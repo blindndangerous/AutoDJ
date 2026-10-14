@@ -1,7 +1,7 @@
 # AutoDJ
 
 [![CI](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml/badge.svg)](https://github.com/blindndangerous/AutoDJ/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: AGPL v3 or later](https://img.shields.io/badge/License-AGPLv3%2B-blue.svg)](LICENSE)
 
 AutoDJ plays music from your own library and chooses the next track using audio similarity, tempo,
 key, and your playback settings. Analysis and playback run on your computer. Your music is not
@@ -382,9 +382,8 @@ a focused button and arrow keys operate the focused slider or tab. Open dialogs 
 shortcuts inactive. With NVDA in browse mode, press NVDA+F2 and then a shortcut to pass that one
 key through to the page.
 
-A new track is announced while the Now Playing tab is showing. To hear it on every tab, turn on
-**Announce track changes on every tab** under Settings, Display and keys; the choice is saved in this
-browser only.
+A new track is announced while the Now Playing tab is showing. **Announce track changes** under
+Settings, Display and keys can make that every tab, or off; the choice is saved in this browser only.
 
 To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Display and keys. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no
@@ -702,7 +701,12 @@ with `uv pip uninstall autodj`.
 
 ## Credits and licensing
 
-- AutoDJ's own code is MIT licensed.
+- AutoDJ is copyright (C) 2026 blindndangerous, jage9 and AutoDJ contributors. It is free
+  software: you can redistribute it and modify it under the terms of the GNU Affero General
+  Public License, version 3 or (at your option) any later version, published by the Free
+  Software Foundation. If you run a modified AutoDJ that people use over a network, you must
+  offer them its source code. It comes with no warranty. The full text is in [LICENSE](LICENSE). Releases up to
+  and including 0.19.1 were published under the MIT license and stay available under it.
 - [MuQ-large-msd-iter](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) uses MIT-licensed code and
   [CC-BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) model weights. The weights require
   attribution; the license forbids commercial use. AutoDJ never redistributes those weights.

@@ -416,12 +416,10 @@ describe("footer build stamp", () => {
     expect(link.target).toBe("_blank");
     expect(link.rel.split(" ")).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
     expect(link.querySelector("#ver-commit").textContent).toBe("1a2b3c4");
-    // Visible text first (2.5.3), then where it goes, for a screen reader.
-    expect(link.textContent.replace(/\s+/g, " ").trim())
-      .toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
-    expect(link.querySelector(".visually-hidden").textContent)
-      .toBe(" on GitHub (opens in a new tab)");
-    expect(link.hasAttribute("aria-label")).toBe(false);
+    // Visible text first (2.5.3), then where it goes, in one name: hidden
+    // text inside the link would be read as a second line.
+    expect(link.textContent.replace(/\s+/g, " ").trim()).toBe("build 1a2b3c4");
+    expect(link.getAttribute("aria-label")).toBe("build 1a2b3c4 on GitHub (opens in a new tab)");
     // Reference data, not a status update: still no live region.
     expect(document.querySelector("#version-stamp [aria-live]")).toBeNull();
     expect(document.querySelector("#version-stamp").hasAttribute("aria-live")).toBe(false);
@@ -1171,24 +1169,30 @@ describe("app request behavior", () => {
     expect(document.querySelector("#badges-announce")).toBeNull();
   });
 
-  it("speaks a track change on other tabs only when Settings asks for it", async () => {
+  it("speaks a track change on every tab, only on Now Playing, or not at all", async () => {
     const { webSocket } = await setupApp();
     const region = document.querySelector("#track-announce");
-    const optIn = document.querySelector("#announce-all-tabs");
+    const choice = document.querySelector("#announce-track-changes");
     const push = (path) => webSocket.onmessage({ data: JSON.stringify({
       current_track: { path, artist: "Artist", title: path },
       queue: [], eq: {}, volume: 1,
     }) });
     document.querySelector("#panel-now").hidden = true;
 
-    expect(optIn.checked).toBe(false);
+    expect(choice.value).toBe("now");
     push("one.mp3");
     expect(region.textContent).not.toContain("one.mp3");
 
-    optIn.checked = true;
-    optIn.dispatchEvent(new Event("change"));
+    choice.value = "all";
+    choice.dispatchEvent(new Event("change"));
     push("two.mp3");
     expect(region.textContent).toBe("Artist — two.mp3");
+
+    document.querySelector("#panel-now").hidden = false;
+    choice.value = "off";
+    choice.dispatchEvent(new Event("change"));
+    push("three.mp3");
+    expect(region.textContent).not.toContain("three.mp3");
   });
 
   it("leaves focus where a skip or mute key found it, and says the mute state", async () => {
@@ -1624,7 +1628,7 @@ describe("app request behavior", () => {
             title: "Song", artist: "Artist", duration: 60,
           }, {
             event_id: "play-2", path: "M:/other.flac", played_at: "2025-12-31T23:00:00Z",
-            title: "Other", artist: "Another", duration: 120,
+            title: "Other", artist: "", duration: 120,
           }] })
           : url.startsWith("/api/library/points?")
             ? jsonResponse({ path: "M:/song.flac", title: "Song", artist: "Artist", kind: "music", points: {} })
@@ -1637,12 +1641,14 @@ describe("app request behavior", () => {
         return found;
       });
       expect(button.getAttribute("aria-label")).toBe("Track info for Artist, Song");
+      expect(document.querySelectorAll("#history-tbody .history-info")[1].getAttribute("aria-label"))
+        .toBe("Track info for Other");
       expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];
       expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
-        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
-        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
+        "gridcell", "gridcell", "gridcell", "gridcell", "gridcell",
+        "gridcell", "gridcell", "gridcell", "gridcell", "gridcell",
       ]);
       expect(cells.filter((cell) => cell.tabIndex === 0)).toEqual([cells[0]]);
       expect(button.tabIndex).toBe(-1);
@@ -1652,7 +1658,7 @@ describe("app request behavior", () => {
       cells[5].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
       expect(document.activeElement).toBe(cells[0]);
       cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(cells[4]);
       button.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
       expect(document.querySelector("#track-info-heading").textContent).toBe("Track info: Artist — Song");
@@ -1665,14 +1671,13 @@ describe("app request behavior", () => {
       document.addEventListener("focusin", (event) => focusEvents.push(event.target));
       back.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-history").hidden).toBe(false));
-      await vi.waitFor(() => expect(document.activeElement).toBe(
-        document.querySelector("#history-tbody .history-info")));
+      await vi.waitFor(() => expect(document.activeElement).toBe(cells[4]));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(historyCalls()).toHaveLength(beforeReturn);
       expect(document.querySelector("#history-tbody .history-info")).toBe(button);
       expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
-      expect(button.tabIndex).toBe(0);
-      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      expect(cells[4].tabIndex).toBe(0);
+      cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
       expect(document.activeElement).toBe(cells[3]);
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
@@ -1713,7 +1718,8 @@ describe("app request behavior", () => {
       expect(rows[1].querySelector("button")).toBeNull();
       expect(rows[2].querySelector(".history-info").textContent).toBe("Track info");
       // The title cell is still the row header, so the row reads the same.
-      expect(rows[0].cells[1].getAttribute("role")).toBe("rowheader");
+      expect(rows[0].cells[1].getAttribute("role")).toBe("gridcell");
+      expect(rows[0].cells[1].hasAttribute("data-name")).toBe(true);
       expect(rows.map((row) => row.dataset.historyId)).toEqual(["live-1", "live-0", "play-1"]);
     } finally {
       window.location.hash = "";
@@ -1822,7 +1828,7 @@ describe("app request behavior", () => {
         .toContain("no longer in the library"));
       expect(document.querySelector("#panel-history").hidden).toBe(false);
       expect(document.querySelector("#panel-track-info").hidden).toBe(true);
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(button.closest("td"));
       expect(document.querySelector("#points-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -1923,7 +1929,7 @@ describe("app request behavior", () => {
       const back = document.querySelector("#track-info-return");
       expect(back.textContent).toBe("Return to Queue & Search");
       back.click();
-      await vi.waitFor(() => expect(document.activeElement).toBe(info));
+      await vi.waitFor(() => expect(document.activeElement).toBe(info.closest("td")));
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1949,7 +1955,7 @@ describe("app request behavior", () => {
       await vi.waitFor(() => expect(resultInfo()).not.toBe(original));
       const replacement = resultInfo();
       document.querySelector("#track-info-return").click();
-      await vi.waitFor(() => expect(document.activeElement).toBe(replacement));
+      await vi.waitFor(() => expect(document.activeElement).toBe(replacement.closest("td")));
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -2150,7 +2156,7 @@ describe("app request behavior", () => {
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
       await vi.waitFor(() => expect(historyCall).toBe(2));
       expect(document.querySelector("#sr-status").textContent).toBe("");
-      expect(document.activeElement).toBe(button);
+      expect(document.activeElement).toBe(button.closest("td"));
       expect(button.isConnected).toBe(true);
       expect(document.querySelector("#history-table").hidden).toBe(false);
       document.querySelector("#hist-refresh").click();

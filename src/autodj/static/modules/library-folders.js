@@ -205,7 +205,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
           advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
         }
         const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
-        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { rowHeaderIndex: 1 });
+        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
         row.dataset.id = folder.id;
         return row;
       }) : [tableRow(doc, ["No folders added yet."], { colspan: [5] })]));

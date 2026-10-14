@@ -1,7 +1,7 @@
 {
   "name": "autodj-frontend",
   "private": true,
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "description": "Development tooling for the AutoDJ web UI: vitest unit tests, ESLint, knip and the Playwright audits.  The server serves src/autodj/static as-is; nothing here is needed to run AutoDJ.",
   "scripts": {

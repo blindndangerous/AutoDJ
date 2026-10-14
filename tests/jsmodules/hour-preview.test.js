@@ -13,7 +13,7 @@ import {
 
 const byId = (id) => document.getElementById(id);
 
-function item(title, status, fixed, starts = ["12:09:10 PM", "12:09:10 PM"]) {
+function item(title, status, fixed, starts = ["12:09:10", "12:09:10"]) {
   return {
     kind: "song",
     status,
@@ -21,9 +21,7 @@ function item(title, status, fixed, starts = ["12:09:10 PM", "12:09:10 PM"]) {
     status_text: fixed ? `Fixed: ${status.replace("_", " ")}` : "Predicted",
     title,
     starts_text: starts[0],
-    starts_words: starts[1],
     length_text: "3:20",
-    length_words: "3:20",
   };
 }
 
@@ -31,13 +29,13 @@ function view(overrides = {}) {
   return {
     minutes: 60,
     reason: null,
-    summary: "Top of the hour, 1:00 PM: lands about 0:35 early. Next hour: 2 fixed and 1 predicted, until 1:10 PM.",
+    summary: "Top of the hour, 13:00: lands about 0:35 early. Next hour: 2 fixed and 1 predicted, until 13:10.",
     items: [
       item("Gold 0, Song 100", "on_air", true),
-      item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12:30 PM"]),
-      item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15:50 PM"]),
+      item("Gold 1, Song 101", "picked", true, ["12:12:30", "12:12:30"]),
+      item("Gold 9, Song 109", "predicted", false, ["12:15:50", "12:15:50"]),
     ],
-    points: [{ kind: "hour", text: "Top of the hour, 1:00 PM: lands about 0:35 early." }],
+    points: [{ kind: "hour", text: "Top of the hour, 13:00: lands about 0:35 early." }],
     notes: ["Predicted songs come from a dry run."],
     stopped: null,
     ...overrides,
@@ -98,14 +96,14 @@ describe("hour preview rendering", () => {
   it("uses the same numeric text for both time columns and assistive technology", () => {
     const cells = rowCells(item("Gold 0, Song 100", "on_air", true));
     expect(cells).toEqual([
-      "12:09:10 PM",
+      "12:09:10",
       "Gold 0, Song 100",
       "3:20",
       "Fixed: on air",
     ]);
     const tbody = document.createElement("tbody");
     renderRows(document, tbody, [item("Gold 0, Song 100", "on_air", true)]);
-    expect(tbody.children[0].children[0].textContent).toBe("12:09:10 PM");
+    expect(tbody.children[0].children[0].textContent).toBe("12:09:10");
     expect(tbody.children[0].children[2].textContent).toBe("3:20");
     expect(tbody.querySelector("[aria-hidden], .visually-hidden")).toBeNull();
     expect(tbody.children[0].className).toBe("is-fixed is-on-air");
@@ -199,6 +197,21 @@ describe("hour preview card", () => {
     });
   });
 
+  it("opens Track info for a liner row as a liner", async () => {
+    const next = view();
+    Object.assign(next.items[1], { kind: "liner", title: "Liner: ID 1", path: "/liners/id1.mp3" });
+    const opened = vi.fn();
+    document.addEventListener("autodj:edit-points", opened, { once: true });
+    harness([next]);
+    await open();
+    const button = byId("hour-preview-tbody").children[1].querySelector("button");
+    expect(button.getAttribute("aria-label")).toBe("Track info for Liner: ID 1");
+    button.click();
+    expect(opened.mock.calls[0][0].detail).toEqual({
+      path: "/liners/id1.mp3", kind: "liner", opener: button,
+    });
+  });
+
   it("refreshes on its timer without speaking or moving focus", async () => {
     const { request, timers } = harness([view(), view({ summary: "Changed." })]);
     await open();
@@ -218,6 +231,18 @@ describe("hour preview card", () => {
     byId("panel-now").hidden = true;
     await timers.at(-1).fn();
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("catches up quietly when Now Playing is shown again", async () => {
+    const { request, spoken } = harness([view(), view()]);
+    await open();
+    byId("panel-now").hidden = true;
+    document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: "history" } }));
+    byId("panel-now").hidden = false;
+    document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: "now" } }));
+    await settle();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(spoken).toEqual([]);
   });
 
   it("says the summary once when Refresh preview is pressed", async () => {

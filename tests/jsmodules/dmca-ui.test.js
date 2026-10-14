@@ -108,7 +108,7 @@ describe("queueing a song over a DMCA limit", () => {
       ["/api/queue/add", { path: "a.flac", confirm: true }],
     ]);
     expect(dialog.open).toBe(false);
-    expect(document.activeElement).toBe(opener);
+    expect(document.activeElement).toBe(opener.closest("td"));
   });
 
   it("says the song was not queued when the operator cancels", async () => {

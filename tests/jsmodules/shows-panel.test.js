@@ -223,7 +223,7 @@ describe("editing a list", () => {
     expect(songButton(0, "up").getAttribute("aria-disabled")).toBe("true");
     expect(songButton(2, "down").getAttribute("aria-disabled")).toBe("true");
     // The visible word starts the button's name; the song says which.
-    expect(songButton(1, "up").textContent).toBe("Move up Artist 2, Song 2");
+    expect(songButton(1, "up").getAttribute("aria-label")).toBe("Move up Artist 2, Song 2");
     songButton(1, "up").click();
     expect(songTitles()).toEqual(["Artist 2, Song 2", "Artist 1, Song 1", "Artist 3, Song 3"]);
     expect(document.activeElement).toBe(songButton(0, "up"));
@@ -249,7 +249,7 @@ describe("editing a list", () => {
     await vi.waitFor(() => expect(byId("shows-results").querySelectorAll("button")).toHaveLength(1));
     expect(status()).toBe("1 song found.");
     const add = byId("shows-results").querySelector("button");
-    expect(add.textContent).toBe("Add Artist 9, Song 9");
+    expect(add.getAttribute("aria-label")).toBe("Add Artist 9, Song 9");
     add.focus();
     add.click();
     expect(songTitles().at(-1)).toBe("Artist 9, Song 9");

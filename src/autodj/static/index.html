@@ -349,7 +349,7 @@
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
-    <p id="handoff-status" aria-live="polite" aria-atomic="true" class="setting-desc"></p>
+    <p id="handoff-status" class="setting-desc"></p>
   </details>
 
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
@@ -1526,13 +1526,15 @@
 
     <fieldset>
       <legend>Announcements</legend>
-      <div class="settings-check">
-        <input type="checkbox" id="announce-all-tabs">
-        <label for="announce-all-tabs">Announce track changes on every tab</label>
+      <div class="settings-row">
+        <label for="announce-track-changes">Announce track changes</label>
+        <select id="announce-track-changes" aria-describedby="announce-track-changes-desc">
+          <option value="all">On every tab</option>
+          <option value="now">Only on Now Playing</option>
+          <option value="off">Off</option>
+        </select>
       </div>
-      <span class="setting-desc" id="announce-all-tabs-desc">
-        When off, a new track is spoken only while the Now Playing tab is showing.  Saved in this browser only.
-      </span>
+      <span class="setting-desc" id="announce-track-changes-desc">Saved in this browser only.</span>
     </fieldset>
 
     <fieldset>
@@ -2239,6 +2241,25 @@
       Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
     </p>
     <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <!-- Time for every station (#282, #286): time-settings.js. -->
+    <fieldset id="time-settings">
+      <legend>Time for every station</legend>
+      <div class="settings-row">
+        <label for="time-zone">Time zone</label>
+        <select id="time-zone" aria-describedby="time-zone-help"></select>
+      </div>
+      <span class="setting-desc" id="time-zone-help">
+        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time AutoDJ starts.
+      </span>
+      <div class="settings-row">
+        <label for="time-format">Time format</label>
+        <select id="time-format">
+          <option value="24">24 hour (15:04)</option>
+          <option value="12">12 hour (3:04 PM)</option>
+        </select>
+      </div>
+      <button type="button" id="time-settings-save">Save time settings</button>
+    </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <ul id="stations-list" aria-labelledby="stations-list-heading"></ul>
     <form id="station-create-form" novalidate>
@@ -2384,7 +2405,6 @@
     <h3>Profiles and access</h3>
     <!-- profiles.js and devices.js load their lists when this panel is
          seen; subtabs.js gives it the open and toggle of a card. -->
-    <h4>Profiles</h4>
     <p class="card-desc">
       Save a mix setup and restore it later. Profiles include the preset, tempo range, key matching, transition mode and fade lengths, track selection, output processing, effect sync, beatmatch on skip, and liner enable and rotation settings.
     </p>
@@ -2401,7 +2421,7 @@
         Letters, digits, spaces, dashes and underscores, up to 64 characters.  Saving under a name that already exists asks before replacing it.
       </span>
     </fieldset>
-    <h5 id="profile-list-heading">Saved profiles</h5>
+    <h4 id="profile-list-heading">Saved profiles</h4>
     <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
 
     <!-- Browser access: only meaningful when the server asks browsers to
@@ -3704,7 +3724,8 @@
       <span aria-hidden="true">⌨</span> Keyboard shortcuts
     </button>
     <a id="changelog-link" href="https://github.com/blindndangerous/AutoDJ/blob/master/CHANGELOG.md"
-       target="_blank" rel="noopener noreferrer">Changelog<span class="visually-hidden"> on GitHub (opens in a new tab)</span></a>
+       target="_blank" rel="noopener noreferrer"
+       aria-label="Changelog on GitHub (opens in a new tab)">Changelog</a>
   </p>
   <p id="version-stamp">
     AutoDJ
@@ -3730,7 +3751,7 @@
      the toast never takes focus.  See modules/live-region.js. -->
 <div id="status-toast-box" hidden>
   <div id="status-toast" aria-hidden="true" hidden></div>
-  <button type="button" id="status-toast-dismiss">Dismiss<span class="visually-hidden"> message</span></button>
+  <button type="button" id="status-toast-dismiss" aria-label="Dismiss message">Dismiss</button>
 </div>
 </body>
 </html>

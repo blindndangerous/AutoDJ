@@ -55,7 +55,8 @@ export function renderRows(doc, tbody, items) {
       row = doc.createElement("tr");
       for (let column = 0; column < 5; column += 1) {
         const cell = doc.createElement("td");
-        cell.setAttribute("role", column === 1 ? "rowheader" : "gridcell");
+        cell.setAttribute("role", "gridcell");
+        if (column === 1) cell.dataset.name = "";
         row.append(cell);
       }
       tbody.append(row);
@@ -71,7 +72,7 @@ export function renderRows(doc, tbody, items) {
       if (td.textContent !== cell) td.textContent = cell;
     });
     const actionCell = row.children[4];
-    const path = item.kind === "song" ? item.path : null;
+    const path = item.kind === "song" || item.kind === "liner" ? item.path : null;
     let button = actionCell.querySelector("button");
     if (!path) {
       button?.remove();
@@ -83,6 +84,7 @@ export function renderRows(doc, tbody, items) {
         actionCell.append(button);
       }
       button.dataset.path = path;
+      button.dataset.kind = item.kind === "liner" ? "liner" : "music";
       button.setAttribute("aria-label", `Track info for ${item.title}`);
     }
   });
@@ -140,7 +142,7 @@ export function installHourPreview({
     const button = event.target.closest?.("button[data-path]");
     if (!button || !tbody.contains(button)) return;
     doc.dispatchEvent(new CustomEvent("autodj:edit-points", {
-      detail: { path: button.dataset.path, kind: "music", opener: button },
+      detail: { path: button.dataset.path, kind: button.dataset.kind, opener: button },
     }));
   });
   let lastView = null;
@@ -345,6 +347,13 @@ export function installHourPreview({
     if (card.open) void spanChanged();
   });
   refreshButton.addEventListener("click", () => { void refresh(); });
+  // Back on Now Playing, or back in this browser tab: catch up at once.
+  doc.addEventListener("autodj:view", (event) => {
+    if (event.detail?.view === "now" && showing()) void quietRefresh();
+  });
+  doc.addEventListener("visibilitychange", () => {
+    if (showing()) void quietRefresh();
+  });
 
   // After sign-out: forget the preview, so another person signing in on
   // this page does not see it.

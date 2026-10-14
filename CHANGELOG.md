@@ -23,8 +23,8 @@ song's structure with keys and speech instead of a waveform. Library tools can r
 automatically, and the lists and tables share one way of moving with the arrow keys. Also new are
 voice tracking from the browser, a cart wall, shows, more stream formats with listener statistics
 and a light theme. The library is now kept in one catalog, `library.db`: a library from an older
-release must be upgraded with `autodj migrate-index` before this version can use it. The
-screen-reader sample for this release is in
+release must be upgraded with `autodj migrate-index` before this version can use it. AutoDJ
+is now licensed under the AGPL-3.0-or-later instead of MIT. The screen-reader sample for this release is in
 [docs/accessibility-samples/0.21.0.md](docs/accessibility-samples/0.21.0.md).
 
 ### Changed
@@ -33,6 +33,17 @@ screen-reader sample for this release is in
   keyboard or when the page puts it back selects the text already there, so typing replaces the
   old search. A click still places the caret where it lands. Enter in Search text runs the
   search, as before.
+- Times the server writes on the page, such as the hour preview, now use 24-hour time like the
+  rest of the server's text. Predicted ad breaks give their length as 1:00 rather than about 60
+  seconds (#281).
+- The hour preview's summary and backtiming lines are shorter. They keep the song names, fixed or
+  predicted, how early or late, and how far a song runs over; the long notes under the table moved
+  to the operations guide (#283).
+- The History Track info button no longer reads a stray comma for a song with no artist (#283).
+- AutoDJ is now licensed under the GNU Affero General Public License, version 3 or later
+  (AGPL-3.0-or-later), instead of MIT. Anyone who runs a modified AutoDJ that people use over a
+  network must offer them its source code. Releases up to and including 0.19.1 stay available under
+  MIT (#276).
 - Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
   Also save the tags to the file to write them into the file as before; it starts unchecked
   for every track (#258).
@@ -817,6 +828,15 @@ screen-reader sample for this release is in
 
 ### Fixed
 
+- Tables no longer say "row header" when focus lands on a track's name (#302).
+- In tables, a cell with a button such as Track info takes focus itself, so it is read once.
+  Enter or Space on the cell presses the button (#294).
+- Up and Down Arrow in a table, such as the hour preview, move between rows without changing the
+  volume (#290).
+- Enter on a track's name in History, the hour preview or Search and browse opens its Track
+  info (#291).
+- The footer Changelog link, the build link, Dismiss, and the row buttons for clockwheel steps,
+  categories, shows and listener requests each read as one line in NVDA browse mode (#288).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
   closed or detached (#277).
 - The track repeat-rule cap warning appears once per station for each setting and library size,

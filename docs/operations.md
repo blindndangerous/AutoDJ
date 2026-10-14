@@ -1374,7 +1374,7 @@ over silence rather than the next song. The interrupted song's History row ends 
 came on. While the DJ is on, automation waits exactly where it was: nothing is added to the play history or the repeat rules, the clockwheel does not move
 on, and the queue, a show on the air and any waiting breaks stay as they were. The stream
 title, the status page and the public feed show the DJ's name and "Live", and the page says
-"Live: DJ Alice since 9:02 PM" once, politely. The station keeps playing while a DJ or a talker
+"Live: DJ Alice since 21:02" once, politely. The station keeps playing while a DJ or a talker
 is connected, even with no listeners.
 
 **Handing back.** When the DJ disconnects, or sends only silence for 15 seconds, automation
@@ -3361,23 +3361,26 @@ Each row says in its Status column whether it is fixed or predicted:
 
 Backtiming goes to each fixed point in the span:
 
-- **Top of the hour**: the nearer song change counts. "Lands about 35 seconds early" means the
-  song change nearest the hour comes 35 seconds before it; the sentence names the song that
-  causes it and whether that song is fixed or predicted. Liners and breaks that run straight into
+- **Top of the hour**: the nearer song change counts. "Top of the hour, 13:00: expected 0:35 early" means
+  the song change nearest the hour comes 35 seconds before it; the line names the song that
+  causes it, whether that song is fixed or predicted, and how far it runs past the hour. Liners and breaks that run straight into
   a song start its song change.
 - **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
   does on the air, so the preview says how early or late that is.
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
   late it runs; a hard event runs on time and the preview says how much of the song it cuts.
 
-The first top of the hour (or clockwheel restart) is the card's summary. **Refresh preview** says
+The card's summary is the first top of the hour (or clockwheel restart) and how it lands, then
+how many rows are fixed and predicted, such as "Next top of the hour, 13:00: expected 0:35 early. 3 fixed
+items, 20 predicted, through 13:10." When that top of the hour does not restart the clockwheel, the summary also
+times the next clockwheel restart in the span. **Refresh preview** says
 it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
 said once, and not again until one succeeds. Choosing another span under **Show** says the new
 summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
 says so. Timestamps and durations use the same compact text on screen and in speech, such as
-"2:04:30 PM" and "3:45". Times are in the station
+"14:04:30" and "3:45" (24 hour). Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
@@ -3397,7 +3400,8 @@ the predicted songs. Every station has its own:
 items, the fixed points with their sentences, and the summary.
 
 What it approximates, as the rotation tester does: a song runs from its saved start to its segue,
-or its length less the crossfade; liners and booked breaks add their full length; automatic
+or its length less the crossfade, scaled to wall time at the configured speed; liners and booked
+breaks add their full length, and trimmed audio tails can still differ from the catalog length; automatic
 liners, matched intros not yet mixed, time checks and carts are left out; and a scheduled change of song picking applies from
 the first song after its time. With hour fitting on, predicted picks use the same fitting choice
 as live picks.
@@ -3707,7 +3711,11 @@ A seasonal clockwheel, such as a holiday one from 27 November to 26 December, ta
 Use **Run now** on the first event to start the season at once when you add it partway through.
 
 Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
-zone when that is not set (UTC when the system has no IANA name). The Schedule panel shows the
+zone when that is not set (UTC when the system has no IANA name). **Time for every station** in
+Settings > Stations sets the time zone from the page instead; a saved one takes the place of
+`config.toml`'s from the next time AutoDJ starts. The same fieldset sets **Time format**, 24 hour
+(the default) or 12 hour, for the times every page shows; it applies at once and changes nothing
+but how times look. The Schedule panel shows the
 zone in use. When daylight saving time skips a time, the event runs at the moment the clock
 jumps; when a time happens twice, the event runs the first time only.
 

@@ -141,10 +141,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     button.type = "button";
     button.dataset.action = action;
     for (const [key, value] of Object.entries(extra)) button.dataset[key] = value;
-    const hidden = doc.createElement("span");
-    hidden.className = "visually-hidden";
-    hidden.textContent = ` ${which}`;
-    button.append(title, hidden);
+    button.textContent = title;
+    button.setAttribute("aria-label", `${title} ${which}`);
     return button;
   }
 

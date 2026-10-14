@@ -27,7 +27,6 @@ from autodj.shows import (
     ShowStore,
     generate,
     length_text,
-    length_words,
     parse_spec,
     preview_shows,
     show_action,
@@ -146,8 +145,8 @@ def test_a_damaged_show_is_skipped_and_kept_and_a_damaged_file_set_aside(tmp_pat
 
 
 def test_lengths_read_well() -> None:
-    assert (length_text(3725), length_words(3725)) == ("1:02:05", "1:02:05")
-    assert (length_text(65), length_words(65)) == ("1:05", "1:05")
+    assert length_text(3725) == "1:02:05"
+    assert length_text(65) == "1:05"
 
 
 # -- generating a list -----------------------------------------------------------------
@@ -383,7 +382,7 @@ def test_songs_view_marks_missing_files(tmp_path: Path) -> None:
         ("Hits 0, Song 0", False),
         ("x.mp3", True),
     ]
-    assert rows[0]["length_words"] == "3:00"
+    assert rows[0]["length_text"] == "3:00"
 
 
 # -- the hour preview ------------------------------------------------------------------
