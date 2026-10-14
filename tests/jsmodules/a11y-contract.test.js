@@ -3480,9 +3480,72 @@ describe("station switcher and station context contracts (#70)", () => {
     const shared = document.getElementById("shared-context");
     expect(shared.hidden).toBe(true);
     expect(shared.textContent).toBe("");
-    for (const id of ["tab-library", "points-save"]) {
+    for (const id of ["tab-library", "points-save", "stab-stations"]) {
       expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
     }
+  });
+
+  it("gives New station labelled native fields, one polite status and an error to link (#233)", () => {
+    installDocument();
+    const panel = document.getElementById("spanel-stations");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
+    expect(document.getElementById("spanel-live").parentElement).toBe(panel.parentElement);
+    const list = document.getElementById("stations-list");
+    expect(list.tagName).toBe("UL");
+    expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    const form = document.getElementById("station-create-form");
+    expect(form.querySelector("legend").textContent.trim()).toBe("New station");
+    // Short visible labels of their own, no aria-label in their place.
+    for (const [id, label] of [
+      ["station-create-source", "Start from"], ["station-create-name", "Name"],
+      ["station-create-slug", "Station ID"], ["station-create-clockwheels", "Clockwheels"],
+      ["station-create-schedule", "Schedule"], ["station-create-carts", "Carts"],
+      ["station-create-autostart", "Start with the server"],
+    ]) {
+      const control = document.getElementById(id);
+      expect(control.hasAttribute("aria-label"), id).toBe(false);
+      expect(form.querySelector(`label[for="${id}"]`).textContent.trim(), id).toBe(label);
+    }
+    expect(document.getElementById("station-create-source").tagName).toBe("SELECT");
+    // Only the ID's format hint is linked; the other help is read by browsing.
+    expect(ids(document.getElementById("station-create-slug"), "aria-describedby"))
+      .toEqual(["station-create-slug-help"]);
+    expect(document.getElementById("station-create-slug-help").classList.contains("setting-desc")).toBe(true);
+    for (const id of ["station-create-source", "station-create-name", "station-create-autostart",
+      "station-create-clockwheels", "station-create-schedule", "station-create-carts"]) {
+      expect(document.getElementById(id).hasAttribute("aria-describedby"), id).toBe(false);
+    }
+    // What stays shared and what a copy never takes are said on the page.
+    expect(panel.querySelector(".card-desc").textContent)
+      .toMatch(/song cue points and Stereo Tool preset files/);
+    expect(document.getElementById("station-create-source-help").textContent)
+      .toMatch(/never takes its relays, listener password, webhooks, recording folder, queue, history/);
+    // Also copy is a fieldset hidden in the markup with its help inside it.
+    const copies = document.getElementById("station-create-copies");
+    expect(copies.tagName).toBe("FIELDSET");
+    expect(copies.hidden).toBe(true);
+    expect(copies.querySelector("legend").textContent.trim()).toBe("Also copy");
+    expect(copies.contains(document.getElementById("station-create-copies-help"))).toBe(true);
+    for (const checkbox of copies.querySelectorAll('input[type="checkbox"]')) {
+      expect(checkbox.parentElement.classList.contains("settings-check")).toBe(true);
+    }
+    const error = document.getElementById("station-create-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hidden).toBe(true);
+    expect(error.closest("[aria-live]")).toBeNull();
+    expect(document.getElementById("station-create-submit").getAttribute("type")).toBe("submit");
+    expect(document.getElementById("station-create-switch").getAttribute("type")).toBe("button");
+    // One polite status, not nested in another live region.
+    const live = [...panel.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["stations-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // Reading order: where from, name, ID, copies, start, then the button.
+    const order = [...form.querySelectorAll("input, select, button")].map((node) => node.id);
+    expect(order).toEqual(["station-create-source", "station-create-name", "station-create-slug",
+      "station-create-clockwheels", "station-create-schedule", "station-create-carts",
+      "station-create-autostart", "station-create-submit"]);
   });
 
   it("gives queue rows, search results, carts, listeners, profiles and Run now the station", () => {

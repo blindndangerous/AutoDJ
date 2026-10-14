@@ -52,6 +52,22 @@ def _security_client(*, secure_cookie: bool = False) -> TestClient:
     )
 
 
+def test_create_station_needs_session_origin_and_small_body() -> None:
+    client = _security_client()
+    body = {"slug": "new", "name": "New Radio"}
+    assert client.post("/api/stations", json=body).status_code == 401
+    assert _pair(client).status_code == 200
+    assert client.post("/api/stations", json=body, headers={"Origin": ""}).status_code == 403
+    assert (
+        client.post(
+            "/api/stations", json=body, headers={"Origin": "http://evil.example"}
+        ).status_code
+        == 403
+    )
+    assert client.post("/api/stations", content=b" " * 4097).status_code == 413
+    assert client.post("/api/stations", json=body).status_code == 503
+
+
 def _security_app():
     player = _make_player_mock()
     player._cfg.server = ServerConfig(

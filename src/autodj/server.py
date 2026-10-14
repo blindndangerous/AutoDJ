@@ -52,7 +52,7 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, BinaryIO, Literal
 
@@ -69,7 +69,16 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
@@ -643,6 +652,45 @@ class DeviceRenameBody(BaseModel):
     name: str
 
 
+class CreateStationBody(BaseModel):
+    """A browser's request for a new stopped station."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: StrictStr
+    name: StrictStr
+    source: StrictStr | None = None
+    copy_clockwheels: StrictBool = False
+    copy_schedule: StrictBool = False
+    copy_carts: StrictBool = False
+    autostart: StrictBool = False
+
+    @field_validator("slug")
+    @classmethod
+    def _slug(cls, value: str) -> str:
+        from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
+
+        if value == DEFAULT_SLUG or not SLUG_PATTERN.fullmatch(value):
+            raise ValueError(
+                "Choose a station ID of 1 to 32 lowercase letters, digits or inner hyphens, other than default"
+            )
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        name = value.strip()
+        if not name or len(name) > 80 or not name.isprintable():
+            raise ValueError("Enter a printable station name of 1 to 80 characters")
+        return name
+
+    @model_validator(mode="after")
+    def _flags(self) -> CreateStationBody:
+        if self.source is None and (self.copy_clockwheels or self.copy_schedule or self.copy_carts):
+            raise ValueError("Copy options need a source station")
+        return self
+
+
 def _is_alac(path: Path) -> bool:
     """Return whether an MP4-family file reports Apple Lossless audio."""
     if path.suffix.lower() not in (".m4a", ".mp4"):
@@ -872,6 +920,7 @@ def create_app(
         first_track=stream_first_track,
     )
     stations = StationRegistry(runtime, extra_stations)
+    station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
     listener_access = runtime.listener_access
     listener_auth_limiter = ListenerAuthLimiter()
@@ -1052,6 +1101,7 @@ def create_app(
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
     body_limits: dict[str, Callable[[], int]] = {
+        "/api/stations": lambda: 4096,
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
@@ -1622,6 +1672,116 @@ def create_app(
     async def api_stations() -> dict[str, list[dict[str, Any]]]:
         """List every configured station: name, state, listeners, song and stream address."""
         return {"stations": stations.summaries()}
+
+    @app.post("/api/stations", status_code=201)
+    async def api_station_create(body: CreateStationBody) -> dict[str, Any]:
+        """Publish a validated definition and register a stopped station."""
+        from autodj.config import MAX_STATIONS, _build_station, _check_station_conflicts
+        from autodj.station_creation import CreationConflict, duplicate_table, stage_station
+        from autodj.station_ledger import setting_key
+        from autodj.stations import StationPaths
+
+        root = bridge.player._cfg
+        library = bridge.library
+        if library is None or not hasattr(library, "catalog") or bridge.sim is None:
+            raise HTTPException(status_code=503, detail="This server cannot host another station")
+        async with station_create_lock:
+            if stations._closing:
+                raise HTTPException(status_code=409, detail="The server is shutting down")
+            if body.slug in stations.slugs():
+                raise HTTPException(status_code=409, detail=f"Station {body.slug} already exists")
+            if body.source is not None and body.source not in stations.slugs():
+                raise HTTPException(status_code=404, detail="The source station was not found")
+            if len(root.stations) >= MAX_STATIONS:
+                raise HTTPException(
+                    status_code=409, detail=f"At most {MAX_STATIONS} other stations are allowed"
+                )
+            if any(
+                body.name.casefold() == name.casefold().strip()
+                for _, name in _station_names(stations)
+            ):
+                raise HTTPException(
+                    status_code=409, detail="A station with that display name already exists"
+                )
+            destination = StationPaths.for_station(root, body.slug).state_dir
+            if await asyncio.to_thread(lambda: destination.exists() or destination.is_symlink()):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"A folder from an earlier station with ID {body.slug} exists; choose another ID or move that folder away",
+                )
+            if await asyncio.to_thread(library.catalog.has_station_plays, body.slug):
+                raise HTTPException(
+                    status_code=409, detail=f"Station {body.slug} already has play history"
+                )
+            try:
+                table = await asyncio.to_thread(
+                    duplicate_table, root, body.source, body.slug, body.name, body.autostart
+                )
+                spec = replace(_build_station(body.slug, table, root), defined_in="web")
+                _check_station_conflicts(root, (*root.stations, spec))
+            except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            clock = None
+            if body.copy_clockwheels:
+                assert body.source is not None
+                clock = await asyncio.to_thread(
+                    lambda: library.station_ledger(body.source).get_setting("clock")
+                )
+            try:
+                _, destination, copied = await asyncio.to_thread(
+                    stage_station,
+                    root,
+                    body.slug,
+                    body.source,
+                    table,
+                    copy_clockwheels=body.copy_clockwheels,
+                    copy_schedule=body.copy_schedule,
+                    copy_carts=body.copy_carts,
+                )
+            except (OSError, CreationConflict) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            clock_written = False
+            try:
+                if clock is not None:
+                    clock_written = True
+                    await asyncio.to_thread(
+                        library.catalog.set_setting, setting_key(body.slug, "clock"), clock
+                    )
+                if stations._closing:
+                    raise StationControlError("The server is shutting down")
+                extra = _extra_station(root, spec, bridge.sim, library, station_timezone)
+                stations.add(extra)
+                root.stations += (spec,)
+            except Exception as exc:
+                try:
+                    if clock_written:
+                        await asyncio.to_thread(
+                            library.catalog.delete_setting, setting_key(body.slug, "clock")
+                        )
+                finally:
+                    await asyncio.to_thread(shutil.rmtree, destination)
+                raise HTTPException(
+                    status_code=409, detail=f"Could not finish station creation: {exc}"
+                ) from exc
+            return {
+                **stations.get(body.slug).summary(),
+                "copied": copied,
+                "not_copied": [
+                    "queue and play history",
+                    "active playback and pending requests",
+                    "listener sessions, bans, and statistics",
+                    "running jobs and recording state",
+                    "relays and passwords",
+                    "liner play dates, ads, shows, intros, and profiles",
+                    "liners, time-check clips, announcements, and caches",
+                    "liner source registration marker",
+                    "music files, library records, analysis, song cues, and Stereo Tool preset files are shared",
+                    "schedule targets missing from the new station may fail when events run",
+                    *(["clockwheels"] if not body.copy_clockwheels else []),
+                    *(["schedule"] if not body.copy_schedule else []),
+                    *(["carts"] if not body.copy_carts else []),
+                ],
+            }
 
     @app.post("/api/stations/{slug}/start")
     async def api_station_start(slug: str) -> dict[str, Any]:
@@ -2353,7 +2513,7 @@ def _extra_station(
                 target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
             )
             player_thread.start()
-            return StationRuntime(
+            runtime = StationRuntime(
                 bridge,
                 timezone=timezone,
                 player_thread=player_thread,
@@ -2361,6 +2521,8 @@ def _extra_station(
                 slug=slug,
                 paths=paths,
             )
+            runtime.defined_in = spec.defined_in
+            return runtime
         except BaseException:
             thread = player_thread
             _abandon_player(
@@ -2382,6 +2544,7 @@ def _extra_station(
         build=build,
         requests_enabled=spec.cfg.requests.enabled,
         player_page=spec.cfg.player_page,
+        defined_in=spec.defined_in,
     )
 
 

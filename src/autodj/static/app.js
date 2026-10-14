@@ -1364,6 +1364,7 @@ installAccess(_accessEls, {
 // Settings > Analysis workers -- ./modules/analysis-workers.js loads when
 // its subtab is shown.
 import { installAnalysisWorkers } from "./modules/analysis-workers.js";
+import { installStationCreator } from "./modules/station-create.js";
 
 installAnalysisWorkers();
 
@@ -1585,6 +1586,18 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => void switchStation(slug),
 });
 
+// Settings > Stations (#233): the list and New station.  A created station
+// joins the list at once; Switch to it puts focus on the Station button.
+const stationCreator = installStationCreator({
+  onCreated: () => refreshStationList(),
+  onSwitch: async (slug) => {
+    await switchStation(slug);
+    if (currentStation() !== slug) return false;
+    stationSwitcher?.focus();
+    return true;
+  },
+});
+
 // "Artist - Title - Night Owl Radio - AutoDJ": the station is named unless
 // it is called AutoDJ.
 function pageTitle(segments) {
@@ -1602,6 +1615,7 @@ function setTextIfChanged(element, text) {
 // Everything that names the station this page controls.
 function renderStationContext() {
   stationSwitcher?.render();
+  stationCreator?.render();
   const several = severalStations();
   const name = stationName();
   setTextIfChanged(pageHeading, several && name !== "AutoDJ" ? `AutoDJ: ${name}` : "AutoDJ");

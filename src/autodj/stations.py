@@ -158,9 +158,19 @@ class StationPaths:
         return active if self.is_default else active / "stations" / self.slug
 
     @property
+    def stations_dir(self) -> Path:
+        """The folder containing named stations' state folders."""
+        return Path(self._cfg.index.active_dir) / "stations"
+
+    @property
     def web_state(self) -> Path:
         """Settings saved from the web page."""
         return self.state_dir / "web_state.json"
+
+    @property
+    def definition(self) -> Path:
+        """A web-created station's configuration definition."""
+        return self.state_dir / "station.json"
 
     @property
     def schedule(self) -> Path:
@@ -864,6 +874,7 @@ class StationRuntime:
 
         self.slug = slug
         self.bridge = bridge
+        self.defined_in = "config"
         self.timezone = timezone
         self.player_thread = player_thread
         self.stream_mode = stream_mode
@@ -991,6 +1002,7 @@ class StationRuntime:
         stream = bridge.stream
         return {
             "slug": self.slug,
+            "defined_in": self.defined_in,
             "name": self.name,
             "state": state,
             "listeners": bridge.listener_total() if stream is not None else 0,
@@ -1430,6 +1442,7 @@ class ExtraStation:
     requests_enabled: bool = False
     #: Its ``[player_page]`` settings, so its pages answer while it is stopped.
     player_page: PlayerPageConfig | None = None
+    defined_in: str = "config"
 
 
 @dataclass
@@ -1477,6 +1490,7 @@ class StoppedStation:
 
     def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
         self.slug = extra.slug
+        self.defined_in = extra.defined_in
         self.name = extra.name
         self.requests_enabled = extra.requests_enabled
         self.player_page = extra.player_page
@@ -1489,6 +1503,7 @@ class StoppedStation:
         """The station's entry in ``/api/stations``."""
         return {
             "slug": self.slug,
+            "defined_in": self.defined_in,
             "name": self.name,
             "state": self.state,
             "listeners": 0,
@@ -1659,6 +1674,15 @@ class StationRegistry:
     def slugs(self) -> frozenset[str]:
         """The name of every configured station, running or not."""
         return frozenset({self._default.slug, *self._extras})
+
+    def add(self, extra: ExtraStation) -> None:
+        """Register a stopped station without touching running stations."""
+        if self._closing:
+            raise StationControlError("The server is shutting down")
+        if extra.slug in self.slugs():
+            raise StationControlError(f"Station {extra.slug} already exists")
+        self._extras[extra.slug] = extra
+        self._locks[extra.slug] = asyncio.Lock()
 
     def paths(self) -> tuple[StationPaths, ...]:
         """Every configured station's paths, the default first."""

@@ -36,6 +36,12 @@ The visual audit (`npm run audit:visual`, part of `audit:ci`) loads every view a
 
 Checkboxes and radio buttons are a deliberate exception to the authored control-boundary rule. In the default color mode they keep the browser and operating system's native appearance; AutoDJ does not replace that appearance or draw a custom border. The forced-colors rules may apply system colors such as `CanvasText` and `Highlight`, but they do not disable the native appearance. Test both checked and unchecked states during release sampling when a sampled flow contains these controls.
 
+Settings > Stations is audited again with a refused New station request from a stood-in server.
+The error must appear beside Station ID, link to that field, and move focus there. Each browser
+must keep a refused create silent apart from the focused field. A stood-in successful create
+must announce once in the panel's status region and move focus to Switch. The audit never
+creates a station; the stand-in answers every create request.
+
 ## Announcement contract
 
 Every message the interface reports follows three rules. They exist because a live region that is
@@ -155,6 +161,11 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   read with "On <station>" after their names; `c` and Shift+C; Listen here still playing the
   station it started on, with its "Playing ..." line; and a stopped station's "Off air" said
   once, with Start reachable on Now Playing.
+- Settings, Stations (#233): browse the station list and read New station fields with their short
+  labels. Station ID includes its format hint. Choosing a copy reveals Also copy as a group of
+  three checkboxes; choosing AutoDJ defaults hides that group and its help. A refused ID or name
+  is read once with focus on its field. Create station says "Created <name>, off air." once and
+  focuses Switch; Switch focuses the Station button, now named after the new station.
 - The listener request page (`/requests`), without JavaScript:
   - The search field is read with its label. A refused search is read with its error, and the
     page title says "Error".

@@ -723,6 +723,7 @@
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
+    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
@@ -2224,6 +2225,84 @@
       <span class="setting-desc" id="station-stop-desc">
         Disconnects its listeners and relays and ends its recording until it is started again.
       </span>
+    </div>
+  </div>
+
+  <!-- Stations on this server, and creating one (#233).  Shared by every
+       station.  station-create.js fills the list and the Start from choice
+       from the station list the page keeps.  Help sits beside the fields,
+       readable by browsing; only the Station ID's format hint is linked.
+       A refused field gets aria-invalid, the error linked, and focus. -->
+  <div class="card" role="tabpanel" id="spanel-stations" aria-labelledby="stab-stations" hidden>
+    <h3>Stations</h3>
+    <p class="card-desc">
+      Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
+    </p>
+    <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4 id="stations-list-heading">Stations on this server</h4>
+    <ul id="stations-list" aria-labelledby="stations-list-heading"></ul>
+    <form id="station-create-form" novalidate>
+      <fieldset>
+        <legend>New station</legend>
+        <p id="station-create-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="station-create-source">Start from</label>
+          <select id="station-create-source">
+            <option value="">AutoDJ defaults</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="station-create-source-help">
+          A copy takes the station's saved settings, including changes made on this page. It never takes its relays, listener password, webhooks, recording folder, queue, history, requests, listeners, bans, statistics, ads, shows, intros, profiles or liners.
+        </span>
+        <div class="settings-row">
+          <label for="station-create-name">Name</label>
+          <input type="text" id="station-create-name" maxlength="80" autocomplete="off" required>
+        </div>
+        <div class="settings-row">
+          <label for="station-create-slug">Station ID</label>
+          <input type="text" id="station-create-slug" maxlength="32" autocomplete="off"
+                 autocapitalize="off" spellcheck="false" required
+                 aria-describedby="station-create-slug-help">
+        </div>
+        <span class="setting-desc" id="station-create-slug-help">
+          Lower-case letters, digits and hyphens, up to 32, such as nightowl.
+        </span>
+        <span class="setting-desc" id="station-create-slug-more">
+          The ID names the station's addresses and folder, and cannot be changed later. Left empty, it is made from the name.
+        </span>
+        <fieldset id="station-create-copies" hidden>
+          <legend>Also copy</legend>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-clockwheels">
+            <label for="station-create-clockwheels">Clockwheels</label>
+          </div>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-schedule">
+            <label for="station-create-schedule">Schedule</label>
+          </div>
+          <div class="settings-check">
+            <input type="checkbox" id="station-create-carts">
+            <label for="station-create-carts">Carts</label>
+          </div>
+          <span class="setting-desc" id="station-create-copies-help">
+            The copies belong to the new station: changing them never changes the station they came from. A scheduled event that needs a profile, show or liner the new station does not have reports an error when it runs.
+          </span>
+        </fieldset>
+        <div class="settings-check">
+          <input type="checkbox" id="station-create-autostart">
+          <label for="station-create-autostart">Start with the server</label>
+        </div>
+        <span class="setting-desc" id="station-create-autostart-help">
+          Creating a station never starts it, and no other station stops. It has no relays until you add them in its Stream settings, and records into its own folder.
+        </span>
+        <button type="submit" id="station-create-submit">Create station</button>
+      </fieldset>
+    </form>
+    <!-- After a create: what was made, and the way to it.  Focus moves to
+         the Switch button; #stations-status says what was created. -->
+    <div id="station-create-done" class="flow-form" hidden>
+      <p id="station-create-done-text"></p>
+      <button type="button" id="station-create-switch">Switch to the new station</button>
     </div>
   </div>
 

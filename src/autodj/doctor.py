@@ -729,6 +729,10 @@ def run_doctor(
         if station in (None, spec.slug):
             checks += _station_checks(cfg, spec)
     checks += _station_folders_check(cfg)
+    checks += [
+        DoctorCheck("station-definition", CheckStatus.WARN, f"{path}: {reason}")
+        for path, reason in cfg.skipped_definitions
+    ]
     return DoctorReport(tuple(checks))
 
 
@@ -923,7 +927,9 @@ def _station_folders_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
     They are never deleted: their settings, schedule and carts may still be
     wanted.  No check is made when there is no ``stations`` folder.
     """
-    folder = cfg.index.active_dir / "stations"
+    from autodj.stations import StationPaths
+
+    folder = StationPaths.default(cfg).stations_dir
     if not folder.is_dir():
         return ()
     configured = {spec.slug for spec in cfg.stations}

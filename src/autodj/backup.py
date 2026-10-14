@@ -57,7 +57,7 @@ import uuid
 import zipfile
 from collections.abc import Callable, Iterable
 from contextlib import closing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -126,7 +126,7 @@ _STATE_FILES = (
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
-STATION_FILES = tuple(name for name in _STATE_FILES if name != "categories.json")
+STATION_FILES = ("station.json", *(name for name in _STATE_FILES if name != "categories.json"))
 STATION_FOLDERS = (
     "liners",
     "carts",
@@ -605,7 +605,8 @@ def _unknown_station(slug: str) -> BackupError:
     """The refusal for a station the configuration does not define."""
     return BackupError(
         f"this backup holds station {slug}, which the configuration does not define; "
-        f"add [stations.{slug}] to config.toml first"
+        f"add [stations.{slug}] to config.toml first. A web-created station is restored "
+        "with its station.json"
     )
 
 
@@ -1085,7 +1086,25 @@ def restore_backup(
     said = warnings if warnings is not None else []
     try:
         with zipfile.ZipFile(archive) as opened:
-            restored = _restore(opened, _roots(cfg), force=force, warnings=said)
+            from autodj.config import _definition_spec
+
+            manifest = _read_manifest(opened)
+            specs = cfg.stations
+            for slug in manifest.stations:
+                if any(spec.slug == slug for spec in specs):
+                    continue
+                name = f"stations/{slug}/index/station.json"
+                if name not in manifest.files or name not in opened.namelist():
+                    raise _unknown_station(slug)
+                try:
+                    document = json.loads(opened.read(name))
+                    spec = _definition_spec(Path(name), slug, cfg, specs, document=document)
+                except (ValueError, TypeError, KeyError, UnicodeError, OSError) as exc:
+                    raise BackupError(f"invalid web station definition {name}: {exc}") from exc
+                specs += (spec,)
+            restored = _restore(
+                opened, _roots(replace(cfg, stations=specs)), force=force, warnings=said
+            )
     except BackupError:
         raise
     except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:

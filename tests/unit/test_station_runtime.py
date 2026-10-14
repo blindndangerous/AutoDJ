@@ -223,6 +223,7 @@ def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
     assert [station.slug for station in registry.all()] == ["default"]
     assert registry.summaries()[1] == {
         "slug": "nightowl",
+        "defined_in": "config",
         "name": "Nightowl",
         "state": "stopped",
         "listeners": 0,

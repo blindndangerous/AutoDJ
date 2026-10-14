@@ -65,6 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Stations can be created or duplicated from the web page without restarting AutoDJ. New
+  stations start stopped with their own state and recording folder (#233).
 - Spoken track landmarks (#60): a song's structure through keys and speech, in place of a
   waveform. A new station route, `/api/landmarks`, merges the cue points, the DJ analysis (drops,
   breakdowns, build-ups, phrases, named DJ-software cues, the beat grid for bar numbers) and the
