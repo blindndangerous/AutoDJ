@@ -652,6 +652,7 @@
       background: var(--tint);
     }
     #history-table tbody tr:last-child td { border-bottom: none; }
+    #history-table .history-date h3 { margin: 0; font-size: inherit; }
     #history-table td:first-child,
     #history-table td:last-child {
       white-space: nowrap;

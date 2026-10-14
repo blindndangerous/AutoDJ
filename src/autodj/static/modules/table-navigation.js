@@ -41,7 +41,8 @@ export function installTableNavigation(body) {
       return;
     }
     const row = cell.closest("tr");
-    const rows = [...body.querySelectorAll("tr")];
+    const rows = [...body.querySelectorAll("tr")]
+      .filter((item) => item.querySelector("td[role=gridcell], td[role=rowheader]"));
     const rowIndex = rows.indexOf(row);
     const column = [...row.querySelectorAll("td[role=gridcell], td[role=rowheader]")].indexOf(cell);
     let target = null;
