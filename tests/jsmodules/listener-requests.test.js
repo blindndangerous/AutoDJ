@@ -108,7 +108,7 @@ describe("listener requests card", () => {
     expect(items).toHaveLength(2);
     expect(items[0].textContent).toContain("Song by Artist Requested by Sam at 2:05 PM.");
     expect(items[0].textContent).toContain("Fits after Other: same key.");
-    const names = [...items[0].querySelectorAll("button")].map((b) => b.textContent.trim());
+    const names = [...items[0].querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
     expect(names).toEqual(["Approve Song by Artist", "Play next Song by Artist", "Turn down Song by Artist"]);
     const second = [...items[1].querySelectorAll("button")].map((b) => b.dataset.action);
     expect(second).toEqual(["play-next", "reject"]);

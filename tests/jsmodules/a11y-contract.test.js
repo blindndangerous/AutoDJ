@@ -1722,9 +1722,8 @@ describe("static accessibility contracts", () => {
     expect(dismiss.parentElement).toBe(box);
     expect(toast.contains(dismiss)).toBe(false);
     expect(dismiss.getAttribute("type")).toBe("button");
-    expect(dismiss.textContent.replace(/\s+/g, " ").trim()).toBe("Dismiss message");
-    expect(dismiss.querySelector(".visually-hidden").textContent.trim()).toBe("message");
-    expect(dismiss.hasAttribute("aria-label")).toBe(false);
+    expect(dismiss.textContent.trim()).toBe("Dismiss");
+    expect(dismiss.getAttribute("aria-label")).toBe("Dismiss message");
     // Reachable, and outside every live region and aria-hidden subtree.
     for (let node = dismiss; node; node = node.parentElement) {
       expect(node.getAttribute("aria-hidden"), node.id).not.toBe("true");
@@ -3340,8 +3339,8 @@ describe("listener request contracts", () => {
     expect(card).toMatch(/<ul id="requests-list" aria-label="Waiting requests"/);
     expect(card).toMatch(/<ul id="requests-recent" aria-labelledby="requests-recent-heading"/);
     // Each button starts with its visible word, then names its song.
-    expect(requestsScript).toMatch(/button\.append\(label\);/);
-    expect(requestsScript).toMatch(/which\.className = "visually-hidden";/);
+    expect(requestsScript).toMatch(/button\.textContent = label;/);
+    expect(requestsScript).toMatch(/aria-label", `\$\{label\} \$\{button\.dataset\.song\}`/);
     expect(requestsScript).not.toMatch(/aria-live/);
   });
 
