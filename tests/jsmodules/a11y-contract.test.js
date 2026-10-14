@@ -2651,11 +2651,19 @@ describe("static accessibility contracts", () => {
     for (const id of ["hour-preview-summary", "hour-preview-points", "hour-preview-table"]) {
       expect(document.getElementById(id).closest("[aria-live], [role=status]")).toBeNull();
     }
-    // A real table: a caption and a header for each column.
+    // Grid navigation keeps the caption and a header for each column.
     const table = document.getElementById("hour-preview-table");
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(table.parentElement.classList.contains("data-table-scroll")).toBe(true);
     expect(table.querySelector("caption").textContent.trim()).toBe("What plays next");
     expect([...table.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
-      .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"]]);
+      .toEqual([["Starts", "col"], ["What", "col"], ["Length", "col"], ["Status", "col"], ["Track info", "col"]]);
+    const history = document.getElementById("history-table");
+    expect(history.getAttribute("role")).toBe("grid");
+    expect(history.getAttribute("aria-label")).toBe("History");
+    expect(history.parentElement.classList.contains("data-table-scroll")).toBe(true);
+    expect([...history.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
+      .toEqual([["Played", "col"], ["Title", "col"], ["Artist", "col"], ["Duration", "col"], ["Track info", "col"]]);
     const backtiming = document.getElementById("hour-preview-backtiming");
     expect(document.getElementById(backtiming.getAttribute("aria-labelledby")).tagName).toBe("H3");
     // Shift+H is in the shortcut list.

@@ -23,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   command, with instructions for moving to another computer.
 - History shows only the time on each play, with a date heading for each day instead of
   repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
+- History, Hour preview and the other action lists use the same arrow-key navigation as
+  clockwheel steps. Ctrl+Home and Ctrl+End move to the first and last row. History and Hour
+  preview now offer Track info on each song row, and narrow tables scroll inside their own area
+  so the page stays readable (#250).
 
 - Settings keep longer help available to read without repeating it on every field focus.
   Track counts, hour preview and matched-intro explanations are shorter (#235).

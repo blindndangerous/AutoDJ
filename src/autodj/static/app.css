@@ -618,20 +618,22 @@
       margin-bottom: 0.75rem;
     }
     #history-empty { color: var(--text-dim); font-style: italic; }
+    .data-table-scroll {
+      max-width: 100%;
+      overflow-x: auto;
+    }
     #history-table {
       width: 100%;
-      /* Fixed layout clamps the table to its container: with the default
-         auto layout the two nowrap columns plus cell padding pushed the
-         minimum content width past a 390 px viewport and the whole page
-         scrolled sideways with DURATION cut off. */
+      min-width: 34rem;
       table-layout: fixed;
       border-collapse: collapse;
       font-size: 0.9rem;
     }
-    #history-table col.hist-time     { width: 22%; }
-    #history-table col.hist-title    { width: 38%; }
-    #history-table col.hist-artist   { width: 25%; }
-    #history-table col.hist-duration { width: 15%; }
+    #history-table col.hist-time     { width: 15%; }
+    #history-table col.hist-title    { width: 28%; }
+    #history-table col.hist-artist   { width: 19%; }
+    #history-table col.hist-duration { width: 12%; }
+    #history-table col.hist-info     { width: 26%; }
     #history-table th,
     #history-table td {
       padding: 0.5rem 0.7rem;
@@ -654,7 +656,7 @@
     #history-table tbody tr:last-child td { border-bottom: none; }
     #history-table .history-date h3 { margin: 0; font-size: inherit; }
     #history-table td:first-child,
-    #history-table td:last-child {
+    #history-table td:nth-child(4) {
       white-space: nowrap;
       font-variant-numeric: tabular-nums;
     }
@@ -704,7 +706,7 @@
     }
     #hour-preview-table {
       width: 100%;
-      /* As History: fixed layout keeps the table inside a narrow window. */
+      min-width: 34rem;
       table-layout: fixed;
       border-collapse: collapse;
       font-size: 0.9rem;
@@ -715,10 +717,11 @@
       font-weight: 600;
       padding-bottom: 0.4rem;
     }
-    #hour-preview-table col.hp-starts { width: 24%; }
-    #hour-preview-table col.hp-what   { width: 42%; }
-    #hour-preview-table col.hp-length { width: 12%; }
-    #hour-preview-table col.hp-status { width: 22%; }
+    #hour-preview-table col.hp-starts { width: 17%; }
+    #hour-preview-table col.hp-what   { width: 28%; }
+    #hour-preview-table col.hp-length { width: 10%; }
+    #hour-preview-table col.hp-status { width: 16%; }
+    #hour-preview-table col.hp-info   { width: 29%; }
     #hour-preview-table th,
     #hour-preview-table td {
       padding: 0.5rem 0.7rem;
@@ -1749,7 +1752,7 @@
         padding: 0.45rem 0.4rem;
       }
       #history-table td:first-child,
-      #history-table td:last-child {
+      #history-table td:nth-child(4) {
         white-space: normal;
       }
       #hour-preview-table th,
