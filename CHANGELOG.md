@@ -29,6 +29,10 @@ screen-reader sample for this release is in
 
 ### Changed
 
+- Focus arriving in the Search text field in Queue & Search, or in the Shows song search, by
+  keyboard or when the page puts it back selects the text already there, so typing replaces the
+  old search. A click still places the caret where it lands. Enter in Search text runs the
+  search, as before.
 - Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
   Also save the tags to the file to write them into the file as before; it starts unchecked
   for every track (#258).

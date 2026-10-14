@@ -22,7 +22,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
-import { fmtTime } from "./dom-helpers.js";
+import { fmtTime, selectOnFocus } from "./dom-helpers.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
@@ -718,6 +718,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   searchInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") { event.preventDefault(); void search(); }
   });
+  selectOnFocus(searchInput);
   el("shows-play-now")?.addEventListener("click", () => void startNow());
   stopButton?.addEventListener("click", () => void stopShow());
   el("shows-close")?.addEventListener("click", () => {
