@@ -2108,6 +2108,16 @@
 #page-footer p {
   margin: 0;
 }
+/* Keyboard shortcuts and Changelog: body-size text above the small stamp. */
+#page-footer #footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+}
 #page-footer .ver-sep {
   margin: 0 0.4em;
   opacity: 0.7;
@@ -2119,7 +2129,8 @@
 /* The commit link: --accent on --bg clears 4.5:1 in both themes, the
    underline tells it from the text around it (1.4.1), and it stands
    24 px tall (2.5.8).  The focus ring is the shared :focus-visible one. */
-#page-footer #ver-commit-link {
+#page-footer #ver-commit-link,
+#page-footer #changelog-link {
   display: inline-block;
   min-height: 24px;
   line-height: 24px;

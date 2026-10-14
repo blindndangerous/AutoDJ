@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The Keyboard shortcuts button is at the bottom of every page, above the version line, next to
+  a new Changelog link (#253).
 - Library tools can rescan the library automatically every so many hours and minutes (#249).
 - DMCA checks on queued songs, listener request placement and show songs now use the hour
   preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
