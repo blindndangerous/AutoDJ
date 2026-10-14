@@ -66,7 +66,7 @@ describe("unified library search in Queue & Search", () => {
     expect(settings.textContent).toContain("Voice liner files");
   });
 
-  it("lands #queue on the queue tab and focuses its first card", async () => {
+  it("lands #queue on the queue tab and leaves focus on the tab", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -76,6 +76,6 @@ describe("unified library search in Queue & Search", () => {
     await vi.waitFor(() => expect(byId("panel-queue").hidden).toBe(false));
     expect(window.location.hash).toBe("#queue");
     expect(byId("search-library-heading").closest("[hidden]")).toBeNull();
-    expect(document.activeElement).toBe(document.querySelector("#panel-queue summary"));
+    expect(document.activeElement).toBe(byId("tab-queue"));
   });
 });

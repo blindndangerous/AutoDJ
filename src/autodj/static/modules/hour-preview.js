@@ -346,6 +346,13 @@ export function installHourPreview({
     if (card.open) void spanChanged();
   });
   refreshButton.addEventListener("click", () => { void refresh(); });
+  // Back on Now Playing, or back in this browser tab: catch up at once.
+  doc.addEventListener("autodj:view", (event) => {
+    if (event.detail?.view === "now" && showing()) void quietRefresh();
+  });
+  doc.addEventListener("visibilitychange", () => {
+    if (showing()) void quietRefresh();
+  });
 
   // After sign-out: forget the preview, so another person signing in on
   // this page does not see it.
