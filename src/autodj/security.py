@@ -574,6 +574,17 @@ _PROXY_HEADERS = (
 )
 
 
+#: Live DJ source mounts (#48): Icecast clients, checked by their route.
+LIVE_SOURCE_PATH = re.compile(r"/live|/stations/[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?/live")
+
+
+def is_canonical_path(scope: Scope) -> bool:
+    """Whether the request target's path, as sent, is its decoded ``path`` (no escapes)."""
+    raw = scope.get("raw_path")
+    path = str(scope.get("path", ""))
+    return raw is None or (path.isascii() and raw == path.encode("ascii"))
+
+
 def machine_transport_allowed(scope: Scope) -> bool:
     """Whether a machine token may travel on this connection: HTTPS, or loopback.
 
@@ -804,10 +815,24 @@ class SecurityMiddleware:
 
         rejection: tuple[int, str] | None = None
         machine_scope = self._machine_scope(path)
-        if len(host_values) != 1 or not policy.host_allowed(host_values[0]):
+        live_mount = method in {"SOURCE", "PUT"} and LIVE_SOURCE_PATH.fullmatch(path)
+        # Only the path exactly as sent: the source framing (autodj.live_protocol)
+        # matches the raw request target, so a percent-encoded spelling of a
+        # mount gets no exemption here either and meets the usual checks.
+        live_source = live_mount and is_canonical_path(scope)
+        if live_source and not host_values:
+            # An HTTP/1.0 source client may send no Host.  A browser always
+            # sends one, so this cannot be a rebinding page; one that is
+            # sent must still be allowed.
+            pass
+        elif len(host_values) != 1 or not policy.host_allowed(host_values[0]):
             rejection = (403, "Disallowed Host")
         elif machine_scope is not None:
             rejection = await self._machine_rejection(scope, machine_scope, origin_values)
+        elif live_source:
+            # A live DJ's source client (#48) has no session or Origin; the
+            # route checks its Basic credentials and transport itself.
+            pass
         elif len(origin_values) > 1 or (
             method in _UNSAFE_METHODS
             and (len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]))
@@ -823,6 +848,10 @@ class SecurityMiddleware:
             headers = {"X-Request-ID": request_id}
             if status == 401 and machine_scope is not None:
                 headers["WWW-Authenticate"] = "Bearer"
+            if live_mount:
+                # A source client streams its body after the head: end the
+                # connection rather than read the audio as further requests.
+                headers["Connection"] = "close"
             response = JSONResponse({"detail": detail}, status_code=status, headers=headers)
             await response(scope, receive, send)
             emit_audit(

@@ -40,6 +40,9 @@ tmp/
 # Local playout notes
 /playout*.md
 
+# Default stream recording folder ([recording] folder)
+/recordings/
+
 # Runtime web-UI snapshots (saved by the browser via "View page source")
 served.html
 
