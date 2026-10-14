@@ -630,6 +630,7 @@ describe("app startup integration", () => {
       installLiners,
     }));
     vi.doMock("../../src/autodj/static/modules/hotkeys.js", () => ({
+      bracketSeekEnabled: vi.fn(() => false),
       installHotkeys,
       toggleShortcutsModal: vi.fn(),
     }));
@@ -747,6 +748,7 @@ describe("app startup integration", () => {
       installLiners,
     }));
     vi.doMock("../../src/autodj/static/modules/hotkeys.js", () => ({
+      bracketSeekEnabled: vi.fn(() => false),
       installHotkeys: vi.fn(),
       toggleShortcutsModal: vi.fn(),
     }));

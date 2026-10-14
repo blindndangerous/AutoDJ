@@ -2796,6 +2796,63 @@ describe("static accessibility contracts", () => {
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
   });
 
+  it("gives Track info's song structure a real list of text, silent help and token colours (#60)", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-track-info #landmarks-section");
+    expect(section.hidden).toBe(true);
+    expect(section.getAttribute("aria-labelledby")).toBe("landmarks-heading");
+    expect(document.getElementById("landmarks-heading").tagName).toBe("H3");
+    expect(document.getElementById("landmarks-heading").textContent).toBe("Song structure");
+    // A real list, named by its heading, still a list in Safari.
+    const list = document.getElementById("landmarks-list");
+    expect(list.tagName).toBe("OL");
+    expect(list.getAttribute("role")).toBe("list");
+    expect(list.getAttribute("aria-labelledby")).toBe("landmarks-heading");
+    // Never live: drawn when a song opens; the keys speak through #sr-status.
+    expect(section.querySelectorAll("[aria-live], [role='status'], [role='alert']")).toHaveLength(0);
+    expect(section.closest("[aria-live], [role=status]")).toBeNull();
+    // The help names the keys in words, not as punctuation.
+    const help = document.getElementById("landmarks-help").textContent;
+    expect(help).toMatch(/Right bracket key/);
+    expect(help).toMatch(/Left bracket key/);
+    expect(document.getElementById("landmarks-note").classList.contains("setting-desc")).toBe(true);
+    // The layout uses the shared tokens only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*\.landmark-list[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    // Items are sentences: no flex layout that would split a time from its words.
+    for (const rule of rules) expect(rule).not.toMatch(/display:\s*(?:flex|grid)/);
+  });
+
+  it("gives \"Bracket keys seek the song on air\" a native checkbox, off, with help to read (#60)", () => {
+    installDocument({ html: htmlSource });
+    const box = document.getElementById("hotkeys-bracket-seek");
+    expect(box.type).toBe("checkbox");
+    expect(box.hasAttribute("checked")).toBe(false);
+    expect(box.hasAttribute("aria-label")).toBe(false);
+    expect(document.querySelector('label[for="hotkeys-bracket-seek"]').textContent.trim())
+      .toBe("Bracket keys seek the song on air");
+    expect(box.closest("fieldset").querySelector("legend").textContent).toBe("Keyboard");
+    expect(box.parentElement.classList.contains("settings-check")).toBe(true);
+    // Help readable below it, not attached to every focus (UI wording guidance).
+    expect(box.hasAttribute("aria-describedby")).toBe(false);
+    const help = document.getElementById("hotkeys-bracket-seek-desc");
+    expect(help.classList.contains("setting-desc")).toBe(true);
+    expect(help.previousElementSibling).toBe(box.parentElement);
+    expect(help.textContent).toMatch(/Off by default\./);
+    expect(help.closest("[aria-live], [role=status]")).toBeNull();
+  });
+
+  it("lists the landmark keys in the shortcut help with spoken names (#60)", () => {
+    installDocument();
+    const modal = document.getElementById("hotkey-help-modal");
+    const help = modal.textContent.replace(/\s+/g, " ");
+    expect(help).toMatch(/Move to the next .*previous landmark/);
+    expect(help).toMatch(/Shift\+U ?Speak what is coming next in the song on air/);
+    const names = [...modal.querySelectorAll("kbd .visually-hidden")].map((node) => node.textContent);
+    expect(names).toEqual(expect.arrayContaining(["Right bracket", "Left bracket"]));
+  });
+
   it("gives Library tools' intro rules labelled native fields, linked help and errors, and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-library #intro-rules");

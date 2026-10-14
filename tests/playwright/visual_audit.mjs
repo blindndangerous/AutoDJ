@@ -57,9 +57,13 @@
 //         list, and Add intro rule saved with no liner chosen, its error
 //         linked to the first liner's checkbox;
 //       - Track info with a song open, its server answers stood in for: the
+//         Song structure list (#60, with a long unbroken cue name), the
 //         Tags form, a refused save with its errors, the Save or Discard
 //         dialog, and Matched intros with a song intro (skipped now) and an
 //         artist intro, then Upload intro refused with its error linked;
+//         the Right bracket key moves the cue point preview to the next
+//         landmark, says it once in #sr-status ("Preview: ...") and leaves
+//         focus where it is;
 //       - Library tools > Shows, its server answers stood in for: a show on
 //         the air with a skipped song, the saved shows, one show's list open
 //         with its Move up, Move down and Remove buttons and a search result,
@@ -268,6 +272,20 @@ const TRACK_INTROS = {
     dates_text: "", playable: true, unplayable_text: "", speech_s: 2,
   }],
 };
+// Its song structure (#60): a range, the singing, a drop with a long
+// unbroken cue name from DJ software for the reflow checks, a phrase and
+// the intro's end (stops for the keys, never listed) and the outro.
+const TRACK_LANDMARKS = {
+  path: TRACK_PATH, kind: "music", length: 215.4, bpm: 120, analysed: true, bars: true, lyrics: true,
+  landmarks: [
+    { time_s: 0, kind: "intro", kinds: ["intro"], name: "Intro", source: "analysis", major: true, bar: 1, end_s: 8, end_bar: 5 },
+    { time_s: 8, kind: "intro_end", kinds: ["intro_end"], name: "Intro ends", source: "analysis", major: true, bar: 5, end_s: null, end_bar: null },
+    { time_s: 12.5, kind: "vocals", kinds: ["vocals"], name: "Vocals", source: "lyrics", major: true, bar: 7, end_s: null, end_bar: null },
+    { time_s: 64, kind: "phrase", kinds: ["phrase"], name: "Phrase", source: "analysis", major: false, bar: 33, end_s: null, end_bar: null },
+    { time_s: 95.5, kind: "drop", kinds: ["drop"], name: "Drop_An_Unbroken_Cue_Name_From_DJ_Software_0001", source: "imported", major: true, bar: 48, end_s: null, end_bar: null },
+    { time_s: 200, kind: "outro", kinds: ["outro"], name: "Outro", source: "analysis", major: true, bar: 100, end_s: 215, end_bar: 108 },
+  ],
+};
 const trackPages = new WeakSet();
 
 async function standInForTrackInfo(page) {
@@ -282,6 +300,41 @@ async function standInForTrackInfo(page) {
   await page.route("**/api/intros?*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(TRACK_INTROS),
   }));
+  await page.route("**/api/landmarks?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(TRACK_LANDMARKS),
+  }));
+}
+
+// The song structure is a list of text, the phrase and the intro's end
+// left out; Right bracket
+// moves the cue point preview to the next landmark (the preview does not
+// play) and says it once in the page's polite status, focus staying put.
+async function checkTrackLandmarks(page) {
+  const list = page.locator("#landmarks-list li");
+  await list.first().waitFor({ state: "visible" });
+  const items = await list.allTextContents();
+  if (items.length !== 4 || !items[2].startsWith("Drop_An_Unbroken")) {
+    throw new Error(`Song structure: unexpected items ${JSON.stringify(items)}`);
+  }
+  const result = await page.evaluate(async () => {
+    const preview = document.getElementById("points-preview");
+    const heading = document.getElementById("track-info-heading");
+    heading.focus();
+    preview.currentTime = 10;
+    const said = [];
+    const region = document.getElementById("sr-status");
+    const watch = new globalThis.MutationObserver(() => { if (region.textContent) said.push(region.textContent); });
+    watch.observe(region, { childList: true, characterData: true, subtree: true });
+    heading.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true, cancelable: true }));
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "]" }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    watch.disconnect();
+    return { said, time: preview.currentTime, focus: document.activeElement?.id };
+  });
+  if (result.said.join("|") !== "Preview: Vocals, 0:12, bar 7" || Math.abs(result.time - 12.5) > 0.01
+      || result.focus !== "track-info-heading") {
+    throw new Error(`Right bracket in Track info: ${JSON.stringify(result)}`);
+  }
 }
 
 // Open the song's Track info, then show a refused save: two fields marked
@@ -290,6 +343,7 @@ async function openTrackTags(page, visit) {
   await page.evaluate((path) => document.dispatchEvent(new CustomEvent("autodj:edit-points",
     { detail: { path, kind: "music", opener: document.getElementById("tab-track-info") } })), TRACK_PATH);
   await page.locator("#tags-form").waitFor({ state: "visible" });
+  await checkTrackLandmarks(page);
   await visit("track-info/tags");
   await page.locator("#tag-year").fill("99");
   await page.locator("#tag-isrc").fill("123");
