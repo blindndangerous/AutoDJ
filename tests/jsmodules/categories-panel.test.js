@@ -90,10 +90,10 @@ afterEach(() => { controls?.destroy(); controls = null; });
 
 describe("categories markup", () => {
   it("is its own card in Library tools, before Clockwheels, with labelled native controls", () => {
-    const section = byId("categories-heading").closest("section");
+    const section = byId("categories-heading").closest("details");
     expect(section.parentElement).toBe(byId("panel-library"));
     expect(section.classList.contains("card")).toBe(true);
-    expect(section.nextElementSibling).toBe(byId("clockwheel-heading").closest("section"));
+    expect(section.nextElementSibling).toBe(byId("clockwheel-heading").closest("details"));
     expect(byId("categories-heading").tagName).toBe("H2");
     expect(section.querySelectorAll('[role="status"], [aria-live]:not([aria-live="off"])')).toHaveLength(1);
     expect(byId("categories-status").getAttribute("role")).toBe("status");

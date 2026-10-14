@@ -116,10 +116,10 @@ afterEach(() => { controls?.destroy(); controls = null; });
 
 describe("shows markup", () => {
   it("is its own card in Library tools, after Clockwheels, with labelled native controls", () => {
-    const section = byId("shows-heading").closest("section");
+    const section = byId("shows-heading").closest("details");
     expect(section.parentElement).toBe(byId("panel-library"));
     expect(section.classList.contains("card")).toBe(true);
-    expect(section.previousElementSibling).toBe(byId("clockwheel-heading").closest("section"));
+    expect(section.previousElementSibling).toBe(byId("clockwheel-heading").closest("details"));
     expect(byId("shows-heading").tagName).toBe("H2");
     // One polite status; the lists and the on-air line are not live.
     const live = [...section.querySelectorAll('[role="status"], [aria-live]:not([aria-live="off"])')];

@@ -99,7 +99,7 @@ describe("intro rules markup", () => {
     const section = byId("intro-rules");
     expect(section.parentElement).toBe(byId("panel-library"));
     expect(section.classList.contains("card")).toBe(true);
-    expect(byId(section.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    expect(section.querySelector(":scope > summary > h2").id).toBe("intro-rules-heading");
     const live = [...section.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
     expect(live.map((node) => node.id)).toEqual(["intro-rules-status"]);
     expect(live[0].getAttribute("aria-atomic")).toBe("true");

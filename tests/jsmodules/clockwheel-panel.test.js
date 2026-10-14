@@ -111,11 +111,11 @@ afterEach(() => { controls?.destroy(); controls = null; });
 
 describe("clockwheel markup", () => {
   it("is its own card in the Library tools tab, with labelled controls", () => {
-    const section = byId("clockwheel-heading").closest("section");
+    const section = byId("clockwheel-heading").closest("details");
     expect(section.parentElement).toBe(byId("panel-library"));
     expect(section.classList.contains("card")).toBe(true);
     // The job card keeps its single live region; this card has its own.
-    expect(section.closest("details")).toBeNull();
+    expect(section.parentElement.closest("details")).toBeNull();
     expect(byId("clockwheel-heading").tagName).toBe("H2");
     expect(byId("clockwheel-heading").textContent).toBe("Clockwheels");
     expect([...section.querySelectorAll("h3")].map((heading) => heading.id)).toEqual(["clock-list-heading", "clock-steps-heading"]);

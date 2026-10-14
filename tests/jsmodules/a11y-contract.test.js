@@ -2863,7 +2863,7 @@ describe("static accessibility contracts", () => {
   it("gives Library tools' intro rules labelled native fields, linked help and errors, and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-library #intro-rules");
-    expect(document.getElementById(section.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    expect(section.querySelector(":scope > summary > h2").id).toBe("intro-rules-heading");
     const list = document.getElementById("intro-rules-list");
     expect(list.getAttribute("role")).toBe("list");
     expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H3");
@@ -2923,9 +2923,9 @@ describe("static accessibility contracts", () => {
   it("gives Shows labelled native fields, keyboard list buttons, one status and token colours", () => {
     installDocument({ html: htmlSource });
     const card = document.getElementById("shows-card");
-    expect(card.tagName).toBe("SECTION");
+    expect(card.tagName).toBe("DETAILS");
     expect(card.closest("#panel-library")).not.toBeNull();
-    expect(document.getElementById(card.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    expect(card.querySelector(":scope > summary > h2").id).toBe("shows-heading");
     // Every field has a visible label of its own, no aria-label in its place.
     for (const [id, label] of [
       ["shows-name", "Name"], ["shows-category", "Category"], ["shows-clockwheel", "Clockwheel"],
