@@ -1,10 +1,11 @@
 """The paired route that edits a recording's tags from Track info (#53).
 
 ``POST /api/library/tags`` takes the recording's path and only the tags the
-page changed.  It refuses a song that is playing or up next on any station,
-writes the file safely (:func:`autodj.tag_edit.write_tags`), stores the new
-values and the file's new identity in the catalog without analysing the
-audio again, and reloads the library.  A refused field answers 400 with
+page changed.  By default it stores them in the catalog only and leaves the
+file alone (#258).  With ``write_file`` it also refuses a song that is
+playing or up next on any station, writes the file safely
+(:func:`autodj.tag_edit.write_tags`) and stores the file's new identity.
+Neither analyses the audio again; both reload the library.  A refused field answers 400 with
 ``detail`` and the ``field`` at fault, so the page can focus it.
 
 The library is shared by every station, so this is a shared route.
@@ -52,6 +53,7 @@ class TagEditBody(BaseModel):
     path: str
     tags: dict[str, StrictStr]
     beets: StrictBool = False
+    write_file: StrictBool = False
 
 
 def _bpm_text(bpm: float) -> str:
@@ -182,9 +184,14 @@ def _lock_for(path: str | Path) -> threading.Lock:
 
 
 def _save(
-    library: Any, stations: Any, path: str, values: TagValues, beets_db: Path | None
+    library: Any,
+    stations: Any,
+    path: str,
+    values: TagValues,
+    beets_db: Path | None,
+    write_file: bool,
 ) -> tuple[str, str, str]:
-    """Write the file, catalog and optional beets row as one per-file operation."""
+    """Store the tags in the catalog, and the file and beets when asked, per file."""
     warning = ""
     beets = "off"
     beets_error = ""
@@ -193,15 +200,25 @@ def _save(
     # The edit mark keeps a scan from storing the rewritten file as a new
     # recording in the moment between the rename and retag.
     with _lock_for(path), library.catalog.editing(path):
-        write_tags(path, values, roots=roots, guard=lambda target: _held_still(stations, target))
-        try:
-            library.catalog.retag(path, _catalog_fields(values))
-        except Exception as exc:  # the file is written: say so, do not fail
-            logger.exception("Tags of %s were written but the catalog was not updated", path)
-            warning = (
-                f"The tags were saved in the file, but AutoDJ could not update its library "
-                f"({exc}). A rescan reads the new tags and analyses the song again."
+        if not write_file:
+            try:
+                stored = library.catalog.retag(path, _catalog_fields(values))
+            except OSError as exc:
+                raise TagError(f"AutoDJ could not read the file: {exc}") from exc
+            if not stored:
+                raise TagError("This recording is no longer in the library.")
+        else:
+            write_tags(
+                path, values, roots=roots, guard=lambda target: _held_still(stations, target)
             )
+            try:
+                library.catalog.retag(path, _catalog_fields(values))
+            except Exception as exc:  # the file is written: say so, do not fail
+                logger.exception("Tags of %s were written but the catalog was not updated", path)
+                warning = (
+                    f"The tags were saved in the file, but AutoDJ could not update its library "
+                    f"({exc}). A rescan reads the new tags and analyses the song again."
+                )
         if beets_db is not None:
             try:
                 beets = update_beets(beets_db, path, library.cfg.library.music_dir, values)
@@ -240,10 +257,21 @@ def install_tag_editor(
             values = validate_tags(body.tags)
         except TagError as exc:
             return JSONResponse(status_code=400, content={"detail": str(exc), "field": exc.field})
+        if not body.write_file and "isrc" in values.changed:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "ISRC is kept only in the file. Check Also save the tags to "
+                    "the file to change it.",
+                    "field": "isrc",
+                },
+            )
         stations = app.state.stations
-        busy = await asyncio.to_thread(playing_on, stations, path)
-        if busy is not None:
-            raise HTTPException(status_code=409, detail=busy)
+        # Only a file rewrite disturbs a song on air; AutoDJ's own copy can change.
+        if body.write_file:
+            busy = await asyncio.to_thread(playing_on, stations, path)
+            if busy is not None:
+                raise HTTPException(status_code=409, detail=busy)
         beets_db = library.cfg.library.beets_db
         if not body.beets or beets_db is None or not Path(beets_db).is_file():
             beets_db = None
@@ -255,6 +283,7 @@ def install_tag_editor(
                 path,
                 values,
                 Path(beets_db) if beets_db is not None else None,
+                body.write_file,
             )
         except TagError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
+  Also save the tags to the file to write them into the file as before; it starts unchecked
+  for every track (#258).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
   does, and gives manual installation steps when needed. The quick start uses one launcher
   command, with instructions for moving to another computer.

@@ -408,16 +408,16 @@
     <h2 id="track-info-heading" tabindex="-1">Track info</h2>
     <p id="track-info-empty">Choose Track info beside a song or liner.</p>
     <dl id="track-info-details" hidden></dl>
-    <!-- Tags (modules/tag-editor.js).  Save tags writes only the fields that
-         changed into the file and the library; the analysis and cue points
-         stay.  A refused field is marked invalid, its error is linked to it
+    <!-- Tags (modules/tag-editor.js).  Save tags stores only the fields that
+         changed in the library, and in the file too when Also save the tags
+         to the file is checked; the analysis and cue points stay.  A refused field is marked invalid, its error is linked to it
          and the first one is focused; any other result is said once in
          #tags-status, and focus stays on Save tags. -->
     <section id="tags-editor" aria-labelledby="tags-heading" hidden>
       <h3 id="tags-heading">Tags</h3>
-      <p id="tags-unavailable" hidden>AutoDJ cannot edit the tags of this kind of file.</p>
+      <p id="tags-unavailable" hidden>AutoDJ cannot write tags into this kind of file, so Save tags changes them in AutoDJ only.</p>
       <form id="tags-form" novalidate>
-        <p class="setting-desc">Change any tag and choose Save tags. AutoDJ writes them into the file without analysing it again. Leave a field empty to remove that tag; Title is required.</p>
+        <p class="setting-desc">Change any tag and choose Save tags. AutoDJ keeps them in its library without analysing the song again. The file changes only if you check Also save the tags to the file. Leave a field empty to remove that tag; Title is required.</p>
         <div class="settings-row tag-field">
           <label for="tag-title">Title</label>
           <input type="text" id="tag-title" data-tag="title" autocomplete="off" required>
@@ -459,9 +459,10 @@
         <div class="settings-row tag-field">
           <label for="tag-isrc">ISRC</label>
           <input type="text" id="tag-isrc" data-tag="isrc" autocomplete="off" spellcheck="false" aria-describedby="tag-isrc-help">
-          <span class="setting-desc" id="tag-isrc-help">Optional. 12 characters, such as AB1CD2600001.</span>
+          <span class="setting-desc" id="tag-isrc-help">Optional. 12 characters, such as AB1CD2600001. Kept only in the file.</span>
           <p id="tag-isrc-error" class="field-error" hidden></p>
         </div>
+        <label id="tags-file-label" hidden><input type="checkbox" id="tags-file"> Also save the tags to the file</label>
         <label id="tags-beets-label" hidden><input type="checkbox" id="tags-beets" checked> Also update the beets library</label>
         <button type="submit" id="tags-save">Save tags</button>
       </form>

@@ -1,7 +1,9 @@
 // Track info, Tags: edit a recording's title, artist, album, genre, year,
 // BPM, key and ISRC (#53).
 //
-// Save tags sends only the fields that changed.  A refused field is marked
+// Save tags sends only the fields that changed.  They go to AutoDJ's library
+// only, unless Also save the tags to the file is checked; that box starts
+// unchecked for every track (#258).  ISRC lives only in the file.  A refused field is marked
 // aria-invalid, its error text is linked to it with aria-describedby and the
 // first one takes focus, which reads the error, so nothing else speaks.
 // Any other result is said once in #tags-status.  Focus stays on Save tags
@@ -73,6 +75,8 @@ export function installTagEditor({ document: doc = document, request = requestJs
   const unavailable = doc.getElementById("tags-unavailable");
   const beetsLabel = doc.getElementById("tags-beets-label");
   const beets = doc.getElementById("tags-beets");
+  const fileLabel = doc.getElementById("tags-file-label");
+  const fileBox = doc.getElementById("tags-file");
   const save = doc.getElementById("tags-save");
   const inputs = Object.fromEntries(TAG_FIELDS.map((field) => [field, doc.getElementById(`tag-${field}`)]));
   const errors = Object.fromEntries(TAG_FIELDS.map((field) => [field, doc.getElementById(`tag-${field}-error`)]));
@@ -113,16 +117,22 @@ export function installTagEditor({ document: doc = document, request = requestJs
     return changed;
   }
 
+  const toFile = () => !!(fileBox && !fileLabel?.hidden && fileBox.checked);
+
   function load(record) {
     generation += 1;
+    if ((record?.path || null) !== path && fileBox) fileBox.checked = false;
     path = record?.path || null;
     loaded = { ...(record?.tags || {}) };
     clearErrors();
     status.textContent = "";
     for (const field of TAG_FIELDS) inputs[field].value = loaded[field] ?? "";
-    const writable = !!path && record?.tags_writable !== false && !!record?.tags;
-    form.hidden = !writable;
-    if (unavailable) unavailable.hidden = writable || !path;
+    const writable = !!path && record?.tags_writable !== false;
+    form.hidden = !path || !record?.tags;
+    if (unavailable) unavailable.hidden = writable || form.hidden;
+    if (fileLabel) fileLabel.hidden = !writable;
+    if (fileBox && !writable) fileBox.checked = false;
+    inputs.isrc.closest(".tag-field").hidden = !writable;
     if (beetsLabel) beetsLabel.hidden = !record?.beets_writeback;
     section.hidden = !path;
   }
@@ -144,7 +154,11 @@ export function installTagEditor({ document: doc = document, request = requestJs
     if (saving || !path || form.hidden) return false;
     clearErrors();
     const changed = changes();
+    const file = toFile();
     const invalid = Object.keys(changed).map((field) => [field, tagFieldError(field, changed[field])]).filter(([, message]) => message);
+    if ("isrc" in changed && !file && !invalid.some(([field]) => field === "isrc")) {
+      invalid.push(["isrc", "ISRC is kept only in the file. Check Also save the tags to the file to change it."]);
+    }
     if (invalid.length) {
       for (const [field, message] of invalid) showError(field, message);
       if (errorTarget) errorTarget.textContent = "Some tags need correcting. Press Escape to return to editing.";
@@ -167,7 +181,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
       const record = await request("/api/library/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked) }),
+        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file }),
       });
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent()) return false;
       const keepBeets = beets?.checked;
@@ -175,14 +189,15 @@ export function installTagEditor({ document: doc = document, request = requestJs
       if (beets) beets.checked = keepBeets;
       onSaved(record);
       const name = record.tags?.title || record.title || "this track";
-      // The file is saved whatever happens to beets or the library; the
+      const where = file ? "in the file" : "in AutoDJ";
+      // The tags are saved whatever happens to beets or the library; the
       // message says what did not follow, in the same one announcement.
       const message = {
-        updated: `Saved the tags of ${name} in the file and in beets.`,
-        not_found: `Saved the tags of ${name} in the file. Beets has no entry for this file, so beets did not change.`,
-        unchanged: `Saved the tags of ${name} in the file. Beets keeps none of the tags you changed, so beets did not change.`,
-        failed: `Saved the tags of ${name} in the file, but beets was not updated: ${record.beets_error || "unknown error"}. Run beet update to read them into beets.`,
-      }[record.beets] || `Saved the tags of ${name}.`;
+        updated: `Saved the tags of ${name} ${where} and in beets.`,
+        not_found: `Saved the tags of ${name} ${where}. Beets has no entry for this file, so beets did not change.`,
+        unchanged: `Saved the tags of ${name} ${where}. Beets keeps none of the tags you changed, so beets did not change.`,
+        failed: `Saved the tags of ${name} ${where}, but beets was not updated: ${record.beets_error || "unknown error"}. Run beet update to read them into beets.`,
+      }[record.beets] || `Saved the tags of ${name} ${where}.`;
       const problem = record.beets === "failed" || !!record.warning;
       say(record.warning ? `${message} ${record.warning}` : message, problem ? "error" : "info");
       return true;

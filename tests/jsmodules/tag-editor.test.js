@@ -69,6 +69,7 @@ describe("Track info tag editor", () => {
     const editor = install({ request: vi.fn(async () => ({ ...RECORD, beets: "unchanged" })) });
     editor.load({ ...RECORD, beets_writeback: true });
     field("isrc").value = "AB1CD2600001";
+    document.getElementById("tags-file").checked = true;
     await editor.save();
     await settle();
     expect(document.getElementById("tags-status").textContent).toBe(
@@ -83,7 +84,7 @@ describe("Track info tag editor", () => {
     await editor.save();
     await settle();
     expect(document.getElementById("tags-status").textContent).toBe(
-      "Saved the tags of Old Title in the file. Beets has no entry for this file, so beets did not change. The library did not reload.",
+      "Saved the tags of Old Title in AutoDJ. Beets has no entry for this file, so beets did not change. The library did not reload.",
     );
   });
 
@@ -100,12 +101,36 @@ describe("Track info tag editor", () => {
     expect(document.getElementById("tags-beets-label").hidden).toBe(false);
   });
 
-  it("says when a file's tags cannot be edited", () => {
+  it("saves in AutoDJ only, without the file box or ISRC, when the file cannot be tagged", () => {
     const editor = install();
     editor.load({ ...RECORD, tags_writable: false });
-    expect(document.getElementById("tags-form").hidden).toBe(true);
+    expect(document.getElementById("tags-form").hidden).toBe(false);
     expect(document.getElementById("tags-unavailable").hidden).toBe(false);
+    expect(document.getElementById("tags-file-label").hidden).toBe(true);
+    expect(field("isrc").closest(".tag-field").hidden).toBe(true);
     expect(editor.dirty()).toBe(false);
+  });
+
+  it("writes the file only when asked, and unchecks the box for a new track", async () => {
+    const request = vi.fn(async (_url, options) => ({ ...RECORD, path: JSON.parse(options.body).path, beets: "off" }));
+    const editor = install({ request });
+    editor.load(RECORD);
+    const box = document.getElementById("tags-file");
+    expect(document.getElementById("tags-file-label").hidden).toBe(false);
+    expect(box.checked).toBe(false);
+    // ISRC lives in the file: without the box it is refused before sending.
+    field("isrc").value = "AB1CD2600001";
+    expect(await editor.save()).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+    expect(document.getElementById("tag-isrc-error").textContent).toMatch(/kept only in the file/);
+    box.checked = true;
+    expect(await editor.save()).toBe(true);
+    expect(JSON.parse(request.mock.calls[0][1].body).write_file).toBe(true);
+    await settle();
+    expect(document.getElementById("tags-status").textContent).toBe("Saved the tags of Old Title in the file.");
+    expect(box.checked).toBe(true);
+    editor.load({ ...RECORD, path: "c:/music/other.flac" });
+    expect(box.checked).toBe(false);
   });
 
   it("sends only the changed fields, says the result once and keeps focus", async () => {
@@ -125,9 +150,9 @@ describe("Track info tag editor", () => {
     expect(request).toHaveBeenCalledTimes(1);
     const [url, options] = request.mock.calls[0];
     expect(url).toBe("/api/library/tags");
-    expect(JSON.parse(options.body)).toEqual({ path: RECORD.path, tags: { title: "New Title", key: "8A" }, beets: false });
+    expect(JSON.parse(options.body)).toEqual({ path: RECORD.path, tags: { title: "New Title", key: "8A" }, beets: false, write_file: false });
     expect(onSaved).toHaveBeenCalledWith(saved);
-    expect(document.getElementById("tags-status").textContent).toBe("Saved the tags of New Title.");
+    expect(document.getElementById("tags-status").textContent).toBe("Saved the tags of New Title in AutoDJ.");
     expect(document.activeElement).toBe(button);
     expect(button.disabled).toBe(false);
     expect(field("key").value).toBe("Am");
@@ -143,7 +168,7 @@ describe("Track info tag editor", () => {
     expect(JSON.parse(request.mock.calls[0][1].body).beets).toBe(true);
     await settle();
     expect(document.getElementById("tags-status").textContent).toBe(
-      "Saved the tags of Old Title in the file, but beets was not updated: database is locked. Run beet update to read them into beets.",
+      "Saved the tags of Old Title in AutoDJ, but beets was not updated: database is locked. Run beet update to read them into beets.",
     );
   });
 
