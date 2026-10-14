@@ -2287,11 +2287,11 @@ def _definition_spec(
 
 
 def _load_web_stations(cfg: AutoDJConfig) -> None:
-    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
-
-    folder = StationPaths.default(cfg).stations_dir
+    folder = Path(cfg.index.active_dir) / "stations"
     if not folder.is_dir():
         return
+    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
+
     skipped: list[tuple[str, str]] = []
     for child in sorted(folder.iterdir()):
         slug = child.name

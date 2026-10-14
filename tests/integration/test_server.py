@@ -2043,6 +2043,7 @@ class TestServeFunction:
             slug="nightowl",
             name="Night Owl Radio",
             autostart=False,
+            defined_in="config",
             cfg=SimpleNamespace(
                 index=SimpleNamespace(active_dir=tmp_path / "main"),
                 playback=SimpleNamespace(stereotool_preset="included", liners_folder=None),
