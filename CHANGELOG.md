@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- AutoDJ is now licensed under the GNU Affero General Public License, version 3 or later
+  (AGPL-3.0-or-later), instead of MIT. Anyone who runs a modified AutoDJ that people use over a
+  network must offer them its source code. Releases up to and including 0.21.0 stay available under
+  MIT (#276).
+
+### Changed
+
 - Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
   Also save the tags to the file to write them into the file as before; it starts unchecked
   for every track (#258).
@@ -796,6 +803,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Alt+1 to Alt+9 put focus on the tab they open, so its name is said once (#296).
 - The open hour preview refreshes as soon as Now Playing shows again (#295).
+- The footer Changelog link, the build link, Dismiss, and the row buttons for clockwheel steps,
+  categories, shows and listener requests each read as one line in NVDA browse mode (#288).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
   closed or detached (#277).
 - The track repeat-rule cap warning appears once per station for each setting and library size,
