@@ -20,7 +20,7 @@
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
-// use them.  Status keys: T N R B K L E V Q J H.
+// use them.  Status keys: T N R B K L E V Q J H U.
 // Stations (#70): lowercase c moves focus to the station switcher while
 // the server has several stations; Shift+C says which station the page
 // controls.  With several stations the status keys about the station
@@ -38,6 +38,22 @@
 // the page gives no element accesskey="r", and NVDA and JAWS pass it
 // through to the page in browse and focus mode alike.
 //
+// Landmarks (#60, modules/landmarks.js): Left and Right bracket move to the
+// previous and next landmark of the song -- the cue point preview's while
+// Track info shows, else the song on air -- and say it; Shift+U says what is
+// coming next on air.  No shortcut here or in Chrome, Edge, Firefox or
+// Safari uses a bare bracket or Shift+U (Firefox's quick find keys are ' and
+// /).  NVDA and JAWS have no focus-mode or forms-mode command on them; in
+// browse mode they keep every printable key, as they do for the other
+// shortcuts, so a key reaches the page in focus mode or after the
+// pass-through key (NVDA+F2, JAWS Insert+3).  On layouts that type a
+// bracket with AltGr (German, French, Nordic) the browser reports Ctrl+Alt,
+// so a bracket the layout typed with AltGr is accepted: e.key is "[" or "]",
+// AltGraph is down, and the physical key is not the bracket key itself.
+// Ctrl+Alt on the US bracket keys stays the browser's and the screen
+// reader's.  Outside Track info the brackets only say the landmark of the
+// song on air unless "Bracket keys seek the song on air" (Settings,
+// Keyboard; off by default, kept per browser like the toggle below) is on.
 // Reserved for Talk (modules/live-talk.js, #48): Alt+M, held to talk over
 // the music while the station can go live, from anywhere on the page.  It
 // is hold-only: letting go always stops, so it never leaves a microphone
@@ -156,6 +172,35 @@ function installShortcutToggle(checkbox) {
   checkbox.addEventListener("change", () => setShortcutsEnabled(checkbox.checked));
 }
 
+// "Bracket keys seek the song on air" (#60): off unless chosen, since a
+// stray bracket would otherwise jump what listeners hear.
+const BRACKET_SEEK_STORAGE_KEY = "autodj.bracketSeek";
+let _bracketSeekOn = null;
+
+export function bracketSeekEnabled() {
+  if (_bracketSeekOn === null) {
+    try {
+      _bracketSeekOn = globalThis.localStorage?.getItem(BRACKET_SEEK_STORAGE_KEY) === "on";
+    } catch (_) {
+      _bracketSeekOn = false;
+    }
+  }
+  return _bracketSeekOn;
+}
+
+function installBracketSeekToggle(checkbox) {
+  if (!checkbox) return;
+  checkbox.checked = bracketSeekEnabled();
+  checkbox.addEventListener("change", () => {
+    _bracketSeekOn = checkbox.checked;
+    try {
+      globalThis.localStorage?.setItem(BRACKET_SEEK_STORAGE_KEY, checkbox.checked ? "on" : "off");
+    } catch (_) {
+      // Still honoured for this page load; it just will not be remembered.
+    }
+  });
+}
+
 const _pressed = new Set();
 
 export function installHotkeys({
@@ -176,8 +221,15 @@ export function installHotkeys({
   // What Space / k do: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
+  // Landmarks (#60): the brackets move by one (+1 or -1) and say it;
+  // Shift+U resolves to the sentence about what is coming next on air.
+  jumpLandmark = null,
+  getUpcomingLandmark = null,
+  // Settings, Keyboard: "Bracket keys seek the song on air".
+  bracketSeekToggle = null,
 }) {
   installShortcutToggle(shortcutToggle);
+  installBracketSeekToggle(bracketSeekToggle);
   const active = () => isEnabled() && shortcutsEnabled();
   // The latch only has to stop a held key from firing again before it
   // is released, so any keyup clears all of it.  Keys NVDA passes
@@ -221,9 +273,12 @@ export function installHotkeys({
 
     const nowPanel = document.getElementById("panel-now");
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-
     const key = e.key;
+    const altGraphBracket = (key === "[" || key === "]")
+      && typeof e.getModifierState === "function" && e.getModifierState("AltGraph")
+      && e.code !== "BracketLeft" && e.code !== "BracketRight";
+    if (e.metaKey || ((e.ctrlKey || e.altKey) && !altGraphBracket)) return;
+
     const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";
     if (!nowVisible && scrollsPage) return;
 
@@ -329,6 +384,18 @@ export function installHotkeys({
       case "H":
         if (speakHour) void speakHour();
         else speakForStation("No hour preview yet.");
+        break;
+      case "[":
+      case "]":
+        if (!jumpLandmark) return;
+        void jumpLandmark(key === "]" ? 1 : -1);
+        break;
+      case "U":
+        if (!getUpcomingLandmark) return;
+        void Promise.resolve()
+          .then(getUpcomingLandmark)
+          .then((text) => { if (text) speakForStation(text); })
+          .catch((error) => speakForStation(`Could not load the landmarks: ${error.message}`));
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

@@ -54,6 +54,7 @@ function fakeServer({
   beets_error = null,
   pending_update = false,
   active = "Morning",
+  ads = {},
 } = {}) {
   const server = { clocks: { Morning: copy(MORNING) }, active, pending_update, calls: [], fail: null };
   server.request = vi.fn(async (url, options = {}) => {
@@ -67,6 +68,7 @@ function fakeServer({
       genres, beets_fields, beets_error,
       types: ["liner", "music", "settings", "track"], cursor: 1, last_status: "Ready", notice,
       pending_update: server.pending_update,
+      ...ads,
     });
     if (url === "/api/library/clock" && method === "GET") return snapshot();
     if (url === "/api/library/clock/check") return { tracks: 12, error: null };
@@ -291,6 +293,9 @@ describe("clockwheel editor", () => {
     expect(describeStep({ ...MUSIC, recursive: true, source: "gone" }, SOURCES)).toBe("music from a folder that is no longer registered, with subfolders, least recently played");
     expect(describeStep({ type: "settings", preset: "night" })).toBe("switch to preset night");
     expect(describeStep({ type: "time_check" })).toBe("time check step");
+    expect(describeStep({ type: "ad_break", max_spots: 1, max_seconds: 0 })).toBe("ad break, up to 1 spot");
+    expect(describeStep({ type: "ad_break", max_spots: 3, max_seconds: 60, advertiser: "Example Motors", category: "Car dealers", hours_from: "06:00", hours_until: "10:00" }))
+      .toBe("ad break, up to 3 spots, up to 60 seconds, from Example Motors, category Car dealers, only every day from 06:00 until 10:00");
   });
 
   it("shares step hours in descriptions used by the list and Why this track", async () => {
@@ -1205,5 +1210,68 @@ describe("clockwheel step conditions, for screen readers", () => {
     await controls.refresh();
     expect([...category.options].map((option) => option.value)).toEqual(["c1", "c2", "c3"]);
     expect(category.value).toBe("c2");
+  });
+
+  it("adds and edits an ad break step with its length, spots and filters", async () => {
+    const server = await open(fakeServer({
+      ads: { ad_advertisers: ["Example Motors", "Sample Bakery"], ad_categories: ["Car dealers"], ads_reason: "Ad breaks are off for this station." },
+    }));
+    const type = byId("clock-step-type");
+    const shown = () => [...document.querySelectorAll(".clock-step-field")].filter((field) => !field.hidden)
+      .map((field) => field.querySelector("input, select").id.replace("clock-step-", ""));
+    type.value = "ad_break";
+    type.dispatchEvent(new Event("change"));
+    expect(shown()).toEqual(["ad-spots"]);
+    expect(byId("clock-step-ads-notice").hidden).toBe(false);
+    expect(byId("clock-step-ads-notice").textContent).toBe("Ad breaks are off for this station.");
+    expect([...byId("clock-step-ad-advertiser").options].map((option) => option.textContent))
+      .toEqual(["Any advertiser", "Example Motors", "Sample Bakery"]);
+    expect([...byId("clock-step-ad-category").options].map((option) => option.textContent)).toEqual(["Any category", "Car dealers"]);
+    expect(byId("clock-step-ad-spots").value).toBe("3");
+    expect(byId("clock-step-ad-seconds").value).toBe("0");
+    const seconds = byId("clock-step-ad-seconds");
+    seconds.value = "5";
+    byId("clock-add-step").click();
+    expect(document.activeElement).toBe(seconds);
+    expect(seconds.getAttribute("aria-invalid")).toBe("true");
+    expect(seconds.getAttribute("aria-describedby")).toBe("clock-step-ad-error");
+    expect(byId("clock-step-ad-error").hidden).toBe(false);
+    expect(byId("clock-step-ad-error").textContent).toBe("Longest break must be 0 for no limit, or from 10 to 900 seconds.");
+    await vi.waitFor(() => expect(status()).toBe("Longest break must be 0 for no limit, or from 10 to 900 seconds."));
+    expect(rows()).toHaveLength(3);
+    seconds.value = "60";
+    seconds.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(seconds.hasAttribute("aria-invalid")).toBe(false);
+    byId("clock-step-ad-spots").value = "11";
+    byId("clock-add-step").click();
+    expect(document.activeElement).toBe(byId("clock-step-ad-spots"));
+    expect(byId("clock-step-ad-error").textContent).toBe("Spots in the break must be from 1 to 10.");
+    byId("clock-step-ad-spots").value = "2";
+    byId("clock-step-ad-advertiser").value = "Example Motors";
+    byId("clock-add-step").click();
+    expect(byId("clock-step-ad-error").hidden).toBe(true);
+    expect(byId("clock-step-ad-spots").hasAttribute("aria-invalid")).toBe(false);
+    await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, ad break, up to 2 spots, up to 60 seconds, from Example Motors. Not saved yet."));
+    expect(byId("clock-step-ad-spots").value).toBe("3");
+    expect(byId("clock-step-ad-advertiser").value).toBe("");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
+    const put = server.calls.find((call) => call.method === "PUT");
+    expect(put.body.steps[3]).toEqual({ type: "ad_break", max_spots: 2, max_seconds: 60, advertiser: "Example Motors" });
+
+    // A saved advertiser with no spot now stays chosen, said as such.
+    server.clocks.Morning.steps[3] = { type: "ad_break", max_spots: 1, max_seconds: 0, advertiser: "Gone Shop", category: "Car dealers" };
+    controls.destroy();
+    await open(server);
+    rowButton(3, "edit").click();
+    expect(type.value).toBe("ad_break");
+    expect(document.activeElement).toBe(type);
+    expect(byId("clock-step-ad-spots").value).toBe("1");
+    expect(byId("clock-step-ad-advertiser").value).toBe("Gone Shop");
+    expect(byId("clock-step-ad-advertiser").selectedOptions[0].textContent).toBe("Gone Shop (no spot now)");
+    expect(byId("clock-step-ad-category").value).toBe("Car dealers");
+    byId("clock-step-ad-category").value = "";
+    byId("clock-add-step").click();
+    expect(rowText(3)).toBe("ad break, up to 1 spot, from Gone Shop");
   });
 });

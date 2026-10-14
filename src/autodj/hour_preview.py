@@ -14,7 +14,8 @@ of it is already fixed and which is a guess:
   dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
   ends, with the station's clockwheel place, history and schedule; and the
   ad breaks due in the span, each at the first predicted song change at or
-  after its time, with its spots guessed by the ad schedule's own rules.
+  after its time, and clockwheel ad steps before their selected song, with
+  spots guessed by the ad schedule's own rules.
 
 It then backtimes to each fixed point in the span: the top of each hour,
 each clockwheel restart, each scheduled event and each ad break.  For
@@ -210,6 +211,7 @@ class Decided:
     reason: str | None = None
     last_rate: float = 1.0
     speed_signature: str = ""
+    ad_heard: tuple[Any, ...] = ()
 
     def signature(self) -> str:
         """What is fixed, without the times: the same while nothing new is decided."""
@@ -546,6 +548,7 @@ class Head:
     waiting: tuple[Any, ...]
     average: float
     liners: frozenset[str]
+    ad_heard: tuple[Any, ...] = ()
 
 
 def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Head | None:
@@ -559,8 +562,10 @@ def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Hea
     if current is None:
         return None
     average = average_length(player.playable_entries())
+    ads = getattr(player, "ad_desk", None)
+    heard = ads.heard_snapshot() if ads is not None else []
     if getattr(player, "bus", None) is not None:
-        found = _read_bus(player, desk, now, average)
+        found = _read_bus(player, desk, now, average, ads, heard)
     else:
         found = _read_browser(player, now, average)
     if found is None:
@@ -579,6 +584,7 @@ def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Hea
         waiting=tuple(_waiting(player)),
         average=average,
         liners=frozenset(_liner_paths(player)),
+        ad_heard=tuple(heard),
     )
 
 
@@ -901,6 +907,7 @@ def read_station(
         clock_boundary=boundary,
         last_rate=timed.last_rate,
         speed_signature=str(getattr(player._cfg.playback, "music_speed_percent", 0.0)),
+        ad_heard=head.ad_heard,
     )
 
 
@@ -928,7 +935,14 @@ def _dmca_breaks(
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
-def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | None:
+def _read_bus(
+    player: Any,
+    desk: Any,
+    now: float,
+    average: float,
+    ads: Any = None,
+    heard: list[Any] | None = None,
+) -> _Found | None:
     """The fixed part when the server mixes the audio (server audio or a stream)."""
     live = _read_live(player)
     playing = live.playing
@@ -1055,6 +1069,19 @@ def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | No
                 label = _break_label(desk, booked.break_id)
                 items.append(Item("break", moment, speech, "booked", label=label))
                 moment += speech
+    if ads is not None and ads.refusal() is None and plan.ad_steps and heard is not None:
+        booked_ads = desk is not None and any(
+            booked.slot_id == plan.slot_id and booked.kind == "ad" for booked in desk.listing()
+        )
+        if not booked_ads:
+            change_at = moment
+            for step in plan.ad_steps:
+                forecast = ads.forecast_step(step, change_at, heard)
+                if forecast is not None:
+                    items.append(
+                        Item("break", moment, forecast.seconds, "predicted", label=forecast.label)
+                    )
+                    moment += forecast.seconds
     upcoming = plan.upcoming
     seconds = _remaining(player, upcoming, 0.0, average)
     items.append(
@@ -1183,6 +1210,9 @@ def _predict(
         return [], handoff, None
     current_rate = max(0.01, float(decided.last_rate or music_rate(source.player, current)))
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
+    heard = list(decided.ad_heard) or (
+        getattr(source.ads, "heard_snapshot", lambda: [])() if source.ads is not None else []
+    )
     entries = tuple(entry for entry in player.playable_entries() if not entry.is_silent)
     if not entries:
         return [], handoff, "the library has no songs to pick"
@@ -1281,6 +1311,19 @@ def _predict(
             if run.seconds > 0:  # a break no spot can fill airs nothing
                 found.append(Item("break", moment, run.seconds, "predicted", label=run.label))
                 moment += run.seconds
+        if (
+            source.ads is not None
+            and hasattr(source.ads, "forecast_step")
+            and source.ads.refusal() is None
+        ):
+            change_at = moment
+            for step in getattr(player, "_chosen_clock_ad_steps", ()):
+                forecast = source.ads.forecast_step(step, change_at, heard)
+                if forecast is not None:
+                    found.append(
+                        Item("break", moment, forecast.seconds, "predicted", label=forecast.label)
+                    )
+                    moment += forecast.seconds
         next_rate = music_rate(player, entry)
         if added and player._cfg.playback.transition_mode == "saved_points":
             rows, delay = _preview_liner_group(

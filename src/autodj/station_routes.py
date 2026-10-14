@@ -31,7 +31,12 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationErr
 from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
-from autodj._bridge import STREAM_SEEK_UNAVAILABLE, StreamSeekUnavailable
+from autodj._bridge import (
+    SEEK_TRACK_CHANGED,
+    STREAM_SEEK_UNAVAILABLE,
+    SeekTrackChanged,
+    StreamSeekUnavailable,
+)
 from autodj.clockwheel import parse_pal
 from autodj.clockwheel_store import (
     OLD_CLOCK_MESSAGE,
@@ -278,6 +283,8 @@ class SeekBody(BaseModel):
 
     seconds: FiniteFloat | None = None
     delta: FiniteFloat | None = None
+    # The song the seek is for (#60); older pages leave it out.
+    path: str | None = PydanticField(default=None, min_length=1, max_length=4096)
 
 
 class PlayNextBody(BaseModel):
@@ -638,6 +645,26 @@ def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
     setting = _clock_setting(station, library)
     known, _, beets_error = _clock_beets(station, library).snapshot()
     player = station.player
+    ads = getattr(station, "ads", None)
+    advertisers: list[str] = []
+    ad_categories: list[str] = []
+    if ads is not None:
+        try:
+            spots = ads.store.cached().spots.values()
+            advertisers = sorted(
+                {
+                    spot.advertiser.casefold(): spot.advertiser for spot in spots if spot.advertiser
+                }.values(),
+                key=str.casefold,
+            )
+            ad_categories = sorted(
+                {
+                    spot.category.casefold(): spot.category for spot in spots if spot.category
+                }.values(),
+                key=str.casefold,
+            )
+        except (OSError, ValueError):
+            pass
     return {
         "names": _clock_store(station).list_names(),
         "active": _active_clock(station, library),
@@ -655,6 +682,9 @@ def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
         "last_status": getattr(player, "_clock_status", None),
         "pending_update": getattr(player, "_pending_clock_update", None) is not None,
         "notice": OLD_CLOCK_MESSAGE if "slots" in setting else None,
+        "ad_advertisers": advertisers,
+        "ad_categories": ad_categories,
+        "ads_reason": ads.refusal() if ads is not None else None,
     }
 
 
@@ -1161,6 +1191,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
+    from autodj.landmarks import install_landmarks
     from autodj.live_routes import install_live_api
     from autodj.matched_intros_api import install_matched_intros
     from autodj.requests_api import install_requests
@@ -1276,9 +1307,11 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_seek(station: StationDep, body: SeekBody) -> dict[str, float]:
         """Seek the active track (absolute or relative seconds)."""
         try:
-            new_pos = station.bridge.seek(seconds=body.seconds, delta=body.delta)
+            new_pos = station.bridge.seek(seconds=body.seconds, delta=body.delta, path=body.path)
         except StreamSeekUnavailable as exc:
             raise HTTPException(status_code=409, detail=STREAM_SEEK_UNAVAILABLE) from exc
+        except SeekTrackChanged as exc:
+            raise HTTPException(status_code=409, detail=SEEK_TRACK_CHANGED) from exc
         return {"elapsed": round(new_pos, 2)}
 
     # ------------------------------------------------------------------
@@ -2065,7 +2098,7 @@ def install_station_routes(router: StationRouter) -> None:
                 from autodj.clockwheel_store import resolve_conditions, validate_step
 
                 step = validate_step(body.step)
-                if step["type"] == "settings":
+                if step["type"] in {"settings", "ad_break"}:
                     return {"tracks": None, "error": None}
                 sources = {source["id"]: source for source in library.catalog.sources()}
                 if step["type"] == "track":
@@ -2216,6 +2249,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
+    install_landmarks(router)
     install_live_api(router)
 
 

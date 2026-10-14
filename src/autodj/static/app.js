@@ -2100,6 +2100,23 @@ function _seekByDelta(deltaSec) {
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
+// A landmark key (#60) moved the song on air: once the server has taken
+// the seek, this page follows, as a slider seek does (_seekToFrac moves the
+// browser deck and tells the server too, so the server's clock and the
+// hour preview stay in step).
+function _applyLandmarkSeek(seconds) {
+  const dur = _seekTrackDuration();
+  const target = dur > 0 ? Math.max(0, Math.min(dur - 0.1, seconds)) : Math.max(0, seconds);
+  if (_lastBrowserPlayback) {
+    try {
+      decks[activeIdx].audio.currentTime = target;
+    } catch (_) {}
+  } else {
+    _keyboardSeek = { seconds: target, at: performance.now() };
+  }
+  hourPreviewControls?.noteSeek();
+}
+
 function _seekToFrac(frac, opts) {
   const dur = _seekTrackDuration();
   if (!(dur > 0)) return;
@@ -2444,9 +2461,30 @@ function sendVolume(val) {
 // Keyboard shortcuts.  Wired here,
 // after every DOM ref it needs has been declared above.
 import {
+  bracketSeekEnabled,
   installHotkeys,
   toggleShortcutsModal,
 } from "./modules/hotkeys.js";
+import { installLandmarks } from "./modules/landmarks.js";
+
+// Spoken track landmarks (#60): Track info's Song structure, the bracket
+// keys and Shift+U.
+const landmarkControls = installLandmarks({
+  isCurrent: authenticatedInteractionEnabled,
+  getPlaying: () => {
+    const track = _lastState?.current_track;
+    if (!track?.path) return null;
+    return {
+      path: track.path,
+      position: _currentPositionSeconds(),
+      duration: _seekTrackDuration(),
+      bpm: track.bpm || 0,
+    };
+  },
+  seekOnAir: bracketSeekEnabled,
+  isStreamMode: () => _lastStreamMode,
+  applyLocalSeek: _applyLandmarkSeek,
+});
 
 installHotkeys({
   btnSkip,
@@ -2475,8 +2513,11 @@ installHotkeys({
   getQueue:    () => _lastState && _lastState.queue,
   getJobStatus: () => libraryJobStatusText(_lastState && _lastState.library_job),
   speakHour: () => hourPreviewControls?.speakSummary(),
+  jumpLandmark: (direction) => landmarkControls.jump(direction),
+  getUpcomingLandmark: () => landmarkControls.upcoming(),
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
+  bracketSeekToggle: document.getElementById("hotkeys-bracket-seek"),
   focusStationSwitcher: () => {
     if (!severalStations()) return false;
     stationSwitcher?.focus();
@@ -2924,6 +2965,7 @@ import { initViewRouter, isReturningToView } from "./modules/tabs.js";
 initViewRouter();
 
 libraryFoldersControls = installLibraryFolders({
+  landmarks: landmarkControls,
   getCurrentTrack: () => _lastState?.current_track || null,
   getCurrentPosition: () => _lastElapsed,
   onFolders(folders) {

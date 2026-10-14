@@ -33,6 +33,10 @@ class ClockSlot:
     require_following: bool = False
     conditions: tuple[dict[str, Any], ...] = ()
     match: str = "all"
+    max_spots: int = 3
+    max_seconds: int = 0
+    advertiser: str = ""
+    ad_category: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.conditions, (list, tuple)) or len(self.conditions) > 32:
@@ -79,8 +83,22 @@ class ClockSlot:
             raise ValueError("require_following must be a boolean")
         if self.selection not in {"least_recent", "random"}:
             raise ValueError("selection must be 'least_recent' or 'random'")
-        if self.kind not in {"music", "liner", "track", "settings", "category"}:
+        if self.kind not in {"music", "liner", "track", "settings", "category", "ad_break"}:
             raise ValueError("unknown clock slot kind")
+        if self.kind == "ad_break":
+            from autodj.ads import MAX_SPOTS_PER_BREAK, NAME_MAX
+
+            if type(self.max_spots) is not int or not 1 <= self.max_spots <= MAX_SPOTS_PER_BREAK:
+                raise ValueError("max_spots must be an integer from 1 to 10")
+            if type(self.max_seconds) is not int or (
+                self.max_seconds != 0 and not 10 <= self.max_seconds <= 900
+            ):
+                raise ValueError("max_seconds must be 0 or an integer from 10 to 900")
+            if any(
+                not isinstance(v, str) or len(v) > NAME_MAX
+                for v in (self.advertiser, self.ad_category)
+            ):
+                raise ValueError("ad filters must be text of at most 100 characters")
         if self.kind == "track" and not self.path:
             raise ValueError("track step needs a path")
         if self.kind == "settings" and not self.preset:
@@ -97,6 +115,9 @@ class ClockSlot:
         if not self.conditions:
             value.pop("conditions")
             value.pop("match")
+        if self.kind != "ad_break":
+            for field in ("max_spots", "max_seconds", "advertiser", "ad_category"):
+                value.pop(field)
         return value
 
     @classmethod
@@ -115,6 +136,10 @@ class ClockSlot:
             "require_following",
             "conditions",
             "match",
+            "max_spots",
+            "max_seconds",
+            "advertiser",
+            "ad_category",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -324,6 +349,8 @@ class ClockPick:
     liner_step_index: int | None = None
     step_snapshot: dict[str, Any] | None = None
     liner_step_snapshot: dict[str, Any] | None = None
+    ad_steps: tuple[int, ...] = ()
+    ad_step_snapshots: tuple[dict[str, Any], ...] = ()
 
 
 #: Slot kinds that pick the music itself (a liner only rides on one).
@@ -517,6 +544,7 @@ def pick_slot(
     pending_liner_requires_following = False
     pending_liner_index = None
     preset = None
+    ad_steps: list[int] = []
     closed_paths = {
         path
         for category in (closed_categories or {})
@@ -586,6 +614,9 @@ def pick_slot(
         if slot.kind == "settings":
             preset = slot.preset
             continue
+        if slot.kind == "ad_break":
+            ad_steps.append(index)
+            continue
         if slot.kind == "track":
             matches = [
                 entry for entry in entries if _normalized(entry.path) == _normalized(slot.path)
@@ -601,6 +632,7 @@ def pick_slot(
                     pending_liner_requires_following if pending_liner is not None else False,
                     index,
                     pending_liner_index,
+                    ad_steps=tuple(ad_steps),
                 )
             skipped.append(
                 f"Step {index + 1}: track step {slot.path}: recording missing or blocked by rules"
@@ -636,6 +668,7 @@ def pick_slot(
                     pending_liner_requires_following if pending_liner is not None else False,
                     index,
                     pending_liner_index,
+                    ad_steps=tuple(ad_steps),
                 )
             continue
         missing = next(
@@ -681,6 +714,7 @@ def pick_slot(
                 pending_liner_requires_following if pending_liner is not None else False,
                 index,
                 pending_liner_index,
+                ad_steps=tuple(ad_steps),
             )
 
     return ClockPick(None, None, start, skipped, preset)

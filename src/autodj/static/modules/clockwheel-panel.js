@@ -37,8 +37,11 @@ const FIELDS_FOR = {
   liner: ["conditions", "selection", "enforce-rules", "require-following"],
   track: ["source", "path"],
   settings: ["preset"],
+  ad_break: ["ad-spots"],
 };
-const ALL_FIELDS = ["conditions", "source", "path", "preset", "selection", "enforce-rules", "require-following"];
+const ALL_FIELDS = ["conditions", "source", "path", "preset", "ad-spots", "selection", "enforce-rules", "require-following"];
+const AD_ERROR = "clock-step-ad-error";
+const AD_FIELDS = ["clock-step-ad-spots", "clock-step-ad-seconds", "clock-step-ad-advertiser", "clock-step-ad-category"];
 // Row buttons, in tab order.
 const ROW_ACTIONS = [["edit", "Edit"], ["move-up", "Move up"], ["move-down", "Move down"], ["duplicate", "Duplicate"], ["delete", "Delete"]];
 
@@ -69,7 +72,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
 
-  const empty = () => ({ names: [], active: null, sources: [], presets: [], categories: [], cursor: 0, notice: null, pending_update: false });
+  const empty = () => ({
+    names: [], active: null, sources: [], presets: [], categories: [], cursor: 0, notice: null, pending_update: false,
+    ad_advertisers: [], ad_categories: [], ads_reason: null,
+  });
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
@@ -97,6 +103,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
   // A step with days and hours says them after what it plays.
   installStepHours(doc);
+  // A refused ad break field is unmarked once it is changed.
+  for (const id of AD_FIELDS) {
+    el(id)?.addEventListener("input", () => { el(id).removeAttribute("aria-invalid"); el(id).removeAttribute("aria-describedby"); });
+  }
   const describe = (step) => describeStep(step, data.sources, data.categories);
   const position = (index) => `Step ${index + 1} of ${clock.steps.length}, ${describe(clock.steps[index])}`;
 
@@ -138,7 +148,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function renderOptions() {
-    const signature = JSON.stringify([data.sources, data.presets, data.categories, data.genres, data.beets_fields, data.beets_error, typeSelect.value]);
+    const signature = JSON.stringify([data.sources, data.presets, data.categories, data.genres, data.beets_fields, data.beets_error,
+      data.ad_advertisers, data.ad_categories, data.ads_reason, typeSelect.value]);
     if (signature === optionsSignature) return;
     optionsSignature = signature;
     const fill = (select, items) => {
@@ -155,7 +166,85 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const kind = typeSelect.value === "liner" ? "liner" : "music";
     fill(el("clock-step-source"), data.sources.filter((source) => source.kind === kind).map((source) => [source.id, source.path]));
     fill(el("clock-step-preset"), data.presets.map((name) => [name, name]));
+    fillAdChoice(el("clock-step-ad-advertiser"), "Any advertiser", data.ad_advertisers);
+    fillAdChoice(el("clock-step-ad-category"), "Any category", data.ad_categories);
+    const notice = el("clock-step-ads-notice");
+    if (notice) {
+      notice.textContent = data.ads_reason || "";
+      notice.hidden = !data.ads_reason;
+    }
     configureConditionOptions();
+  }
+
+  // The advertisers or categories of the station's spots, after "Any".  A
+  // saved name no spot has now stays chosen, said as such.
+  function fillAdChoice(select, any, names = [], chosen = select?.value) {
+    if (!select) return;
+    if (select === doc.activeElement && chosen === select.value) {
+      // Rebuilding the list under the reader would move its place; try on the next refresh.
+      optionsSignature = "";
+      return;
+    }
+    const items = [["", any], ...(names || []).map((name) => [name, name])];
+    if (chosen && !items.some(([value]) => value.toLowerCase() === chosen.toLowerCase())) {
+      items.splice(1, 0, [chosen, `${chosen} (no spot now)`]);
+    }
+    select.replaceChildren(...items.map(([value, label]) => {
+      const option = doc.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }));
+    const match = items.find(([value]) => value.toLowerCase() === (chosen || "").toLowerCase());
+    select.value = match ? match[0] : "";
+  }
+
+  function clearAdError() {
+    for (const id of AD_FIELDS) {
+      el(id)?.removeAttribute("aria-invalid");
+      el(id)?.removeAttribute("aria-describedby");
+    }
+    const error = el(AD_ERROR);
+    if (error) { error.textContent = ""; error.hidden = true; }
+  }
+
+  function refuseAd(field, message, interactive) {
+    if (interactive) {
+      clearAdError();
+      field.setAttribute("aria-invalid", "true");
+      field.setAttribute("aria-describedby", AD_ERROR);
+      const error = el(AD_ERROR);
+      if (error) { error.textContent = message; error.hidden = false; }
+      field.focus();
+    }
+    throw new Error(message);
+  }
+
+  // A whole number typed in *field*, or the error said for it.
+  function wholeNumber(field, label, interactive) {
+    const text = String(field?.value ?? "").trim();
+    if (!/^\d+$/.test(text) || field?.validity?.badInput) {
+      refuseAd(field, `Enter ${label} as a whole number.`, interactive);
+    }
+    return Number(text);
+  }
+
+  function adStep(interactive) {
+    if (interactive) clearAdError();
+    const spotsField = el("clock-step-ad-spots");
+    const secondsField = el("clock-step-ad-seconds");
+    const spots = wholeNumber(spotsField, "Spots in the break", interactive);
+    if (spots < 1 || spots > 10) refuseAd(spotsField, "Spots in the break must be from 1 to 10.", interactive);
+    const seconds = wholeNumber(secondsField, "Longest break in seconds", interactive);
+    if (seconds > 900 || (seconds > 0 && seconds < 10)) {
+      refuseAd(secondsField, "Longest break must be 0 for no limit, or from 10 to 900 seconds.", interactive);
+    }
+    const step = { type: "ad_break", max_spots: spots, max_seconds: seconds };
+    const advertiser = el("clock-step-ad-advertiser")?.value || "";
+    const category = el("clock-step-ad-category")?.value || "";
+    if (advertiser) step.advertiser = advertiser;
+    if (category) step.category = category;
+    return step;
   }
 
   function conditionRow(value = {}) {
@@ -543,10 +632,21 @@ export function installClockwheelPanel({ document: doc = document, request = req
     renderConditions([{}]);
     const requireFollowing = el("clock-step-require-following");
     if (requireFollowing) requireFollowing.checked = false;
+    fillAdFields();
     fillStepHours(doc);
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
     if (cancelEdit) cancelEdit.hidden = true;
+  }
+
+  function fillAdFields(step = {}) {
+    const spots = el("clock-step-ad-spots");
+    if (spots) spots.value = String(step.max_spots ?? 3);
+    const seconds = el("clock-step-ad-seconds");
+    if (seconds) seconds.value = String(step.max_seconds ?? 0);
+    fillAdChoice(el("clock-step-ad-advertiser"), "Any advertiser", data.ad_advertisers, step.advertiser || "");
+    fillAdChoice(el("clock-step-ad-category"), "Any category", data.ad_categories, step.category || "");
+    clearAdError();
   }
 
   function startEdit(index) {
@@ -560,6 +660,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (step.type === "track") set("clock-step-source", step.source || "");
     set("clock-step-path", step.path || "");
     set("clock-step-preset", step.preset || "");
+    if (step.type === "ad_break") fillAdFields(step);
     if (FOLDER_TYPES.has(typeSelect.value)) {
       set("clock-step-match", step.match || "all");
       renderConditions(step.type === "category"
@@ -620,6 +721,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       if (!preset) throw new Error("Choose a preset.");
       return { type, preset };
     }
+    if (type === "ad_break") return adStep(interactive);
     throw new Error(`The editor cannot make ${type} steps yet.`);
   }
 
@@ -627,8 +729,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (stepCountTimer !== null) clearTimeout(stepCountTimer);
     const mine = ++stepCountGeneration;
     const output = el("clock-step-match-count");
-    if (typeSelect.value === "settings") {
-      if (output) output.textContent = "Preset changes do not select tracks.";
+    if (typeSelect.value === "settings" || typeSelect.value === "ad_break") {
+      if (output) output.textContent = typeSelect.value === "settings" ? "Preset changes do not select tracks." : "Ad breaks do not select tracks.";
       return;
     }
     if (output) output.textContent = "Checking matching tracks…";
