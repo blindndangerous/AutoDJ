@@ -41,7 +41,12 @@ export function installTableNavigation(body) {
       if (event.target !== cell && controls(cell).includes(event.target)) return;
       if (event.repeat) { event.preventDefault(); return; }
       const control = controls(cell).find((item) => !item.disabled);
-      if (control) { event.preventDefault(); control.click(); }
+      if (control) { event.preventDefault(); control.click(); return; }
+      // Enter on a track's name opens its Track info.
+      const info = event.key === "Enter" && cell.getAttribute("role") === "rowheader"
+        && [...cell.closest("tr").querySelectorAll("button")]
+          .find((item) => item.textContent.trim() === "Track info" && !item.disabled);
+      if (info) { event.preventDefault(); info.click(); }
       return;
     }
     const row = cell.closest("tr");

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { installTableNavigation } from "../../src/autodj/static/modules/table-navigation.js";
 
 describe("native table grid navigation", () => {
@@ -118,5 +118,23 @@ describe("native table grid navigation", () => {
     expect(activations).toBe(0);
     button.click();
     expect(activations).toBe(1);
+  });
+
+  it("opens Track info when Enter is pressed on a track's name", () => {
+    document.body.innerHTML = `<table><tbody id="rows">
+      <tr><td role="gridcell">12:00</td><td role="rowheader">Song</td>
+        <td role="gridcell"><button type="button">Track info</button></td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [, name, action] = body.querySelectorAll("td");
+    const open = vi.fn();
+    action.querySelector("button").addEventListener("click", open);
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    name.dispatchEvent(enter);
+    expect(open).toHaveBeenCalledOnce();
+    expect(enter.defaultPrevented).toBe(true);
+    name.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    expect(open).toHaveBeenCalledOnce();
   });
 });

@@ -794,6 +794,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Up and Down Arrow in a table, such as the hour preview, move between rows without changing the
+  volume (#290).
+- Enter on a track's name in History, the hour preview or Search and browse opens its Track
+  info (#291).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
   closed or detached (#277).
 - The track repeat-rule cap warning appears once per station for each setting and library size,
