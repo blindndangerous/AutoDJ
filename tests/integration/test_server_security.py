@@ -338,6 +338,7 @@ def test_post_start_exception_audits_actual_status_without_second_response(
         "/api/audio?path=Z%3A%2FMusic%2Fsong_0.flac",
         "/api/library/job",
         "/api/library/missing",
+        "/api/library/auto-rescan",
         "/api/profiles",
         "/api/liners",
     ],
@@ -363,6 +364,7 @@ def test_secured_route_categories_require_session(path: str) -> None:
         ("delete", "/api/liners/file/id.mp3", {}),
         ("post", "/api/library/run", {"json": {}}),
         ("post", "/api/library/remove-missing", {"json": {}}),
+        ("put", "/api/library/auto-rescan", {"json": {}}),
     ],
 )
 def test_unsafe_route_categories_reject_before_parsing_body(
@@ -643,6 +645,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/stop"),
         ("post", "/api/library/tags"),
         ("post", "/api/library/remove-missing"),
+        ("put", "/api/library/auto-rescan"),
     ],
 )
 def test_every_mutation_route_requires_session_before_body_validation(

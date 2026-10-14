@@ -50,6 +50,7 @@ SHARED = frozenset(
         "/api/library/folders",
         "/api/library/folders/{source_id}",
         "/api/library/rescan",
+        "/api/library/auto-rescan",
         "/api/library/points",
         "/api/library/tags",
         "/api/library/job",
@@ -213,6 +214,8 @@ STATION = frozenset(
         "/shows/{show_id}/songs",
         "/shows/{show_id}/generate",
         "/shows/{show_id}/start",
+        # Spoken track landmarks (#60): read through the station's player.
+        "/landmarks",
         # Live DJs (#48): the DJ accounts, talkover settings and microphone.
         "/live",
         "/live/settings",

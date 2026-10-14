@@ -71,6 +71,46 @@ def test_clock_slot_json_validation():
             ClockSlot.from_json({"folder": "liners", "kind": "liner", "require_following": invalid})
     with pytest.raises(ValueError, match="unknown"):
         ClockSlot.from_json({"folder": "music", "code": "run"})
+    ad = ClockSlot(kind="ad_break", max_spots=2, advertiser="Example Motors")
+    assert ClockSlot.from_json(ad.to_json()) == ad
+    assert "max_spots" not in slot.to_json()
+
+
+def test_ad_steps_pass_to_next_music_across_wrap_and_keep_liner():
+    entry = Entry("C:/music/song.flac")
+    liner = Entry("C:/liners/voice.wav")
+    slots = [
+        ClockSlot(kind="ad_break"),
+        ClockSlot(kind="ad_break"),
+        ClockSlot(kind="liner", folder="C:/liners"),
+        ClockSlot(kind="ad_break"),
+        ClockSlot(kind="track", path=entry.path),
+    ]
+    picked = pick_slot(slots, 2, [entry], {}, lambda _: True, liners=[liner])
+    assert picked.entry == entry and picked.liner == liner and picked.ad_steps == (3,)
+    wrapped = pick_slot(slots, 3, [entry], {}, lambda _: True)
+    assert wrapped.ad_steps == (3,)
+    closed = pick_slot(
+        slots, 0, [entry], {}, lambda _: True, condition_errors={1: "outside its hours"}
+    )
+    assert closed.ad_steps == (0, 3)
+    assert "Step 2: outside its hours" in closed.skipped
+    across_end = pick_slot(
+        [ClockSlot(kind="track", path=entry.path), ClockSlot(kind="ad_break")],
+        1,
+        [entry],
+        {},
+        lambda _: True,
+    )
+    assert across_end.ad_steps == (1,)
+    empty = pick_slot(
+        [ClockSlot(kind="ad_break"), ClockSlot(kind="track", path=entry.path)],
+        0,
+        [],
+        {},
+        lambda _: True,
+    )
+    assert empty.entry is None and empty.ad_steps == ()
 
 
 @dataclass

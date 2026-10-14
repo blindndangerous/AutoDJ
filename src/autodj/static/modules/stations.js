@@ -124,6 +124,7 @@ export const STATION_ROUTES = Object.freeze([
   "/requests/{request_id}/approve",
   "/requests/{request_id}/play-next",
   "/requests/{request_id}/reject",
+  "/landmarks",
   "/requests/settings",
   "/live",
   "/live/settings",

@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Library tools can rescan the library automatically every so many hours and minutes (#249).
+- DMCA checks on queued songs, listener request placement and show songs now use the hour
+  preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
+  overlapping liners and music speed, instead of whole file lengths (#217).
+- A listener request is no longer placed where a queued song after it would then break a repeat
+  rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
 - The page title no longer shows the album. It names the station whenever the station is not
   called AutoDJ, even on a server with one station (#251).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
@@ -50,10 +56,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Stations can be created or duplicated from the web page without restarting AutoDJ. New
   stations start stopped with their own state and recording folder (#233).
+- Spoken track landmarks (#60): a song's structure through keys and speech, in place of a
+  waveform. A new station route, `/api/landmarks`, merges the cue points, the DJ analysis (drops,
+  breakdowns, build-ups, phrases, named DJ-software cues, the beat grid for bar numbers) and the
+  synced lyrics (where the singing starts) into named landmarks, merged when they fall together
+  and kept in a cache until the song's cue points, analysis or lyrics change. Track info lists
+  them under **Song structure** ("Intro, 0:00 to 0:32", "Vocals from 0:45", "Drop, 1:35, bar 49"),
+  with times numeric on screen and in speech alike. **Right bracket** and **Left bracket** go to the next or
+  previous landmark and say it: in Track info they move the cue point preview ("Preview: Drop,
+  1:35, bar 49"); elsewhere they say the landmark of the song on air ("On air: ...,
+  in 0:12") and move the song only with the new **Bracket keys seek the song on air**
+  setting (Settings, Keyboard; off by default). **Shift+U** says what is coming next on air ("On
+  air: Drop in 0:12, 6 bars"). Each answer is said once, politely, without moving focus,
+  and the keys follow Enable keyboard shortcuts.
+- `POST /api/seek` takes an optional `path`: the song the seek is for. When another song is
+  playing, the server refuses with 409 ("The song on air has changed, so it was not moved.").
+  Pages that leave it out seek as before.
+- The lyric timing the mix and the landmarks use is read again when a song's file or its `.lrc`
+  sidecar changes, instead of being kept until restart.
 - `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
   preview, recovery copy, and safe retry after interruption.
+- Ad breaks as a clockwheel step (#51): the new **Ad break** step type plays spots from the Ads
+  tab at the song change before the next song the clockwheel picks. It holds up to **Spots in the
+  break** and **Longest break in seconds**, and can keep to one **Advertiser** or **Competing
+  category**. Its spots are picked, booked and reported like any ad break's (flight dates, limits,
+  separation, late and missed), with the source "Clockwheel step". When no spot can play, the
+  step is skipped, the music goes on and the ad report says why. The hour preview shows each ad
+  step as a predicted ad break with its expected length.
 - Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
   advertiser, campaign, competing category, flight dates and daily and hourly limits) and ad
   breaks (the minutes past the hour they run at, such as :15 and :45, with hours, days and a date
@@ -752,6 +783,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Prevent a song from playing in the same quarter of the hour** reads quarters on the
+  station's clock. Across Lord Howe Island's half-hour clock change it compared UTC quarters, so
+  a song could return to the quarter it last played in. Listener request checks read it on the
+  station's clock too (#219).
+
+- Saving cue points in Track info no longer fails with "end exceeds track length" on some
+  tracks when the End was left as loaded. Track info shows cue times to the nearest 0.01 s,
+  which could round the End just past the song's length. The catalog now accepts a cue that
+  rounding pushed up to 0.01 s past its limit (the length, Start, End, or the Overlap start
+  room) and moves it onto that limit; anything further is still rejected (#237).
 - A matched intro reserved for a handoff is available again if playback skips that handoff before the intro starts. Intros already heard keep their cooldown.
 
 

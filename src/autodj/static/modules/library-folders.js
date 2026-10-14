@@ -6,6 +6,7 @@ import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
+import { installAutoRescan } from "./auto-rescan.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
@@ -40,7 +41,10 @@ export function formatPointTime(value) {
 }
 
 
-export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders }) {
+const NO_LANDMARKS = { load() {}, clear() {}, refresh() {} };
+
+// landmarks: Track info's Song structure (modules/landmarks.js, #60).
+export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders, landmarks = NO_LANDMARKS }) {
   const panel = doc.getElementById("panel-library");
   const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
   let searchShown = false;
@@ -241,6 +245,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     searchShown = searching;
     if (visible() && timer == null) {
       void refresh();
+      void autoRescan?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -314,6 +319,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pendingFolderEdits.delete(button);
       if (requestCurrent(epoch, generation)) { button.removeAttribute("aria-disabled"); await refresh(); }
     }
+  });
+  const autoRescan = installAutoRescan({
+    document: doc,
+    request,
+    say: announceAction,
+    isCurrent: () => !suspended,
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
     if (suspended) return;
@@ -432,6 +443,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (!requestCurrent(epoch, generation)) return false;
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
+      // New cue points can move the intro, outro and segue landmarks.
+      landmarks.refresh();
       pointSay(`Saved changes to ${currentName}.`);
       return true;
     } catch (error) {
@@ -523,6 +536,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pointPath.value = currentPath;
       setPointFields(data.points || {}, data.point_sources || {});
       renderDetails(data);
+      landmarks.load({ path: currentPath, kind: currentKind });
       tags.load(data);
       intros.load(data);
       editor.hidden = false;
@@ -557,6 +571,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
           currentPath = null;
           tags.clear();
           intros.clear();
+          landmarks.clear();
           editor.hidden = true;
           pointPath.value = "";
           const details = doc.getElementById("track-info-details");
@@ -644,6 +659,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     editor.hidden = true;
     tags.clear();
     intros.clear();
+    landmarks.clear();
     currentPath = null;
     currentKind = "music";
     currentName = "this track";
@@ -653,6 +669,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     folderSignature = null;
     pathInput.value = "";
     clearAddError();
+    autoRescan?.clear();
     status.textContent = "";
     progress.textContent = "";
     pointStatus.textContent = "";
@@ -679,6 +696,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   function resume() { suspended = false; updatePolling(); }
   // Matched intros are each station's own (#70); the rest of Track info is shared.
-  const refreshIntros = () => intros.refresh();
+  // The song structure is read through the station too.
+  const refreshIntros = () => { landmarks.refresh(); return intros.refresh(); };
   return { refresh, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

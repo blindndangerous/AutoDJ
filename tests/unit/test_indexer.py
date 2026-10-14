@@ -21,10 +21,10 @@ from autodj.indexer import (
     _resolve_beets_path,
     build_faiss_index,
     load_index,
-    save_index,
     walk_music_dir,
 )
 from autodj.model import EMBEDDING_DIM
+from tests.unit._legacy_index import save_index
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -272,13 +272,14 @@ class TestSaveLoadIndex:
 
     def test_load_refuses_a_count_that_does_not_match_the_manifest(self, tmp_path: Path) -> None:
         from autodj.index_manifest import IndexConsistencyError, publish_generation
-        from autodj.indexer import _entry_to_row, _write_faiss_chunked, _write_tracks_file
+        from autodj.indexer import _write_tracks_file
+        from tests.unit._legacy_index import entry_to_row, write_vectors
 
         entries, vectors = self._make_entries(3)
 
         def write(tracks: Path, vectors_path: Path) -> None:
-            _write_tracks_file([_entry_to_row(e, None, i) for i, e in enumerate(entries)], tracks)
-            _write_faiss_chunked(build_faiss_index(vectors[:2]), vectors_path)
+            _write_tracks_file([entry_to_row(e, None, i) for i, e in enumerate(entries)], tracks)
+            write_vectors(vectors[:2], vectors_path)
 
         publish_generation(tmp_path, base_generation=0, vector_count=3, write_files=write)
 
@@ -287,14 +288,15 @@ class TestSaveLoadIndex:
 
     def test_load_refuses_absolute_track_path(self, tmp_path: Path) -> None:
         from autodj.index_manifest import UnsupportedIndexError, publish_generation
-        from autodj.indexer import _entry_to_row, _write_faiss_chunked, _write_tracks_file
+        from autodj.indexer import _write_tracks_file
+        from tests.unit._legacy_index import entry_to_row, write_vectors
 
         entries, vectors = self._make_entries(1)
-        row = _entry_to_row(entries[0], None, 0) | {"path": "Z:/Music/song_0.flac"}
+        row = entry_to_row(entries[0], None, 0) | {"path": "Z:/Music/song_0.flac"}
 
         def write(tracks: Path, vectors_path: Path) -> None:
             _write_tracks_file([row], tracks)
-            _write_faiss_chunked(build_faiss_index(vectors), vectors_path)
+            write_vectors(vectors, vectors_path)
 
         publish_generation(tmp_path, base_generation=0, vector_count=1, write_files=write)
 
@@ -670,7 +672,7 @@ class TestRelativizeForStorage:
 
 class TestPathPortability:
     def test_save_strips_music_dir_prefix(self, tmp_path: Path) -> None:
-        from autodj.indexer import load_index, save_index
+        from autodj.indexer import load_index
 
         music_dir = tmp_path / "Music"
         music_dir.mkdir()

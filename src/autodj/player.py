@@ -973,6 +973,9 @@ class Player:
         # "why this track" sentence list shown in the web UI.
         self._last_pick_mode: str = "seed"
         self._last_clock_step: dict | None = None
+        self._chosen_clock_ad_steps: tuple[dict, ...] = ()
+        self._clock_has_ad_steps = False
+        self._clock_has_pending_ad_steps = False
         self._clock_revision = 0
         # Edits wait for worker picks/renders, never for audio callbacks.
         self._clock_selection_lock = threading.RLock()
@@ -1200,6 +1203,7 @@ class Player:
         """
         self._seed_clock_following = None
         self._seed_clock_step = None
+        self._chosen_clock_ad_steps = ()
         chosen: IndexEntry | None
         dmca = self._pick_context() if self._state.dmca_enabled else None
         if self._library is not None:
@@ -1373,6 +1377,8 @@ class Player:
         with self._clock_selection_lock, self._clock_lock, settings_lock(self):
             self._pending_clock_update = None
             self._clock = None
+            self._clock_has_ad_steps = False
+            self._clock_has_pending_ad_steps = False
             self._seed_clock_following = None
             self._clock_next_boundary = None
             self._clock_status = status
@@ -1416,6 +1422,10 @@ class Player:
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
+            self._clock_has_ad_steps = any(
+                getattr(slot, "kind", None) == "ad_break" for slot in slots
+            )
+            self._clock_has_pending_ad_steps = False
             self._clock_status = "Ready"
             self._seed_clock_following = None
             self._clock_next_boundary = boundary.timestamp() if boundary else None
@@ -1437,6 +1447,7 @@ class Player:
         changed = old_name != name or getattr(self, "_clock_definition", None) != clock
         if not changed:
             self._pending_clock_update = None
+            self._clock_has_pending_ad_steps = False
             if self._clock is not None and self._clock.get("pending_restart_reset"):
                 self._clock = {
                     key: value
@@ -1449,6 +1460,9 @@ class Player:
         revision = self._clock_revision + 1
         if timing == "next_restart" and old_name == name and self._clock is not None:
             self._pending_clock_update = (clock, slots, revision)
+            self._clock_has_pending_ad_steps = any(
+                getattr(slot, "kind", None) == "ad_break" for slot in slots
+            )
             self._pending_clock_name = name
             self._clock = {**self._clock, "pending_restart_reset": True}
             if (ledger := self._ledger) is not None:
@@ -1468,10 +1482,12 @@ class Player:
             if not isinstance(cursor, int) or not 0 <= cursor < len(clock["steps"]):
                 cursor = 0
         self._pending_clock_update = None
+        self._clock_has_pending_ad_steps = False
         self._clock_revision = revision
         self._clock_definition = clock
         self._seed_clock_following = None
         self._clock_slots = slots
+        self._clock_has_ad_steps = any(getattr(slot, "kind", None) == "ad_break" for slot in slots)
         self._clock_steps = clock["steps"]
         from autodj.categories import parse_step_hours
 
@@ -1546,6 +1562,16 @@ class Player:
             elif kind == "settings":
                 get_preset(step["preset"], self._cfg.presets)
                 slots.append(ClockSlot(kind="settings", preset=step["preset"]))
+            elif kind == "ad_break":
+                slots.append(
+                    ClockSlot(
+                        kind="ad_break",
+                        max_spots=step["max_spots"],
+                        max_seconds=step["max_seconds"],
+                        advertiser=step.get("advertiser", ""),
+                        ad_category=step.get("category", ""),
+                    )
+                )
             elif kind == "category":
                 # A category deleted or emptied later is skipped when it is
                 # reached, like an empty folder, so it never stops loading.
@@ -1764,6 +1790,17 @@ class Player:
             picked,
             step_snapshot=self._clock_step_snapshot(picked.step_index, steps),
             liner_step_snapshot=self._clock_step_snapshot(picked.liner_step_index, steps),
+            ad_step_snapshots=tuple(
+                {
+                    "index": index,
+                    "number": index + 1,
+                    "clock": clock["name"],
+                    "step": deepcopy(steps[index]),
+                }
+                for index in picked.ad_steps
+            )
+            if picked.entry is not None
+            else (),
         )
 
     def _promote_pending_clock(self) -> None:
@@ -1778,6 +1815,7 @@ class Player:
         name = (self._clock or {}).get("name")
         self._clock_definition = clock
         self._clock_slots = slots
+        self._clock_has_ad_steps = any(getattr(slot, "kind", None) == "ad_break" for slot in slots)
         self._clock_steps = clock["steps"]
         from autodj.categories import parse_step_hours
 
@@ -1786,6 +1824,7 @@ class Player:
         self._seed_clock_following = None
         self._clock = {"name": name, "cursor": 0, "resync_minutes": clock["resync_minutes"]}
         self._pending_clock_update = None
+        self._clock_has_pending_ad_steps = False
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
@@ -2238,6 +2277,7 @@ class Player:
             context.queue_reserved, (*self._pending_reserved_liners, *also_reserved)
         )
         self._chosen_clock_step = None
+        self._chosen_clock_ad_steps = ()
         self._chosen_clock_revision = self._clock_revision
         self._forget_other_clock_place()
         cursor = self._pending_clock_cursor
@@ -2298,6 +2338,7 @@ class Player:
                 self._chosen_clock_revision = self._clock_revision
                 picked = self._clock_pick(context, 0)
             self._chosen_clock_step = picked.step_snapshot
+            self._chosen_clock_ad_steps = picked.ad_step_snapshots
             if picked.entry is None:
                 # Only empty or deleted categories left nothing to play.
                 rescue = self._empty_category_fallback(current, context)
@@ -2326,6 +2367,7 @@ class Player:
                         if rescue is None:
                             raise ValueError(self._clock_status)
                         self._chosen_clock_step = None
+                        self._chosen_clock_ad_steps = ()
                         return (
                             rescue,
                             "fallback",
@@ -2335,6 +2377,7 @@ class Player:
                         )
                     picked = reset
                     self._chosen_clock_step = reset.step_snapshot
+                    self._chosen_clock_ad_steps = reset.ad_step_snapshots
                     self._clock_status = "Restarting the clock at the nearest song handoff"
                     following = next_boundary(
                         datetime.fromtimestamp(max(boundary, when)).astimezone(),
@@ -2370,6 +2413,24 @@ class Player:
         if not selected and auto_liner:
             selected, key = self._auto_liner(current, upcoming)
         return upcoming, mode, selected, cursor, key
+
+    def _miss_unbooked_ad_steps(self, steps: tuple[dict, ...], slot_id: str = "") -> None:
+        desk = getattr(self, "ad_desk", None)
+        if desk is None:
+            return
+        if not desk.enabled:
+            self._log_clock_skips(
+                [
+                    f"Step {step['number']}: ad break skipped: ad breaks are off for this station"
+                    for step in steps
+                ]
+            )
+        elif not slot_id or desk.handled_count(slot_id) < len(steps):
+            missed = steps if not slot_id else steps[desk.handled_count(slot_id) :]
+            desk.missed_steps(
+                missed,
+                desk.refusal() or "its song change was rendered before its spots could be booked",
+            )
 
     def _auto_liner(
         self, current: IndexEntry, upcoming: IndexEntry
@@ -2692,11 +2753,14 @@ class Player:
             next_clock_step = None
             plan = self._claim_slot_plan(current) if station_mode else None
             breaks: tuple[Break, ...] = ()
+            unbooked_ad_steps: tuple[dict, ...] = ()
+            unbooked_slot_id = ""
             # An intro matched to the next song (#127) takes the automatic
             # liner's place at this change; the liner trigger stays due.
             intro = None
             try:
                 if plan is not None:
+                    unbooked_ad_steps, unbooked_slot_id = plan.ad_steps, plan.slot_id
                     next_entry, next_mode, liners, next_cursor = (
                         plan.upcoming,
                         plan.mode,
@@ -2723,6 +2787,7 @@ class Player:
                         self._choose_station_next(current, context, auto_liner=False)
                     )
                     next_clock_step = self._chosen_clock_step
+                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
                     if next_mode == "clock":
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
@@ -2738,6 +2803,7 @@ class Player:
                             liners, liner_key = self._auto_liner(current, next_entry)
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
+                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
             except Exception as exc:
                 logger.warning(
                     "No track can follow %s (%s); it plays out alone.", current.path, exc
@@ -2770,6 +2836,8 @@ class Player:
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
                 rendered = None
+            if rendered is not None and next_entry is not None and unbooked_ad_steps:
+                self._miss_unbooked_ad_steps(unbooked_ad_steps, unbooked_slot_id)
             if intro is not None and (
                 rendered is None
                 or intro.intro_id not in {event[1] for event in rendered.intro_events}
@@ -3085,6 +3153,7 @@ class Player:
             clock_name=self._pending_clock_name,
             clock_revision=getattr(self, "_chosen_clock_revision", self._clock_revision),
             clock_step=getattr(self, "_chosen_clock_step", None),
+            ad_steps=self._chosen_clock_ad_steps if mode == "clock" else (),
         )
         with self._slot_lock:
             self._slot_plan = plan
@@ -3836,7 +3905,7 @@ class Player:
             now,
             self._track_keys(),
             at=(self._now() if at is None else at) if timed else None,
-            zone=self._station_zone() if rules.daypart_days else UTC,
+            zone=self._station_zone() if timed else UTC,
         )
         if minute_paths:
             held = set(paths)
@@ -4195,6 +4264,8 @@ class Player:
         """
         when = self._browser_handoff(current) if at is None else at
         entry, mode = self._choose_next(current, self._pick_context(at=when))
+        if self._chosen_clock_ad_steps:
+            self._miss_unbooked_ad_steps(self._chosen_clock_ad_steps)
         self._last_pick_mode = mode
         self._next_pick = (entry.path, mode)
         return entry
@@ -4228,6 +4299,7 @@ class Player:
         Raises:
             SimilarityError: The library has no track that is not silent.
         """
+        self._chosen_clock_ad_steps = ()
         queued = self._pop_user_queue(context.peek_queue, context.queue_reserved)
         if queued is not None:
             marked_cursor = (

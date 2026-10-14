@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from autodj.ads import Spot, new_id, spot_file_name
 from autodj.catalog import LibraryCatalog
 from autodj.server import PlayerBridge, create_app
 
@@ -56,6 +57,54 @@ def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
         )
         assert counted.status_code == 200
         assert counted.json() == {"tracks": 0, "error": None}
+        ad = {"type": "ad_break", "max_spots": 2, "max_seconds": 60, "advertiser": "Example Motors"}
+        checked = client.post("/api/library/clock/check", json={"step": ad})
+        assert checked.json() == {"tracks": None, "error": None}
+        assert {"ad_advertisers", "ad_categories", "ads_reason"} <= listed.json().keys()
+        station = app.state.stations.default
+        station.ads.store._max_spots = lambda: 200
+        for advertiser, category in (
+            ("Example Motors", "Car dealers"),
+            ("example motors", "car dealers"),
+        ):
+            key = new_id()
+            station.ads.store.add_spot(
+                key,
+                Spot(
+                    title="Sale",
+                    advertiser=advertiser,
+                    category=category,
+                    file=spot_file_name(key, ".wav"),
+                    cue_start=0,
+                    cue_segue=1,
+                    cue_end=1,
+                    length_s=1,
+                ),
+            )
+        ad_data = client.get("/api/library/clock").json()
+        assert [name.casefold() for name in ad_data["ad_advertisers"]] == ["example motors"]
+        assert [name.casefold() for name in ad_data["ad_categories"]] == ["car dealers"]
+        assert ad_data["ads_reason"] == station.ads.refusal()
+        created = client.post(
+            "/api/library/clock",
+            json={
+                "version": 1,
+                "name": "Ads",
+                "resync_minutes": [0],
+                "steps": [
+                    ad,
+                    {
+                        "type": "music",
+                        "conditions": [
+                            {"field": "genre", "operator": "is_not", "value": "Slow Jam"}
+                        ],
+                        "match": "all",
+                    },
+                ],
+            },
+        )
+        assert created.status_code == 200, created.text
+        assert client.get("/api/library/clock/Ads").json()["steps"][0] == ad
         unknown = client.post(
             "/api/library/clock",
             json={"version": 1, "name": "X", "steps": [], "resync_minutes": [0], "path": "C:/"},

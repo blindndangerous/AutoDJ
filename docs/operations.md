@@ -82,8 +82,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
-paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+tab. Its folder table shows each folder's type, path and scan options. Automatic rescan every N hours
+and M minutes runs the same scan as the Rescan button, and its setting is kept in `library.db`.
+Setting 0 hours and 0 minutes (the default) turns it off; the shortest interval is 5 minutes. Time
+counts from the end of the last startup, manual or automatic scan; if a scan or cleanup is running,
+the next tick tries again. **Queue & Search** uses one paginated list: choose Music or Voice liners,
+choose all folders or one folder, and optionally
 search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
 Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
@@ -575,15 +579,32 @@ carry the same album name counts as one album, again the stricter limit.
   library) does AutoDJ break one: it plays a song that breaks the fewest limits,
   and logs a warning naming each one. The music never stops.
 - Songs you queue from Search or Library: Play now, Play next and Add to queue
-  check the limits at the time the song is expected to start, worked out from
-  the lengths of the song playing and the songs queued before it. If the song
-  would break a limit, nothing is queued; a dialog names the limit in words and
-  offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing Queue
-  anyway queues it and logs a warning; Cancel leaves the queue as it was. The
-  result is spoken either way. The expected start is an estimate: crossfades and
-  skips move it, so near a three-hour boundary, check again before relying on it.
+  check the limits at the time the song is expected to start, timed as the
+  hour preview times the queue (see [Expected start times](#expected-start-times)).
+  If the song would break a limit, nothing is queued; a dialog names the limit in
+  words and offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing
+  Queue anyway queues it and logs a warning; Cancel leaves the queue as it was.
+  The result is spoken either way. The expected start is an estimate: skips and
+  later queue edits move it, so near a three-hour boundary, check again before
+  relying on it.
   A queued song plays even if it breaks a limit when it starts, and the log
   says so.
+
+### Expected start times
+
+The DMCA and repeat checks on queued songs, listener requests and shows use the hour preview's
+timing for when a song will start:
+
+- The song playing counts from where it is now, so a seek moves the queue.
+- A song the server has already mixed keeps its mixed handoff and the speed it was mixed at.
+- Other songs hand over at their saved start and segue cues, or the crossfade, at the current
+  music speed. Liners keep their own length and overlap cues.
+- A song put ahead of one that is already mixed counts as taking its place, as it does once the
+  mix is redone. If the song playing ends before the new mix is ready, the change lands one song
+  later.
+
+Automatic liners, breaks not yet booked and skips are not known in advance, so the time is an
+estimate.
 
 ### Public pages
 
@@ -833,9 +854,13 @@ the show's waiting songs and the listener is told only that it plays "after the 
 
 For the last check, AutoDJ looks at each place in the queue that would start within
 `window_minutes`. The first place, after the song playing and any "play next" song, always counts.
-For each place, AutoDJ projects when the song would start. It then checks the repeat rules (track,
+For each place, AutoDJ works out when the song would start, as the hour preview times the queue
+([Expected start times](#expected-start-times)). It then checks the repeat rules (track,
 artist, album, title, and related tracks and artists) as of then, and in
-[DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
+[DMCA mode](#dmca-mode) the DMCA limits too. It also checks the queued songs after that place
+again: a place where a later song would break a rule only because the request is ahead of it
+counts as breaking that rule, named as "Artist — Song after it: same artist". A rule a queued
+song breaks already does not count against the request. Of the places that break nothing, it picks the one
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
 tie. Working out the place and adding the song there happen as one step, so the queue cannot
@@ -885,7 +910,8 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
 - **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
-  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song.
+  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song
+  and the queued songs after it.
 - **Turn down**.
 
 Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
@@ -2663,6 +2689,75 @@ page's `Origin`, never an announcer token. `POST` takes the announcer upload's f
 `ending_id`, `upcoming_id`, `placement`, `allow_outro` and `file`), with no `kind`: a voice track is
 always a DJ break.
 
+## Song structure and landmarks
+
+A sighted DJ reads a song's shape from its waveform. AutoDJ gives the same picture as text: a
+song's **landmarks** are its intro, the start of the singing, drops, breakdowns, build-ups, the
+outro and the segue, plus every 32-beat phrase and the hot and memory cues named in DJ software.
+They come from what AutoDJ already knows about the song, merged into one list:
+
+- the cue points in Track info (Start, Intro, Outro and Segue), whoever set them;
+- the DJ analysis: detected drops, breakdowns and phrases, the beat grid (for bar numbers), and the
+  cues imported from Mixxx, Rekordbox, Serato or Traktor. A hot cue named "Drop 2" or "Breakdown"
+  counts as one. Cues that only time a mix (first and last downbeat) are left out;
+- the synced lyrics: where the singing starts.
+
+Marks less than a second apart are one landmark. Of two marks of the same kind, one set by hand
+wins over DJ software, then lyrics, then analysis; two kinds that fall together share a name, such
+as "Drop and vocals". Bars count from the first beat of the beat grid, so bar 1 is the first
+detected beat; a song with no beat grid has no bar numbers. Drops, breakdowns, phrases and bars
+appear once the song has been analysed: when it is next up to play, or when Analyse runs in
+Library tools.
+
+### In Track info
+
+Track info lists the song's structure under **Song structure**, one landmark per list item in time
+order, for example:
+
+- Intro, 0:00 to 0:32, bars 1 to 17
+- Vocals from 0:45, bar 23
+- Drop, 1:35, bar 49
+- Breakdown, 2:40, bar 81
+- Outro, 3:50 to 4:10, bars 116 to 126
+
+Times are numeric on screen and to a screen reader alike, as elsewhere in AutoDJ. Phrases, unnamed cues and the end of the intro (its item already says
+where it ends) are not listed; the bracket keys still stop on them, and Shift+U says when the intro
+ends.
+
+### Keys
+
+- **Right bracket** and **Left bracket** go to the next and previous landmark and say it. Each
+  answer starts with what it is about: "Preview:" or "On air:".
+  - While Track info shows, they move the cue point preview, whether it is playing or paused, and
+    say "Preview: Drop, 1:35, bar 49". **Use preview position** then copies that
+    time into a cue point.
+  - On any other tab they speak about the song on air, from where it is playing: "On air: Drop,
+    1:35, bar 49, in 0:12" (or "0:08 ago" for Left bracket). They do not
+    move it, because listeners would hear the jump.
+  - To have them move the song on air too, turn on **Bracket keys seek the song on air** under
+    Settings, Display and keys, Keyboard. It is off by default and saved in this browser only.
+    Seeking is not possible in stream mode, and a seek names the song it is for: when another song
+    is playing by the time it reaches the server, nothing moves and the page says "The song on air
+    has changed, so it was not moved."
+  - Left bracket goes back to the start of the landmark you are in, or to the one before when you
+    are within a second of it.
+- **Shift+U** says what is coming next in the song on air, with the seconds and, when the tempo is
+  known, the bars: "On air: Drop in 0:12, 6 bars", "On air: Outro starts in 0:30, 15 bars". After the last landmark it says how long the song has left. With several stations it
+  starts with the station's name.
+
+Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so
+**Enable keyboard shortcuts** (Settings, Display and keys) turns them off with the rest. Neither
+bracket nor Shift+U is used by the browsers or by NVDA and JAWS outside browse mode; in browse
+mode, use focus mode, or press NVDA+F2 or JAWS Insert+3 first to pass the key through. On a
+keyboard layout that types brackets with AltGr, AltGr and the bracket key work; Ctrl+Alt with the
+bracket keys of a US layout is left to the browser and the screen reader.
+
+The song on air is looked up afresh on every key press, and the server keeps each song's answer
+until its cue points, its analysis or its lyrics (the audio file or its `.lrc` sidecar) change.
+
+The landmarks are read through the station the page controls, at `GET /api/landmarks?path=...`
+or `/api/stations/<slug>/landmarks?path=...`, for a song in the library only.
+
 ## Matched intros
 
 A matched intro is a short voice clip tied to one song, or to every song by one artist, such as
@@ -2884,6 +2979,13 @@ it is booked at its time, where Soft first waits for the playing song to end. Th
 shows each run as a fixed point to time to.
 
 **Run now** books a break at the next song change it can join, which is handy for a test.
+
+### Ad breaks in a clockwheel
+
+A [clockwheel](#clockwheels) can place an ad break before its next song. The report lists its
+source as "Clockwheel step" and its break as "Clockwheel <name>, step <n>". If a song change is
+re-planned, the new change books the step again; spots dropped from the old change are reported
+as missed.
 
 ### How a break is filled
 
@@ -3251,6 +3353,8 @@ Each row says in its Status column whether it is fixed or predicted:
   booked joins the first predicted song change at or after its time, with the spots its rules
   would pick now and their length; the songs after it move later by that much. Its time is also
   a fixed point below, as "Ad break" and its name.
+- Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
+  would play, the row has length 0 and says why.
 
 Backtiming goes to each fixed point in the span:
 
@@ -3670,6 +3774,13 @@ Step types:
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
+- **Ad break**: books spots at the song change before the next song the clockwheel picks.
+  **Most spots** or **Spots in the break** limits the count (1 to 10); **Longest break in
+  seconds** is its target length (0 means no limit). Optional **Advertiser** and **Competing
+  category** restrict eligible spots. It needs `[ads] enabled = true`, saved segue points and
+  server mixing, as described under [Ad breaks](#ad-breaks). With no eligible spot, music
+  continues and the report records a missed break with the reason. JSON example:
+  `{"type":"ad_break","max_spots":3,"max_seconds":60,"advertiser":"","category":""}`.
 
 Music and liner steps have an **Add condition** button in the same step form. Choose **Match
 all** when every condition must hold, or **Match any** when one is enough. Each folder is its

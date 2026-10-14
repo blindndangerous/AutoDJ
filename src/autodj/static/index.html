@@ -425,6 +425,18 @@
     <h2 id="track-info-heading" tabindex="-1">Track info</h2>
     <p id="track-info-empty">Choose Track info beside a song or liner.</p>
     <dl id="track-info-details" hidden></dl>
+    <!-- Song structure (modules/landmarks.js, #60): the song's landmarks as
+         a list of text in time order, times numeric (1:35) as the UI
+         wording guidance asks.  Never live: it is drawn when a song opens, and the bracket
+         keys say where they land through #sr-status instead. -->
+    <section id="landmarks-section" aria-labelledby="landmarks-heading" hidden>
+      <h3 id="landmarks-heading">Song structure</h3>
+      <p class="setting-desc" id="landmarks-help">Where the intro, the singing, drops, breakdowns and the outro are, from AutoDJ’s analysis, the synced lyrics and the cue points. While Track info shows, the Right bracket key moves the cue point preview to the next landmark and the Left bracket key to the previous one, and says what is there.</p>
+      <p id="landmarks-empty" hidden></p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
+      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
+    </section>
     <!-- Tags (modules/tag-editor.js).  Save tags writes only the fields that
          changed into the file and the library; the analysis and cue points
          stay.  A refused field is marked invalid, its error is linked to it
@@ -1526,6 +1538,13 @@
       </div>
       <span class="setting-desc" id="hotkeys-enabled-desc">
         Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
+      </span>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-bracket-seek">
+        <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
+      </div>
+      <span class="setting-desc" id="hotkeys-bracket-seek-desc">
+        Outside Track info, the Left and Right bracket keys say the previous and next landmark of the song on air, such as its drop or outro.  With this on they also move the song there, which listeners hear; not in stream mode.  In Track info they always move the cue point preview.  Off by default.  Saved in this browser only.
       </span>
     </fieldset>
   </div>
@@ -3045,6 +3064,22 @@
         <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
+        <fieldset id="auto-rescan">
+          <legend>Automatic rescan every</legend>
+          <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>
+          <div class="settings-row">
+            <label for="auto-rescan-hours">Hours</label>
+            <input type="number" id="auto-rescan-hours" min="0" max="168" step="1" value="0" inputmode="numeric">
+          </div>
+          <div class="settings-row">
+            <label for="auto-rescan-minutes">Minutes</label>
+            <input type="number" id="auto-rescan-minutes" min="0" max="59" step="1" value="0" inputmode="numeric">
+          </div>
+          <!-- A refused value's message; the script moves it under the field
+               it names and links it there with aria-describedby. -->
+          <p class="field-error" id="auto-rescan-error" hidden></p>
+          <button type="button" id="auto-rescan-save">Save</button>
+        </fieldset>
         <p id="source-folders-status">Loading folders…</p>
         <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
@@ -3263,6 +3298,7 @@
           <option value="liner">Voice liner matching conditions</option>
           <option value="track">A specific track</option>
           <option value="settings">Switch preset</option>
+          <option value="ad_break">Ad break</option>
         </select>
         <div class="clock-step-field" id="clock-step-conditions-field">
           <label for="clock-step-match">Match conditions</label>
@@ -3286,6 +3322,29 @@
         <div class="clock-step-field">
           <label for="clock-step-preset">Preset</label>
           <select id="clock-step-preset"></select>
+        </div>
+        <!-- An ad break step: spots from the Ads tab, by its rules.  A refused
+             field is linked to #clock-step-ad-error and focused. -->
+        <div class="clock-step-field" id="clock-step-ad-field">
+          <p class="setting-desc" id="clock-step-ad-help">Plays spots from the Ads tab at the song change before the next song this clockwheel picks, by the rules of every ad break. Longest break is 10 to 900 seconds, or 0 for no limit. When no spot can play, the step is skipped and the ad report says why.</p>
+          <p class="setting-desc" id="clock-step-ads-notice" hidden></p>
+          <div class="settings-row">
+            <label for="clock-step-ad-spots">Spots in the break</label>
+            <input type="number" id="clock-step-ad-spots" min="1" max="10" step="1" value="3">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-seconds">Longest break in seconds</label>
+            <input type="number" id="clock-step-ad-seconds" min="0" max="900" step="1" value="0">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-advertiser">Advertiser</label>
+            <select id="clock-step-ad-advertiser"><option value="">Any advertiser</option></select>
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-category">Competing category</label>
+            <select id="clock-step-ad-category"><option value="">Any category</option></select>
+          </div>
+          <p id="clock-step-ad-error" class="field-error" hidden></p>
         </div>
         <div class="clock-step-field">
           <label for="clock-step-selection">Choose</label>
@@ -3599,6 +3658,8 @@
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
     <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
+    <dt style="margin-top:0.5rem"><kbd><span aria-hidden="true">]</span><span class="visually-hidden">Right bracket</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">[</span><span class="visually-hidden">Left bracket</span></kbd></dt><dd style="margin-top:0.5rem">Move to the next <span aria-hidden="true">/</span><span class="visually-hidden">or</span> previous landmark (intro, vocals, drop, breakdown, outro, phrase) and speak it. In Track info, moves the cue point preview. On other tabs, says the landmark of the song on air, and moves the song there only with “Bracket keys seek the song on air” on in Settings, Keyboard.</dd>
+    <dt><kbd>Shift+U</kbd></dt><dd>Speak what is coming next in the song on air, such as “On air: Drop in 0:12, 6 bars”</dd>
     <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
     <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>
   </dl>
