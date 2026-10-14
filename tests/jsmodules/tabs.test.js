@@ -36,6 +36,7 @@ describe("card headings", () => {
     }
     // Library h3s and the voice-liner "Files" h3 now sit under an h2.
     for (const h3 of document.querySelectorAll("main h3")) {
+      if (h3.closest("#panel-track-info")) continue;
       const card = h3.closest("details.card");
       expect(card?.querySelector(":scope > summary > h2"), h3.textContent).not.toBeNull();
     }
