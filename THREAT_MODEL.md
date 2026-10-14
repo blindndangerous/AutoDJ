@@ -64,9 +64,10 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   Recording status and controls are paired routes; the public stream cannot control recording.
   Backups include the recording settings and running state, not the recorded files.
 - Paired Stream settings can manage relay destinations and source passwords. Relay definitions
-  live in a station-local `relays.json`; the file is atomically written with mode 0600 on POSIX
-  (on Windows the inherited directory ACL governs access; `chmod(0o600)` only sets read-only)
-  and excluded from backups. Relay APIs and status files expose connection details and safe errors,
+  live in a station-local `relays.json`; the file is atomically written readable by its owner
+  only: mode 0600 on POSIX, and on Windows a protected access list that grants only the user
+  AutoDJ runs as (no inherited entries). It is excluded from backups, and a restore skips one
+  found in an archive, leaving the station's own file in place. Relay APIs and status files expose connection details and safe errors,
   never passwords. Environment passwords override saved passwords and are read-only in the UI.
   Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
   by AutoDJ; use a trusted network or a server that protects its source connection separately.
@@ -274,9 +275,9 @@ also uses, that address is allowed too; this widens the Host check but does not 
 
 When no token is configured, `--lan` stores a generated 43-character token in
 `<index_dir>/.access-token`, written atomically and regenerated if the file is empty or too
-short. On Linux and macOS the file has mode 0600, so only the owner can read it. On Windows the
-mode call does nothing and the file gets the index folder's permissions; if the index folder is
-on a network share, anyone who can read that share can read the token and derive pairing codes. An unreadable file stops startup with an error instead of silently replacing
+short. On Linux and macOS the file has mode 0600, so only the owner can read it. On Windows it
+gets a protected access list granting only the user AutoDJ runs as, in place of the index
+folder's inherited permissions. An unreadable file stops startup with an error instead of silently replacing
 the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Anyone who can read
 the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
 deleting the file rotates the token and ends every paired session on the next start. Startup

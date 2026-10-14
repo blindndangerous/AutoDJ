@@ -206,6 +206,17 @@ def test_projected_history_counts_the_playing_track_and_the_queue() -> None:
     assert when == 1300.0
 
 
+def test_projected_history_uses_the_played_length_when_given() -> None:
+    history = plays(song(1), start=1000.0)
+    playing = SimpleNamespace(path="1.flac", artist="Lead", album="Album", title="", length=220)
+    queued = SimpleNamespace(path="2.flac", artist="Q", album="Q", title="Q", length=110)
+    records, when = projected_history(
+        history, 1050.0, playing, [queued], length=lambda entry: entry.length / 1.1
+    )
+    assert [record.started for record in records] == [1000.0, pytest.approx(1200.0)]
+    assert when == pytest.approx(1300.0)
+
+
 def test_projected_history_adds_an_unrecorded_playing_track_and_play_now_skips_it() -> None:
     playing = SimpleNamespace(path="p.flac", artist="A", album="B", title="C", length=60)
     records, when = projected_history([], 10.0, playing, [])

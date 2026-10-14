@@ -835,7 +835,7 @@ function applyState(s) {
       { ...s.settings, discovery_enabled: s.discovery_enabled },
       _settingsEls(),
     );
-    if (document.activeElement !== _musicSpeedNumber) {
+    if (document.activeElement !== _musicSpeedNumber && !musicSpeedSliderBusy(_musicSpeedSlider)) {
       syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
     }
     applyMixSettings(s.settings, _mixEls);
@@ -864,7 +864,9 @@ import {
   postSettings as _postSettingsModule,
   resetSettingsState,
 } from "./modules/settings-panel.js";
-import { installMusicSpeedSlider, syncMusicSpeedSlider } from "./modules/music-speed.js";
+import {
+  installMusicSpeedSlider, musicSpeedSliderBusy, syncMusicSpeedSlider,
+} from "./modules/music-speed.js";
 
 const _musicSpeedNumber = document.getElementById("pb-music-speed-number");
 const _musicSpeedSlider = document.getElementById("pb-music-speed-slider");

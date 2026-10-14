@@ -10,18 +10,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
+  root, and startup never registers one implicitly. Legacy relative paths remain supported, with
+  an explicit `migrate-index --music-dir` option for old index imports.
+
+- Startup and backups use `library.db` without loading old index generations. Older libraries
+  must be upgraded with `migrate-index`; leftover manifests no longer affect a current catalog (#223).
+
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
+- Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
+  work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
+- The Library panel can preview and confirm removal of tracks missing from available source folders.
+  A clean scan and unchanged preview are required; more than 20% missing requires a second
+  confirmation. Catalog cues and vectors are removed with the record, while audio files and play
+  history remain. Disconnected and unreadable sources are protected.
+- `prepared_path` is no longer part of the catalog schema API, serialization or change tracking.
+  Existing SQLite columns are ignored without rebuilding the database.
+- Hour preview rows now use the same compact timestamp and duration on screen and in screen-reader
+  output. A refresh keeps a predicted choice while it remains eligible and tied for best, while
+  still following the picker when eligibility or play history changes.
 
 ### Added
 
+- `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
+  `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
+  upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
+  preview, recovery copy, and safe retry after interruption.
 - Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
   when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
   first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
   voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
   play dates and a priority next to the song's and artist's own matched intros (after them by
   default). Each station keeps its own rules in `intro_rules.json`, which backups include.
-
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
@@ -74,7 +97,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   aside as before.
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
-  name, genre, description and website URL are sent where each stream protocol supports them.
+  name, genre, description and website URL are sent where each stream protocol supports them. The
+  saved relay file is readable only by the account AutoDJ runs as, on Windows too, and backups
+  leave it and its passwords out; a restore keeps each station's own relay settings.
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,

@@ -1,7 +1,7 @@
 """Background job runner for the web UI.
 
 Wraps long-running library-maintenance commands (``index``, ``enrich``,
-``analyse``, ``prune``, ``stats``) so the web UI can drive them without
+``analyse``, ``stats``) so the web UI can drive them without
 dropping to a terminal.  One concurrent job slot — running a second job
 while the first is in flight returns 409 from the API.
 
@@ -73,7 +73,6 @@ class JobManager:
         "enrich": {},
         "analyse": {},
         "analyse-library": {},
-        "prune": {},
         "stats": {},
         "list-indexes": {},
     }
@@ -85,7 +84,6 @@ class JobManager:
         "enrich",
         "analyse",
         "analyse-library",
-        "prune",
         "stats",
     }
 

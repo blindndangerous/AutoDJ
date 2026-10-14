@@ -1,17 +1,17 @@
 """Library statistics display for AutoDJ.
 
-Reads the index metadata and renders a Rich overview of the library:
+Reads catalog metadata and renders a Rich overview of the library:
 BPM distribution, top genres, decade breakdown, track-length histogram,
 top artists, key distribution, major/minor split, and energy histogram.
 
-No MuQ model is needed.  ``autodj stats`` loads the index with
-:func:`autodj.indexer.load_index`, which also reads and checks the vectors.
+No MuQ model or audio decode is needed. ``autodj stats`` reads the current
+catalog records without loading vectors.
 
 Example:
     >>> from autodj.stats import print_stats
-    >>> from autodj.indexer import load_index
-    >>> entries, _, _ = load_index(index_dir)
-    >>> print_stats(entries, console)
+    >>> from autodj.catalog import LibraryCatalog
+    >>> with LibraryCatalog(catalog_path) as catalog:
+    ...     print_stats(catalog.entries_snapshot(), console)
 """
 
 from __future__ import annotations

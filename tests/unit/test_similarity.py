@@ -313,116 +313,29 @@ class TestFindNextForPath:
 
 
 # ---------------------------------------------------------------------------
-# from_index_dir (loads from disk)
+# Catalog refresh
 # ---------------------------------------------------------------------------
 
 
-class TestFromIndexDir:
-    def test_loads_from_disk(self, tmp_path: Path) -> None:
-        from autodj.indexer import save_index
-
-        entries = [_make_entry(i) for i in range(5)]
-        vectors = np.array([_unit_vec(seed=i) for i in range(5)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path, base_generation=0)
-
-        sim = SimilarityIndex.from_index_dir(tmp_path)
+class TestCatalogRefresh:
+    def test_replacement_updates_paths_and_count(self):
+        sim, _ = _make_similarity_index(3)
+        entries = [_make_entry(i + 10) for i in range(5)]
+        vectors = np.array([_unit_vec(seed=i + 10) for i in range(5)], dtype=np.float32)
+        sim.replace_catalog_index(entries, vectors)
         assert sim.ntotal == 5
+        assert sim.entry_for_path("song_0.flac") is None
+        assert sim.entry_for_path(entries[0].path) == entries[0]
+        np.testing.assert_allclose(sim.faiss_index.reconstruct(0), vectors[0])
 
-    def test_load_records_the_loaded_manifest(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import read_manifest
-        from autodj.indexer import save_index
-
-        entries = [_make_entry(0)]
-        vectors = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path, base_generation=0)
-
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-
-        assert sim.manifest == read_manifest(tmp_path)
-
-    def test_raises_if_index_missing(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            SimilarityIndex.from_index_dir(tmp_path / "nonexistent")
-
-
-class TestReloadFromDisk:
-    def test_reload_without_an_index_keeps_live_state_then_loads_a_publish(
-        self, tmp_path: Path
-    ) -> None:
-        from autodj.indexer import save_index
-
-        sim, _ = _make_similarity_index(1)
-        index_dir = tmp_path / "default"
-        index_dir.mkdir()
-
-        with pytest.raises(FileNotFoundError):
-            sim.reload_from_disk(index_dir)
-
-        assert sim.ntotal == 1
-        assert sim.manifest is None
-        entries = [_make_entry(5)]
-        vectors = np.array([_unit_vec(seed=5)], dtype=np.float32)
-        published = save_index(entries, vectors, index_dir, base_generation=0)
-
-        assert sim.reload_from_disk(index_dir) == 1
-        assert sim.manifest == published
-        assert sim.entry_for_path(entries[0].path) is not None
-
-    def test_reload_picks_up_new_entries(self, tmp_path: Path) -> None:
-        from autodj.indexer import save_index
-
-        # Initial index with 3 tracks
-        e1 = [_make_entry(i) for i in range(3)]
-        v1 = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
-        save_index(e1, v1, tmp_path, base_generation=0)
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-        assert sim.ntotal == 3
-
-        # Concurrent indexer adds more — write a bigger snapshot
-        e2 = [_make_entry(i) for i in range(7)]
-        v2 = np.array([_unit_vec(seed=i) for i in range(7)], dtype=np.float32)
-        save_index(e2, v2, tmp_path, base_generation=1)
-
-        new_total = sim.reload_from_disk(tmp_path)
-        assert new_total == 7
-        assert sim.ntotal == 7
-
-    def test_reload_path_lookup_refreshed(self, tmp_path: Path) -> None:
-        from autodj.indexer import save_index
-
-        e1 = [_make_entry(0)]
-        v1 = np.array([_unit_vec(seed=0)], dtype=np.float32)
-        save_index(e1, v1, tmp_path, base_generation=0)
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-        # New entry that wasn't in the original index
-        e2 = [_make_entry(0), _make_entry(99)]
-        v2 = np.array([_unit_vec(seed=i) for i in (0, 99)], dtype=np.float32)
-        save_index(e2, v2, tmp_path, base_generation=1)
-        sim.reload_from_disk(tmp_path)
-        # _path_to_idx should now know about song_99
-        assert "song_99.flac" in sim._path_to_idx
-
-    def test_failed_reload_keeps_live_state(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import save_index
-
-        entries = [_make_entry(i) for i in range(3)]
-        vectors = np.array([_unit_vec(seed=i) for i in range(3)], dtype=np.float32)
-        save_index(entries, vectors, tmp_path, base_generation=0)
-        sim = SimilarityIndex.from_index_dir(tmp_path)
-        old_entries = sim.entries_snapshot()
-        old_faiss_index = sim.faiss_index
-        old_manifest = sim.manifest
-        newer = save_index(entries[:2], vectors[:2], tmp_path, base_generation=1)
-        (tmp_path / newer.vectors_file).write_bytes(b"torn copy")
-
-        with pytest.raises(IndexConsistencyError, match="SHA-256"):
-            sim.reload_from_disk(tmp_path)
-
-        assert sim.entries_snapshot() == old_entries
-        assert sim.faiss_index is old_faiss_index
-        assert sim.manifest == old_manifest
-        assert sim.ntotal == 3
+    def test_invalid_replacement_keeps_live_state(self):
+        sim, vectors = _make_similarity_index(3)
+        entries = sim.entries_snapshot()
+        index = sim.faiss_index
+        with pytest.raises(ValueError, match="mismatch"):
+            sim.replace_catalog_index(list(entries[:2]), vectors)
+        assert sim.entries_snapshot() == entries
+        assert sim.faiss_index is index
 
     def test_reload_swaps_entries_and_index_under_one_lock(self, tmp_path: Path) -> None:
         sim, _ = _make_similarity_index(3)
@@ -435,15 +348,15 @@ class TestReloadFromDisk:
 
         def fake_load_index(*args, **kwargs):
             loaded.set()
-            return replacement_entries, replacement_index, None
+            return replacement_index
 
         def reload() -> None:
             try:
-                sim.reload_from_disk(tmp_path)
+                sim.replace_catalog_index(replacement_entries, replacement_vectors)
             finally:
                 finished.set()
 
-        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+        with patch("autodj.indexer.build_faiss_index", side_effect=fake_load_index):
             with sim._reload_lock:
                 worker = threading.Thread(target=reload)
                 worker.start()
@@ -478,7 +391,7 @@ class TestReloadFromDisk:
 
         def fake_load_index(*args, **kwargs):
             reload_loaded.set()
-            return replacement_entries, replacement_index, None
+            return replacement_index
 
         sim.faiss_index = blocking_index
         blocking_index.search.side_effect = blocking_search
@@ -486,13 +399,13 @@ class TestReloadFromDisk:
             target=sim.find_next_for_path,
             args=(old_snapshot[0].path, deque([old_snapshot[0].path])),
         )
-        with patch("autodj.similarity.load_index", side_effect=fake_load_index):
+        with patch("autodj.indexer.build_faiss_index", side_effect=fake_load_index):
             public.start()
             assert public_entered.wait(timeout=1)
 
             def reload() -> None:
                 try:
-                    sim.reload_from_disk(tmp_path)
+                    sim.replace_catalog_index(replacement_entries, replacement_vectors)
                 finally:
                     reload_done.set()
 

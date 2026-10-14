@@ -1,7 +1,7 @@
 """Deprecated published-index format, retained for import and migration.
 
 Current serving and indexing use library.db. Existing generations remain readable
-for first-use imports, old backups and the migration commands.
+only for the explicit migration command. Normal startup and backups use library.db.
 
 An index directory holds, for its live generation *N*:
 
@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -46,6 +45,13 @@ MANIFEST_NAME = "index-manifest.json"
 GENERATION_FILE_RE = re.compile(r"^(?:tracks|vectors)\.g(\d{20})\.(?:db|index)$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 logger = logging.getLogger(__name__)
+
+
+def has_legacy_index(directory: Path) -> bool:
+    """Recognize old library artifacts without loading or validating a generation."""
+    return any(
+        (directory / name).exists() for name in (MANIFEST_NAME, "tracks.db", "vectors.index")
+    ) or any(GENERATION_FILE_RE.fullmatch(path.name) for path in directory.glob("*.g*.*"))
 
 
 class IndexConsistencyError(RuntimeError):
@@ -83,92 +89,6 @@ class UnsupportedIndexError(IndexConsistencyError):
             f"The index in {index_dir} was made by an older AutoDJ ({reason}). "
             + (remedy or f"Rebuild it with `{REBUILD_COMMAND}`.")
         )
-
-
-class OldDjMetaCacheError(ValueError):
-    """Raised when ``dj_meta.db`` stores absolute track paths, as releases before relative keys did."""
-
-    def __init__(self, cache_path: Path, absolute: str) -> None:
-        """Build the message telling the user to delete and rebuild the cache.
-
-        Args:
-            cache_path: The ``dj_meta.db`` file.
-            absolute: One absolute path found in it.
-        """
-        super().__init__(
-            f"The DJ metadata cache {cache_path} was made by an older AutoDJ "
-            f"(it stores the absolute path {absolute}). "
-            "Delete it and run `autodj analyse` to rebuild it."
-        )
-
-
-def first_absolute_path(conn: sqlite3.Connection, table: str) -> str | None:
-    """Return one absolute path stored in *table*, or ``None`` when all are relative.
-
-    Args:
-        conn: Open connection to ``tracks.db`` or ``dj_meta.db``.
-        table: ``"tracks"`` or ``"dj_meta"``; both keep the path in a ``path`` column.
-
-    Returns:
-        The first absolute path found, matching :func:`is_absolute_storage`.
-    """
-    query = {
-        "tracks": "SELECT path FROM tracks",
-        "dj_meta": "SELECT path FROM dj_meta",
-    }[table]
-    row = conn.execute(
-        query + " WHERE substr(path, 1, 1) IN ('/', '\\') OR substr(path, 2, 1) = ':' LIMIT 1"
-    ).fetchone()
-    return None if row is None else str(row[0])
-
-
-def is_absolute_storage(path: str) -> bool:
-    """Whether a stored *path* is absolute: a POSIX root, a UNC share, or a drive letter.
-
-    Args:
-        path: Path text as stored in ``tracks.db`` or ``dj_meta.db``.
-
-    Returns:
-        ``True`` for an absolute path on any platform.
-    """
-    return path.startswith(("/", "\\")) or path[1:2] == ":"
-
-
-def relative_storage_path(path: str | os.PathLike[str], music_dir: Path | None) -> str:
-    """Return *path* as a forward-slashed path relative to *music_dir*.
-
-    Both sides are compared component by component after
-    ``os.path.normpath`` and ``os.path.normcase``, so on Windows a
-    drive-letter or folder case difference, or mixed separators, still
-    match.  The result keeps the path's own spelling.  Pure string work:
-    nothing is resolved or stat()ed, which matters on network libraries.
-
-    Args:
-        path: Runtime track path.
-        music_dir: Library root.  ``None`` keeps already-relative paths as-is.
-
-    Returns:
-        The relative, forward-slashed path to store.
-
-    Raises:
-        ValueError: If *path* is absolute and not under *music_dir*.
-    """
-    parts = Path(os.path.normpath(path)).parts
-    if music_dir is not None:
-        root = Path(os.path.normpath(music_dir)).parts  # "." has no parts
-        if (
-            root
-            and len(parts) > len(root)
-            and all(
-                os.path.normcase(a) == os.path.normcase(b)
-                for a, b in zip(parts, root, strict=False)
-            )
-        ):
-            return "/".join(parts[len(root) :])
-    stored = Path(path).as_posix()
-    if is_absolute_storage(stored):
-        raise ValueError(f"{path} is not under music_dir {music_dir}")
-    return stored
 
 
 @dataclass(frozen=True)

@@ -82,7 +82,6 @@ def _resolve_seed(
     """
     if seed is None:
         return None
-
     similarity = sim
     entries = similarity.entries_snapshot()
     candidates: list[Track | IndexEntry] = []
@@ -107,6 +106,43 @@ def _resolve_seed(
     console_.print(f"Seed: [bold]{display}[/bold]")
     path_str = str(getattr(chosen, "path", chosen))
     return next((e for e in entries if e.path == path_str), None)
+
+
+def _analyse_catalog_dj_meta(
+    cfg: AutoDJConfig, catalog: Any, entries: list[IndexEntry], *, limit: int | None = None
+) -> None:
+    """Backfill CPU DJ metadata and publish its automatic intro/outro cues."""
+    from autodj.dj_meta import get_cache
+    from autodj.indexer import backfill_dj_meta
+
+    backfill_dj_meta(cfg, entries, limit=limit, prune=False)
+    cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+    if cache is None:
+        return
+    invalid_points = 0
+    for entry in entries:
+        meta = cache.get(entry.path)
+        if meta is None or not meta.analysed:
+            continue
+        points = {
+            name: value
+            for name, value in (
+                ("intro", meta.intro_end_s or None),
+                ("outro", meta.outro_start_s or None),
+            )
+            if value is not None
+        }
+        try:
+            catalog.set_points(entry.path, points, source="analysis")
+        except ValueError as exc:
+            invalid_points += 1
+            logging.getLogger(__name__).warning(
+                "Could not publish DJ cues for %s, skipped: %s", entry.path, exc
+            )
+    if invalid_points:
+        console.print(
+            f"[yellow]Skipped automatic cue updates for {invalid_points} tracks with invalid points.[/]"
+        )
 
 
 def _load_cfg_or_exit(
@@ -152,41 +188,20 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Import a legacy index only when this library has no catalog yet."""
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex as _SI
+    """Start with an empty similarity view; LibraryManager loads catalog vectors."""
+    from autodj.config import station_config
+    from autodj.library import require_current_library
+    from autodj.similarity import SimilarityIndex
+    from autodj.stations import StationPaths
 
-    index_dir = cfg.index.active_dir if active_dir is None else active_dir
-    if (Path(index_dir) / "library.db").is_file():
-        return _SI.empty()
-    if (Path(index_dir) / "index-manifest.json").is_file():
-        console.print(
-            "[yellow]The published-index format is deprecated. Importing it into the library; "
-            "the original files will be kept for recovery.[/]"
-        )
-
-    try:
-        return _SI.from_index_dir(
-            index_dir,
-            music_dir=cfg.library.music_dir,
-        )
-    except UnsupportedIndexError as exc:
-        if exc.schema_version != 3 or not sys.stdin.isatty():
-            raise
-        click.echo(str(exc))
-        if not click.confirm(
-            "Stop any other serving or indexing process first. Save a recovery copy "
-            "and migrate this index to schema 4 now?",
-            default=False,
-        ):
-            raise
-        _convert_index(index_dir, cfg.library.music_dir, {}, apply=True)
-        return _SI.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError:
-        console.print(
-            "[yellow]Library is empty; add music folders in Library tools to get started.[/]"
-        )
-        return _SI.empty()
+    require_current_library(
+        cfg.index.active_dir if active_dir is None else active_dir,
+        (
+            StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+            for spec in cfg.stations
+        ),
+    )
+    return SimilarityIndex.empty()
 
 
 def _scan_index_rows(
@@ -194,14 +209,10 @@ def _scan_index_rows(
 ) -> list[tuple[str, str, str]]:  # pragma: no cover
     """Walk *base* for index directories; return (name, track count, path) rows.
 
-    Prefer the current catalog; report a legacy index only before its first import.
+    Read catalog counts; flag older libraries for explicit migration.
     """
     from autodj.catalog import catalog_counts
-    from autodj.index_manifest import (
-        IndexConsistencyError,
-        UnsupportedIndexError,
-        read_manifest,
-    )
+    from autodj.index_manifest import has_legacy_index
 
     rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
@@ -217,23 +228,9 @@ def _scan_index_rows(
             active_marker = "  *" if entry.name == active_name else "   "
             rows.append((active_marker + entry.name, status, str(entry)))
             continue
-        try:
-            manifest = read_manifest(entry)
-        except UnsupportedIndexError as exc:
-            status = (
-                "[yellow]schema 3: convert with autodj migrate-index[/yellow]"
-                if exc.schema_version == 3
-                else "[red]old format: rebuild with autodj index --force[/red]"
-            )
-        except IndexConsistencyError:
-            status = "[red]corrupt[/red]"
-        else:
-            if manifest is None:
-                if not (entry / "tracks.db").exists():
-                    continue
-                status = "[red]old format: rebuild with autodj index --force[/red]"
-            else:
-                status = f"{manifest.vector_count} tracks"
+        if not has_legacy_index(entry):
+            continue
+        status = "[yellow]migration needed: autodj migrate-index --apply[/yellow]"
         active_marker = "  *" if entry.name == active_name else "   "
         rows.append((active_marker + entry.name, status, str(entry)))
     return rows
@@ -1061,7 +1058,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--no-analyse",
     "skip_analyse",
     is_flag=True,
-    help="Skip the extra beat/cue backfill for the configured music root; basic cues are still read.",
+    help="Skip the extra beat/cue backfill for registered music folders; basic cues are still read.",
 )
 @click.option(
     "--no-enrich",
@@ -1084,7 +1081,7 @@ def cmd_index(
 ) -> None:
     """Add registered folders to the library, then analyse pending songs.
 
-    On first use, imports an existing legacy index or registers [library] music_dir.
+    Add music folders in Library before indexing. Older indexes need migrate-index first.
     Later runs rescan the folders saved in Library tools. Songs become available
     before advanced analysis; folders with advanced analysis disabled are skipped
     by that pass. --limit caps advanced analysis, not the basic import.
@@ -1092,13 +1089,10 @@ def cmd_index(
     --force replaces existing analysis after each successful result. It keeps
     manual cues, history, settings and usable old vectors if a song fails.
     """
-    from autodj.index_manifest import IndexConsistencyError
     from autodj.library import LibraryManager, analyse_library
-    from autodj.similarity import SimilarityIndex
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
-    cfg.library.music_dir = cfg.library.music_dir.resolve()
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
     console.print(f"  Library : {cfg.index.active_dir}")
     if limit:
@@ -1106,17 +1100,13 @@ def cmd_index(
     if force:
         console.print("  Mode : [yellow]FORCE REBUILD[/] of analysis; saved station data is kept")
     try:
-        try:
-            sim = _load_index_for_serve(cfg)
-        except IndexConsistencyError:
-            if not force:
-                raise
-            console.print(
-                "[yellow]The old index could not be imported; rebuilding from folders.[/]"
-            )
-            sim = SimilarityIndex.empty()
+        sim = _load_index_for_serve(cfg)
         library = LibraryManager(cfg, sim)
         ctx.call_on_close(library.close)
+        if not library.catalog.sources("music"):
+            console.print(
+                "No music folders registered. Start `autodj serve` and add folders in Library."
+            )
         library.scan()
         state = library.snapshot()
         console.print(f"[green]{state['tracks_ready']} songs available.[/]")
@@ -1162,27 +1152,17 @@ def cmd_index(
                 console.print(f"[bold red]Enrich failed:[/] {escape(str(exc))}")
 
     if not skip_analyse:
-        from autodj.indexer import backfill_dj_meta
-
         try:
-            # The portable DJ cache still belongs to the configured music root.
             library.refresh()
             entries = [
                 entry
                 for entry in library.entries_snapshot()
-                if Path(entry.path).is_relative_to(cfg.library.music_dir.resolve())
-                and any(
+                if any(
                     source["advanced"]
                     for source in library.catalog.sources_for_path(entry.path, "music")
                 )
             ]
-            backfill_dj_meta(cfg, entries, prune=False)
-            for entry in entries:
-                library.catalog.set_points(
-                    entry.path,
-                    library._legacy_point_suggestions(Path(entry.path)),
-                    source="analysis",
-                )
+            _analyse_catalog_dj_meta(cfg, library.catalog, entries)
         except Exception as exc:
             console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
     if skip_analyse and skip_enrich:
@@ -1200,10 +1180,8 @@ def cmd_index(
     is_flag=True,
     default=False,
     help=(
-        "Bypass the safety check that refuses to prune more than 20% of the "
-        "index in a single pass. Use only when you really did delete that "
-        "much of your library — otherwise fix [library] music_dir in "
-        "config first."
+        "Allow removal when more than 20% of catalog tracks are missing. "
+        "Check registered library folders before overriding."
     ),
 )
 @click.option(
@@ -1219,42 +1197,57 @@ def cmd_prune(
     force: bool,
     index_name: str | None,
 ) -> None:
-    """Remove indexed entries whose audio files no longer exist on disk.
-
-    Useful after deleting, moving, or renaming files in your music library.
-    Auto-prune also runs at the start of every ``autodj index`` run, so
-    you usually do not need to invoke this directly.
+    """Preview and confirm removal of catalog records missing from available folders.
 
     \b
     Examples:
       uv run autodj prune
-      uv run autodj prune --force        # bypass safety threshold
+      uv run autodj prune --force        # confirm removal above the 20% safeguard
     """
-    from autodj.indexer import PruneSafetyError, prune_index
+    from autodj.library import LibraryManager
+    from autodj.similarity import SimilarityIndex
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
     _apply_index_name(cfg, index_name)
 
+    catalog_path = cfg.index.active_dir / "library.db"
+    if not catalog_path.is_file():
+        raise click.ClickException("No current library catalog. Run `autodj index` first.")
+    manager = LibraryManager(cfg, SimilarityIndex.empty())
     try:
-        removed, kept = prune_index(
-            cfg.index.active_dir,
-            music_dir=cfg.library.music_dir,
-            allow_mass_prune=force,
+        manager.scan()
+        preview = manager.missing_removal_preview()
+        if not preview["ready"]:
+            raise click.ClickException("The scan was incomplete; no records can be removed safely.")
+        count = preview["count"]
+        if not count:
+            console.print("[green]No missing catalog tracks.[/]")
+            return
+        console.print(
+            f"Missing tracks: {count} of {preview['total']} ({preview['percentage']:.1f}%)."
         )
-    except PruneSafetyError as exc:
-        console.print(f"[bold red]Prune aborted (safety check):[/]\n{escape(str(exc))}")
-        sys.exit(2)
-    except Exception as exc:
-        console.print(f"[bold red]Prune failed:[/] {escape(str(exc))}")
-        sys.exit(1)
-
-    if removed == 0 and kept == 0:
-        console.print("[yellow]No index found — nothing to prune.[/]")
-    elif removed == 0:
-        console.print(f"[green]All {kept} indexed tracks present.[/] Nothing to prune.")
-    else:
-        console.print(f"[green]Pruned {removed} missing tracks.[/] {kept} tracks remain in index.")
+        for track in preview["tracks"]:
+            console.print(
+                f"  {escape(track['artist'])} — {escape(track['title'])} ({escape(track['path'])})"
+            )
+        if count > len(preview["tracks"]):
+            console.print(f"  …and {count - len(preview['tracks'])} more")
+        if preview["requires_override"] and not force:
+            raise click.ClickException(
+                "More than 20% are missing; rerun with --force after checking folder availability."
+            )
+        if not click.confirm(
+            "Remove these catalog records? Play history will be preserved", default=False
+        ):
+            console.print("No records removed.")
+            return
+        removed = manager.remove_missing(preview["token"], confirmed=True, allow_mass=force)
+        console.print(
+            f"[green]Removed {removed} missing catalog records; play history was preserved.[/]"
+        )
+    finally:
+        manager.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1272,7 +1265,7 @@ def cmd_prune(
 )
 @click.pass_context
 def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
-    """Refresh the index's tags and key / mode from the beets database.
+    """Refresh current catalog tags and key / mode from the beets database.
 
     Walks every entry in the existing index and looks it up in your beets
     database.  Title, artist, album, genre, BPM, year and length are
@@ -1301,6 +1294,9 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
         )
         sys.exit(1)
 
+    if not (cfg.index.active_dir / "library.db").is_file():
+        raise click.ClickException("No current library catalog. Run `autodj index` first.")
+
     try:
         updated, total = enrich_from_beets(
             cfg.index.active_dir,
@@ -1312,7 +1308,7 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
         sys.exit(1)
 
     if total == 0:
-        console.print("[yellow]No index found.[/]")
+        console.print("[yellow]No catalog entries found.[/]")
     elif updated == 0:
         console.print(
             f"[green]Index already in sync with beets[/] ({total} entries scanned, 0 changed)."
@@ -1530,14 +1526,13 @@ def cmd_analyse(
     index_name: str | None,
     limit: int | None,
 ) -> None:
-    """Backfill DJ-meta (intro/outro/beat grid/cues) for indexed tracks.
+    """Backfill CPU DJ metadata for music in the current catalog.
 
-    Walks the existing FAISS index and, for every entry whose
-    ``dj_meta.db`` cache is missing or has ``analysed=False``, decodes
-    the audio, runs :func:`autodj.dj_meta.analyse_audio`, merges cues
-    imported from DJ software (``[playback] import_external_cues``), and
-    writes the result.  Skips entries already analysed so repeated runs
-    are cheap.  Rows of tracks no longer in the index are deleted.
+    Uses current catalog entries, decodes tracks whose ``dj_meta.db`` cache
+    is missing or has ``analysed=False``, merges cues imported from DJ
+    software (``[playback] import_external_cues``), and publishes automatic
+    intro/outro suggestions. Skips completed analyses and preserves manual
+    cue points. Tracks from every registered library folder are included.
 
     No GPU and no MuQ model required -- pure CPU work via librosa +
     numpy.  Run this on the NAS / listening host after a GPU host has
@@ -1563,29 +1558,24 @@ def cmd_analyse(
 
     _apply_index_name(cfg, index_name)
 
-    from autodj.index_manifest import IndexConsistencyError
-    from autodj.indexer import backfill_dj_meta, load_index
+    from autodj.catalog import LibraryCatalog
 
-    try:
-        entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError:
+    catalog_path = cfg.index.active_dir / "library.db"
+    if not catalog_path.is_file():
         console.print(
-            f"[bold red]No index at {cfg.index.active_dir}.[/]  Run `autodj index` first."
+            f"[bold red]No current library at {catalog_path}.[/]  Run `autodj index` first."
         )
         sys.exit(1)
-    except IndexConsistencyError as exc:
-        console.print(f"[bold red]{escape(str(exc))}[/]")
-        sys.exit(1)
-
-    console.print(Panel("[bold green]AutoDJ DJ-meta backfill[/]", expand=False))
-    console.print(f"  Index dir : {cfg.index.active_dir}")
-    console.print(f"  Tracks    : {len(entries)}")
-    if limit is not None:
-        console.print(f"  Limit     : {limit}")
-    console.print()
-
     try:
-        backfill_dj_meta(cfg, entries, limit=limit)
+        with LibraryCatalog(catalog_path) as catalog:
+            entries = list(catalog.entries_snapshot("music"))
+            console.print(Panel("[bold green]AutoDJ DJ-meta backfill[/]", expand=False))
+            console.print(f"  Library   : {catalog_path}")
+            console.print(f"  Tracks    : {len(entries)}")
+            if limit is not None:
+                console.print(f"  Limit     : {limit}")
+            console.print()
+            _analyse_catalog_dj_meta(cfg, catalog, entries, limit=limit)
     except Exception as exc:
         console.print(f"[bold red]Analyse failed:[/] {escape(str(exc))}")
         sys.exit(1)
@@ -1594,15 +1584,6 @@ def cmd_analyse(
 # ---------------------------------------------------------------------------
 # serve subcommand
 # ---------------------------------------------------------------------------
-
-
-def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, apply: bool) -> None:
-    from autodj.index_migration import convert
-
-    try:
-        convert(index_dir, music_dir, moves, apply)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        raise click.ClickException(f"Index conversion failed: {exc}") from exc
 
 
 @cli.command("migrate-index")
@@ -1616,13 +1597,23 @@ def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, a
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="JSON mapping of old to new paths relative to music_dir.",
 )
+@click.option(
+    "--music-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Base folder for paths in a legacy index; not needed for current-library state upgrades.",
+)
 @click.pass_context
 def cmd_migrate_index(
-    ctx: click.Context, index_name: str | None, apply: bool, move_map: Path | None
+    ctx: click.Context,
+    index_name: str | None,
+    apply: bool,
+    move_map: Path | None,
+    music_dir: Path | None,
 ) -> None:
-    """Convert a schema-3 index to schema 4 without repeating analysis.
+    """Import published index data and legacy state into the current catalog.
 
     Stop serving and indexing before --apply. The default is a read-only preview.
+    Vectors are imported unchanged; audio is not reanalysed.
     """
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
@@ -1630,7 +1621,26 @@ def cmd_migrate_index(
         moves = json.loads(move_map.read_text(encoding="utf-8")) if move_map else {}
     except (OSError, ValueError) as exc:
         raise click.ClickException(f"Cannot read the move map: {exc}") from exc
-    _convert_index(cfg.index.active_dir, cfg.library.music_dir, moves, apply=apply)
+    from autodj.config import station_config
+    from autodj.index_migration import migrate_catalog
+    from autodj.stations import StationPaths
+
+    liner_dir = cfg.playback.liners_folder or str(StationPaths.default(cfg).liners)
+    station_web_states = [
+        StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+        for spec in cfg.stations
+    ]
+    try:
+        migrate_catalog(
+            cfg.index.active_dir,
+            music_dir or cfg.library.music_dir,
+            Path(liner_dir),
+            moves,
+            apply=apply,
+            station_web_states=station_web_states,
+        )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        raise click.ClickException(f"Catalog migration failed: {exc}") from exc
 
 
 class _ServeCommand(click.Command):
@@ -2315,9 +2325,9 @@ def cmd_simulate(
 )
 @click.pass_context
 def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
-    """Print a statistical overview of the indexed music library.
+    """Print a statistical overview of current catalog music.
 
-    Loads the index (not the model) and displays BPM distribution, genres,
+    Reads catalog records (not vectors or the model) and displays BPM distribution, genres,
     decades, track lengths, top artists, key distribution, major/minor
     split, and energy histogram.
 
@@ -2325,21 +2335,16 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
     Examples:
       uv run autodj stats
     """
-    from autodj.index_manifest import IndexConsistencyError
-    from autodj.indexer import load_index
+    from autodj.catalog import LibraryCatalog
     from autodj.stats import print_stats
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
     _apply_index_name(cfg, index_name)
 
-    try:
-        entries, _, _ = load_index(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError as exc:
-        console.print(f"[bold red]Index not found:[/] {escape(str(exc))}")
+    catalog_path = cfg.index.active_dir / "library.db"
+    if not catalog_path.is_file():
+        console.print(f"[bold red]Current library not found:[/] {escape(str(catalog_path))}")
         sys.exit(1)
-    except IndexConsistencyError as exc:
-        console.print(f"[bold red]{escape(str(exc))}[/]")
-        sys.exit(1)
-
-    print_stats(entries, console)
+    with LibraryCatalog(catalog_path) as catalog:
+        print_stats(list(catalog.entries_snapshot("music")), console)

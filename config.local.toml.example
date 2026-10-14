@@ -1,17 +1,16 @@
 # Per-machine overrides, loaded only when a sibling base configuration file is loaded.
 # Copy to config.local.toml; this example remains safe to commit.
-# Only sections and keys from config.toml.example are accepted; any other is an error.
+# Only supported configuration sections and keys are accepted; any other is an error.
 # Every value here replaces the one in config.toml, so delete the lines you do not need.
 
 [library]
-music_dir = "/srv/music"
 # beets_db = "/srv/beets/library.db"
 
 [index]
-# Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
-# index generation it names (tracks.g<number>.db and vectors.g<number>.index),
-# dj_meta.db (SQLite), web_state.json, and liner files.
-# Default liner path: <index_dir>/<name>/liners/.
+# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
+# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# Keep a separate catalog per machine and register folders using that machine's paths.
+# Do not share this directory between an indexing machine and a playout machine.
 index_dir = "/srv/autodj/index"
 model_dir = "/srv/autodj/models"
 
