@@ -12,11 +12,13 @@ import numpy as np
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from autodj.indexer import FEATURE_DIM
 from autodj.library import LibraryManager
 from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
+    LibraryAutoRescanBody,
     LibraryFolderBody,
     LibraryFolderUpdateBody,
     LibraryRescanBody,
@@ -95,6 +97,57 @@ def test_rescan_passes_explicit_tag_override_option(library_api):
         mock_call(override_tags=False),
         mock_call(override_tags=True),
     ]
+
+
+def test_auto_rescan_routes_store_shared_interval(library_api):
+    manager, call, _app = library_api
+    assert call("GET", "/api/library/auto-rescan") == {"hours": 0, "minutes": 0}
+    assert call("PUT", "/api/library/auto-rescan", LibraryAutoRescanBody(hours=1, minutes=30)) == {
+        "hours": 1,
+        "minutes": 30,
+    }
+    assert manager.catalog.get_setting("auto_rescan_minutes") == 90
+    assert call("GET", "/api/library/auto-rescan") == {"hours": 1, "minutes": 30}
+    assert call("PUT", "/api/library/auto-rescan", LibraryAutoRescanBody(hours=0, minutes=0)) == {
+        "hours": 0,
+        "minutes": 0,
+    }
+    assert manager.auto_rescan_minutes() == 0
+
+
+def test_auto_rescan_rejects_interval_below_five_minutes(library_api):
+    _manager, call, _app = library_api
+    with pytest.raises(HTTPException) as invalid:
+        call("PUT", "/api/library/auto-rescan", LibraryAutoRescanBody(hours=0, minutes=4))
+    assert invalid.value.status_code == 400
+    assert invalid.value.detail == "Use at least 5 minutes, or 0 to turn it off."
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"hours": 169, "minutes": 0},
+        {"hours": 0, "minutes": 60},
+        {"hours": -1, "minutes": 0},
+        {"hours": 0, "minutes": -1},
+        {"hours": 0, "minutes": 5, "extra": True},
+        {"hours": "5", "minutes": 0},
+    ],
+)
+def test_auto_rescan_body_rejects_invalid_values(values):
+    with pytest.raises(ValidationError):
+        LibraryAutoRescanBody.model_validate(values)
+
+
+def test_auto_rescan_http_validation(library_api):
+    _manager, _call, app = library_api
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    response = TestClient(app).put(
+        "/api/library/auto-rescan",
+        json={"hours": "1", "minutes": 0},
+        headers={"host": urlsplit(origin).netloc, "origin": origin},
+    )
+    assert response.status_code == 422
 
 
 def test_points_validate_and_keep_manual_values_without_analysis(library_api, tmp_path):

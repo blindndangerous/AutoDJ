@@ -10,12 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Library tools can rescan the library automatically every so many hours and minutes (#249).
 - DMCA checks on queued songs, listener request placement and show songs now use the hour
   preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
   overlapping liners and music speed, instead of whole file lengths (#217).
 - A listener request is no longer placed where a queued song after it would then break a repeat
   rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
-
 - The page title no longer shows the album. It names the station whenever the station is not
   called AutoDJ, even on a server with one station (#251).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool

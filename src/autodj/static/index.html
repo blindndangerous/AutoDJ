@@ -2966,6 +2966,22 @@
         <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
+        <fieldset id="auto-rescan">
+          <legend>Automatic rescan every</legend>
+          <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>
+          <div class="settings-row">
+            <label for="auto-rescan-hours">Hours</label>
+            <input type="number" id="auto-rescan-hours" min="0" max="168" step="1" value="0" inputmode="numeric">
+          </div>
+          <div class="settings-row">
+            <label for="auto-rescan-minutes">Minutes</label>
+            <input type="number" id="auto-rescan-minutes" min="0" max="59" step="1" value="0" inputmode="numeric">
+          </div>
+          <!-- A refused value's message; the script moves it under the field
+               it names and links it there with aria-describedby. -->
+          <p class="field-error" id="auto-rescan-error" hidden></p>
+          <button type="button" id="auto-rescan-save">Save</button>
+        </fieldset>
         <p id="source-folders-status">Loading folders…</p>
         <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
