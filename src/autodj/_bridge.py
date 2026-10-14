@@ -207,6 +207,9 @@ class PlayerBridge:
     paths: Any = None
     # The station's public stream address; the m3u playlist is beside it.
     stream_path: str = "/stream.mp3"
+    # Whether a queue entry is a show's own copy (#106): a remove or reorder
+    # aimed by path at another entry of the same file never takes it.
+    show_entry: Callable[[Any], bool] | None = None
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -227,6 +230,9 @@ class PlayerBridge:
     # The relays to other servers (:class:`~autodj.relay.RelayManager`),
     # when any are configured.
     relays: Any = None
+    # The stream in every format (:class:`~autodj.stream_mounts.StreamMounts`):
+    # the MP3 stream above and the AAC and Opus mounts that are on.
+    mounts: Any = None
     public_state_changed: Callable[[], Any] | None = None
     track_started_callback: Callable[[], None] | None = None
     # History is appended on the mix-bus thread, trimmed by the station's
@@ -261,17 +267,67 @@ class PlayerBridge:
         """Whether the mix is served as a radio stream."""
         return self.stream is not None
 
-    def attach_stream(self, *, stream: Any, station: Any, relays: Any = None) -> None:
+    def attach_stream(
+        self, *, stream: Any, station: Any, relays: Any = None, mounts: Any = None
+    ) -> None:
         """Switch the bridge into stream mode.
 
         Args:
             stream: The :class:`~autodj.stream.StreamOutput`.
             station: The :class:`~autodj.station.Station`.
             relays: The :class:`~autodj.relay.RelayManager`, if any.
+            mounts: The :class:`~autodj.stream_mounts.StreamMounts`, if any.
         """
         self.stream = stream
         self.station = station
         self.relays = relays
+        self.mounts = mounts
+
+    def listener_total(self) -> int:
+        """Listeners on every format of the stream together."""
+        if self.mounts is not None:
+            return int(self.mounts.listener_count)
+        return int(self.stream.listener_count) if self.stream is not None else 0
+
+    def stream_enabled(self, name: str) -> bool:
+        """Whether format *name* (``"mp3"``, ``"aac"``...) is on; never starts an encoder."""
+        if self.mounts is not None:
+            return bool(self.mounts.enabled(name))
+        return name == "mp3"
+
+    def stream_output(self, name: str) -> Any:
+        """The output serving format *name*, starting its encoder if needed; ``None`` when off.
+
+        Call off the event loop: an extra format's first listener starts ffmpeg.
+        """
+        if self.mounts is not None:
+            return self.mounts.acquire(name)
+        return self.stream if name == "mp3" else None
+
+    def stream_formats(self) -> list[dict]:
+        """Each format: its bitrate (0 when off), address, listeners and the encoder's last error."""
+        from autodj.stream_formats import FORMATS
+
+        base = self.stream_path.removesuffix(".mp3")
+        mounts = self.mounts
+        counts = mounts.counts() if mounts is not None else {"mp3": int(self.stream.listener_count)}
+        result = []
+        for name, fmt in FORMATS.items():
+            if name == "mp3":
+                bitrate = int(self.player._cfg.stream.bitrate)
+            else:
+                bitrate = int(mounts.bitrate(name)) if mounts is not None else 0
+            result.append(
+                {
+                    "format": name,
+                    "label": fmt.label,
+                    "bitrate": bitrate,
+                    "path": f"{base}.{name}",
+                    "listeners": int(counts.get(name, 0)),
+                    "error": mounts.last_error(name) if mounts is not None else None,
+                }
+            )
+        return result
 
     def relay_status(self) -> list[dict]:
         """Return each relay's name, server type, target and state; no passwords."""
@@ -342,9 +398,11 @@ class PlayerBridge:
             "description": self.player._cfg.stream.description,
             "url": self.player._cfg.stream.url,
             "show_next": self.player._cfg.nowplaying.show_next,
-            "listeners": int(self.stream.listener_count),
+            "listeners": self.listener_total(),
             "state": self.station.state,
             "relays": self.relay_status(),
+            "formats": self.stream_formats(),
+            "stats_days": int(self.player._cfg.stream.stats_days),
         }
 
     def set_stream_bitrate(self, bitrate: int) -> None:
@@ -365,6 +423,28 @@ class PlayerBridge:
         self.stream.set_bitrate(bitrate)
         self.player._cfg.stream.bitrate = bitrate
 
+    def set_stream_formats(self, changes: dict[str, int]) -> list[str]:
+        """Turn the AAC and Opus streams on, off or to new bitrates, all or none; remember them.
+
+        Args:
+            changes: Bitrate by format name (``"aac"``, ``"opus"``); 0 is off.
+
+        Returns:
+            The formats that changed.
+
+        Raises:
+            ValueError: Not an extra format or one of its bitrates, or this
+                stream has no extra formats.
+            EncoderUnavailableError: ffmpeg cannot encode one of them;
+                nothing changed.
+        """
+        if self.mounts is None:
+            raise ValueError("this stream has no extra formats")
+        changed = self.mounts.apply(changes)
+        for name, bitrate in changes.items():
+            setattr(self.player._cfg.stream, f"{name}_bitrate", bitrate)
+        return list(changed)
+
     def on_track_started(self, entry: Any) -> None:
         """Record a track the mix bus started; retitle the stream.
 
@@ -383,6 +463,8 @@ class PlayerBridge:
         if self.stream is not None:
             artist, title = getattr(entry, "artist", "") or "", getattr(entry, "title", "") or ""
             self.stream.set_title(artist, title)
+            if self.mounts is not None:
+                self.mounts.set_title(artist, title)
             if self.relays is not None:
                 self.relays.set_title(artist, title)
         worker = self._liner_worker
@@ -1181,7 +1263,7 @@ class PlayerBridge:
             "stream_server_audio": self.stream_mode
             and bool(getattr(self.player, "_server_audio_too", False)),
             "stream_state": self.station.state if self.stream_mode else None,
-            "stream_listeners": int(self.stream.listener_count) if self.stream_mode else 0,
+            "stream_listeners": self.listener_total() if self.stream_mode else 0,
             "stream_relays": self.relay_status(),
             "stream_event": self._current_station_event(),
             "playout": {
@@ -1610,6 +1692,37 @@ class PlayerBridge:
         state = self.player._state
         return QueueView(state.current_track, state.queued_next, tuple(state.queue))
 
+    def queue_insert_if(self, entry: IndexEntry, position: int, view: QueueView) -> bool:
+        """Put *entry* at *position* of the user queue if the queue still matches *view*.
+
+        For callers that worked out the place from *view* with no lock held
+        (a show's next song, #106): under ``queue_lock`` only, the queue is
+        compared with *view* and the song inserted, or nothing happens and
+        ``False`` says the queue changed meanwhile.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            if self._queue_view_unlocked() != view:
+                return False
+            self._capture_pre_queue_seed()
+            state.queue.insert(max(0, min(position, len(state.queue))), entry)
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
+    def queue_remove_if(self, position: int, view: QueueView) -> bool:
+        """Remove the user queue's item at *position* if the queue still matches *view*."""
+        state = self.player._state
+        with state.queue_lock:
+            if self._queue_view_unlocked() != view or not 0 <= position < len(state.queue):
+                return False
+            del state.queue[position]
+            if not state.queue and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
     def queue_insert(self, path: str, position: int) -> bool:
         """Put a track by path at *position* of the user queue (0 plays first)."""
         entry = self.entry_for_path(path)
@@ -1629,22 +1742,61 @@ class PlayerBridge:
         with state.queue_lock:
             return list(state.queue)
 
-    def queue_remove(self, path: str) -> bool:
-        """Remove the first matching path from the queue."""
+    def _is_show_entry(self, entry: Any) -> bool:
+        check = self.show_entry
+        return bool(check is not None and check(entry))
+
+    def queue_remove(self, path: str, position: int | None = None) -> bool:
+        """Remove one queued *path*: the one at *position* when it is there, else the first.
+
+        *position* is the entry's place in the queue as the page showed it;
+        when the queue still has *path* there, that very entry goes.  Without
+        it (or when the queue has moved), the first entry with *path* goes,
+        passing over a show's own copy (#106) when another entry has the path.
+        """
         state = self.player._state
         with state.queue_lock:
             q = state.queue
-            for i, e in enumerate(q):
-                if e.path == path:
-                    del q[i]
-                    if not q and state.queued_next is None:
-                        state.pre_queue_seed = None
-                    self._refresh_bus_queue()
-                    self._sync_next_for_prefetch()
-                    return True
-        return False
+            if position is not None and 0 <= position < len(q) and q[position].path == path:
+                index: int | None = position
+            else:
+                found = [i for i, e in enumerate(q) if e.path == path]
+                others = [i for i in found if not self._is_show_entry(q[i])]
+                if not found:
+                    return False
+                index = (others or found)[0]
+            del q[index]
+            if not q and state.queued_next is None:
+                state.pre_queue_seed = None
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+            return True
 
-    def queue_reorder(self, paths: list[str]) -> bool:
+    def requeue_play_next(self, position: int) -> bool:
+        """Move a waiting "play next" song into the user queue at *position*; whether one moved.
+
+        A show that starts at once in browser playback (#106) plays its first
+        song first and the operator's "play next" song right after it.
+        """
+        state = self.player._state
+        with state.queue_lock:
+            waiting = state.queued_next
+            if waiting is None:
+                return False
+            state.queued_next = None
+            queue = state.queue
+            queue.insert(max(0, min(position, len(queue))), waiting)
+            self._refresh_bus_queue()
+            self._sync_next_for_prefetch()
+        return True
+
+    def queue_reorder(
+        self,
+        paths: list[str],
+        *,
+        from_paths: list[str] | None = None,
+        order: list[int] | None = None,
+    ) -> bool:
         """Reorder the queue to match the given list of paths.
 
         Tracks present in the queue but missing from *paths* are dropped.
@@ -1652,6 +1804,13 @@ class PlayerBridge:
         :meth:`queue_add`).  A track queued more than once keeps one slot
         per occurrence of its path in *paths*, up to the number of times it
         was queued.
+
+        With *from_paths* (the queue as the page showed it) and *order* (each
+        new slot's place in *from_paths*), and the queue still as shown, the
+        entries themselves are moved, so two entries of one file (a listener's
+        request and a show's copy, #106) keep who they are.  Otherwise, when a
+        file has fewer slots than entries, a show's own copy is kept before
+        the others.
         """
         state = self.player._state
         # Read, rebuild and write back under the queue lock.  Without it the
@@ -1660,10 +1819,34 @@ class PlayerBridge:
         # twice.
         with state.queue_lock:
             q = state.queue
-            by_path: dict[str, deque[IndexEntry]] = {}
-            for entry in q:
-                by_path.setdefault(entry.path, deque()).append(entry)
-            q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
+            if (
+                from_paths is not None
+                and order is not None
+                and [entry.path for entry in q] == list(from_paths)
+                and len(order) == len(paths)
+                and len(set(order)) == len(order)
+                and all(
+                    0 <= i < len(q) and q[i].path == p for i, p in zip(order, paths, strict=True)
+                )
+            ):
+                q[:] = [q[i] for i in order]
+            else:
+                by_path: dict[str, deque[IndexEntry]] = {}
+                for entry in q:
+                    by_path.setdefault(entry.path, deque()).append(entry)
+                wanted: dict[str, int] = {}
+                for p in paths:
+                    wanted[p] = wanted.get(p, 0) + 1
+                for p, entries in by_path.items():
+                    extra = len(entries) - wanted.get(p, 0)
+                    if extra <= 0:
+                        continue
+                    # Drop the others first, from the end; a show's copy last.
+                    shows = [self._is_show_entry(entry) for entry in entries]
+                    ranked = sorted(range(len(entries)), key=lambda i: (shows[i], -i))
+                    dropped = set(ranked[:extra])
+                    by_path[p] = deque(e for i, e in enumerate(entries) if i not in dropped)
+                q[:] = [by_path[p].popleft() for p in paths if by_path.get(p)]
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
@@ -1855,6 +2038,9 @@ class PlayerBridge:
                 "nowplaying_show_next": cfg.nowplaying.show_next,
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
+                "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
+                "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
+                "stream_stats_days": int(cfg.stream.stats_days),
                 "volume": float(p._state.volume),
                 "is_muted": bool(p._state.is_muted),
             },

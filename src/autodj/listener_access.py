@@ -26,6 +26,10 @@ class BannedAddressError(Exception):
     """An address is banned from the stream."""
 
 
+class StationFullError(Exception):
+    """The station has ``max_listeners`` listeners across all its formats."""
+
+
 def normalize_address(value: str) -> str:
     """Canonicalize a socket or uvicorn-forwarded client address."""
     address = ipaddress.ip_address(value)
@@ -159,12 +163,25 @@ class ListenerAccess:
         path: Path,
         max_per_address: int,
         clock: Callable[[], float] = time.time,
+        *,
+        max_total: int = 0,
     ) -> None:
+        """Load the bans from *path*.
+
+        Args:
+            path: The station's ``listener_bans.json``.
+            max_per_address: Connections one address may have; 0 for any.
+            clock: Wall-clock seconds.
+            max_total: Listeners the station may have on all its formats
+                (MP3, AAC, Opus) together; 0 for any.
+        """
         self.path = path
         self.max_per_address = max_per_address
+        self.max_total = max_total
         self._clock = clock
         self._lock = threading.RLock()
-        self._listeners: dict[str, tuple[str, str, float, Any, Any]] = {}
+        # id -> (address, player, connected at, listener, stream, format)
+        self._listeners: dict[str, tuple[str, str, float, Any, Any, str]] = {}
         self._pending: dict[str, int] = {}
         self._bans: dict[str, dict[str, Any]] = {}
         self.revision = 0
@@ -240,17 +257,30 @@ class ListenerAccess:
             for key, ban in self._bans.items()
         )
 
-    def add(self, stream: Any, address: str, agent: str, *, icy: bool) -> tuple[str, Any]:
-        """Reserve admission before adding a listener outside the registry lock."""
+    def add(
+        self, stream: Any, address: str, agent: str, *, icy: bool, fmt: str = "mp3"
+    ) -> tuple[str, Any]:
+        """Reserve admission before adding a listener outside the registry lock.
+
+        Raises:
+            BannedAddressError: The address is banned.
+            AddressLimitError: The address has its allotted connections.
+            StationFullError: The station has ``max_total`` listeners on
+                its formats together.
+        """
         address = normalize_address(address)
         with self._lock:
             if self._banned_locked(address):
                 raise BannedAddressError(address)
+            open_entries = [entry for entry in self._listeners.values() if not entry[3].closed]
             count = self._pending.get(address, 0) + sum(
-                entry[0] == address and not entry[3].closed for entry in self._listeners.values()
+                entry[0] == address for entry in open_entries
             )
             if self.max_per_address and count >= self.max_per_address:
                 raise AddressLimitError(address)
+            total = sum(self._pending.values()) + len(open_entries)
+            if self.max_total and total >= self.max_total:
+                raise StationFullError(address)
             self._pending[address] = self._pending.get(address, 0) + 1
         try:
             listener = stream.add_listener(icy=icy)
@@ -265,6 +295,7 @@ class ListenerAccess:
                         self._clock(),
                         listener,
                         stream,
+                        fmt,
                     )
                     self.revision += 1
             if banned:
@@ -296,7 +327,13 @@ class ListenerAccess:
             if stale:
                 self.revision += 1
             return [
-                {"id": key, "address": entry[0], "player": entry[1], "connected_at": entry[2]}
+                {
+                    "id": key,
+                    "address": entry[0],
+                    "player": entry[1],
+                    "connected_at": entry[2],
+                    "format": entry[5],
+                }
                 for key, entry in self._listeners.items()
             ]
 

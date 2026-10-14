@@ -15,6 +15,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
+  (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
+  its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
+  quality), or with `[stream] aac_bitrate` and `opus_bitrate`; Settings lists every format's
+  address with its own Copy button. Turning a format on checks first that ffmpeg can encode
+  it, and refuses with ffmpeg's reason when it cannot. Each format runs its own encoder on the
+  same mix, only while someone listens to it (and a minute after), through its own short queue,
+  so a slow encoder never holds up the mix or the other formats; each costs a few percent of one
+  CPU core while it runs (measurements in the operations guide). AAC players get song
+  titles as MP3 players do; Opus streams carry none. `max_listeners` now counts the listeners of
+  every format together, and a listener on any format starts an idle set.
+- Listener statistics (#50): Settings, Stream, **Listener statistics** says in words and in two
+  tables how many are listening now on each format, each day's peak and when it was, the number
+  of sessions, listening hours, the average and longest session, and how long sessions lasted,
+  for the last 7, 30 or 90 days or every day kept. **Download statistics (CSV)** saves one row
+  per day. Only daily counts are kept, never an address or player name, for
+  `[stream] stats_days` days (90 by default; 0 keeps none), in each station's
+  `listener_stats.json`, which backups include. Routes: `/api/stream/stats` and
+  `/api/stream/stats/export`, and the same under `/api/stations/<name>/`.
+- Shows (#106): Library tools has a **Shows** card where you plan a show such as "Remembering
+  the 2000s" ahead of time as a list of songs. Choose where its songs come from (a category, so
+  any genre, year or beets field, or a clockwheel with its step conditions) and a target length,
+  then **Generate list**: a dry run of the station's own picker, the one the rotation tester
+  uses, picks the songs under the repeat rules and DMCA limits without touching the air,
+  optionally as if at a later date and time. The list is then yours: **Move up**, **Move down**
+  and **Remove** buttons on every song (keyboard operable, focus stays on the moved song), songs
+  added from a library search, and the total length against the target. A schedule event with
+  the new action **Play a show** airs it at a date and time, once or repeating; hard timing plays
+  its first song at once, fading out the song playing, and soft timing queues it to follow the
+  song playing. On the air the list feeds the queue two songs
+  ahead, so liners, time checks and breaks behave as with queued songs, and normal programming
+  resumes when the list ends. Show songs are pre-approved for the repeat rules, but a song that
+  would break a DMCA limit is skipped and logged, checked again at every song change. The card
+  says which show is on the air and what was skipped, with **Stop show**. The hour preview lists
+  the rest of a show on the air, and a scheduled show's songs from its time, as fixed, and a
+  song the DMCA limits would skip as skipped. Shows are
+  kept per station in `shows.json` (a damaged entry is skipped and kept, as with matched intros)
+  and included in every station's backup. A show cut short by a restart resumes at its earliest
+  unplayed song while its list would still be running; the card says so until then, and Stop
+  show cancels it. `show_on_air.json`, which holds that place, is left out of backups and cleared
+  by a restore. Queue & Search removes and moves the very entry pressed, so a listener's
+  request and a show song of the same file never swap. While a show is on the air (or about to
+  start) listener requests go after its songs and are told "after the station's show" rather
+  than a time. A song may be listed twice, with a warning. Routes: `/api/shows` and
+  `/api/stations/<name>/shows`, with request bodies capped for POST and PUT. See
+  [Shows](docs/operations.md#shows).
+- A schedule event whose action this version does not have, such as one a newer AutoDJ added,
+  is now kept exactly as it was with every save instead of being set aside, so moving between
+  versions loses no event. An event with settings its action does not accept is still set
+  aside as before.
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them. The

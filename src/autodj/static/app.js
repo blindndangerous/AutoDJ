@@ -31,6 +31,7 @@ import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
+import { installShowsPanel } from "./modules/shows-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
@@ -43,6 +44,8 @@ import { createRecordingControls } from "./modules/recording-controls.js";
 import { installRelaySettings } from "./modules/relay-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
+import { installStreamFormats } from "./modules/stream-formats.js";
+import { installListenerStats } from "./modules/listener-stats.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
@@ -211,10 +214,23 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
+// Settings > Stream > More formats: the AAC and Opus streams (#50).
+const streamFormats = installStreamFormats({
+  doc: document,
+  save: (name, value, control) =>
+    postSettings("/api/stream/settings", { [`${name}_bitrate`]: value }, control),
+  refresh: () => { void streamSettings.refresh(); },
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
-  fetchInfo: () => requestJson("/api/stream"),
+  fetchInfo: async () => {
+    const info = await requestJson("/api/stream");
+    streamFormats.fill(info);
+    return info;
+  },
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
@@ -246,6 +262,13 @@ const listenerControls = createListenerControls(
   ),
 );
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
+// Settings > Stream > Listener statistics (#50).
+const listenerStats = installListenerStats({
+  doc: document,
+  saveKeepDays: (value, control) =>
+    postSettings("/api/stream/settings", { stats_days: value }, control),
+  settingsStatus,
+});
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -262,6 +285,7 @@ let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
+let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
@@ -299,10 +323,12 @@ function stopProtectedPlayback() {
 function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
+  streamFormats.reset();
   relaySettings.reset();
   recordingControls.reset();
   nowPlayingSettings?.reset();
   listenerControls.reset();
+  listenerStats.reset();
   resetTrackCaches();
   historyRequest?.abort();
   _histPlayingPath = null;
@@ -348,6 +374,8 @@ function clearStationViews() {
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
+  // Shows are the station's own (#106).
+  showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
@@ -559,6 +587,8 @@ function applyState(s) {
   else recordingControls.reset();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
+  streamFormats.apply(s);
+  listenerStats.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
@@ -1408,6 +1438,10 @@ function connectWS({ quiet = false } = {}) {
         cartWallControls?.event(message);
       } else if (message.type === "schedule_changed" || message.type === "schedule_run") {
         void schedulerPanelControls?.refresh();
+        // A schedule event may play a show: its list says which events do.
+        void showsPanelControls?.refresh();
+      } else if (message.type === "shows_changed") {
+        void showsPanelControls?.refresh();
       } else applyState(message);
     } catch (_) {}
   };
@@ -1463,6 +1497,7 @@ function connectWS({ quiet = false } = {}) {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
+          showsPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
           hourPreviewControls?.resume();
@@ -1654,6 +1689,7 @@ function refreshStationPanels() {
   void nowPlayingSettings?.load();
   clockwheelPanelControls?.resume();
   void clockwheelPanelControls?.refresh();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
@@ -2851,6 +2887,7 @@ libraryFoldersControls = installLibraryFolders({
 clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
+showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
@@ -2958,6 +2995,7 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
+  showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();

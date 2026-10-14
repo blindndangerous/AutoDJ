@@ -135,6 +135,13 @@ controls still require pairing in LAN mode. Older
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
 
+The same mix can also be served in AAC (`/stream.aac`) and Opus (`/stream.opus`), each at its own
+bitrate, from Settings, Stream, More formats. Settings, Stream, Listener statistics shows the
+listeners on each format, daily peaks, sessions and listening hours as text and tables, with a
+CSV download; it keeps only daily counts, never addresses. See
+[More formats](docs/operations.md#more-formats-aac-and-opus) and
+[Listener statistics](docs/operations.md#listener-statistics).
+
 The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
