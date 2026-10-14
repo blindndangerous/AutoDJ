@@ -69,7 +69,7 @@ from fastapi import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
@@ -569,6 +569,8 @@ def _version_info() -> dict[str, str]:
 
 __all__ = ["PlayerBridge", "create_app", "serve"]
 
+AUTO_RESCAN_MIN_MINUTES = 5
+
 
 class LibraryJobBody(BaseModel):
     """Request body for POST /api/library/run — invokes a CLI subcommand."""
@@ -600,6 +602,14 @@ class LibraryRescanBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     override_tags: StrictBool = False
+
+
+class LibraryAutoRescanBody(BaseModel):
+    """Shared library automatic rescan interval."""
+
+    model_config = ConfigDict(extra="forbid")
+    hours: StrictInt = Field(ge=0, le=168)
+    minutes: StrictInt = Field(ge=0, le=59)
 
 
 class LibraryRemoveMissingBody(BaseModel):
@@ -1827,6 +1837,22 @@ def create_app(
         if not library.start_scan(override_tags=body.override_tags if body else False):
             raise HTTPException(status_code=409, detail="Library cleanup is running")
         return library.snapshot()
+
+    @app.get("/api/library/auto-rescan")
+    async def api_library_auto_rescan() -> dict[str, int]:
+        hours, minutes = divmod(_catalog_library().auto_rescan_minutes(), 60)
+        return {"hours": hours, "minutes": minutes}
+
+    @app.put("/api/library/auto-rescan")
+    async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
+        library = _catalog_library()
+        total = body.hours * 60 + body.minutes
+        if 0 < total < AUTO_RESCAN_MIN_MINUTES:
+            raise HTTPException(
+                status_code=400, detail="Use at least 5 minutes, or 0 to turn it off."
+            )
+        await asyncio.to_thread(library.set_auto_rescan_minutes, total)
+        return {"hours": body.hours, "minutes": body.minutes}
 
     @app.get("/api/library/missing")
     async def api_library_missing_preview() -> dict:

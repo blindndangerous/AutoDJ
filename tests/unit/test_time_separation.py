@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from autodj.config import PlaybackConfig
+from autodj.player import apply_repeat_windows
 from autodj.repeat_rules import (
     HISTORY_LIMIT,
     HOURPART_DAYS,
@@ -37,6 +38,8 @@ from autodj.rotation_sim import SimulationRequest, report_text, simulate
 from tests.unit._rotation_station import category_step, make_station, song
 
 NEW_YORK = ZoneInfo("America/New_York")
+#: Moves its clock by half an hour: on to +11:00 on 4 October 2026, back to +10:30 on 5 April.
+LORD_HOWE = ZoneInfo("Australia/Lord_Howe")
 DAY = 86400.0
 
 
@@ -152,6 +155,28 @@ def test_quarters_of_the_hour() -> None:
         2,
         3,
     ]
+
+
+def test_quarters_are_read_on_the_station_clock() -> None:
+    # Two days apart at 12:05 on Lord Howe Island, across its half-hour clock change.
+    before, after = _local("2026-10-03T12:05", LORD_HOWE), _local("2026-10-05T12:05", LORD_HOWE)
+    assert after - before == 2 * DAY - 1800
+    assert quarter_hour(before, LORD_HOWE) == quarter_hour(after, LORD_HOWE) == 0
+    # In UTC they fall in different quarters.
+    assert quarter_hour(before) != quarter_hour(after)
+    assert quarter_hour(_local("2026-10-12T12:50", NEW_YORK), NEW_YORK) == 3
+    assert quarter_hour(_utc("2026-10-12T12:50"), UTC) == 3
+
+
+@pytest.mark.parametrize(
+    ("zone", "wall"),
+    [(NEW_YORK, "2026-11-01T01:05"), (LORD_HOWE, "2026-04-05T01:35")],
+)
+def test_a_repeated_wall_time_is_one_quarter_both_times(zone: ZoneInfo, wall: str) -> None:
+    first = datetime.fromisoformat(wall).replace(tzinfo=zone).timestamp()
+    second = datetime.fromisoformat(wall).replace(tzinfo=zone, fold=1).timestamp()
+    assert second > first
+    assert quarter_hour(first, zone) == quarter_hour(second, zone) == int(wall[-2:]) // 15
 
 
 # -- the daypart rule -----------------------------------------------------------------
@@ -272,6 +297,48 @@ def test_the_quarter_hour_rule_looks_back_a_week() -> None:
     at = _utc("2026-10-12T12:05")
     assert _filter([_played(SONG, at - 6 * DAY)], rules, at).reason(SONG) == "same quarter hour"
     assert _filter([_played(SONG, at - (HOURPART_DAYS * DAY + 60))], rules, at).reason(SONG) is None
+
+
+@pytest.mark.parametrize(
+    ("zone", "played", "at", "held"),
+    [
+        # Lord Howe's half-hour change falls between the play and the pick.
+        (LORD_HOWE, "2026-10-03T12:05", "2026-10-05T12:10", True),
+        (LORD_HOWE, "2026-10-03T12:05", "2026-10-05T12:20", False),
+        (LORD_HOWE, "2026-04-04T12:50", "2026-04-06T12:55", True),
+        (LORD_HOWE, "2026-04-04T12:50", "2026-04-06T12:40", False),
+        # An hour's change keeps the quarter, in either direction.
+        (NEW_YORK, "2026-10-31T12:05", "2026-11-02T12:10", True),
+        (NEW_YORK, "2026-10-31T12:05", "2026-11-02T12:20", False),
+        (UTC, "2026-10-03T12:05", "2026-10-05T12:10", True),
+        (UTC, "2026-10-03T12:05", "2026-10-05T12:20", False),
+    ],
+)
+def test_the_quarter_hour_rule_reads_the_station_clock(
+    zone: Any, played: str, at: str, held: bool
+) -> None:
+    rules = RepeatRules(track_window=0, artist_window=0, hourpart_plays=1)
+    history = [_played(SONG, _local(played, zone))]
+    reason = _filter(history, rules, _local(at, zone), zone).reason(SONG)
+    assert (reason == "same quarter hour") is held
+
+
+def test_the_player_reads_quarters_on_the_station_clock(tmp_path: Path) -> None:
+    """Only the quarter-hour rule on: the player still passes the station's time zone (#219)."""
+    songs = [song(n, f"Artist {n}") for n in range(3)]
+    source = make_station(
+        tmp_path,
+        songs,
+        playback={"repeat_rules": {"artist": {"tracks": 0}, "hourpart": {"plays": 1}}},
+        timezone="Australia/Lord_Howe",
+    )
+    player = source.player
+    apply_repeat_windows(player)
+    at = _local("2026-10-05T12:10", LORD_HOWE)
+    player._now = player._state.clock = lambda: at
+    player._state.restore_history([PlayRecord.of(songs[0], _local("2026-10-03T12:05", LORD_HOWE))])
+    held = player._pick_context(at=at).repeat
+    assert held.reason(songs[0]) == "same quarter hour"
 
 
 def test_the_new_reasons_come_last_and_are_counted() -> None:

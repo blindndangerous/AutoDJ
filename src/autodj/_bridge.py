@@ -2016,9 +2016,9 @@ class PlayerBridge:
         )
 
     def _rule_zone(self, rules: Any) -> Any:
-        """The zone the daypart rule reads hours in (UTC when the rule is off)."""
+        """The zone the daypart and quarter-hour rules read the clock in (UTC when both are off)."""
         zone = getattr(self.player, "_station_zone", None)
-        if rules.daypart_days and callable(zone):
+        if (rules.daypart_days or rules.hourpart_plays) and callable(zone):
             found = zone()
             if isinstance(found, tzinfo):
                 return found

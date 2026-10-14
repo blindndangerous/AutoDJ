@@ -10,12 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Library tools can rescan the library automatically every so many hours and minutes (#249).
 - DMCA checks on queued songs, listener request placement and show songs now use the hour
   preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
   overlapping liners and music speed, instead of whole file lengths (#217).
 - A listener request is no longer placed where a queued song after it would then break a repeat
   rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
-
 - The page title no longer shows the album. It names the station whenever the station is not
   called AutoDJ, even on a server with one station (#251).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
@@ -773,6 +773,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "Relaying to Icecast and Shoutcast" in the operations guide.
 
 ### Fixed
+
+- **Prevent a song from playing in the same quarter of the hour** reads quarters on the
+  station's clock. Across Lord Howe Island's half-hour clock change it compared UTC quarters, so
+  a song could return to the quarter it last played in. Listener request checks read it on the
+  station's clock too (#219).
 
 - Saving cue points in Track info no longer fails with "end exceeds track length" on some
   tracks when the End was left as loaded. Track info shows cue times to the nearest 0.01 s,

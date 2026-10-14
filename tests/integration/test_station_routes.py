@@ -50,6 +50,7 @@ SHARED = frozenset(
         "/api/library/folders",
         "/api/library/folders/{source_id}",
         "/api/library/rescan",
+        "/api/library/auto-rescan",
         "/api/library/points",
         "/api/library/tags",
         "/api/library/job",
