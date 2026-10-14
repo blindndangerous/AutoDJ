@@ -1860,7 +1860,8 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, body: PlayNextBody
     ) -> dict[str, bool] | JSONResponse:
         """Insert a track at the head of the queue."""
-        if refusal := _dmca_refusal(station, body, append=False):
+        # Off the event loop: the check reads the renders and the library (#217).
+        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=False):
             return refusal
         if not station.bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
@@ -1872,7 +1873,8 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, body: PlayNextBody
     ) -> dict[str, bool] | JSONResponse:
         """Append a track to the user-ordered queue."""
-        if refusal := _dmca_refusal(station, body, append=True):
+        # Off the event loop: the check reads the renders and the library (#217).
+        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=True):
             return refusal
         if not station.bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
