@@ -1323,7 +1323,7 @@
     }
     /* The card title is an <h2> inside the summary so heading navigation
        reaches every card.  It takes the summary's look, not .card h2. */
-    details.card > summary > h2 {
+    details.card > summary > :is(h2, h3) {
       display: inline;
       margin: 0;
       font: inherit;
@@ -1352,6 +1352,8 @@
     details.card > *:not(summary) {
       padding: 0 1.25rem 1rem;
     }
+    /* Firefox draws audio controls wider than a 320 px card's content. */
+    details.card audio { max-width: 100%; }
     /* A button that is a direct child of the card was inheriting the
        card's block padding, which pinned its label to the top edge and
        shifted it 20 px left of everything around it. */
