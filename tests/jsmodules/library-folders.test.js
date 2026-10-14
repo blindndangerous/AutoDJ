@@ -428,15 +428,18 @@ describe("clock folder and points controls", () => {
     document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice/id.wav", kind: "liner" } }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const input = document.querySelector('[data-point="overlap_start"]');
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
     input.focus();
     input.value = "-3";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     const status = document.getElementById("points-status");
     await vi.waitFor(() => expect(status.textContent).toContain("unavailable for negative values"));
+    expect(input.getAttribute("aria-describedby")).toBe("negative-overlap-help");
     expect(document.activeElement).toBe(input);
     input.value = "0";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(() => expect(status.textContent).toContain("available again"));
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
     expect(document.querySelector('[data-preview="overlap_start"]').disabled).toBe(false);
     expect(document.querySelector('[data-set-current="overlap_start"]').disabled).toBe(false);
   });

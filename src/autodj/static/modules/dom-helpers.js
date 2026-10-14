@@ -39,22 +39,12 @@ export function dbg(...args) {
 // ----------------------------------------------------------------
 
 export function fmtTime(sec) {
-  if (!sec || isNaN(sec)) return "0:00";
+  if (!Number.isFinite(Number(sec)) || sec <= 0) return "0:00";
+  const h = Math.floor(sec / 3600);
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-// A duration in words for speech, such as "1 minute 5 seconds", where
-// fmtTime's "1:05" suits the screen.
-export function fmtDurationWords(sec) {
-  const s = Math.max(0, Math.round(Number(sec) || 0));
-  const mins = Math.floor(s / 60);
-  const secs = s % 60;
-  const secStr = `${secs} second${secs === 1 ? "" : "s"}`;
-  if (mins === 0) return secStr;
-  const minStr = `${mins} minute${mins === 1 ? "" : "s"}`;
-  return secs === 0 ? minStr : `${minStr} ${secStr}`;
+  const minutes = h ? `${h}:${String(m % 60).padStart(2, "0")}` : String(m);
+  return `${minutes}:${String(s).padStart(2, "0")}`;
 }
 
 export function fmtTrack(t) {

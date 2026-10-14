@@ -164,7 +164,6 @@ export function installPreviewOutput({
   if (!select) return null;
   const button = doc.getElementById("preview-device-choose");
   const note = doc.getElementById("preview-device-note");
-  const help = doc.getElementById("preview-device-desc");
   const { supported, canChoose } = previewOutputSupport({ mediaDevices, mediaElementPrototype });
   const targets = () => [...doc.querySelectorAll("audio[data-preview-output]")]
     .filter((element) => typeof element.setSinkId === "function");
@@ -203,8 +202,8 @@ export function installPreviewOutput({
     if (!note) return;
     note.textContent = text || "";
     note.hidden = !text;
-    const ids = [help?.id, text ? note.id : null].filter(Boolean).join(" ");
-    select.setAttribute("aria-describedby", ids);
+    if (text) select.setAttribute("aria-describedby", note.id);
+    else select.removeAttribute("aria-describedby");
   }
 
   function clearFallbackNote() {

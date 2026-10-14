@@ -858,11 +858,12 @@ describe("liner play dates", () => {
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     expect(document.activeElement).toBe(after);
     expect(after.getAttribute("aria-invalid")).toBe("true");
-    expect(after.getAttribute("aria-describedby")).toBe("ln-dates-desc ln-dates-error");
+    expect(after.getAttribute("aria-describedby")).toBe("ln-dates-error");
     expect(document.getElementById("ln-dates-error").textContent)
       .toBe("Do not play after must be on or after the Not before date");
     after.dispatchEvent(new Event("input"));
-    expect(after.getAttribute("aria-describedby")).toBe("ln-dates-desc");
+    expect(after.getAttribute("aria-describedby")).toBe("");
+    expect(document.getElementById("ln-dates-desc").hidden).toBe(false);
 
     after.value = "2027-01-01";
     form.dispatchEvent(new Event("submit", { cancelable: true }));

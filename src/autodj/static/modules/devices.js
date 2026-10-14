@@ -24,7 +24,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { fmtDurationWords, nextRowControl, rowButton } from "./dom-helpers.js";
+import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -62,12 +62,6 @@ function shownCode(code) {
 
 export function spokenCode(code) {
   return `${[...code.slice(0, 4)].join(" ")}, ${[...code.slice(4)].join(" ")}`;
-}
-
-function validForWords(seconds) {
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 1) return fmtDurationWords(seconds);
-  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 // Plain http is not a secure context, so it has no clipboard API; the
@@ -352,7 +346,7 @@ export function installAccess(els, { onSignedOut }) {
   function showCountdown(now) {
     const left = Math.ceil((pairing.validUntil - now) / 1000);
     pairCountdown.textContent = left > 0
-      ? `Valid for ${fmtDurationWords(left)}.`
+      ? `Valid for ${fmtTime(left)}.`
       : "This code has expired.  Press Refresh code.";
   }
 
@@ -395,7 +389,7 @@ export function installAccess(els, { onSignedOut }) {
     pairCode.replaceChildren(shown, heard);
     showCountdown(now);
     if (speak) {
-      say(`Pairing code ${spokenCode(pairing.code)}, valid for ${validForWords(body.valid_seconds)}.`);
+      say(`Pairing code ${spokenCode(pairing.code)}, valid for ${fmtTime(body.valid_seconds)}.`);
     }
     return true;
   }

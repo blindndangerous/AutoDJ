@@ -102,11 +102,13 @@ def test_times_and_lengths_read_well() -> None:
     two_pm = datetime(2026, 10, 12, 14, 0, tzinfo=UTC).timestamp()
     assert clock_text(two_pm + 270, UTC_ZONE) == "2:04:30 PM"
     assert clock_words(two_pm + 270, UTC_ZONE) == "2:04:30 PM"
-    assert clock_words(two_pm, UTC_ZONE) == "2:00:00 PM"
+    assert clock_words(two_pm, UTC_ZONE) == "2:00 PM"
     assert clock_words(two_pm + 61, UTC_ZONE) == "2:01:01 PM"
     midnight = datetime(2026, 10, 12, 0, 5, tzinfo=UTC).timestamp()
-    assert clock_text(midnight, UTC_ZONE) == "12:05:00 AM"
+    assert clock_text(midnight, UTC_ZONE) == "12:05 AM"
     assert length_text(225) == "3:45"
+    assert length_text(3600) == "1:00:00"
+    assert length_text(3725) == "1:02:05"
     assert length_words(225) == "3:45"
     assert length_words(60) == "1:00"
     assert length_words(1) == "0:01"
@@ -261,15 +263,15 @@ def test_the_hour_lands_at_the_nearer_song_change() -> None:
     short, sentence = landing_words(early, UTC_ZONE)
     assert short == "0:35 early"
     assert sentence == (
-        "Top of the hour, 1:00:00 PM: lands about 0:35 early, at the song change into "
+        "Top of the hour, 1:00 PM: lands about 0:35 early, at the song change into "
         "Artist 1, Song 1 (predicted) at 12:59:25 PM. "
-        "That song runs 2:40 past 1:00:00 PM."
+        "That song runs 2:40 past 1:00 PM."
     )
     late = land(hour, song_changes(_songs(TOP - 150, TOP + 20)), TOP + 220)
     assert late.offset == pytest.approx(20)
     assert landing_words(late, UTC_ZONE) == (
         "0:20 late",
-        "Top of the hour, 1:00:00 PM: lands about 0:20 late. Artist 0, Song 0 (predicted) is "
+        "Top of the hour, 1:00 PM: lands about 0:20 late. Artist 0, Song 0 (predicted) is "
         "playing then; the next song change is at 1:00:20 PM.",
     )
     on_time = land(hour, song_changes(_songs(TOP - 200, TOP + 0.4)), TOP + 200)
@@ -293,7 +295,7 @@ def test_events_wait_or_cut_by_their_timing() -> None:
     soft = land(Point("event", TOP, "News", "soft", "Play a liner: News"), songs, TOP + 300)
     assert soft.offset == pytest.approx(90)
     assert landing_words(soft, UTC_ZONE)[1] == (
-        "News (Play a liner: News), soft, at 1:00:00 PM: runs about 1:30 late, after "
+        "News (Play a liner: News), soft, at 1:00 PM: runs about 1:30 late, after "
         "Artist 0, Song 0 (predicted) ends at 1:01:30 PM. A soft event waits for "
         "the song playing to end."
     )
@@ -301,7 +303,7 @@ def test_events_wait_or_cut_by_their_timing() -> None:
     assert (hard.offset, hard.cut) == (0.0, pytest.approx(90))
     assert landing_words(hard, UTC_ZONE) == (
         "on time, cuts 1:30",
-        "News (Play a liner: News), hard, at 1:00:00 PM: on time. It cuts Artist 0, Song 0 "
+        "News (Play a liner: News), hard, at 1:00 PM: on time. It cuts Artist 0, Song 0 "
         "(predicted) short by about 1:30.",
     )
 
@@ -313,7 +315,7 @@ def test_a_point_past_the_preview_is_not_guessed() -> None:
     assert landing.starts is None
     assert landing_words(landing, UTC_ZONE) == (
         "not known",
-        "Top of the hour, 1:00:00 PM: the preview does not reach the song change after it.",
+        "Top of the hour, 1:00 PM: the preview does not reach the song change after it.",
     )
 
 
@@ -351,12 +353,12 @@ def test_fixed_points_are_hours_restarts_and_events_in_the_span() -> None:
     # The clockwheel restarts are read in the computer's zone, as the player
     # reads them; the station here uses that zone too.
     assert words == [
-        ("restart", "Clockwheel restart", "12:30:00 PM"),
-        ("event", "Weather", "12:45:00 PM"),
-        ("restart", "Top of the hour, clockwheel restart", "1:00:00 PM"),
-        ("event", "News", "1:30:00 PM"),
-        ("restart", "Clockwheel restart", "1:30:00 PM"),
-        ("restart", "Top of the hour, clockwheel restart", "2:00:00 PM"),
+        ("restart", "Clockwheel restart", "12:30 PM"),
+        ("event", "Weather", "12:45 PM"),
+        ("restart", "Top of the hour, clockwheel restart", "1:00 PM"),
+        ("event", "News", "1:30 PM"),
+        ("restart", "Clockwheel restart", "1:30 PM"),
+        ("restart", "Top of the hour, clockwheel restart", "2:00 PM"),
     ]
     assert points[1].timing == "hard"
     assert points[1].detail == "Play a liner: news.mp3"
@@ -414,12 +416,15 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"].startswith("Top of the hour, 1:00:00 PM: lands about ")
+    assert view["summary"].startswith("Top of the hour, 1:00 PM: lands about ")
     assert view["summary"].endswith(
-        f"Next hour: 3 fixed and {len(predicted)} predicted, until 1:10:00 PM."
+        f"Next hour: 3 fixed and {len(predicted)} predicted, until 1:10 PM."
     )
     assert [point["kind"] for point in view["points"]] == ["hour"]
     assert view["stopped"] is None
+
+    later = build_preview(source, 60, now=NOW + 31)
+    assert later["summary"].endswith("until 1:10:31 PM.")
 
 
 def test_browser_queue_uses_music_rate_but_liners_keep_their_source_time(tmp_path: Path) -> None:
@@ -540,7 +545,7 @@ def test_a_scheduled_change_of_picking_reaches_the_prediction(tmp_path: Path) ->
     # The change is a fixed point too: a soft event waits for the song playing.
     events = [point for point in view["points"] if point["kind"] == "event"]
     assert [(point["label"], point["timing"], point["at_words"]) for point in events] == [
-        ("Gold only", "soft", "12:20:00 PM")
+        ("Gold only", "soft", "12:20 PM")
     ]
     assert events[0]["landing"].endswith("late") or events[0]["landing"] == "on time"
 
