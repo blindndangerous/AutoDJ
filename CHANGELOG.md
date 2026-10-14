@@ -10,8 +10,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Categories, Clockwheels, Shows and Intro rules in Library tools can be collapsed and expanded
-  like the Now Playing cards (#306).
 - Times the server writes on the page, such as the hour preview, now use 24-hour time like the
   rest of the server's text. Predicted ad breaks give their length as 1:00 rather than about 60
   seconds (#281).
