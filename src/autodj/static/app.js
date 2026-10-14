@@ -2631,12 +2631,10 @@ function historyRowHtml(it) {
   button.dataset.path = it.path || "";
   button.dataset.historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
   button.textContent = "Track info";
-  const title = document.createElement("span");
-  title.textContent = it.title ?? "";
-  const titleAndInfo = document.createDocumentFragment();
-  titleAndInfo.append(title, " ", button);
+  button.setAttribute("aria-label", `Track info for ${it.artist ?? ""}, ${it.title ?? ""}`);
   const row = tableRow(document, [
-    formatPlayedAt(it.played_at, false), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
+    formatPlayedAt(it.played_at, false), it.title ?? "", it.artist ?? "",
+    _fmtDuration(it.duration), button,
   ], { rowHeaderIndex: 1 });
   row.dataset.playedAt = it.played_at;
   return row;

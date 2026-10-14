@@ -12,6 +12,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { listRow, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
@@ -46,6 +47,7 @@ export function installProfiles(els, { getSettings }) {
   const { card, nameInput, saveButton, list, status } = els;
   if (!card || !nameInput || !saveButton || !list || !status) return;
   const doc = card.ownerDocument;
+  const listNavigation = installActionListNavigation(list);
   let names = [];
 
   const say = (message, tone = "info") => {
@@ -58,6 +60,7 @@ export function installProfiles(els, { getSettings }) {
       empty.className = "no-results";
       empty.textContent = "No saved profiles yet.";
       list.replaceChildren(empty);
+      listNavigation.refresh();
       return;
     }
     list.replaceChildren(...names.map((name) => {
@@ -68,6 +71,7 @@ export function installProfiles(els, { getSettings }) {
       remove.dataset.profile = name;
       return listRow(doc, name, "profile-name", apply, remove);
     }));
+    listNavigation.refresh();
   }
 
   async function load() {

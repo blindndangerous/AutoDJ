@@ -20,7 +20,7 @@ export function updateHistoryDateHeadings(tbody, locale = undefined) {
       heading.className = "history-date";
       heading.dataset.day = day;
       const cell = tbody.ownerDocument.createElement("td");
-      cell.colSpan = 4;
+      cell.colSpan = 5;
       const title = tbody.ownerDocument.createElement("h3");
       title.textContent = valid
         ? played.toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric" })

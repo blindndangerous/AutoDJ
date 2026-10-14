@@ -111,6 +111,17 @@ describe("hour preview rendering", () => {
     expect(tbody.children[0].className).toBe("is-fixed is-on-air");
   });
 
+  it("puts a named Track info action in the last cell of each song row", () => {
+    const tbody = document.createElement("tbody");
+    const song = { ...item("Gold 0, Song 100", "on_air", true), path: "/music/gold0.mp3" };
+    renderRows(document, tbody, [song, { ...item("Break", "queued", true), kind: "break" }]);
+    const action = tbody.children[0].lastElementChild.querySelector("button");
+    expect(action?.textContent).toBe("Track info");
+    expect(action?.getAttribute("aria-label")).toBe("Track info for Gold 0, Song 100");
+    expect(action?.dataset.path).toBe(song.path);
+    expect(tbody.children[1].lastElementChild.querySelector("button")).toBeNull();
+  });
+
   it("changes only the cells whose text changed, keeping the rows", () => {
     const tbody = document.createElement("tbody");
     const first = view().items;
@@ -171,6 +182,21 @@ describe("hour preview card", () => {
     expect(byId("hour-preview-backtiming").hidden).toBe(false);
     expect(byId("hour-preview-status").textContent).toBe("");
     expect(timers.at(-1).ms).toBe(30000);
+  });
+
+  it("opens Track info from a song row", async () => {
+    const next = view();
+    next.items[0].path = "/music/gold0.mp3";
+    const opened = vi.fn();
+    document.addEventListener("autodj:edit-points", opened, { once: true });
+    harness([next]);
+    await open();
+    const button = byId("hour-preview-tbody").querySelector("button");
+    button.click();
+    expect(opened).toHaveBeenCalledOnce();
+    expect(opened.mock.calls[0][0].detail).toEqual({
+      path: next.items[0].path, kind: "music", opener: button,
+    });
   });
 
   it("refreshes on its timer without speaking or moving focus", async () => {
