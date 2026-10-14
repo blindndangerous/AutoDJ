@@ -38,7 +38,6 @@ import random
 import re
 import threading
 import time
-import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, file_signature, set_aside
 from autodj.liners import LINER_EXTS
 from autodj.repeat_rules import ArtistSplitter, artist_key
 
@@ -299,23 +298,10 @@ class MatchedIntros:
             OSError: The file is there but cannot be looked at, or its
                 folder is away.
         """
-        try:
-            found = self.path.stat()
-        except FileNotFoundError as exc:
-            confirm_missing(self.path, exc)
-            return None
-        return found.st_mtime_ns, found.st_size, found.st_ino
+        return file_signature(self.path)
 
     def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            self.path.replace(bad)
-        except OSError:
-            logger.exception("Could not set aside the invalid matched intros file %s", self.path)
-            return
-        logger.error(
-            "Matched intros file %s is invalid (%s); set it aside as %s", self.path, reason, bad
-        )
+        set_aside(self.path, "matched intros file", reason)
 
     def _load_locked(self) -> dict[str, Intro]:
         """Every intro, read again if the file changed.  Caller holds ``_lock``.

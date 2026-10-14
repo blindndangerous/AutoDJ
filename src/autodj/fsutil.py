@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import uuid
 from contextlib import suppress
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def is_absolute_storage(path: str) -> bool:
@@ -103,3 +106,37 @@ def confirm_missing(path: Path, error: FileNotFoundError) -> None:
             pass
     except OSError:
         raise error from None
+
+
+def file_signature(path: Path) -> tuple[int, int, int] | None:
+    """The file's time, size and ID; ``None`` when it is truly not there.
+
+    The ID too: every save replaces the file, so a new file of the same size
+    written within one tick of the clock is still noticed.
+
+    Raises:
+        OSError: The file is there but cannot be looked at, or its folder is
+            away (see :func:`confirm_missing`).
+    """
+    try:
+        found = path.stat()
+    except FileNotFoundError as exc:
+        confirm_missing(path, exc)
+        return None
+    return found.st_mtime_ns, found.st_size, found.st_ino
+
+
+def set_aside(path: Path, what: str, reason: str) -> bool:
+    """Rename the invalid *path* to ``<name>.bad-<random>`` beside it, and log why.
+
+    *what* names the file in the log, such as ``"ads file"``.  Returns
+    whether it was moved; a failure is logged with its traceback.
+    """
+    bad = path.with_name(f"{path.name}.bad-{uuid.uuid4().hex[:8]}")
+    try:
+        path.replace(bad)
+    except OSError:
+        logger.exception("Could not set aside the invalid %s %s", what, path)
+        return False
+    logger.error("%s %s is invalid (%s); set it aside as %s", what.capitalize(), path, reason, bad)
+    return True
