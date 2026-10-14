@@ -2399,6 +2399,36 @@ describe("static accessibility contracts", () => {
     expect(group.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
   });
 
+  it("gives a clockwheel ad break step labelled native fields, plain help and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const option = document.querySelector('#clock-step-type option[value="ad_break"]');
+    expect(option.textContent).toBe("Ad break");
+    const field = document.querySelector("#clock-step-ad-field");
+    expect(field.classList.contains("clock-step-field")).toBe(true);
+    for (const [id, label, min, max] of [["clock-step-ad-spots", "Spots in the break", "1", "10"], ["clock-step-ad-seconds", "Longest break in seconds", "0", "900"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("number");
+      expect([input.getAttribute("min"), input.getAttribute("max"), input.getAttribute("step")]).toEqual([min, max, "1"]);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // Help is read by browsing, not on every focus.
+      expect(input.hasAttribute("aria-describedby")).toBe(false);
+    }
+    for (const [id, label, any] of [["clock-step-ad-advertiser", "Advertiser", "Any advertiser"], ["clock-step-ad-category", "Competing category", "Any category"]]) {
+      const select = document.getElementById(id);
+      expect(select.tagName).toBe("SELECT");
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(select.options[0].value).toBe("");
+      expect(select.options[0].textContent).toBe(any);
+    }
+    expect(document.getElementById("clock-step-ad-help").textContent).toContain("0 for no limit");
+    expect(document.getElementById("clock-step-ads-notice").hidden).toBe(true);
+    const error = document.querySelector("#clock-step-ad-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    expect(error.hidden).toBe(true);
+    expect(field.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
+  });
+
   it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#schedule-range");

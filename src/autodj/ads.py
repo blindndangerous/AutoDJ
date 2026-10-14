@@ -3,8 +3,8 @@
 A station keeps *spots* (an audio file with its advertiser, campaign, flight
 dates and play limits) and *ad breaks* (a name, the minutes past the hour it
 runs, the days and hours it keeps to, and how many spots it may hold).  A
-break also runs from a Schedule event (the ``ad_break`` action) or from Run
-now in the Ads tab.
+break also runs from a Schedule event (the ``ad_break`` action), a clockwheel
+step, or from Run now in the Ads tab.
 
 When a break falls due, :class:`AdDesk` picks its spots and books them, as
 standalone breaks, on the station's open song change through the announcer
@@ -50,7 +50,7 @@ import re
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -128,6 +128,7 @@ SOURCES: dict[str, str] = {
     "clock": "Minutes past the hour",
     "schedule": "Schedule event",
     "manual": "Run now",
+    "clockwheel": "Clockwheel step",
 }
 #: A spot's state in the log, then the report's words for each.
 Status = Literal["booked", "aired", "missed", "interrupted"]
@@ -960,6 +961,8 @@ def choose(
     heard: Sequence[Heard],
     *,
     usable: Callable[[str, Spot], bool] = lambda _key, _spot: True,
+    advertiser: str = "",
+    category: str = "",
 ) -> Choice:
     """The spots for *item* running at *at*, in the order they play.
 
@@ -982,19 +985,38 @@ def choose(
             if when.replace(minute=0, second=0, microsecond=0) == hour_start:
                 hour_counts[play.spot_id] = hour_counts.get(play.spot_id, 0) + 1
         last[play.spot_id] = max(last.get(play.spot_id, float("-inf")), play.at)
-        if separation and abs(play.at - at) < separation:
+        if play.at == at or (separation and abs(play.at - at) < separation):
             near_advertisers.add(_key(play.advertiser))
             if play.category.strip():
                 near_categories.add(_key(play.category))
-    if not state.spots:
+    if not state.spots and not (advertiser or category):
         return Choice((), "the station has no spots")
+    filters = []
+    if advertiser:
+        filters.append(f"from advertiser {advertiser}")
+    if category:
+        filters.append(f"in category {category}")
+    matched = {
+        key: spot
+        for key, spot in state.spots.items()
+        if (not advertiser or _key(spot.advertiser) == _key(advertiser))
+        and (not category or _key(spot.category) == _key(category))
+    }
+    if not matched:
+        if advertiser and not any(
+            _key(s.advertiser) == _key(advertiser) for s in state.spots.values()
+        ):
+            return Choice((), f"no spot is from advertiser {advertiser}")
+        if category and not any(_key(s.category) == _key(category) for s in state.spots.values()):
+            return Choice((), f"no spot is in category {category}")
+        return Choice((), f"no spot is {' and '.join(filters)}")
     candidates: list[tuple[str, Spot]] = []
     passed: dict[str, int] = {}
 
     def skip(why: str) -> None:
         passed[why] = passed.get(why, 0) + 1
 
-    for key, spot in state.spots.items():
+    for key, spot in matched.items():
         if not spot.enabled:
             skip("turned off")
         elif spot.flight().refusal(today) is not None:
@@ -1043,12 +1065,16 @@ def choose(
     if chosen:
         return Choice(tuple(chosen))
     if too_long:
-        return Choice((), f"every spot that could play is longer than {item.max_seconds} seconds")
+        reason = f"every spot that could play is longer than {item.max_seconds} seconds"
+        return Choice(
+            (), f"no spot {' and '.join(filters)} could play: {reason}" if filters else reason
+        )
     words = "; ".join(
         f"{count} {'spot is' if count == 1 else 'spots are'} {why}"
         for why, count in sorted(passed.items(), key=lambda pair: -pair[1])
     )
-    return Choice((), f"no spot could play: {words}" if words else "no spot could play")
+    prefix = f"no spot {' and '.join(filters)} could play" if filters else "no spot could play"
+    return Choice((), f"{prefix}: {words}" if words else prefix)
 
 
 # ----------------------------------------------------------------------
@@ -1184,12 +1210,16 @@ class AdDesk:
         self._heard: deque[Heard] = deque()
         self._recent: deque[PlayRecord] = deque(maxlen=RECENT)
         self._unwritten: list[PlayRecord] = []
+        self._missed_steps: list[tuple[dict, str]] = []
+        self._handled_steps: OrderedDict[str, int] = OrderedDict()
         self._requests = 0
         # Whether a break is due within PLAN_AHEAD, as last worked out: the
         # render worker asks often, and must never wait for the disk.
         self._soon = False
         if breaks is not None:
             breaks.wants_slots = self.wants_slots
+        if player is not None:
+            player.ad_desk = self
 
     def noticed(self, state: AdState | None = None) -> None:
         """Take in the store's breaks after a change (no disk access)."""
@@ -1251,6 +1281,16 @@ class AdDesk:
         """
         if not self.enabled:
             return False
+        player = self.player
+        if (
+            player is not None
+            and getattr(player._cfg.playback, "pick_mode", None) == "clock"
+            and (
+                getattr(player, "_clock_has_ad_steps", False)
+                or getattr(player, "_clock_has_pending_ad_steps", False)
+            )
+        ):
+            return True
         with self._lock:
             return bool(self._pending or self._booked or self._soon)
 
@@ -1335,7 +1375,7 @@ class AdDesk:
     def needs_tick(self) -> bool:
         """Whether :meth:`tick` has work (cheap; the event loop asks once a second)."""
         with self._lock:
-            if self._pending or self._booked or self._unwritten:
+            if self._pending or self._booked or self._unwritten or self._missed_steps:
                 return True
         return self.enabled
 
@@ -1354,6 +1394,13 @@ class AdDesk:
             records.extend(self._due(state, cursor, now, "the computer slept or AutoDJ stalled"))
         self._noticed(state, now)
         records.extend(self._book_pending(state, now))
+        records.extend(self._book_steps(state, now))
+        with self._lock:
+            missed, self._missed_steps = self._missed_steps, []
+        if enabled:
+            records.extend(
+                self._run_missed(self._step_run(step, now), reason, now) for step, reason in missed
+            )
         records.extend(self._outcomes(now))
         self._write(records)
         if enabled and now - self._cursor_saved >= CURSOR_EVERY_SECONDS:
@@ -1658,9 +1705,6 @@ class AdDesk:
 
     def _try_book(self, run: Run, now: float, expires: float) -> list[PlayRecord] | None:
         """Book *run*'s spots on the open song change.  ``None`` to try again later."""
-        from autodj.breaks import AD, AD_SCHEDULE, Break, BreakCues, BreakError
-        from autodj.breaks import new_id as new_break_id
-
         player = self.player
         plan, _closes_in, airs_in = player.slot_status()
         if plan is None:
@@ -1677,67 +1721,93 @@ class AdDesk:
                 return [self._run_missed(run, "its ad break was deleted", now)]
             if not item.enabled and run.source == "schedule":
                 return [self._run_missed(run, "its ad break is turned off", now)]
-            with self._lock:
-                heard = list(self._heard)
-            expected_airtime = now + airs_in
-            choice = choose(state, item, expected_airtime, self.zone, heard, usable=self._usable)
-            if not choice.spots:
-                logger.warning("Ad break %r has no spot to air: %s", item.name, choice.reason)
-                return [self._run_missed(run, choice.reason, now)]
-            limit = float(self.config().max_spot_seconds)
-            breaks = [
-                Break(
-                    break_id=new_break_id(),
-                    kind=AD,
-                    slot_id=plan.slot_id,
-                    ending="",
-                    upcoming="",
-                    placement="standalone",
-                    allow_outro=False,
-                    path=self.store.folder / spot.file,
-                    size=0,
-                    cues=BreakCues(spot.cue_start, spot.cue_segue, spot.cue_end, spot.length_s),
-                    label=spot.label,
-                    token_name=AD_SENDER,
-                    created_at=now,
-                    expires_at=expires,
-                    source=AD_SCHEDULE,
-                    keep_file=True,
-                    limit_s=limit,
-                )
-                for _key, spot in choice.spots
-            ]
-            try:
-                player.book_breaks(breaks, plan.slot_id)
-            except BreakError:
-                return None  # the change closed as it was booked: the next one
-            records = [
-                PlayRecord(
-                    id=booked.break_id,
-                    run=run.run_id,
-                    break_id=run.break_id,
-                    break_name=item.name,
-                    source=run.source,
-                    scheduled=_utc(run.scheduled),
-                    spot_id=key,
-                    title=spot.title,
-                    advertiser=spot.advertiser,
-                    campaign=spot.campaign,
-                    category=spot.category,
-                    seconds=round(spot.seconds, 3),
-                    status=BOOKED,
-                    logged=_utc(now),
-                )
-                for booked, (key, spot) in zip(breaks, choice.spots, strict=True)
-            ]
-            with self._lock:
-                for record in records:
-                    entry = Heard(
-                        record.spot_id, record.advertiser, record.category, expected_airtime
-                    )
-                    self._booked[record.id] = _Tracked(record, entry)
-                    self._heard.append(entry)
-                self._forget_old_locked(now)
+            return self._book_item(run, item, plan.slot_id, now, airs_in, expires, state)
+
+    def _book_item(
+        self,
+        run: Run,
+        item: AdBreak,
+        slot_id: str,
+        now: float,
+        airs_in: float,
+        expires: float,
+        state: AdState,
+        *,
+        advertiser: str = "",
+        category: str = "",
+    ) -> list[PlayRecord] | None:
+        """Select and book one run; caller holds ``_book_lock``."""
+        from autodj.breaks import AD, AD_SCHEDULE, Break, BreakCues, BreakError
+        from autodj.breaks import new_id as new_break_id
+
+        with self._lock:
+            heard = list(self._heard)
+        expected_airtime = now + airs_in
+        choice = choose(
+            state,
+            item,
+            expected_airtime,
+            self.zone,
+            heard,
+            usable=self._usable,
+            advertiser=advertiser,
+            category=category,
+        )
+        if not choice.spots:
+            logger.warning("Ad break %r has no spot to air: %s", item.name, choice.reason)
+            return [self._run_missed(run, choice.reason, now)]
+        limit = float(self.config().max_spot_seconds)
+        breaks = [
+            Break(
+                break_id=new_break_id(),
+                kind=AD,
+                slot_id=slot_id,
+                ending="",
+                upcoming="",
+                placement="standalone",
+                allow_outro=False,
+                path=self.store.folder / spot.file,
+                size=0,
+                cues=BreakCues(spot.cue_start, spot.cue_segue, spot.cue_end, spot.length_s),
+                label=spot.label,
+                token_name=AD_SENDER,
+                created_at=now,
+                expires_at=expires,
+                source=AD_SCHEDULE,
+                keep_file=True,
+                limit_s=limit,
+            )
+            for _key, spot in choice.spots
+        ]
+        try:
+            self.player.book_breaks(breaks, slot_id)
+        except BreakError:
+            return None  # the change closed as it was booked: the next one
+        records = [
+            PlayRecord(
+                id=booked.break_id,
+                run=run.run_id,
+                break_id=run.break_id,
+                break_name=item.name,
+                source=run.source,
+                scheduled=_utc(run.scheduled),
+                spot_id=key,
+                title=spot.title,
+                advertiser=spot.advertiser,
+                campaign=spot.campaign,
+                category=spot.category,
+                seconds=round(spot.seconds, 3),
+                status=BOOKED,
+                logged=_utc(now),
+            )
+            for booked, (key, spot) in zip(breaks, choice.spots, strict=True)
+        ]
+        with self._lock:
+            for record in records:
+                entry = Heard(record.spot_id, record.advertiser, record.category, expected_airtime)
+                self._booked[record.id] = _Tracked(record, entry)
+                self._heard.append(entry)
+            self._forget_old_locked(now)
         logger.info(
             "Ad break %r booked with %d spot%s for the song change in about %d s",
             item.name,
@@ -1746,6 +1816,103 @@ class AdDesk:
             round(airs_in),
         )
         return records
+
+    @staticmethod
+    def _step_run(step: dict, at: float) -> Run:
+        name = f"Clockwheel {step['clock']}, step {step['number']}"
+        return Run(new_id(), "", name, at, "clockwheel")
+
+    def missed_steps(self, steps: Sequence[dict], reason: str) -> None:
+        """Queue misses from the render worker; the tick writes their report lines."""
+        if not self.enabled:
+            return
+        with self._lock:
+            self._missed_steps.extend((step, reason) for step in steps)
+
+    def handled_count(self, slot_id: str) -> int:
+        with self._lock:
+            return self._handled_steps.get(slot_id, 0)
+
+    def _book_steps(self, state: AdState, now: float) -> list[PlayRecord]:
+        if not self.enabled or self.player is None:
+            return []
+        plan, _closes_in, airs_in = self.player.slot_status()
+        if (
+            plan is None
+            or not plan.ad_steps
+            or self.handled_count(plan.slot_id) >= len(plan.ad_steps)
+        ):
+            return []
+        refusal = self.refusal()
+        records: list[PlayRecord] = []
+        with self._book_lock:
+            state = self.store.cached()
+            completed = self.handled_count(plan.slot_id)
+            for number, step in enumerate(plan.ad_steps[completed:], completed + 1):
+                run = self._step_run(step, now + airs_in)
+                if refusal is not None:
+                    records.append(self._run_missed(run, refusal, now))
+                else:
+                    item = AdBreak(
+                        name=run.break_name,
+                        max_spots=step["step"]["max_spots"],
+                        max_seconds=step["step"]["max_seconds"],
+                    )
+                    result = self._book_item(
+                        run,
+                        item,
+                        plan.slot_id,
+                        now,
+                        airs_in,
+                        now + airs_in + state.settings.miss_after_minutes * 60,
+                        state,
+                        advertiser=step["step"].get("advertiser", ""),
+                        category=step["step"].get("category", ""),
+                    )
+                    if result is None:
+                        return records
+                    records.extend(result)
+                with self._lock:
+                    self._handled_steps[plan.slot_id] = number
+                    if len(self._handled_steps) > 64:
+                        self._handled_steps.popitem(last=False)
+        return records
+
+    def heard_snapshot(self) -> list[Heard]:
+        with self._lock:
+            return list(self._heard)
+
+    def forecast_step(self, step: dict, at: float, heard: list[Heard]) -> Forecast | None:
+        if self.refusal() is not None:
+            return None
+        fields = step["step"]
+        item = AdBreak(
+            name=f"Clockwheel {step['clock']}, step {step['number']}",
+            max_spots=fields["max_spots"],
+            max_seconds=fields["max_seconds"],
+        )
+        choice = choose(
+            self.store.cached(),
+            item,
+            at,
+            self.zone,
+            heard,
+            advertiser=fields.get("advertiser", ""),
+            category=fields.get("category", ""),
+            usable=self._usable,
+        )
+        for spot_id, spot in choice.spots:
+            heard.append(Heard(spot_id, spot.advertiser, spot.category, at))
+        detail = (
+            f"Ad break, {len(choice.spots)} spot{'' if len(choice.spots) == 1 else 's'}, "
+            f"about {round(choice.seconds)} seconds"
+            if choice.spots
+            else choice.reason
+        )
+        label = f"Ad break: clockwheel step {step['number']}"
+        if not choice.spots:
+            label += f" ({choice.reason})"
+        return Forecast(at, label, choice.seconds, detail, False)
 
     def _outcomes(self, now: float) -> list[PlayRecord]:
         """What became of the booked spots: aired, cut off on the air, or missed and why."""

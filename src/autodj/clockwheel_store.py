@@ -9,7 +9,9 @@ A clockwheel file looks like this::
         {"type": "track", "source": "<source id>", "path": "Album/Song.flac"},
         {"type": "category", "category": "<category id>",
          "selection": "least_recent", "enforce_rules": true},
-        {"type": "settings", "preset": "Night"}]}
+        {"type": "settings", "preset": "Night"},
+        {"type": "ad_break", "max_spots": 3, "max_seconds": 60,
+         "advertiser": "", "category": ""}]}
 
 Folder and track steps name a registered library source by its ID and a
 path inside it written with forward slashes, so a file never holds an
@@ -23,9 +25,10 @@ categories use (:func:`autodj.categories.daypart_refusal`).  Outside them
 the step is skipped, as an empty one is.  A step without them is written
 without the keys, so an older AutoDJ still reads the file.
 
-Step types live in a registry, like the scheduler's actions.  Loading a
+An ad break step books eligible spots before the next clockwheel song.
+Step types live in a registry, like the scheduler's actions. Loading a
 clockwheel with a type nobody registered fails with an error that names
-the type.  A feature adds its own type (carts, time checks, ad breaks)
+the type. A feature adds its own type (carts, time checks)
 with :func:`register_step_type` before clockwheels load, and teaches the
 player to play it in ``Player.configure_clock``.
 """
@@ -263,6 +266,26 @@ def _settings_step(value: Mapping[str, Any]) -> dict[str, Any]:
     return {"type": "settings", "preset": preset.strip()}
 
 
+def _ad_break_step(value: Mapping[str, Any]) -> dict[str, Any]:
+    from autodj.ads import MAX_SPOTS_PER_BREAK, NAME_MAX
+
+    _fields(value, {"type", "max_spots", "max_seconds", "advertiser", "category"}, {"type"})
+    spots = value.get("max_spots", 3)
+    seconds = value.get("max_seconds", 0)
+    if type(spots) is not int or not 1 <= spots <= MAX_SPOTS_PER_BREAK:
+        raise ValueError(f"max_spots must be an integer from 1 to {MAX_SPOTS_PER_BREAK}")
+    if type(seconds) is not int or (seconds != 0 and not 10 <= seconds <= 900):
+        raise ValueError("max_seconds must be 0 or an integer from 10 to 900")
+    step = {"type": "ad_break", "max_spots": spots, "max_seconds": seconds}
+    for field in ("advertiser", "category"):
+        text = value.get(field, "")
+        if not isinstance(text, str) or len(text) > NAME_MAX:
+            raise ValueError(f"{field} must be text of at most {NAME_MAX} characters")
+        if text.strip():
+            step[field] = text.strip()
+    return step
+
+
 def _category_step(value: Mapping[str, Any]) -> dict[str, Any]:
     _fields(value, {"type", "category", "selection", "enforce_rules"}, {"type", "category"})
     category = value["category"]
@@ -282,6 +305,7 @@ register_step_type("liner", _folder_step)
 register_step_type("track", _track_step)
 register_step_type("settings", _settings_step)
 register_step_type("category", _category_step)
+register_step_type("ad_break", _ad_break_step)
 
 
 def validate_step(value: Any) -> dict[str, Any]:

@@ -2597,6 +2597,13 @@ shows each run as a fixed point to time to.
 
 **Run now** books a break at the next song change it can join, which is handy for a test.
 
+### Ad breaks in a clockwheel
+
+A [clockwheel](#clockwheels) can place an ad break before its next song. The report lists its
+source as "Clockwheel step" and its break as "Clockwheel <name>, step <n>". If a song change is
+re-planned, the new change books the step again; spots dropped from the old change are reported
+as missed.
+
 ### How a break is filled
 
 When a break falls due, AutoDJ picks its spots:
@@ -2962,6 +2969,8 @@ Each row says in its Status column whether it is fixed or predicted:
   booked joins the first predicted song change at or after its time, with the spots its rules
   would pick now and their length; the songs after it move later by that much. Its time is also
   a fixed point below, as "Ad break" and its name.
+- Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
+  would play, the row has length 0 and says why.
 
 Backtiming goes to each fixed point in the span:
 
@@ -3381,6 +3390,13 @@ Step types:
 - **A specific track**, by its path inside a registered music folder. It follows the repeat rules;
   when they hold it back, the clockwheel moves on to the next step.
 - **Switch preset**: the next song is picked and mixed with that preset.
+- **Ad break**: books spots at the song change before the next song the clockwheel picks.
+  **Most spots** or **Spots in the break** limits the count (1 to 10); **Longest break in
+  seconds** is its target length (0 means no limit). Optional **Advertiser** and **Competing
+  category** restrict eligible spots. It needs `[ads] enabled = true`, saved segue points and
+  server mixing, as described under [Ad breaks](#ad-breaks). With no eligible spot, music
+  continues and the report records a missed break with the reason. JSON example:
+  `{"type":"ad_break","max_spots":3,"max_seconds":60,"advertiser":"","category":""}`.
 
 Music and liner steps have an **Add condition** button in the same step form. Choose **Match
 all** when every condition must hold, or **Match any** when one is enough. Each folder is its
