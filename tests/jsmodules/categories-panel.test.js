@@ -136,8 +136,9 @@ describe("categories list", () => {
   it("lists each category as plain text with named Edit and Delete buttons, and says nothing", async () => {
     await open();
     expect(items()[0].querySelector("span").textContent).toBe(describeCategory(DECADE));
-    expect(rowButton(1, "edit").textContent).toBe("Edit A");
-    expect(rowButton(1, "delete").querySelector(".visually-hidden").textContent).toBe(" A");
+    expect(rowButton(1, "edit").textContent).toBe("Edit");
+    expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit A");
+    expect(rowButton(1, "delete").getAttribute("aria-label")).toBe("Delete A");
     expect(status()).toBe("");
     expect(byId("categories-playlist").options).toHaveLength(3);
     expect(byId("categories-folder").textContent).toBe("D:\\Radio\\playlists");
