@@ -56,6 +56,8 @@ SHARED = frozenset(
         "/api/library/run",
         "/api/library/stop",
         "/api/library/stats",
+        "/api/library/missing",
+        "/api/library/remove-missing",
         "/api/categories",
         "/api/categories/check",
         "/api/categories/{category_id}",

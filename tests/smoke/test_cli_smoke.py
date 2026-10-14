@@ -166,10 +166,10 @@ class TestIndexCommand:
 
 
 class TestStatsCommand:
-    def test_stats_runs_without_crash(self, runner: CliRunner, project_dir: Path) -> None:
+    def test_stats_requires_library_catalog(self, runner: CliRunner, project_dir: Path) -> None:
         result = runner.invoke(cli, ["--config", str(project_dir / "config.toml"), "stats"])
-        assert result.exit_code == 0, f"Output:\n{result.output}"
-        assert "tracks" in result.output.lower() or "Total" in result.output
+        assert result.exit_code == 1
+        assert "Current library not found" in result.output
 
     def test_stats_missing_config_exits_1(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(cli, ["--config", str(tmp_path / "nope.toml"), "stats"])

@@ -31,7 +31,9 @@ def _bridge_with_library(root: Path, current=None):
         huggingface=HuggingFaceConfig(),
         config_path=root / "config.toml",
     )
+    cfg.library.music_dir.mkdir(parents=True, exist_ok=True)
     library = LibraryManager(cfg, _EmptySimilarity())
+    library.catalog.add_source(cfg.library.music_dir)
     player = _make_player_mock(current)
     player._cfg = cfg
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())

@@ -1876,10 +1876,12 @@
       <div id="stream-relay-settings">
         <h4>Relays</h4>
         <button type="button" id="stream-relay-add">Add relay</button>
+        <div id="stream-relay-table-wrap">
         <table id="stream-relay-table" role="grid" aria-label="Stream relays">
           <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
           <tbody id="stream-relay-rows"></tbody>
         </table>
+        </div>
         <form id="stream-relay-form" hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
           <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
@@ -2570,19 +2572,19 @@
         <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
         <dt>Tracks with energy</dt> <dd id="lib-stat-with-energy"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
       </dl>
-      <button type="button" id="lib-stats-refresh">Refresh stats</button>
+      <button type="button" id="lib-stats-refresh">Refresh summary</button>
 
       <!-- Run buttons -->
       <h3 id="library-run-heading">Library jobs</h3>
-      <p>Index rescans your registered folders and analyses eligible songs in the current library.
-        Enrich updates its metadata from beets. Analyse, Prune and Stats below are legacy tools
-        for older index files; they do not update the current library.</p>
+      <p>Import and analyze refreshes the current library and runs advanced analysis where enabled.
+        Enrich refreshes metadata from beets. Analyse adds CPU DJ cues, Remove missing tracks previews
+        and confirms safe catalog cleanup, and Detailed stats prints the current library report.</p>
       <div role="group" aria-labelledby="library-run-heading">
         <div class="settings-row">
           <label for="lib-index-limit">Advanced analysis limit (optional)</label>
           <input type="number" id="lib-index-limit" min="0" step="1"
                  placeholder="0 = all">
-          <button type="button" id="lib-run-index">Index</button>
+          <button type="button" id="lib-run-index">Import and analyze</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">
           Add songs from your registered folders, then analyse those with advanced analysis
@@ -2593,8 +2595,8 @@
         <div class="settings-row">
           <button type="button" id="lib-run-enrich">Enrich</button>
           <button type="button" id="lib-run-analyse">Analyse</button>
-          <button type="button" id="lib-run-prune">Prune</button>
-          <button type="button" id="lib-run-stats">Stats</button>
+          <button type="button" id="lib-run-prune">Remove missing tracks</button>
+          <button type="button" id="lib-run-stats">Detailed stats</button>
           <button type="button" id="lib-run-stop">Stop running job</button>
         </div>
         <p class="setting-desc">
@@ -2602,9 +2604,9 @@
           beets without re-embedding.  <strong>Analyse</strong> finds the
           intro, outro, beat grid and cue points of tracks not analysed yet;
           already analysed tracks are skipped, so running it again is quick.
-          <strong>Prune</strong> drops index
-          entries whose files were deleted.  <strong>Stats</strong> prints
-          the full library report from the indexer.  <strong>Stop</strong>
+          <strong>Remove missing tracks</strong> shows a preview after a successful scan,
+          asks for confirmation, protects disconnected folders, and keeps play history.
+          <strong>Detailed stats</strong> prints the current catalog report. <strong>Stop</strong>
           terminates the running subprocess.
         </p>
       </div>

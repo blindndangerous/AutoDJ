@@ -183,6 +183,7 @@ def least_recent(
     allowed: Callable[[Any], bool] | None = None,
     versions: SongVersions | None = None,
     fit: Callable[[Sequence[Any]], Any] | None = None,
+    preferred_path: str | None = None,
 ) -> Any | None:
     """Choose the oldest allowed entry; prefer never-played and randomize ties.
 
@@ -190,7 +191,15 @@ def least_recent(
     and the oldest version of the oldest song wins.  With *fit* (hour
     fitting), it chooses among the oldest few allowed songs, oldest first.
     """
-    return _least_recent(entries, last_played.get, rng, allowed=allowed, versions=versions, fit=fit)
+    return _least_recent(
+        entries,
+        last_played.get,
+        rng,
+        allowed=allowed,
+        versions=versions,
+        preferred_path=preferred_path,
+        fit=fit,
+    )
 
 
 def _least_recent(
@@ -201,6 +210,7 @@ def _least_recent(
     allowed: Callable[[Any], bool] | None = None,
     versions: SongVersions | None = None,
     fit: Callable[[Sequence[Any]], Any] | None = None,
+    preferred_path: str | None = None,
 ) -> Any | None:
     if not entries:
         raise ValueError("entries must not be empty")
@@ -210,6 +220,21 @@ def _least_recent(
     if versions:
         songs = list(dict.fromkeys(versions.song(entry.path) for entry in entries))
         chooser.shuffle(songs)
+        preferred_song = (
+            next(
+                (
+                    versions.song(entry.path)
+                    for entry in entries
+                    if _normalized(entry.path) == _normalized(preferred_path)
+                ),
+                None,
+            )
+            if preferred_path is not None
+            else None
+        )
+        if preferred_song is not None:
+            songs.remove(preferred_song)
+            songs.insert(0, preferred_song)
         song_order = {song: index for index, song in enumerate(songs)}
 
     def age(entry: Any) -> tuple[Any, ...]:
@@ -231,7 +256,18 @@ def _least_recent(
     if allowed is not None or fit is not None:
         ordered = list(entries)
         chooser.shuffle(ordered)
-        heap = [(*age(entry), index, entry) for index, entry in enumerate(ordered)]
+        heap = [
+            (
+                *age(entry),
+                0
+                if preferred_path is not None
+                and _normalized(entry.path) == _normalized(preferred_path)
+                else 1,
+                index,
+                entry,
+            )
+            for index, entry in enumerate(ordered)
+        ]
         heapq.heapify(heap)
         fitting: list[Any] = []
         fitted_songs: set[str] = set()
@@ -255,6 +291,17 @@ def _least_recent(
     ages = [age(entry) for entry in entries]
     oldest = min(ages)
     candidates = [entry for entry, when in zip(entries, ages, strict=True) if when == oldest]
+    if preferred_path is not None:
+        preferred = next(
+            (
+                entry
+                for entry in candidates
+                if _normalized(entry.path) == _normalized(preferred_path)
+            ),
+            None,
+        )
+        if preferred is not None:
+            return preferred
     return chooser.choice(candidates)
 
 
@@ -437,6 +484,7 @@ def pick_slot(
     normalized_history: Mapping[str, Any] | None = None,
     versions: SongVersions | None = None,
     fit: Callable[[Sequence[Any]], Any] | None = None,
+    preferred_path: str | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
 
@@ -498,6 +546,7 @@ def pick_slot(
                 allowed=allowed if slot.enforce_rules else None,
                 versions=versions,
                 fit=fit,
+                preferred_path=preferred_path,
             )
         else:
             candidates = [entry for entry in matches if not slot.enforce_rules or allowed(entry)]

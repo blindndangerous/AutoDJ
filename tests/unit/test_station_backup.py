@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from autodj.backup import STATION_FILES, BackupError, create_backup, restore_backup
+from autodj.catalog import LibraryCatalog
 from autodj.config import AutoDJConfig, load_config
 from autodj.version import current_version
 
@@ -42,6 +44,12 @@ folder = "{(root / "recordings" / slug).as_posix()}"
     path.write_text(text + extra, encoding="utf-8")
     cfg = load_config(path, environ={})
     cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.active_dir / "library.db"):
+        pass
+    # The fixture only needs the main database; WAL sidecars are transient and
+    # would make rollback assertions depend on SQLite's connection timing.
+    for suffix in ("-shm", "-wal"):
+        (cfg.index.active_dir / f"library.db{suffix}").unlink(missing_ok=True)
     return cfg
 
 
@@ -61,7 +69,8 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
     for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
         for name in STATION_FILES:
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
-        put(base / "relays.json", b'{"password": "' + who + b'-relay-secret"}')
+        # Not in *written*: a backup never holds it, so a restore never brings it.
+        (base / "relays.json").write_bytes(b'{"password": "' + who + b'-relay-secret"}')
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
@@ -81,9 +90,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     with zipfile.ZipFile(archive) as opened:
         names = set(opened.namelist())
         manifest = json.loads(opened.read("manifest.json"))
-        default_relays = opened.read("index/relays.json")
-        owl_relays = opened.read("stations/nightowl/index/relays.json")
-        archive_manifest = opened.read("manifest.json")
+        contents = b"".join(opened.read(name) for name in opened.namelist())
     assert manifest["stations"] == ["nightowl"]
     # The default station keeps today's names; Night Owl's are under its slug.
     assert {"index/web_state.json", "liners/id.mp3", "profiles/Party.json"} <= names
@@ -97,13 +104,12 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
         "stations/nightowl/clockwheels/Night.json",
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
-        "stations/nightowl/index/relays.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
-    assert "index/relays.json" in names
-    assert default_relays == written[cfg.index.active_dir / "relays.json"]
-    assert owl_relays == written[_station_dir(cfg, "nightowl") / "relays.json"]
-    assert b"relay-secret" not in archive_manifest
+    # Relay settings hold source passwords: a backup never holds them.
+    assert "index/relays.json" not in names
+    assert "stations/nightowl/index/relays.json" not in names
+    assert b"relay-secret" not in contents
     assert "relay-secret" not in caplog.text
     # A station never holds the shared categories, and nothing is stored twice.
     assert "stations/nightowl/index/categories.json" not in names
@@ -115,6 +121,42 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
 
     for path, data in written.items():
         assert path.read_bytes() == data, path
+    # The live relay settings were left alone.
+    assert (cfg.index.active_dir / "relays.json").read_bytes() == (
+        b'{"password": "default-relay-secret"}'
+    )
+    assert (_station_dir(cfg, "nightowl") / "relays.json").read_bytes() == (
+        b'{"password": "owl-relay-secret"}'
+    )
+
+
+def test_restore_skips_relay_settings_in_an_archive_that_has_them(tmp_path: Path) -> None:
+    """An archive from a build that backed relays.json up never replaces the live one."""
+    cfg = _config(tmp_path)
+    written = _fill(cfg)
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    old = tmp_path / "old.zip"
+    with zipfile.ZipFile(archive) as source, zipfile.ZipFile(old, "w") as target:
+        manifest = json.loads(source.read("manifest.json"))
+        for name in source.namelist():
+            if name != "manifest.json":
+                target.writestr(source.getinfo(name), source.read(name))
+        stale = {
+            "index/relays.json": b'{"password": "stale-default"}',
+            "stations/nightowl/index/relays.json": b'{"password": "stale-owl"}',
+        }
+        for name, data in stale.items():
+            target.writestr(name, data)
+        manifest["files"] = [*manifest["files"], *stale]
+        target.writestr("manifest.json", json.dumps(manifest))
+
+    warnings: list[str] = []
+    assert restore_backup(cfg, old, force=True, warnings=warnings) == len(manifest["files"]) - 2
+    assert any("Relay settings" in warning for warning in warnings)
+    for path, data in written.items():
+        assert path.read_bytes() == data, path
+    assert b"default-relay-secret" in (cfg.index.active_dir / "relays.json").read_bytes()
+    assert b"owl-relay-secret" in (_station_dir(cfg, "nightowl") / "relays.json").read_bytes()
 
 
 def test_restore_to_a_new_machine_creates_the_station_folder(tmp_path: Path) -> None:
@@ -123,6 +165,8 @@ def test_restore_to_a_new_machine_creates_the_station_folder(tmp_path: Path) -> 
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
 
     fresh = _config(tmp_path / "new")
+    # A new machine has configuration directories but has not indexed yet.
+    (fresh.index.active_dir / "library.db").unlink()
     restore_backup(fresh, archive, force=False)
 
     for path, data in written.items():
@@ -241,6 +285,13 @@ def test_restore_refuses_a_station_the_config_does_not_define(tmp_path: Path) ->
 
 
 def _archive(path: Path, files: dict[str, bytes], stations: list[str] | None = None) -> Path:
+    files = dict(files)
+    if "index/library.db" not in files:
+        with tempfile.TemporaryDirectory(dir=path.parent) as temporary:
+            catalog = Path(temporary) / "library.db"
+            with LibraryCatalog(catalog):
+                pass
+            files["index/library.db"] = catalog.read_bytes()
     manifest: dict[str, object] = {"autodj_version": current_version(), "files": list(files)}
     if stations is not None:
         manifest["stations"] = stations
@@ -788,7 +839,11 @@ def _snapshot_files(root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(root)): path.read_bytes()
         for path in sorted(root.rglob("*"))
-        if path.is_file() and path.suffix != ".lock" and path.name != ".autodj-restore.json"
+        if path.is_file()
+        and path.suffix != ".lock"
+        and path.name != ".autodj-restore.json"
+        and ".db-shm" not in path.name
+        and ".db-wal" not in path.name
     }
 
 
@@ -799,62 +854,57 @@ def _live_state(cfg: AutoDJConfig) -> dict[str, bytes]:
 
 def _changed_since_backup(cfg: AutoDJConfig) -> None:
     for path in [*cfg.index.active_dir.rglob("*"), *(cfg.index.index_dir / "profiles").rglob("*")]:
-        if path.is_file() and path.suffix not in (".lock", ".db"):
+        if (
+            path.is_file()
+            and path.suffix not in (".lock", ".db")
+            and ".db-shm" not in path.name
+            and ".db-wal" not in path.name
+        ):
             path.write_bytes(b"current " + path.name.encode())
 
 
-def _count_replaces(cfg: AutoDJConfig, archive: Path) -> int:
-    """How many renames a successful restore of *archive* makes."""
-    calls = {"n": 0}
-    real = os.replace
-
-    def counting(source, target):
-        calls["n"] += 1
-        return real(source, target)
-
-    with patch("autodj.backup.os.replace", counting), patch("autodj.fsutil.os.replace", counting):
-        restore_backup(cfg, archive, force=True)
-    return calls["n"]
-
-
-def test_every_failing_rename_leaves_the_data_as_it_was(tmp_path: Path) -> None:
-    """Failure injection at each rename a restore makes, journal writes included."""
+@pytest.mark.parametrize("target_name", ["liners", "library.db", "web_state.json"])
+def test_failed_replacement_restores_the_data(tmp_path: Path, target_name: str) -> None:
+    """A failure after an asset, catalog or later state file is moved is undone."""
     cfg = _config(tmp_path)
     _fill(cfg)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
-    total = _count_replaces(cfg, archive)
-    assert total > 20
     _changed_since_backup(cfg)
     before = _live_state(cfg)
-    real = os.replace
-    # The first and last few renames, and every stretch in between.
-    points = sorted({1, 2, 3, total - 1, total, *range(4, total, max(1, total // 15))})
-    for failing in points:
-        calls = {"n": 0}
+    from autodj import backup as backup_module
 
-        def replace(source, target, failing=failing, calls=calls):
-            calls["n"] += 1
-            if calls["n"] == failing:
-                raise OSError(f"injected failure at rename {failing}")
-            return real(source, target)
+    real_put = backup_module._Swap.put
+    target = (
+        cfg.index.active_dir / target_name
+        if target_name in {"library.db", "web_state.json"}
+        else cfg.index.active_dir / "liners"
+    )
+    raised = False
 
-        with (
-            patch("autodj.backup.os.replace", replace),
-            patch("autodj.fsutil.os.replace", replace),
-            pytest.raises(BackupError, match="nothing was changed"),
-        ):
-            restore_backup(cfg, archive, force=True)
-        assert _live_state(cfg) == before, f"rename {failing}"
-        assert _leftovers(tmp_path / "index") == [], f"rename {failing}"
-        assert not (cfg.index.active_dir / ".autodj-restore.json").exists(), f"rename {failing}"
+    def fail_after_put(swap, source, destination):
+        nonlocal raised
+        real_put(swap, source, destination)
+        if destination == target and not raised:
+            raised = True
+            raise OSError(f"injected failure after replacing {target_name}")
+
+    with (
+        patch.object(backup_module._Swap, "put", fail_after_put),
+        pytest.raises(BackupError, match="nothing was changed"),
+    ):
+        restore_backup(cfg, archive, force=True)
+    assert raised
+    assert _live_state(cfg) == before
+    assert _leftovers(tmp_path / "index") == []
+    assert not (cfg.index.active_dir / ".autodj-restore.json").exists()
 
 
 class _Crash(BaseException):
     """The process dies here: no undo, no clean-up."""
 
 
-@pytest.mark.parametrize("crash_at", [2, 7, 15, -3])
-def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, crash_at: int) -> None:
+@pytest.mark.parametrize("target_name", ["liners", "library.db", "web_state.json"])
+def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, target_name: str) -> None:
     from autodj import backup as backup_module
     from autodj.backup import pending_restore_state, recover_restore, restore_leftovers
     from autodj.doctor import CheckStatus, run_doctor
@@ -862,22 +912,22 @@ def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, crash_at: int
     cfg = _config(tmp_path)
     _fill(cfg)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
-    total = _count_replaces(cfg, archive)
     _changed_since_backup(cfg)
     before = _live_state(cfg)
-    stop = crash_at if crash_at > 0 else total + crash_at
-    real = os.replace
-    calls = {"n": 0}
+    target = (
+        cfg.index.active_dir / target_name
+        if target_name in {"library.db", "web_state.json"}
+        else cfg.index.active_dir / "liners"
+    )
+    real_put = backup_module._Swap.put
 
-    def replace(source, target):
-        calls["n"] += 1
-        if calls["n"] == stop:
+    def crash_after_put(swap, source, destination):
+        real_put(swap, source, destination)
+        if destination == target:
             raise _Crash
-        return real(source, target)
 
     with (
-        patch("autodj.backup.os.replace", replace),
-        patch("autodj.fsutil.os.replace", replace),
+        patch.object(backup_module._Swap, "put", crash_after_put),
         patch.object(backup_module._Swap, "undo", lambda self: []),
         patch("autodj.backup.shutil.rmtree"),
         pytest.raises(_Crash),

@@ -1518,11 +1518,20 @@ class PlayerBridge:
         self.skip()
         return True
 
+    def _played_seconds(self, entry: IndexEntry) -> float:
+        """How long *entry* plays at the station's music speed, in seconds."""
+        length = float(entry.length)
+        rate = getattr(self.player, "music_playback_rate", None)
+        value = rate(entry) if callable(rate) else 1.0
+        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+            return length
+        return length / float(value)
+
     def dmca_queue_limits(self, entry: IndexEntry, *, now: bool, append: bool) -> tuple[str, ...]:
         """The DMCA limits *entry* would break where it is about to be queued.
 
-        Its start is projected from track lengths: after the playing track
-        (unless *now*), and with *append* after everything already queued
+        Its start is projected from track lengths at the music speed: after
+        the playing track (unless *now*), and with *append* after everything already queued
         too.  Empty when DMCA mode is off or no limit is broken.
         """
         from autodj.dmca import complement, projected_history
@@ -1540,6 +1549,7 @@ class PlayerBridge:
             state.clock(),
             None if now else state.current_track,
             waiting if append else [],
+            length=self._played_seconds,
         )
         return complement(records, when, player._track_keys()).broken(entry)
 
@@ -1576,7 +1586,7 @@ class PlayerBridge:
         One slot per queue position whose projected start is within
         *horizon_s* of now (the first, after the playing track and any
         "play next" track, always counts).  Each start is projected from
-        track lengths, and the repeat rules, the same-song window and, in
+        track lengths at the music speed, and the repeat rules, the same-song window and, in
         DMCA mode, the DMCA limits are checked as of that start.
 
         Lock order: this holds no lock while it works.  It copies the
@@ -1610,7 +1620,9 @@ class PlayerBridge:
         slots: list[RequestSlot] = []
         for position in range(len(queue) + 1):
             waiting = [*fixed, *queue[:position]]
-            records, when = projected_history(history, now, current, waiting)
+            records, when = projected_history(
+                history, now, current, waiting, length=self._played_seconds
+            )
             if position and when - now > horizon_s:
                 break
             repeat, minute_paths = build_filter(records, rules, when, keys)
