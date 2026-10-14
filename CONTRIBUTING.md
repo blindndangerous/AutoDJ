@@ -50,7 +50,7 @@ The PR template lists the first two; check the rest as well:
 - Tests added or updated for the new behaviour.
 - Use short native form labels; keep longer help outside the label, readable on demand without `aria-describedby`. Keep concise format hints, active restrictions, station context and validation errors associated with their controls, including `aria-invalid` and error focus. In Settings, use `data-help` when visibility logic needs to hide or show that help.
 - Use the same numeric times and concise counts for visual and screen-reader output; follow the [UI wording guidance](docs/accessibility-testing.md#ui-wording) rather than assuming numbers need spoken-word replacements.
-- `CHANGELOG.md` updated under `[Unreleased]`.
+- Leave `CHANGELOG.md` alone; the release notes are written when releasing.
 - `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. Commits run
   only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
   every hook by hand with `uv run pre-commit run --all-files` followed by
@@ -70,8 +70,10 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
 
 1. Set `version = "X.Y.Z"` in `pyproject.toml` and run `uv lock` so the lock records the new
    project version.
-2. In `CHANGELOG.md`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty
-   `## [Unreleased]` above it, and update the link references at the bottom of the file.
+2. In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` with the user-facing changes from the PRs
+   merged since the last tag, one line each. Leave out fixes to changes that were never released.
+   Keep an empty `## [Unreleased]` above it, and update the link references at the bottom of the
+   file.
 3. Record the manual screen-reader sample that
    [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
    notes.
