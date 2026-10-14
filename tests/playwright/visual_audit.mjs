@@ -1212,7 +1212,7 @@ async function openStationCreateError(page, visit) {
   await page.locator("#station-create-slug").fill("audit-refused");
   await page.locator("#station-create-submit").click();
   await page.locator("#station-create-error").waitFor({ state: "visible" });
-  await visit("settings/stations-refused");
+  await visit("settings/stations/refused");
 }
 
 function realStations(page) {
