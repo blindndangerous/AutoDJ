@@ -179,6 +179,15 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
 
+### Live DJs and talkover
+
+In stream mode a live DJ can take over a station from BUTT, Mixxx or another Icecast source
+client, connecting to AutoDJ's own address with their own username and password (Settings,
+Live DJ). AutoDJ crossfades to the DJ, holds automation where it was, and comes back
+with the next song when they leave. Anyone signed in can also hold **Talk** (or Alt+M) to speak
+over the music from the browser's microphone. See
+[Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
+
 ### Several stations
 
 One server can run more than one station from the same library. The root sections of
@@ -372,7 +381,7 @@ browser only.
 To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Display and keys. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no
 single-key shortcut fires; buttons, sliders, tabs and dialogs keep their normal keys, and the
-Keyboard shortcuts button still opens the list. If the browser blocks site storage, shortcuts stay
+Keyboard shortcuts button at the bottom of the page still opens the list. If the browser blocks site storage, shortcuts stay
 on and the choice lasts only until the page is reloaded.
 
 ### Theme and status messages

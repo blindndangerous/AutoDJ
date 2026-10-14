@@ -18,7 +18,6 @@ from __future__ import annotations
 import calendar
 import logging
 import threading
-import uuid
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date as Date
 from datetime import datetime
@@ -27,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, file_signature, set_aside
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -175,26 +174,10 @@ class LinerDates:
         Raises:
             OSError: The file is there but cannot be looked at.
         """
-        # The file ID too: every save replaces the file, so a new file of the
-        # same size written within one tick of the clock is still noticed.
-        try:
-            found = self.path.stat()
-        except FileNotFoundError as exc:
-            # Only when its folder is there: a dropped share also says "not found".
-            confirm_missing(self.path, exc)
-            return None
-        return found.st_mtime_ns, found.st_size, found.st_ino
+        return file_signature(self.path)
 
     def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            self.path.replace(bad)
-        except OSError:
-            logger.exception("Could not set aside the invalid liner dates file %s", self.path)
-            return
-        logger.error(
-            "Liner dates file %s is invalid (%s); set it aside as %s", self.path, reason, bad
-        )
+        set_aside(self.path, "liner dates file", reason)
 
     def _load_locked(self) -> dict[str, ClipDates]:
         """Every liner's dates, read again if the file changed. Caller holds ``_lock``.

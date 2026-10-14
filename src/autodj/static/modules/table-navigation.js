@@ -25,6 +25,8 @@ export function installTableNavigation(body) {
   body.addEventListener("focusin", (event) => {
     const cell = event.target.closest?.("td");
     if (!cell || !body.contains(cell)) return;
+    // Firefox can focus a tall cell while leaving its bottom below the viewport.
+    cell.scrollIntoView({ block: "nearest", inline: "nearest" });
     const control = cellControl(cell);
     if (event.target === cell && control) { control.focus(); return; }
     setRovingFocus(control === event.target ? event.target : cell);

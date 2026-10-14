@@ -38,7 +38,6 @@ import random
 import re
 import threading
 import time
-import uuid
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -49,7 +48,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
-from autodj.fsutil import atomic_write, confirm_missing
+from autodj.fsutil import atomic_write, file_signature, set_aside
 from autodj.liners import LINER_EXTS
 from autodj.repeat_rules import ArtistSplitter, artist_key
 
@@ -287,6 +286,7 @@ class MatchedIntros:
         # Audio files a delete could not remove yet (one open for a decode).
         self._doomed: set[Path] = set()
         self._splitter = ArtistSplitter()
+        self.rules: Any = None
 
     # ------------------------------------------------------------------
     # The file
@@ -299,23 +299,10 @@ class MatchedIntros:
             OSError: The file is there but cannot be looked at, or its
                 folder is away.
         """
-        try:
-            found = self.path.stat()
-        except FileNotFoundError as exc:
-            confirm_missing(self.path, exc)
-            return None
-        return found.st_mtime_ns, found.st_size, found.st_ino
+        return file_signature(self.path)
 
     def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            self.path.replace(bad)
-        except OSError:
-            logger.exception("Could not set aside the invalid matched intros file %s", self.path)
-            return
-        logger.error(
-            "Matched intros file %s is invalid (%s); set it aside as %s", self.path, reason, bad
-        )
+        set_aside(self.path, "matched intros file", reason)
 
     def _load_locked(self) -> dict[str, Intro]:
         """Every intro, read again if the file changed.  Caller holds ``_lock``.
@@ -518,14 +505,24 @@ class MatchedIntros:
         ]
         return song, by_artist
 
-    def choose(self, track_id: str, artist: str, at: float) -> Chosen | None:
+    def choose(
+        self,
+        track_id: str,
+        artist: str,
+        at: float,
+        group: Literal["both", "song", "artist"] = "both",
+    ) -> Chosen | None:
         """An intro for the song *track_id* by *artist*, airing at Unix time *at*, or ``None``.
 
-        The song's own intros come first, then its artist's (see the module
-        notes).  The one chosen is held for this song change, so another
+        The song's own intros come first, then its artist's, unless *group*
+        limits selection to one tier. The one chosen is held for this song change, so another
         render does not choose it within its wait; :meth:`release` lets it go.
         """
         song, by_artist = self.candidates(track_id, artist)
+        if group == "song":
+            by_artist = []
+        elif group == "artist":
+            song = []
         if not song and not by_artist:
             return None
         day = self._day_at(at)
@@ -539,9 +536,9 @@ class MatchedIntros:
         }
         with self._lock:
             self._apply_heard_locked()
-            for group in (song, by_artist):
+            for tier in (song, by_artist):
                 ready: list[tuple[float, float, str, Intro]] = []
-                for intro_id in group:
+                for intro_id in tier:
                     intro = intros.get(intro_id)
                     if intro is None or intro_id not in present:
                         continue
@@ -573,6 +570,11 @@ class MatchedIntros:
 
     def release(self, intro_ids: Iterable[str]) -> None:
         """Let go of intros held for a song change that will not air."""
+        intro_ids = tuple(intro_ids)
+        if self.rules is not None:
+            for intro_id in intro_ids:
+                if intro_id.startswith("rule:"):
+                    self.rules.release(intro_id[5:])
         with self._lock:
             self._apply_heard_locked()
             for intro_id in intro_ids:
@@ -580,15 +582,24 @@ class MatchedIntros:
 
     def heard(self, intro_id: str) -> None:
         """The mix bus reports *intro_id* on the air.  Never waits."""
+        if intro_id.startswith("rule:") and self.rules is not None:
+            self.rules.heard(intro_id[5:])
+            return
         self._heard.append((intro_id, time.time()))
 
     def release_later(self, intro_ids: Iterable[str]) -> None:
         """Queue reservations the mix bus left without waiting for the store lock."""
-        self._released.extend(intro_ids)
+        for intro_id in intro_ids:
+            if intro_id.startswith("rule:") and self.rules is not None:
+                self.rules.release_later(intro_id[5:])
+            else:
+                self._released.append(intro_id)
 
     def needs_upkeep(self) -> bool:
         """Whether :meth:`upkeep` has anything to do."""
-        return bool(self._heard or self._released or self._unwritten or self._doomed)
+        return bool(self._heard or self._released or self._unwritten or self._doomed) or (
+            self.rules is not None and self.rules.needs_upkeep()
+        )
 
     def upkeep(self) -> None:
         """Write when intros aired and delete audio a delete had to leave (the station's tick).
@@ -619,6 +630,8 @@ class MatchedIntros:
             except OSError:
                 with self._lock:
                     self._doomed.add(path)
+        if self.rules is not None:
+            self.rules.upkeep()
 
 
 __all__ = [

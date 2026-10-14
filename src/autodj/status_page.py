@@ -34,6 +34,9 @@ def track_text(track: dict[str, Any] | None, *, empty: str) -> str:
     """Say a track in words: "Title by Artist, from the album Album."."""
     if not track:
         return empty
+    if track.get("kind") == "live":
+        # A live DJ (#48), worded as modules/status-page.js words it.
+        return f"Live: {str(track.get('artist') or '').strip() or 'a DJ'}."
     title = str(track.get("title") or "").strip() or "Unknown title"
     artist = str(track.get("artist") or "").strip() or "an unknown artist"
     text = f"{title} by {artist}"
