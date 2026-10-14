@@ -1033,6 +1033,75 @@
     }
     #vt-list li:last-child { border-bottom: none; }
 
+    /* ---- Ads (ads-panel.js, #51) ----
+       Spots and breaks: each one's words, then its buttons, which wrap
+       under the words when narrow.  The report's tables scroll sideways
+       inside their own region on a narrow window, never the page. */
+    .ads-notice {
+      margin: 0.5rem 0 0.75rem;
+      padding: 0.35rem 0.6rem;
+      border-left: 3px solid var(--danger-edge);
+      background: var(--notice-bg);
+      color: var(--text);
+    }
+    .ads-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+    .ads-list li {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .ads-list li:last-child { border-bottom: none; }
+    .ads-list li > span { flex: 1 1 16rem; min-width: 0; overflow-wrap: anywhere; }
+    .ads-plain { margin: 0.25rem 0 0.75rem 1.25rem; }
+    .ads-plain li { overflow-wrap: anywhere; }
+    .ads-plain li + li { margin-top: 0.3rem; }
+    #panel-ads h4 { font-size: 0.95rem; margin: 1rem 0 0.25rem; }
+    #ads-spot-add, #ads-break-add { margin-top: 0.5rem; }
+    #ads-spot-form, #ads-break-form { margin-top: 0.75rem; }
+    #ads-report-summary { margin: 0.75rem 0; }
+    .ads-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      margin-bottom: 0.75rem;
+    }
+    .ads-table-wrap:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .ads-table {
+      width: 100%;
+      min-width: 36rem;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    .ads-table caption {
+      text-align: left;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+    }
+    .ads-table th,
+    .ads-table td {
+      padding: 0.5rem 0.7rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+    }
+    .ads-table thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+    }
+    .ads-table tbody th { font-weight: 600; }
+    .ads-table tbody tr:nth-child(even) { background: var(--tint); }
+    .ads-table tbody tr:last-child > * { border-bottom: none; }
+    .ads-table td.ads-number { font-variant-numeric: tabular-nums; }
+
     /* Track info, Matched intros (#127): each intro's words, then its
        Listen and Remove buttons, which wrap under the words when narrow. */
     .intro-list { list-style: none; padding: 0; margin: 0.5rem 0; }

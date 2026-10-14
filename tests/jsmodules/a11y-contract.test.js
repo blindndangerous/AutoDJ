@@ -1767,8 +1767,8 @@ describe("static accessibility contracts", () => {
       '<div id="library-log" aria-live="polite"',
     ))).toBe(false);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
-      ' role="region"',
-      ' role="log"',
+      /(<div id="library-log"\s+)role="region"/,
+      '$1role="log"',
     ))).toBe(false);
 
     installDocument();
@@ -2868,6 +2868,59 @@ describe("static accessibility contracts", () => {
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
     expect(keys).toContain("Alt+R");
+  });
+
+  it("gives the Ads tab labelled forms, one polite status and report tables with headers", () => {
+    installDocument({ html: htmlSource });
+    const panel = document.getElementById("panel-ads");
+    expect(panel.getAttribute("role")).toBe("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe("tab-ads");
+    expect(document.getElementById("tab-ads").textContent).toBe("Ads");
+    expect([...panel.children].find((child) => child.tagName === "H2").id).toBe("ads-heading");
+    const root = document.getElementById("ads-panel");
+    for (const button of root.querySelectorAll("button")) {
+      expect(["button", "submit"], button.id).toContain(button.getAttribute("type"));
+      expect(button.textContent.trim(), button.id).not.toBe("");
+    }
+    // Every field has a visible label, and the checkbox groups a legend.
+    for (const control of root.querySelectorAll("input, select")) {
+      const label = root.querySelector(`label[for="${control.id}"]`);
+      expect(label?.textContent.trim(), control.id).toBeTruthy();
+    }
+    expect(document.querySelector("#ads-break-days legend").textContent).toBe("Days");
+    // One polite region says what a button did; the lists, notices and the
+    // report summary are on the page and never live.
+    const live = [...root.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
+    expect(live.map((node) => node.id)).toEqual(["ads-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // Errors are words a field can be described by, hidden until needed.
+    for (const id of ["ads-spot-error", "ads-break-error", "ads-rules-error", "ads-report-error"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error"), id).toBe(true);
+      expect(error.hidden, id).toBe(true);
+    }
+    for (const id of ["ads-spots", "ads-breaks"]) {
+      expect(document.getElementById(id).getAttribute("role"), id).toBe("list");
+    }
+    // The report: tables with captions and column headers, each in a named
+    // region that takes focus, so a narrow window scrolls it by keyboard.
+    for (const [wrapId, tableId, columns] of [
+      ["ads-totals-wrap", "ads-totals-table", ["Advertiser", "Campaign", "Aired", "Aired late", "Missed", "May have aired", "Waiting", "Seconds aired"]],
+      ["ads-rows-wrap", "ads-rows-table", ["Break time", "Aired", "Result", "Spot", "Break", "Reason"]],
+    ]) {
+      const wrap = document.getElementById(wrapId);
+      const table = document.getElementById(tableId);
+      expect(wrap.getAttribute("role")).toBe("region");
+      expect(wrap.getAttribute("tabindex")).toBe("0");
+      expect(wrap.getAttribute("aria-labelledby")).toBe(table.querySelector("caption").id);
+      const headers = [...table.querySelectorAll("thead th")];
+      expect(headers.map((th) => th.textContent)).toEqual(columns);
+      expect(headers.every((th) => th.getAttribute("scope") === "col")).toBe(true);
+    }
+    // Run now acts on air, so it names the station like the schedule's.
+    const appSource = readFileSync(staticPath("modules", "ads-panel.js"), "utf8");
+    expect(appSource).toMatch(/run\.setAttribute\("aria-describedby", "station-context"\)/);
   });
 
   it("keeps the transition effect description to one sentence", () => {

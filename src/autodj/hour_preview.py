@@ -6,17 +6,20 @@ of it is already fixed and which is a guess:
 
 * fixed: the song on the air; what the render-ahead worker has rendered,
   with the liners and announcer breaks mixed into it; the song picked to
-  follow it; the open song change and the breaks booked on it (#88); and
-  the request queue, which plays before any pick; and the songs of a show
-  (#106): the rest of the one on the air, and a scheduled one's from the
-  first song after its time;
+  follow it; the open song change and the breaks booked on it (#88), ad
+  spots among them (#51); and the request queue, which plays before any
+  pick; and the songs of a show (#106): the rest of the one on the air, and a
+  scheduled one's from the first song after its time;
 * predicted: what the station's own picker would choose after that, from a
   dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
-  ends, with the station's clockwheel place, history and schedule.
+  ends, with the station's clockwheel place, history and schedule; and the
+  ad breaks due in the span, each at the first predicted song change at or
+  after its time, with its spots guessed by the ad schedule's own rules.
 
 It then backtimes to each fixed point in the span: the top of each hour,
-each clockwheel restart and each scheduled event.  For each it says how
-early or late the nearest song change lands, and which song is the reason.
+each clockwheel restart, each scheduled event and each ad break.  For
+each it says how early or late the nearest song change lands, and which
+song is the reason.
 
 Nothing on the air changes.  The live player is only read: its renders,
 its render cursor, the open song change and the queue, under the locks
@@ -115,7 +118,13 @@ STATUS_WORDS = {
 # The schedule's actions the dry run follows: the picking changes, and shows.
 _PREVIEW_ACTIONS = _PICKING_ACTIONS | _UNSIMULATED_ACTIONS | {"show"}
 
-BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "Music news"}
+BREAK_KINDS = {
+    "dj": "DJ",
+    "news": "News",
+    "weather": "Weather",
+    "music_news": "Music news",
+    "ad": "Ad",
+}
 
 NOTES = (
     "Predicted songs come from a dry run of the station's own picker, starting where the fixed "
@@ -127,6 +136,8 @@ NOTES = (
     "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
     "scheduled change of song picking "
     "applies from the first song after its time.",
+    "An ad break not yet booked is predicted at the first predicted song change at or after its "
+    "time, with the spots its rules would pick now; once booked on a song change it is fixed.",
     "A show's songs are listed as saved, from the first song after its time; on the air one "
     "that would break a DMCA limit is skipped.",
 )
@@ -847,6 +858,7 @@ def predict(
     seed: int,
     budget: float = BUDGET_SECONDS,
     limit: int | None = None,
+    ad_runs: Sequence[Any] = (),
     preferred_choices: dict[str, str] | None = None,
     on_choice: Callable[[str, str], None] | None = None,
 ) -> tuple[list[Item], float, str | None]:
@@ -872,6 +884,7 @@ def predict(
             songs,
             preferred_choices or {},
             on_choice,
+            ad_runs,
         )
 
 
@@ -885,8 +898,12 @@ def _predict(
     limit: int,
     preferred_choices: dict[str, str],
     on_choice: Callable[[str, str], None] | None,
+    ad_runs: Sequence[Any] = (),
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
+    # Ad breaks not yet booked (#51), soonest first: each joins the first
+    # predicted song change at or after its time.
+    ads = deque(sorted(ad_runs, key=lambda run: run.at))
     current = decided.last
     handoff = decided.handoff
     if current is None or handoff >= end:
@@ -955,6 +972,12 @@ def _predict(
             if limits is not None and limits.broken(entry):
                 found.append(Item("skipped", handoff, 0.0, "skipped", entry, show_name))
                 continue
+            # An ad break due by now joins this song change too (#51).
+            while ads and ads[0].at <= handoff:
+                run = ads.popleft()
+                if run.seconds > 0:
+                    found.append(Item("break", handoff, run.seconds, "predicted", label=run.label))
+                    handoff += run.seconds
             record(entry, handoff)
             seconds = song_seconds(player, entry, average)
             found.append(Item("song", handoff, seconds, "show", entry, show_name))
@@ -980,6 +1003,11 @@ def _predict(
         if on_choice is not None:
             on_choice(choice_key, entry.path)
         moment = handoff
+        while ads and ads[0].at <= handoff:
+            run = ads.popleft()
+            if run.seconds > 0:  # a break no spot can fill airs nothing
+                found.append(Item("break", moment, run.seconds, "predicted", label=run.label))
+                moment += run.seconds
         next_rate = music_rate(player, entry)
         if added and player._cfg.playback.transition_mode == "saved_points":
             rows, delay = _preview_liner_group(
@@ -1402,6 +1430,7 @@ def build_preview(
     if decided.reason is not None:
         return view
     snapshot = source.snapshot or snapshot_player(source.player)
+    forecasts = _ad_forecasts(source, now, end)
     choices: list[tuple[str, str]] = []
     predicted, ends, stopped = predict(
         source,
@@ -1410,6 +1439,7 @@ def build_preview(
         end,
         seed=seed_for(decided.signature()),
         budget=budget,
+        ad_runs=forecasts,
         preferred_choices=preferred_choices,
         on_choice=(
             (lambda key, path: choices.append((key, path))) if on_prediction is not None else None
@@ -1450,6 +1480,12 @@ def build_preview(
         events=source.events,
         describe=describe,
     )
+    points.extend(
+        Point("event", run.at, run.label, "soft", run.detail)
+        for run in forecasts
+        if run.own_point and now < run.at <= end
+    )
+    points.sort(key=lambda point: (point.at, point.kind != "event"))
     view["points_note"] = (
         f"Only the first {MAX_POINTS} of {len(points)} fixed points are timed."
         if len(points) > MAX_POINTS
@@ -1465,6 +1501,18 @@ def build_preview(
     )
     view["summary"] = _summary(view, landings, zone, minutes)
     return view
+
+
+def _ad_forecasts(source: SimulationSource, now: float, end: float) -> list[Any]:
+    """The ad breaks the station expects from *now* to *end*, not yet booked (#51)."""
+    ads = source.ads
+    if ads is None:
+        return []
+    try:
+        return list(ads.forecast(now, end, source.events))
+    except Exception:  # a store that cannot be read must not stop the preview
+        logger.exception("Could not forecast the ad breaks")
+        return []
 
 
 def _on_air_show(source: SimulationSource) -> tuple[str, Sequence[Any]] | None:
@@ -1718,6 +1766,7 @@ class HourPreviews:
                     source.events,
                     versions,
                     category_signature,
+                    getattr(source.ads, "revision", None),
                     source.shows.signature() if source.shows is not None else None,
                 )
             ).encode("utf-8")
@@ -1779,6 +1828,7 @@ def _source(station: Any) -> SimulationSource:
         events=events,
         timezone=station.timezone,
         liner_dates=station.paths.liner_dates,
+        ads=getattr(station, "ads", None),
     )
 
 

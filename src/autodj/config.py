@@ -1708,6 +1708,49 @@ class BreaksConfig(_Section):
         return self.quota_mb * 1024 * 1024
 
 
+@dataclass
+class AdsConfig(_Section):
+    """Scheduled ad breaks with play reports (#51).
+
+    Attributes:
+        enabled: Air the ad breaks set up in the Ads tab.  Like
+            ``[breaks] enabled``, it makes the station plan each song change
+            one song ahead, so a break can join it.  Off by default.
+        max_upload_mb: The largest spot file, in megabytes (at most 200).
+        max_spot_seconds: The longest spot, in seconds (5 to 600).  A spot is
+            decoded whole into memory when it airs, about 0.35 MB per second.
+        max_spots: The most spots one station keeps (1 to 1000).
+    """
+
+    SECTION: ClassVar[str] = "ads"
+
+    enabled: bool = False
+    max_upload_mb: int = 20
+    max_spot_seconds: float = 120.0
+    max_spots: int = 200
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("ads.enabled must be true or false")
+        value = self.max_spot_seconds
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("ads.max_spot_seconds must be a number")
+        if not math.isfinite(value) or not 5.0 <= value <= 600.0:
+            raise ValueError("ads.max_spot_seconds must be between 5 and 600")
+        self.max_spot_seconds = float(value)
+        for name, low, high in (("max_upload_mb", 1, 200), ("max_spots", 1, 1000)):
+            number = getattr(self, name)
+            if isinstance(number, bool) or not isinstance(number, int):
+                raise TypeError(f"ads.{name} must be a whole number")
+            if not low <= number <= high:
+                raise ValueError(f"ads.{name} must be between {low} and {high}")
+
+    @property
+    def max_upload_bytes(self) -> int:
+        """:attr:`max_upload_mb` in bytes."""
+        return self.max_upload_mb * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class WebhookConfig:
     """One outbound track-change destination, stored in config.local.toml."""
@@ -1816,6 +1859,7 @@ class AutoDJConfig:
         server: Web server, LAN and HTTPS settings.
         stream: Radio stream settings.
         breaks: Announcer breaks from another program (#88).
+        ads: Scheduled ad breaks (#51).
         stations: The stations other than the default one, from
             ``[stations.<slug>]`` tables; empty for a single station.
         config_sources: Where the values came from, in load order.
@@ -1839,6 +1883,7 @@ class AutoDJConfig:
     player_page: PlayerPageConfig = field(default_factory=PlayerPageConfig)
     time_checks: TimeChecksConfig = field(default_factory=TimeChecksConfig)
     breaks: BreaksConfig = field(default_factory=BreaksConfig)
+    ads: AdsConfig = field(default_factory=AdsConfig)
     dmca: DmcaConfig = field(default_factory=DmcaConfig)
     webhooks: tuple[WebhookConfig, ...] = ()
     stations: tuple[StationSpec, ...] = ()
@@ -2031,6 +2076,7 @@ _SECTION_TYPES: tuple[type[_Section], ...] = (
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
+    AdsConfig,
     DmcaConfig,
 )
 
@@ -2050,6 +2096,7 @@ STATION_SECTION_TYPES: tuple[type[_Section], ...] = (
     PlayerPageConfig,
     TimeChecksConfig,
     BreaksConfig,
+    AdsConfig,
     DmcaConfig,
 )
 SHARED_SECTIONS: tuple[str, ...] = ("library", "index", "model", "huggingface", "server")
