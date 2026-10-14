@@ -1422,7 +1422,9 @@ class Player:
                 "resync_minutes": clock["resync_minutes"],
             }
             self._clock_slots = slots
-            self._clock_has_ad_steps = any(slot.kind == "ad_break" for slot in slots)
+            self._clock_has_ad_steps = any(
+                getattr(slot, "kind", None) == "ad_break" for slot in slots
+            )
             self._clock_has_pending_ad_steps = False
             self._clock_status = "Ready"
             self._seed_clock_following = None
@@ -1458,7 +1460,9 @@ class Player:
         revision = self._clock_revision + 1
         if timing == "next_restart" and old_name == name and self._clock is not None:
             self._pending_clock_update = (clock, slots, revision)
-            self._clock_has_pending_ad_steps = any(slot.kind == "ad_break" for slot in slots)
+            self._clock_has_pending_ad_steps = any(
+                getattr(slot, "kind", None) == "ad_break" for slot in slots
+            )
             self._pending_clock_name = name
             self._clock = {**self._clock, "pending_restart_reset": True}
             if (ledger := self._ledger) is not None:
@@ -1483,7 +1487,7 @@ class Player:
         self._clock_definition = clock
         self._seed_clock_following = None
         self._clock_slots = slots
-        self._clock_has_ad_steps = any(slot.kind == "ad_break" for slot in slots)
+        self._clock_has_ad_steps = any(getattr(slot, "kind", None) == "ad_break" for slot in slots)
         self._clock_steps = clock["steps"]
         from autodj.categories import parse_step_hours
 
@@ -1811,7 +1815,7 @@ class Player:
         name = (self._clock or {}).get("name")
         self._clock_definition = clock
         self._clock_slots = slots
-        self._clock_has_ad_steps = any(slot.kind == "ad_break" for slot in slots)
+        self._clock_has_ad_steps = any(getattr(slot, "kind", None) == "ad_break" for slot in slots)
         self._clock_steps = clock["steps"]
         from autodj.categories import parse_step_hours
 
@@ -2783,7 +2787,7 @@ class Player:
                         self._choose_station_next(current, context, auto_liner=False)
                     )
                     next_clock_step = self._chosen_clock_step
-                    unbooked_ad_steps = self._chosen_clock_ad_steps
+                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
                     if next_mode == "clock":
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
@@ -2799,7 +2803,7 @@ class Player:
                             liners, liner_key = self._auto_liner(current, next_entry)
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
-                    unbooked_ad_steps = self._chosen_clock_ad_steps
+                    unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
             except Exception as exc:
                 logger.warning(
                     "No track can follow %s (%s); it plays out alone.", current.path, exc
