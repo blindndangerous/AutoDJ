@@ -192,7 +192,7 @@ non-loopback address, and `localhost`, `127.0.0.1` and `::1`. With TLS files set
 (`[server] ssl_certfile` and `ssl_keyfile`, or `--ssl-certfile` and `--ssl-keyfile`) it allows
 the matching `https://` origins too. It uses a configured
 `access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
-`<index_dir>/.access-token`. On Linux and macOS only you can read that file. On Windows it gets the index folder's permissions, and if the index folder is on a network share, anyone who can read the share can read the token. Deleting `.access-token` makes the next start create a new
+`<index_dir>/.access-token`. Only you can read that file: on Windows it gets an access list granting your account alone, not the index folder's permissions. Deleting `.access-token` makes the next start create a new
 token, which ends every paired session; each browser must pair again. Startup prints the addresses
 to open and, while no browser is paired, a pairing code with how long it stays valid; it never
 prints the token. After that no code is printed or usable until someone asks for one:
@@ -985,8 +985,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
   default. Type up to two decimal places; the slider's arrow keys move one percentage point.
   Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
-  normal speed. Saved cues and seek positions still refer to the original file; clock fitting
-  and forecasts account for the changed playing time.
+  normal speed. Saved cues and seek positions still refer to the original file; clock fitting,
+  forecasts and the DMCA and repeat checks on queued songs and listener requests account for the
+  changed playing time.
   Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
   current audio and booked speech intact. Browser playback applies a change immediately when
   no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
@@ -1161,10 +1162,10 @@ removed; saved definitions and passwords then take precedence over TOML. A blank
 keeps the saved one only when editing the same relay destination (host, port and type).
 Environment passwords take precedence over both files and cannot be edited in the web form.
 `relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
-separate private copy if needed. Unreadable saved relay settings leave relays off and block
-web saves until the file is repaired. On POSIX systems the file is written with mode 0600.
-On Windows, Python's `chmod(0o600)` sets the read-only attribute; access is governed by the
-directory's inherited Windows ACL, which administrators must restrict to trusted users.
+separate private copy if needed. Unreadable saved relay settings leave relays off and block web saves until the
+file is repaired. Only the account AutoDJ runs as can read the file: it has mode 0600 on
+Linux and macOS, and on Windows an access list granting that user alone, with nothing
+inherited from the folder.
 Station metadata is saved with the other web settings in `web_state.json`.
 
 For initial configuration, describe each server as a named table in `config.toml`:
@@ -1516,9 +1517,10 @@ destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
 in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
-`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
-files without encryption, so store them with the same care as those credentials. A folder two
+`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A backup holds no
+secrets: each station's `relays.json`, which holds relay source passwords, stays out of it, and a
+restore leaves the station's own `relays.json` in place (it skips one found in an archive made by
+an older build). Keep a separate private copy of `relays.json` if you need one. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and

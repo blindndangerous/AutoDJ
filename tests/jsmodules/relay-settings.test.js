@@ -69,4 +69,21 @@ describe("relay settings", () => {
     await Promise.resolve();
     expect(document.getElementById("stream-relay-rows").textContent).not.toContain("stale");
   });
+
+  it("keeps focus on a row's Enable or Disable button after it saves", async () => {
+    const post = vi.fn(async () => true);
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [{ name: "main", enabled: true }] })),
+      post, remove: vi.fn(), announce: vi.fn(),
+    });
+    ui.setAvailable(true);
+    await vi.waitFor(() => expect(document.querySelector("#stream-relay-rows tr")).toBeTruthy());
+    const toggle = document.querySelectorAll("#stream-relay-rows tr button")[1];
+    toggle.focus();
+    toggle.click();
+    await vi.waitFor(() => expect(post).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(toggle);
+    ui.reset();
+  });
 });

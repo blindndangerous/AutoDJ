@@ -1854,10 +1854,12 @@
       <div id="stream-relay-settings">
         <h4>Relays</h4>
         <button type="button" id="stream-relay-add">Add relay</button>
+        <div id="stream-relay-table-wrap">
         <table id="stream-relay-table" role="grid" aria-label="Stream relays">
           <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
           <tbody id="stream-relay-rows"></tbody>
         </table>
+        </div>
         <form id="stream-relay-form" hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
           <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
