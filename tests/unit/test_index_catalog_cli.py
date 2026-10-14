@@ -12,7 +12,8 @@ from click.testing import CliRunner
 
 from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_index_for_serve, cli
-from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets, save_index
+from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets
+from tests.unit._legacy_index import save_index
 from tests.unit.test_library import fake_basic, fake_loudness, make_config
 
 
