@@ -34,6 +34,7 @@
 
 import { announceStatus } from "./live-region.js";
 import { stationApi } from "./stations.js";
+import { clockText } from "./time-format.js";
 
 const SAMPLES_PER_MESSAGE = 2048;
 // Audio queued in the socket past this is dropped: about 0.7 s at 48 kHz.
@@ -91,7 +92,7 @@ registerProcessor("autodj-talk-capture", AutodjTalkCapture);
 function localTime(iso, locale) {
   const when = new Date(iso);
   if (Number.isNaN(when.getTime())) return "";
-  return when.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  return clockText(when, { locale });
 }
 
 // The live line for *live* ({dj, since} or null): "" when automation plays.

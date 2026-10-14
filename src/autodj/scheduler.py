@@ -45,6 +45,7 @@ from pydantic import (
 )
 
 from autodj.fsutil import atomic_write
+from autodj.timefmt import clock_text
 
 logger = logging.getLogger(__name__)
 
@@ -362,7 +363,7 @@ def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | No
 
 
 def _hhmm(value: Time | None) -> str:
-    return value.strftime("%H:%M") if value is not None else ""
+    return clock_text(value) if value is not None else ""
 
 
 def _day_words(day: Date, *, year: bool = True) -> str:
