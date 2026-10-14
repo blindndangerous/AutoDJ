@@ -103,40 +103,37 @@ describe("tab arrow keys", () => {
     }
   });
 
-  it("places Carts, Voice tracks, Ads, then Track info, after Queue & Search in cached markup and keyboard order", async () => {
+  it("orders the tabs from one list, fixes cached markup and opens them with Alt+number", async () => {
     installIndex();
-    const carts = document.getElementById("tab-carts");
-    const voice = document.getElementById("tab-voice");
-    const ads = document.getElementById("tab-ads");
-    const info = document.getElementById("tab-track-info");
-    expect(document.getElementById("tab-queue").nextElementSibling).toBe(carts);
-    expect(carts.nextElementSibling).toBe(voice);
-    expect(voice.nextElementSibling).toBe(ads);
-    expect(ads.nextElementSibling).toBe(info);
+    const order = ["now", "queue", "track-info", "history", "carts", "voice", "ads", "library", "settings"];
+    const ids = () => [...document.querySelectorAll('#view-nav [role="tab"]')].map((tab) => tab.dataset.view);
+    expect(ids()).toEqual(order);
     // A cached page with the tabs in another order is put right.
-    info.parentElement.append(ads, voice, carts, info);
+    const list = document.querySelector('#view-nav [role="tablist"]');
+    list.append(...[...list.children].reverse());
+    window.location.hash = "#now";
     vi.resetModules();
     const { initViewRouter: freshRouter } = await import(
       "../../src/autodj/static/modules/tabs.js");
-    freshRouter();
-    const queue = document.getElementById("tab-queue");
-    expect(queue.nextElementSibling).toBe(carts);
-    expect(carts.nextElementSibling).toBe(voice);
-    expect(voice.nextElementSibling).toBe(ads);
-    expect(ads.nextElementSibling).toBe(info);
-    queue.focus();
-    queue.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(carts);
-    expect(document.getElementById("panel-carts").hidden).toBe(false);
-    carts.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(voice);
-    expect(document.getElementById("panel-voice").hidden).toBe(false);
-    voice.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(ads);
-    expect(document.getElementById("panel-ads").hidden).toBe(false);
-    ads.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(info);
-    window.location.hash = "";
+    try {
+      freshRouter();
+      expect(ids()).toEqual(order);
+      const alt = (code) => document.dispatchEvent(
+        new KeyboardEvent("keydown", { code, altKey: true, bubbles: true, cancelable: true }));
+      document.getElementById("tab-queue").focus();
+      document.getElementById("tab-queue").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(document.getElementById("tab-track-info"));
+      alt("Digit9");
+      await vi.waitFor(() => expect(document.querySelector("#panel-settings").hidden).toBe(false));
+      expect(document.querySelector("#panel-settings").contains(document.activeElement)).toBe(true);
+      // An open dialog keeps the page behind it where it is.
+      document.getElementById("hotkey-help-modal").setAttribute("open", "");
+      alt("Digit4");
+      expect(window.location.hash).toBe("#settings");
+    } finally {
+      window.location.hash = "";
+    }
   });
 
   it("focuses the Voice tracks heading when the tab is chosen", async () => {

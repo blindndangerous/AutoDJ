@@ -354,6 +354,8 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+J** — speak the library job status: what is running, for how long, and how far it has
   got as a percentage when the job shows one, or how the last job ended.
 - **Shift+H** — speak how the hour lands, from the hour preview.
+- **Alt+1** to **Alt+9** — open the tab in that position: Now Playing, Queue & Search, Track info,
+  History, Carts, Voice tracks, Ads, Library tools, Settings. These work in text fields too.
 - **?** — open the shortcut list.
 
 Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now

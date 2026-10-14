@@ -103,13 +103,13 @@
   <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
+    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
-    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
-    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
 </nav>
 
@@ -3328,6 +3328,7 @@
     <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
     <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt><kbd>Alt+1</kbd> to <kbd>Alt+9</kbd></dt><dd>Open the tab in that position: Now Playing, Queue &amp; Search, Track info, History, Carts, Voice tracks, Ads, Library tools, Settings. Works from anywhere, including text fields.</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
     <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
