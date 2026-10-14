@@ -56,9 +56,8 @@ serving and indexing before accepting this repair. `serve --lan` runs until stop
 change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
 configuration report.
 
-The `index` check reads the current catalog when one exists. Before its first import, it checks
-the legacy index that `serve` or `index` would import. It reports catalog counts, warns when the
-library is empty, and reports an error that would prevent startup or import. The `dj-meta-db`
+The `index` check reads the current catalog. It reports catalog counts, warns when the library
+is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
 basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
@@ -76,8 +75,8 @@ liner folder is missing. With several stations, each station is checked on its o
 
 `autodj index` scans the registered folders and saves basic song records in `library.db` before
 loading the model. It then embeds eligible songs that do not yet have vectors. By default it also
-refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks under
-the configured music root whose folders have advanced analysis enabled. This backfill adds intro,
+refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks in
+registered music folders with advanced analysis enabled. This backfill adds intro,
 outro, beat-grid and cue data; `--no-analyse` skips it, while advanced embedding still runs.
 In a terminal, analysis commands show completed-track progress. Redirected output and web job
 logs keep plain progress messages.
@@ -108,19 +107,34 @@ directory that lists each file and its messages: `decode-indexing.log` for embed
 report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
 left out, because the decode itself is complete.
 
-`autodj index` uses the same registered folders as Library tools. `--limit` caps the advanced
+A new library starts empty. Add folders in Library tools; setup and startup do not choose a
+music folder for you. `autodj index` uses those same registered folders. `--limit` caps the advanced
 embedding pass, not the basic import. Folders with advanced analysis disabled stay playable
 without embedding. Each completed vector is saved in `library.db`, so an interrupted run resumes
 with remaining songs. `--force` replaces vectors for eligible songs without deleting cues,
 history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
 audio prefetch. `--no-enrich` skips the optional beets refresh.
 
-The old published-index format, including `index-manifest.json`, is deprecated. If there is no
-catalog, `index` or `serve` imports a valid old index once and keeps the originals for recovery.
-A stale manifest is ignored when the catalog already exists. For an unreadable legacy index,
-`index --force` can build a catalog from the configured folders without importing that index.
-`migrate-index` remains available for older formats. Legacy `analyse`, `prune`, and `stats`
-commands still use the old files; `enrich` uses the catalog when present.
+The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
+and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
+data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
+not bypass migration. A leftover manifest is ignored when the current catalog already exists.
+
+`analyse`, `enrich`, and `stats` use the
+current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
+beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers
+all registered folders. New DJ-meta cache entries use full track paths; existing
+relative cache entries remain readable with the old `music_dir` setting. That setting does not
+limit which registered folders can be analysed. It is optional and kept only to resolve older
+relative cache or beets paths; leave it out of new setups. For a legacy index import, pass
+`migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
+
+The Library panel's **Remove missing tracks** action is
+available after a successful rescan; it previews catalog records missing from mounted sources,
+requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
+analysis data for those records, and preserves audio files and play history. Disconnected sources
+and incomplete scans are excluded from cleanup.
+
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:
@@ -192,7 +206,7 @@ non-loopback address, and `localhost`, `127.0.0.1` and `::1`. With TLS files set
 (`[server] ssl_certfile` and `ssl_keyfile`, or `--ssl-certfile` and `--ssl-keyfile`) it allows
 the matching `https://` origins too. It uses a configured
 `access_token` or `AUTODJ_ACCESS_TOKEN` when there is one; otherwise it loads or creates
-`<index_dir>/.access-token`. On Linux and macOS only you can read that file. On Windows it gets the index folder's permissions, and if the index folder is on a network share, anyone who can read the share can read the token. Deleting `.access-token` makes the next start create a new
+`<index_dir>/.access-token`. Only you can read that file: on Windows it gets an access list granting your account alone, not the index folder's permissions. Deleting `.access-token` makes the next start create a new
 token, which ends every paired session; each browser must pair again. Startup prints the addresses
 to open and, while no browser is paired, a pairing code with how long it stays valid; it never
 prints the token. After that no code is printed or usable until someone asks for one:
@@ -295,8 +309,9 @@ AUTODJ_GID=1000
 #AUTODJ_BEETS_PATH=/home/you/.config/beets
 ```
 
-Without `.env`, music comes from `./music` and the index and model live in the named volumes
-`autodj-index` and `autodj-models`.
+Without `.env`, `./music` is mounted at `/music` and the index and model live in the named
+volumes `autodj-index` and `autodj-models`. Add `/music` in Library after starting the container;
+mounting a folder does not register it automatically.
 
 ```bash
 docker compose up -d --build
@@ -766,7 +781,7 @@ daily_limit = 50             # requests the station takes per day, from everyone
 max_pending = 20             # requests that may wait for you at once (manual approval)
 window_minutes = 30          # how far ahead in the queue a request may be placed
 blocked_artists = ["Night Owl Jingles"]
-blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+blocked_folders = ["Christmas"]   # full paths, or folders relative to registered music folders
 ipv6_prefix = 56             # an IPv6 listener's limits count over this network
 ```
 
@@ -889,8 +904,10 @@ with, so a page opened as `localhost` or `127.0.0.1` gives a link only that comp
 page says so); open AutoDJ by the network address in its start-up message before copying a link
 for a speaker.
 
-The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`. Anyone who can
-reach the server can listen without pairing. Playback controls and settings still require
+The listening address is `/stream.mp3`, with a playlist at `/stream.m3u`; the AAC and Opus
+streams, when on, are at `/stream.aac` and `/stream.opus` (see
+[More formats](#more-formats-aac-and-opus)). Anyone who can reach the server can listen without
+pairing. Playback controls and settings still require
 pairing when LAN authentication is enabled. Older addresses containing a stream key, such as
 `/stream/<secret>.mp3`, no longer work: set any speaker or player saved with one to
 `/stream.mp3`. AutoDJ no longer uses the `index/.stream-secret` file those versions made, and you
@@ -983,8 +1000,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 - **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
   default. Type up to two decimal places; the slider's arrow keys move one percentage point.
   Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
-  normal speed. Saved cues and seek positions still refer to the original file; clock fitting
-  and forecasts account for the changed playing time.
+  normal speed. Saved cues and seek positions still refer to the original file; clock fitting,
+  forecasts and the DMCA and repeat checks on queued songs and listener requests account for the
+  changed playing time.
   Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
   current audio and booked speech intact. Browser playback applies a change immediately when
   no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
@@ -1041,6 +1059,103 @@ track, never mid-song.
 
 The listening address stays the same across restarts. There is no key to copy or renew.
 
+### More formats: AAC and Opus
+
+Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
+own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
+
+```toml
+[stream]
+aac_bitrate = 96    # 0 (off), 64, 96, 128, 192 or 256
+opus_bitrate = 64   # 0 (off), 48, 64, 96, 128 or 192
+```
+
+A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
+`/stations/<slug>.aac` or `/stations/<slug>.opus` for any station; a format that is off answers
+404. Settings, Stream lists the address of every format that is on, each with its own Copy
+button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
+and per-address limit apply to them too. The choice made in Settings is saved in
+`web_state.json` and wins over `config.toml` at the next start, as the MP3 quality does.
+Changing a format's bitrate makes only that format's listeners reconnect.
+
+- **AAC** (AAC-LC in ADTS frames, `audio/aac`) sounds better than MP3 at the same bitrate and
+  plays on most phones, browsers and smart speakers. Players that ask for ICY titles get the
+  song titles, as with MP3.
+- **Opus** (in Ogg, `audio/ogg`, resampled to 48 kHz) sounds good at low bitrates, which suits
+  mobile data. Browsers and players such as VLC play it; some smart speakers and older players
+  do not. Song titles are not sent inside an Opus stream; players can read them from the
+  now-playing feed.
+
+`max_listeners` counts listeners on every format together: with the default 8, five MP3 and
+three Opus listeners fill the station. A listener on any format starts an idle set, as an MP3
+listener does. Relays and broadcast recordings stay MP3.
+
+Turning a format on first has ffmpeg encode a moment of silence in it. If this ffmpeg cannot
+(for example one built without libopus), the setting is refused with ffmpeg's own words and
+nothing changes; when several changes are saved together, none is made unless all can be.
+
+A format that is on runs its own ffmpeg encoder on this computer, fed the same mixed audio, but
+only while someone listens to it: its first listener starts the encoder, and it stops once nobody
+has listened for a minute. So a format nobody uses costs nothing. (The MP3 encoder runs whenever
+the station streams, as before.) The mix never waits for an encoder: each has its own queue of at
+most 2 seconds of audio, and one that falls behind loses its oldest audio, with one warning in
+the log, while the mix, the MP3 stream and the other format carry on; the song title changes
+never wait on an encoder starting or stopping either. A listener who joins a running encoder
+starts on a whole frame (or, for Opus, the stream's header and then a whole page) from the last
+2 seconds of audio; the first listener, or one who joins before an Opus stream's header is
+complete, gets the stream from its start. When an encoder exits, the log gives its last words,
+and Settings shows them beside its address while it runs.
+
+What an encoder costs, measured with ffmpeg's `-benchmark` on 120 seconds of audio, as a share
+of one CPU core (an Intel Core i7-8809G at 3.1 GHz under Windows 11, ffmpeg 8.1):
+
+- MP3 (the stream that is always on): 2.1 % at 320 kbps, 2.9 % at 128 kbps.
+- AAC: 3.5 % at 96 kbps, 4.9 % at 256 kbps.
+- Opus: 1.3 % at 64 kbps, 1.9 % at 192 kbps.
+
+Those are for music (two minutes of a DJ demo track). Pink noise under a chord gave 1.1 to
+1.5 % for MP3, 2.1 to 2.2 % for AAC and 1.3 to 1.6 % for Opus. The whole AutoDJ process with its
+encoders, on an idle station playing silence, went from 1.9 % of one core with MP3 alone to
+3.9 % with AAC at 96 kbps and Opus at 64 kbps both running, as when each has a listener.
+
+So each extra format costs about as much as the MP3 stream already does, a few percent of one
+core, and only while it has listeners (and a minute after). Several stations each run their own
+encoders, so multiply by the stations whose format is being heard.
+
+### Listener statistics
+
+Settings, Stream, **Listener statistics** shows, for the station the page controls:
+
+- a summary in words: how many are listening now on each format, today's peak and when it was,
+  today's sessions and listening hours, and the same for the chosen period with its peak day
+  and longest session;
+- a table **Listeners by format**: listening now, the peak, sessions and listening hours of
+  MP3, AAC and Opus;
+- a table **Listeners by day**, newest first: the peak and when it was, sessions, listening
+  hours, the average and the longest session;
+- **How long sessions lasted**: how many sessions were under 1 minute, 1 to 5 minutes, 5 to 15
+  minutes, 15 minutes to 1 hour, 1 to 3 hours, and 3 hours or more.
+
+**Show** picks the last 7, 30 or 90 days, or every day kept. The view changes only when you open
+Settings, press **Refresh statistics** or change Show, so a screen reader reading a table is
+never interrupted. **Download statistics (CSV)** saves every day kept as a spreadsheet file,
+one row per day, with the same numbers for each format and each session length band.
+
+A session is one connection, from connect to disconnect, and counts on the day it began, in
+the station's time zone (`[server] station_timezone`). The peak is the most listeners connected
+at once. Listeners of a relay's server are not counted here; that server keeps its own figures.
+
+Nothing in the statistics identifies a listener. AutoDJ keeps no address, player name or
+connection time for them: only the daily counts and totals above, in the station's
+`listener_stats.json`, written about once a minute and when the station stops, and included in
+backups. **Days to keep statistics** (`[stream] stats_days`, 90 by default, 0 to 3650) deletes
+older days; 0 keeps none and deletes those kept. The connected listeners' addresses and player
+names in the Listeners list above are shown only while they are connected, as before.
+
+Routes: `GET /api/stream/stats?days=30` (JSON) and `GET /api/stream/stats/export` (CSV), and
+the same under `/api/stations/<slug>/`. Both need a paired browser.
+
 ### Relaying to Icecast and Shoutcast
 
 AutoDJ can push the same station to one or more hosted Icecast or Shoutcast servers, so a
@@ -1062,10 +1177,10 @@ removed; saved definitions and passwords then take precedence over TOML. A blank
 keeps the saved one only when editing the same relay destination (host, port and type).
 Environment passwords take precedence over both files and cannot be edited in the web form.
 `relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
-separate private copy if needed. Unreadable saved relay settings leave relays off and block
-web saves until the file is repaired. On POSIX systems the file is written with mode 0600.
-On Windows, Python's `chmod(0o600)` sets the read-only attribute; access is governed by the
-directory's inherited Windows ACL, which administrators must restrict to trusted users.
+separate private copy if needed. Unreadable saved relay settings leave relays off and block web saves until the
+file is repaired. Only the account AutoDJ runs as can read the file: it has mode 0600 on
+Linux and macOS, and on Windows an access list granting that user alone, with nothing
+inherited from the folder.
 Station metadata is saved with the other web settings in `web_state.json`.
 
 For initial configuration, describe each server as a named table in `config.toml`:
@@ -1322,8 +1437,13 @@ client for a running server.
   origin with `--allowed-origin`) if it is a name `--lan` cannot detect, such as a router DNS
   entry.
 - **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
-  Raise `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
+  It counts the listeners of every format (MP3, AAC and Opus) together. Raise
+  `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
+- **The AAC or Opus address answers 404** — that format is off for the station. Turn it on in
+  Settings, Stream, More formats. If the log says the Opus stream encoder keeps exiting, the
+  ffmpeg on the PATH was built without libopus; install a build with it (the container image
+  has one).
 - **A relay says "the server rejected the user name or password"** — check the password in
   `config.local.toml` and, for Icecast, the `user` and `mount`. Many hosts give a separate
   source password; the admin password is not always accepted.
@@ -1428,7 +1548,7 @@ The rules:
 
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
 the default station: `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
-`time_checks.json`, `listener_bans.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
+`time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
 
@@ -1437,7 +1557,9 @@ shared `library.db`. The default station's files stay where they always were.
 `autodj serve` starts the default station as before, then every other station with
 `autostart = true`. Each other station mixes on the server and streams at
 `/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
-the addresses. These are public like `/stream.mp3`, and the station's own `listener_user` and
+the addresses. A station's AAC and Opus streams, when its `[stations.<slug>.stream]` table sets
+`aac_bitrate` or `opus_bitrate` (or Settings does), are at `/stations/<slug>.aac` and
+`/stations/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
 `listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
 `/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
@@ -1534,10 +1656,12 @@ directly if it is an intended backup source. Restore refuses linked archive entr
 destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
-in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json`, `stations/nightowl/index/relays.json` and
-`stations/nightowl/liners/...`. Relay settings include source passwords. Backups are plain ZIP
-files without encryption, so store them with the same care as those credentials. A folder two
+in the archive, including the current catalog at `index/library.db`; another station's are under
+`stations/<slug>/`, for example `stations/nightowl/index/web_state.json` and
+`stations/nightowl/liners/...`. New backups omit legacy index manifests and generation files.
+Each station's `relays.json`, which holds relay source passwords, stays out of the backup, and a
+restore leaves the station's own `relays.json` in place (it skips one found in an archive made by
+an older build). Keep a separate private copy of `relays.json` if you need one. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
 name, and the archive notes that it was shared. If you restore it with a configuration that gives
 that station a folder of its own, the folder is restored to the default station's place only, and
@@ -1551,6 +1675,11 @@ check that its `stations/<slug>/` files are in it:
 uv run autodj backup backups/after-nightowl.zip
 unzip -l backups/after-nightowl.zip | grep stations/nightowl
 ```
+
+An older archive without `index/library.db` cannot be restored directly by this version. Restore
+it with a compatible older release, then run `autodj migrate-index --apply` and create a new
+backup. Archives containing old index generations are also refused, since those files may
+contain vectors that have not been imported into the catalog.
 
 Restore puts each station's files back in that station's folder. A backup that holds a station
 your configuration does not define is refused before anything changes: add its
@@ -1891,34 +2020,43 @@ exactly one new file match. A copy, two identical files, or a file whose bytes c
 is handled as a changed or new song. Register the destination folder before rescanning. This does
 not make a copied catalog portable to paths on another machine.
 
-Legacy imports need index schema 4. When started in an interactive terminal, `autodj serve` detects a
-schema-3 index and offers to save a recovery copy and convert it. Entering Yes converts the index
-and continues startup; No leaves it unchanged and stops startup. Stop any other AutoDJ serving,
-indexing or analysis process before accepting. Services and other non-interactive launches exit
-with instructions instead of waiting for input.
+Use `autodj migrate-index` to move a published index and supported old state into the current
+`library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
+reanalyze audio. It also upgrades version-1 `web_state.json`, imports legacy play-history JSON, and
+preserves existing folder registrations. When upgrading older folder state, it registers the
+configured liner folder and an explicitly supplied legacy music folder, if any.
+You can run it when the index itself is current but only saved settings, history, or folder
+registration still needs upgrading. The preview lists the work and writes nothing.
 
-To preview and convert manually, use the same configuration and named index as your server:
+Run it with the same configuration and named index as your server:
 
 ```bash
+# Current catalog: upgrade old settings/history without a music root
 uv run autodj migrate-index
 uv run autodj migrate-index --apply
+# Old published index: supply the base for its relative paths
+uv run autodj migrate-index --music-dir /path/to/music --apply
 # With another configuration or named index:
 uv run autodj --config station.toml migrate-index --name gold --apply
 ```
 
-The preview writes nothing. Applying copies the original index generation, cue database, station
-library database and saved web settings into a recovery folder under
-`index/.migration-backups/default.schema3-backup-...`. The location is printed. SQLite databases
-are copied with their committed changes, including changes still in the write-ahead log.
-The copy is verified before
-live files change and is retained after conversion. This is a migration recovery folder, not an
-`autodj restore` ZIP archive; it preserves the original files for recovery after an interrupted
-conversion. It does not copy music, external liner folders or configuration files.
+Applying saves a recovery copy of the index generation, `dj_meta.db`, `library.db`, and saved web
+settings before changing them. The recovery folder is under `index/.migration-backups/`; the exact
+path is printed. SQLite databases are copied with committed changes, including changes still in
+the write-ahead log. The recovery copy is retained. It is not an `autodj restore` ZIP archive and
+does not copy music, external liner folders or configuration files. The import is idempotent: if it
+is interrupted, run `migrate-index --apply` again. Existing catalog records and vectors are kept;
+missing records and vectors are filled from the published generation. Unsupported older index
+schemas still require rebuilding.
 
-Vectors are copied unchanged, so the expensive analysis does not run again. The converted index
-is checked before publication. Missing music files are listed and keep their existing analysis,
-but cannot be recognised as moved until they have a fingerprint. A conversion failure stops
-startup; it does not silently rebuild the index. Schema 2 still requires a rebuild.
+Applying holds the index's serve lock and refuses to run while `autodj serve` is using that index.
+Stop the server and rerun the command after it releases the lock.
+
+The command validates the published files before importing them. Missing music files keep their
+existing vectors and metadata, but cannot be recognized as moved until their files can be
+fingerprinted. Old index imports use `--music-dir` (or an existing legacy `[library] music_dir`).
+Settings/history-only upgrades need no music root. Existing folder registrations and saved
+catalog settings are preserved.
 
 For files that moved, `--map moves.json` accepts old to new paths relative to `music_dir`, such as
 `{"Old/a.flac": "New/a.flac"}`. Paths must use forward slashes, and destinations must be unique
@@ -1930,7 +2068,8 @@ uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /m
 uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json --apply
 ```
 
-The first command is a dry run. Both entry points use the same converter and recovery copy.
+The first command is a dry run for the schema-3 to schema-4 conversion; the `migrate-index` command
+then imports the published vectors into `library.db`.
 
 ## More than one machine
 
@@ -1949,11 +2088,11 @@ that machine; do not copy a populated `library.db` expecting it to adapt to a di
 
 ### Importing a legacy index on another machine
 
-Older published indexes store paths relative to `music_dir` and can still be imported when the
-destination has no catalog. Set `music_dir` to that machine's library root, then place the legacy
-index files in its named index directory before running `serve` or `index`. The first import keeps
-the source files for recovery; after a catalog exists, the legacy manifest is ignored. The
-`migrate-index` command remains available for older index schemas.
+Older published indexes store paths relative to `music_dir` and can be imported on the destination
+without re-embedding. Place the legacy index files in its named index directory, then run
+`autodj migrate-index --music-dir /path/to/old/music --apply` using the destination
+folder that contains the old relative paths. The catalog stores the
+destination's absolute paths and the command keeps a recovery copy.
 
 For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.
 Copy only the files needed by the old format from `index/<name>/`:
@@ -1961,9 +2100,8 @@ Copy only the files needed by the old format from `index/<name>/`:
 - The generation files named in `index-manifest.json`: `tracks.g<number>.db` and
   `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
-- `index-manifest.json` last, after the files it names are in place. AutoDJ loads only what the
-  manifest names and checks both files against the SHA-256 in it, so a missing or half-copied file
-  is refused with an error instead of being served.
+- `index-manifest.json` last, after the files it names are in place. The migration command checks
+  both files against the SHA-256 values in the manifest and refuses missing or half-copied files.
 
 Do not copy machine-specific data:
 
@@ -2810,8 +2948,8 @@ table refreshes every 30 seconds and shortly after the song changes, changing ce
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
 said once, and not again until one succeeds. Choosing another span under **Show** says the new
 summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
-says so. Times show as "2:04:30 PM" and read as "2:04 PM and
-30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+says so. Timestamps and durations use the same compact text on screen and in speech, such as
+"2:04:30 PM" and "3:45". Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
@@ -2840,15 +2978,13 @@ choose them to fit.
 
 `autodj backup` writes one ZIP file holding:
 
-- The live index generation: `index-manifest.json` and the `tracks.g<number>.db` and
-  `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
 - `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
-  complete play history.
+  complete play history, and matching vectors.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
@@ -2856,6 +2992,7 @@ choose them to fit.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
+- `listener_stats.json`, the daily listener counts (no addresses or player names).
 - `shows.json`, the shows and their lists of songs.
 - Every other station's state files and folders, under `stations/<slug>/` (see
   [Backups and doctor](#backups-and-doctor)).
@@ -2867,12 +3004,12 @@ and keep them with the archive. Backups also leave out the pairing secret and th
 after a restore on a new machine you pair your browsers again.
 Use the new machine's address followed by `/stream.mp3` to listen.
 
-Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
-both databases through SQLite's backup API, so it never picks up a half-written index. It refuses to
-overwrite an existing archive unless you pass `--force`, and it refuses an index made by an older
-AutoDJ; convert schema 3 with `autodj migrate-index --apply` first. That conversion saves its own
-recovery copy. Older backup archives that do not contain `library.db` leave the current station
-catalog unchanged when restored.
+Backup copies databases through SQLite's backup API, so saved records and vectors form a
+consistent database even while AutoDJ is serving. It refuses to overwrite an archive unless you
+pass `--force`. It requires `library.db` and does not include old manifests or generation files.
+An archive without `library.db` must be restored with a compatible older release, then upgraded
+with `autodj migrate-index --apply` and create a new backup. Archives containing old generation
+files are refused even if they also contain a catalog, to avoid losing unimported vectors.
 
 ```bash
 # Linux/WSL2 Bash
@@ -2917,7 +3054,7 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+files the manifest does not list, and an archive without a current catalog. It also refuses file
 names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
 space.
 
@@ -2932,7 +3069,8 @@ folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
-- The index in the archive replaces the current index, including its older generations.
+- The catalog in the archive replaces `library.db`, including its records, vectors and history.
+  Archives containing old index generations are refused; migrate them with an older release first.
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
@@ -2942,7 +3080,7 @@ Without `--force`, restore refuses when anything it would replace already exists
 
 Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
 or to more than the free space beside its destinations. It unpacks every file into a temporary
-folder beside its destination and checks the index before it replaces anything, so a damaged
+folder beside its destination and checks the catalog before it replaces anything, so a damaged
 archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
 (`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
 new ones in, and deletes what it set aside only once all are in. If any replacement fails,

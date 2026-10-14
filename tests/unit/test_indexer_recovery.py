@@ -165,25 +165,14 @@ def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     assert np.array_equal(restored.reconstruct(0), _vector()[0])
 
 
-def test_checkpoint_with_nothing_new_publishes_nothing(tmp_path: Path) -> None:
-    checkpoint = indexer.IncrementalCheckpoint(
-        index_dir=tmp_path,
-        music_dir=None,
-        existing_entries=[],
-        existing_vectors=[],
-        base_generation=0,
-    )
-
-    checkpoint.write([], [])
-    checkpoint.finish([], [])
-
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
     index_dir = tmp_path / "index"
     entry = _entry(str(tmp_path / "indexed.flac"))
-    indexer.save_index([entry], _vector(), index_dir, music_dir=tmp_path, base_generation=0)
+    from autodj.catalog import LibraryCatalog
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(tmp_path)
+        catalog.put_entry(entry)
     beets_db = tmp_path / "beets.db"
     connection = sqlite3.connect(beets_db)
     try:
@@ -203,13 +192,3 @@ def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
         connection.close()
 
     assert indexer.enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=beets_db) == (0, 1)
-
-
-def test_stat_mtimes_reports_missing_files_as_none(tmp_path: Path) -> None:
-    existing = tmp_path / "existing.flac"
-    existing.touch()
-    entries = [_entry(str(existing)), _entry(str(tmp_path / "missing.flac"))]
-
-    mtimes = indexer._stat_mtimes(entries)
-
-    assert mtimes == [existing.stat().st_mtime, None]

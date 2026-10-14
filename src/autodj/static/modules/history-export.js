@@ -36,7 +36,7 @@ export function exportMessage(plays, missing, what = "Play log", unmatchable = 0
   return text;
 }
 
-function saveFile(doc, blob, filename) {
+export function saveFile(doc, blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = doc.createElement("a");
   link.href = url;

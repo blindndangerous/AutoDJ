@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import ServerConfig, load_config
-from autodj.index_manifest import IndexConsistencyError, UnsupportedIndexError, read_manifest
+from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
@@ -40,7 +40,7 @@ def test_empty_similarity_index_has_feature_dimension() -> None:
     assert sim.faiss_index.d == 1040
 
 
-def test_empty_similarity_index_reloads_a_published_generation(tmp_path: Path) -> None:
+def test_empty_similarity_index_loads_catalog_vectors(tmp_path: Path) -> None:
     sim = SimilarityIndex.empty()
     entry = IndexEntry(
         path="song.flac",
@@ -58,9 +58,7 @@ def test_empty_similarity_index_reloads_a_published_generation(tmp_path: Path) -
     )
     vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
     vectors[0, 0] = 1.0
-    manifest = save_index([entry], vectors, tmp_path, base_generation=0)
-    assert sim.reload_from_disk(tmp_path) == 1
-    assert sim.manifest == manifest
+    sim.replace_catalog_index([entry], vectors)
     assert sim.ntotal == 1
     assert sim.entries_snapshot() == (entry,)
 
@@ -71,7 +69,7 @@ def test_serve_loader_refuses_index_without_manifest(tmp_path: Path) -> None:
     index_dir.mkdir()
     (index_dir / "tracks.db").touch()
 
-    with pytest.raises(UnsupportedIndexError, match=r"Rebuild it with `autodj index --force`"):
+    with pytest.raises(IndexConsistencyError, match="migrate-index"):
         _load_index_for_serve(cfg, active_dir=index_dir)
 
 
@@ -96,7 +94,7 @@ def test_serve_loader_refuses_a_manifest_whose_file_is_missing(tmp_path: Path) -
     assert manifest is not None
     (tmp_path / manifest.vectors_file).unlink()
 
-    with pytest.raises(IndexConsistencyError, match="is missing; copy the index again"):
+    with pytest.raises(IndexConsistencyError, match="migrate-index"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
 
 
@@ -112,7 +110,7 @@ def test_serve_loader_names_generation_files_without_manifest(
     cfg = load_config(None, environ={})
     (tmp_path / orphan_name).touch()
 
-    with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*index --force"):
+    with pytest.raises(IndexConsistencyError, match="migrate-index"):
         _load_index_for_serve(cfg, active_dir=tmp_path)
 
 
@@ -188,8 +186,8 @@ def test_player_uses_first_published_generation_after_waiting(tmp_path: Path) ->
         ]
         vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
         vectors[:, 0] = 1.0
-        save_index(entries, vectors, tmp_path, base_generation=0)
-        assert sim.reload_from_disk(tmp_path) == 2
+        sim.replace_catalog_index(entries, vectors)
+        assert sim.ntotal == 2
         wait_event.set()
         advanced = progressed.wait(timeout=2)
     except BaseException as exc:

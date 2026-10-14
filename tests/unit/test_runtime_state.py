@@ -16,6 +16,7 @@ from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
     load_into_bridge,
+    migrate_state_file,
     save_from_player,
     state_file_for,
 )
@@ -81,6 +82,9 @@ def _make_player() -> SimpleNamespace:
             continuous=False,
             station_name="AutoDJ",
             max_listeners_per_address=0,
+            aac_bitrate=0,
+            opus_bitrate=0,
+            stats_days=90,
         ),
         nowplaying=NowPlayingConfig(),
         dmca=DmcaConfig(),
@@ -153,6 +157,9 @@ def _warnings(caplog: pytest.LogCaptureFixture, field: str) -> int:
         ({"playback": {"stream_bitrate": 100}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": "320"}}, "stream_bitrate"),
         ({"playback": {"stream_bitrate": True}}, "stream_bitrate"),
+        ({"playback": {"stream_aac_bitrate": 320}}, "stream_aac_bitrate"),
+        ({"playback": {"stream_opus_bitrate": "64"}}, "stream_opus_bitrate"),
+        ({"playback": {"stream_stats_days": -1}}, "stream_stats_days"),
         ({"playback": {"transition_wet_mix": 2.0}}, "transition_wet_mix"),
         ({"playback": {"replaygain_target_db": "loud"}}, "replaygain_target_db"),
         ({"playback": {"volume": True}}, "volume"),
@@ -242,6 +249,9 @@ def test_v1_migration_preserves_supported_settings_and_honors_disabled_harmonic_
     (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
     player = _make_player()
 
+    from autodj.runtime_state import migrate_state_file
+
+    migrate_state_file(tmp_path / "web_state.json", apply=True)
     _load(player, tmp_path)
 
     assert player._cfg.transitions.effect == "echo_out"
@@ -269,6 +279,9 @@ def test_v1_migration_safely_handles_legacy_harmonic_toggle(
     (tmp_path / "web_state.json").write_text(json.dumps(state), encoding="utf-8")
     player = _make_player()
 
+    from autodj.runtime_state import migrate_state_file
+
+    migrate_state_file(tmp_path / "web_state.json", apply=True)
     _load(player, tmp_path)
 
     assert player._cfg.djmix.harmonic_mode == expected
@@ -277,41 +290,28 @@ def test_v1_migration_safely_handles_legacy_harmonic_toggle(
         assert "invalid djmix.harmonic_mixing" in caplog.text
 
 
-def test_first_save_after_v1_keeps_original_backup(tmp_path: Path) -> None:
-    original = json.dumps(
-        {"schema_version": 1, "djmix": {"harmonic_mode": "compatible", "harmonic_mixing": False}}
-    )
-    path = tmp_path / "web_state.json"
-    path.write_text(original, encoding="utf-8")
-
-    save_from_player({"preset": "new"}, tmp_path)
-
-    backup = tmp_path / "web_state.json.v1.bak"
-    assert backup.read_bytes() == original.encode("utf-8")
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == STATE_VERSION
-    path.write_text('{"schema_version":1,"changed":true}', encoding="utf-8")
-    save_from_player({"preset": "newer"}, tmp_path)
-    assert backup.read_bytes() == original.encode("utf-8")
-
-
-def test_failed_v1_backup_prevents_overwrite(tmp_path: Path, monkeypatch, caplog) -> None:
-    original = (
-        b'{"schema_version":1,"djmix":{"harmonic_mode":"compatible","harmonic_mixing":false}}'
-    )
+def test_state_migration_rejects_non_integer_current_version(tmp_path: Path) -> None:
+    original = b'{"schema_version":2.0}'
     path = tmp_path / "web_state.json"
     path.write_bytes(original)
 
-    def fail_backup(target: Path, _payload) -> None:
-        if target.name.endswith(".v1.bak"):
-            raise OSError("backup unavailable")
-        raise AssertionError("new state must not be written")
-
-    monkeypatch.setattr("autodj.runtime_state.atomic_write", fail_backup)
-    with caplog.at_level("WARNING"):
-        save_from_player({"preset": "new"}, tmp_path)
+    with pytest.raises(ValueError, match=r"unsupported schema_version 2\.0"):
+        migrate_state_file(path, apply=False)
 
     assert path.read_bytes() == original
-    assert "Failed to back up v1 web_state.json" in caplog.text
+    assert not path.with_name("web_state.json.v1.bak").exists()
+
+
+def test_runtime_refuses_v1_and_save_leaves_it_untouched(tmp_path: Path, caplog) -> None:
+    original = b'{"schema_version":1,"djmix":{"harmonic_mixing":false}}'
+    path = tmp_path / "web_state.json"
+    path.write_bytes(original)
+    with pytest.raises(ValueError, match="migrate-index"):
+        _load(_make_player(), tmp_path)
+    save_from_player({"preset": "new"}, tmp_path)
+    assert path.read_bytes() == original
+    assert "migrate-index" in caplog.text
+    assert not (tmp_path / "web_state.json.v1.bak").exists()
 
 
 def test_non_object_state_root_is_warned_and_ignored(tmp_path: Path, caplog) -> None:
@@ -445,6 +445,22 @@ class TestLoadInto:
         _write_state(tmp_path, {"playback": {"stream_bitrate": 128}})
         _load(player, tmp_path)
         assert player._cfg.stream.bitrate == 128
+
+    def test_stream_formats_and_statistics_days_are_restored(self, tmp_path) -> None:
+        player = _make_player()
+        _write_state(
+            tmp_path,
+            {
+                "playback": {
+                    "stream_aac_bitrate": 96,
+                    "stream_opus_bitrate": 64,
+                    "stream_stats_days": 30,
+                }
+            },
+        )
+        _load(player, tmp_path)
+        stream = player._cfg.stream
+        assert (stream.aac_bitrate, stream.opus_bitrate, stream.stats_days) == (96, 64, 30)
 
     def test_stream_continuous_restores_and_rejects_non_boolean(self, tmp_path) -> None:
         player = _make_player()
@@ -701,6 +717,9 @@ class TestRoundTrip:
             "nowplaying_show_next",
             "dmca_enabled",
             "stream_max_listeners_per_address",
+            "stream_aac_bitrate",
+            "stream_opus_bitrate",
+            "stream_stats_days",
             "crossfade_bass_cutoff_hz",
             "pick_top_k",
             "pick_temperature",

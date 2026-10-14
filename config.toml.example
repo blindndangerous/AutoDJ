@@ -1,13 +1,6 @@
 # AutoDJ Configuration
 # Copy this file to config.toml and adjust paths to match your setup.
 #
-# IMPORTANT — Windows paths: always use forward slashes (/) in this file.
-#   Correct:   music_dir = "C:/Users/you/Music"
-#   Wrong:     music_dir = "C:\Users\you\Music"   ← backslashes break TOML parsing
-#
-# Backslashes are escape characters in TOML strings (\U, \b, \D etc. are
-# interpreted as unicode/control sequences and will cause a parse error).
-#
 # ---------------------------------------------------------------------------
 # Per-machine overlay (config.local.toml)
 # ---------------------------------------------------------------------------
@@ -19,19 +12,17 @@
 #   config.toml          = private deployment/base settings
 #   config.local.toml    = private per-machine overrides
 #
-# Example config.local.toml on a Windows host pointing at a NAS:
+# Example config.local.toml on a Windows host pointing at beets:
 #
 #   [library]
-#   music_dir = "Z:/Music"
-#   beets_db  = "Z:/Music/.config/beets/library.db"
+#   beets_db = "Z:/Music/.config/beets/library.db"
 #
 # Configuration precedence:
 # defaults < config.toml < config.local.toml < environment
 #   < settings saved from the web page (web_state.json, serve only) < CLI
 #
-# Both files accept only the sections and keys shown in this file.  An unknown
-# section or key (for example a setting a newer AutoDJ removed) stops AutoDJ
-# with an error that names it; delete the line.
+# Configuration keys are validated when loaded. An unknown section or key stops
+# AutoDJ with an error that names it; delete the unsupported line.
 #
 # Supported environment overrides:
 # BEGIN ENVIRONMENT OVERRIDES
@@ -52,13 +43,6 @@
 # END ENVIRONMENT OVERRIDES
 
 [library]
-# Full path to your music folder (local or mapped NAS drive).
-# When using beets, this MUST match the local mount point of the beets
-# `directory` config — recent beets versions store paths relative to the
-# library root, so AutoDJ resolves those against music_dir.
-# Example: "Z:/Music" or "C:/Users/you/Music"
-music_dir = "Z:/Music"
-
 # Full path to your beets SQLite library database (optional).
 # Find it by running: beet config | grep library
 # Leave blank to skip beets integration and use filesystem scanning instead.
@@ -73,13 +57,10 @@ supported_formats = ["mp3", "flac", "m4a"]
 # playlists_folder = "/srv/autodj/playlists"
 
 [index]
-# Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
-# index generation it names (tracks.g<number>.db and vectors.g<number>.index),
-# dj_meta.db (SQLite), web_state.json, and liner files.
-# Default liner path: <index_dir>/<name>/liners/.
-# Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
-# and `autodj serve` on another machine, point both configs here to the same NAS path.
-# Example: "Z:/autodj-index"
+# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
+# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# Keep a separate catalog per machine and register folders using that machine's paths.
+# Do not share this directory between an indexing machine and a playout machine.
 index_dir = "index"
 
 # Directory where the MuQ model checkpoint is cached after download
@@ -161,6 +142,18 @@ trusted_proxies = []
 
 # Station name announced to players via the icy-name header.
   station_name = "AutoDJ"
+
+# More formats beside the MP3 stream, each at its own address and bitrate:
+# AAC at /stream.aac (0 is off; 64, 96, 128, 192 or 256 kbps) and Opus at
+# /stream.opus (0 is off; 48, 64, 96, 128 or 192 kbps).  Each one that is on
+# runs its own ffmpeg encoder; max_listeners counts every format together.
+# Settings, Stream, More formats changes them while the station plays.
+aac_bitrate = 0
+opus_bitrate = 0
+
+# Days of listener statistics to keep (daily peaks, sessions and listening
+# time per format; never addresses or player names).  0 keeps none.
+stats_days = 90
 
 # Relays: push the station to hosted Icecast or Shoutcast servers, so their
 # listeners, directory listings and capacity carry it too.  One named table
@@ -643,7 +636,7 @@ daily_limit = 50
 max_pending = 20
 # How far ahead in the queue a request may be placed, in minutes.
 window_minutes = 30
-# Artists, and folders (full paths or inside music_dir), listeners cannot request.
+# Artists, and folders (full paths or relative to registered music folders), listeners cannot request.
 blocked_artists = []
 blocked_folders = []
 # An IPv6 listener's limits count over this network: 56 (a whole home network),

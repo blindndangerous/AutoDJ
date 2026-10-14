@@ -180,6 +180,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     cfg = load_config(_write_config(tmp_path, **values), environ={})
     sim = SimilarityIndex.empty()
     library = LibraryManager(cfg, sim)
+    library.catalog.add_source(cfg.library.music_dir)
     # One known song, so queue routes have something to queue.
     song = make_entry(tmp_path / "Music" / "song.flac")
     monkeypatch.setattr(

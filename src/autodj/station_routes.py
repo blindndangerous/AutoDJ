@@ -43,7 +43,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
-from autodj.config import MAX_RELAYS, RelayConfig, _relay_target
+from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RelayConfig, _relay_target
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -79,6 +79,8 @@ from autodj.station_ledger import StationLedger, setting_key
 from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
+from autodj.stream_formats import FORMATS
+from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
@@ -1026,7 +1028,7 @@ def equip_station(
             requests_cfg,
             bridge,
             RequestBook(station.paths.listener_requests, timezone=station.timezone),
-            music_dir=Path(station.cfg.library.music_dir),
+            music_dir=station.cfg.library.music_dir,
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
@@ -1349,11 +1351,46 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="Ban not found")
         return {"address": address}
 
+    @router.get("/stream/stats")
+    async def api_stream_stats(
+        station: StationDep, days: Annotated[int, Query(ge=1, le=MAX_STATS_DAYS)] = 30
+    ) -> JSONResponse:
+        """Listener statistics for the last *days* days: counts only, no addresses (#50)."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        bridge = station.bridge
+        listening = (
+            bridge.mounts.counts()
+            if bridge.mounts is not None
+            else {"mp3": int(bridge.stream.listener_count)}
+        )
+        summary = await asyncio.to_thread(stats.summary, days, listening)
+        return JSONResponse(summary, headers=_NO_STORE)
+
+    @router.get("/stream/stats/export")
+    async def api_stream_stats_export(station: StationDep) -> Response:
+        """Download every kept day of listener statistics as CSV."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        body = await asyncio.to_thread(stats.csv_text)
+        return Response(
+            body.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                **_NO_STORE,
+                "Content-Disposition": f'attachment; filename="autodj-listeners-{station.slug}.csv"',
+            },
+        )
+
     @router.post("/stream/settings")
     async def api_stream_settings(
         station: StationDep, body: StreamSettingsBody, request: Request
     ) -> dict:
-        """Change the stream bitrate (listeners reconnect), continuous play or name."""
+        """Change the stream bitrates (listeners reconnect), continuous play, name or statistics."""
         access = _require_stream_mode(station)
         bridge = station.bridge
         cfg = station.cfg
@@ -1367,11 +1404,44 @@ def install_station_routes(router: StationRouter) -> None:
                 status_code=409,
                 detail="DMCA mode is on, so the next song is never shown publicly.",
             )
+        # The AAC and Opus changes go first, all or none: each is checked and
+        # ffmpeg is tried on it before anything changes (#50).
+        formats: dict[str, int] = {
+            name: value
+            for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate))
+            if value is not None
+        }
+        changed_formats: list[str] = []
+        if formats:
+            try:
+                changed_formats = await asyncio.to_thread(bridge.set_stream_formats, formats)
+            except EncoderUnavailableError as exc:
+                logger.error("A stream format could not be turned on: %s", exc)
+                raise HTTPException(status_code=503, detail=f"{exc}. Nothing was changed.") from exc
+            except (ValueError, MountsClosedError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
             except EncoderUnavailableError as exc:
-                raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+                if not changed_formats:
+                    raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+                # Say exactly what did change before the MP3 encoder failed.
+                await asyncio.to_thread(bridge.save_persistent_state)
+                labels = " and ".join(FORMATS[name].label for name in changed_formats)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "The MP3 stream encoder failed, so its quality is unchanged. "
+                        f"The {labels} change was saved; nothing else was changed."
+                    ),
+                ) from exc
+        if body.stats_days is not None:
+            cfg.stream.stats_days = body.stats_days
+            if station.listener_stats is not None:
+                # Days no longer kept go now, not at the next tick.
+                await asyncio.to_thread(station.listener_stats.tick)
+                await asyncio.to_thread(station.listener_stats.flush)
         if body.continuous is not None:
             cfg.stream.continuous = body.continuous
         if body.station_name is not None:

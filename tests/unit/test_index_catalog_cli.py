@@ -99,6 +99,7 @@ def test_index_uses_registered_folder_and_forwards_limit_force_workers(tmp_path:
 
 def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"song")
     with patch("autodj.model.download_model_if_needed") as download:
@@ -115,6 +116,7 @@ def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> N
 
 def test_index_model_failure_leaves_basic_song_available(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"song")
     with patch(
@@ -251,7 +253,7 @@ def test_catalog_beets_enrichment_keeps_vector_and_cues_without_legacy_files(
     assert not (cfg.index.active_dir / "index-manifest.json").exists()
 
 
-def test_index_imports_legacy_vectors_once_without_rewriting_manifest(tmp_path: Path) -> None:
+def test_index_requires_explicit_migration_without_rewriting_manifest(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "old.flac"
     song.write_bytes(b"song")
@@ -267,26 +269,22 @@ def test_index_imports_legacy_vectors_once_without_rewriting_manifest(tmp_path: 
     original = manifest.read_bytes()
     with patch("autodj.model.download_model_if_needed") as download:
         result = _invoke(cfg, ["--no-enrich", "--no-analyse"])
-    assert result.exit_code == 0, result.output
-    assert "deprecated" in result.output
+    assert result.exit_code != 0
+    assert "migrate-index" in result.output
     download.assert_not_called()
     assert manifest.read_bytes() == original
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        assert catalog.has_vector(song)
-    manifest.write_text("obsolete", encoding="utf-8")
-    result = _invoke(cfg, ["--no-enrich", "--no-analyse"])
-    assert result.exit_code == 0, result.output
-    assert manifest.read_text(encoding="utf-8") == "obsolete"
+    assert not (cfg.index.active_dir / "library.db").exists()
 
 
-def test_index_force_can_start_from_unreadable_legacy_manifest(tmp_path: Path) -> None:
+def test_index_force_cannot_bypass_legacy_migration(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     cfg.index.active_dir.mkdir(parents=True)
     manifest = cfg.index.active_dir / "index-manifest.json"
     manifest.write_text("obsolete", encoding="utf-8")
     result = _invoke(cfg, ["--force", "--no-enrich", "--no-analyse"])
-    assert result.exit_code == 0, result.output
-    assert (cfg.index.active_dir / "library.db").is_file()
+    assert result.exit_code != 0
+    assert "migrate-index" in result.output
+    assert not (cfg.index.active_dir / "library.db").exists()
     assert manifest.read_text(encoding="utf-8") == "obsolete"
 
 
@@ -343,17 +341,14 @@ def test_index_backfills_relative_music_root_without_pruning_disabled_folder(
         close_cache()
 
 
-def test_force_imports_legacy_vector_before_failed_reanalysis(tmp_path: Path) -> None:
+def test_force_preserves_catalog_vector_after_failed_reanalysis(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "old.flac"
     song.write_bytes(b"song")
-    save_index(
-        [_entry(song)],
-        np.ones((1, FEATURE_DIM), dtype=np.float32),
-        cfg.index.active_dir,
-        music_dir=cfg.library.music_dir,
-        base_generation=0,
-    )
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+        catalog.seed_entries([_entry(song)])
+        catalog.seed_vectors([_entry(song)], np.ones((1, FEATURE_DIM), dtype=np.float32))
     with patch("autodj.model.download_model_if_needed", side_effect=RuntimeError("unavailable")):
         result = _invoke(cfg, ["--force", "--no-enrich", "--no-analyse"])
     assert result.exit_code != 0
@@ -363,6 +358,7 @@ def test_force_imports_legacy_vector_before_failed_reanalysis(tmp_path: Path) ->
 
 def test_index_reports_unreadable_file_without_crashing(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
     (cfg.library.music_dir / "broken.flac").write_bytes(b"broken")
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),

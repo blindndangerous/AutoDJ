@@ -1871,10 +1871,12 @@
       <div id="stream-relay-settings">
         <h4>Relays</h4>
         <button type="button" id="stream-relay-add">Add relay</button>
+        <div id="stream-relay-table-wrap">
         <table id="stream-relay-table" role="grid" aria-label="Stream relays">
           <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
           <tbody id="stream-relay-rows"></tbody>
         </table>
+        </div>
         <form id="stream-relay-form" hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
           <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
@@ -1911,6 +1913,46 @@
       <span class="setting-desc" id="stream-continuous-desc">
         Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
       </span>
+      <!-- The AAC and Opus streams beside the MP3 one (#50), filled by
+           stream-formats.js.  The address list is plain text, rebuilt
+           only when it changes; saves and Copy speak through the status
+           regions. -->
+      <fieldset id="stream-formats">
+        <legend>More formats</legend>
+        <p class="setting-desc" id="stream-formats-desc">
+          Serve the station in AAC or Opus too, each at its own address beside the MP3 one. Each format that is on runs its own encoder on this computer. Listeners on every format count toward the listener limit.
+        </p>
+        <div class="settings-row">
+          <label for="stream-aac-bitrate">AAC quality</label>
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-desc station-context">
+            <option value="0">Off</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+            <option value="256">256 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-aac-desc">
+          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. Changing it makes AAC listeners reconnect for a moment.
+        </span>
+        <div class="settings-row">
+          <label for="stream-opus-bitrate">Opus quality</label>
+          <select id="stream-opus-bitrate" aria-describedby="stream-opus-desc station-context">
+            <option value="0">Off</option>
+            <option value="48">48 kbps</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-opus-desc">
+          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. Changing it makes Opus listeners reconnect for a moment.
+        </span>
+        <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
+        <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
+      </fieldset>
       <!-- The public now-playing feed and the webhooks from
            config.local.toml; nowplaying-settings.js fills it.  Nested so
            it shows, hides and hands focus away with the Stream settings.
@@ -2037,6 +2079,71 @@
         <h4 id="listener-bans-title" tabindex="-1">Bans</h4>
         <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
         <p id="listener-ban-empty" hidden>No bans.</p>
+      </section>
+      <!-- Listener statistics (#50), filled by listener-stats.js: plain
+           text and tables, never a live region and never a chart alone.
+           They change only when asked (opening, Refresh, Show), so reading
+           a table is never disturbed; results speak through the settings
+           status region. -->
+      <section id="listener-stats" aria-labelledby="listener-stats-title">
+        <h4 id="listener-stats-title" tabindex="-1">Listener statistics</h4>
+        <p class="setting-desc" id="listener-stats-privacy">
+          Counts only: no address, player name or other detail of a listener is kept. Days are in the station's time zone, and a session counts on the day it began.
+        </p>
+        <div class="settings-row">
+          <label for="listener-stats-span">Show</label>
+          <select id="listener-stats-span" aria-describedby="station-context">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="3650">Every day kept</option>
+          </select>
+          <button type="button" id="listener-stats-refresh" aria-describedby="station-context">Refresh statistics</button>
+        </div>
+        <p class="stream-detail" id="listener-stats-summary">Statistics not loaded yet.</p>
+        <table id="listener-stats-formats" hidden>
+          <caption id="listener-stats-formats-caption">Listeners by format</caption>
+          <thead>
+            <tr>
+              <th scope="col">Format</th>
+              <th scope="col">Listening now</th>
+              <th scope="col">Peak</th>
+              <th scope="col">Sessions</th>
+              <th scope="col">Listening hours</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <table id="listener-stats-days" hidden>
+          <caption id="listener-stats-days-caption">Listeners by day</caption>
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Peak</th>
+              <th scope="col">Sessions</th>
+              <th scope="col">Listening hours</th>
+              <th scope="col">Average session</th>
+              <th scope="col">Longest session</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="stream-detail" id="listener-stats-lengths-title" hidden>How long sessions lasted:</p>
+        <ul class="stream-detail" id="listener-stats-lengths" aria-labelledby="listener-stats-lengths-title" hidden></ul>
+        <div class="settings-row">
+          <label for="listener-stats-keep">Days to keep statistics</label>
+          <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
+                 aria-describedby="listener-stats-keep-desc station-context">
+        </div>
+        <span class="setting-desc" id="listener-stats-keep-desc">
+          From 0 to 3650; 90 unless changed. Older days are deleted. 0 keeps no statistics and deletes those kept.
+        </span>
+        <div class="settings-row">
+          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc station-context">Download statistics (CSV)</button>
+        </div>
+        <span class="setting-desc" id="listener-stats-export-desc">
+          A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
+        </span>
       </section>
     </fieldset>
     <!-- A station other than the default one can be stopped (#70); it asks
@@ -2534,19 +2641,19 @@
         <dt>Tracks with genre</dt>  <dd id="lib-stat-with-genre"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
         <dt>Tracks with energy</dt> <dd id="lib-stat-with-energy"><span aria-hidden="true">—</span><span class="visually-hidden">Not loaded</span></dd>
       </dl>
-      <button type="button" id="lib-stats-refresh">Refresh stats</button>
+      <button type="button" id="lib-stats-refresh">Refresh summary</button>
 
       <!-- Run buttons -->
       <h3 id="library-run-heading">Library jobs</h3>
-      <p>Index rescans your registered folders and analyses eligible songs in the current library.
-        Enrich updates its metadata from beets. Analyse, Prune and Stats below are legacy tools
-        for older index files; they do not update the current library.</p>
+      <p>Import and analyze refreshes the current library and runs advanced analysis where enabled.
+        Enrich refreshes metadata from beets. Analyse adds CPU DJ cues, Remove missing tracks previews
+        and confirms safe catalog cleanup, and Detailed stats prints the current library report.</p>
       <div role="group" aria-labelledby="library-run-heading">
         <div class="settings-row">
           <label for="lib-index-limit">Advanced analysis limit (optional)</label>
           <input type="number" id="lib-index-limit" min="0" step="1"
                  placeholder="0 = all">
-          <button type="button" id="lib-run-index">Index</button>
+          <button type="button" id="lib-run-index">Import and analyze</button>
         </div>
         <p class="setting-desc" id="lib-index-desc">
           Add songs from your registered folders, then analyse those with advanced analysis
@@ -2557,8 +2664,8 @@
         <div class="settings-row">
           <button type="button" id="lib-run-enrich">Enrich</button>
           <button type="button" id="lib-run-analyse">Analyse</button>
-          <button type="button" id="lib-run-prune">Prune</button>
-          <button type="button" id="lib-run-stats">Stats</button>
+          <button type="button" id="lib-run-prune">Remove missing tracks</button>
+          <button type="button" id="lib-run-stats">Detailed stats</button>
           <button type="button" id="lib-run-stop">Stop running job</button>
         </div>
         <p class="setting-desc">
@@ -2566,9 +2673,9 @@
           beets without re-embedding.  <strong>Analyse</strong> finds the
           intro, outro, beat grid and cue points of tracks not analysed yet;
           already analysed tracks are skipped, so running it again is quick.
-          <strong>Prune</strong> drops index
-          entries whose files were deleted.  <strong>Stats</strong> prints
-          the full library report from the indexer.  <strong>Stop</strong>
+          <strong>Remove missing tracks</strong> shows a preview after a successful scan,
+          asks for confirmation, protects disconnected folders, and keeps play history.
+          <strong>Detailed stats</strong> prints the current catalog report. <strong>Stop</strong>
           terminates the running subprocess.
         </p>
       </div>

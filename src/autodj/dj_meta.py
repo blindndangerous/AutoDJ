@@ -41,6 +41,8 @@ import atexit
 import contextlib
 import json
 import logging
+import ntpath
+import os
 import re
 import sqlite3
 import threading
@@ -53,11 +55,7 @@ from types import TracebackType
 
 import numpy as np
 
-from autodj.index_manifest import (
-    OldDjMetaCacheError,
-    first_absolute_path,
-    relative_storage_path,
-)
+from autodj.fsutil import is_absolute_storage, relative_storage_path
 from autodj.sqlite_utils import immediate_transaction
 
 logger = logging.getLogger(__name__)
@@ -493,7 +491,7 @@ def key_spoken(
 
 
 # ---------------------------------------------------------------------------
-# Cache (SQLite) — keyed by track path relative to music_dir
+# Cache (SQLite) — canonical absolute keys, with legacy relative-key reads
 # ---------------------------------------------------------------------------
 
 
@@ -628,16 +626,17 @@ class DjMetaCache:
 
         Args:
             sidecar_path: Path to the SQLite database (``*.db``).
-            music_dir: Optional library root used to store cache keys as
-                portable relative paths.
+            music_dir: Optional library root used to resolve legacy relative
+                cache keys and relative migration callers.
             clock: Monotonic seconds, for the miss expiry.
 
-        Raises:
-            ValueError: If the cache stores an absolute track path, which only
-                AutoDJ releases before relative keys wrote.
         """
         self._path = sidecar_path
-        self._music_dir = music_dir
+        self._music_dir = (
+            Path(os.path.abspath(os.path.expanduser(os.fspath(music_dir))))
+            if music_dir is not None
+            else None
+        )
         self._lock = threading.Lock()
         self._dirty = 0
         # Pending writes — flushed in a single transaction by `flush()`.
@@ -649,6 +648,8 @@ class DjMetaCache:
         # Expiring them lets rows another process writes show up, while
         # get_state's few lookups a second stay off SQLite meanwhile.
         self._misses: dict[str, tuple[float, DjMeta]] = {}
+        self._normalized_paths: dict[str, str] | None = None
+        self._normalized_paths_version = -1
         self._clock = clock
         self._warned_closed = False
         self._conn: sqlite3.Connection | None = None
@@ -673,16 +674,30 @@ class DjMetaCache:
             self.close()
 
     def _key(self, path: str) -> str:
-        """Return the canonical SQLite key for *path*.
+        """Return the canonical key, using an absolute path when a root is known."""
+        raw = os.fspath(path)
+        if not is_absolute_storage(raw) and self._music_dir is not None:
+            raw = os.path.join(os.fspath(self._music_dir), raw)
+        if not is_absolute_storage(raw):
+            # Lightweight callers without a configured root keep their
+            # historical relative keys; runtime catalog paths are absolute.
+            return relative_storage_path(raw, None)
+        absolute = os.path.abspath(os.path.expanduser(raw))
+        return os.path.normcase(absolute) if os.name == "nt" else absolute
 
-        Runtime paths are absolute so audio can be opened directly, but cache
-        identity is portable: keys are relative to ``music_dir``, matching
-        ``tracks.db``.
+    def _legacy_key(self, path: str) -> str | None:
+        """Return the pre-canonical relative key for a path under music_dir."""
+        try:
+            return relative_storage_path(path, self._music_dir)
+        except ValueError:
+            return None
 
-        Raises:
-            ValueError: If *path* is absolute and not under ``music_dir``.
-        """
-        return relative_storage_path(path, self._music_dir)
+    @staticmethod
+    def _absolute_alias(path: str) -> str | None:
+        """Return the old absolute spelling, for case-normalized cache compatibility."""
+        if not is_absolute_storage(path):
+            return None
+        return os.path.abspath(os.path.expanduser(path))
 
     def _open(self) -> None:
         """Open the SQLite connection and run the schema."""
@@ -707,11 +722,6 @@ class DjMetaCache:
             self._conn.execute("PRAGMA synchronous=NORMAL")
 
         if not first_init:
-            absolute = first_absolute_path(self._conn, "dj_meta")
-            if absolute is not None:
-                self._conn.close()
-                self._conn = None
-                raise OldDjMetaCacheError(self._path, absolute)
             count = self._conn.execute("SELECT COUNT(*) FROM dj_meta").fetchone()[0]
             if count:
                 logger.info("Loaded DJ meta cache: %d entries", count)
@@ -734,9 +744,54 @@ class DjMetaCache:
             intro_start_s=None if intro_start is None else float(intro_start),
         )
 
+    def _stored_key_locked(self, key: str) -> str | None:
+        """Find a stored key, matching Windows path case the same way the OS does."""
+        assert self._conn is not None
+        row = self._conn.execute("SELECT path FROM dj_meta WHERE path = ?", (key,)).fetchone()
+        if row is None and os.name == "nt":
+            return self._normalized_paths_locked().get(ntpath.normcase(key))
+        return None if row is None else str(row[0])
+
+    def _normalized_paths_locked(self) -> dict[str, str]:
+        """Return the Windows-normalized path map, refreshed after external writes."""
+        assert self._conn is not None
+        while True:
+            version = int(self._conn.execute("PRAGMA data_version").fetchone()[0])
+            if self._normalized_paths is not None and version == self._normalized_paths_version:
+                return self._normalized_paths
+            paths = (str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta"))
+            normalized: dict[str, str] = {}
+            for path in paths:
+                normalized.setdefault(ntpath.normcase(path), path)
+            if version != int(self._conn.execute("PRAGMA data_version").fetchone()[0]):
+                continue
+            self._normalized_paths = normalized
+            self._normalized_paths_version = version
+            return normalized
+
+    def _remember_normalized_paths_locked(self, paths: Iterable[str]) -> None:
+        """Add committed local writes to an existing normalized-path map."""
+        assert self._conn is not None
+        if self._normalized_paths is None:
+            return
+        if int(self._conn.execute("PRAGMA data_version").fetchone()[0]) != (
+            self._normalized_paths_version
+        ):
+            self._normalized_paths = None
+            return
+        for path in paths:
+            key = ntpath.normcase(path)
+            existing = self._normalized_paths.get(key)
+            if existing is not None and existing != path:
+                self._normalized_paths = None
+                return
+            self._normalized_paths[key] = path
+
     def get(self, path: str) -> DjMeta:
         """Return the cached :class:`DjMeta` for *path*, or a fresh empty one."""
         key = self._key(path)
+        legacy_key = self._legacy_key(path)
+        absolute_alias = self._absolute_alias(path)
         with self._lock:
             if key in self._buf:
                 return self._buf[key]
@@ -749,11 +804,17 @@ class DjMetaCache:
             if self._conn is None:
                 self._warn_closed_locked("read")
                 return DjMeta()
-            row = self._conn.execute(
-                "SELECT intro_end_s, outro_start_s, analysed, beats, cues, intro_start_s "
-                "FROM dj_meta WHERE path = ?",
-                (key,),
-            ).fetchone()
+            stored_key = None
+            for candidate in (key, absolute_alias, legacy_key):
+                if candidate is not None and (stored_key := self._stored_key_locked(candidate)):
+                    break
+            row = None
+            if stored_key is not None:
+                row = self._conn.execute(
+                    "SELECT intro_end_s, outro_start_s, analysed, beats, cues, intro_start_s "
+                    "FROM dj_meta WHERE path = ?",
+                    (stored_key,),
+                ).fetchone()
             meta = self._row_to_meta(row) if row else DjMeta()
             if meta.analysed:
                 self._mem_cache[key] = meta
@@ -823,8 +884,10 @@ class DjMetaCache:
                 self._buf.clear()
                 self._dirty = 0
                 return
+            flushed_paths = tuple(self._buf)
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
+            self._remember_normalized_paths_locked(flushed_paths)
             self._buf.clear()
             self._dirty = 0
 
@@ -834,7 +897,15 @@ class DjMetaCache:
         Returns:
             Number of stale rows removed.
         """
-        valid_keys = {self._key(path) for path in valid_paths}
+        valid_keys: set[str] = set()
+        for path in valid_paths:
+            valid_keys.add(self._key(path))
+            absolute_alias = self._absolute_alias(path)
+            if absolute_alias is not None:
+                valid_keys.add(absolute_alias)
+            legacy = self._legacy_key(path)
+            if legacy is not None:
+                valid_keys.add(legacy)
         with self._lock:
             if self._conn is None:
                 self._warn_closed_locked("pruned")
@@ -842,11 +913,18 @@ class DjMetaCache:
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
                 existing = [str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta")]
-                stale = [path for path in existing if path not in valid_keys]
+                if os.name == "nt":
+                    normalized_valid = {os.path.normcase(path) for path in valid_keys}
+                    stale = [
+                        path for path in existing if os.path.normcase(path) not in normalized_valid
+                    ]
+                else:
+                    stale = [path for path in existing if path not in valid_keys]
                 if stale:
                     self._conn.executemany(
                         "DELETE FROM dj_meta WHERE path = ?", [(path,) for path in stale]
                     )
+            self._normalized_paths = None
             self._buf.clear()
             self._dirty = 0
             for path in stale:
@@ -869,7 +947,17 @@ class DjMetaCache:
         Returns:
             Number of rows re-keyed.
         """
-        pairs = [(self._key(old), self._key(new)) for old, new in moves]
+        pairs = [
+            (
+                self._key(old),
+                self._absolute_alias(old),
+                self._legacy_key(old),
+                self._key(new),
+                self._absolute_alias(new),
+                self._legacy_key(new),
+            )
+            for old, new in moves
+        ]
         with self._lock:
             if self._conn is None:
                 self._warn_closed_locked("re-keyed")
@@ -877,22 +965,50 @@ class DjMetaCache:
             rekeyed = 0
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
-                for old, new in pairs:
+                for old, old_absolute, old_legacy, new, new_absolute, new_legacy in pairs:
                     if old == new:
                         continue
-                    taken = self._conn.execute(
-                        "SELECT 1 FROM dj_meta WHERE path = ?", (new,)
-                    ).fetchone()
-                    if taken is not None:
+                    destination_keys = {new}
+                    if new_absolute is not None:
+                        destination_keys.add(new_absolute)
+                    if new_legacy is not None:
+                        destination_keys.add(new_legacy)
+                    if any(
+                        self._stored_key_locked(destination) is not None
+                        for destination in destination_keys
+                    ):
+                        continue
+                    source = None
+                    for candidate in (old, old_absolute, old_legacy):
+                        if candidate is None:
+                            continue
+                        stored_source = self._stored_key_locked(candidate)
+                        if stored_source is not None:
+                            source = stored_source
+                            break
+                    if source is None:
                         continue
                     cur = self._conn.execute(
-                        "UPDATE dj_meta SET path = ? WHERE path = ?", (new, old)
+                        "UPDATE dj_meta SET path = ? WHERE path = ?", (new, source)
                     )
                     rekeyed += cur.rowcount
+                    if cur.rowcount:
+                        for alias in (old, old_absolute, old_legacy):
+                            if alias is None or alias == source:
+                                continue
+                            if alias not in destination_keys:
+                                stored_alias = self._stored_key_locked(alias)
+                                if stored_alias is not None and stored_alias != source:
+                                    self._conn.execute(
+                                        "DELETE FROM dj_meta WHERE path = ?", (stored_alias,)
+                                    )
+            self._normalized_paths = None
             self._buf.clear()
             self._dirty = 0
-            for old, new in pairs:
-                for key in (old, new):
+            for old, old_absolute, old_legacy, new, new_absolute, new_legacy in pairs:
+                for key in (old, old_absolute, old_legacy, new, new_absolute, new_legacy):
+                    if key is None:
+                        continue
                     self._mem_cache.pop(key, None)
                     self._misses.pop(key, None)
             return rekeyed

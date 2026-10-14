@@ -89,6 +89,7 @@ from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
     ListenerAuthLimiter,
+    StationFullError,
     normalize_address,
     trusted_proxy_setting,
 )
@@ -143,6 +144,7 @@ from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_stat
 from autodj.stereo import SAFE_FFMPEG_INPUT
 from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
+from autodj.stream_formats import FORMATS
 from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
@@ -484,12 +486,17 @@ class _GZipExceptStream(GZipMiddleware):
         await super().__call__(scope, receive, send)
 
 
+#: The addresses' extensions: each stream format's, and the playlist's.
+_LISTEN_EXTENSIONS = frozenset({*FORMATS, "m3u"})
+
+
 def _is_stream_path(path: str) -> bool:
     """Whether *path* is a station's stream or playlist: ``/stream.mp3``, ``/stations/x.m3u``."""
-    if path in {"/stream.mp3", "/stream.m3u"}:
+    if path.startswith("/stream.") and path.removeprefix("/stream.") in _LISTEN_EXTENSIONS:
         return True
     name = path.removeprefix("/stations/")
-    return name != path and "/" not in name and name.endswith((".mp3", ".m3u"))
+    _slug, dot, ext = name.rpartition(".")
+    return name != path and "/" not in name and bool(dot) and ext in _LISTEN_EXTENSIONS
 
 
 # Where the footer's build stamp links a commit.  A constant, so neither the
@@ -588,6 +595,15 @@ class LibraryRescanBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     override_tags: StrictBool = False
+
+
+class LibraryRemoveMissingBody(BaseModel):
+    """Explicit confirmation for removing catalog records after a clean scan."""
+
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    confirmed: StrictBool
+    allow_mass: StrictBool = False
 
 
 class SongPointsBody(BaseModel):
@@ -1412,16 +1428,20 @@ def create_app(
     # ------------------------------------------------------------------
 
     async def _serve_listener(station: StationRuntime, ext: str, request: Request) -> Response:
-        """Serve *station*'s stream (``mp3``) or its one-line playlist (``m3u``).
+        """Serve *station*'s stream in a format (``mp3``, ``aac``, ``opus``) or its playlist (``m3u``).
 
         ``HEAD`` answers with the same checks and headers but no body and
-        without becoming a listener.  404 unless the station streams.
+        without becoming a listener.  404 unless the station streams, and
+        for a format that is off.
         """
         sbridge = station.bridge
         access = station.listener_access
         if not sbridge.stream_mode or access is None:
             raise HTTPException(status_code=404, detail="Not Found")
-        if ext not in {"mp3", "m3u"}:
+        if ext not in _LISTEN_EXTENSIONS:
+            raise HTTPException(status_code=404, detail="Not Found")
+        # Never starts an encoder: that happens off the loop, for a real listener.
+        if ext != "m3u" and not sbridge.stream_enabled(ext):
             raise HTTPException(status_code=404, detail="Not Found")
         stream_cfg = station.cfg.stream
         try:
@@ -1470,7 +1490,9 @@ def create_app(
                 headers["Content-Length"] = str(len(body))
                 body = b""
             return Response(body, media_type="audio/x-mpegurl", headers=headers)
-        icy = request.headers.get("icy-metadata", "").strip() == "1"
+        fmt = FORMATS[ext]
+        # An Ogg (Opus) stream carries no ICY titles; its player is never offered them.
+        icy = fmt.icy and request.headers.get("icy-metadata", "").strip() == "1"
         if icy:
             headers.update(
                 {
@@ -1478,20 +1500,36 @@ def create_app(
                     "icy-name": _header_text(stream_cfg.station_name),
                     "icy-genre": _header_text(stream_cfg.genre),
                     "icy-url": _header_text(stream_cfg.url),
-                    "icy-br": str(stream_cfg.bitrate),
+                    "icy-br": str(
+                        stream_cfg.bitrate if ext == "mp3" else sbridge.mounts.bitrate(ext)
+                    ),
                 }
             )
         if head:
-            response = Response(media_type="audio/mpeg", headers=headers)
+            response = Response(media_type=fmt.media_type, headers=headers)
             del response.headers["content-length"]  # a live stream has no length
             return response
-        stream = sbridge.stream
+        # Off the loop: an extra format's first listener starts its encoder.
+        try:
+            stream = await asyncio.to_thread(sbridge.stream_output, ext)
+        except (EncoderUnavailableError, OSError) as exc:
+            logger.error("The %s stream encoder could not start", ext, exc_info=True)
+            raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+        if stream is None:
+            raise HTTPException(status_code=404, detail="Not Found")
         try:
             # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
             ident, listener = await asyncio.to_thread(
-                access.add, stream, address, request.headers.get("user-agent", ""), icy=icy
+                functools.partial(
+                    access.add,
+                    stream,
+                    address,
+                    request.headers.get("user-agent", ""),
+                    icy=icy,
+                    fmt=ext,
+                )
             )
-        except (ListenerLimitError, AddressLimitError) as exc:
+        except (ListenerLimitError, AddressLimitError, StationFullError) as exc:
             raise HTTPException(status_code=503, detail="Stream listener limit reached") from exc
         except BannedAddressError as exc:
             raise HTTPException(status_code=403, detail="Listener address banned") from exc
@@ -1503,9 +1541,13 @@ def create_app(
             request.headers.get("user-agent", ""),
         )
         feed = station.nowplaying
+        stats = station.listener_stats
+        started = stats.connected(ext) if stats is not None else (0.0, 0.0)
 
         def release() -> None:
             access.remove(ident)
+            if stats is not None:
+                stats.disconnected(ext, started)
             sbridge.listener_disconnected(client)
             feed.refresh()
 
@@ -1515,7 +1557,7 @@ def create_app(
             return _ListenerResponse(
                 listener.chunks(),
                 on_close=release,
-                media_type="audio/mpeg",
+                media_type=fmt.media_type,
                 headers=headers,
             )
         except BaseException:
@@ -1526,7 +1568,8 @@ def create_app(
     async def api_stream_audio(ext: str, request: Request) -> Response:
         """Serve the default station's ``/stream.mp3``, or ``/stream.m3u`` pointing at it.
 
-        Any other ``/stream.*`` name is not found.
+        ``/stream.aac`` and ``/stream.opus`` while those formats are on; any
+        other ``/stream.*`` name is not found.
         """
         return await _serve_listener(stations.default, ext, request)
 
@@ -1534,11 +1577,12 @@ def create_app(
     async def api_station_stream(station_file: str, request: Request) -> Response:
         """Serve ``/stations/<slug>.mp3`` or ``.m3u``: any station's stream by name.
 
+        ``.aac`` and ``.opus`` too, while the station has those formats on.
         404 for a name that is no station or another extension; 503 "off
         air" while the station is stopped.
         """
         slug, dot, ext = station_file.rpartition(".")
-        if not dot or ext not in {"mp3", "m3u"}:
+        if not dot or ext not in _LISTEN_EXTENSIONS:
             raise HTTPException(status_code=404, detail="Not Found")
         try:
             station = stations.get(slug)
@@ -1771,8 +1815,31 @@ def create_app(
     @app.post("/api/library/rescan")
     async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
         library = _catalog_library()
-        library.start_scan(override_tags=body.override_tags if body else False)
+        if not library.start_scan(override_tags=body.override_tags if body else False):
+            raise HTTPException(status_code=409, detail="Library cleanup is running")
         return library.snapshot()
+
+    @app.get("/api/library/missing")
+    async def api_library_missing_preview() -> dict:
+        """Preview records missing after a complete scan of available folders."""
+        return await asyncio.to_thread(_catalog_library().missing_removal_preview)
+
+    @app.post("/api/library/remove-missing")
+    async def api_library_remove_missing(body: LibraryRemoveMissingBody) -> dict:
+        """Remove only the unchanged set shown by a clean-scan preview."""
+        library = _catalog_library()
+        try:
+            removed = await asyncio.to_thread(
+                library.remove_missing,
+                body.token,
+                confirmed=body.confirmed,
+                allow_mass=body.allow_mass,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"removed": removed, "remaining": library.snapshot()["tracks_ready"]}
 
     @app.get("/api/library/points")
     async def api_library_points(path: str) -> dict:
@@ -2128,6 +2195,9 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 # One revision per tick covers churn, encoder resets and expired bans.
                 await asyncio.to_thread(listener_access.listeners)
                 await asyncio.to_thread(listener_access.prune_expired)
+            if bridge.stream_mode and station.listener_stats is not None:
+                # A new day's peak, old days pruned, the counts saved each minute.
+                await asyncio.to_thread(station.listener_stats.tick)
             recorder = station.recorder
             await _broadcast_state_once(
                 bridge,

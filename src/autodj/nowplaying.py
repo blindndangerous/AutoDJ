@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from autodj._bridge import PlayerBridge
+from autodj.stream_mounts import StreamMounts
 
 #: Version of the public payload; 2 added the peak and uptime fields.
 SCHEMA_VERSION = 2
@@ -32,6 +33,14 @@ def _history_row(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("kind") == "live":
         public.update(kind="live", ended_at=row.get("ended_at"))
     return public
+
+
+def _listeners(bridge: Any) -> int:
+    """Listeners on every stream format together (a test double may have only the MP3 one)."""
+    mounts = getattr(bridge, "mounts", None)
+    if isinstance(mounts, StreamMounts):
+        return mounts.listener_count
+    return int(bridge.stream.listener_count) if bridge.stream else 0
 
 
 class NowPlaying:
@@ -128,7 +137,7 @@ class NowPlaying:
                 else None
             ),
             "history": [_history_row(row) for row in reversed(history[-limit:])] if limit else [],
-            "listener_count": self.bridge.stream.listener_count if self.bridge.stream else 0,
+            "listener_count": _listeners(self.bridge),
             "stream_path": stream_path if isinstance(stream_path, str) else "/stream.mp3",
         }
         with self._lock:

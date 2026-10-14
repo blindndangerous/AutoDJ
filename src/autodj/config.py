@@ -90,7 +90,8 @@ class LibraryConfig(_Section):
     """Settings for the music library location and format filtering.
 
     Attributes:
-        music_dir: Path to the root music folder (local or NAS mapped drive).
+        music_dir: Optional base for legacy relative paths only. New libraries
+            start empty; registered folders determine the music available.
             For beets users, this should match the local mount point of the
             beets ``directory`` setting — relative paths stored in the beets
             database are resolved against ``music_dir``.
@@ -102,14 +103,14 @@ class LibraryConfig(_Section):
 
     SECTION: ClassVar[str] = "library"
 
-    music_dir: Path
+    music_dir: Path | None = None
     beets_db: Path | None = None
     supported_formats: list[str] = field(default_factory=lambda: ["mp3", "flac", "m4a"])
     playlists_folder: Path | None = None
 
     def __post_init__(self) -> None:
         """Expand ``~`` in the paths; an empty ``beets_db`` or ``playlists_folder`` means none."""
-        self.music_dir = Path(self.music_dir).expanduser()
+        self.music_dir = Path(self.music_dir).expanduser() if self.music_dir else None
         self.beets_db = Path(self.beets_db).expanduser() if self.beets_db else None
         self.playlists_folder = (
             Path(self.playlists_folder).expanduser() if self.playlists_folder else None
@@ -1118,6 +1119,12 @@ class HuggingFaceConfig(_Section):
 
 
 STREAM_BITRATES = (128, 192, 256, 320)
+#: The AAC mount's bitrates in kbps (``[stream] aac_bitrate``; 0 is off).
+AAC_BITRATES = (64, 96, 128, 192, 256)
+#: The Opus mount's bitrates in kbps (``[stream] opus_bitrate``; 0 is off).
+OPUS_BITRATES = (48, 64, 96, 128, 192)
+#: The most days of listener statistics ``[stream] stats_days`` may keep.
+MAX_STATS_DAYS = 3650
 
 
 def parse_env_bool(value: str) -> bool:
@@ -1299,9 +1306,14 @@ class StreamConfig(_Section):
         enabled: Serve in stream mode.
         bitrate: MP3 bitrate in kbps, one of :data:`STREAM_BITRATES`.
         idle_grace_seconds: Seconds without listeners before the set stops.
-        max_listeners: Concurrent listener limit.
+        max_listeners: Concurrent listener limit, across every format.
         station_name: Name sent to players as ``icy-name``.
         relays: External servers to push the stream to, by name.
+        aac_bitrate: The AAC mount's bitrate in kbps, one of
+            :data:`AAC_BITRATES`, or 0 for no AAC mount.
+        opus_bitrate: The Opus mount's bitrate in kbps, one of
+            :data:`OPUS_BITRATES`, or 0 for no Opus mount.
+        stats_days: Days of listener statistics to keep, 0 to keep none.
     """
 
     SECTION: ClassVar[str] = "stream"
@@ -1320,9 +1332,22 @@ class StreamConfig(_Section):
     description: str = ""
     url: str = ""
     relays: dict[str, RelayConfig] = field(default_factory=dict)
+    aac_bitrate: int = 0
+    opus_bitrate: int = 0
+    stats_days: int = 90
 
     def __post_init__(self) -> None:
         """Validate every field."""
+        for name, allowed in (("aac_bitrate", AAC_BITRATES), ("opus_bitrate", OPUS_BITRATES)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"stream.{name} must be an integer")
+            if value and value not in allowed:
+                raise ValueError(f"stream.{name} must be 0 (off) or one of {allowed}, got {value}")
+        if isinstance(self.stats_days, bool) or not isinstance(self.stats_days, int):
+            raise TypeError("stream.stats_days must be an integer")
+        if not 0 <= self.stats_days <= MAX_STATS_DAYS:
+            raise ValueError(f"stream.stats_days must be between 0 and {MAX_STATS_DAYS}")
         if not isinstance(self.relays, Mapping):
             raise TypeError(
                 "stream.relays must be named tables such as [stream.relays.main], not a list"
@@ -1458,7 +1483,8 @@ class RequestsConfig(_Section):
         window_minutes: How far ahead a request may be placed in the queue.
         blocked_artists: Artists listeners cannot request.
         blocked_folders: Folders whose songs listeners cannot request or
-            find, as full paths or paths inside ``[library] music_dir``.
+            find, as full paths or paths relative to registered music folders.
+            A configured legacy ``music_dir`` retains the older relative-path behavior.
         ipv6_prefix: The IPv6 network one listener's limits count over,
             in bits: 56 (the default) counts a whole home network that was
             delegated a /56; 64 a single /64; 128 a single address.
@@ -1871,7 +1897,7 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
 def _default_raw() -> dict[str, Any]:
     """Return the minimal raw configuration defaults."""
     return {
-        "library": {"music_dir": "music"},
+        "library": {},
         "index": {"index_dir": "index", "model_dir": "models"},
         "server": {"host": "127.0.0.1", "port": 8080},
     }

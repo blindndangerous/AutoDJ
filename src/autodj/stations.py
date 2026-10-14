@@ -59,6 +59,8 @@ if TYPE_CHECKING:
     from autodj.scheduler import Scheduler
     from autodj.shows import ShowRunner, ShowStore
     from autodj.stream import StreamOutput
+    from autodj.stream_formats import StreamFormat
+    from autodj.stream_mounts import StreamMounts
     from autodj.time_checks import TimeChecks
     from autodj.webhooks import WebhookWorker
 
@@ -230,6 +232,11 @@ class StationPaths:
         return self.state_dir / "listener_bans.json"
 
     @property
+    def listener_stats(self) -> Path:
+        """Daily listener counts: peaks, sessions and listening time, no addresses (#50)."""
+        return self.state_dir / "listener_stats.json"
+
+    @property
     def recording(self) -> Path:
         """Whether a broadcast recording was running."""
         return self.state_dir / "recording.json"
@@ -295,7 +302,11 @@ def start_stream_station(
 
     Starts the MP3 encoder, registers the stream as an output of the
     player's mix bus, and hands the stream to the station, which reads its
-    listener count and starts a set on the first listener.  Configured
+    listener count and starts a set on the first listener.  The extra
+    formats that are on (``[stream] aac_bitrate`` and ``opus_bitrate``)
+    are checked with ffmpeg; each starts its own encoder on the same bus
+    when its first listener comes, and their listeners count too
+    (:mod:`autodj.stream_mounts`).  Configured
     relays (``[stream.relays.<name>]``) start connecting too; while any is
     enabled the station plays as if it always had a listener, because the
     relay's own listeners are invisible to AutoDJ.
@@ -320,6 +331,7 @@ def start_stream_station(
     from autodj import stream as stream_module
     from autodj.liner_scheduler import LinerScheduler
     from autodj.station import Station
+    from autodj.stream_mounts import StreamMounts
 
     player = bridge.player
     cfg = player._cfg
@@ -338,9 +350,26 @@ def start_stream_station(
         made.append(output)
         return output
 
+    def make_mount(fmt: StreamFormat, bitrate: int) -> StreamOutput:
+        return stream_module.StreamOutput(
+            bitrate,
+            cfg.stream.max_listeners,
+            encoder_factory=functools.partial(stream_module.FfmpegEncoder, fmt=fmt),
+            loop=loop,
+            fmt=fmt,
+        )
+
     relays = None
+    mounts = None
     try:
         stream_out = make_output(cfg.stream.bitrate, cfg.stream.max_listeners)
+        mounts = StreamMounts(
+            stream_out,
+            make_mount,
+            bus.add_output,
+            bus.remove_output,
+            probe=stream_module.probe_encoder,
+        )
         from autodj.relay import RelayManager, relay_status_path
 
         relays = RelayManager(
@@ -360,7 +389,7 @@ def start_stream_station(
         )
         station = Station(
             bus,
-            stream_out,
+            mounts,
             player,
             cfg.stream.idle_grace_seconds,
             on_event=bridge.announce_station_event,
@@ -384,7 +413,7 @@ def start_stream_station(
         )
         if first_track is not None:
             station.start_with(first_track, "seed")
-        bridge.attach_stream(stream=stream_out, station=station, relays=relays)
+        bridge.attach_stream(stream=stream_out, station=station, relays=relays, mounts=mounts)
         bridge.attach_liner_scheduler(scheduler)
         if recorder is not None:
             stream_out.add_sink(recorder)
@@ -392,14 +421,18 @@ def start_stream_station(
         for output in relays.outputs:
             bus.add_output(output)
         relays.start()
+        mounts.start({"aac": cfg.stream.aac_bitrate, "opus": cfg.stream.opus_bitrate})
     except BaseException:
-        _undo_stream_start(bridge, made, relays)
+        _undo_stream_start(bridge, made, relays, mounts)
         raise
     return stream_out
 
 
 def _undo_stream_start(
-    bridge: PlayerBridge, made: Sequence[StreamOutput], relays: Any | None
+    bridge: PlayerBridge,
+    made: Sequence[StreamOutput],
+    relays: Any | None,
+    mounts: StreamMounts | None = None,
 ) -> None:
     """Close what a failed :func:`start_stream_station` made: relays, encoders, liner worker.
 
@@ -408,6 +441,8 @@ def _undo_stream_start(
     """
     bus = bridge.player.bus
     steps: list[tuple[str, Callable[[], None]]] = []
+    if mounts is not None:
+        steps.append(("stopping the extra formats", mounts.close))
     # The relays close their own encoders.
     theirs = {id(output) for output in relays.outputs} if relays is not None else set()
     for output in made:
@@ -421,7 +456,7 @@ def _undo_stream_start(
             step()
         except Exception:
             logger.exception("A stream that failed to start: %s it failed too", what)
-    bridge.attach_stream(stream=None, station=None, relays=None)
+    bridge.attach_stream(stream=None, station=None, relays=None, mounts=None)
 
 
 def start_server_audio_liners(
@@ -630,7 +665,13 @@ async def stop_stream_station(bridge: PlayerBridge, stream_out: StreamOutput) ->
             for output in bridge.relays.outputs
         ]
         relay_steps.append(("stopping the relays", bridge.relays.close))
+    # The AAC and Opus mounts leave the bus and close their own encoders.
+    mounts = getattr(bridge, "mounts", None)
+    mount_steps: list[tuple[str, Callable[[], None]]] = (
+        [("stopping the extra formats", mounts.close)] if mounts is not None else []
+    )
     steps: tuple[tuple[str, Callable[[], None]], ...] = (
+        *mount_steps,
         *relay_steps,
         ("detaching", functools.partial(bridge.player.bus.remove_output, stream_out)),
         ("closing", stream_out.close),
@@ -661,7 +702,7 @@ async def tick_every_second(
 async def tick_stream_workers(
     bridge: PlayerBridge, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 ) -> None:
-    """Tick the station and the liner scheduler once a second, independently.
+    """Tick the station, the liner scheduler and the extra formats once a second, apart.
 
     Each has its own loop, so a slow liner decode (up to 30 s through
     ffmpeg) never holds up the station's idle check, and a failure in one
@@ -671,7 +712,12 @@ async def tick_stream_workers(
         bridge: The bridge holding the station and liner scheduler.
         sleep: ``asyncio.sleep`` replacement for tests.
     """
-    workers = (("station", bridge.station), ("liner scheduler", bridge.liner_scheduler))
+    workers = (
+        ("station", bridge.station),
+        ("liner scheduler", bridge.liner_scheduler),
+        # Stops an extra format's encoder once nobody listens to it (#50).
+        ("extra formats", getattr(bridge, "mounts", None)),
+    )
     async with asyncio.TaskGroup() as group:
         for name, worker in workers:
             if worker is not None:
@@ -795,6 +841,7 @@ class StationRuntime:
         """
         from autodj._bridge import PlayerBridge
         from autodj.listener_access import ListenerAccess
+        from autodj.listener_stats import ListenerStats
         from autodj.nowplaying import NowPlaying
         from autodj.webhooks import WebhookWorker
 
@@ -827,12 +874,25 @@ class StationRuntime:
         if callable(attach := getattr(getattr(bridge.player, "bus", None), "set_live", None)):
             attach(self.live)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
+        streams = stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
+        stream_cfg = bridge.player._cfg.stream
         self.listener_access: ListenerAccess | None = (
             ListenerAccess(
                 self.paths.listener_bans,
-                bridge.player._cfg.stream.max_listeners_per_address,
+                stream_cfg.max_listeners_per_address,
+                max_total=stream_cfg.max_listeners,
             )
-            if stream_mode or (isinstance(bridge, PlayerBridge) and bridge.stream_mode)
+            if streams
+            else None
+        )
+        # Daily listener counts, no addresses (#50).
+        self.listener_stats: ListenerStats | None = (
+            ListenerStats(
+                self.paths.listener_stats,
+                timezone=timezone,
+                keep_days=lambda: int(self.cfg.stream.stats_days),
+            )
+            if streams
             else None
         )
         self.recorder: Recorder | None = None
@@ -916,7 +976,7 @@ class StationRuntime:
             "slug": self.slug,
             "name": self.name,
             "state": state,
-            "listeners": int(stream.listener_count) if stream is not None else 0,
+            "listeners": bridge.listener_total() if stream is not None else 0,
             "title": (
                 f"{live['dj']}: {self.live.title}"
                 if (live := self.live.status()) is not None
@@ -1169,6 +1229,13 @@ class StationRuntime:
             await _step(
                 "stopping its stream",
                 functools.partial(stop_stream_station, bridge, self.stream_out),
+                problems,
+            )
+        stats = getattr(self, "listener_stats", None)
+        if stats is not None:
+            await _step(
+                "saving its listener statistics",
+                functools.partial(asyncio.to_thread, stats.flush),
                 problems,
             )
         if self.recorder is not None:

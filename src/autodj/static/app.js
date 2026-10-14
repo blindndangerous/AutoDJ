@@ -46,6 +46,8 @@ import { installLiveDesk } from "./modules/live-talk.js";
 import { installLiveSettings } from "./modules/live-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
+import { installStreamFormats } from "./modules/stream-formats.js";
+import { installListenerStats } from "./modules/listener-stats.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
@@ -214,10 +216,23 @@ btnListen.addEventListener("click", () => {
 });
 // Settings subtabs (./modules/subtabs.js).  Stream shows only in stream mode.
 const settingsTabs = initSubtabs(document.getElementById("settings-tabs"));
+// Settings > Stream > More formats: the AAC and Opus streams (#50).
+const streamFormats = installStreamFormats({
+  doc: document,
+  save: (name, value, control) =>
+    postSettings("/api/stream/settings", { [`${name}_bitrate`]: value }, control),
+  refresh: () => { void streamSettings.refresh(); },
+  srStatus: document.getElementById("sr-status"),
+  settingsStatus,
+});
 // Settings > Stream.
 const streamSettings = createStreamSettings({
   doc: document,
-  fetchInfo: () => requestJson("/api/stream"),
+  fetchInfo: async () => {
+    const info = await requestJson("/api/stream");
+    streamFormats.fill(info);
+    return info;
+  },
   saveBitrate: (value, control) =>
     postSettings("/api/stream/settings", { bitrate: value }, control),
   saveContinuous: (value, control) =>
@@ -249,6 +264,13 @@ const listenerControls = createListenerControls(
   ),
 );
 const recordingControls = createRecordingControls(document, document.getElementById("sr-status"));
+// Settings > Stream > Listener statistics (#50).
+const listenerStats = installListenerStats({
+  doc: document,
+  saveKeepDays: (value, control) =>
+    postSettings("/api/stream/settings", { stats_days: value }, control),
+  settingsStatus,
+});
 // A lookup that failed while another tab showed was never heard; opening
 // Settings tries again.
 window.addEventListener("hashchange", () => {
@@ -323,6 +345,7 @@ function stopProtectedPlayback() {
 function clearStationViews() {
   _seekController?.cancel();
   streamSettings.reset();
+  streamFormats.reset();
   relaySettings.reset();
   recordingControls.reset();
   // Switching stations or signing out stops talking and lets the
@@ -332,6 +355,7 @@ function clearStationViews() {
   _liveInfo = null;
   nowPlayingSettings?.reset();
   listenerControls.reset();
+  listenerStats.reset();
   resetTrackCaches();
   historyRequest?.abort();
   _histPlayingPath = null;
@@ -592,6 +616,8 @@ function applyState(s) {
   renderLiveTab();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
+  streamFormats.apply(s);
+  listenerStats.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
 
   // Now Playing
@@ -834,7 +860,7 @@ function applyState(s) {
       { ...s.settings, discovery_enabled: s.discovery_enabled },
       _settingsEls(),
     );
-    if (document.activeElement !== _musicSpeedNumber) {
+    if (document.activeElement !== _musicSpeedNumber && !musicSpeedSliderBusy(_musicSpeedSlider)) {
       syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
     }
     applyMixSettings(s.settings, _mixEls);
@@ -863,7 +889,9 @@ import {
   postSettings as _postSettingsModule,
   resetSettingsState,
 } from "./modules/settings-panel.js";
-import { installMusicSpeedSlider, syncMusicSpeedSlider } from "./modules/music-speed.js";
+import {
+  installMusicSpeedSlider, musicSpeedSliderBusy, syncMusicSpeedSlider,
+} from "./modules/music-speed.js";
 
 const _musicSpeedNumber = document.getElementById("pb-music-speed-number");
 const _musicSpeedSlider = document.getElementById("pb-music-speed-slider");

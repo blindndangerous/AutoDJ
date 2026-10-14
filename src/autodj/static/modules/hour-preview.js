@@ -14,8 +14,8 @@
 // those refreshes start failing, the failure is said once (not again until
 // one succeeds).  Refresh preview, and choosing another span under Show,
 // say the new summary once through #hour-preview-status, and Shift+H
-// (speakSummary) says it from anywhere through the page's spoken status.  Times and lengths are shown as "2:04:30 PM" and "3:45" but read
-// as "2:04 PM and 30 seconds" and "3 minutes 45 seconds".  Fixed or
+// (speakSummary) says it from anywhere through the page's spoken status.  Times and lengths use
+// the same compact text on screen and in speech, such as "2:04:30 PM" and "3:45". Fixed or
 // predicted is a word in the Status column of every row, not a colour.
 import { requestJson } from "./api-client.js";
 import { srSpeak } from "./dom-helpers.js";
@@ -34,33 +34,15 @@ export function spokenSummary(view) {
   return view.reason || view.summary || "No hour preview yet.";
 }
 
-// The cells of one row: [shown, read] for the time and the length, so a
-// screen reader gets words where the screen shows figures.
+// Compact times and durations are the same for everyone, so each cell has
+// one accessible text value without a duplicate hidden expansion.
 export function rowCells(item) {
   return [
-    { shown: item.starts_text, read: item.starts_words },
-    { text: item.title },
-    { shown: item.length_text, read: item.length_words },
-    { text: item.status_text },
+    item.starts_text,
+    item.title,
+    item.length_text,
+    item.status_text,
   ];
-}
-
-function cellKey(cell) {
-  return cell.text !== undefined ? `t:${cell.text}` : `s:${cell.shown}\n${cell.read}`;
-}
-
-function fillCell(doc, td, cell) {
-  if (cell.text !== undefined) {
-    td.textContent = cell.text;
-    return;
-  }
-  const shown = doc.createElement("span");
-  shown.setAttribute("aria-hidden", "true");
-  shown.textContent = cell.shown;
-  const read = doc.createElement("span");
-  read.className = "visually-hidden";
-  read.textContent = cell.read;
-  td.replaceChildren(shown, read);
 }
 
 // Bring *tbody* in line with *items*, changing only what differs: rows are
@@ -83,10 +65,9 @@ export function renderRows(doc, tbody, items) {
     }
     rowCells(item).forEach((cell, column) => {
       const td = row.children[column];
-      const key = cellKey(cell);
-      if (td.dataset.key !== key) {
-        fillCell(doc, td, cell);
-        td.dataset.key = key;
+      if (td.dataset.text !== cell) {
+        td.textContent = cell;
+        td.dataset.text = cell;
       }
     });
   });

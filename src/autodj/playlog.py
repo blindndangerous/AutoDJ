@@ -216,7 +216,8 @@ def _cell(value: object) -> str:
     return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
 
 
-def _csv(header: Sequence[str], rows: Iterable[Sequence[object]]) -> str:
+def safe_csv(header: Sequence[str], rows: Iterable[Sequence[object]]) -> str:
+    """CSV text whose cells a spreadsheet never runs as formulas (see the module notes)."""
     out = io.StringIO(newline="")
     writer = csv.writer(out)
     writer.writerow(header)
@@ -230,7 +231,7 @@ def _local(moment: datetime) -> str:
 
 def plays_csv(plays: Iterable[Play]) -> str:
     """Return *plays* as CSV text with :data:`COLUMNS` as the header row."""
-    return _csv(
+    return safe_csv(
         COLUMNS,
         (
             (
@@ -276,7 +277,7 @@ def missing_fields(plays: Iterable[Play]) -> list[tuple[str, str, str, str, int,
 
 def missing_csv(plays: Iterable[Play]) -> str:
     """Return :func:`missing_fields` as CSV text with :data:`MISSING_COLUMNS`."""
-    return _csv(MISSING_COLUMNS, missing_fields(plays))
+    return safe_csv(MISSING_COLUMNS, missing_fields(plays))
 
 
 # The columns of SoundExchange's Report of Use templates for commercial
@@ -427,6 +428,7 @@ __all__ = [
     "parse_bound",
     "plays_between",
     "plays_csv",
+    "safe_csv",
     "soundexchange_filename",
     "soundexchange_report",
     "summary",

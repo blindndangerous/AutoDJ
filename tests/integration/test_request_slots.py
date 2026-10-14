@@ -52,6 +52,15 @@ def test_each_place_has_its_start_neighbours_and_problems(bridge) -> None:
     assert slots[1].starts_in - slots[0].starts_in == 180.0
 
 
+def test_places_are_projected_at_the_music_speed(bridge) -> None:
+    """At +10% music speed each song plays 1/1.1 of its file length (#162)."""
+    _ready(bridge)
+    bridge.player.music_playback_rate = lambda entry: 1.1
+    slots = bridge.request_slots(_song(5), horizon_s=3600)
+    assert slots[1].starts_in - slots[0].starts_in == pytest.approx(180.0 / 1.1)
+    assert slots[2].starts_in - slots[1].starts_in == pytest.approx(180.0 / 1.1)
+
+
 def test_places_beyond_the_window_are_left_out_but_the_first_always_counts(bridge) -> None:
     _ready(bridge)
     assert [slot.position for slot in bridge.request_slots(_song(5), horizon_s=0)] == [0]

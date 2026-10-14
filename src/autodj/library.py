@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import threading
@@ -15,12 +17,12 @@ import numpy as np
 from autodj.analysis_queue import SERVER_HOLDER, SERVER_LEASE_SECONDS, AnalysisQueue
 from autodj.beets import Track
 from autodj.catalog import (
-    VECTOR_CHUNK,
     Coverage,
     LibraryCatalog,
     _covered_by,
     _path,
     _prefix,
+    _under,
 )
 from autodj.categories import CategoryIndex
 from autodj.clock_condition_data import BeetsConditions
@@ -44,12 +46,27 @@ from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
 
-# Catalog setting naming the legacy index generation already seeded.
-_IMPORTED_GENERATION = "imported_index_generation"
-
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
     from autodj.model import MuqWrapper
+
+
+def require_current_library(directory: Path, station_web_states: Iterable[Path] = ()) -> None:
+    """Refuse legacy application data before creating or changing database files."""
+    from autodj.index_manifest import IndexConsistencyError, has_legacy_index
+    from autodj.index_migration import migration_required
+
+    if not (directory / "library.db").is_file() and has_legacy_index(directory):
+        reason = "an older published index is present"
+    else:
+        needed, reason = migration_required(directory, station_web_states)
+        if not needed:
+            return
+    raise IndexConsistencyError(
+        f"The library in {directory} needs migration ({reason}). Stop AutoDJ and run "
+        "`autodj migrate-index` to preview, then `autodj migrate-index --apply`. "
+        "Your original files will be kept."
+    )
 
 
 class _ImportState(TypedDict):
@@ -85,14 +102,17 @@ def _browse_order(entries: tuple[IndexEntry, ...]) -> list[_Indexed]:
 
 
 class LibraryManager:
-    """Keep a per-index catalog current without modifying legacy FAISS files."""
+    """Keep the playable library and its similarity view current."""
 
     def __init__(self, cfg: AutoDJConfig, sim: Any) -> None:
+        from autodj.config import station_config
+
         self.cfg = cfg
         self.sim = sim
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._scan_lock = threading.Lock()
+        self._cleanup_active = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_sources: set[str] | None = set()
@@ -144,6 +164,13 @@ class LibraryManager:
         self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.clock_beets = BeetsConditions(cfg)
         catalog_path = cfg.index.active_dir / "library.db"
+        require_current_library(
+            cfg.index.active_dir,
+            (
+                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                for spec in cfg.stations
+            ),
+        )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
         # What each station played, and its settings; the default station's
@@ -161,70 +188,13 @@ class LibraryManager:
             self.catalog.close()
             raise
         try:
-            self.catalog.seed_sources(cfg.library.music_dir, liner_root)
-            if existing_catalog:
-                self.refresh()
-            else:
-                self.import_legacy()
+            if not existing_catalog:
+                self.catalog.seed_sources(None, liner_root)
+            self.refresh()
         except BaseException:
             self.analysis_queue.close()
             self.catalog.close()
             raise
-
-    def import_legacy(self) -> None:
-        """Seed the loaded legacy generation into a new catalog, a chunk at a time.
-
-        Runs only when the library has no catalog yet.  The generation files
-        are never changed, and the manifest of the imported generation is
-        recorded.  The catalog's vectors are handed back to ``sim``.
-        """
-        manifest = getattr(self.sim, "manifest", None)
-        key = (
-            {
-                "generation": manifest.generation,
-                "tracks_sha256": manifest.tracks_sha256,
-                "vectors_sha256": manifest.vectors_sha256,
-            }
-            if manifest is not None
-            else None
-        )
-        if key is None or self.catalog.get_setting(_IMPORTED_GENERATION) != key:
-            self._seed_legacy(list(self.sim.entries_snapshot()))
-            if key is not None:
-                self.catalog.set_setting(_IMPORTED_GENERATION, key)
-        self.refresh(force_vectors=True)
-
-    def _legacy_rows(self, start: int, stop: int) -> np.ndarray:
-        """Rows *start* to *stop* of the legacy FAISS index, as one float32 matrix."""
-        index = self.sim.faiss_index
-        reconstruct_n = getattr(index, "reconstruct_n", None)
-        if reconstruct_n is not None:
-            rows = reconstruct_n(start, stop - start)
-        else:
-            rows = np.vstack([index.reconstruct(row) for row in range(start, stop)])
-        matrix = np.asarray(rows, dtype=np.float32)
-        if matrix.shape != (stop - start, FEATURE_DIM):
-            raise ValueError("legacy vectors do not match the index entries")
-        return matrix
-
-    def _seed_legacy(self, entries: list[IndexEntry]) -> None:
-        """Add the legacy tracks and vectors the catalog lacks, a chunk at a time."""
-        count = int(self.sim.faiss_index.ntotal)
-        if count != len(entries):
-            raise ValueError("legacy vectors do not match the index entries")
-        if count:
-            self._legacy_rows(0, 1)  # refuse a mismatched index before writing anything
-        self.catalog.seed_entries(entries)
-        have = self.catalog.paths_with_vectors()
-        for start in range(0, count, VECTOR_CHUNK):
-            stop = min(count, start + VECTOR_CHUNK)
-            wanted = [row for row in range(start, stop) if _path(entries[row].path) not in have]
-            if not wanted:
-                continue
-            rows = self._legacy_rows(start, stop)
-            self.catalog.seed_vectors(
-                [entries[row] for row in wanted], rows[[row - start for row in wanted]]
-            )
 
     def _changed(self) -> bool:
         """Whether records, vectors or sources changed since the last load."""
@@ -492,8 +462,129 @@ class LibraryManager:
             "tracks_indexed": indexed,
         }
 
+    def missing_removal_preview(
+        self, *, scan_lock_held: bool = False, cleanup_lock_held: bool = False
+    ) -> dict[str, Any]:
+        """Describe missing records from the latest clean scan for explicit cleanup."""
+        candidates, generation = self._missing_candidates(
+            scan_lock_held=scan_lock_held, cleanup_lock_held=cleanup_lock_held
+        )
+        if candidates is None:
+            # nosec B105 below: an absent cleanup confirmation token, not a password.
+            return {"ready": False, "count": 0, "tracks": [], "token": None}  # nosec B105
+        versions = self.catalog.change_versions()
+        token_data = json.dumps(
+            [
+                generation,
+                versions["entries"],
+                versions["sources"],
+                [item["path"] for item in candidates],
+            ],
+            separators=(",", ":"),
+        )
+        total = len(self.catalog.stored_entries())
+        count = len(candidates)
+        return {
+            "ready": True,
+            "count": count,
+            "total": total,
+            "percentage": 100 * count / total if total else 0.0,
+            "requires_override": bool(total and count / total > 0.2),
+            "tracks": candidates[:50],
+            "token": hashlib.sha256(token_data.encode()).hexdigest(),
+            "_versions": versions,
+        }
+
+    def _missing_candidates(
+        self, *, scan_lock_held: bool = False, cleanup_lock_held: bool = False
+    ) -> tuple[list[dict[str, str]], int] | tuple[None, int]:
+        """Return missing files covered by sources with at least one reachable catalog file."""
+        with self._lock:
+            if (
+                (self._scan_lock.locked() and not scan_lock_held)
+                or (self._cleanup_active and not cleanup_lock_held)
+                or not self._reconciled
+                or self._walk_failed
+            ):
+                return None, self._scan_generation
+            missing = set(self._missing)
+            generation = self._scan_generation
+        stored = {entry.path: (kind, entry) for kind, entry in self.catalog.stored_entries()}
+        sources = self.catalog.sources()
+        sources_with_files: set[str] = set()
+        for stored_path, (kind, _entry) in stored.items():
+            if not Path(stored_path).is_file():
+                continue
+            normalized = _path(stored_path)
+            sources_with_files.update(
+                source["id"]
+                for source in sources
+                if source["kind"] == kind
+                and _under(normalized, source["path"], source["recursive"])
+            )
+        candidates: list[dict[str, str]] = []
+        for path in sorted(missing):
+            try:
+                Path(path).stat()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # Permission and I/O errors do not prove that a file is gone.
+                continue
+            else:
+                continue
+            stored_item = stored.get(path)
+            if stored_item is None:
+                continue
+            kind, entry = stored_item
+            relevant = self.catalog.sources_for_path(path, kind)
+            # A path covered by a disconnected source is never considered safe to remove.
+            if not relevant or any(
+                not Path(source["path"]).is_dir() or source["id"] not in sources_with_files
+                for source in relevant
+            ):
+                continue
+            candidates.append(
+                {"path": path, "title": entry.title or Path(path).name, "artist": entry.artist}
+            )
+        return candidates, generation
+
+    def remove_missing(self, token: str, *, confirmed: bool, allow_mass: bool = False) -> int:
+        """Remove only candidates from a clean, unchanged preview after explicit confirmation."""
+        if not confirmed:
+            raise ValueError("Explicit confirmation is required")
+        with self._lock:
+            if self._scan_lock.locked() or self._cleanup_active:
+                raise RuntimeError("A library scan or cleanup is running")
+            self._cleanup_active = True
+        try:
+            preview = self.missing_removal_preview(cleanup_lock_held=True)
+            if not preview["ready"] or preview["token"] != token:
+                raise RuntimeError("The library changed; rescan and preview the removal again")
+            if preview["requires_override"] and not allow_mass:
+                raise ValueError(
+                    "More than 20% of catalog tracks are missing; explicit override is required"
+                )
+            latest = self.missing_removal_preview(cleanup_lock_held=True)
+            if latest["token"] != token:
+                raise RuntimeError("The missing-track set changed; preview the removal again")
+            candidates, _generation = self._missing_candidates(cleanup_lock_held=True)
+            paths = [item["path"] for item in candidates or []]
+            if any(os.path.isfile(path) for path in paths):
+                raise RuntimeError("A missing track returned; preview the removal again")
+            removed = self.catalog.remove_entries(paths, expected_versions=latest["_versions"])
+            with self._lock:
+                self._missing = frozenset(set(self._missing) - set(paths))
+            self.refresh()
+            return removed
+        finally:
+            with self._lock:
+                self._cleanup_active = False
+
     def _claim_scan(self, source_ids: set[str] | None, override_tags: bool = False) -> bool:
         """Queue a scope and claim the worker lock; caller holds ``_lock``."""
+        if self._cleanup_active:
+            return False
         if source_ids is None or self._pending_sources is None:
             self._pending_sources = None
         else:
@@ -512,6 +603,8 @@ class LibraryManager:
         with self._lock:
             if self._closed:
                 return False
+            if self._cleanup_active:
+                return False
             if not self._claim_scan(source_ids, override_tags):
                 return True
             self._thread = threading.Thread(
@@ -527,7 +620,11 @@ class LibraryManager:
 
     def scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         with self._lock:
-            if self._closed or not self._claim_scan(source_ids, override_tags):
+            if (
+                self._closed
+                or self._cleanup_active
+                or not self._claim_scan(source_ids, override_tags)
+            ):
                 return
         self._scan_queued()
 
@@ -735,7 +832,7 @@ class LibraryManager:
                     if cache is not None:
                         cache.rekey_many([(source, str(track.path))])
                 except ValueError:
-                    # The legacy cache is rooted at one configured directory.
+                    # Invalid legacy cache paths must not prevent library scanning.
                     pass
                 finally:
                     missing.discard(source)
@@ -766,7 +863,7 @@ class LibraryManager:
             cache = get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
             meta = cache.get(str(path)) if cache is not None else None
         except ValueError:
-            # The legacy cache is rooted at one configured directory.
+            # Invalid legacy cache paths must not prevent library scanning.
             return {}
         if meta is None:
             return {}

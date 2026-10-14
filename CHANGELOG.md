@@ -10,11 +10,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
+  root, and startup never registers one implicitly. Legacy relative paths remain supported, with
+  an explicit `migrate-index --music-dir` option for old index imports.
+
+- Startup and backups use `library.db` without loading old index generations. Older libraries
+  must be upgraded with `migrate-index`; leftover manifests no longer affect a current catalog (#223).
+
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
+- Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
+  work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
+- The Library panel can preview and confirm removal of tracks missing from available source folders.
+  A clean scan and unchanged preview are required; more than 20% missing requires a second
+  confirmation. Catalog cues and vectors are removed with the record, while audio files and play
+  history remain. Disconnected and unreadable sources are protected.
+- `prepared_path` is no longer part of the catalog schema API, serialization or change tracking.
+  Existing SQLite columns are ignored without rebuilding the database.
+- Hour preview rows now use the same compact timestamp and duration on screen and in screen-reader
+  output. A refresh keeps a predicted choice while it remains eligible and tied for best, while
+  still following the picker when eligibility or play history changes.
 
 ### Added
 
+- `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
+  `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
+  upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
+  preview, recovery copy, and safe retry after interruption.
+- More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
+  (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
+  its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
+  quality), or with `[stream] aac_bitrate` and `opus_bitrate`; Settings lists every format's
+  address with its own Copy button. Turning a format on checks first that ffmpeg can encode
+  it, and refuses with ffmpeg's reason when it cannot. Each format runs its own encoder on the
+  same mix, only while someone listens to it (and a minute after), through its own short queue,
+  so a slow encoder never holds up the mix or the other formats; each costs a few percent of one
+  CPU core while it runs (measurements in the operations guide). AAC players get song
+  titles as MP3 players do; Opus streams carry none. `max_listeners` now counts the listeners of
+  every format together, and a listener on any format starts an idle set.
+- Listener statistics (#50): Settings, Stream, **Listener statistics** says in words and in two
+  tables how many are listening now on each format, each day's peak and when it was, the number
+  of sessions, listening hours, the average and longest session, and how long sessions lasted,
+  for the last 7, 30 or 90 days or every day kept. **Download statistics (CSV)** saves one row
+  per day. Only daily counts are kept, never an address or player name, for
+  `[stream] stats_days` days (90 by default; 0 keeps none), in each station's
+  `listener_stats.json`, which backups include. Routes: `/api/stream/stats` and
+  `/api/stream/stats/export`, and the same under `/api/stations/<name>/`.
 - Shows (#106): Library tools has a **Shows** card where you plan a show such as "Remembering
   the 2000s" ahead of time as a list of songs. Choose where its songs come from (a category, so
   any genre, year or beets field, or a clockwheel with its step conditions) and a target length,
@@ -65,7 +108,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
-  name, genre, description and website URL are sent where each stream protocol supports them.
+  name, genre, description and website URL are sent where each stream protocol supports them. The
+  saved relay file is readable only by the account AutoDJ runs as, on Windows too, and backups
+  leave it and its passwords out; a restore keeps each station's own relay settings.
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,

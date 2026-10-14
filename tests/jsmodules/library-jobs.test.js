@@ -488,3 +488,46 @@ describe("library job follow-up", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("missing catalog track confirmation", () => {
+  it("shows paths and data-retention details in the shared modal before removal", async () => {
+    document.body.innerHTML = `
+      <p id="status">Idle.</p><p id="elapsed" aria-live="off"></p><div id="log"></div>
+      <button id="prune">Remove missing tracks</button>
+      <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+        <h2 id="confirm-title"></h2><p id="confirm-message"></p>
+        <button id="confirm-accept"></button><button id="confirm-cancel"></button>
+      </dialog>`;
+    const dialog = document.querySelector("#confirm-dialog");
+    dialog.showModal = () => { dialog.open = true; };
+    dialog.close = () => {
+      dialog.open = false;
+      dialog.dispatchEvent(new Event("close"));
+    };
+    const fetchImpl = vi.fn((url) => Promise.resolve(new globalThis.Response(
+      JSON.stringify(url === "/api/library/missing"
+        ? { ready: true, count: 1, total: 20, percentage: 5, requires_override: false,
+          tracks: [{ artist: "Artist", title: "Track", path: "Z:/Music/Track.flac" }], token: "fresh" }
+        : { removed: 1, remaining: 19 }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )));
+    vi.stubGlobal("fetch", fetchImpl);
+    const els = {
+      jobStatus: document.querySelector("#status"),
+      jobElapsed: document.querySelector("#elapsed"),
+      libLog: document.querySelector("#log"),
+      runPrune: document.querySelector("#prune"),
+    };
+    installLibraryJobs(els);
+
+    els.runPrune.click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    expect(document.querySelector("#confirm-message").textContent).toContain("Z:/Music/Track.flac");
+    expect(document.querySelector("#confirm-message").textContent).toContain("play history are kept");
+    document.querySelector("#confirm-accept").click();
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.some(([url]) => url === "/api/library/remove-missing")).toBe(true));
+    expect(JSON.parse(fetchImpl.mock.calls.find(([url]) => url === "/api/library/remove-missing")[1].body))
+      .toEqual({ token: "fresh", confirmed: true, allow_mass: false });
+    vi.unstubAllGlobals();
+  });
+});

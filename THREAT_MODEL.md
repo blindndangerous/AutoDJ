@@ -64,9 +64,10 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   Recording status and controls are paired routes; the public stream cannot control recording.
   Backups include the recording settings and running state, not the recorded files.
 - Paired Stream settings can manage relay destinations and source passwords. Relay definitions
-  live in a station-local `relays.json`; the file is atomically written with mode 0600 on POSIX
-  (on Windows the inherited directory ACL governs access; `chmod(0o600)` only sets read-only)
-  and excluded from backups. Relay APIs and status files expose connection details and safe errors,
+  live in a station-local `relays.json`; the file is atomically written readable by its owner
+  only: mode 0600 on POSIX, and on Windows a protected access list that grants only the user
+  AutoDJ runs as (no inherited entries). It is excluded from backups, and a restore skips one
+  found in an archive, leaving the station's own file in place. Relay APIs and status files expose connection details and safe errors,
   never passwords. Environment passwords override saved passwords and are read-only in the UI.
   Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
   by AutoDJ; use a trusted network or a server that protects its source connection separately.
@@ -274,9 +275,9 @@ also uses, that address is allowed too; this widens the Host check but does not 
 
 When no token is configured, `--lan` stores a generated 43-character token in
 `<index_dir>/.access-token`, written atomically and regenerated if the file is empty or too
-short. On Linux and macOS the file has mode 0600, so only the owner can read it. On Windows the
-mode call does nothing and the file gets the index folder's permissions; if the index folder is
-on a network share, anyone who can read that share can read the token and derive pairing codes. An unreadable file stops startup with an error instead of silently replacing
+short. On Linux and macOS the file has mode 0600, so only the owner can read it. On Windows it
+gets a protected access list granting only the user AutoDJ runs as, in place of the index
+folder's inherited permissions. An unreadable file stops startup with an error instead of silently replacing
 the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Anyone who can read
 the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
 deleting the file rotates the token and ends every paired session on the next start. Startup
@@ -586,9 +587,10 @@ What a listener can and cannot do:
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
-  a session like any other path, and then returns 404. Optional HTTP Basic credentials protect
-  only `/stream.mp3` and `/stream.m3u` (and the `/stations/` stream paths below); the playlist
-  never includes them.
+  a session like any other path, and then returns 404. `/stream.aac` and `/stream.opus` (and
+  their `/stations/` forms) are public stream paths too, for the other formats below. Optional
+  HTTP Basic credentials protect only these stream paths and `/stream.m3u` (and the
+  `/stations/` stream paths below); the playlist never includes them.
 - Each station's stream is also public at `/stations/<slug>.mp3` and `/stations/<slug>.m3u`,
   but only for a configured slug (`[stations.<slug>]`). The default station's is
   `/stations/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
@@ -626,6 +628,52 @@ What the operator should know:
   status. Five failed Basic-auth attempts per address per minute trigger a temporary throttle.
   Paired browsers can see listener addresses and User-Agent names. `listener_bans.json` contains
   banned IP addresses and is included in backups.
+
+Other stream formats (#50):
+
+- A station can also serve its mix as AAC (`/stream.aac`, `/stations/<slug>.aac`) and Opus
+  (`/stream.opus`, `/stations/<slug>.opus`). Each is off until the operator turns it on in
+  `config.toml` or a paired Settings page. These paths are public for every station whether the
+  format is on or off; a format that is off answers 404 without a session, which tells anyone
+  that it is off. That is accepted: a format that is on is as public as the MP3 stream.
+- They pass exactly the checks of `/stream.mp3`: the Host allowlist, the station's listener
+  password and its throttle, bans and `max_listeners_per_address`. `max_listeners` counts the
+  listeners of all of a station's formats together, so turning a format on adds no listener
+  slots and no way around the limit.
+- Each format that is on is at most one more ffmpeg process per station, started with a fixed
+  argument list (`-c:a aac -f adts`, or `-c:a libopus -ar 48000 -f ogg`) and a bitrate from a
+  fixed list; nothing a listener or the browser sends reaches its command line. Turning a
+  format on probes it once with a fixed tenth of a second of silence. The encoder starts for
+  the format's first listener and stops a minute after its last; a request that is then turned
+  away (listener limit, ban) can keep it running for that minute, so repeated requests can keep
+  an enabled format's encoder up, which costs a few percent of one core and nothing more. The
+  encoder gets audio through its own
+  bounded queue (2 seconds); one that stalls loses its oldest audio with a logged warning and
+  never holds up the mix bus, the MP3 stream or the other format, and a listener that falls
+  behind is dropped as on the MP3 stream. Measured cost is a few percent of one CPU core per
+  encoder (see Operations, More formats).
+- An Opus stream never carries ICY metadata; an AAC stream carries the same ICY titles as MP3,
+  to players that ask.
+
+Listener statistics (#50):
+
+- Each station counts its listening as daily totals: the most listeners at once and when, the
+  number of sessions, their total and longest length, how many fell in each of six length
+  bands, and the same peak, sessions and time per format. They are kept in the station's
+  `listener_stats.json` and shown and exported (CSV) only to a paired browser, through
+  `GET /api/stream/stats` and `GET /api/stream/stats/export` (and the station-named forms).
+  They are not part of the public feed.
+- No listener's address, User-Agent, connection time or any per-session record is written to
+  disk or sent to the page in the statistics. While a listener is connected, AutoDJ holds only
+  its format and the start time in memory, to measure the session when it ends. The listener
+  list that paired browsers already see (addresses and player names of connected listeners) is
+  unchanged and is not stored either.
+- Retention is bounded: `[stream] stats_days` (90 by default, 0 to 3650) deletes older days at
+  once and then each tick; 0 deletes every day kept and records nothing new. So the file holds
+  at most one small row per day. A file that cannot be read is moved aside with a `.bad`
+  suffix and counting starts again, as for `listener_bans.json`. The file is included in
+  backups; it reveals only how popular the station was and when.
+- The public feed's `listener_count` and today's peak now count the listeners of every format.
 
 Removed keyed links:
 
@@ -869,7 +917,8 @@ A station's live DJ accounts (`live_djs.json`) are archived with every salt and 
 hash removed, so a backup holds no DJ credential; DJ passwords are set again after a restore.
 
 With several stations, the archive also holds each other station's state files and folders
-under `stations/<slug>/`, including its `listener_bans.json` and `recording.json`, and the
+under `stations/<slug>/`, including its `listener_bans.json`, `listener_stats.json` and
+`recording.json`, and the
 manifest lists the stations. A folder shared with another station is stored once. The backup
 may not be written inside any station's folders either. Every station's state files are copied
 under the index's publication lock together with the index generation; each SQLite database is

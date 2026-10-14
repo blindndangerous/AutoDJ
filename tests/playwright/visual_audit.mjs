@@ -19,6 +19,10 @@
 //         their neighbours, its numbers 4.5:1;
 //       - Now Playing's Hour preview opened, with a stood-in answer: its
 //         table of fixed and predicted rows and its backtiming list;
+//       - Settings > Stream (when the server streams) with its Listener
+//         statistics stood in for: the summary, the tables by format and
+//         by day (a long run of days, every format) and the session
+//         lengths, and the address list of the formats that are on;
 //       - the status message with its Dismiss button, as a confirmation
 //         and as an error, through axe-core as well;
 //       - the footer's link to the running commit, when the server knows
@@ -321,26 +325,65 @@ const HOUR_PREVIEW_ITEM = (title, status, fixed, starts, words) => ({
   starts_words: words,
   seconds: 200,
   length_text: "3:20",
-  length_words: "3 minutes 20 seconds",
+  length_words: "3:20",
 });
 const HOUR_PREVIEW = {
   station: "default",
   minutes: 60,
   reason: null,
-  summary: "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59 PM and 25 seconds. That song runs 2 minutes 45 seconds past 1 PM. Next hour: 3 fixed and 2 predicted, until 1:10 PM.",
+  summary: "Top of the hour, 1:00:00 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59:25 PM. That song runs 2:45 past 1:00:00 PM. Next hour: 3 fixed and 2 predicted, until 1:10:00 PM.",
   items: [
-    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49 PM and 10 seconds"),
-    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52 PM and 30 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55 PM and 50 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59 PM and 25 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02 PM and 45 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49:10 PM"),
+    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52:30 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55:50 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59:25 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02:45 PM"),
   ],
-  points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+  points: [{ kind: "hour", text: "Top of the hour, 1:00:00 PM: lands about 35 seconds early." }],
   counts: { fixed: 3, predicted: 2 },
   stopped: null,
   notes: ["Predicted songs come from a dry run of the station's own picker."],
 };
 const hourPreviewPages = new WeakSet();
+
+// Settings > Stream > Listener statistics (#50), stood in for so its
+// tables, summary and session lengths are measured filled, with every
+// format and a long run of days, on a server nobody has listened to.
+const STATS_DAY = (date, peak, sessions) => ({
+  date, peak, peak_at: peak ? "21:45" : null, sessions, seconds: sessions * 1260,
+  longest: sessions ? 11400 : 0, bands: [1, 2, 0, Math.max(0, sessions - 4), 1, 0],
+  formats: peak ? { mp3: { peak, sessions, seconds: sessions * 1260 } } : {},
+});
+const LISTENER_STATS = {
+  keep_days: 90,
+  days_shown: 30,
+  today: "2026-10-13",
+  now: { total: 12, formats: { mp3: 7, aac: 3, opus: 2 } },
+  days: [
+    STATS_DAY("2026-10-13", 14, 38), STATS_DAY("2026-10-12", 9, 21),
+    STATS_DAY("2026-10-11", 0, 0), STATS_DAY("2026-10-10", 100, 1234),
+  ],
+  period: {
+    sessions: 1293, seconds: 1629180, longest: 11400, peak: 100, peak_date: "2026-10-10",
+    peak_at: "21:45", bands: [4, 8, 0, 1281, 4, 0],
+    formats: {
+      mp3: { peak: 100, sessions: 1293, seconds: 1629180 },
+      aac: { peak: 3, sessions: 40, seconds: 50400 },
+      opus: { peak: 2, sessions: 12, seconds: 15120 },
+    },
+  },
+  bands: ["Under 1 minute", "1 to 5 minutes", "5 to 15 minutes", "15 minutes to 1 hour",
+    "1 to 3 hours", "3 hours or more"],
+};
+const listenerStatsPages = new WeakSet();
+
+async function standInForListenerStats(page) {
+  if (listenerStatsPages.has(page)) return;
+  listenerStatsPages.add(page);
+  await page.route("**/stream/stats?*", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify(LISTENER_STATS),
+  }));
+}
 
 async function standInForHourPreview(page) {
   if (hourPreviewPages.has(page)) return;
@@ -398,6 +441,9 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-cancel").click();
   await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
+  const condition = page.locator("#clock-step-conditions").getByRole("group").first();
+  await condition.getByLabel("Condition type", { exact: true }).selectOption("title");
+  await condition.getByLabel("Value", { exact: true }).fill("Audit");
   await page.locator("#clock-step-hours-from").fill("22:00");
   await page.locator("#clock-add-step").click();
   await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
@@ -780,6 +826,7 @@ async function eachTarget(page, visit) {
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
   await standInForHourPreview(page);
+  await standInForListenerStats(page);
   await standInForVoiceTracker(page);
   await standInForShows(page);
   await standInForStations(page);
@@ -841,14 +888,24 @@ function horizontalOverflow(page) {
   });
 }
 
+// Checkboxes and radio buttons under 24 px, and the Stream settings'
+// format Copy buttons and statistics buttons (#50) under the 44 px every
+// other button has.
 function smallChoiceControls(page) {
-  return page.evaluate(() => [...document.querySelectorAll(
-    'input[type="checkbox"], input[type="radio"]',
-  )]
-    .filter((input) => input.getClientRects().length)
-    .map((input) => ({ id: input.id, ...input.getBoundingClientRect().toJSON() }))
-    .filter(({ width, height }) => width < 23.5 || height < 23.5)
-    .map(({ id, width, height }) => `${id || "input"} ${Math.round(width)}x${Math.round(height)}`));
+  return page.evaluate(() => {
+    const measure = (selector, least) => [...document.querySelectorAll(selector)]
+      .filter((control) => control.getClientRects().length)
+      .map((control) => ({
+        id: control.id || control.textContent.trim() || control.tagName.toLowerCase(),
+        ...control.getBoundingClientRect().toJSON(),
+      }))
+      .filter(({ width, height }) => width < least || height < least)
+      .map(({ id, width, height }) => `${id} ${Math.round(width)}x${Math.round(height)}`);
+    return [
+      ...measure('input[type="checkbox"], input[type="radio"]', 23.5),
+      ...measure("#stream-formats-list button, #listener-stats button", 43.5),
+    ];
+  });
 }
 
 async function axeViolations(page) {
