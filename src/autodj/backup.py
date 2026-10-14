@@ -8,10 +8,11 @@ that wrote it and the list of files) and these members:
 - ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``,
-  ``index/shows.json`` and ``index/relays.json`` from the active index folder. Relay files
-  contain source passwords.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
+  ``index/matched_intros.json`` and ``index/shows.json`` from the active index folder.
+  ``relays.json``, which holds relay source passwords, is never backed up
+  (:data:`SECRET_STATE_FILES`).
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -28,7 +29,8 @@ that wrote it and the list of files) and these members:
 
 Every station's state files are copied with the index generation under its
 publication lock; each SQLite database is copied through SQLite's backup API.
-The ZIP is not encrypted; protect it as you would the relay passwords it contains.
+A backup holds no secrets: relay settings stay out of it, and a restore skips
+them in an archive that has them, leaving the station's own file in place.
 Restore is all or nothing: what it replaces is set aside first
 (``.<name>.old-<id>``), each step written to a journal (``.autodj-restore.json``),
 and put back if any replacement fails; after a crash, :func:`recover_restore`
@@ -76,14 +78,18 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "shows.json",
-    "relays.json",
     im.MANIFEST_NAME,
 )
+#: State files holding secrets (relay source passwords).  A backup never
+#: holds them, and a restore skips them in an archive that does (one made by
+#: a build that included them), so the station keeps its own file.
+SECRET_STATE_FILES = frozenset({"relays.json"})
 _FOLDERS = (
     "liners",
     "carts",
@@ -100,12 +106,12 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "shows.json",
-    "relays.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
@@ -598,6 +604,12 @@ def _unsafe_part(part: str) -> bool:
     return part.split(".", 1)[0].rstrip(" ").upper() in _DEVICE_NAMES
 
 
+def _is_secret(name: str) -> bool:
+    """Whether archive member *name* is a station's secret state file."""
+    key, rest = _split(name)
+    return _is_files(key) and len(rest) == 1 and rest[0] in SECRET_STATE_FILES
+
+
 def _target(roots: dict[str, Path], name: str) -> Path:
     """Return where archive member *name* is restored, refusing unsafe or unknown names."""
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
@@ -921,12 +933,18 @@ def _restore(
             "or finish it before restoring again"
         )
     manifest = _read_manifest(archive)
-    files = manifest.files
+    files = [name for name in manifest.files if not _is_secret(name)]
+    if len(files) != len(manifest.files):
+        warnings.append(
+            "Relay settings in this backup were skipped; each station keeps its own relays.json."
+        )
     for slug in manifest.stations:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
     targets = {name: _target(roots, name) for name in files}
-    if sorted(files) != sorted(name for name in archive.namelist() if name != "manifest.json"):
+    if sorted(manifest.files) != sorted(
+        name for name in archive.namelist() if name != "manifest.json"
+    ):
         raise BackupError("the archive's files do not match its manifest.json")
     for name, place in targets.items():
         # A destination that a link takes elsewhere would be written there.
