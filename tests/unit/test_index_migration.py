@@ -17,6 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj import index_migration
+from autodj.backup import SERVE_LOCK_NAME
 from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import (
@@ -108,7 +109,7 @@ def _tree(path: Path) -> dict[str, bytes]:
     return {
         file.relative_to(path).as_posix(): file.read_bytes()
         for file in path.rglob("*")
-        if file.is_file() and file.name != ".index-publication.lock"
+        if file.is_file() and file.name not in {".index-publication.lock", SERVE_LOCK_NAME}
     }
 
 
@@ -425,14 +426,14 @@ def test_migrate_imports_schema3_vectors_and_catalog_state_without_analysis(tmp_
         history = db.execute("SELECT title,artist,duration,played_at FROM play_history").fetchall()
         settings = dict(db.execute("SELECT key,value FROM catalog_settings"))
         sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources").fetchall()
-    assert row[:3] == (str(audio.resolve()).casefold(), "Track 0", "Artist")
+    assert row[:3] == (_dj_meta_path(str(audio)), "Track 0", "Artist")
     assert json.loads(row[3]) == {"intro": 12.5}
     assert json.loads(row[4]) == {"intro": "analysis"}
     np.testing.assert_array_equal(np.frombuffer(row[5], dtype=np.float32), original.reconstruct(0))
     assert history == [("Old song", "Singer", 120.0, "2024-01-01T00:00:00+00:00")]
     assert json.loads(settings["play_history_migrated"]) is True
     assert json.loads(settings["imported_index_generation"])["generation"] == 2
-    assert (str(music_dir.resolve()).casefold(), "music", 1, 1) in sources
+    assert (_dj_meta_path(str(music_dir)), "music", 1, 1) in sources
     assert json.loads((index_dir / "web_state.json").read_text())["djmix"]["harmonic_mode"] == "off"
     assert (index_dir / "web_state.json.v1.bak").exists()
     assert not index_migration.migration_required(index_dir)[0]
@@ -528,8 +529,8 @@ def test_settings_migration_preserves_existing_catalog_source_roots(tmp_path: Pa
 
     with LibraryCatalog(index_dir / "library.db") as catalog:
         assert {(source["path"], source["kind"]) for source in catalog.sources()} == {
-            (str(chosen_music.resolve()).casefold(), "music"),
-            (str(chosen_liners.resolve()).casefold(), "liner"),
+            (_dj_meta_path(str(chosen_music)), "music"),
+            (_dj_meta_path(str(chosen_liners)), "liner"),
         }
 
 
