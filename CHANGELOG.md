@@ -809,6 +809,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Liners in the hour preview have a Track info button too (#289).
+- Tables no longer say "row header" when focus lands on a track's name (#302).
+- In tables, a cell with a button such as Track info takes focus itself, so it is read once.
+  Enter or Space on the cell presses the button (#294).
+- Up and Down Arrow in a table, such as the hour preview, move between rows without changing the
+  volume (#290).
+- Enter on a track's name in History, the hour preview or Search and browse opens its Track
+  info (#291).
 - The footer Changelog link, the build link, Dismiss, and the row buttons for clockwheel steps,
   categories, shows and listener requests each read as one line in NVDA browse mode (#288).
 - A slow request-head deadline no longer logs an asyncio error when a TLS connection has already
