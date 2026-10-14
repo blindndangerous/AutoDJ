@@ -2056,19 +2056,6 @@ class PlayerBridge:
             self._sync_next_for_prefetch()
         return True
 
-    def queue_insert(self, path: str, position: int) -> bool:
-        """Put a track by path at *position* of the user queue (0 plays first)."""
-        entry = self.entry_for_path(path)
-        if entry is None:
-            return False
-        with self.player._state.queue_lock:
-            self._capture_pre_queue_seed()
-            queue = self.player._state.queue
-            queue.insert(max(0, min(position, len(queue))), entry)
-            self._refresh_bus_queue()
-            self._sync_next_for_prefetch()
-        return True
-
     def _queue_snapshot(self) -> list[IndexEntry]:
         """Copy the user queue under its lock for read-only use."""
         state = self.player._state

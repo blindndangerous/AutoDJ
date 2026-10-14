@@ -774,6 +774,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Saving cue points in Track info no longer fails with "end exceeds track length" on some
+  tracks when the End was left as loaded. Track info shows cue times to the nearest 0.01 s,
+  which could round the End just past the song's length. The catalog now accepts a cue that
+  rounding pushed up to 0.01 s past its limit (the length, Start, End, or the Overlap start
+  room) and moves it onto that limit; anything further is still rejected (#237).
 - A matched intro reserved for a handoff is available again if playback skips that handoff before the intro starts. Intros already heard keep their cooldown.
 
 

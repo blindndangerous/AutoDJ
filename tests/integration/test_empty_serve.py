@@ -10,10 +10,11 @@ from fastapi.testclient import TestClient
 from autodj.cli import _load_index_for_serve, cli
 from autodj.config import ServerConfig, load_config
 from autodj.index_manifest import IndexConsistencyError, read_manifest
-from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.player import Player
 from autodj.server import PlayerBridge, create_app
 from autodj.similarity import SimilarityIndex
+from tests.unit._legacy_index import save_index
 
 
 class _WaitSignallingEvent:
