@@ -7,10 +7,11 @@ that wrote it and the list of files) and these members:
 - ``index/dj_meta.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``,
-  ``index/shows.json`` and ``index/relays.json`` from the active index folder. Relay files
-  contain source passwords.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
+  ``index/matched_intros.json`` and ``index/shows.json`` from the active index folder.
+  ``relays.json``, which holds relay source passwords, is never backed up
+  (:data:`SECRET_STATE_FILES`).
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -29,7 +30,8 @@ Every station's state files are copied under the index publication lock; each SQ
 is copied through SQLite's backup API. Old archives without ``index/library.db`` are not
 restored here: restore them with a compatible older release, then run
 ``autodj migrate-index --apply``.
-The ZIP is not encrypted; protect it as you would the relay passwords it contains.
+Relay settings stay out of backups, and restore skips them in older archives,
+leaving the station's own file in place.
 Restore is all or nothing: what it replaces is set aside first
 (``.<name>.old-<id>``), each step written to a journal (``.autodj-restore.json``),
 and put back if any replacement fails; after a crash, :func:`recover_restore`
@@ -77,16 +79,17 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "shows.json",
-    "relays.json",
 )
-# Kept readable only so old archives can be validated and their obsolete
-# generation files skipped during an otherwise catalog-based restore.
+# Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
 _LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
+#: Relay source passwords stay on the machine, including when restoring older archives.
+SECRET_STATE_FILES = frozenset({"relays.json"})
 _FOLDERS = (
     "liners",
     "carts",
@@ -103,12 +106,12 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
     "shows.json",
-    "relays.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
@@ -598,6 +601,12 @@ def _unsafe_part(part: str) -> bool:
     return part.split(".", 1)[0].rstrip(" ").upper() in _DEVICE_NAMES
 
 
+def _is_secret(name: str) -> bool:
+    """Whether archive member *name* is a station's secret state file."""
+    key, rest = _split(name)
+    return _is_files(key) and len(rest) == 1 and rest[0] in SECRET_STATE_FILES
+
+
 def _target(roots: dict[str, Path], name: str) -> Path:
     """Return where archive member *name* is restored, refusing unsafe or unknown names."""
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
@@ -915,12 +924,16 @@ def _restore(
             "or finish it before restoring again"
         )
     manifest = _read_manifest(archive)
-    archive_files = manifest.files
+    archive_files = [name for name in manifest.files if not _is_secret(name)]
+    if len(archive_files) != len(manifest.files):
+        warnings.append(
+            "Relay settings in this backup were skipped; each station keeps its own relays.json."
+        )
     for slug in manifest.stations:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
     archive_targets = {name: _target(roots, name) for name in archive_files}
-    if sorted(archive_files) != sorted(
+    if sorted(manifest.files) != sorted(
         name for name in archive.namelist() if name != "manifest.json"
     ):
         raise BackupError("the archive's files do not match its manifest.json")
@@ -934,9 +947,15 @@ def _restore(
             "this backup has no catalog database; restore it with a compatible older AutoDJ "
             "release, then run `autodj migrate-index --apply`"
         )
-    # Old catalog-era backups may also contain index generations. Validate
-    # them above, but never install them into the current catalog-based index.
-    files = [name for name in archive_files if not _is_legacy_index_member(name)]
+    # Generations may contain vectors not yet migrated into library.db.
+    legacy_count = sum(_is_legacy_index_member(name) for name in archive_files)
+    if legacy_count:
+        raise BackupError(
+            f"this backup contains {legacy_count} legacy index files; restore it with a "
+            "compatible older AutoDJ release, then run `autodj migrate-index --apply` "
+            "and create a new backup"
+        )
+    files = archive_files
     targets = {name: archive_targets[name] for name in files}
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
     _check_layout(roots, keys)
@@ -1016,7 +1035,7 @@ def restore_backup(
     archive or a full disk changes nothing.  A journal beside the index
     records each step, so a crash part way can be rolled back by
     ``autodj doctor``. Restored ``liners`` and ``profiles`` folders replace
-    the current ones whole. Legacy generations in a catalog backup are ignored;
+    the current ones whole. Archives with legacy generations are refused;
     archives without ``library.db`` must be restored by a compatible older
     release before running ``autodj migrate-index --apply``.
     Another station's files go back to its own folder; a station the

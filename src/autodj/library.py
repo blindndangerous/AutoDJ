@@ -104,6 +104,8 @@ class LibraryManager:
     """Keep the playable library and its similarity view current."""
 
     def __init__(self, cfg: AutoDJConfig, sim: Any) -> None:
+        from autodj.config import station_config
+
         self.cfg = cfg
         self.sim = sim
         self._lock = threading.RLock()
@@ -161,7 +163,13 @@ class LibraryManager:
         self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.clock_beets = BeetsConditions(cfg)
         catalog_path = cfg.index.active_dir / "library.db"
-        require_current_library(cfg.index.active_dir)
+        require_current_library(
+            cfg.index.active_dir,
+            (
+                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                for spec in cfg.stations
+            ),
+        )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
         # What each station played, and its settings; the default station's

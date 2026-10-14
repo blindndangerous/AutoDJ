@@ -129,6 +129,8 @@ STATION = frozenset(
         "/stream/listeners",
         "/stream/listeners/{ident}",
         "/stream/bans",
+        "/stream/stats",
+        "/stream/stats/export",
         "/stream/settings",
         "/recording",
         "/recording/start",

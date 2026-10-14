@@ -8,6 +8,14 @@ function displaySpeed(value) {
   return `${rounded > 0 ? "+" : ""}${rounded}%`;
 }
 
+// Whether the slider is in use: focused, or held by the pointer (WebKit does
+// not focus a range input it drags), so a state push must not move it.
+export function musicSpeedSliderBusy(slider) {
+  if (!slider) return false;
+  if (slider.ownerDocument?.activeElement === slider) return true;
+  try { return slider.matches(":active"); } catch (_) { return false; }
+}
+
 export function syncMusicSpeedSlider(number, slider, output) {
   if (!number || !slider) return;
   slider.value = number.value || "0";

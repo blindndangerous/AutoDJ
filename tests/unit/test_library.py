@@ -16,6 +16,7 @@ from autodj.config import (
     LibraryConfig,
     ModelConfig,
     PlaybackConfig,
+    StationSpec,
 )
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.library import LibraryManager, analyse_library
@@ -179,6 +180,22 @@ def test_empty_library_requires_explicit_folder_and_keeps_it_after_restart(tmp_p
         assert reopened.entry_for_path(song) is not None
     finally:
         reopened.close()
+
+
+def test_constructor_refuses_legacy_settings_in_another_station(tmp_path):
+    from autodj.index_manifest import IndexConsistencyError
+    from autodj.stations import StationPaths
+
+    cfg = make_config(tmp_path)
+    cfg.stations = [StationSpec(slug="secondary", autostart=False, cfg=cfg)]
+    state = StationPaths.for_station(cfg, "secondary").web_state
+    state.parent.mkdir(parents=True)
+    original = '{"schema_version":1,"djmix":{"harmonic_mixing":false}}'
+    state.write_text(original, encoding="utf-8")
+    with pytest.raises(IndexConsistencyError, match="needs migration"):
+        LibraryManager(cfg, Similarity())
+    assert not (cfg.index.active_dir / "library.db").exists()
+    assert state.read_text(encoding="utf-8") == original
 
 
 def test_constructor_closes_catalog_when_refresh_fails(tmp_path):

@@ -65,6 +65,9 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "stream_url",
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
+        "stream_aac_bitrate",
+        "stream_opus_bitrate",
+        "stream_stats_days",
     }
 )
 #: Playback keys mirrored into ``web_state.json``.
@@ -289,6 +292,13 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if limit is not _INVALID and limit is not None:
             player._cfg.stream.max_listeners_per_address = limit
+    for field in ("aac_bitrate", "opus_bitrate", "stats_days"):
+        key = f"stream_{field}"
+        if key in playback:
+            # The stream is not running yet, so only the configured value changes.
+            value = _checked(StreamSettingsBody, field, playback[key], key)
+            if value is not _INVALID and value is not None:
+                setattr(player._cfg.stream, field, value)
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():

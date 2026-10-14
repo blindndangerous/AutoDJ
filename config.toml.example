@@ -138,6 +138,18 @@ trusted_proxies = []
 # Station name announced to players via the icy-name header.
   station_name = "AutoDJ"
 
+# More formats beside the MP3 stream, each at its own address and bitrate:
+# AAC at /stream.aac (0 is off; 64, 96, 128, 192 or 256 kbps) and Opus at
+# /stream.opus (0 is off; 48, 64, 96, 128 or 192 kbps).  Each one that is on
+# runs its own ffmpeg encoder; max_listeners counts every format together.
+# Settings, Stream, More formats changes them while the station plays.
+aac_bitrate = 0
+opus_bitrate = 0
+
+# Days of listener statistics to keep (daily peaks, sessions and listening
+# time per format; never addresses or player names).  0 keeps none.
+stats_days = 90
+
 # Relays: push the station to hosted Icecast or Shoutcast servers, so their
 # listeners, directory listings and capacity carry it too.  One named table
 # per server; the name is shown in Settings, Stream, in the log and in

@@ -369,7 +369,7 @@ def test_restore_refuses_unsafe_member_names(tmp_path: Path, name: str) -> None:
     assert not list(tmp_path.rglob("*.mp3"))
 
 
-def test_restore_ignores_legacy_generations_in_a_catalog_backup(tmp_path: Path) -> None:
+def test_restore_refuses_legacy_generations_even_with_a_catalog(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     catalog = _catalog(cfg)
     catalog.close()
@@ -381,7 +381,8 @@ def test_restore_ignores_legacy_generations_in_a_catalog_backup(tmp_path: Path) 
     }
     archive = _archive(tmp_path / "old.zip", files)
 
-    restore_backup(cfg, archive, force=True)
+    with pytest.raises(BackupError, match=r"3 legacy index files.*migrate-index --apply"):
+        restore_backup(cfg, archive, force=True)
 
     assert not (cfg.index.active_dir / "index-manifest.json").exists()
     assert not list(cfg.index.active_dir.glob("tracks.g*"))
