@@ -1639,8 +1639,8 @@ describe("app request behavior", () => {
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];
       expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
-        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
-        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
+        "gridcell", "gridcell", "gridcell", "gridcell", "gridcell",
+        "gridcell", "gridcell", "gridcell", "gridcell", "gridcell",
       ]);
       expect(cells.filter((cell) => cell.tabIndex === 0)).toEqual([cells[0]]);
       expect(button.tabIndex).toBe(-1);
@@ -1710,7 +1710,8 @@ describe("app request behavior", () => {
       expect(rows[1].querySelector("button")).toBeNull();
       expect(rows[2].querySelector(".history-info").textContent).toBe("Track info");
       // The title cell is still the row header, so the row reads the same.
-      expect(rows[0].cells[1].getAttribute("role")).toBe("rowheader");
+      expect(rows[0].cells[1].getAttribute("role")).toBe("gridcell");
+      expect(rows[0].cells[1].hasAttribute("data-name")).toBe(true);
       expect(rows.map((row) => row.dataset.historyId)).toEqual(["live-1", "live-0", "play-1"]);
     } finally {
       window.location.hash = "";

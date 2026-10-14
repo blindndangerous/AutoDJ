@@ -121,7 +121,7 @@ describe("native table grid navigation", () => {
 
   it("opens Track info when Enter is pressed on a track's name", () => {
     document.body.innerHTML = `<table><tbody id="rows">
-      <tr><td role="gridcell">12:00</td><td role="rowheader">Song</td>
+      <tr><td role="gridcell">12:00</td><td role="gridcell" data-name>Song</td>
         <td role="gridcell"><button type="button">Track info</button></td></tr>
     </tbody></table>`;
     const body = document.getElementById("rows");

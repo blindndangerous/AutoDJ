@@ -2726,7 +2726,7 @@ function historyRowHtml(it) {
   const row = tableRow(document, [
     formatPlayedAt(it.played_at, false), live ? it.title || "Live" : it.title ?? "", it.artist ?? "",
     live && !it.ended_at ? "On the air" : _fmtDuration(it.duration), actionCell,
-  ], { rowHeaderIndex: 1 });
+  ], { nameIndex: 1 });
   row.dataset.historyId = historyId;
   row.dataset.playedAt = it.played_at;
   return row;

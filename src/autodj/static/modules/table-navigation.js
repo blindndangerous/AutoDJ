@@ -44,7 +44,7 @@ export function installTableNavigation(body) {
       const control = controls(cell).find((item) => !item.disabled);
       if (control) { event.preventDefault(); control.click(); return; }
       // Enter on a track's name opens its Track info.
-      const info = event.key === "Enter" && cell.getAttribute("role") === "rowheader"
+      const info = event.key === "Enter" && cell.hasAttribute("data-name")
         && [...cell.closest("tr").querySelectorAll("button")]
           .find((item) => item.textContent.trim() === "Track info" && !item.disabled);
       if (info) { event.preventDefault(); info.click(); }

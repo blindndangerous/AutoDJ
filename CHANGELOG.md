@@ -801,6 +801,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Tables no longer say "row header" when focus lands on a track's name (#302).
 - In tables, a cell with a button such as Track info takes focus itself, so it is read once.
   Enter or Space on the cell presses the button (#294).
 - Up and Down Arrow in a table, such as the hour preview, move between rows without changing the
