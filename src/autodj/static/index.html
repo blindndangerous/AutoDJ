@@ -155,6 +155,10 @@
              stops playing a track, so "Set stopped" stays the one spoken
              report and a page loaded while idle speaks nothing on its own. -->
         <p id="now-playing-idle" hidden>Nothing playing. The station starts when someone listens.</p>
+        <!-- Live DJ (#48): "Live: DJ Alice since 8:15 PM" while a DJ feeds
+             the station.  Plain text, not a live region: live-talk.js says
+             the change once through #sr-status. -->
+        <p id="live-on-air" class="live-on-air" hidden></p>
         <!-- Stream mode, idle.  Plain text, not a live region: the
              "Set stopped" station event is the one spoken report. -->
         <p id="stream-idle-note" class="stream-idle-note" hidden></p>
@@ -267,6 +271,19 @@
            page controls another station this says which, and describes
            Listen here.  Plain text, not live. -->
       <p id="listen-station" class="stream-detail" hidden></p>
+      <!-- Browser talkover (#48), shown while the station can go live.
+           Hold to talk; a quick press latches it on until the next press.
+           A fixed name: aria-pressed says whether this page is talking.
+           The help, the note (busy, unavailable) and the error are plain
+           text, linked by live-talk.js only while they have words. -->
+      <div id="talk-desk" class="talk-desk" hidden>
+        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help station-context">Talk</button>
+        <p id="talk-help" class="stream-detail">Hold to talk over the music: hold this button, hold Space or Enter on it, or hold Alt+M anywhere on the page. A quick press of this button keeps talking on until you press it again, for 2 minutes at most; Alt+M talks only while held. The music ducks while you talk. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air, as they can use every other control here.</p>
+        <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
+        <p id="talk-latched" class="talk-latched" hidden></p>
+        <p id="talk-note" class="stream-detail" hidden></p>
+        <p id="talk-error" class="field-error" hidden></p>
+      </div>
     </div>
 
     <!-- Volume -->
@@ -688,6 +705,7 @@
     <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
+    <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
@@ -2185,6 +2203,80 @@
     </div>
   </div>
 
+  <!-- Live DJ (#48): DJ accounts for BUTT, Mixxx or another Icecast
+       source program, where they connect, and the talkover settings.
+       live-settings.js shows the tab while the station can go live.
+       Passwords are write-only.  Results go to #settings-status; a
+       refused save shows its words under the form, linked to its field. -->
+  <div class="card" role="tabpanel" id="spanel-live" aria-labelledby="stab-live" hidden>
+    <h3>Live DJ</h3>
+    <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. When the DJ's program connects and sends sound, the music fades out under the DJ; when it disconnects, the music fades back in with a new song. Listeners and History see the DJ's name. The Talk button on Now Playing lets you talk over the music from this browser. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings, as they can use every other control here.</p>
+    <p class="stream-detail" id="live-unavailable" hidden></p>
+    <div id="live-settings" hidden>
+      <h4 id="live-connect-heading">Connect a DJ program</h4>
+      <div class="settings-row">
+        <label for="live-source-url">Source address</label>
+        <input type="text" id="live-source-url" readonly aria-describedby="live-source-desc">
+        <button type="button" id="live-source-copy">Copy address</button>
+      </div>
+      <span class="setting-desc" id="live-source-desc">In BUTT or Mixxx, add an Icecast 2 server with the settings below, and the username and password of one of this station's DJs.</span>
+      <dl class="live-facts" aria-labelledby="live-connect-heading">
+        <dt>Server type</dt><dd>Icecast 2</dd>
+        <dt>Address</dt><dd id="live-source-host"></dd>
+        <dt>Port</dt><dd id="live-source-port"></dd>
+        <dt>Mount</dt><dd id="live-source-mount"></dd>
+        <dt>Encryption</dt><dd id="live-source-tls"></dd>
+        <dt>Format</dt><dd>MP3, AAC or Ogg</dd>
+      </dl>
+      <p class="stream-detail" id="live-transport-note"></p>
+      <h4 id="live-djs-heading">DJ accounts</h4>
+      <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
+      <button type="button" id="live-dj-add" aria-describedby="station-context">Add DJ</button>
+      <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
+        <thead><tr><th scope="col">DJ</th><th scope="col">Password</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
+        <tbody id="live-dj-rows"></tbody>
+      </table>
+      <p class="stream-detail" id="live-dj-none">No DJ accounts yet.</p>
+      <form id="live-dj-form" hidden novalidate>
+        <h5 id="live-dj-form-title">Add DJ</h5>
+        <div class="settings-row">
+          <label for="live-dj-username">Username</label>
+          <input id="live-dj-username" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="live-dj-username-desc">
+        </div>
+        <span class="setting-desc" id="live-dj-username-desc">What the DJ types as the user name in BUTT or Mixxx: letters, digits or punctuation, up to 64, with no spaces and no colon.</span>
+        <div class="settings-row">
+          <label for="live-dj-name">Display name</label>
+          <input id="live-dj-name" maxlength="80" autocomplete="off" aria-describedby="live-dj-name-desc">
+        </div>
+        <span class="setting-desc" id="live-dj-name-desc">Shown to listeners and in History while this DJ is live.</span>
+        <div class="settings-row">
+          <label for="live-dj-password">Password</label>
+          <input id="live-dj-password" type="password" maxlength="256" autocomplete="new-password" aria-describedby="live-dj-password-help">
+        </div>
+        <span class="setting-desc" id="live-dj-password-help">12 to 256 characters. The DJ types it as the password in BUTT or Mixxx.</span>
+        <p class="field-error" id="live-dj-error" hidden></p>
+        <button type="submit" id="live-dj-save">Save DJ</button>
+        <button type="button" id="live-dj-cancel">Cancel</button>
+      </form>
+      <fieldset id="live-talkover">
+        <legend>Talk over the music</legend>
+        <p class="setting-desc">For the Talk button on Now Playing: how far the music ducks while you talk, and how fast it comes back after.</p>
+        <div class="settings-row">
+          <label for="live-return-seconds">Return time (seconds)</label>
+          <input type="number" id="live-return-seconds" min="0.1" max="10" step="0.1" required aria-describedby="live-return-desc">
+        </div>
+        <span class="setting-desc" id="live-return-desc">How long the music takes to come back up after you stop talking, from 0.1 to 10 seconds.</span>
+        <div class="settings-row">
+          <label for="live-duck-db">Duck amount (dB)</label>
+          <input type="number" id="live-duck-db" min="0" max="30" step="1" required aria-describedby="live-duck-desc">
+        </div>
+        <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
+        <p class="field-error" id="live-talkover-error" hidden></p>
+        <button type="button" id="live-talkover-save" aria-describedby="station-context">Save talk settings</button>
+      </fieldset>
+    </div>
+  </div>
+
   <div class="card" role="tabpanel" id="spanel-access" aria-labelledby="stab-access" hidden>
     <h3>Profiles and access</h3>
     <!-- profiles.js and devices.js load their lists when this panel is
@@ -3330,6 +3422,7 @@
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
+    <dt><kbd>Alt+M</kbd></dt><dd>Talk over the music while held, when the station can go live. Talk stops when you let go, however quick the press; focus stays where it is.</dd>
     <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>

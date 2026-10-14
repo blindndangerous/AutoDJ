@@ -244,6 +244,33 @@ class RenderAhead:
             self._apply(lambda: self._rewind(ready))
             self._cond.notify_all()
 
+    def rerender(self) -> None:
+        """Render the waiting track again from its start, keeping it to fall back on.
+
+        For a track that has waited a long time (under a live DJ, #48):
+        what it carries was planned for when it was rendered.  Like
+        :meth:`refresh`, this never causes dead air: until the new render
+        is ready the bus gets the old one.  With nothing waiting, or a
+        render in flight (which is fresh anyway), there is nothing to do.
+        """
+        with self._cond:
+            ready = self._ready
+            if ready is None or self._rendering:
+                return
+            self._ready = None
+            self._fallback = ready
+            self._apply(lambda: self._rewind(ready))
+            self._cond.notify_all()
+
+    def wait_rendered(self, timeout: float) -> bool:
+        """Block up to *timeout* seconds for a finished render (not a fallback).
+
+        Returns:
+            Whether one is waiting.
+        """
+        with self._cond:
+            return self._cond.wait_for(lambda: self._ready is not None, max(0.0, timeout))
+
     def _apply(self, move: Callable[[], None]) -> None:
         """Run a cursor move now if the worker is idle, else queue it (lock held)."""
         if self._rendering or self._planning or self._deferred:

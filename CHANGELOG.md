@@ -128,6 +128,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is now kept exactly as it was with every save instead of being set aside, so moving between
   versions loses no event. An event with settings its action does not accept is still set
   aside as before.
+- Live DJs and talkover (#48): in stream mode a live DJ can take over a station from BUTT,
+  Mixxx or another Icecast source client, connecting to AutoDJ's own address and port at the
+  mount `live` (or `stations/<name>/live`) with their own username and password, added in
+  **Settings > Live DJ** (passwords are stored as scrypt hashes and never shown).
+  When the DJ's audio arrives AutoDJ crossfades to it and holds automation exactly where it
+  was; when they leave, or go silent for 15 seconds, it comes back with the next song,
+  rendered again for the time it airs. Hard-timed schedule events during a set take effect
+  when the DJ hands back, and liners, time checks and carts are not played over them. The page
+  says "Live: <name> since <time>" once when a DJ goes on or off, and the public feed, status
+  page and stream title show the DJ. Each set is a History row and a `live` row in the CSV
+  play log, left out of SoundExchange reports. Hold **Talk** on Now Playing (mouse, touch,
+  Space or Enter on the button, or Alt+M anywhere) to speak over the music from the browser's
+  microphone, with the duck amount and return time set per station; one person talks at a
+  time. Sources need HTTPS or this machine, unless `[server] live_plain_http_lan = true` also
+  allows plain HTTP from the local network. Backups keep the DJs but not their password
+  hashes, so set DJ passwords again after a restore. See
+  [Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them. The

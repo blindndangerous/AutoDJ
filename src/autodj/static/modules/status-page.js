@@ -31,9 +31,14 @@ function count(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-// "Title by Artist, from the album Album."
+// "Title by Artist, from the album Album."  A live DJ's set (#48) has no
+// title, album or length worth reading: "Live: DJ Alice."  status_page.py
+// words both the same.
 export function trackText(track, empty) {
   if (!track) return empty;
+  if (track.kind === "live") {
+    return `Live: ${String(track.artist || "").trim() || "a DJ"}.`;
+  }
   const title = String(track.title || "").trim() || "Unknown title";
   const artist = String(track.artist || "").trim() || "an unknown artist";
   let text = `${title} by ${artist}`;
