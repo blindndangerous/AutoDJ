@@ -288,6 +288,7 @@ class SlotPlan:
         ending_offset_s: Seconds of *ending* already played when it starts.
         clock_name: The clockwheel *next_cursor* is a place in (#133).
         clock_step: The selected step snapshot for the Why display.
+        ad_steps: Clockwheel ad steps passed before the selected song.
         pinned: A break is booked: keep the pair whatever the queue does.
         stale: A queue edit changed what the pick would be (unpinned only).
     """
@@ -311,6 +312,7 @@ class SlotPlan:
     pinned: bool = False
     stale: bool = False
     clock_step: dict | None = None
+    ad_steps: tuple[dict, ...] = ()
 
 
 class BreakError(Exception):

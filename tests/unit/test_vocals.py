@@ -10,6 +10,7 @@ from autodj.vocals import (
     VocalCache,
     first_vocal_s,
     guard_fade,
+    lyric_stamp,
     sung_spans,
 )
 
@@ -145,3 +146,22 @@ class TestVocalCache:
         cache.spans("b")
         cache.spans("a")
         assert reads == ["a", "b", "a"]
+
+    def test_edited_lyrics_are_read_again(self, tmp_path) -> None:
+        """A changed file or a new .lrc sidecar is a new stamp (#60)."""
+        song = tmp_path / "song.flac"
+        song.write_bytes(b"x")
+        reads: list[str] = []
+        cache = VocalCache(lambda path: reads.append(path) or _lines((1.0, "hi")))
+        first = cache.spans(str(song))
+        # Unchanged: the same tuple, so callers can compare by identity.
+        assert cache.spans(str(song)) is first
+        (tmp_path / "song.lrc").write_text("[00:02.00]hello\n", encoding="utf-8")
+        cache.spans(str(song))
+        song.write_bytes(b"xy")
+        cache.spans(str(song))
+        assert len(reads) == 3
+
+    def test_stamp_of_a_missing_file_is_steady(self, tmp_path) -> None:
+        missing = str(tmp_path / "gone.flac")
+        assert lyric_stamp(missing) == lyric_stamp(missing) == (None, None)

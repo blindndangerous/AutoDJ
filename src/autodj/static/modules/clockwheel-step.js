@@ -77,5 +77,13 @@ function describeSelection(step, sources, categories) {
   }
   if (step.type === "track") return `track ${step.path}`;
   if (step.type === "settings") return `switch to preset ${step.preset}`;
+  if (step.type === "ad_break") {
+    const spots = Number(step.max_spots ?? 3);
+    const parts = [`ad break, up to ${spots} ${spots === 1 ? "spot" : "spots"}`];
+    if (Number(step.max_seconds) > 0) parts.push(`up to ${step.max_seconds} seconds`);
+    if (step.advertiser) parts.push(`from ${step.advertiser}`);
+    if (step.category) parts.push(`category ${step.category}`);
+    return parts.join(", ");
+  }
   return `${String(step.type).replaceAll("_", " ")} step`;
 }
