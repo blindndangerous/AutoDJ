@@ -58,6 +58,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm test
+        env:
+          NODE_OPTIONS: --max-old-space-size=5120
       - run: npm run deadcode
       - run: npm audit --audit-level=high
 

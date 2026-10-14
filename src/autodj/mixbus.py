@@ -19,6 +19,7 @@ from autodj.stereo import SAMPLE_RATE
 if TYPE_CHECKING:
     from autodj.beatmatch import Glide
     from autodj.indexer import IndexEntry
+    from autodj.live import LiveDesk, LiveSource, PcmBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 # (see :mod:`autodj.mastering`), so a catch-up burst never drains it.
 CATCH_UP_BLOCKS = 8
 _NO_LINER = np.zeros((0, 2), np.float32)
+# Live source audio buffered before it plays, and again after an underrun,
+# so network jitter does not crackle (#48); a browser talker's, shorter.
+_LIVE_PREROLL_FRAMES = int(0.3 * SAMPLE_RATE)
+_MIC_PREROLL_FRAMES = int(0.06 * SAMPLE_RATE)
 
 
 @dataclass(frozen=True)
@@ -324,6 +329,148 @@ class MixBus:
         self._eq_filters = make_eq_filters(SAMPLE_RATE)
         self._eq_state = make_eq_state(self._eq_filters, channels=2)
         self._eq_previous_gains = (1.0, 1.0, 1.0)
+        # Live input (#48): the desk, the crossfade level (0 automation,
+        # 1 live) and the jitter buffers' state.  Read on the bus thread only.
+        self._live: LiveDesk | None = None
+        self._live_gain = 0.0
+        self._live_feed: LiveSource | None = None
+        self._live_primed = False
+        self._mic_feed: PcmBuffer | None = None
+        self._mic_primed = False
+        self._mic_gain = 1.0
+        self._deferred_liner: tuple[np.ndarray, float] | None = None
+        self._advance_held = False
+
+    def set_live(self, desk: LiveDesk) -> None:
+        """Attach the station's live input (:class:`~autodj.live.LiveDesk`)."""
+        with self._lock:
+            self._live = desk
+
+    @property
+    def live_on_air(self) -> bool:
+        """Whether a live source has taken over (automation is held or fading)."""
+        return self._live_gain > 0.0
+
+    def drop_held_track(self) -> None:
+        """Forget the track held under a live source, so automation returns with the next.
+
+        Called before the live source fades out: the bus then takes the
+        next rendered track as the live audio fades, rather than resuming
+        the song the DJ interrupted.  Its liner cue and skip effect go too.
+        """
+        with self._lock:
+            self._current = None
+            self._pos = 0
+            self._tail = None
+            self._skip_fade = 0
+            self._drop_liner()
+
+    def _live_block(self, desk: LiveDesk, feed: LiveSource) -> np.ndarray | None:
+        """One block of *feed*, or ``None`` while it (re)buffers (lock held).
+
+        A jitter buffer: playing starts once ``_LIVE_PREROLL_FRAMES`` are
+        waiting, and an underrun goes back to buffering, inserting silence,
+        so network bursts do not crackle.  An underrun of the connected
+        source is only counted on it (``underruns``); its route logs it, as
+        nothing on this thread may block on logging.
+        """
+        if feed is not self._live_feed:
+            self._live_feed = feed
+            self._live_primed = False
+        waiting = feed.buffer.frames
+        if not self._live_primed:
+            if waiting < _LIVE_PREROLL_FRAMES:
+                return None
+            self._live_primed = True
+            feed.primed = True
+        if waiting < self.BLOCK:
+            self._live_primed = False
+            if feed is desk.source:
+                feed.underruns += 1
+            return None
+        return feed.buffer.pop(self.BLOCK)
+
+    def _live_taking_over(self) -> bool:
+        """Whether a live source has the air, or takes it this block (lock held).
+
+        From then on no new track starts: one ending under the crossfade
+        leaves silence beneath the DJ rather than starting the next song,
+        which waits, with everything planned for it, until the DJ leaves.
+        """
+        desk = self._live
+        source = desk.source if desk is not None else None
+        if source is None or not source.started:
+            return False
+        return source.primed or source.buffer.frames >= _LIVE_PREROLL_FRAMES
+
+    def _mix_live(self, block: np.ndarray) -> np.ndarray:
+        """Crossfade to or from the live source and add talkover (lock held).
+
+        Reads only what the routes have already put in the desk's buffers;
+        it never waits for the network or the decoder, and never takes the
+        desk's lock.  The source and the music cross with equal power, so
+        the level holds through the crossfade.
+        """
+        desk = self._live
+        if desk is None:
+            return block
+        active = desk.source
+        if active is not None and not active.started:
+            active = None  # connected, but only silence so far: still off the air
+        feed = active if active is not None else desk.return_source
+        previous = self._live_gain
+        live = None
+        if feed is not None and (previous > 0.0 or feed is active):
+            live = self._live_block(desk, feed)
+        on_air = active is not None and active.primed
+        step = self.BLOCK / (SAMPLE_RATE * desk.crossfade_seconds)
+        self._live_gain = min(1.0, previous + step) if on_air else max(0.0, previous - step)
+        if previous == self._live_gain == 1.0:
+            block = live if live is not None else np.zeros_like(block)
+        elif previous or self._live_gain:
+            ramp = np.linspace(previous, self._live_gain, self.BLOCK, dtype=np.float32)[:, None]
+            angle = ramp * np.float32(math.pi / 2)
+            block = block * np.cos(angle)
+            if live is not None:
+                block += live * np.sin(angle)
+        returning = desk.return_source
+        if self._live_gain == 0.0 and returning is not None:
+            desk.clear_return_source(returning)
+        if previous and not self._live_gain and self._deferred_liner is not None:
+            # The DJ has handed back: the liner that was due under them plays
+            # once now, over the music (if any is playing).
+            audio, gain = self._deferred_liner
+            self._deferred_liner = None
+            if self._playing and not self._paused:
+                self._start_liner(audio, gain)
+        return self._talkover(desk, block)
+
+    def _talkover(self, desk: LiveDesk, block: np.ndarray) -> np.ndarray:
+        """Duck *block* under a browser talker and add their voice (lock held)."""
+        mic = desk.mic
+        if mic is not self._mic_feed:
+            self._mic_feed = mic
+            self._mic_primed = False
+        if mic is not None and not self._mic_primed and mic.frames >= _MIC_PREROLL_FRAMES:
+            self._mic_primed = True
+        talking = mic is not None and self._mic_primed
+        settings = desk.settings
+        old = self._mic_gain
+        if talking:
+            target = float(10 ** (-settings.mic_duck_db / 20))
+            change = self.BLOCK / (SAMPLE_RATE * desk.attack_seconds)
+            self._mic_gain = max(target, old - change) if old > target else target
+        else:
+            change = self.BLOCK / (SAMPLE_RATE * settings.mic_return_seconds)
+            self._mic_gain = min(1.0, old + change)
+        if old != self._mic_gain:
+            block = block * np.linspace(old, self._mic_gain, self.BLOCK, dtype=np.float32)[:, None]
+        elif old != 1.0:
+            block = block * np.float32(old)
+        if talking:
+            assert mic is not None
+            block = block + mic.pop(self.BLOCK)
+        return block
 
     @property
     def playing(self) -> bool:
@@ -437,7 +584,14 @@ class MixBus:
                 last = len(self._current.audio) - 1
                 self._pos = max(0, min(int(frames), last))
 
-    def play_liner(self, audio: np.ndarray, duck_db: float, at: LinerCue | None = None) -> None:
+    def play_liner(
+        self,
+        audio: np.ndarray,
+        duck_db: float,
+        at: LinerCue | None = None,
+        *,
+        after_live: bool = False,
+    ) -> None:
         """Mix *audio* over the music, ducking the music by *duck_db* dB.
 
         The music ramps to the duck level — and, once the liner ends,
@@ -453,18 +607,36 @@ class MixBus:
                 and set its ``started``; a cue whose track stops playing
                 first is dropped.  One cue waits at a time: a new one
                 replaces it.  A cue already passed starts at once.
+            after_live: While a live DJ has the air (#48) nothing is mixed
+                over them.  ``True`` (a station ID or other liner) keeps
+                the latest such liner to play once when the DJ hands back;
+                ``False`` (a time check, which would be stale by then)
+                drops it.  Either way the caller's thread logs it.
         """
         audio = audio.astype(np.float32, copy=False)
         gain = float(10 ** (duck_db / 20.0))
         with self._lock:
-            if at is not None and not (at.track is self._current and self._pos >= at.frame):
-                self._liner_cue, self._cued_liner, self._cued_duck = at, audio, gain
-                return
-            if at is not None:
-                at.started = True
-                self._liner_cue = None
-                self._cued_liner = None
-            self._start_liner(audio, gain)
+            under_live = self._live_gain > 0.0 or self._advance_held
+            if under_live and after_live:
+                self._deferred_liner = (audio, gain)
+            if not under_live:
+                self._play_liner_locked(audio, gain, at)
+        # Logged here, with the bus lock released.
+        if under_live and after_live:
+            logger.info("A liner was due while a live DJ was on the air; it plays when they leave")
+        elif under_live:
+            logger.info("A time check was due while a live DJ was on the air; skipped as stale")
+
+    def _play_liner_locked(self, audio: np.ndarray, gain: float, at: LinerCue | None) -> None:
+        """Start or cue a liner (lock held)."""
+        if at is not None and not (at.track is self._current and self._pos >= at.frame):
+            self._liner_cue, self._cued_liner, self._cued_duck = at, audio, gain
+            return
+        if at is not None:
+            at.started = True
+            self._liner_cue = None
+            self._cued_liner = None
+        self._start_liner(audio, gain)
 
     def _start_liner(self, audio: np.ndarray, gain: float) -> None:
         """Start *audio* on the next block and duck the music to *gain* (lock held)."""
@@ -571,6 +743,8 @@ class MixBus:
         filled = 0
         while filled < frames and self._playing:
             if self._current is None:
+                if self._advance_held:
+                    break  # a live DJ is taking the air: the next song waits for them
                 self._advance(pending)
                 if self._current is None:
                     break
@@ -679,21 +853,37 @@ class MixBus:
             _master, master_enabled = self._master_state()
         pending: list[Callable[[], None]] = []
         with self._lock:
-            if self._paused or not self._playing:
+            desk = self._live
+            live_input = desk is not None and (
+                desk.active or desk.return_source is not None or self._mic_gain < 1.0
+            )
+            if (self._paused or not self._playing) and not live_input:
                 return np.zeros((self.BLOCK, 2), np.float32)
-            block = self._music(self.BLOCK, pending)
-            gains = self._eq_gains()
-            # Keep filter memory current even at unity gain.  Both EQ calls
-            # return a new array, so the music view is never written to.
-            if gains != self._eq_previous_gains:
-                # Ramp slider changes over this 20 ms block to avoid clicks.
-                block = ramp_eq(
-                    block, self._eq_filters, self._eq_previous_gains, gains, self._eq_state
-                )
+            # While a live source has the air the automation is held where
+            # it is: no track advances, so the clockwheel, the repeat
+            # history and the planned song change stay as they were.
+            self._advance_held = self._live_taking_over()
+            if self._live_gain >= 1.0 or self._paused or not self._playing:
+                # No music under live input: the EQ is skipped rather than
+                # fed silence (its filters' decaying tails would go
+                # denormal and cost a hundred times more), and starts clean.
+                block = np.zeros((self.BLOCK, 2), np.float32)
+                reset_eq_state(self._eq_state)
             else:
-                block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
-            self._eq_previous_gains = gains
+                block = self._music(self.BLOCK, pending)
+                gains = self._eq_gains()
+                # Keep filter memory current even at unity gain.  Both EQ calls
+                # return a new array, so the music view is never written to.
+                if gains != self._eq_previous_gains:
+                    # Ramp slider changes over this 20 ms block to avoid clicks.
+                    block = ramp_eq(
+                        block, self._eq_filters, self._eq_previous_gains, gains, self._eq_state
+                    )
+                else:
+                    block = apply_eq(block, self._eq_filters, *gains, state=self._eq_state)
+                self._eq_previous_gains = gains
             self._duck_and_mix(block)
+            block = self._mix_live(block)
             if not master_enabled:
                 np.clip(block, -1.0, 1.0, out=block)
             if self._current is not None:

@@ -347,8 +347,8 @@ never starts in the same quarter twice running; at 3 it moves round all four. Pl
 week old do not count.
 
 - The hours are the station's (`[server] station_timezone`, else the computer's), and a daypart
-  keeps its hours across a clock change. Quarters of the hour compare exactly in every time
-  zone, except across Lord Howe Island's half-hour clock change.
+  keeps its hours across a clock change. Quarters of the hour are read on the station's clock
+  too, so they hold across every clock change, Lord Howe Island's half-hour one included.
 - Both rules judge the time the next song is expected to start, as dayparting does, not the time
   the pick is made. Server playout picks ahead, so this is the time the song goes on air.
 - A song is its file, or with **Count versions as one song** on, every version of it.

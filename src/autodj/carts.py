@@ -369,6 +369,9 @@ class StationCarts:
             return "Nobody is listening, so the cart was not played"
         if bridge.player._state.is_paused:
             return "Playback is paused, so the cart was not played"
+        if getattr(bridge.player.bus, "live_on_air", False) is True:
+            # AutoDJ does not talk over a live DJ (#48).
+            return "A live DJ is on the air, so the cart was not played"
         if station is None and not bridge.player.bus.playing:
             return "Start playback before playing a cart"
         return None

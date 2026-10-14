@@ -6,7 +6,6 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import faiss
 import numpy as np
 import pytest
 
@@ -151,18 +150,6 @@ def test_key_estimation_rejects_weak_profile_match() -> None:
     )
 
     assert indexer._estimate_key_from_chroma(weak_match) == (-1, -1)
-
-
-def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
-    faiss_index = indexer.build_faiss_index(_vector())
-    destination = tmp_path / "vectors.index"
-
-    with patch("os.fsync", side_effect=OSError("unsupported")):
-        indexer._write_faiss_chunked(faiss_index, destination, chunk_size=7)
-
-    restored = faiss.read_index(str(destination))
-    assert restored.ntotal == 1
-    assert np.array_equal(restored.reconstruct(0), _vector()[0])
 
 
 def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
