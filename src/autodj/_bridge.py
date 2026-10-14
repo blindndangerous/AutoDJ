@@ -2017,6 +2017,8 @@ class PlayerBridge:
                 "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
                 "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
                 "pick_top_k": int(pb.pick_top_k),
+                "hour_fit": bool(pb.hour_fit),
+                "hour_fit_window_minutes": int(pb.hour_fit_window_minutes),
                 "pick_temperature": float(pb.pick_temperature),
                 "stereotool_agc_drive_db": float(pb.stereotool_agc_drive_db),
                 "intro_lift_max_db": float(pb.intro_lift_max_db),

@@ -1198,6 +1198,8 @@
     body:not(:has(#pb-replaygain option[value="replaygain"]:checked)) [data-show-when="pb-replaygain=replaygain"],
     body:not(:has(#pb-replaygain option[value="stereotool"]:checked)) [data-show-when="pb-replaygain=stereotool"],
     body:not(:has(#pb-pick-mode option[value="similarity"]:checked)) [data-show-when="pb-pick-mode=similarity"],
+    body:has(#pb-hour-fit:not(:checked)) [data-show-when="pb-hour-fit"],
+    body:not(:has(#schedule-timing option[value="hard"]:checked)) [data-show-when="schedule-timing=hard"],
     body:has(#key-notation option[value="musical"]:not(:checked)) [data-show-when="key-notation=musical"],
     body:has(#disc-enabled:not(:checked)) [data-show-when="disc-enabled"],
     body:has(#ln-enabled:not(:checked)) [data-show-when="ln-enabled"] {

@@ -1077,6 +1077,7 @@ class Point:
         label: Its name, such as "Top of the hour" or an event's name.
         timing: An event's ``"hard"`` or ``"soft"``; empty otherwise.
         detail: What an event does, in words.
+        wait_seconds: How long a hard event lets the playing song finish.
     """
 
     kind: str
@@ -1084,6 +1085,7 @@ class Point:
     label: str
     timing: str = ""
     detail: str = ""
+    wait_seconds: int = 0
 
 
 def fixed_points(
@@ -1151,7 +1153,16 @@ def fixed_points(
             if when is None or when.timestamp() > end:
                 break
             detail = _described(event, describe)
-            points.append(Point("event", when.timestamp(), event.name, event.timing, detail))
+            points.append(
+                Point(
+                    "event",
+                    when.timestamp(),
+                    event.name,
+                    event.timing,
+                    detail,
+                    getattr(event, "wait_seconds", 0),
+                )
+            )
             cursor_at = when
     points.sort(key=lambda point: (point.at, point.kind != "event"))
     return points
@@ -1245,7 +1256,7 @@ def land(point: Point, changes: Sequence[tuple[float, Item]], ends: float) -> La
         return Landing(point, playing, began, following, 0.0)
     late = following - at
     early = at - began
-    if point.kind == "event" and point.timing == "hard":
+    if point.kind == "event" and point.timing == "hard" and late > point.wait_seconds:
         cut = late if late >= ON_TIME_SECONDS else 0.0
         return Landing(point, playing, began, following, 0.0, cut)
     offset = late if point.kind == "event" or late <= early else -early
@@ -1322,7 +1333,7 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
     if playing is None or landing.began is None or landing.starts is None:
         return "not known", f"{heading}: the preview does not reach the song change after it."
     after = clock_text(landing.starts, zone)
-    if point.kind == "event" and point.timing == "hard":
+    if point.kind == "event" and point.timing == "hard" and landing.offset == 0:
         if landing.cut:
             cut = length_text(landing.cut)
             return (
@@ -1341,7 +1352,11 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
         return (
             f"{amount} late",
             f"{heading}: runs about {amount} late, after {_who(playing)} ends at {after}. "
-            "A soft event waits for the song playing to end.",
+            + (
+                "A hard event waits because the song ends within its wait limit."
+                if point.timing == "hard"
+                else "A soft event waits for the song playing to end."
+            ),
         )
     lands = "the clockwheel restarts" if point.kind == "restart" else "lands"
     if landing.offset > 0:
