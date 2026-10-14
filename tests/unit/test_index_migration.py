@@ -513,8 +513,8 @@ def test_catalog_state_migrates_without_music_root_and_keeps_registered_sources(
 
     with LibraryCatalog(index_dir / "library.db") as catalog:
         assert {(source["path"], source["kind"]) for source in catalog.sources()} == {
-            (str(registered_music.resolve()).casefold(), "music"),
-            (str(registered_liners.resolve()).casefold(), "liner"),
+            (_dj_meta_path(str(registered_music)), "music"),
+            (_dj_meta_path(str(registered_liners)), "liner"),
         }
     with closing(sqlite3.connect(index_dir / "library.db")) as db:
         assert db.execute("SELECT title,artist,duration FROM play_history").fetchall() == [
@@ -537,7 +537,7 @@ def test_rootless_catalog_upgrade_does_not_invent_a_music_source(tmp_path: Path)
 
     with closing(sqlite3.connect(index_dir / "library.db")) as db:
         sources = db.execute("SELECT path,kind FROM catalog_sources").fetchall()
-        assert sources == [(str((tmp_path / "unused-liners").resolve()).casefold(), "liner")]
+        assert sources == [(_dj_meta_path(str(tmp_path / "unused-liners")), "liner")]
         assert db.execute(
             "SELECT value FROM catalog_settings WHERE key='sources_seeded'"
         ).fetchone() == ("true",)

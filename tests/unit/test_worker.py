@@ -114,10 +114,12 @@ def test_worker_results_match_local_analysis_exactly(server, tmp_path):
     # The same songs analysed on this machine by the server's own job.
     local_cfg = make_config(tmp_path / "local")
     seed = LibraryManager(local_cfg, Similarity())
+    seed.catalog.add_source(local_cfg.library.music_dir)
     for song in server.songs:
         copy = local_cfg.library.music_dir / song.name
         copy.write_bytes(song.read_bytes())
         seed.catalog.put_entry(make_entry(copy))
+    assert len(seed.analysis_pending()) == 3
     seed.close()
     assert analyse_library(local_cfg, FakeModel()) == 3
     local = LibraryManager(local_cfg, Similarity())
