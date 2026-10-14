@@ -801,7 +801,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- Alt+1 to Alt+9 put focus on the tab they open, so its name is said once (#296).
+- Opening a tab leaves focus on the tab, whether by click, arrow keys or Alt+1 to Alt+9, so its
+  name is said once (#296).
 - The open hour preview refreshes as soon as Now Playing shows again (#295).
 - The footer Changelog link, the build link, Dismiss, and the row buttons for clockwheel steps,
   categories, shows and listener requests each read as one line in NVDA browse mode (#288).

@@ -40,15 +40,13 @@ describe("card headings", () => {
     }
   });
 
-  it("focuses the card's summary, not the heading inside it, on a tab switch", () => {
+  it("leaves focus on the tab when it is clicked", () => {
     installIndex();
     window.location.hash = "#now";
     try {
       initViewRouter();
       document.querySelector("#tab-now").click();
-      const active = document.activeElement;
-      expect(active.tagName).toBe("SUMMARY");
-      expect(active.textContent.trim()).toBe("Now Playing");
+      expect(document.activeElement.id).toBe("tab-now");
     } finally {
       window.location.hash = "";
     }
@@ -136,7 +134,7 @@ describe("tab arrow keys", () => {
     }
   });
 
-  it("focuses the Voice tracks heading when the tab is chosen", async () => {
+  it("leaves focus on the Voice tracks tab when it is chosen", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -145,12 +143,12 @@ describe("tab arrow keys", () => {
     freshRouter();
     document.querySelector("#tab-voice").click();
     await vi.waitFor(() => expect(document.querySelector("#panel-voice").hidden).toBe(false));
-    expect(document.activeElement.id).toBe("voice-heading");
+    expect(document.activeElement.id).toBe("tab-voice");
     expect(window.location.hash).toBe("#voice");
     window.location.hash = "";
   });
 
-  it("focuses the Ads heading when the tab is chosen", async () => {
+  it("leaves focus on the Ads tab when it is chosen", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -159,12 +157,12 @@ describe("tab arrow keys", () => {
     freshRouter();
     document.querySelector("#tab-ads").click();
     await vi.waitFor(() => expect(document.querySelector("#panel-ads").hidden).toBe(false));
-    expect(document.activeElement.id).toBe("ads-heading");
+    expect(document.activeElement.id).toBe("tab-ads");
     expect(window.location.hash).toBe("#ads");
     window.location.hash = "";
   });
 
-  it("focuses the Carts heading when the tab is chosen", async () => {
+  it("leaves focus on the Carts tab when it is chosen", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -173,12 +171,12 @@ describe("tab arrow keys", () => {
     freshRouter();
     document.querySelector("#tab-carts").click();
     await vi.waitFor(() => expect(document.querySelector("#panel-carts").hidden).toBe(false));
-    expect(document.activeElement.id).toBe("carts-heading");
+    expect(document.activeElement.id).toBe("tab-carts");
     expect(window.location.hash).toBe("#carts");
     window.location.hash = "";
   });
 
-  it("routes directly to Track info and focuses its heading", async () => {
+  it("routes directly to Track info and leaves focus on its tab", async () => {
     installIndex();
     window.location.hash = "#now";
     vi.resetModules();
@@ -187,7 +185,7 @@ describe("tab arrow keys", () => {
     freshRouter();
     document.querySelector("#tab-track-info").click();
     await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
-    expect(document.activeElement.id).toBe("track-info-heading");
+    expect(document.activeElement.id).toBe("tab-track-info");
     expect(window.location.hash).toBe("#track-info");
     window.location.hash = "";
   });

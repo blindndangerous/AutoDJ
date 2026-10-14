@@ -134,23 +134,7 @@ function applyView(name, userInitiated) {
   }
   markSelected([..._viewLinks.values()], _viewLinks.get(name));
   if (changed) document.dispatchEvent(new CustomEvent("autodj:view", { detail: { view: name } }));
-  if (userInitiated) {
-    const sec = _viewSections.get(name);
-    const tab = _viewLinks.get(name);
-    // Don't steal focus away from a focused tab during arrow-key nav
-    // -- that defeats roving tabindex.
-    if (sec && document.activeElement !== tab) {
-      // Only a heading of the panel itself.  Card titles are <h2>s inside
-      // <summary>, and focusing one of those would land inside the
-      // disclosure button instead of on it.
-      const heading = Array.from(sec.children).find((el) => el.tagName === "H2");
-      if (heading) {
-        heading.setAttribute("tabindex", "-1");
-        heading.focus({ preventScroll: false });
-      } else {
-        const firstSummary = sec.querySelector("summary");
-        if (firstSummary) firstSummary.focus({ preventScroll: false });
-      }
-    }
-  }
+  // A click, or the address naming a tab, leaves focus on that tab, as
+  // the arrow keys and Alt+1 to Alt+9 do, so its name is said once.
+  if (userInitiated) _viewLinks.get(name)?.focus();
 }
