@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -104,7 +105,9 @@ def _browse_order(entries: tuple[IndexEntry, ...]) -> list[_Indexed]:
 class LibraryManager:
     """Keep the playable library and its similarity view current."""
 
-    def __init__(self, cfg: AutoDJConfig, sim: Any) -> None:
+    def __init__(
+        self, cfg: AutoDJConfig, sim: Any, *, clock: Callable[[], float] = time.monotonic
+    ) -> None:
         from autodj.config import station_config
 
         self.cfg = cfg
@@ -173,6 +176,9 @@ class LibraryManager:
         )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
+        self._clock = clock
+        self._auto_rescan_minutes = self.catalog.get_setting("auto_rescan_minutes", 0)
+        self._last_scan_end = self._clock()
         # What each station played, and its settings; the default station's
         # first.  tick() writes them all.
         self.ledger = StationLedger(self.catalog, DEFAULT_SLUG, self.entry_for_path)
@@ -439,6 +445,13 @@ class LibraryManager:
         for ledger in ledgers:
             ledger.flush()
 
+    def auto_rescan_minutes(self) -> int:
+        return self._auto_rescan_minutes
+
+    def set_auto_rescan_minutes(self, minutes: int) -> None:
+        self.catalog.set_setting("auto_rescan_minutes", minutes)
+        self._auto_rescan_minutes = minutes
+
     def tick(self) -> None:
         self._flush_ledgers()
         with self._lock:
@@ -448,6 +461,13 @@ class LibraryManager:
         if not scanning and self._changed():
             self.refresh()
         self.schedule_analysis()
+        if (
+            self._auto_rescan_minutes > 0
+            and not self._scan_lock.locked()
+            and self._clock() - self._last_scan_end >= self._auto_rescan_minutes * 60
+            and self.start_scan(override_tags=False)
+        ):
+            logger.info("Automatic library rescan started")
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -649,12 +669,14 @@ class LibraryManager:
                     )
                     repeat = repeat and not self._stop.is_set()
                     if not repeat:
+                        self._last_scan_end = self._clock()
                         self._scan_lock.release()
                         acquired = False
                         break
         finally:
             if acquired:
                 with self._lock:
+                    self._last_scan_end = self._clock()
                     self._scan_lock.release()
 
     def _set_state(self, **values: Any) -> None:

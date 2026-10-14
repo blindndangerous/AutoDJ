@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Library tools can rescan the library automatically every so many hours and minutes (#249).
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
   does, and gives manual installation steps when needed. The quick start uses one launcher
   command, with instructions for moving to another computer.

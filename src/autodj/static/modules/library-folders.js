@@ -6,6 +6,7 @@ import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { announceStatus } from "./live-region.js";
+import { installAutoRescan } from "./auto-rescan.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
@@ -241,6 +242,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     searchShown = searching;
     if (visible() && timer == null) {
       void refresh();
+      void autoRescan?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -314,6 +316,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
       pendingFolderEdits.delete(button);
       if (requestCurrent(epoch, generation)) { button.removeAttribute("aria-disabled"); await refresh(); }
     }
+  });
+  const autoRescan = installAutoRescan({
+    document: doc,
+    request,
+    say: announceAction,
+    isCurrent: () => !suspended,
   });
   doc.getElementById("source-folder-rescan").addEventListener("click", async () => {
     if (suspended) return;
@@ -653,6 +661,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     folderSignature = null;
     pathInput.value = "";
     clearAddError();
+    autoRescan?.clear();
     status.textContent = "";
     progress.textContent = "";
     pointStatus.textContent = "";

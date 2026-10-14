@@ -82,8 +82,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
-paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+tab. Its folder table shows each folder's type, path and scan options. Automatic rescan every N hours
+and M minutes runs the same scan as the Rescan button, and its setting is kept in `library.db`.
+Setting 0 hours and 0 minutes (the default) turns it off; the shortest interval is 5 minutes. Time
+counts from the end of the last startup, manual or automatic scan; if a scan or cleanup is running,
+the next tick tries again. **Queue & Search** uses one paginated list: choose Music or Voice liners,
+choose all folders or one folder, and optionally
 search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
 Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
