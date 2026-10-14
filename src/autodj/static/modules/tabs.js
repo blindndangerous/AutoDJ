@@ -7,7 +7,9 @@
 import { showVisibleStatus } from "./live-region.js";
 import { markSelected, tabForKey } from "./tablist.js";
 
-const VIEW_NAMES = ["now", "queue", "carts", "voice", "ads", "track-info", "history", "settings", "library"];
+// The main tabs in order.  The tab bar follows this list, and Alt+1 to
+// Alt+9 open the tab at that position, so a new tab only goes here.
+const VIEW_NAMES = ["now", "queue", "track-info", "history", "carts", "voice", "ads", "library", "settings"];
 
 const _viewSections = new Map();
 const _viewLinks = new Map();
@@ -38,6 +40,16 @@ export function initViewRouter() {
     // swap is just a `hidden` toggle, no perf reason for manual.
     lnk.addEventListener("keydown", _onTabKeydown);
   }
+  document.addEventListener("keydown", (e) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const digit = /^Digit([1-9])$/.exec(e.code);
+    const name = digit && VIEW_NAMES.filter((n) => _viewLinks.has(n))[digit[1] - 1];
+    if (!name || document.querySelector("dialog[open]")) return;
+    e.preventDefault();
+    clearStaleStatus(name);
+    if (location.hash !== "#" + name) location.hash = name;
+    else applyView(name, true);
+  });
   window.addEventListener("hashchange", (event) => {
     if (event.newURL && new URL(event.newURL).hash !== location.hash) return;
     const view = (location.hash || "#now").replace(/^#/, "");

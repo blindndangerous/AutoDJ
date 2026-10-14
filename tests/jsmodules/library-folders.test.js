@@ -104,6 +104,13 @@ describe("clock folder and points controls", () => {
     expect(formatPointTime(59.999)).toBe("1:00");
   });
 
+  it("round-trips a cue to within the half hundredth the catalog allows (#237)", () => {
+    expect(parsePointTime(formatPointTime(213.4567))).toBe(213.46);
+    for (const value of [0.004, 1.2351, 12.3456, 200.0049, 205.555, 213.4567, 3599.995]) {
+      expect(Math.abs(parsePointTime(formatPointTime(value)) - value)).toBeLessThanOrEqual(0.005 + 1e-9);
+    }
+  });
+
   it("announces an added folder once and keeps polling progress outside the live region", async () => {
     document.getElementById("panel-library").hidden = false;
     const request = vi.fn(async (url, options) => url === "/api/library/folders" && !options ? {

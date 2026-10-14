@@ -973,6 +973,10 @@ class ServerConfig(_Section):
     station_timezone: str | None = None
     ssl_certfile: str | None = None
     ssl_keyfile: str | None = None
+    # Live DJ source clients (#48) may log in over plain HTTP from the LAN,
+    # not only from this machine.  Their passwords then cross the LAN in
+    # the clear; off unless chosen (see THREAT_MODEL.md).
+    live_plain_http_lan: bool = False
 
     def __post_init__(self) -> None:
         """Normalize and validate server settings after initialization."""
@@ -1003,6 +1007,8 @@ class ServerConfig(_Section):
             raise TypeError("server.insecure_lan must be a boolean")
         if not isinstance(self.lan, bool):
             raise TypeError("server.lan must be a boolean")
+        if not isinstance(self.live_plain_http_lan, bool):
+            raise TypeError("server.live_plain_http_lan must be a boolean")
         self.allowed_hosts = _canonicalize_allowed_hosts(self.allowed_hosts)
         self.allowed_origins = _canonicalize_allowed_origins(self.allowed_origins)
         self.session_ttl_seconds = _require_int(

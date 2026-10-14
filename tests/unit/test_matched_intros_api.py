@@ -63,9 +63,26 @@ class Station:
             },
         }
         self.gone: set[str] = set()
+        # Registered library folders, for intro rules' liners and folder conditions.
+        self.sources: list[dict] = []
+
+        def record_for_path(path: str) -> dict | None:
+            return next((r for r in self.records.values() if r["path"] == str(path)), None)
+
         bridge.library = SimpleNamespace(
             record_for_id=self.records.get,
-            catalog=SimpleNamespace(record_for_id=self.records.get),
+            catalog=SimpleNamespace(
+                record_for_id=self.records.get,
+                record_for_path=record_for_path,
+                sources=lambda kind=None: [
+                    s for s in self.sources if kind is None or s["kind"] == kind
+                ],
+            ),
+            entries_snapshot=lambda kind="music": tuple(
+                SimpleNamespace(path=r["path"], genre=r.get("genre", ""))
+                for r in self.records.values()
+                if r["kind"] == kind
+            ),
             is_gone=lambda path: path in self.gone,
         )
 
@@ -124,6 +141,48 @@ def test_an_artist_intro_shows_on_every_song_by_the_artist(station) -> None:
     assert made["target_text"] == "Any song by Example Artist"
     listing = station.listing(OTHER)
     assert listing["song"] == [] and [item["id"] for item in listing["artist"]] == [made["id"]]
+
+
+def test_intro_rule_crud_uses_station_routes_and_limited_json(station) -> None:
+    from tests.unit._break_station import write_voice
+
+    station.store.folder.parent.mkdir(parents=True, exist_ok=True)
+    liner = write_voice(station.store.folder.parent / "liner.wav", 1)
+    station.records["liner-1"] = {"id": "liner-1", "kind": "liner", "path": str(liner)}
+    body = {
+        "conditions": [{"field": "genre", "operator": "is", "value": "Rock"}],
+        "clip_ids": ["liner-1"],
+        "chance": 50,
+    }
+    made = station.client.post("/api/stations/default/intros/rules", json=body, headers=ORIGIN)
+    assert made.status_code == 201, made.text
+    key = made.json()["id"]
+    listed = station.client.get("/api/intros/rules")
+    assert listed.status_code == 200
+    assert [rule["id"] for rule in listed.json()["rules"]] == [key]
+    edited = station.client.put(
+        f"/api/intros/rules/{key}", json={**body, "chance": 75}, headers=ORIGIN
+    )
+    assert edited.status_code == 200 and edited.json()["chance"] == 75
+    assert (
+        station.client.post(
+            "/api/intros/rules", json={**body, "chance": 0}, headers=ORIGIN
+        ).status_code
+        == 422
+    )
+    assert (
+        station.client.post("/api/intros/rules", content=b"x" * 65537, headers=ORIGIN).status_code
+        == 413
+    )
+    assert (
+        station.client.post(
+            "/api/intros/rules", json={**body, "priority": "unknown"}, headers=ORIGIN
+        ).status_code
+        == 422
+    )
+    gone = station.client.delete(f"/api/intros/rules/{key}", headers=ORIGIN)
+    assert gone.status_code == 200
+    assert station.client.get("/api/intros/rules").json()["rules"] == []
 
 
 def test_a_song_with_no_artist_takes_only_a_song_intro(station) -> None:
@@ -239,6 +298,10 @@ def test_every_intro_route_needs_a_session(tmp_path: Path) -> None:
         ("GET", f"/api/intros/{intro}/audio"),
         ("DELETE", f"/api/intros/{intro}"),
         ("POST", "/api/stations/default/intros"),
+        ("GET", "/api/intros/rules"),
+        ("POST", "/api/intros/rules"),
+        ("PUT", f"/api/intros/rules/{intro}"),
+        ("DELETE", f"/api/intros/rules/{intro}"),
     ):
         reply = station.client.request(method, path, headers=ORIGIN)
         assert reply.status_code == 401, (method, path, reply.text)

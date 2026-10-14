@@ -2415,7 +2415,29 @@ class Player:
                 return None
             artist = str(getattr(upcoming, "artist", "") or record.get("artist") or "")
             when = at if at is not None else self._now()
-            return store.choose(str(record.get("id") or ""), artist, when)
+            song_id = str(record.get("id") or "")
+            rules = getattr(store, "rules", None)
+            if rules is None:
+                return store.choose(song_id, artist, when)
+            # Intro rules (#127) come after the song's and the artist's own
+            # intros unless a rule asks to go before one of them.  Their
+            # clips must pass the station's liner filter: its own liners,
+            # within their play dates.
+            allowed = getattr(self, "liner_filter", None)
+
+            def by_rule(priority: str) -> Any:
+                return rules.choose(upcoming, when, self._library, priority, allowed)
+
+            priorities = rules.priorities()
+            if not priorities.intersection({"before_song", "before_artist"}):
+                return store.choose(song_id, artist, when) or by_rule("after_artist")
+            if "before_song" in priorities and (chosen := by_rule("before_song")) is not None:
+                return chosen
+            if (chosen := store.choose(song_id, artist, when, "song")) is not None:
+                return chosen
+            if "before_artist" in priorities and (chosen := by_rule("before_artist")) is not None:
+                return chosen
+            return store.choose(song_id, artist, when, "artist") or by_rule("after_artist")
         except Exception:
             # A store that cannot be read must not stop the render.
             logger.exception("Could not choose a matched intro for %s", upcoming.path)
@@ -3371,6 +3393,20 @@ class Player:
             self._render_ahead.refresh()
         self._recheck_slot_plan()
 
+    def prepare_live_return(self, timeout: float) -> None:
+        """Render the track after a live DJ's set again, for now (#48).
+
+        The track rendered to follow the song a live DJ interrupted waited
+        through the set; its liners and time checks were planned for
+        then.  It is rendered again from its own start, the old render
+        kept to fall back on, and this waits up to *timeout* seconds for
+        the new one.  The clockwheel place, the queue and the planned song
+        change are those it had: nothing advanced while the DJ was on.
+        """
+        self._render_ahead.rerender()
+        if not self._render_ahead.wait_rendered(timeout):
+            logger.info("Automation returns with the song readied before the live set")
+
     def play_now(self, entry: IndexEntry, pick_mode: str = "queue") -> None:
         """Fade out the playing track and play *entry* next, from its start.
 
@@ -3800,7 +3836,7 @@ class Player:
             now,
             self._track_keys(),
             at=(self._now() if at is None else at) if timed else None,
-            zone=self._station_zone() if rules.daypart_days else UTC,
+            zone=self._station_zone() if timed else UTC,
         )
         if minute_paths:
             held = set(paths)

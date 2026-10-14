@@ -39,6 +39,12 @@ _ENTRY_FIELDS = (
 )
 _POINTS = ("start", "intro", "outro", "segue", "end", "overlap_start")
 _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
+# Track info shows and sends cue times to the nearest 0.01 s, so a cue saved
+# unchanged can land up to 0.005 s past the length or a neighbouring cue, and
+# an Overlap start up to 0.01 s past its Start-to-End room (#237).  A cue that
+# far over is moved onto its limit instead of rejected; the epsilon absorbs
+# float error in the rounded values.
+_CUE_SLACK = 0.01 + 1e-6
 # The columns a tag edit from Track info may change (LibraryCatalog.retag).
 _RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "key", "mode"})
 # Fields set by hand in Track info that analysis keeps (catalog_entries.user_tags).
@@ -103,7 +109,8 @@ _SCHEMA = """
         event_id TEXT PRIMARY KEY NOT NULL, entry_id TEXT, path TEXT,
         title TEXT NOT NULL, artist TEXT NOT NULL, duration REAL NOT NULL,
         played_at TEXT NOT NULL, interrupted INTEGER NOT NULL DEFAULT 0,
-        performances INTEGER, station TEXT NOT NULL DEFAULT 'default'
+        performances INTEGER, station TEXT NOT NULL DEFAULT 'default',
+        kind TEXT NOT NULL DEFAULT 'song', ended_at TEXT
     );
     CREATE TABLE IF NOT EXISTS station_plays (
         station TEXT NOT NULL, path TEXT NOT NULL, last_played REAL NOT NULL,
@@ -416,6 +423,10 @@ class LibraryCatalog:
                 db.execute(
                     "ALTER TABLE play_history ADD COLUMN station TEXT NOT NULL DEFAULT 'default'"
                 )
+            if "kind" not in have:
+                db.execute("ALTER TABLE play_history ADD COLUMN kind TEXT NOT NULL DEFAULT 'song'")
+            if "ended_at" not in have:
+                db.execute("ALTER TABLE play_history ADD COLUMN ended_at TEXT")
             # Each station reads its own plays, newest first; SQLite keeps the
             # rowid in every index, so this one also orders them.
             db.execute("CREATE INDEX IF NOT EXISTS play_history_station ON play_history(station)")
@@ -554,25 +565,28 @@ class LibraryCatalog:
         """Append unique play events of *station* and mark any supplied events interrupted.
 
         A row for an event already stored only raises its ``performances``,
-        which grows as listeners join during the play.
+        which grows as listeners join during the play; a live DJ's set
+        (``kind`` ``"live"``, no path) is stored when it starts and again
+        with its length and ``ended_at`` when it ends.
         """
         clean_rows = []
         for row in rows:
             event_id = row.get("event_id") if isinstance(row, dict) else None
             path = row.get("path") if isinstance(row, dict) else None
             duration = self._duration(row.get("duration")) if isinstance(row, dict) else None
+            # A live DJ's set (#48) has no file.
+            live = isinstance(row, dict) and row.get("kind") == "live"
             if (
                 not isinstance(event_id, str)
                 or not event_id
-                or not isinstance(path, str)
-                or not path
+                or (not live and (not isinstance(path, str) or not path))
                 or not isinstance(row.get("title"), str)
                 or not isinstance(row.get("artist"), str)
                 or duration is None
                 or not self._valid_played_at(row.get("played_at"))
             ):
                 continue
-            normalized_path = _path(path)
+            normalized_path = None if live else _path(str(path))
             clean_rows.append(
                 (
                     event_id,
@@ -584,6 +598,8 @@ class LibraryCatalog:
                     row["played_at"],
                     self._count(row.get("performances")),
                     station,
+                    "live" if live else "song",
+                    row.get("ended_at") if self._valid_played_at(row.get("ended_at")) else None,
                 )
             )
         interrupted = tuple(
@@ -595,12 +611,21 @@ class LibraryCatalog:
                 db.execute("BEGIN")
                 db.executemany(
                     "INSERT INTO play_history (event_id,entry_id,path,title,artist,duration,"
-                    "played_at,performances,station) "
-                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?,?,?) "
-                    # A play is written again when a listener joins during it.
-                    "ON CONFLICT(event_id) DO UPDATE SET performances="
-                    "max(COALESCE(performances,0),excluded.performances) "
-                    "WHERE excluded.performances IS NOT NULL",
+                    "played_at,performances,station,kind,ended_at) "
+                    "VALUES (?,(SELECT id FROM catalog_entries WHERE path=?),?,?,?,?,?,?,?,?,?) "
+                    # A play is written again when a listener joins during it, a
+                    # live set when it ends, and a song a live DJ cut off with
+                    # its end (#48).  Only a live set's length and end change;
+                    # a song's end is set once and its length never.
+                    "ON CONFLICT(event_id) DO UPDATE SET performances=CASE "
+                    "WHEN excluded.performances IS NULL THEN performances "
+                    "ELSE max(COALESCE(performances,0),excluded.performances) END,"
+                    "duration=CASE WHEN excluded.kind='live' "
+                    "THEN excluded.duration ELSE duration END,"
+                    "ended_at=CASE WHEN excluded.kind='live' "
+                    "THEN excluded.ended_at ELSE COALESCE(ended_at,excluded.ended_at) END "
+                    "WHERE excluded.performances IS NOT NULL OR excluded.kind='live' "
+                    "OR excluded.ended_at IS NOT NULL",
                     clean_rows,
                 )
                 db.executemany(
@@ -620,8 +645,8 @@ class LibraryCatalog:
             rows = (
                 self._db()
                 .execute(
-                    "SELECT event_id,entry_id,path,title,artist,duration,played_at FROM ("
-                    "SELECT rowid,event_id,entry_id,path,title,artist,duration,played_at "
+                    "SELECT event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at FROM ("
+                    "SELECT rowid,event_id,entry_id,path,title,artist,duration,played_at,kind,ended_at "
                     "FROM play_history WHERE interrupted=0 AND station=? "
                     "ORDER BY rowid DESC LIMIT ?) "
                     "ORDER BY rowid ASC",
@@ -649,7 +674,7 @@ class LibraryCatalog:
                     "SELECT h.rowid AS row,h.path,h.title,h.artist,"
                     "COALESCE(e.album,'') AS album,h.played_at "
                     "FROM play_history h LEFT JOIN catalog_entries e ON e.path=h.path "
-                    "WHERE h.interrupted=0 AND h.station=? AND h.path IS NOT NULL "
+                    "WHERE h.interrupted=0 AND h.station=? AND h.path IS NOT NULL AND h.kind!='live' "
                     "AND (e.kind IS NULL OR e.kind='music') "
                     "ORDER BY h.rowid DESC LIMIT ?) ORDER BY row ASC",
                     (station, limit),
@@ -696,7 +721,8 @@ class LibraryCatalog:
                 )
             rows = db.execute(
                 "SELECT h.played_at,h.duration,h.title,h.artist,"  # nosec B608 -- fixed SQL fragments; values bound
-                "COALESCE(e.path,h.path) AS path,e.album,e.kind,h.performances "
+                "COALESCE(e.path,h.path) AS path,e.album,COALESCE(NULLIF(h.kind,'song'),e.kind) AS kind,"
+                "h.performances,h.ended_at "
                 + following
                 + " FROM play_history h LEFT JOIN catalog_entries e ON e.id="  # nosec B608 -- fixed SQL fragments
                 "COALESCE(h.entry_id,(SELECT id FROM catalog_entries WHERE path=h.path)) "
@@ -1407,17 +1433,25 @@ class LibraryCatalog:
                         else f"{name} must be a finite non-negative time or None"
                     )
                 if row["length"] > 0 and name != "overlap_start" and value > row["length"]:
-                    raise ValueError(f"{name} exceeds track length")
+                    if value - row["length"] > _CUE_SLACK:
+                        raise ValueError(f"{name} exceeds track length")
+                    value = row["length"]
             if sources.get(name) in {"user", "imported"} and source not in {"user", "imported"}:
                 continue
             current[name], sources[name] = value, source
         start, end = current.get("start"), current.get("end")
         for name in ("intro", "outro", "segue"):
             value = current.get(name)
-            if value is not None and (
-                (start is not None and value < start) or (end is not None and value > end)
-            ):
-                raise ValueError(f"{name} must fall between Start and End")
+            if value is None:
+                continue
+            if start is not None and value < start:
+                if start - value > _CUE_SLACK:
+                    raise ValueError(f"{name} must fall between Start and End")
+                current[name] = start
+            elif end is not None and value > end:
+                if value - end > _CUE_SLACK:
+                    raise ValueError(f"{name} must fall between Start and End")
+                current[name] = end
         if start is not None and end is not None and start >= end:
             raise ValueError("Start must precede End")
         overlap = current.get("overlap_start")
@@ -1430,11 +1464,17 @@ class LibraryCatalog:
                     limit_point = row["length"]
                 limit = None if limit_point is None else limit_point - (start or 0)
                 if limit is not None and overlap > limit:
-                    if "overlap_start" in values and source in {"user", "imported"}:
+                    if (
+                        "overlap_start" in values
+                        and source in {"user", "imported"}
+                        and overlap - limit > _CUE_SLACK
+                    ):
                         raise ValueError("overlap_start exceeds the liner segue after Start")
                     current["overlap_start"], sources["overlap_start"] = max(0, limit), source
             elif start is not None and end is not None and overlap > end - start:
-                raise ValueError("overlap_start exceeds the selected Start to End range")
+                if overlap - (end - start) > _CUE_SLACK:
+                    raise ValueError("overlap_start exceeds the selected Start to End range")
+                current["overlap_start"] = end - start
         self._db().execute(
             "UPDATE catalog_entries SET points=?,point_sources=? WHERE path=?",
             (json.dumps(current), json.dumps(sources), path),

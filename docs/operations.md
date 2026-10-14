@@ -82,8 +82,12 @@ In a terminal, analysis commands show completed-track progress. Redirected outpu
 logs keep plain progress messages.
 
 In the web page, add, remove and rescan music and voice liner folders in the **Library tools**
-tab. Its folder table shows each folder's type, path and scan options. **Queue & Search** uses one
-paginated list: choose Music or Voice liners, choose all folders or one folder, and optionally
+tab. Its folder table shows each folder's type, path and scan options. Automatic rescan every N hours
+and M minutes runs the same scan as the Rescan button, and its setting is kept in `library.db`.
+Setting 0 hours and 0 minutes (the default) turns it off; the shortest interval is 5 minutes. Time
+counts from the end of the last startup, manual or automatic scan; if a scan or cleanup is running,
+the next tick tries again. **Queue & Search** uses one paginated list: choose Music or Voice liners,
+choose all folders or one folder, and optionally
 search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
 Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
@@ -575,15 +579,32 @@ carry the same album name counts as one album, again the stricter limit.
   library) does AutoDJ break one: it plays a song that breaks the fewest limits,
   and logs a warning naming each one. The music never stops.
 - Songs you queue from Search or Library: Play now, Play next and Add to queue
-  check the limits at the time the song is expected to start, worked out from
-  the lengths of the song playing and the songs queued before it. If the song
-  would break a limit, nothing is queued; a dialog names the limit in words and
-  offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing Queue
-  anyway queues it and logs a warning; Cancel leaves the queue as it was. The
-  result is spoken either way. The expected start is an estimate: crossfades and
-  skips move it, so near a three-hour boundary, check again before relying on it.
+  check the limits at the time the song is expected to start, timed as the
+  hour preview times the queue (see [Expected start times](#expected-start-times)).
+  If the song would break a limit, nothing is queued; a dialog names the limit in
+  words and offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing
+  Queue anyway queues it and logs a warning; Cancel leaves the queue as it was.
+  The result is spoken either way. The expected start is an estimate: skips and
+  later queue edits move it, so near a three-hour boundary, check again before
+  relying on it.
   A queued song plays even if it breaks a limit when it starts, and the log
   says so.
+
+### Expected start times
+
+The DMCA and repeat checks on queued songs, listener requests and shows use the hour preview's
+timing for when a song will start:
+
+- The song playing counts from where it is now, so a seek moves the queue.
+- A song the server has already mixed keeps its mixed handoff and the speed it was mixed at.
+- Other songs hand over at their saved start and segue cues, or the crossfade, at the current
+  music speed. Liners keep their own length and overlap cues.
+- A song put ahead of one that is already mixed counts as taking its place, as it does once the
+  mix is redone. If the song playing ends before the new mix is ready, the change lands one song
+  later.
+
+Automatic liners, breaks not yet booked and skips are not known in advance, so the time is an
+estimate.
 
 ### Public pages
 
@@ -833,9 +854,13 @@ the show's waiting songs and the listener is told only that it plays "after the 
 
 For the last check, AutoDJ looks at each place in the queue that would start within
 `window_minutes`. The first place, after the song playing and any "play next" song, always counts.
-For each place, AutoDJ projects when the song would start. It then checks the repeat rules (track,
+For each place, AutoDJ works out when the song would start, as the hour preview times the queue
+([Expected start times](#expected-start-times)). It then checks the repeat rules (track,
 artist, album, title, and related tracks and artists) as of then, and in
-[DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
+[DMCA mode](#dmca-mode) the DMCA limits too. It also checks the queued songs after that place
+again: a place where a later song would break a rule only because the request is ahead of it
+counts as breaking that rule, named as "Artist — Song after it: same artist". A rule a queued
+song breaks already does not count against the request. Of the places that break nothing, it picks the one
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
 tie. Working out the place and adding the song there happen as one step, so the queue cannot
@@ -885,7 +910,8 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
 - **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
-  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song.
+  DMCA limits and clockwheel step restrictions still hold, counting that "play next" song
+  and the queued songs after it.
 - **Turn down**.
 
 Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
@@ -1306,6 +1332,131 @@ relay changes state).
 The password crosses the network to the server as the protocol requires: in an HTTP Basic
 login for Icecast, and as plain text for Shoutcast, including in title updates. AutoDJ does
 not use TLS for relays, so use a host you trust on networks you trust. See the threat model.
+
+### Live DJs and talkover
+
+A live DJ can take over a station from their own DJ software, and anyone signed in to the page
+can talk over the music from the browser. Both need stream mode (`serve --stream`, or a station
+under `[stations.<name>]`), because the server mixes what goes on the air.
+
+**Adding DJs.** In **Settings > Live DJ**, add each DJ with a username, the name
+listeners see (for example "DJ Alice") and a password of 12 to 256 characters. Passwords are
+never shown again; editing a DJ with the password left blank keeps the saved one. Each station
+has its own DJs, kept in that station's `live_djs.json` as scrypt hashes, written atomically and,
+on POSIX systems, readable only by the server's user. Removing a DJ who is on the air takes them
+off at once. A backup keeps the DJs and the talkover settings but not the password hashes, so
+after a restore each DJ shows "no password" until you set their password again.
+
+**Connecting BUTT or Mixxx.** Live DJs connect to the station's source mount on AutoDJ's own
+address and port, with the same settings as an Icecast 2 server:
+
+- Server type: Icecast (Icecast 2).
+- Address and port: the ones the page is open on, for example `radio.example.com` and `8080`.
+- Mount: `live` for the default station, `stations/<name>/live` for another station. The
+  Live DJ tab shows the full address for the station the page controls.
+- Username and password: the DJ's. (Not `source`: each DJ has their own login.)
+- Format: MP3, AAC or Ogg Vorbis, at up to 512 kbit/s.
+- Encryption: turn on SSL/TLS in BUTT ("Use SSL/TLS") when AutoDJ serves HTTPS.
+
+A DJ's password goes in an HTTP Basic login, so AutoDJ accepts it only over HTTPS or from the
+machine AutoDJ runs on. To let DJs on your local network connect over plain HTTP, set
+`live_plain_http_lan = true` under `[server]`; their passwords then cross your LAN unencrypted,
+so use it only on a network you trust. It never admits plain HTTP from outside the private
+address ranges, or through a proxy. Five wrong passwords from one address in a minute (one
+IPv6 /64) lock that address out for the rest of the minute, and one station takes one DJ at a
+time: a second DJ is refused until the first disconnects.
+
+**Going on the air.** A DJ who connects is on standby until their software sends sound: silence
+does not take the station. When sound arrives, AutoDJ buffers about 0.3 seconds of it and
+crossfades from the music to the DJ over one second, at equal power so the level holds. From
+that moment no new song starts: if the song playing ends during the crossfade, the DJ comes in
+over silence rather than the next song. The interrupted song's History row ends when the DJ
+came on. While the DJ is on, automation waits exactly where it was: nothing is added to the play history or the repeat rules, the clockwheel does not move
+on, and the queue, a show on the air and any waiting breaks stay as they were. The stream
+title, the status page and the public feed show the DJ's name and "Live", and the page says
+"Live: DJ Alice since 9:02 PM" once, politely. The station keeps playing while a DJ or a talker
+is connected, even with no listeners.
+
+**Handing back.** When the DJ disconnects, or sends only silence for 15 seconds, automation
+takes back the air. It does not resume the interrupted song: the song that was due next is
+rendered again for now (its time check and liners were planned before the DJ came on), and
+the DJ's last buffered audio crossfades into it. If that render takes longer than the DJ's
+remaining audio, the song as rendered before the DJ came on plays instead, so there is never
+dead air. A station with no set playing (no listeners and nothing keeping it on) goes back to
+idle.
+
+**Scheduled events while a DJ is on.** Events still run at their time and are logged as usual,
+but AutoDJ does not put its own audio over a live DJ:
+
+- An event that changes the song with hard timing (**Play a show**, a song played now) takes
+  effect when the DJ hands back: its song is the first one automation plays.
+- Soft-timed events queue as usual and play in turn after the DJ.
+- A station ID or other liner due while the DJ is on (fired by the schedule or **Test**) plays
+  once when the DJ hands back, over the first song; if several fall due, only the latest plays.
+  The log says it waits.
+- A time check due while the DJ is on would be stale by then: it is skipped, and the log says
+  so.
+- Cart clips are refused while the DJ is on, and the cart wall says why.
+- A voice break (#88) waiting for the next song change misses its slot: it is dropped and
+  logged as missed, "live DJ on air". (The missed and late rules being designed in #215 will
+  decide this in time.)
+- **Stop playing** stops automation behind the DJ; the DJ stays on, and when they leave the
+  station is idle.
+
+**When a source is cut off.** A connection is closed when it sends nothing for 10 seconds,
+waits on standby (only silence) for 30 minutes, sends faster than 512 kbit/s over five seconds
+(with a 64 KiB burst allowance), passes 2 GiB in one connection (about 14 hours at 320 kbit/s),
+or when the decoder cannot keep up or fails. If the DJ's audio briefly runs out (a network
+stall), AutoDJ plays silence, logs one warning, and resumes when 0.3 seconds have buffered
+again. Each source is decoded by its own FFmpeg process, reading only the format the DJ's
+software declared, from a pipe, with no access to files or the network; at most 2 seconds of
+decoded audio wait for the mixer, and older audio is dropped first.
+
+On the development PC (Windows 11, FFmpeg 8.1.2), decoding 30 seconds of 128 kbit/s MP3 the way
+a source is decoded took 0.09 seconds of CPU and 16.3 MiB of memory for the FFmpeg process, so a
+DJ costs well under 1% of one core. The mixer spends about 30 microseconds on each 20 ms block
+while a DJ is on, less than with music (the music's EQ is skipped), and about 20 microseconds
+more while someone talks over.
+
+**Talkover from the browser.** The **Talk** button in the Controls card on Now Playing puts
+your microphone on the air while you hold it: hold the mouse button or a finger on it, or
+press and hold Space or Enter while it has focus, or hold **Alt+M** anywhere on the page.
+Alt+M only ever talks while held. A quick press or click on the button itself (under about a
+third of a second), such as a screen reader's click or a switch, keeps talk on until you press
+Talk again instead: the page then shows "Talking until you press Talk again, for 2 minutes at
+most." under the button and says so once, and talk turns itself off after 2 minutes, saying
+"Talk turned off after 2 minutes." The button stays named "Talk" and reports pressed while you
+are on the air; Alt+M also says "Talking." and "Stopped talking." The browser asks
+for the microphone when you first press, and the page lets it go when you stop, leave the
+window or tab, switch station or sign out. Alt+M is not turned off by the Settings keyboard
+switch, which covers single-key shortcuts. While you talk, the
+music (or the live DJ) is lowered by the **Duck amount** (12 dB to start with) within 40 ms,
+and when you release it comes back up over the **Return time** (half a second to start with);
+set both in **Settings > Live DJ**, per station. One person talks at a time on each
+station; while someone else talks, Talk shows as unavailable. When the server has no sign-in
+(pairing is off), anyone who can open the page can talk on the air and change the Live DJ
+settings, as with every other control on the page. Talkover needs a secure page (HTTPS, or
+`localhost`), because browsers give the microphone only to secure pages.
+
+The browser sends 16-bit mono PCM at its own sample rate over a WebSocket, about 0.7 to 0.8
+Mbit/s, rather than Opus: there is no decoder process per talker and no codec delay, and the
+server resamples to the station's rate. Programs can use the same socket,
+`wss://<host>/api/live/mic?rate=48000` (or `/api/stations/<name>/live/mic`), with the page's
+session cookie and Origin: binary messages of little-endian 16-bit mono samples, at most 32 KiB
+each, sent continuously while talking. The server closes the socket after 2 seconds without a
+message, keeps at most half a second of a talker's audio, and closes a talker sending more than
+twice real time.
+
+**History and reports.** A DJ's set is one History row with the DJ's name, "Live", when it
+started and, once over, when it ended and its length. It is in the CSV play log with kind
+`live`, and left out of SoundExchange reports and the repeat rules: the music came from the
+DJ's own software, which AutoDJ cannot see. Report a DJ's songs from their own software.
+
+The routes, for scripts: `GET /api/live` (the DJ on the air, the DJs without their passwords,
+the talkover settings and the source mount), `PUT /api/live/settings`, `POST /api/live/djs`
+(`username`, `display_name`, and `password`, or `null` to keep the saved one),
+`DELETE /api/live/djs/<username>`, each also under `/api/stations/<name>/`. They need a paired
+browser session like the rest of the page.
 
 ### Recording the broadcast
 
@@ -2561,6 +2712,84 @@ as the speech ends. With Smooth or Stereo Tool processing the clip gets the voic
 A clip that cannot be decoded is left out and the music plays on. The hour preview lists an intro
 once its song change is mixed, as "Matched intro" and its label.
 
+### Intro rules
+
+An intro rule plays a voice liner as the next song starts when that song matches the rule's
+conditions: a name drop for an artist, a jingle before rock songs, or "here's one from the eighties"
+before songs first released in the 1980s. Each station keeps its own rules. Manage them in
+**Library tools**, **Intro rules**, below Shows. Each rule is listed in words with an
+**Edit** and a **Delete** button; Delete asks first and leaves the liners in the library.
+
+**Add intro rule** (or Edit) opens one form:
+
+- **Label**: optional words to tell rules apart, shown in the list.
+- **Match conditions** and the conditions themselves: the same 1 to 32 condition rows as clockwheel
+  steps and categories, with **Match all** or **Match any**. A rule can match the artist (Artist
+  contains, for a name drop), title, album, genre, year (Year between 1980 and 1989 for a decade),
+  BPM, duration, any Beets field (`original_year` is the first release, with the release year
+  standing in when Beets has none), a registered music folder, or a saved music category. A song
+  with no value for a field, or a category that no longer exists, never matches a condition on it.
+- **Voice liners to choose from**: check any of the station's registered voice liners, choose a
+  registered **Liner folder** (every registered liner in it and its subfolders), or both. One clip
+  is picked at random each time. A clip whose file is missing, that is outside its liner play
+  dates, or that belongs to another station's liner folder is passed over.
+- **Priority**: where the rule stands next to the song's own matched intros and its artist's.
+  By default rules come after both; a rule can come after the song's own intros and before the
+  artist's, or before both.
+- **Chance (percent)**, **Wait between plays (minutes)**, **Not before** and **Do not play after**:
+  as for a matched intro. The wait holds across restarts.
+
+Choose **Save intro rule**. A field the page or the server refuses is marked, its error is shown
+under it and it takes focus; any other result is said once.
+
+At each song change AutoDJ tries, in priority order, the song's own intros, the artist's and the
+rules. Among the rules of one priority whose dates, wait and conditions allow them, the one heard
+longest ago is tried first, and its chance is rolled on the matched intros' own random source, so
+the rotation tester and the hour preview keep predicting the same songs. A chosen clip is placed
+as a matched intro is (talk-up or before the song, below), takes the automatic liner's place in
+the same way, and gives way in the same way to a DJ break and to **Only when no liner is
+scheduled**. A song change that is rendered again, or that ended before its intro aired, gives the
+rule back for the next one.
+
+Rules are chosen on the render-ahead thread, one song ahead, never on the audio thread. Measured on
+Windows with Python 3.14 and synthetic data (no audio decoded), 100 rules of two conditions each
+took 3.3 ms median and 6.9 ms at the 95th percentile per song change against 1,000 songs, and 4.2
+ms and 9.0 ms against 50,000; the music library's size does not enter the checks. A liner folder's
+clips are gathered by the station's upkeep, which looks every 5 seconds, off the render path: 40 ms
+for 50,000 registered liners, once each time the liner library changes; until then the clips
+gathered before serve, less any no longer registered. A song change then took 0.3 ms median
+and 1.3 ms at the 95th percentile with that folder. For one song change at most 256 clips of a
+large folder are looked at, so a folder of missing files cannot hold up the render.
+
+`intro_rules.json` in the station's state folder holds the rules and when each last aired; backups
+include it. When it cannot be read just now, the rules last read are used and saves are refused,
+so nothing is written over it. A rule in it that is not valid is skipped, logged and named under
+the Intro rules heading, and written back as it was with every save; only a file that is not a
+file of rules at all is set aside, as `intro_rules.json.bad-<id>`.
+
+For scripts, the routes are `GET` and `POST /api/intros/rules`, and `PUT` and `DELETE
+/api/intros/rules/<id>` (`/api/stations/<slug>/intros/rules` for any station), with the browser
+session and the page's `Origin`. The body is a JSON object of at most 64 KiB:
+
+```json
+{
+  "label": "Rock jingles",
+  "conditions": [{"field": "genre", "operator": "is", "value": "Rock"}],
+  "match": "all",
+  "clip_ids": ["<registered liner library ID>"],
+  "liner_folder": "D:\\Radio\\Liners\\Rock",
+  "priority": "after_artist",
+  "chance": 50,
+  "cooldown_minutes": 60,
+  "not_before": "2026-12-01",
+  "not_after": "2026-12-26"
+}
+```
+
+`clip_ids`, `liner_folder` or both are required; `priority` is `after_artist` (the default),
+`before_artist` or `before_song`. A refused rule answers 422 with `detail` and the `field` at fault.
+`GET` also lists the liners, liner folders and condition choices the page offers.
+
 ### Where they are kept
 
 Each station keeps its own: `matched_intros.json` in the station's state folder (the active index
@@ -2778,7 +3007,8 @@ The CSV has one row per play, in this column order:
   not a valid ISRC (2 letters, 3 letters or digits, then 7 digits) counts as missing, so the song
   shows up in `--missing`. Label comes from `LABEL`, `ORGANIZATION` or `PUBLISHER` (FLAC and Ogg), `TPUB` or
   `TXXX:LABEL` (MP3), or the iTunes `LABEL` atom (M4A).
-- `kind`: `song` or `liner`.
+- `kind`: `song`, `liner`, or `live` for a live DJ's set (see "Live DJs and talkover"),
+  which has no path and is never in a SoundExchange report.
 - `path`: the file's path inside its music or liner folder, with `/` between folders.
 - `performances`: how many listeners heard the play; see "Listener counts" below. Empty for plays
   logged before AutoDJ counted listeners.

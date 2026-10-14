@@ -15,7 +15,8 @@ from click.testing import CliRunner
 
 from autodj.cli import cli
 from autodj.config import ENVIRONMENT_OVERLAY
-from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
+from autodj.indexer import FEATURE_DIM, IndexEntry
+from tests.unit._legacy_index import save_index
 
 # ---------------------------------------------------------------------------
 # Fixtures

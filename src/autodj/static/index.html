@@ -103,13 +103,13 @@
   <div role="tablist" aria-orientation="horizontal">
     <button type="button" role="tab" id="tab-now"      data-view="now"      aria-selected="true"  tabindex="0">Now Playing</button>
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
+    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
+    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
-    <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
-    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
     <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
 </nav>
 
@@ -155,6 +155,10 @@
              stops playing a track, so "Set stopped" stays the one spoken
              report and a page loaded while idle speaks nothing on its own. -->
         <p id="now-playing-idle" hidden>Nothing playing. The station starts when someone listens.</p>
+        <!-- Live DJ (#48): "Live: DJ Alice since 8:15 PM" while a DJ feeds
+             the station.  Plain text, not a live region: live-talk.js says
+             the change once through #sr-status. -->
+        <p id="live-on-air" class="live-on-air" hidden></p>
         <!-- Stream mode, idle.  Plain text, not a live region: the
              "Set stopped" station event is the one spoken report. -->
         <p id="stream-idle-note" class="stream-idle-note" hidden></p>
@@ -257,16 +261,24 @@
                 style="display:none">
           <span aria-hidden="true">◈</span> Discovery
         </button>
-        <button id="btn-shortcuts"
-                title="View keyboard shortcuts (or press ?)"
-                aria-description="View keyboard shortcuts, or press the question mark key">
-          <span aria-hidden="true">⌨</span> Keyboard shortcuts
-        </button>
       </div>
       <!-- Listen here plays the station it was started on (#70).  Once the
            page controls another station this says which, and describes
            Listen here.  Plain text, not live. -->
       <p id="listen-station" class="stream-detail" hidden></p>
+      <!-- Browser talkover (#48), shown while the station can go live.
+           Hold to talk; a quick press latches it on until the next press.
+           A fixed name: aria-pressed says whether this page is talking.
+           The help, the note (busy, unavailable) and the error are plain
+           text, linked by live-talk.js only while they have words. -->
+      <div id="talk-desk" class="talk-desk" hidden>
+        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help station-context">Talk</button>
+        <p id="talk-help" class="stream-detail">Hold to talk over the music: hold this button, hold Space or Enter on it, or hold Alt+M anywhere on the page. A quick press of this button keeps talking on until you press it again, for 2 minutes at most; Alt+M talks only while held. The music ducks while you talk. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air, as they can use every other control here.</p>
+        <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
+        <p id="talk-latched" class="talk-latched" hidden></p>
+        <p id="talk-note" class="stream-detail" hidden></p>
+        <p id="talk-error" class="field-error" hidden></p>
+      </div>
     </div>
 
     <!-- Volume -->
@@ -689,6 +701,7 @@
     <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
+    <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
@@ -2186,6 +2199,80 @@
     </div>
   </div>
 
+  <!-- Live DJ (#48): DJ accounts for BUTT, Mixxx or another Icecast
+       source program, where they connect, and the talkover settings.
+       live-settings.js shows the tab while the station can go live.
+       Passwords are write-only.  Results go to #settings-status; a
+       refused save shows its words under the form, linked to its field. -->
+  <div class="card" role="tabpanel" id="spanel-live" aria-labelledby="stab-live" hidden>
+    <h3>Live DJ</h3>
+    <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. When the DJ's program connects and sends sound, the music fades out under the DJ; when it disconnects, the music fades back in with a new song. Listeners and History see the DJ's name. The Talk button on Now Playing lets you talk over the music from this browser. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings, as they can use every other control here.</p>
+    <p class="stream-detail" id="live-unavailable" hidden></p>
+    <div id="live-settings" hidden>
+      <h4 id="live-connect-heading">Connect a DJ program</h4>
+      <div class="settings-row">
+        <label for="live-source-url">Source address</label>
+        <input type="text" id="live-source-url" readonly aria-describedby="live-source-desc">
+        <button type="button" id="live-source-copy">Copy address</button>
+      </div>
+      <span class="setting-desc" id="live-source-desc">In BUTT or Mixxx, add an Icecast 2 server with the settings below, and the username and password of one of this station's DJs.</span>
+      <dl class="live-facts" aria-labelledby="live-connect-heading">
+        <dt>Server type</dt><dd>Icecast 2</dd>
+        <dt>Address</dt><dd id="live-source-host"></dd>
+        <dt>Port</dt><dd id="live-source-port"></dd>
+        <dt>Mount</dt><dd id="live-source-mount"></dd>
+        <dt>Encryption</dt><dd id="live-source-tls"></dd>
+        <dt>Format</dt><dd>MP3, AAC or Ogg</dd>
+      </dl>
+      <p class="stream-detail" id="live-transport-note"></p>
+      <h4 id="live-djs-heading">DJ accounts</h4>
+      <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
+      <button type="button" id="live-dj-add" aria-describedby="station-context">Add DJ</button>
+      <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
+        <thead><tr><th scope="col">DJ</th><th scope="col">Password</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
+        <tbody id="live-dj-rows"></tbody>
+      </table>
+      <p class="stream-detail" id="live-dj-none">No DJ accounts yet.</p>
+      <form id="live-dj-form" hidden novalidate>
+        <h5 id="live-dj-form-title">Add DJ</h5>
+        <div class="settings-row">
+          <label for="live-dj-username">Username</label>
+          <input id="live-dj-username" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="live-dj-username-desc">
+        </div>
+        <span class="setting-desc" id="live-dj-username-desc">What the DJ types as the user name in BUTT or Mixxx: letters, digits or punctuation, up to 64, with no spaces and no colon.</span>
+        <div class="settings-row">
+          <label for="live-dj-name">Display name</label>
+          <input id="live-dj-name" maxlength="80" autocomplete="off" aria-describedby="live-dj-name-desc">
+        </div>
+        <span class="setting-desc" id="live-dj-name-desc">Shown to listeners and in History while this DJ is live.</span>
+        <div class="settings-row">
+          <label for="live-dj-password">Password</label>
+          <input id="live-dj-password" type="password" maxlength="256" autocomplete="new-password" aria-describedby="live-dj-password-help">
+        </div>
+        <span class="setting-desc" id="live-dj-password-help">12 to 256 characters. The DJ types it as the password in BUTT or Mixxx.</span>
+        <p class="field-error" id="live-dj-error" hidden></p>
+        <button type="submit" id="live-dj-save">Save DJ</button>
+        <button type="button" id="live-dj-cancel">Cancel</button>
+      </form>
+      <fieldset id="live-talkover">
+        <legend>Talk over the music</legend>
+        <p class="setting-desc">For the Talk button on Now Playing: how far the music ducks while you talk, and how fast it comes back after.</p>
+        <div class="settings-row">
+          <label for="live-return-seconds">Return time (seconds)</label>
+          <input type="number" id="live-return-seconds" min="0.1" max="10" step="0.1" required aria-describedby="live-return-desc">
+        </div>
+        <span class="setting-desc" id="live-return-desc">How long the music takes to come back up after you stop talking, from 0.1 to 10 seconds.</span>
+        <div class="settings-row">
+          <label for="live-duck-db">Duck amount (dB)</label>
+          <input type="number" id="live-duck-db" min="0" max="30" step="1" required aria-describedby="live-duck-desc">
+        </div>
+        <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
+        <p class="field-error" id="live-talkover-error" hidden></p>
+        <button type="button" id="live-talkover-save" aria-describedby="station-context">Save talk settings</button>
+      </fieldset>
+    </div>
+  </div>
+
   <div class="card" role="tabpanel" id="spanel-access" aria-labelledby="stab-access" hidden>
     <h3>Profiles and access</h3>
     <!-- profiles.js and devices.js load their lists when this panel is
@@ -2875,6 +2962,22 @@
         <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
+        <fieldset id="auto-rescan">
+          <legend>Automatic rescan every</legend>
+          <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>
+          <div class="settings-row">
+            <label for="auto-rescan-hours">Hours</label>
+            <input type="number" id="auto-rescan-hours" min="0" max="168" step="1" value="0" inputmode="numeric">
+          </div>
+          <div class="settings-row">
+            <label for="auto-rescan-minutes">Minutes</label>
+            <input type="number" id="auto-rescan-minutes" min="0" max="59" step="1" value="0" inputmode="numeric">
+          </div>
+          <!-- A refused value's message; the script moves it under the field
+               it names and links it there with aria-describedby. -->
+          <p class="field-error" id="auto-rescan-error" hidden></p>
+          <button type="button" id="auto-rescan-save">Save</button>
+        </fieldset>
         <p id="source-folders-status">Loading folders…</p>
         <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
@@ -3251,6 +3354,91 @@
         <button type="button" id="shows-close">Close list</button>
       </section>
     </section>
+
+    <section class="card" id="intro-rules" aria-labelledby="intro-rules-heading">
+      <h2 id="intro-rules-heading">Intro rules</h2>
+      <!-- intro-rules-panel.js fills this section.  The list is plain text;
+           each result of a button is said once through #intro-rules-status.
+           A refused field is marked aria-invalid, its error is linked to it
+           and it takes focus, which reads the error. -->
+      <p>An intro rule plays a voice liner as the next song starts when that song matches its conditions: a name drop for an artist, a jingle before rock songs, or “here’s one from the eighties” before songs first released in the 1980s. It uses the same conditions as clockwheel steps and categories. A song’s own matched intros, set in Track info, come first, then its artist’s, then intro rules, unless a rule’s priority says otherwise. Rules play only with saved segue playback, and a DJ break booked for the song change wins.</p>
+      <!-- Rules the station's file holds that are not valid: skipped, kept
+           in the file, and said here in words (never live). -->
+      <p class="field-error" id="intro-rules-problem" hidden></p>
+      <h3 id="intro-rules-list-heading">Saved intro rules</h3>
+      <p id="intro-rules-empty">No intro rules yet. Press Add intro rule to make one.</p>
+      <!-- role="list": list-style none drops the list role in Safari. -->
+      <ul id="intro-rules-list" class="intro-list" role="list" aria-labelledby="intro-rules-list-heading"></ul>
+      <button type="button" id="intro-rules-add">Add intro rule</button>
+      <form id="intro-rules-form" novalidate hidden>
+        <fieldset>
+          <legend id="intro-rules-form-legend">Add intro rule</legend>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-label">Label</label>
+            <input type="text" id="intro-rules-label" maxlength="120" autocomplete="off" aria-describedby="intro-rules-label-help">
+            <span class="setting-desc" id="intro-rules-label-help">Optional. A name for the rule, such as Eighties name drops, so you can tell rules apart.</span>
+            <p id="intro-rules-label-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row">
+            <label for="intro-rules-match">Match conditions</label>
+            <select id="intro-rules-match"><option value="all">Match all</option><option value="any">Match any</option></select>
+          </div>
+          <p id="intro-rules-conditions-label">Conditions the next song must meet</p>
+          <div id="intro-rules-conditions" role="group" aria-labelledby="intro-rules-conditions-label"></div>
+          <p id="intro-rules-conditions-error" class="field-error" hidden></p>
+          <button type="button" id="intro-rules-condition-add" aria-describedby="intro-rules-conditions-help">Add condition</button>
+          <span class="setting-desc" id="intro-rules-conditions-help">Up to 32. For a decade, use Year between 1980 and 1989, or the Beets field original_year for the first release; for a name drop, Artist contains. A song with no value for a field never matches a condition on it.</span>
+          <fieldset id="intro-rules-clips" aria-describedby="intro-rules-clips-help">
+            <legend>Voice liners to choose from</legend>
+            <span class="setting-desc" id="intro-rules-clips-help">Check registered voice liners, choose a liner folder, or both. One of them plays, picked at random; a file that is missing, outside its play dates or another station’s is passed over.</span>
+            <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
+            <div id="intro-rules-liners" class="intro-rule-liners"></div>
+            <p id="intro-rules-clips-error" class="field-error" hidden></p>
+            <div class="settings-row tag-field">
+              <label for="intro-rules-folder">Liner folder</label>
+              <select id="intro-rules-folder" aria-describedby="intro-rules-folder-help"><option value="">None</option></select>
+              <span class="setting-desc" id="intro-rules-folder-help">Optional. Every registered liner in the folder and its subfolders.</span>
+              <p id="intro-rules-folder-error" class="field-error" hidden></p>
+            </div>
+          </fieldset>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-priority">Priority</label>
+            <select id="intro-rules-priority" aria-describedby="intro-rules-priority-help">
+              <option value="after_artist">After the song’s and the artist’s own intros</option>
+              <option value="before_artist">After the song’s own intros, before the artist’s</option>
+              <option value="before_song">Before the song’s and the artist’s own intros</option>
+            </select>
+            <span class="setting-desc" id="intro-rules-priority-help">The first in this order that is ready plays. Among rules of the same priority, the one heard longest ago goes first.</span>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-chance">Chance (percent)</label>
+            <input type="text" id="intro-rules-chance" value="100" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-rules-chance-help">
+            <span class="setting-desc" id="intro-rules-chance-help">From 1 to 100. At 50 the rule plays about every other time a matching song comes up.</span>
+            <p id="intro-rules-chance-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-cooldown">Wait between plays (minutes)</label>
+            <input type="text" id="intro-rules-cooldown" value="60" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="intro-rules-cooldown-help">
+            <span class="setting-desc" id="intro-rules-cooldown-help">From 0 to 10080 (a week). After it plays, the rule waits this long before it plays again, across restarts.</span>
+            <p id="intro-rules-cooldown-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-not-before">Not before</label>
+            <input type="date" id="intro-rules-not-before" aria-describedby="intro-rules-dates-help">
+            <p id="intro-rules-not-before-error" class="field-error" hidden></p>
+          </div>
+          <div class="settings-row tag-field">
+            <label for="intro-rules-not-after">Do not play after</label>
+            <input type="date" id="intro-rules-not-after" aria-describedby="intro-rules-dates-help">
+            <p id="intro-rules-not-after-error" class="field-error" hidden></p>
+          </div>
+          <span class="setting-desc" id="intro-rules-dates-help">Optional. Both days are included, in the station’s time zone.</span>
+          <button type="submit" id="intro-rules-save">Save intro rule</button>
+          <button type="button" id="intro-rules-cancel">Cancel</button>
+        </fieldset>
+      </form>
+      <p id="intro-rules-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    </section>
   </section>
 
 <!-- Volume announcement region — only written on user-initiated volume changes -->
@@ -3309,7 +3497,7 @@
   </form>
 </dialog>
 
-<!-- Hotkey help dialog — opened via "?" or the toolbar button, from any
+<!-- Hotkey help dialog — opened via "?" or the footer button, from any
      tab.  <dialog>+showModal() gives native focus trap, ESC-to-close, and
      focus-restore on close.  No role=dialog needed (native).  Lives at
      body level, outside every [role="tabpanel"]: it used to sit inside
@@ -3319,7 +3507,7 @@
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
   <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing in a text field or using a dropdown. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
-  <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button.</p>
+  <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button at the bottom of the page.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
     <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
@@ -3329,8 +3517,10 @@
     <dt><kbd><span aria-hidden="true">,</span><span class="visually-hidden">Comma</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">.</span><span class="visually-hidden">Period</span></kbd></dt><dd>Seek back <span aria-hidden="true">/</span><span class="visually-hidden">or</span> forward 1 measure (BPM-derived; falls back to 5 s). Not available in stream mode.</dd>
     <dt><kbd><span aria-hidden="true">?</span><span class="visually-hidden">question mark</span></kbd></dt><dd>Open <span aria-hidden="true">/</span><span class="visually-hidden">or</span> close this dialog</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close this dialog</dd>
+    <dt><kbd>Alt+1</kbd> to <kbd>Alt+9</kbd></dt><dd>Open the tab in that position: Now Playing, Queue &amp; Search, Track info, History, Carts, Voice tracks, Ads, Library tools, Settings. Works from anywhere, including text fields.</dd>
     <dt style="margin-top:0.5rem">Number keys 1 to 9 and 0, <kbd><span aria-hidden="true">-</span><span class="visually-hidden">minus</span></kbd>, <kbd><span aria-hidden="true">=</span><span class="visually-hidden">equals</span></kbd></dt><dd style="margin-top:0.5rem">Play carts 1 to 12 on the cart page shown. Only with focus on the cart wall, in the Carts tab.</dd>
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
+    <dt><kbd>Alt+M</kbd></dt><dd>Talk over the music while held, when the station can go live. Talk stops when you let go, however quick the press; focus stays where it is.</dd>
     <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
@@ -3374,6 +3564,15 @@
   "build 1a2b3c4" (2.5.3), and a hidden suffix says where it goes.
 -->
 <footer id="page-footer">
+  <p id="footer-links">
+    <button type="button" id="btn-shortcuts"
+            title="View keyboard shortcuts (or press ?)"
+            aria-description="View keyboard shortcuts, or press the question mark key">
+      <span aria-hidden="true">⌨</span> Keyboard shortcuts
+    </button>
+    <a id="changelog-link" href="https://github.com/blindndangerous/AutoDJ/blob/master/CHANGELOG.md"
+       target="_blank" rel="noopener noreferrer">Changelog<span class="visually-hidden"> on GitHub (opens in a new tab)</span></a>
+  </p>
   <p id="version-stamp">
     AutoDJ
     <span id="ver-version">loading…</span>

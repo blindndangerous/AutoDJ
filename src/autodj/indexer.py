@@ -6,7 +6,6 @@ serialization helpers remain here only for explicit migration of older libraries
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import logging
 import os
@@ -26,14 +25,13 @@ import numpy as np
 
 from autodj.beets import Track
 from autodj.config import AutoDJConfig
-from autodj.fsutil import is_absolute_storage, relative_storage_path
+from autodj.fsutil import is_absolute_storage
 from autodj.index_manifest import (
     REBUILD_COMMAND,
     IndexConsistencyError,
     IndexManifest,
     UnsupportedIndexError,
     publication_lock,
-    publish_generation,
     require_manifest,
     sha256_file,
 )
@@ -115,32 +113,6 @@ _TRACKS_SELECT_SQL = (
     "key, mode, tempo_confidence, embedded_at, size, fingerprint "
     "FROM tracks ORDER BY vec_row ASC"
 )
-
-
-def _entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:
-    """Convert an :class:`IndexEntry` to a SQLite-bound row dict.
-
-    Stored ``path`` is relative to *music_dir*, so an index built on one host
-    works on any host that mounts the library somewhere else.
-    """
-    return {
-        "vec_row": vec_row,
-        "path": relative_storage_path(entry.path, music_dir),
-        "title": entry.title,
-        "artist": entry.artist,
-        "album": entry.album,
-        "genre": entry.genre,
-        "bpm": float(entry.bpm),
-        "year": int(entry.year),
-        "length": float(entry.length),
-        "energy": float(entry.energy),
-        "key": int(entry.key),
-        "mode": int(entry.mode),
-        "tempo_confidence": float(entry.tempo_confidence),
-        "embedded_at": float(entry.embedded_at),
-        "size": int(entry.size),
-        "fingerprint": entry.fingerprint,
-    }
 
 
 def _row_to_entry(row: tuple) -> IndexEntry:
@@ -758,95 +730,6 @@ def build_faiss_index(vectors: np.ndarray) -> faiss.IndexFlatIP:
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
-
-
-def _write_faiss_chunked(index: faiss.Index, path: Path, chunk_size: int = 1 << 20) -> None:
-    """Write a FAISS index to *path* via chunked Python IO.
-
-    FAISS's native ``write_index`` calls C++ ``fwrite`` which buffers
-    aggressively and fails inscrutably on some SMB / NAS shares with
-    "Invalid argument" after only a few KB.  This helper sidesteps that
-    by:
-
-    1. Serialising the index to a bytes buffer in memory
-       (``faiss.serialize_index``).
-    2. Writing the buffer to disk in *chunk_size* slices via Python's
-       file-object ``write``, which the SMB driver handles much more
-       reliably.
-    3. ``fsync`` after the last chunk so the data is durably committed
-       before the caller renames it to its generation name.
-
-    Memory cost: an extra ~Nbytes copy of the index during write.  For a
-    300 MB FAISS index that's 300 MB peak — easy on any reasonable host.
-
-    Args:
-        index: The FAISS index to save.
-        path: Destination path (typically a ``*.tmp`` file that the caller
-            renames to the new generation's name).
-        chunk_size: Bytes per write call.  1 MB is a good balance —
-            small enough that each ``write`` round-trips quickly on SMB,
-            large enough to amortise per-call overhead.
-    """
-    buf = faiss.serialize_index(index)  # 1-D uint8 numpy array
-    mv = memoryview(buf).cast("B")
-    with open(path, "wb") as fh:
-        for i in range(0, len(mv), chunk_size):
-            fh.write(mv[i : i + chunk_size])
-        fh.flush()
-        # fsync may not be supported on every FS — best-effort
-        with contextlib.suppress(OSError):
-            os.fsync(fh.fileno())
-
-
-def save_index(
-    entries: list[IndexEntry],
-    vectors: np.ndarray,
-    index_dir: Path,
-    music_dir: Path | None = None,
-    *,
-    base_generation: int,
-) -> IndexManifest:
-    """Publish *entries* and *vectors* as the next index generation.
-
-    Paths are stored relative to *music_dir* (forward-slashed), making the
-    index portable across machines that mount the library at a different
-    absolute path.  A path outside *music_dir* raises ``ValueError``.
-    Runtime ``entry.path`` values are not mutated.
-
-    Args:
-        entries: One :class:`IndexEntry` per track, in the row order of *vectors*.
-        vectors: float32 array of shape ``(len(entries), FEATURE_DIM)``.
-        index_dir: The index directory.
-        music_dir: Library root — when set, paths are relativized for storage.
-        base_generation: The generation *entries* were built from, or 0.
-
-    Returns:
-        The new manifest.
-
-    Raises:
-        IndexConsistencyError: If another command published since
-            *base_generation*.
-    """
-    rows = [_entry_to_row(entry, music_dir, vec_row) for vec_row, entry in enumerate(entries)]
-    matrix = np.asarray(vectors, dtype=np.float32).reshape(len(entries), FEATURE_DIM)
-
-    def write_files(tracks_path: Path, vectors_path: Path) -> None:
-        _write_tracks_file(rows, tracks_path)
-        _write_faiss_chunked(build_faiss_index(matrix), vectors_path)
-
-    manifest = publish_generation(
-        index_dir,
-        base_generation=base_generation,
-        vector_count=len(entries),
-        write_files=write_files,
-    )
-    logger.info(
-        "Published index generation %d with %d tracks to %s",
-        manifest.generation,
-        len(entries),
-        index_dir,
-    )
-    return manifest
 
 
 def _find_beets_row(
