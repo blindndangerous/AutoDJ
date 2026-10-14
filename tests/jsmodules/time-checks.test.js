@@ -56,7 +56,7 @@ describe("Time checks panel markup", () => {
     expect(panel.querySelector(":scope > h3").textContent).toBe("Time checks");
   });
 
-  it("labels and describes every control with native elements", () => {
+  it("labels native controls and keeps general help available separately", () => {
     expect(byId("tc-enabled").type).toBe("checkbox");
     expect(byId("tc-hour-format").tagName).toBe("SELECT");
     expect([...byId("tc-hour-format").options].map((o) => o.value)).toEqual(["12", "24"]);
@@ -71,8 +71,10 @@ describe("Time checks panel markup", () => {
     expect(test.type).toBe("button");
     expect(test.textContent).toBe("Play a time check now");
     for (const id of ["tc-enabled", "tc-hour-format", "tc-rule", "tc-test"]) {
-      const ref = byId(id).getAttribute("aria-describedby");
-      expect(byId(ref)?.textContent.trim(), id).toBeTruthy();
+      const help = byId(`${id}-desc`);
+      expect(help?.textContent.trim(), id).toBeTruthy();
+      expect(help.hidden, id).toBe(false);
+      expect(byId(id).getAttribute("aria-describedby")).toBe(id === "tc-test" ? help.id : null);
     }
     const status = byId("tc-status");
     expect(status.getAttribute("role")).toBe("status");
@@ -85,12 +87,14 @@ describe("Time checks panel markup", () => {
     const packs = byId("tc-packs");
     expect(packs.tagName).toBe("FIELDSET");
     expect(packs.querySelector("legend").textContent).toBe("Voice packs");
-    expect(byId(packs.getAttribute("aria-describedby")).textContent).toContain("RadioBOSS");
+    expect(packs.hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("tc-packs-desc").textContent).toContain("RadioBOSS");
     expect(byId("tc-pack-list").getAttribute("aria-live")).toBeNull();
     expect([...byId("tc-pack-order").options].map((o) => o.value)).toEqual(["rotate", "random"]);
     for (const id of ["tc-pack-order", "tc-test-voice"]) {
       expect(document.querySelector(`label[for="${id}"]`)?.textContent.trim(), id).toBeTruthy();
-      expect(byId(byId(id).getAttribute("aria-describedby"))?.textContent.trim(), id).toBeTruthy();
+      expect(byId(id).hasAttribute("aria-describedby")).toBe(false);
+      expect(byId(`${id}-desc`)?.textContent.trim(), id).toBeTruthy();
     }
     expect(byId("tc-test-voice").options[0].value).toBe("");
   });
@@ -143,7 +147,8 @@ describe("voice packs", () => {
     expect(group.hidden).toBe(false);
     expect(group.tagName).toBe("FIELDSET");
     expect(group.querySelector("legend").textContent).toBe("Voice pack play dates");
-    expect(byId(group.getAttribute("aria-describedby")).textContent).toContain("both days included");
+    expect(group.hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("tc-dates-desc").textContent).toContain("both days included");
     for (const id of ["tc-dates-pack", "tc-not-before", "tc-not-after"]) {
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim(), id).toBeTruthy();
     }

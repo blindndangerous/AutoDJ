@@ -345,12 +345,15 @@ export function installLibraryFolders({ document: doc = document, request = requ
     updateNegativeOverlapHelp();
   }
   function updateNegativeOverlapHelp() {
+    const field = doc.querySelector('[data-point="overlap_start"]');
     const negative = currentKind === "liner"
-      && doc.querySelector('[data-point="overlap_start"]').value.trim().startsWith("-");
+      && field.value.trim().startsWith("-");
     const help = doc.getElementById("negative-overlap-help");
     if (help) {
       const changed = help.hidden === negative;
       help.hidden = !negative;
+      if (negative) field.setAttribute("aria-describedby", help.id);
+      else field.removeAttribute("aria-describedby");
       if (changed) announceStatus(doc.getElementById("points-status"), negative
         ? help.textContent
         : "Preview and Use preview position are available again.");

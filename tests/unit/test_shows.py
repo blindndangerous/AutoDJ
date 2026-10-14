@@ -146,8 +146,8 @@ def test_a_damaged_show_is_skipped_and_kept_and_a_damaged_file_set_aside(tmp_pat
 
 
 def test_lengths_read_well() -> None:
-    assert (length_text(3725), length_words(3725)) == ("1:02:05", "1 hour 2 minutes 5 seconds")
-    assert (length_text(65), length_words(65)) == ("1:05", "1 minute 5 seconds")
+    assert (length_text(3725), length_words(3725)) == ("1:02:05", "1:02:05")
+    assert (length_text(65), length_words(65)) == ("1:05", "1:05")
 
 
 # -- generating a list -----------------------------------------------------------------
@@ -187,7 +187,7 @@ def test_a_category_that_runs_out_says_so(tmp_path: Path) -> None:
     made = generate(source, "c" * 32, _spec(target_minutes=180), start=NOW, seed=3)
     # Twenty songs, each at most once: an hour.
     assert len(made.songs) == len(hits)
-    assert made.note.startswith("The list is 1 hour, shorter than the target of 3 hours")
+    assert made.note.startswith("The list is 1:00:00, shorter than the target of 3:00:00")
 
 
 def test_a_clockwheel_show_leaves_the_liners_out(tmp_path: Path) -> None:
@@ -383,7 +383,7 @@ def test_songs_view_marks_missing_files(tmp_path: Path) -> None:
         ("Hits 0, Song 0", False),
         ("x.mp3", True),
     ]
-    assert rows[0]["length_words"] == "3 minutes"
+    assert rows[0]["length_words"] == "3:00"
 
 
 # -- the hour preview ------------------------------------------------------------------

@@ -14,8 +14,8 @@
 // those refreshes start failing, the failure is said once (not again until
 // one succeeds).  Refresh preview, and choosing another span under Show,
 // say the new summary once through #hour-preview-status, and Shift+H
-// (speakSummary) says it from anywhere through the page's spoken status.  Times and lengths use
-// the same compact text on screen and in speech, such as "2:04:30 PM" and "3:45". Fixed or
+// (speakSummary) says it from anywhere through the page's spoken status.
+// Times and lengths use the same numeric text for everyone. Fixed or
 // predicted is a word in the Status column of every row, not a colour.
 import { requestJson } from "./api-client.js";
 import { srSpeak } from "./dom-helpers.js";
@@ -34,8 +34,6 @@ export function spokenSummary(view) {
   return view.reason || view.summary || "No hour preview yet.";
 }
 
-// Compact times and durations are the same for everyone, so each cell has
-// one accessible text value without a duplicate hidden expansion.
 export function rowCells(item) {
   return [
     item.starts_text,
@@ -65,10 +63,7 @@ export function renderRows(doc, tbody, items) {
     }
     rowCells(item).forEach((cell, column) => {
       const td = row.children[column];
-      if (td.dataset.text !== cell) {
-        td.textContent = cell;
-        td.dataset.text = cell;
-      }
+      if (td.textContent !== cell) td.textContent = cell;
     });
   });
   for (const row of rows.slice(items.length)) row.remove();

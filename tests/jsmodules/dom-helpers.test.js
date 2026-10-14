@@ -5,16 +5,22 @@ import { fmtTime, fmtTrack, escHtml, isTypingTarget } from
   "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
-  it("formats seconds into mm:ss", () => {
+  it("formats seconds into m:ss or h:mm:ss without wrapping hours", () => {
     expect(fmtTime(0)).toBe("0:00");
     expect(fmtTime(5)).toBe("0:05");
     expect(fmtTime(65)).toBe("1:05");
-    expect(fmtTime(3661)).toBe("61:01");
+    expect(fmtTime(59.9)).toBe("0:59");
+    expect(fmtTime(3599)).toBe("59:59");
+    expect(fmtTime(3600)).toBe("1:00:00");
+    expect(fmtTime(3661)).toBe("1:01:01");
+    expect(fmtTime(90061)).toBe("25:01:01");
   });
   it("returns 0:00 for falsy / NaN", () => {
     expect(fmtTime(null)).toBe("0:00");
     expect(fmtTime(undefined)).toBe("0:00");
     expect(fmtTime(NaN)).toBe("0:00");
+    expect(fmtTime(Infinity)).toBe("0:00");
+    expect(fmtTime(-1)).toBe("0:00");
   });
 });
 

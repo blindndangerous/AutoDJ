@@ -22,6 +22,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { fmtTime } from "./dom-helpers.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
@@ -36,7 +37,7 @@ const plural = (n, one, many) => `${number(n)} ${n === 1 ? one : many}`;
 
 // What one saved show is, for its list item.
 export function describeShow(show) {
-  const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_words : "no list yet"}.`];
+  const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
   sentences.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
   if (show.missing) sentences.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
   const events = show.events || [];
@@ -70,10 +71,10 @@ export function describeOnAir(onAir) {
   return text;
 }
 
-// The list's total, in words, against its target.
+// The list's total against its target.
 export function summaryText(show) {
   if (!show.count) return `No songs yet. Target ${plural(show.target_minutes, "minute", "minutes")}.`;
-  let text = `${plural(show.count, "song", "songs")}, ${show.total_words}; target ${plural(show.target_minutes, "minute", "minutes")}.`;
+  let text = `${plural(show.count, "song", "songs")}, ${show.total_text}; target ${plural(show.target_minutes, "minute", "minutes")}.`;
   if (show.missing) text += ` ${plural(show.missing, "song is", "songs are")} no longer in the library and will be skipped.`;
   if (show.repeated) text += ` Warning: ${plural(show.repeated, "song is", "songs are")} in the list more than once, and each copy plays.`;
   return text;
@@ -145,19 +146,6 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     hidden.textContent = ` ${which}`;
     button.append(title, hidden);
     return button;
-  }
-
-  // Figures on the screen, words for a screen reader.
-  function lengthSpan(shown, read) {
-    const wrap = doc.createElement("span");
-    const figures = doc.createElement("span");
-    figures.setAttribute("aria-hidden", "true");
-    figures.textContent = shown;
-    const words = doc.createElement("span");
-    words.className = "visually-hidden";
-    words.textContent = read;
-    wrap.append(figures, words);
-    return wrap;
   }
 
   // ---- The shows -------------------------------------------------------
@@ -396,7 +384,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     if (song.missing) {
       text.textContent = `${song.title}, not in the library; skipped on the air`;
     } else {
-      text.append(`${song.title}, `, lengthSpan(song.length_text, song.length_words));
+      text.textContent = `${song.title}, ${song.length_text}`;
     }
     const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
     if (others.length) {
@@ -464,19 +452,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const repeatedCount = [...repeatedPlaces(songs).values()].reduce((sum, places) => sum + places.length - 1, 0);
     const view = {
       ...open, count: songs.length, missing: songs.filter((song) => song.missing).length,
-      repeated: repeatedCount, total_words: wordsFor(total),
+      repeated: repeatedCount, total_text: fmtTime(total),
     };
     if (summary) summary.textContent = summaryText(view);
     const note = el("shows-note");
     if (note) { note.textContent = open.note || ""; note.hidden = !open.note; }
-  }
-
-  function wordsFor(seconds) {
-    const total = Math.max(0, Math.round(seconds));
-    const hours = Math.floor(total / 3600), minutes = Math.floor((total % 3600) / 60), secs = total % 60;
-    const parts = [[hours, "hour"], [minutes, "minute"], [secs, "second"]]
-      .filter(([count]) => count).map(([count, unit]) => `${count} ${unit}${count === 1 ? "" : "s"}`);
-    return parts.join(" ") || "0 seconds";
   }
 
   function applyOpen(show) {
@@ -635,8 +615,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         text.className = "show-song";
         const title = song.artist ? `${song.artist}, ${song.title || song.display_name}` : (song.title || song.display_name);
         const seconds = Math.max(0, Math.round(Number(song.length) || 0));
-        const shown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-        text.append(`${title}, `, lengthSpan(shown, wordsFor(seconds)));
+        const shown = fmtTime(seconds);
+        text.textContent = `${title}, ${shown}`;
         const add = namedButton("add", "Add", title, { index: String(index) });
         if (generating) add.setAttribute("aria-disabled", "true");
         add.dataset.path = song.path;
@@ -660,7 +640,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const seconds = Number(button.dataset.seconds) || 0;
     songs = [...songs, {
       path: button.dataset.path, title: button.dataset.title, missing: false, seconds,
-      length_text: button.dataset.shown, length_words: wordsFor(seconds),
+      length_text: button.dataset.shown,
     }];
     renderSongs();
     renderSummary();

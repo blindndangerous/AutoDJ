@@ -57,7 +57,7 @@
 // localStorage and defaults to on; storage that is blocked or throws
 // simply means "on" and an unsaved choice.
 
-import { fmtDurationWords, fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
+import { fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
   "button",
@@ -283,7 +283,7 @@ export function installHotkeys({
       }
       case "R": {
         const rem = getRemaining && getRemaining();
-        speakForStation(rem != null ? fmtDurationWords(rem) : "Position unknown");
+        speakForStation(rem != null ? fmtTime(rem) : "Position unknown");
         break;
       }
       case "B": {
