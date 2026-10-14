@@ -179,6 +179,31 @@ describe("mix settings", () => {
     expect(postSettings).not.toHaveBeenCalled();
   });
 
+  it("saves the hour fitting window as whole minutes from 1 to 30", async () => {
+    document.body.innerHTML = `<input type="number" id="window" value="10">
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const pbHourFitWindow = document.querySelector("#window");
+    const settingsStatus = document.querySelector("#settings-status");
+    const postSettings = vi.fn().mockResolvedValue(true);
+    installMixSettings({ pbHourFitWindow }, { postSettings, settingsStatus });
+    applyMixSettings({ playback: { hour_fit_window_minutes: 12 } }, { pbHourFitWindow });
+    expect(pbHourFitWindow.value).toBe("12");
+
+    pbHourFitWindow.value = "2.5";
+    pbHourFitWindow.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
+      "Could not save Minutes before to start fitting: enter a whole number from 1 to 30.  It is still 12.",
+    ));
+    expect(pbHourFitWindow.value).toBe("12");
+    expect(postSettings).not.toHaveBeenCalled();
+
+    pbHourFitWindow.value = "30";
+    pbHourFitWindow.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
+      "/api/playback-settings", { hour_fit_window_minutes: 30 }, pbHourFitWindow,
+    ));
+  });
+
   it("saves Stereo Tool AGC drive within its server range and reads the saved value", async () => {
     document.body.innerHTML = '<input type="number" id="boost" value="9">';
     const pbStereoAgcDrive = document.querySelector("#boost");

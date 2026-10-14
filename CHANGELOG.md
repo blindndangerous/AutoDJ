@@ -147,6 +147,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
   the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
   catalog durations and playback progress remain on the source-file timeline.
+- Hour fitting (#126): **Fit songs to the hour** in Settings > Song picking chooses, near the
+  top of the hour, a clockwheel restart or a hard scheduled event, the song whose end lands
+  closest to it, out of up to 20 songs the station would allow anyway. A song that would end
+  just short of the hour, leaving a gap the next whole song overruns, counts as a poor fit.
+  **Minutes before to start fitting** is 10 by default (1 to 30). Off by default; in
+  `config.toml` they are `[playback] hour_fit` and `hour_fit_window_minutes`. The rotation tester
+  and the hour preview pick the same way.
+- Hard schedule events have **Wait up to seconds** (0 to 300, default 0) in the schedule editor:
+  when the song playing will end within that many seconds after the event's time, the event waits
+  and runs at the song change without fading it out; if the song runs past the limit, the event
+  runs then with the usual hard fade. The hour preview shows the wait. A schedule with no waits
+  set is still read by older versions of AutoDJ.
 - Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
   Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
   the same daypart** holds back a song that played in the daypart the next song starts in (such

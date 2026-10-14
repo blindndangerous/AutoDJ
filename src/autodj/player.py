@@ -831,6 +831,10 @@ class Player:
     _pending_clock_boundary: float | None = None
     _clock: dict[str, Any] | None = None
     _clock_next_boundary: float | None = None
+    # Hour fitting's hard events (or a callable giving the scheduler's
+    # current ones) and the time zone they run in (#126).
+    _hour_fit_events: Sequence[Any] | Callable[[], Sequence[Any]] = ()
+    _hour_fit_timezone: str | None = None
     # The clockwheel _seed_clock_cursor is a place in (#133).
     _seed_clock_name: str | None = None
     _seed_clock_revision: int | None = None
@@ -1559,6 +1563,8 @@ class Player:
     def _clock_pick(self, context: _PickContext, cursor: int | None) -> Any:
         from autodj.clockwheel import ClockPick, ConditionPaths, _normalized, pick_slot
 
+        fit = self._hour_fit_choice(context)
+
         with settings_lock(self):
             clock = self._clock
             slots = getattr(self, "_clock_slots", ())
@@ -1683,6 +1689,7 @@ class Player:
                 closed_categories=context.closed_categories if hours else None,
                 normalized_history=normalized_history,
                 versions=self._song_versions(),
+                fit=fit,
                 preferred_path=getattr(self, "_preview_preferred_path", None),
             )
 
@@ -2937,6 +2944,16 @@ class Player:
             return 0.0
         return max(0.0, (len(playing.audio) - self._playback_output_pos[0]) / SAMPLE_RATE)
 
+    def _current_song_remaining_s(self) -> float:
+        """Estimated seconds until the current song ends, for scheduled events."""
+        if self._playing_render is not None:
+            return self._playing_remaining_s()
+        current = self._state.current_track
+        started = getattr(self, "_browser_started", None)
+        if current is None or started is None or started[0] is not current:
+            return float("inf")
+        return max(0.0, float(current.length) - (self._now() - started[1]))
+
     def _plan_slot(self, ready: RenderedTrack) -> None:
         with self._clock_selection_lock:
             self._plan_slot_serial(ready)
@@ -3913,6 +3930,49 @@ class Player:
             return self._chooser().choice(pool)  # nosec B311 -- music selection
         return versions.choice(pool, self._chooser())
 
+    def _hour_fit_choice(
+        self, context: _PickContext
+    ) -> Callable[[Sequence[IndexEntry]], IndexEntry] | None:
+        """Return a fitting choice only when the next handoff is near a fixed point.
+
+        Off (and with no fixed point near) it is ``None``, so picking, and
+        what it draws from the random generator, is just as without it.
+        """
+        playback = self._cfg.playback
+        # Only a real True turns it on (config validation makes it a bool).
+        if playback.hour_fit is not True:
+            return None
+        from autodj.hour_fit import fit_chooser, next_target
+        from autodj.scheduler import system_timezone
+
+        at = self._now() if context.at is None else context.at
+        events = self._hour_fit_events
+        if callable(events):
+            events = events()
+        boundary = None
+        if playback.pick_mode == "clock":
+            boundary = self._pending_clock_boundary or self._clock_next_boundary
+        target = next_target(
+            at,
+            playback.hour_fit_window_minutes,
+            self._hour_fit_timezone or self._cfg.server.station_timezone or system_timezone(),
+            boundary,
+            events,
+        )
+        if target is None:
+            return None
+
+        def seconds(entry: IndexEntry) -> float:
+            try:
+                if playback.transition_mode == "saved_points":
+                    start, segue = self._clock_music_span(entry)
+                    return segue - start
+                return float(entry.length) - playback.crossfade_seconds
+            except Exception:
+                return float(entry.length)
+
+        return fit_chooser(target.at - at, seconds, hard=target.hard)
+
     def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
@@ -3973,6 +4033,7 @@ class Player:
             if self._cfg.playback.pick_mode == "least_recent" and ledger is not None
             else None
         )
+        fit = self._hour_fit_choice(context)
 
         def choose(blocked: set[str] | frozenset[str], use_rules: bool = True) -> IndexEntry | None:
             def allowed(entry: IndexEntry) -> bool:
@@ -3994,9 +4055,24 @@ class Player:
                     allowed=allowed,
                     versions=versions,
                     preferred_path=getattr(self, "_preview_preferred_path", None),
+                    fit=fit,
                 )
             pool = [entry for entry in entries if allowed(entry)]
-            return self._choose(pool) if pool else None
+            if not pool:
+                return None
+            if fit is not None:
+                from autodj.hour_fit import FIT_CANDIDATES
+
+                if versions is not None:
+                    songs: dict[str, list[IndexEntry]] = {}
+                    for entry in pool:
+                        songs.setdefault(versions.song(entry.path), []).append(entry)
+                    names = self._chooser().sample(list(songs), min(FIT_CANDIDATES, len(songs)))
+                    candidates = [self._chooser().choice(songs[name]) for name in names]
+                else:
+                    candidates = self._chooser().sample(pool, min(FIT_CANDIDATES, len(pool)))
+                return fit(candidates)
+            return self._choose(pool)
 
         chosen = choose(excluded)
         if chosen is None:
@@ -4035,7 +4111,11 @@ class Player:
             )
             extra = {"rng": self._random} if self._random is not None else {}
             entry = self._sim.find_distant(
-                current.path, recent, allowed=self._candidate_filter(context), **extra
+                current.path,
+                recent,
+                allowed=self._candidate_filter(context),
+                fit=self._hour_fit_choice(context),
+                **extra,
             )
             _log_repeat_blocks(context.repeat, entry)
             if self.pick_observer is None:
@@ -4148,6 +4228,7 @@ class Player:
             "repeat_filter": self._candidate_filter(context),
             "pick_top_k": self._cfg.playback.pick_top_k,
             "pick_temperature": self._cfg.playback.pick_temperature,
+            "fit": self._hour_fit_choice(context),
         }
         if self._random is not None:
             search["rng"] = self._random
