@@ -1,7 +1,7 @@
 """Deprecated published-index format, retained for import and migration.
 
 Current serving and indexing use library.db. Existing generations remain readable
-for first-use imports, old backups and the migration commands.
+only for the explicit migration command. Normal startup and backups use library.db.
 
 An index directory holds, for its live generation *N*:
 
@@ -47,6 +47,13 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 logger = logging.getLogger(__name__)
 
 
+def has_legacy_index(directory: Path) -> bool:
+    """Recognize old library artifacts without loading or validating a generation."""
+    return any(
+        (directory / name).exists() for name in (MANIFEST_NAME, "tracks.db", "vectors.index")
+    ) or any(GENERATION_FILE_RE.fullmatch(path.name) for path in directory.glob("*.g*.*"))
+
+
 class IndexConsistencyError(RuntimeError):
     """Raised when published index artifacts do not describe one snapshot."""
 
@@ -82,55 +89,6 @@ class UnsupportedIndexError(IndexConsistencyError):
             f"The index in {index_dir} was made by an older AutoDJ ({reason}). "
             + (remedy or f"Rebuild it with `{REBUILD_COMMAND}`.")
         )
-
-
-def is_absolute_storage(path: str) -> bool:
-    """Whether a stored *path* is absolute: a POSIX root, a UNC share, or a drive letter.
-
-    Args:
-        path: Path text as stored in ``tracks.db`` or ``dj_meta.db``.
-
-    Returns:
-        ``True`` for an absolute path on any platform.
-    """
-    return path.startswith(("/", "\\")) or path[1:2] == ":"
-
-
-def relative_storage_path(path: str | os.PathLike[str], music_dir: Path | None) -> str:
-    """Return *path* as a forward-slashed path relative to *music_dir*.
-
-    Both sides are compared component by component after
-    ``os.path.normpath`` and ``os.path.normcase``, so on Windows a
-    drive-letter or folder case difference, or mixed separators, still
-    match.  The result keeps the path's own spelling.  Pure string work:
-    nothing is resolved or stat()ed, which matters on network libraries.
-
-    Args:
-        path: Runtime track path.
-        music_dir: Library root.  ``None`` keeps already-relative paths as-is.
-
-    Returns:
-        The relative, forward-slashed path to store.
-
-    Raises:
-        ValueError: If *path* is absolute and not under *music_dir*.
-    """
-    parts = Path(os.path.normpath(path)).parts
-    if music_dir is not None:
-        root = Path(os.path.normpath(music_dir)).parts  # "." has no parts
-        if (
-            root
-            and len(parts) > len(root)
-            and all(
-                os.path.normcase(a) == os.path.normcase(b)
-                for a, b in zip(parts, root, strict=False)
-            )
-        ):
-            return "/".join(parts[len(root) :])
-    stored = Path(path).as_posix()
-    if is_absolute_storage(stored):
-        raise ValueError(f"{path} is not under music_dir {music_dir}")
-    return stored
 
 
 @dataclass(frozen=True)

@@ -160,24 +160,18 @@ def migrate_state_file(path: Path, *, apply: bool = False) -> bool:
     return True
 
 
-def _backup_v1_state(path: Path) -> bool:
-    """Preserve a v1 file once before replacing it; false means do not save."""
-    backup = path.with_name(f"{path.name}.v1.bak")
-    if backup.exists():
-        return True
+def _can_save_state(path: Path) -> bool:
+    """Do not overwrite old settings that have not been explicitly migrated."""
     try:
-        original = path.read_bytes()
-        data = json.loads(original)
+        data = json.loads(path.read_bytes())
     except (OSError, UnicodeError, json.JSONDecodeError):
         return True
-    if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
-        return True
-    if data["schema_version"] != 1:
-        return True
-    try:
-        atomic_write(backup, original)
-    except OSError as exc:
-        logger.warning("Failed to back up v1 web_state.json; keeping original: %s", exc)
+    if (
+        isinstance(data, dict)
+        and type(data.get("schema_version")) is int
+        and data["schema_version"] == 1
+    ):
+        logger.warning("Keeping old web_state.json; run `autodj migrate-index --apply` first")
         return False
     return True
 
@@ -344,8 +338,8 @@ def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
 def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Restore previously-saved settings through *bridge*.
 
-    Version 1 state is migrated conservatively; unsupported versions are
-    ignored. Other saved fields continue to be validated individually.
+    Version 1 state needs explicit migration. Unsupported versions are ignored;
+    current fields continue to be validated individually.
 
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
@@ -365,7 +359,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         return
     version = data.get("schema_version")
     if type(version) is int and version == 1:
-        data = _migrate_v1(data)
+        raise ValueError(f"{path} needs migration; run `autodj migrate-index --apply` first")
     elif type(version) is not int or version != STATE_VERSION:
         logger.warning(
             "ignoring web_state.json: schema_version must be %d, got %r",
@@ -450,7 +444,7 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and not _backup_v1_state(path):
+        if path.exists() and not _can_save_state(path):
             return
         atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False))
     except OSError as exc:

@@ -55,10 +55,7 @@ from types import TracebackType
 
 import numpy as np
 
-from autodj.index_manifest import (
-    is_absolute_storage,
-    relative_storage_path,
-)
+from autodj.fsutil import is_absolute_storage, relative_storage_path
 from autodj.sqlite_utils import immediate_transaction
 
 logger = logging.getLogger(__name__)

@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
+  root, and startup never registers one implicitly. Legacy relative paths remain supported, with
+  an explicit `migrate-index --music-dir` option for old index imports.
+
+- Startup and backups use `library.db` without loading old index generations. Older libraries
+  must be upgraded with `migrate-index`; leftover manifests no longer affect a current catalog (#223).
+
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
 - Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta

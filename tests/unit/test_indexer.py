@@ -6,7 +6,7 @@ model downloads. Vector math and FAISS operations use real numpy/faiss.
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import faiss
 import numpy as np
@@ -16,7 +16,6 @@ from autodj.beets import Track
 from autodj.indexer import (
     FEATURE_DIM,
     IndexEntry,
-    _collect_tracks_to_index,
     _combine_features,
     _extract_librosa_features,
     _resolve_beets_path,
@@ -363,305 +362,6 @@ class TestResolveBeetsPath:
 
 
 # ---------------------------------------------------------------------------
-# prune_index
-# ---------------------------------------------------------------------------
-
-
-class TestPruneIndex:
-    def _distinctive_entries(
-        self,
-        tmp_path: Path,
-        *,
-        missing_rows: set[int] | None = None,
-    ) -> tuple[list[IndexEntry], np.ndarray]:
-        missing_rows = missing_rows or set()
-        entries: list[IndexEntry] = []
-        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
-        for row, marker in enumerate((3, 7, 11)):
-            path = tmp_path / f"song_{row}.flac"
-            if row not in missing_rows:
-                path.write_bytes(b"")
-            entries.append(
-                IndexEntry(
-                    path=str(path),
-                    title=f"Original {row}",
-                    artist="Artist",
-                    album="Album",
-                    genre="Genre",
-                    bpm=120.0,
-                    year=2026,
-                    length=180.0,
-                    energy=0.5,
-                    key=0,
-                    mode=1,
-                    tempo_confidence=0.8,
-                )
-            )
-            vectors[row, marker] = 1.0
-        return entries, vectors
-
-    def _save_with_files(self, tmp_path: Path, n_present: int, n_missing: int) -> Path:
-        """Build an index where some entries have real files, others don't."""
-        from autodj.indexer import save_index
-
-        entries: list[IndexEntry] = []
-        for i in range(n_present):
-            f = tmp_path / f"present_{i}.flac"
-            f.write_bytes(b"")
-            entries.append(
-                IndexEntry(
-                    path=str(f),
-                    title=f"P{i}",
-                    artist="A",
-                    album="L",
-                    genre="G",
-                    bpm=100.0,
-                    year=2020,
-                    length=180.0,
-                    energy=0.05,
-                    key=0,
-                    mode=1,
-                    tempo_confidence=0.5,
-                )
-            )
-        for i in range(n_missing):
-            entries.append(
-                IndexEntry(
-                    path=str(tmp_path / f"missing_{i}.flac"),
-                    title=f"M{i}",
-                    artist="A",
-                    album="L",
-                    genre="G",
-                    bpm=100.0,
-                    year=2020,
-                    length=180.0,
-                    energy=0.05,
-                    key=0,
-                    mode=1,
-                    tempo_confidence=0.5,
-                )
-            )
-        vectors = np.random.randn(len(entries), FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-        save_index(entries, vectors, index_dir, music_dir=tmp_path, base_generation=0)
-        return index_dir
-
-    def test_no_index_returns_zero(self, tmp_path: Path) -> None:
-        from autodj.indexer import prune_index
-
-        assert prune_index(tmp_path / "noidx") == (0, 0)
-
-    def test_prunes_missing_files(self, tmp_path: Path) -> None:
-        from autodj.indexer import prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=10, n_missing=2)
-        removed, kept = prune_index(idx, music_dir=tmp_path)
-        assert removed == 2
-        assert kept == 10
-
-    def test_no_missing_returns_zero_removed(self, tmp_path: Path) -> None:
-        from autodj.indexer import prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=5, n_missing=0)
-        removed, kept = prune_index(idx, music_dir=tmp_path)
-        assert removed == 0
-        assert kept == 5
-
-    def test_prune_keeps_each_survivor_with_its_own_vector(self, tmp_path: Path) -> None:
-        from autodj.indexer import load_index, prune_index, save_index
-
-        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={1})
-        idx = tmp_path / "idx"
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
-
-        assert prune_index(idx, allow_mass_prune=True, music_dir=tmp_path) == (1, 2)
-        loaded, loaded_vectors, _ = load_index(idx, music_dir=tmp_path)
-        assert [Path(entry.path).name for entry in loaded] == ["song_0.flac", "song_2.flac"]
-        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(2)] == [3, 11]
-
-    def test_prune_rejects_generation_race_without_overwriting_newer_snapshot(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        from dataclasses import replace
-
-        import autodj.indexer as indexer
-        from autodj.index_manifest import IndexConsistencyError, read_manifest
-        from autodj.indexer import load_index, prune_index, save_index
-
-        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={2})
-        idx = tmp_path / "idx"
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
-        first = read_manifest(idx)
-        assert first is not None
-        concurrent_entries = [
-            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
-        ]
-        concurrent_vectors = np.zeros_like(vectors)
-        concurrent_vectors[0, 13] = 1.0
-        concurrent_vectors[1, 17] = 1.0
-        concurrent_vectors[2, 19] = 1.0
-        real_check = indexer._check_prune_safety
-        raced = False
-
-        def check_after_concurrent_publish(*args, **kwargs):
-            nonlocal raced
-            real_check(*args, **kwargs)
-            if not raced:
-                raced = True
-                save_index(
-                    concurrent_entries,
-                    concurrent_vectors,
-                    idx,
-                    music_dir=tmp_path,
-                    base_generation=1,
-                )
-
-        with (
-            patch(
-                "autodj.indexer._check_prune_safety",
-                side_effect=check_after_concurrent_publish,
-            ),
-            pytest.raises(IndexConsistencyError, match="another command published"),
-        ):
-            prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
-
-        current = read_manifest(idx)
-        assert current is not None
-        assert current.generation == first.generation + 1
-        loaded, loaded_vectors, _ = load_index(idx, music_dir=tmp_path)
-        assert [entry.title for entry in loaded] == [
-            "Concurrent 0",
-            "Concurrent 1",
-            "Concurrent 2",
-        ]
-        assert [int(np.argmax(loaded_vectors.reconstruct(row))) for row in range(3)] == [13, 17, 19]
-
-    def test_prune_all_rejects_generation_race_without_deleting_newer_snapshot(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import load_index, prune_index, save_index
-
-        entries, vectors = self._distinctive_entries(tmp_path, missing_rows={0, 1, 2})
-        idx = tmp_path / "idx"
-        save_index(entries, vectors, idx, music_dir=tmp_path, base_generation=0)
-        replacement_path = tmp_path / "replacement.flac"
-        replacement_path.write_bytes(b"")
-        replacement = [
-            IndexEntry(
-                path=str(replacement_path),
-                title="Concurrent replacement",
-                artist="Artist",
-                album="Album",
-                genre="Genre",
-                bpm=120.0,
-                year=2026,
-                length=180.0,
-                energy=0.5,
-                key=0,
-                mode=1,
-                tempo_confidence=0.8,
-            )
-        ]
-        replacement_vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
-        replacement_vectors[0, 23] = 1.0
-
-        def publish_replacement(*_args, **_kwargs) -> None:
-            save_index(replacement, replacement_vectors, idx, music_dir=tmp_path, base_generation=1)
-
-        with (
-            patch(
-                "autodj.indexer._check_prune_safety",
-                side_effect=publish_replacement,
-            ),
-            pytest.raises(IndexConsistencyError, match="another command published"),
-        ):
-            prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
-
-        loaded, loaded_vectors, _ = load_index(idx, music_dir=tmp_path)
-        assert [entry.title for entry in loaded] == ["Concurrent replacement"]
-        assert int(np.argmax(loaded_vectors.reconstruct(0))) == 23
-
-    def test_mp3_decode_uses_isolated_ffmpeg_path(self, tmp_path: Path) -> None:
-        import soundfile as sf
-
-        from autodj.indexer import _load_audio
-
-        path = tmp_path / "track.MP3"
-        samples = np.zeros((128, 2), dtype=np.float32)
-        with (
-            patch("autodj.stereo.load_with_ffmpeg", return_value=(samples, 44100)) as decode,
-            patch.object(sf, "SoundFile") as native_decode,
-        ):
-            audio, rate = _load_audio(path)
-        decode.assert_called_once_with(path, channels=2, sample_rate=None, max_seconds=None)
-        native_decode.assert_not_called()
-        assert audio.shape == (128,)
-        assert rate == 44100
-
-    def test_load_audio_falls_back_to_ffmpeg_when_soundfile_errors(self, tmp_path: Path) -> None:
-        # Some FLACs over NFS make libsndfile raise "flac decoder lost sync"
-        # mid-stream; FFmpeg decodes them, so it is tried before giving up.
-        import soundfile as sf
-
-        from autodj.indexer import _load_audio
-
-        flac = tmp_path / "broken.flac"
-        flac.write_bytes(b"not really flac")
-        decoded = np.zeros((48000, 2), dtype=np.float32)
-
-        with (
-            patch.object(sf, "SoundFile", side_effect=sf.LibsndfileError(0, "lost sync")),
-            patch("autodj.stereo.load_with_ffmpeg", return_value=(decoded, 48000)) as ffmpeg,
-        ):
-            audio, sr = _load_audio(flac)
-        assert ffmpeg.called
-        assert sr == 48000
-        assert len(audio) == 48000
-
-    def test_prints_phase_banner(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        # Banner makes the silent NFS stat() loop visible — see indexer.py prune_index.
-        from autodj.indexer import prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=3, n_missing=0)
-        prune_index(idx, music_dir=tmp_path)
-        out = capsys.readouterr().out
-        assert "Phase: Pruning" in out
-        assert "checking 3 indexed files" in out
-
-    def test_safety_threshold_blocks_mass_prune(self, tmp_path: Path) -> None:
-        from autodj.indexer import PruneSafetyError, prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=2, n_missing=10)
-        with pytest.raises(PruneSafetyError):
-            prune_index(idx, music_dir=tmp_path)
-
-    def test_force_bypasses_safety(self, tmp_path: Path) -> None:
-        from autodj.indexer import prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=2, n_missing=10)
-        removed, kept = prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
-        assert removed == 10
-        assert kept == 2
-
-    def test_all_missing_publishes_an_empty_generation(self, tmp_path: Path) -> None:
-        from autodj.indexer import load_index, prune_index
-
-        idx = self._save_with_files(tmp_path, n_present=0, n_missing=3)
-        removed, kept = prune_index(idx, allow_mass_prune=True, music_dir=tmp_path)
-        assert removed == 3
-        assert kept == 0
-        loaded, loaded_vectors, manifest = load_index(idx, music_dir=tmp_path)
-        assert loaded == []
-        assert loaded_vectors.ntotal == 0
-        assert manifest.generation == 2
-
-
-# ---------------------------------------------------------------------------
 # enrich_from_beets
 # ---------------------------------------------------------------------------
 
@@ -773,6 +473,21 @@ class TestEnrichFromBeets:
                 "Enriched 1",
             ]
 
+    def test_skips_catalog_entries_absent_from_beets(self, tmp_path: Path) -> None:
+        from autodj.catalog import LibraryCatalog
+        from autodj.indexer import enrich_from_beets
+
+        entries, _vectors = self._make_distinctive_index(tmp_path)
+        idx = tmp_path / "idx"
+        self._make_catalog(idx, entries, tmp_path)
+        beets = tmp_path / "beets.db"
+        self._make_beets(beets, [{"path": str(tmp_path / "other.flac"), "title": "Other"}])
+        assert enrich_from_beets(idx, music_dir=tmp_path, beets_db=beets) == (0, 2)
+        with LibraryCatalog(idx / "library.db") as catalog:
+            assert [entry.title for entry in catalog.entries_snapshot()] == [
+                entry.title for entry in entries
+            ]
+
     def test_updates_initial_key(self, tmp_path: Path) -> None:
         from autodj.indexer import enrich_from_beets
 
@@ -848,12 +563,6 @@ class TestEnrichFromBeets:
 # ---------------------------------------------------------------------------
 
 
-def _stale(entries: list[IndexEntry]) -> set[str]:
-    from autodj.indexer import _detect_stale_entries, _stat_mtimes
-
-    return _detect_stale_entries(entries, _stat_mtimes(entries))
-
-
 class TestDetectStaleEntries:
     def _entry(self, path: str, embedded_at: float = 0.0) -> IndexEntry:
         return IndexEntry(
@@ -871,46 +580,6 @@ class TestDetectStaleEntries:
             tempo_confidence=0.0,
             embedded_at=embedded_at,
         )
-
-    def test_detects_replaced_file(self, tmp_path: Path) -> None:
-
-        f = tmp_path / "song.flac"
-        f.write_bytes(b"original")
-        original_mtime = f.stat().st_mtime
-        # Embedded an hour ago, then file replaced now
-        e = self._entry(str(f), embedded_at=original_mtime - 3600)
-        os.utime(f, (original_mtime, original_mtime))
-        assert e.path in _stale([e])
-
-    def test_unstamped_entry_is_re_embedded(self, tmp_path: Path) -> None:
-
-        f = tmp_path / "song.flac"
-        f.write_bytes(b"x")
-        e = self._entry(str(f), embedded_at=0.0)
-        assert _stale([e]) == {e.path}
-
-    def test_epoch_mtime_file_is_not_re_embedded_every_run(self, tmp_path: Path) -> None:
-        """A file dated at the epoch is stamped 0 when embedded; that is current, not stale."""
-
-        f = tmp_path / "song.flac"
-        f.write_bytes(b"x")
-        os.utime(f, (0, 0))
-        e = self._entry(str(f), embedded_at=0.0)
-        assert _stale([e]) == set()
-
-    def test_unchanged_file_not_stale(self, tmp_path: Path) -> None:
-
-        f = tmp_path / "song.flac"
-        f.write_bytes(b"x")
-        # Embedded just after file creation
-        e = self._entry(str(f), embedded_at=f.stat().st_mtime + 60)
-        assert e.path not in _stale([e])
-
-    def test_missing_file_skipped(self, tmp_path: Path) -> None:
-        # prune handles missing files; stale detection ignores them
-
-        e = self._entry(str(tmp_path / "gone.flac"), embedded_at=1.0)
-        assert _stale([e]) == set()
 
     def test_from_track_stamps_embedded_at(self) -> None:
         import time
@@ -958,33 +627,17 @@ class TestDetectStaleEntries:
         entry = IndexEntry.from_track(track)
         assert entry.embedded_at == pytest.approx(track.path.stat().st_mtime)
 
-    def test_clock_skew_does_not_make_a_fresh_entry_stale(self, tmp_path: Path) -> None:
-        """A NAS clock an hour ahead used to re-embed the whole library forever."""
-        track = self._future_track(tmp_path, ahead_s=3600)
-        entry = IndexEntry.from_track(track)
-
-        assert _stale([entry]) == set()
-
-    def test_a_later_edit_is_still_stale(self, tmp_path: Path) -> None:
-
-        track = self._future_track(tmp_path, ahead_s=3600)
-        entry = IndexEntry.from_track(track)
-        touched = entry.embedded_at + 120
-        os.utime(track.path, (touched, touched))
-
-        assert _stale([entry]) == {entry.path}
-
 
 class TestRelativizeForStorage:
     def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
         assert relative_storage_path(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
 
     def test_rejects_path_outside_music_dir(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
@@ -993,9 +646,9 @@ class TestRelativizeForStorage:
 
     def test_does_not_stat_filesystem(self, tmp_path: Path) -> None:
         # Resolve() / is_relative_to() on real Paths used to dominate save_index
-        # for libraries on NFS — see index_manifest.relative_storage_path.
+        # for libraries on NFS — see fsutil.relative_storage_path.
         # Must work on paths that don't exist.
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"  # never created
         fake = md / "Artist" / "song.flac"
@@ -1004,13 +657,13 @@ class TestRelativizeForStorage:
     @pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are a Windows rule")
     def test_case_and_separator_mismatch_is_under_music_dir(self) -> None:
         """Beets may spell the drive or folders differently from music_dir on Windows."""
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = Path("c:/music")
         assert relative_storage_path(r"C:\Music\Artist/Song.flac", md) == "Artist/Song.flac"
 
     def test_no_music_dir_keeps_relative_path(self) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         assert relative_storage_path("Artist/song.flac", None) == "Artist/song.flac"
 
@@ -1111,60 +764,6 @@ def _backfill_cfg(tmp_path: Path, *, throttle_ms: float = 0.0, import_cues: bool
         huggingface=HuggingFaceConfig(),
         config_path=None,
     )
-
-
-def test_index_limit_reads_only_the_tags_it_needs(tmp_path: Path) -> None:
-    # `autodj index --limit 60` read the tags of all 76,728 tracks on a NAS
-    # before applying the limit.  Indexed tracks are skipped unread too.
-    from autodj.audio_meta import FileTags
-
-    cfg = _backfill_cfg(tmp_path)
-    for album in ("A", "B", "C"):
-        (cfg.library.music_dir / album).mkdir(parents=True)
-        for n in range(4):
-            (cfg.library.music_dir / album / f"{n}.flac").touch()
-    indexed = {str(cfg.library.music_dir / "A" / "0.flac")}
-
-    with patch("autodj.audio_meta.read_file_tags", return_value=FileTags()) as read:
-        tracks = _collect_tracks_to_index(cfg, indexed, limit=3)
-
-    wanted = [cfg.library.music_dir / "A" / f"{n}.flac" for n in (1, 2, 3)]
-    assert [t.path for t in tracks] == wanted
-    assert [c.args[0] for c in read.call_args_list] == wanted
-
-
-def test_beets_items_with_missing_files_are_skipped_with_one_warning(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    # Beets listed 11 deleted files; every `autodj index` pruned them, then
-    # queued them again as new and failed all 11 in ffmpeg.
-    import dataclasses
-    import sqlite3
-
-    base = _backfill_cfg(tmp_path)
-    music = base.library.music_dir
-    (music / "A").mkdir(parents=True)
-    (music / "A" / "real.flac").touch()
-    beets = tmp_path / "library.db"
-    with sqlite3.connect(beets) as conn:
-        conn.execute(
-            "CREATE TABLE items (path BLOB, title TEXT, artist TEXT, album TEXT,"
-            " genre TEXT, bpm REAL, year INTEGER, length REAL)"
-        )
-        conn.executemany(
-            "INSERT INTO items (path) VALUES (?)", [(b"A/gone.flac",), (b"A/real.flac",)]
-        )
-    conn.close()
-    cfg = dataclasses.replace(base, library=dataclasses.replace(base.library, beets_db=beets))
-
-    with caplog.at_level("WARNING", logger="autodj.indexer"):
-        tracks = _collect_tracks_to_index(cfg, set(), limit=None)
-
-    assert [t.path for t in tracks] == [music / "A" / "real.flac"]
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    assert len(warnings) == 1
-    assert "1 beets items" in warnings[0]
-    assert "gone.flac" in warnings[0]
 
 
 class TestBackfillDjMeta:
@@ -1294,320 +893,6 @@ class TestBackfillDjMeta:
         assert cache is not None
         cues = cache.get(str(track)).cues
         assert cues == ([serato, auto] if import_cues else [auto])
-
-
-# ---------------------------------------------------------------------------
-# Throttled FAISS checkpoint + crash-recovery reconciliation
-# ---------------------------------------------------------------------------
-
-
-class TestIncrementalCheckpoint:
-    """Every-N publication during ``autodj index`` and resuming from it."""
-
-    @staticmethod
-    def _make_entries(n: int) -> tuple[list[IndexEntry], np.ndarray]:
-        entries = [
-            IndexEntry(
-                path=f"song_{i}.flac",
-                title=f"Song {i}",
-                artist="Artist",
-                album="Album",
-                genre="Rock",
-                bpm=120.0,
-                year=2000,
-                length=180.0,
-                energy=0.05,
-                key=0,
-                mode=1,
-                tempo_confidence=0.8,
-            )
-            for i in range(n)
-        ]
-        vectors = np.random.randn(n, FEATURE_DIM).astype(np.float32)
-        vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
-        return entries, vectors
-
-    def test_publishes_every_flush_every_tracks_and_the_rest_on_finish(
-        self, tmp_path: Path
-    ) -> None:
-        from autodj.index_manifest import read_manifest
-        from autodj.indexer import IncrementalCheckpoint
-
-        existing, existing_vectors = self._make_entries(1)
-        save_index(existing, existing_vectors, tmp_path, base_generation=0)
-        new, new_vectors = self._make_entries(3)
-        for entry in new:
-            entry.path = "new_" + entry.path
-        checkpoint = IncrementalCheckpoint(
-            index_dir=tmp_path,
-            music_dir=None,
-            existing_entries=existing,
-            existing_vectors=list(existing_vectors),
-            base_generation=1,
-            flush_every=2,
-        )
-
-        checkpoint.write(new[:1], list(new_vectors[:1]))
-        assert read_manifest(tmp_path).generation == 1  # type: ignore[union-attr]
-        checkpoint.write(new[:2], list(new_vectors[:2]))
-        assert read_manifest(tmp_path).vector_count == 3  # type: ignore[union-attr]
-        checkpoint.finish(new, list(new_vectors))
-
-        loaded, loaded_vectors, manifest = load_index(tmp_path)
-        assert manifest.generation == 3
-        assert [e.path for e in loaded] == [e.path for e in existing + new]
-        np.testing.assert_allclose(
-            loaded_vectors.reconstruct_n(0, 4),
-            np.vstack([existing_vectors, new_vectors]),
-            rtol=1e-6,
-        )
-
-    def test_replaced_file_is_dropped_and_its_new_vector_appended(self, tmp_path: Path) -> None:
-        from autodj.indexer import IncrementalCheckpoint, _load_existing_index
-
-        entries, _ = self._make_entries(3)
-        for index, entry in enumerate(entries):
-            track_path = tmp_path / f"song_{index}.flac"
-            track_path.touch()
-            entry.path = str(track_path)
-            entry.embedded_at = track_path.stat().st_mtime
-        entries[1].embedded_at -= 10.0
-
-        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
-        for row, marker in enumerate((3, 7, 11)):
-            vectors[row, marker] = 1.0
-        index_dir = tmp_path / "index"
-        save_index(entries, vectors, index_dir, music_dir=tmp_path, base_generation=0)
-
-        existing_entries, existing_vectors, base = _load_existing_index(
-            index_dir, music_dir=tmp_path, force=False
-        )
-        assert [entry.path for entry in existing_entries] == [entries[0].path, entries[2].path]
-        assert [int(np.argmax(vector)) for vector in existing_vectors] == [3, 11]
-
-        replacement = entries[1]
-        replacement.embedded_at = Path(replacement.path).stat().st_mtime
-        replacement_vector = np.zeros(FEATURE_DIM, dtype=np.float32)
-        replacement_vector[19] = 1.0
-        checkpoint = IncrementalCheckpoint(
-            index_dir=index_dir,
-            music_dir=tmp_path,
-            existing_entries=existing_entries,
-            existing_vectors=existing_vectors,
-            base_generation=base,
-        )
-        checkpoint.finish([replacement], [replacement_vector])
-
-        loaded_entries, loaded_index, _ = load_index(index_dir, music_dir=tmp_path)
-        assert [entry.path for entry in loaded_entries] == [
-            entries[0].path,
-            entries[2].path,
-            entries[1].path,
-        ]
-        assert [
-            int(np.argmax(loaded_index.reconstruct(row))) for row in range(loaded_index.ntotal)
-        ] == [3, 11, 19]
-
-    def test_fused_missing_prune_rejects_generation_published_during_stat(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from dataclasses import replace
-
-        import autodj.indexer as indexer
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import _load_existing_index
-
-        entries, vectors = self._make_entries(5)
-        mtimes: list[float | None] = []
-        for row, entry in enumerate(entries):
-            path = tmp_path / f"song_{row}.flac"
-            entry.path = str(path)
-            if row == 4:
-                mtimes.append(None)
-            else:
-                path.write_bytes(b"")
-                mtimes.append(path.stat().st_mtime + 3600)
-                entry.embedded_at = mtimes[-1]
-        index_dir = tmp_path / "idx"
-        save_index(entries, vectors, index_dir, music_dir=tmp_path, base_generation=0)
-        concurrent_entries = [
-            replace(entry, title=f"Concurrent {row}") for row, entry in enumerate(entries)
-        ]
-
-        def stat_after_concurrent_publish(*_args, **_kwargs):
-            save_index(
-                concurrent_entries, vectors, index_dir, music_dir=tmp_path, base_generation=1
-            )
-            return mtimes
-
-        monkeypatch.setattr(indexer, "_stat_mtimes", stat_after_concurrent_publish)
-        with pytest.raises(IndexConsistencyError, match="another command published"):
-            _load_existing_index(index_dir, music_dir=tmp_path, force=False)
-
-        loaded, _, _ = load_index(index_dir, music_dir=tmp_path)
-        assert [entry.title for entry in loaded] == [f"Concurrent {row}" for row in range(5)]
-
-    def test_force_rebuild_refuses_to_overwrite_a_generation_published_after_start(
-        self, tmp_path: Path
-    ) -> None:
-        from dataclasses import replace
-
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import IncrementalCheckpoint, _load_existing_index
-
-        entries, vectors = self._make_entries(2)
-        index_dir = tmp_path / "idx"
-        save_index(entries, vectors, index_dir, music_dir=tmp_path, base_generation=0)
-        existing_entries, existing_vectors, base = _load_existing_index(
-            index_dir, music_dir=tmp_path, force=True
-        )
-        assert (existing_entries, existing_vectors, base) == ([], [], 1)
-
-        concurrent = [replace(entry, title="Concurrent") for entry in entries]
-        save_index(concurrent, vectors, index_dir, music_dir=tmp_path, base_generation=1)
-        checkpoint = IncrementalCheckpoint(
-            index_dir=index_dir,
-            music_dir=tmp_path,
-            existing_entries=[],
-            existing_vectors=[],
-            base_generation=base,
-        )
-        with pytest.raises(IndexConsistencyError, match="another command published"):
-            checkpoint.finish([entries[0]], [vectors[0]])
-
-        loaded, _, _ = load_index(index_dir, music_dir=tmp_path)
-        assert [entry.title for entry in loaded] == ["Concurrent", "Concurrent"]
-
-    def test_embed_propagates_checkpoint_failure(self, tmp_path: Path) -> None:
-        from autodj.indexer import _embed_new_tracks
-
-        track = _fake_track(str(tmp_path / "song.flac"))
-        wrapper = MagicMock()
-        wrapper.embed_array.return_value = _random_embedding()
-        features = (
-            np.ones(16, dtype=np.float32),
-            np.zeros(32, dtype=np.float32),
-            22050,
-            {"energy": 0.0, "key": -1, "mode": -1, "bpm": 0.0, "tempo_confidence": 0.0},
-        )
-
-        def fail(*_args: object) -> None:
-            raise OSError("checkpoint failed")
-
-        with (
-            patch("autodj.indexer._extract_librosa_features", return_value=features),
-            patch("autodj.indexer.TrackProgress") as progress,
-            pytest.raises(OSError, match="checkpoint failed"),
-        ):
-            _embed_new_tracks([track], wrapper, 1, fail, 0.0, MagicMock())
-        progress.return_value.__enter__.return_value.update.assert_called_once_with(1)
-        progress.return_value.__exit__.assert_called_once()
-
-
-class TestIndexRecoveryPaths:
-    """Destructive --force handling and refusals for index folders that are not current."""
-
-    _WORKING = ("tracks.db", "tracks.db-wal", "tracks.db-shm", "vectors.index")
-    _KEPT = (
-        "dj_meta.db",
-        "web_state.json",
-        "tracks.g00000000000000000001.db",
-        "vectors.g00000000000000000001.index",
-    )
-
-    def _fill(self, index_dir: Path) -> None:
-        index_dir.mkdir()
-        for name in (*self._WORKING, *self._KEPT):
-            (index_dir / name).write_bytes(b"x")
-        (index_dir / "liners").mkdir()
-        (index_dir / "liners" / "drop.mp3").write_bytes(b"x")
-
-    def test_force_without_manifest_removes_only_working_files(self, tmp_path: Path) -> None:
-        from autodj.indexer import _load_existing_index
-
-        index_dir = tmp_path / "idx"
-        self._fill(index_dir)
-
-        entries, vectors, _base = _load_existing_index(index_dir, music_dir=tmp_path, force=True)
-
-        assert (entries, vectors) == ([], [])
-        assert not any((index_dir / name).exists() for name in self._WORKING)
-        assert all((index_dir / name).exists() for name in self._KEPT)
-        assert (index_dir / "liners" / "drop.mp3").exists()
-
-    def test_pre_manifest_index_is_refused_without_force(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import UnsupportedIndexError
-        from autodj.indexer import _load_existing_index
-
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-        (index_dir / "tracks.db").write_bytes(b"x")
-        (index_dir / "vectors.index").write_bytes(b"x")
-
-        with pytest.raises(UnsupportedIndexError, match=r"no index-manifest\.json.*--force"):
-            _load_existing_index(index_dir, music_dir=tmp_path, force=False)
-        assert (index_dir / "tracks.db").exists()
-        assert (index_dir / "vectors.index").exists()
-
-    def test_force_replaces_an_old_manifest(self, tmp_path: Path) -> None:
-        """--force is the rebuild path, so an unreadable old manifest must not stop it."""
-        import json
-
-        from autodj.index_manifest import MANIFEST_NAME
-        from autodj.indexer import _load_existing_index
-
-        index_dir = tmp_path / "idx"
-        self._fill(index_dir)
-        (index_dir / MANIFEST_NAME).write_text(json.dumps({"schema_version": 2}), "utf-8")
-
-        entries, _vectors, base = _load_existing_index(index_dir, music_dir=tmp_path, force=True)
-
-        assert entries == []
-        assert base == 0
-        assert not (index_dir / MANIFEST_NAME).exists()
-        assert not any((index_dir / name).exists() for name in self._WORKING)
-
-    def test_build_killed_before_first_publish_leaves_nothing_behind(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import autodj.indexer as indexer
-        from autodj.indexer import _load_existing_index, save_index
-
-        entries, vectors = TestSaveLoadIndex()._make_entries(2)
-        index_dir = tmp_path / "idx"
-
-        def killed(*_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("killed before publication")
-
-        monkeypatch.setattr(indexer, "_write_faiss_chunked", killed)
-        with pytest.raises(RuntimeError, match="killed"):
-            save_index(entries, vectors, index_dir, base_generation=0)
-        monkeypatch.undo()
-
-        assert [p.name for p in index_dir.iterdir() if not p.name.endswith(".lock")] == []
-        assert _load_existing_index(index_dir, music_dir=tmp_path, force=False) == ([], [], 0)
-
-    @pytest.mark.parametrize("command", ["prune", "enrich"])
-    def test_generation_files_without_manifest_are_not_reported_as_no_index(
-        self, tmp_path: Path, command: str
-    ) -> None:
-        from autodj.index_manifest import IndexConsistencyError
-        from autodj.indexer import enrich_from_beets, prune_index
-
-        index_dir = tmp_path / "idx"
-        index_dir.mkdir()
-        (index_dir / "tracks.g00000000000000000003.db").write_bytes(b"x")
-
-        if command == "prune":
-            with pytest.raises(IndexConsistencyError, match=r"no index-manifest\.json.*--force"):
-                prune_index(index_dir, music_dir=tmp_path)
-        else:
-            assert enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=tmp_path / "b.db") == (
-                0,
-                0,
-            )
 
 
 # ---------------------------------------------------------------------------

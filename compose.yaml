@@ -37,6 +37,7 @@ services:
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache
     volumes:
+      # Mount music here, then add /music from the Library page in AutoDJ.
       - ${AUTODJ_MUSIC_DIR:-./music}:/music:ro
       - ${AUTODJ_INDEX_DIR:-autodj-index}:/index
       - ${AUTODJ_MODEL_DIR:-autodj-models}:/models

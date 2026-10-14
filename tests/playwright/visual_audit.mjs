@@ -429,6 +429,9 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-cancel").click();
   await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
+  const condition = page.locator("#clock-step-conditions").getByRole("group").first();
+  await condition.getByLabel("Condition type", { exact: true }).selectOption("title");
+  await condition.getByLabel("Value", { exact: true }).fill("Audit");
   await page.locator("#clock-step-hours-from").fill("22:00");
   await page.locator("#clock-add-step").click();
   await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });

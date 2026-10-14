@@ -1,8 +1,9 @@
-"""One-off conversion of an AutoDJ index from schema 3 to schema 4.
+"""One-off import of old AutoDJ indexes and legacy catalog-owned state.
 
-Schema 4 stores a size and a content fingerprint per track so moved files can
-keep their analysis. Use ``autodj migrate-index`` to preview, then add ``--apply``.
-Interactive ``autodj serve`` also offers this conversion. Vectors are copied unchanged.
+Use ``autodj migrate-index`` to preview, then add ``--apply``. Published
+schema-3 and schema-4 indexes store paths relative to the music root, so
+``--music-dir`` is required to import one. Settings and play-history upgrades
+in an existing catalog do not need a music root. Vectors are copied unchanged.
 
 Usage (stop `autodj serve` and `autodj index` first)::
 
@@ -44,11 +45,10 @@ import numpy as np
 
 from autodj.backup import _check_sqlite
 from autodj.dj_meta import DjMetaCache
-from autodj.fsutil import atomic_write, fsync_directory
+from autodj.fsutil import atomic_write, fsync_directory, is_absolute_storage
 from autodj.index_manifest import (
     MANIFEST_NAME,
     IndexConsistencyError,
-    is_absolute_storage,
     publication_lock,
     publish_generation,
     sha256_file,
@@ -351,7 +351,7 @@ def migration_required(
 
 def _upgrade_settings_and_sources(
     index_dir: Path,
-    music_dir: Path,
+    music_dir: Path | None,
     liner_dir: Path,
     *,
     apply: bool,
@@ -448,7 +448,7 @@ def _mark_import_pending(index_dir: Path, music_dir: Path) -> None:
 
 def _migrate_catalog(
     index_dir: Path,
-    music_dir: Path,
+    music_dir: Path | None,
     liner_dir: Path,
     moves: dict[str, str],
     *,
@@ -462,7 +462,9 @@ def _migrate_catalog(
     All writes are opt-in and repeatable; seed operations never replace
     current catalog records or vectors.
     """
-    index_dir, music_dir, liner_dir = index_dir.resolve(), music_dir.resolve(), liner_dir.resolve()
+    index_dir = index_dir.resolve()
+    music_dir = music_dir.resolve() if music_dir is not None else None
+    liner_dir = liner_dir.resolve()
     catalog_exists = _has_current_catalog(index_dir)
     pending_import = _has_pending_import(index_dir)
     manifest_path = index_dir / MANIFEST_NAME
@@ -483,6 +485,8 @@ def _migrate_catalog(
             raise ValueError("--map is only supported when converting a schema-3 index")
 
     import_published = schema in (3, 4) and (not catalog_exists or pending_import)
+    if import_published and music_dir is None:
+        raise ValueError("--music-dir is required to import a published schema-3 or schema-4 index")
     history_pending, _ = _old_catalog_data(index_dir)
     if history_pending:
         _validate_legacy_history(index_dir)
@@ -490,6 +494,7 @@ def _migrate_catalog(
         schema = None  # Current catalogs ignore leftover published generations.
 
     if schema == 3:
+        assert music_dir is not None
         convert(index_dir, music_dir, moves, apply)
         if not apply:
             settings, history, sources = _upgrade_settings_and_sources(
@@ -507,6 +512,7 @@ def _migrate_catalog(
         schema = 4
 
     if schema == 4:
+        assert music_dir is not None
         # Validate the complete generation and map before changing catalog state.
         entries, _, _ = load_index(index_dir, music_dir=music_dir)
         history, sources = _old_catalog_data(index_dir)
@@ -541,6 +547,7 @@ def _migrate_catalog(
 
     _recovery_catalog_copy(index_dir, station_web_states)
     if schema == 4:
+        assert music_dir is not None
         _mark_import_pending(index_dir, music_dir)
     settings, history, sources = _upgrade_settings_and_sources(
         index_dir,
@@ -550,6 +557,7 @@ def _migrate_catalog(
         station_web_states=station_web_states,
     )
     if schema == 4:
+        assert music_dir is not None
         count, vectors = _import_published_generation(index_dir, music_dir)
         print(
             f"Imported {count} tracks and {vectors} vectors into library.db; no analysis was run."
@@ -565,7 +573,7 @@ def _migrate_catalog(
 
 def migrate_catalog(
     index_dir: Path,
-    music_dir: Path,
+    music_dir: Path | None,
     liner_dir: Path,
     moves: dict[str, str],
     *,

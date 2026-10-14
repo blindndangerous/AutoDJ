@@ -1,8 +1,6 @@
 """Installation and runtime diagnostics for AutoDJ.
 
-The checks repair nothing and write no data.  Loading the index takes its
-publication lock, which creates ``.index-publication.lock`` in the index
-directory when it is not there yet.
+The checks repair nothing and write no data.
 
 With several stations (``[stations.<slug>]``), the checks that belong to
 one station run once more for each other station, read from its own
@@ -29,10 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.config import is_loopback_bind
-from autodj.index_manifest import (
-    IndexConsistencyError,
-    UnsupportedIndexError,
-)
+from autodj.index_manifest import has_legacy_index
 from autodj.repeat_settings import removed_saved_repeat_keys
 from autodj.sqlite_utils import readonly_uri
 
@@ -126,7 +121,7 @@ def _configuration_check(cfg: AutoDJConfig) -> DoctorCheck:
         "host": cfg.server.host,
         "port": cfg.server.port,
         "lan": cfg.server.lan,
-        "music_dir": str(cfg.library.music_dir),
+        "music_dir": str(cfg.library.music_dir) if cfg.library.music_dir is not None else None,
         "index_dir": str(cfg.index.index_dir),
         "model_dir": str(cfg.index.model_dir),
         "access_token": "<redacted>" if cfg.server.access_token else None,
@@ -206,10 +201,10 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 
 def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Check registered music roots, falling back to config before catalog setup."""
+    """Check registered music folders; an empty library needs no configured root."""
     catalog_path = cfg.index.active_dir / "library.db"
     if not catalog_path.is_file():
-        return _path_check("music-path", cfg.library.music_dir, writable=False)
+        return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
     try:
         conn = _connect(readonly_uri(catalog_path), uri=True)
         with closing(conn):
@@ -218,7 +213,7 @@ def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
                 for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
             if "catalog_sources" not in tables:
-                return _path_check("music-path", cfg.library.music_dir, writable=False)
+                return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
             roots = [
                 Path(str(row[0]))
                 for row in conn.execute(
@@ -267,6 +262,15 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
         return DoctorCheck(
             "saved-settings", CheckStatus.WARN, "saved settings root is not an object"
         )
+    version = data.get("schema_version")
+    if type(version) is int and version == 1:
+        return DoctorCheck(
+            "saved-settings",
+            CheckStatus.FAIL,
+            "saved settings need migration",
+            f"{path}; run `autodj migrate-index --apply`",
+            "migrate-index",
+        )
     removed = removed_saved_repeat_keys(data)
     if removed:
         grouped = "; ".join(f"{group}: {', '.join(keys)}" for group, keys in removed.items())
@@ -287,27 +291,33 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
             f"{path}; {grouped}. Re-enter any old limits in Settings > Picking > Repeats.{preserve}",
             "repair-saved-settings",
         )
-    version = data.get("schema_version")
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version != 2:
         return DoctorCheck(
             "saved-settings",
             CheckStatus.WARN,
             "unsupported saved settings schema",
-            f"schema_version must be 1 or 2, got {version!r}; runtime ignores this file",
+            f"schema_version must be 2, got {version!r}; runtime ignores this file",
         )
     return DoctorCheck("saved-settings", CheckStatus.PASS, "saved settings valid", str(path))
 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
-    """Check the current catalog, or the legacy index before its first import."""
+    """Check the current catalog without reading old generation files."""
     index_dir = cfg.index.active_dir
     catalog_path = index_dir / "library.db"
     if catalog_path.is_file():
         from autodj.catalog import catalog_counts
 
         try:
+            from autodj.index_migration import migration_required
+
+            needed, reason = migration_required(index_dir)
+            if needed:
+                return DoctorCheck(
+                    "index", CheckStatus.FAIL, "library migration needed", reason, "migrate-index"
+                )
             ready, analyzed = catalog_counts(catalog_path)
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
             return DoctorCheck("index", CheckStatus.FAIL, "library cannot be read", str(exc))
         return DoctorCheck(
             "index",
@@ -315,45 +325,25 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
             f"{ready} songs; {analyzed} analyzed",
             str(catalog_path),
         )
-    if not index_dir.exists():
+    if index_dir.exists() and not index_dir.is_dir():
         return DoctorCheck(
-            "index", CheckStatus.WARN, "no index", f"{index_dir}; run `autodj index`", "index"
+            "index", CheckStatus.FAIL, "library path is not a directory", str(index_dir)
         )
-    try:
-        from autodj.similarity import SimilarityIndex
-
-        sim = SimilarityIndex.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError as exc:
-        return DoctorCheck(
-            "index", CheckStatus.WARN, "no index", f"{exc}; run `autodj index`", "index"
-        )
-    except UnsupportedIndexError as exc:
-        if exc.schema_version == 3:
-            detail = (
-                f"{exc}; stop AutoDJ serving and indexing, then run `autodj migrate-index --apply` "
-                "to save a recovery copy and carry the index forward without re-embedding."
-            )
-            return DoctorCheck(
-                "index", CheckStatus.FAIL, type(exc).__name__, detail, "migrate-index"
-            )
-        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc), "rebuild-index")
-    except IndexConsistencyError as exc:
+    if has_legacy_index(index_dir):
         return DoctorCheck(
             "index",
             CheckStatus.FAIL,
-            type(exc).__name__,
-            f"{exc}; run `autodj index --force`",
-            "rebuild-index",
+            "library migration needed",
+            f"{index_dir}; stop AutoDJ and run `autodj migrate-index --apply`.",
+            "migrate-index",
         )
-    except Exception as exc:  # report whatever serve would fail with
-        return DoctorCheck("index", CheckStatus.FAIL, type(exc).__name__, str(exc))
-    manifest = sim.manifest
-    assert manifest is not None  # from_index_dir always sets it
-    summary = f"generation {manifest.generation}: {sim.ntotal} tracks"
-    detail = f"published {manifest.published_at}"
-    if sim.ntotal == 0:
-        return DoctorCheck("index", CheckStatus.WARN, summary, f"{detail}; the index is empty")
-    return DoctorCheck("index", CheckStatus.PASS, summary, detail)
+    return DoctorCheck(
+        "index",
+        CheckStatus.WARN,
+        "library is empty",
+        f"{index_dir}; add music folders in Library tools or run `autodj index`",
+        "index",
+    )
 
 
 def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:

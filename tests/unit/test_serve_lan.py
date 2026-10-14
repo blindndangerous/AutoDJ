@@ -259,7 +259,7 @@ def _invoke_serve(cfg: MagicMock, *args: str) -> tuple[click.testing.Result, Mag
     sim.ntotal = 1
     with (
         patch("autodj.config.load_config", return_value=cfg),
-        patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim),
+        patch("autodj.cli._load_index_for_serve", return_value=sim),
         patch("autodj.server.serve") as serve_mock,
         patch("autodj.library.LibraryManager"),
     ):

@@ -47,7 +47,6 @@ ENV HOME=/home/autodj \
     HF_HOME=/models/huggingface \
     AUTODJ_HOST=0.0.0.0 \
     AUTODJ_PORT=8080 \
-    AUTODJ_LIBRARY_MUSIC_DIR=/music \
     AUTODJ_INDEX_DIR=/index \
     AUTODJ_MODEL_DIR=/models
 

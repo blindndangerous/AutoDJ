@@ -18,6 +18,7 @@ import pytest
 from click.testing import CliRunner
 
 import autodj.doctor as doctor
+from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_cfg_or_exit, cli
 from autodj.config import (
     AutoDJConfig,
@@ -37,8 +38,8 @@ from autodj.doctor import (
     render_text,
     run_doctor,
 )
-from autodj.index_manifest import read_manifest, sha256_file
-from autodj.indexer import FEATURE_DIM, IndexEntry, build_faiss_index, save_index
+from autodj.index_manifest import sha256_file
+from autodj.indexer import FEATURE_DIM, IndexEntry
 
 
 def _config(tmp_path: Path, *, host: str = "127.0.0.2") -> AutoDJConfig:
@@ -80,9 +81,10 @@ def _write_index(cfg: AutoDJConfig) -> None:
     )
     vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
     vector /= np.linalg.norm(vector, axis=1, keepdims=True)
-    save_index(
-        [entry], vector, cfg.index.active_dir, music_dir=cfg.library.music_dir, base_generation=0
-    )
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+        catalog.seed_entries([entry])
+        catalog.seed_vectors([entry], vector)
 
 
 def _write_dj_meta(path: Path) -> None:
@@ -106,13 +108,14 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
         path.relative_to(root): (
             path.is_dir(),
             path.stat().st_size,
-            # The index check takes the index lock, as serve does, which
-            # touches the lock file and its folder.
+            # Read-only SQLite connections may create transient WAL sidecars.
             None if path.is_dir() else path.stat().st_mtime_ns,
             None if path.is_dir() else sha256_file(path),
         )
         for path in paths
-        if path.exists() and path.name != ".index-publication.lock"
+        if path.exists()
+        and path.name != ".index-publication.lock"
+        and not path.name.endswith(("-wal", "-shm"))
     }
 
 
@@ -170,44 +173,29 @@ def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str)
     check = doctor._index_check(cfg)
 
     assert check.status is doctor.CheckStatus.FAIL
-    assert "autodj index --force" in check.detail
-    assert check.repair == "rebuild-index"
+    assert "autodj migrate-index --apply" in check.detail
+    assert check.repair == "migrate-index"
 
 
-def test_corrupt_published_index_fails(tmp_path: Path) -> None:
+def test_corrupt_catalog_fails_without_rebuild_offer(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    _write_index(cfg)
-    manifest = read_manifest(cfg.index.active_dir)
-    assert manifest is not None
-    (cfg.index.active_dir / manifest.vectors_file).write_bytes(b"corrupt")
-
+    cfg.index.active_dir.mkdir()
+    (cfg.index.active_dir / "library.db").write_bytes(b"corrupt")
     check = doctor._index_check(cfg)
-
     assert check.status is doctor.CheckStatus.FAIL
-    assert "autodj index" in check.detail
-    assert check.repair == "rebuild-index"
+    assert check.repair is None
 
 
-@pytest.mark.parametrize(("schema", "repair"), [(3, "migrate-index"), (2, "rebuild-index")])
-def test_unsupported_schema_recommends_safe_recovery(
-    tmp_path: Path, schema: int, repair: str
-) -> None:
+@pytest.mark.parametrize("schema", [2, 3, 4])
+def test_legacy_library_requires_explicit_migration(tmp_path: Path, schema: int) -> None:
     cfg = _config(tmp_path)
-    _write_index(cfg)
+    cfg.index.active_dir.mkdir()
     path = cfg.index.active_dir / "index-manifest.json"
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    manifest["schema_version"] = schema
-    path.write_text(json.dumps(manifest), encoding="utf-8")
-
+    path.write_text(json.dumps({"schema_version": schema}))
     check = doctor._index_check(cfg)
-
     assert check.status is doctor.CheckStatus.FAIL
-    assert check.repair == repair
-    if schema == 3:
-        assert "stop AutoDJ serving and indexing" in check.detail
-        assert "migrate-index --apply" in check.detail
-        assert "recovery copy" in check.detail
-        assert "without re-embedding" in check.detail
+    assert check.repair == "migrate-index"
+    assert "migrate-index --apply" in check.detail
 
 
 def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
@@ -223,30 +211,6 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
     assert "rebuild" in check.detail.lower()
     assert check.repair == "rebuild-dj-meta"
     assert db.stat().st_mtime_ns == before
-
-
-def test_published_absolute_track_path_fails_like_serve(tmp_path: Path) -> None:
-    """Serve refuses an index with absolute paths, so doctor reports the same error."""
-    from autodj.index_manifest import publish_generation
-    from autodj.indexer import _entry_to_row, _write_faiss_chunked, _write_tracks_file
-
-    cfg = _config(tmp_path)
-    entry = IndexEntry("song.flac", "Song", "", "", "", 0, 0, 0, 0, -1, -1, 0)
-    vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
-
-    def write(tracks: Path, vectors: Path) -> None:
-        row = _entry_to_row(entry, None, 0) | {"path": "C:/Music/song.flac"}
-        _write_tracks_file([row], tracks)
-        _write_faiss_chunked(build_faiss_index(vector), vectors)
-
-    publish_generation(cfg.index.active_dir, base_generation=0, vector_count=1, write_files=write)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.summary == "UnsupportedIndexError"
-    assert "absolute path C:/Music/song.flac" in check.detail
-    assert "autodj index --force" in check.detail
 
 
 def test_dj_meta_with_absolute_key_is_valid(tmp_path: Path) -> None:
@@ -299,23 +263,6 @@ def test_music_path_check_reports_missing_registered_root(tmp_path: Path) -> Non
     assert check.status is CheckStatus.FAIL
     assert check.summary == "registered music folders unavailable"
     assert [Path(path) for path in check.detail["unavailable"]] == [registered]
-
-
-def test_unknown_index_exception_does_not_select_repair(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-
-    def fail(*_args, **_kwargs):
-        raise RuntimeError("untrusted text says autodj index --force")
-
-    monkeypatch.setattr("autodj.similarity.SimilarityIndex.from_index_dir", fail)
-
-    check = doctor._index_check(cfg)
-
-    assert check.status is doctor.CheckStatus.FAIL
-    assert check.repair is None
 
 
 def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:
@@ -669,7 +616,7 @@ def test_generation_artifacts_without_manifest_fail(tmp_path: Path) -> None:
     check = doctor._index_check(cfg)
 
     assert check.status is doctor.CheckStatus.FAIL
-    assert "manifest" in check.detail
+    assert "migrate-index" in check.detail
 
 
 def test_module_probe_handles_normal_and_invalid_specs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -827,7 +774,7 @@ def test_missing_index_and_dj_meta_warn_explicitly(tmp_path: Path) -> None:
 
     assert index.status is doctor.CheckStatus.WARN
     assert dj_meta.status is doctor.CheckStatus.WARN
-    assert index.summary == "no index"
+    assert index.summary == "library is empty"
     assert dj_meta.summary == "database absent"
 
 
@@ -985,17 +932,13 @@ def test_configuration_check_shows_lan_setting(
     assert check.detail["lan"] is True
 
 
-def test_published_empty_index_warns_instead_of_passing(tmp_path: Path) -> None:
+def test_empty_catalog_warns_instead_of_passing(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    save_index(
-        [], np.zeros((0, FEATURE_DIM), dtype=np.float32), cfg.index.active_dir, base_generation=0
-    )
-
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.set_setting("sources_seeded", True)
     check = doctor._index_check(cfg)
-
     assert check.status is doctor.CheckStatus.WARN
-    assert check.summary == "generation 1: 0 tracks"
-    assert "empty" in check.detail
+    assert check.summary == "0 songs; 0 analyzed"
 
 
 def test_locked_metadata_is_not_offered_a_destructive_rebuild(tmp_path: Path) -> None:
@@ -1195,3 +1138,11 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
     assert (active / "categories.json").exists()  # doctor never sets the file aside
+
+
+def test_new_library_needs_no_music_root(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    cfg.library.music_dir = None
+    check = doctor._music_paths_check(cfg)
+    assert check.status is CheckStatus.PASS
+    assert check.summary == "no music folders registered"

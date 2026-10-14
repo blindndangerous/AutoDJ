@@ -29,7 +29,7 @@ from autodj.config import (
     PlaybackConfig,
 )
 from autodj.dj_meta import Cue, DjMeta, DjMetaCache
-from autodj.index_manifest import MANIFEST_NAME
+from autodj.index_manifest import MANIFEST_NAME, IndexConsistencyError
 from autodj.indexer import FEATURE_DIM, _write_tracks_file
 
 
@@ -300,80 +300,23 @@ def test_cli_migrate_default_is_dry_run(tmp_path: Path) -> None:
     assert _tree(index_dir) == before
 
 
-def test_accepted_startup_converts_and_loads_real_named_index(tmp_path: Path) -> None:
+@pytest.mark.parametrize("interactive", [True, False])
+def test_startup_requires_explicit_migration_without_modifying_named_library(
+    tmp_path: Path, interactive: bool
+) -> None:
     cfg = _config(tmp_path)
     named_dir = cfg.index.index_dir / "gold"
     _fixture(tmp_path, index_dir=named_dir, music_dir=cfg.library.music_dir)
+    before = _tree(named_dir)
     with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: True)),
-        patch("autodj.cli.click.confirm", return_value=True),
-    ):
-        sim = _load_index_for_serve(cfg, active_dir=named_dir)
-    assert sim.ntotal == 2
-    assert json.loads((named_dir / MANIFEST_NAME).read_text())["schema_version"] == 4
-    assert not (cfg.index.active_dir / MANIFEST_NAME).exists()
-
-
-@pytest.mark.parametrize("accept", [True, False])
-def test_serve_prompt_accepts_or_declines_for_named_index(tmp_path: Path, accept: bool) -> None:
-    cfg = _config(tmp_path)
-    named_dir = cfg.index.index_dir / "named"
-    named_dir.mkdir()
-    manifest = {"schema_version": 3}
-    (named_dir / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex
-
-    unsupported = UnsupportedIndexError(named_dir, "schema 3", schema_version=3)
-    loads = iter((unsupported, object()))
-
-    def load_index(*args: object, **kwargs: object) -> object:
-        result = next(loads)
-        if isinstance(result, UnsupportedIndexError):
-            raise result
-        return result
-
-    with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: True)),
-        patch("autodj.cli.click.confirm", return_value=accept) as confirm,
-        patch("autodj.cli._convert_index") as convert,
-        patch.object(SimilarityIndex, "from_index_dir", side_effect=load_index),
-    ):
-        if accept:
-            value = _load_index_for_serve(cfg, active_dir=named_dir)
-            assert value is not None
-            convert.assert_called_once_with(named_dir, cfg.library.music_dir, {}, apply=True)
-        else:
-            with pytest.raises(UnsupportedIndexError):
-                _load_index_for_serve(cfg, active_dir=named_dir)
-            convert.assert_not_called()
-    confirm.assert_called_once()
-
-
-def test_non_tty_serve_does_not_prompt_and_uses_named_active_dir(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
-    named_dir = cfg.index.index_dir / "named"
-    named_dir.mkdir()
-    (named_dir / MANIFEST_NAME).write_text('{"schema_version": 3}', encoding="utf-8")
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex
-
-    with (
-        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: False)),
+        patch("autodj.cli.sys.stdin", SimpleNamespace(isatty=lambda: interactive)),
         patch("autodj.cli.click.confirm") as confirm,
-        patch("autodj.cli._convert_index") as convert,
-        patch.object(
-            SimilarityIndex,
-            "from_index_dir",
-            side_effect=UnsupportedIndexError(named_dir, "schema 3", schema_version=3),
-        ) as load,
-        pytest.raises(UnsupportedIndexError),
+        pytest.raises(IndexConsistencyError, match="migrate-index"),
     ):
         _load_index_for_serve(cfg, active_dir=named_dir)
     confirm.assert_not_called()
-    convert.assert_not_called()
-    assert load.call_args.kwargs["music_dir"] == cfg.library.music_dir
-    assert load.call_args.args[0] == named_dir
+    assert _tree(named_dir) == before
+    assert not (named_dir / "library.db").exists()
 
 
 def test_migrate_imports_schema3_vectors_and_catalog_state_without_analysis(tmp_path: Path) -> None:
@@ -532,6 +475,106 @@ def test_settings_migration_preserves_existing_catalog_source_roots(tmp_path: Pa
             (_dj_meta_path(str(chosen_music)), "music"),
             (_dj_meta_path(str(chosen_liners)), "liner"),
         }
+
+
+def test_catalog_state_migrates_without_music_root_and_keeps_registered_sources(
+    tmp_path: Path,
+) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    registered_music = tmp_path / "registered-music"
+    registered_liners = tmp_path / "registered-liners"
+    registered_music.mkdir()
+    registered_liners.mkdir()
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(registered_music, "music", recursive=False, advanced=False)
+        catalog.add_source(registered_liners, "liner", recursive=False, advanced=False)
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('play_history', ?)",
+            (
+                json.dumps(
+                    [
+                        {
+                            "title": "Old song",
+                            "artist": "Singer",
+                            "duration": 120,
+                            "played_at": "2024-01-01T00:00:00+00:00",
+                        }
+                    ]
+                ),
+            ),
+        )
+        db.commit()
+    state = index_dir / "web_state.json"
+    state.write_text('{"schema_version":1,"djmix":{"harmonic_mixing":false}}')
+
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        assert {(source["path"], source["kind"]) for source in catalog.sources()} == {
+            (_dj_meta_path(str(registered_music)), "music"),
+            (_dj_meta_path(str(registered_liners)), "liner"),
+        }
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT title,artist,duration FROM play_history").fetchall() == [
+            ("Old song", "Singer", 120.0)
+        ]
+    assert json.loads(state.read_text())["djmix"]["harmonic_mode"] == "off"
+    assert not index_migration.migration_required(index_dir)[0]
+
+
+def test_rootless_catalog_upgrade_does_not_invent_a_music_source(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    index_dir.mkdir()
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute("INSERT INTO catalog_settings VALUES ('sources_seeded','false')")
+        db.execute("INSERT INTO catalog_settings VALUES ('play_history','[]')")
+        db.commit()
+
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        sources = db.execute("SELECT path,kind FROM catalog_sources").fetchall()
+        assert sources == [(_dj_meta_path(str(tmp_path / "unused-liners")), "liner")]
+        assert db.execute(
+            "SELECT value FROM catalog_settings WHERE key='sources_seeded'"
+        ).fetchone() == ("true",)
+    assert not index_migration.migration_required(index_dir)[0]
+    index_migration.migrate_catalog(index_dir, None, tmp_path / "unused-liners", {}, apply=True)
+    with closing(sqlite3.connect(index_dir / "library.db")) as db:
+        assert db.execute("SELECT path,kind FROM catalog_sources").fetchall() == sources
+    assert not index_migration.migration_required(index_dir)[0]
+
+
+def test_published_relative_index_requires_music_root_before_any_writes(tmp_path: Path) -> None:
+    index_dir, _music_dir = _fixture(tmp_path, paths=("old.flac",))
+    before = _tree(index_dir)
+
+    with pytest.raises(ValueError, match="--music-dir is required"):
+        index_migration.migrate_catalog(index_dir, None, tmp_path / "liners", {}, apply=True)
+
+    assert _tree(index_dir) == before
+    assert not (tmp_path / ".migration-backups").exists()
+
+
+def test_migrate_index_cli_accepts_music_root_override_when_config_has_none(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.library.music_dir = None
+    legacy_music = tmp_path / "legacy-music"
+    legacy_music.mkdir()
+    index_dir, _ = _fixture(tmp_path, paths=("old.flac",), index_dir=cfg.index.active_dir)
+
+    with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
+        result = CliRunner().invoke(cli, ["migrate-index", "--music-dir", str(legacy_music)])
+
+    assert result.exit_code == 0, result.output
+    assert str(legacy_music.resolve()) in result.output
+    assert "Dry run" in result.output
+    assert not (index_dir / "library.db").exists()
 
 
 def test_migrate_imports_schema4_and_resumes_after_interruption(tmp_path: Path) -> None:

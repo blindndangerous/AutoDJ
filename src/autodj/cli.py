@@ -188,41 +188,20 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
 def _load_index_for_serve(
     cfg: AutoDJConfig, *, active_dir: Path | None = None
 ) -> SimilarityIndex:  # pragma: no cover
-    """Import a legacy index only when this library has no catalog yet."""
-    from autodj.index_manifest import UnsupportedIndexError
-    from autodj.similarity import SimilarityIndex as _SI
+    """Start with an empty similarity view; LibraryManager loads catalog vectors."""
+    from autodj.config import station_config
+    from autodj.library import require_current_library
+    from autodj.similarity import SimilarityIndex
+    from autodj.stations import StationPaths
 
-    index_dir = cfg.index.active_dir if active_dir is None else active_dir
-    if (Path(index_dir) / "library.db").is_file():
-        return _SI.empty()
-    if (Path(index_dir) / "index-manifest.json").is_file():
-        console.print(
-            "[yellow]The published-index format is deprecated. Importing it into the library; "
-            "the original files will be kept for recovery.[/]"
-        )
-
-    try:
-        return _SI.from_index_dir(
-            index_dir,
-            music_dir=cfg.library.music_dir,
-        )
-    except UnsupportedIndexError as exc:
-        if exc.schema_version != 3 or not sys.stdin.isatty():
-            raise
-        click.echo(str(exc))
-        if not click.confirm(
-            "Stop any other serving or indexing process first. Save a recovery copy "
-            "and migrate this index to schema 4 now?",
-            default=False,
-        ):
-            raise
-        _convert_index(index_dir, cfg.library.music_dir, {}, apply=True)
-        return _SI.from_index_dir(index_dir, music_dir=cfg.library.music_dir)
-    except FileNotFoundError:
-        console.print(
-            "[yellow]Library is empty; add music folders in Library tools to get started.[/]"
-        )
-        return _SI.empty()
+    require_current_library(
+        cfg.index.active_dir if active_dir is None else active_dir,
+        (
+            StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+            for spec in cfg.stations
+        ),
+    )
+    return SimilarityIndex.empty()
 
 
 def _scan_index_rows(
@@ -230,14 +209,10 @@ def _scan_index_rows(
 ) -> list[tuple[str, str, str]]:  # pragma: no cover
     """Walk *base* for index directories; return (name, track count, path) rows.
 
-    Prefer the current catalog; report a legacy index only before its first import.
+    Read catalog counts; flag older libraries for explicit migration.
     """
     from autodj.catalog import catalog_counts
-    from autodj.index_manifest import (
-        IndexConsistencyError,
-        UnsupportedIndexError,
-        read_manifest,
-    )
+    from autodj.index_manifest import has_legacy_index
 
     rows: list[tuple[str, str, str]] = []
     for entry in sorted(base.iterdir()):
@@ -253,23 +228,9 @@ def _scan_index_rows(
             active_marker = "  *" if entry.name == active_name else "   "
             rows.append((active_marker + entry.name, status, str(entry)))
             continue
-        try:
-            manifest = read_manifest(entry)
-        except UnsupportedIndexError as exc:
-            status = (
-                "[yellow]schema 3: convert with autodj migrate-index[/yellow]"
-                if exc.schema_version == 3
-                else "[red]old format: rebuild with autodj index --force[/red]"
-            )
-        except IndexConsistencyError:
-            status = "[red]corrupt[/red]"
-        else:
-            if manifest is None:
-                if not (entry / "tracks.db").exists():
-                    continue
-                status = "[red]old format: rebuild with autodj index --force[/red]"
-            else:
-                status = f"{manifest.vector_count} tracks"
+        if not has_legacy_index(entry):
+            continue
+        status = "[yellow]migration needed: autodj migrate-index --apply[/yellow]"
         active_marker = "  *" if entry.name == active_name else "   "
         rows.append((active_marker + entry.name, status, str(entry)))
     return rows
@@ -1097,7 +1058,7 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     "--no-analyse",
     "skip_analyse",
     is_flag=True,
-    help="Skip the extra beat/cue backfill for the configured music root; basic cues are still read.",
+    help="Skip the extra beat/cue backfill for registered music folders; basic cues are still read.",
 )
 @click.option(
     "--no-enrich",
@@ -1120,7 +1081,7 @@ def cmd_index(
 ) -> None:
     """Add registered folders to the library, then analyse pending songs.
 
-    On first use, imports an existing legacy index or registers [library] music_dir.
+    Add music folders in Library before indexing. Older indexes need migrate-index first.
     Later runs rescan the folders saved in Library tools. Songs become available
     before advanced analysis; folders with advanced analysis disabled are skipped
     by that pass. --limit caps advanced analysis, not the basic import.
@@ -1128,13 +1089,10 @@ def cmd_index(
     --force replaces existing analysis after each successful result. It keeps
     manual cues, history, settings and usable old vectors if a song fails.
     """
-    from autodj.index_manifest import IndexConsistencyError
     from autodj.library import LibraryManager, analyse_library
-    from autodj.similarity import SimilarityIndex
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     _apply_index_name(cfg, index_name)
-    cfg.library.music_dir = cfg.library.music_dir.resolve()
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
     console.print(f"  Library : {cfg.index.active_dir}")
     if limit:
@@ -1142,17 +1100,13 @@ def cmd_index(
     if force:
         console.print("  Mode : [yellow]FORCE REBUILD[/] of analysis; saved station data is kept")
     try:
-        try:
-            sim = _load_index_for_serve(cfg)
-        except IndexConsistencyError:
-            if not force:
-                raise
-            console.print(
-                "[yellow]The old index could not be imported; rebuilding from folders.[/]"
-            )
-            sim = SimilarityIndex.empty()
+        sim = _load_index_for_serve(cfg)
         library = LibraryManager(cfg, sim)
         ctx.call_on_close(library.close)
+        if not library.catalog.sources("music"):
+            console.print(
+                "No music folders registered. Start `autodj serve` and add folders in Library."
+            )
         library.scan()
         state = library.snapshot()
         console.print(f"[green]{state['tracks_ready']} songs available.[/]")
@@ -1226,10 +1180,8 @@ def cmd_index(
     is_flag=True,
     default=False,
     help=(
-        "Bypass the safety check that refuses to prune more than 20% of the "
-        "index in a single pass. Use only when you really did delete that "
-        "much of your library — otherwise fix [library] music_dir in "
-        "config first."
+        "Allow removal when more than 20% of catalog tracks are missing. "
+        "Check registered library folders before overriding."
     ),
 )
 @click.option(
@@ -1634,15 +1586,6 @@ def cmd_analyse(
 # ---------------------------------------------------------------------------
 
 
-def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, apply: bool) -> None:
-    from autodj.index_migration import convert
-
-    try:
-        convert(index_dir, music_dir, moves, apply)
-    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        raise click.ClickException(f"Index conversion failed: {exc}") from exc
-
-
 @cli.command("migrate-index")
 @click.option("--name", "index_name", default=None, help="Named index to convert.")
 @click.option(
@@ -1654,9 +1597,18 @@ def _convert_index(index_dir: Path, music_dir: Path, moves: dict[str, str], *, a
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="JSON mapping of old to new paths relative to music_dir.",
 )
+@click.option(
+    "--music-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Base folder for paths in a legacy index; not needed for current-library state upgrades.",
+)
 @click.pass_context
 def cmd_migrate_index(
-    ctx: click.Context, index_name: str | None, apply: bool, move_map: Path | None
+    ctx: click.Context,
+    index_name: str | None,
+    apply: bool,
+    move_map: Path | None,
+    music_dir: Path | None,
 ) -> None:
     """Import published index data and legacy state into the current catalog.
 
@@ -1681,7 +1633,7 @@ def cmd_migrate_index(
     try:
         migrate_catalog(
             cfg.index.active_dir,
-            cfg.library.music_dir,
+            music_dir or cfg.library.music_dir,
             Path(liner_dir),
             moves,
             apply=apply,

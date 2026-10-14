@@ -305,7 +305,7 @@ class TestCliConfigSelection:
         cfg = _make_cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg) as loader,
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve"])
@@ -323,7 +323,7 @@ class TestCliConfigSelection:
         cfg.server.port = 8082
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve") as serve_mock,
         ):
             result = CliRunner().invoke(cli, ["serve", "--host", "127.0.0.3", "--port", "8083"])
@@ -337,7 +337,7 @@ class TestCliConfigSelection:
         original_sources = cfg.config_sources
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve"])
@@ -348,7 +348,7 @@ class TestCliConfigSelection:
         cfg = _make_cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve", "--name", "alternate"])
@@ -361,7 +361,7 @@ class TestCliConfigSelection:
         original_sources = cfg.config_sources
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve", "--name", "default"])
@@ -532,7 +532,7 @@ class TestCmdServe:
         sim_mock = _make_sim()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.cli._load_index_for_serve", return_value=sim_mock),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve"])
@@ -556,7 +556,7 @@ class TestCmdServe:
     ) -> None:
         with (
             patch("autodj.config.load_config", return_value=_make_cfg()),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=_make_sim()),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
             patch("autodj.server.serve", side_effect=failure),
         ):
             result = CliRunner().invoke(cli, ["serve"])
@@ -590,7 +590,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=_make_cfg()),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve", side_effect=failure),
@@ -604,7 +604,7 @@ class TestCmdServe:
         sim_mock = _make_sim()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.cli._load_index_for_serve", return_value=sim_mock),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve", "--port", "9999"])
@@ -614,7 +614,7 @@ class TestCmdServe:
         cfg = _make_cfg()
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.cli._load_index_for_serve") as load_index,
             patch("autodj.server.serve") as serve_mock,
         ):
             result = CliRunner().invoke(
@@ -642,7 +642,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve") as serve_mock,
@@ -678,7 +678,7 @@ class TestCmdServe:
         weak = "do-not-print-me"
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.cli._load_index_for_serve") as load_index,
             patch("autodj.server.serve") as serve_mock,
         ):
             result = CliRunner().invoke(
@@ -710,7 +710,7 @@ class TestCmdServe:
         original_server = cfg.server
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.cli._load_index_for_serve") as load_index,
             patch("autodj.server.serve") as serve_mock,
         ):
             result = CliRunner().invoke(
@@ -739,7 +739,7 @@ class TestCmdServe:
         original_server = cfg.server
         with (
             patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir") as load_index,
+            patch("autodj.cli._load_index_for_serve") as load_index,
             patch("autodj.server.serve") as serve_mock,
         ):
             result = CliRunner().invoke(cli, ["serve", "--host", "[::1]"])
@@ -757,7 +757,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve") as serve_mock,
@@ -784,7 +784,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve") as serve_mock,
@@ -812,7 +812,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve"),
@@ -827,7 +827,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve"),
@@ -857,7 +857,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve") as serve_mock,
@@ -874,7 +874,7 @@ class TestCmdServe:
         with (
             patch("autodj.config.load_config", return_value=cfg),
             patch(
-                "autodj.similarity.SimilarityIndex.from_index_dir",
+                "autodj.cli._load_index_for_serve",
                 return_value=_make_sim(),
             ),
             patch("autodj.server.serve") as serve_mock,
@@ -1054,7 +1054,8 @@ class TestCmdListIndexes:
 
     def test_lists_named_indexes(self, tmp_path: Path) -> None:
 
-        from autodj.indexer import FEATURE_DIM, save_index
+        from autodj.catalog import LibraryCatalog
+        from autodj.indexer import FEATURE_DIM
         from tests.unit._fakes import make_entry
 
         for n, count in (("default", 5), ("workout", 12)):
@@ -1064,7 +1065,9 @@ class TestCmdListIndexes:
             for entry in entries:
                 entry.path = f"song_{entry.title}.flac"
             vectors = np.zeros((count, FEATURE_DIM), dtype=np.float32)
-            save_index(entries, vectors, d, base_generation=0)
+            with LibraryCatalog(d / "library.db") as catalog:
+                catalog.seed_entries(entries)
+                catalog.seed_vectors(entries, vectors)
         cfg_mock = _make_cfg()
         cfg_mock.index.index_dir = tmp_path / "idx"
         cfg_mock.index.name = "workout"
@@ -1073,8 +1076,8 @@ class TestCmdListIndexes:
         assert result.exit_code == 0
         assert "default" in result.output
         assert "workout" in result.output
-        assert "5 tracks" in result.output
-        assert "12 tracks" in result.output
+        assert "5 songs" in result.output
+        assert "12 songs" in result.output
 
     def test_old_format_index_needs_a_rebuild(self, tmp_path: Path) -> None:
         d = tmp_path / "idx" / "old"
@@ -1085,7 +1088,7 @@ class TestCmdListIndexes:
         with patch("autodj.config.load_config", return_value=cfg_mock):
             result = CliRunner().invoke(cli, ["list-indexes"])
         assert result.exit_code == 0
-        assert "rebuild with autodj index --force" in result.output
+        assert "migrate-index --apply" in result.output
 
     def test_skips_empty_index_dir(self, tmp_path: Path) -> None:
         (tmp_path / "idx").mkdir()
@@ -1119,7 +1122,7 @@ class TestNameValidation:
         sim_mock = _make_sim()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.similarity.SimilarityIndex.from_index_dir", return_value=sim_mock),
+            patch("autodj.cli._load_index_for_serve", return_value=sim_mock),
             patch("autodj.server.serve"),
         ):
             result = CliRunner().invoke(cli, ["serve", "--name", "../etc"])
