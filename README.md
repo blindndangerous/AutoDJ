@@ -325,7 +325,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar, and the **Hour preview**: what plays next with estimated start times, each marked fixed or predicted, and how early or late the hour lands.  See [Hour preview and backtiming](docs/operations.md#hour-preview-and-backtiming).
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
-- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. Attach matched intros: voice clips that play as the song starts, for that song or any song by its artist (see [Matched intros](docs/operations.md#matched-intros)). Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
+- **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. **Song structure** lists the song's landmarks, such as "Intro, 0:00 to 0:32", "Vocals from 0:45" and "Drop, 1:35, bar 49" (see [Song structure and landmarks](docs/operations.md#song-structure-and-landmarks)). Attach matched intros: voice clips that play as the song starts, for that song or any song by its artist (see [Matched intros](docs/operations.md#matched-intros)). Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
 - **Ads.**  Spots (advertiser, campaign, flight dates, daily and hourly limits) and ad breaks that run at chosen minutes past the hour or from a Schedule event, between two songs at the next song change.  Competing advertisers are kept apart, and the ad report lists what aired, late or on time, and what was missed and why, by advertiser and campaign, with a CSV export for affidavits.  Needs `[ads] enabled = true`; see [Ad breaks](docs/operations.md#ad-breaks).
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
@@ -365,6 +365,14 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+H** — speak how the hour lands, from the hour preview.
 - **Alt+1** to **Alt+9** — open the tab in that position: Now Playing, Queue & Search, Track info,
   History, Carts, Voice tracks, Ads, Library tools, Settings. These work in text fields too.
+- **Right bracket** / **Left bracket** — the next / previous landmark of the song (intro, vocals,
+  drop, breakdown, outro, phrase). In Track info they move the cue point preview and say it ("Preview:
+  Drop, 1:35, bar 49"). On other tabs they say the landmark of the song on air ("On air: Drop,
+  1:35, bar 49, in 0:12") and move the song there only with
+  **Bracket keys seek the song on air** on (Settings, Display and keys; off by default; never in
+  stream mode).
+- **Shift+U** — speak what is coming next in the song on air, such as "On air: Drop in 0:12,
+  6 bars".
 - **?** — open the shortcut list.
 
 Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now

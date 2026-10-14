@@ -713,6 +713,54 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     assert view["items"][9]["title"].startswith("Gold ")
 
 
+def test_fixed_open_clockwheel_step_is_predicted_until_booked(tmp_path: Path) -> None:
+    from autodj.ads import Forecast
+
+    source, power, gold = _station(tmp_path)
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    player.bus = object()
+    player._playing_render = _render(gold[0], 200, gold[1], 5)
+    player._playback_pos[0] = round(50 * SR)
+    player._render_ahead._ready = _render(gold[1], 190, gold[2], 5)
+    player._pending_entry = gold[2]
+    player._pending_offset = round(5 * SR)
+    player._cursor_serial = 7
+    player._slot_plan = SlotPlan(
+        slot_id="s1",
+        serial=7,
+        before=gold[1],
+        before_s=190,
+        ending=gold[2],
+        upcoming=power[3],
+        mode="clock",
+        liners=(),
+        next_cursor=2,
+        boundary_before=None,
+        boundary_after=None,
+        queue_reserved=None,
+        reserved=(),
+        ad_steps=(
+            {
+                "index": 0,
+                "number": 1,
+                "clock": "Main",
+                "step": {"type": "ad_break", "max_spots": 1, "max_seconds": 30},
+            },
+        ),
+    )
+    player.ad_desk = SimpleNamespace(
+        heard_snapshot=lambda: [],
+        refusal=lambda: None,
+        forecast_step=lambda _step, at, _heard: Forecast(
+            at, "Ad break: clockwheel step 1", 12.0, "one spot", False
+        ),
+    )
+    decided = read_station(player, now=NOW)
+    rows = [item for item in decided.items if item.kind == "break"]
+    assert len(rows) == 1 and rows[0].status == "predicted" and rows[0].seconds == 12.0
+
+
 class _Ads:
     """The station's ad desk, as the preview reads it: one break due at 12:25."""
 
@@ -1418,6 +1466,59 @@ def _ads_on_with_no_break_due(tmp_path: Path, player: Any) -> Any:
     ads.noticed()
     player.break_desk = desk
     return ads
+
+
+@pytest.mark.parametrize("has_spot", [False, True])
+def test_clockwheel_ad_preview_is_dry_and_shows_length_or_reason(
+    tmp_path: Path, has_spot: bool
+) -> None:
+    from autodj.ads import Spot, new_id, spot_file_name
+
+    source, _power, gold = _station(
+        tmp_path,
+        clockwheels=[
+            {
+                "name": "Main",
+                "resync_minutes": [],
+                "steps": [
+                    {"type": "ad_break", "max_spots": 1, "max_seconds": 30},
+                    category_step("gold"),
+                ],
+            }
+        ],
+    )
+    _playing(source, gold[0], NOW - 50)
+    source.ads = _ads_on_with_no_break_due(tmp_path, source.player)
+    if has_spot:
+        key = new_id()
+        source.ads.store.folder.mkdir(parents=True, exist_ok=True)
+        (source.ads.store.folder / spot_file_name(key, ".wav")).write_bytes(b"audio")
+        source.ads.store.add_spot(
+            key,
+            Spot(
+                title="Sale",
+                advertiser="Example Motors",
+                file=spot_file_name(key, ".wav"),
+                cue_start=0.0,
+                cue_segue=12.0,
+                cue_end=12.0,
+                length_s=12.0,
+            ),
+        )
+    before = source.ads.heard_snapshot()
+    view = build_preview(source, 20, now=NOW)
+    rows = [
+        item
+        for item in view["items"]
+        if item["kind"] == "break" and "clockwheel step" in item["title"]
+    ]
+    assert rows
+    assert rows[0]["seconds"] == (12.0 if has_spot else 0.0)
+    if not has_spot:
+        assert "no spot" in rows[0]["title"]
+    assert source.ads.heard_snapshot() == before
+    assert not source.ads._missed_steps and not source.ads._booked
+    assert not source.ads.log.months()
 
 
 def test_ads_on_with_no_break_due_leave_the_preview_as_with_ads_off(tmp_path: Path) -> None:

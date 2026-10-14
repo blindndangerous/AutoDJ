@@ -58,10 +58,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Spoken track landmarks (#60): a song's structure through keys and speech, in place of a
+  waveform. A new station route, `/api/landmarks`, merges the cue points, the DJ analysis (drops,
+  breakdowns, build-ups, phrases, named DJ-software cues, the beat grid for bar numbers) and the
+  synced lyrics (where the singing starts) into named landmarks, merged when they fall together
+  and kept in a cache until the song's cue points, analysis or lyrics change. Track info lists
+  them under **Song structure** ("Intro, 0:00 to 0:32", "Vocals from 0:45", "Drop, 1:35, bar 49"),
+  with times numeric on screen and in speech alike. **Right bracket** and **Left bracket** go to the next or
+  previous landmark and say it: in Track info they move the cue point preview ("Preview: Drop,
+  1:35, bar 49"); elsewhere they say the landmark of the song on air ("On air: ...,
+  in 0:12") and move the song only with the new **Bracket keys seek the song on air**
+  setting (Settings, Keyboard; off by default). **Shift+U** says what is coming next on air ("On
+  air: Drop in 0:12, 6 bars"). Each answer is said once, politely, without moving focus,
+  and the keys follow Enable keyboard shortcuts.
+- `POST /api/seek` takes an optional `path`: the song the seek is for. When another song is
+  playing, the server refuses with 409 ("The song on air has changed, so it was not moved.").
+  Pages that leave it out seek as before.
+- The lyric timing the mix and the landmarks use is read again when a song's file or its `.lrc`
+  sidecar changes, instead of being kept until restart.
 - `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
   preview, recovery copy, and safe retry after interruption.
+- Ad breaks as a clockwheel step (#51): the new **Ad break** step type plays spots from the Ads
+  tab at the song change before the next song the clockwheel picks. It holds up to **Spots in the
+  break** and **Longest break in seconds**, and can keep to one **Advertiser** or **Competing
+  category**. Its spots are picked, booked and reported like any ad break's (flight dates, limits,
+  separation, late and missed), with the source "Clockwheel step". When no spot can play, the
+  step is skipped, the music goes on and the ad report says why. The hour preview shows each ad
+  step as a predicted ad break with its expected length.
 - Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
   advertiser, campaign, competing category, flight dates and daily and hourly limits) and ad
   breaks (the minutes past the hour they run at, such as :15 and :45, with hours, days and a date

@@ -2399,6 +2399,36 @@ describe("static accessibility contracts", () => {
     expect(group.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
   });
 
+  it("gives a clockwheel ad break step labelled native fields, plain help and an error to link", () => {
+    installDocument({ html: htmlSource });
+    const option = document.querySelector('#clock-step-type option[value="ad_break"]');
+    expect(option.textContent).toBe("Ad break");
+    const field = document.querySelector("#clock-step-ad-field");
+    expect(field.classList.contains("clock-step-field")).toBe(true);
+    for (const [id, label, min, max] of [["clock-step-ad-spots", "Spots in the break", "1", "10"], ["clock-step-ad-seconds", "Longest break in seconds", "0", "900"]]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("number");
+      expect([input.getAttribute("min"), input.getAttribute("max"), input.getAttribute("step")]).toEqual([min, max, "1"]);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // Help is read by browsing, not on every focus.
+      expect(input.hasAttribute("aria-describedby")).toBe(false);
+    }
+    for (const [id, label, any] of [["clock-step-ad-advertiser", "Advertiser", "Any advertiser"], ["clock-step-ad-category", "Competing category", "Any category"]]) {
+      const select = document.getElementById(id);
+      expect(select.tagName).toBe("SELECT");
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      expect(select.options[0].value).toBe("");
+      expect(select.options[0].textContent).toBe(any);
+    }
+    expect(document.getElementById("clock-step-ad-help").textContent).toContain("0 for no limit");
+    expect(document.getElementById("clock-step-ads-notice").hidden).toBe(true);
+    const error = document.querySelector("#clock-step-ad-error");
+    expect(error.classList.contains("field-error")).toBe(true);
+    expect(error.hasAttribute("aria-live")).toBe(false);
+    expect(error.hidden).toBe(true);
+    expect(field.compareDocumentPosition(document.querySelector("#clock-add-step")) & 4).toBeTruthy(); // DOCUMENT_POSITION_FOLLOWING
+  });
+
   it("gives the schedule date range native labelled date inputs and a target-size rule", () => {
     installDocument({ html: htmlSource });
     const group = document.querySelector("#schedule-range");
@@ -2764,6 +2794,63 @@ describe("static accessibility contracts", () => {
     const rules = stripCssComments(cssSource).match(/[^{}]*(?:\.intro-list|#intro-applies|#intros-form)[^{}]*\{[^{}]*\}/g);
     expect(rules.length).toBeGreaterThan(0);
     for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  });
+
+  it("gives Track info's song structure a real list of text, silent help and token colours (#60)", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-track-info #landmarks-section");
+    expect(section.hidden).toBe(true);
+    expect(section.getAttribute("aria-labelledby")).toBe("landmarks-heading");
+    expect(document.getElementById("landmarks-heading").tagName).toBe("H3");
+    expect(document.getElementById("landmarks-heading").textContent).toBe("Song structure");
+    // A real list, named by its heading, still a list in Safari.
+    const list = document.getElementById("landmarks-list");
+    expect(list.tagName).toBe("OL");
+    expect(list.getAttribute("role")).toBe("list");
+    expect(list.getAttribute("aria-labelledby")).toBe("landmarks-heading");
+    // Never live: drawn when a song opens; the keys speak through #sr-status.
+    expect(section.querySelectorAll("[aria-live], [role='status'], [role='alert']")).toHaveLength(0);
+    expect(section.closest("[aria-live], [role=status]")).toBeNull();
+    // The help names the keys in words, not as punctuation.
+    const help = document.getElementById("landmarks-help").textContent;
+    expect(help).toMatch(/Right bracket key/);
+    expect(help).toMatch(/Left bracket key/);
+    expect(document.getElementById("landmarks-note").classList.contains("setting-desc")).toBe(true);
+    // The layout uses the shared tokens only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*\.landmark-list[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    // Items are sentences: no flex layout that would split a time from its words.
+    for (const rule of rules) expect(rule).not.toMatch(/display:\s*(?:flex|grid)/);
+  });
+
+  it("gives \"Bracket keys seek the song on air\" a native checkbox, off, with help to read (#60)", () => {
+    installDocument({ html: htmlSource });
+    const box = document.getElementById("hotkeys-bracket-seek");
+    expect(box.type).toBe("checkbox");
+    expect(box.hasAttribute("checked")).toBe(false);
+    expect(box.hasAttribute("aria-label")).toBe(false);
+    expect(document.querySelector('label[for="hotkeys-bracket-seek"]').textContent.trim())
+      .toBe("Bracket keys seek the song on air");
+    expect(box.closest("fieldset").querySelector("legend").textContent).toBe("Keyboard");
+    expect(box.parentElement.classList.contains("settings-check")).toBe(true);
+    // Help readable below it, not attached to every focus (UI wording guidance).
+    expect(box.hasAttribute("aria-describedby")).toBe(false);
+    const help = document.getElementById("hotkeys-bracket-seek-desc");
+    expect(help.classList.contains("setting-desc")).toBe(true);
+    expect(help.previousElementSibling).toBe(box.parentElement);
+    expect(help.textContent).toMatch(/Off by default\./);
+    expect(help.closest("[aria-live], [role=status]")).toBeNull();
+  });
+
+  it("lists the landmark keys in the shortcut help with spoken names (#60)", () => {
+    installDocument();
+    const modal = document.getElementById("hotkey-help-modal");
+    const help = modal.textContent.replace(/\s+/g, " ");
+    expect(help).toMatch(/Move to the next .*previous landmark/);
+    expect(help).toMatch(/Shift\+U ?Speak what is coming next in the song on air/);
+    const names = [...modal.querySelectorAll("kbd .visually-hidden")].map((node) => node.textContent);
+    expect(names).toEqual(expect.arrayContaining(["Right bracket", "Left bracket"]));
   });
 
   it("gives Library tools' intro rules labelled native fields, linked help and errors, and one status", () => {

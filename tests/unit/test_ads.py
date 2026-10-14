@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -155,6 +156,27 @@ def test_the_spot_heard_longest_ago_goes_first_and_one_advertiser_once():
     # Never heard first (by title), then one spot of each advertiser.
     assert [key for key, _spot in choice.spots] == ["3" * 32, "2" * 32]
     assert math.isclose(choice.seconds, 60.0)
+
+
+def test_clockwheel_filters_choose_spots_and_explain_empty_matches():
+    cars = ("1" * 32, spot("Example Motors", category="Car dealers"))
+    bread = ("2" * 32, spot("Sample Bakery", category="Bakers"))
+    pool = state(cars, bread)
+    selected = choose(
+        pool, ad_break(), NOON, UTC_ZONE, [], advertiser=" example motors ", category="CAR DEALERS"
+    )
+    assert [key for key, _ in selected.spots] == [cars[0]]
+    assert (
+        choose(pool, ad_break(), NOON, UTC_ZONE, [], advertiser="Missing").reason
+        == "no spot is from advertiser Missing"
+    )
+    assert (
+        choose(pool, ad_break(), NOON, UTC_ZONE, [], category="Missing").reason
+        == "no spot is in category Missing"
+    )
+    heard = [Heard(cars[0], "Example Motors", "Car dealers", NOON)]
+    missed = choose(pool, ad_break(), NOON, UTC_ZONE, heard, advertiser="Example Motors")
+    assert "no spot from advertiser Example Motors could play" in missed.reason
 
 
 def test_competing_categories_never_share_a_break_or_the_separation_time():
@@ -654,6 +676,130 @@ def test_a_due_break_is_booked_rendered_aired_and_logged(station):
     desk.maintain()
     assert all(item.path.exists() for item in booked)
     assert ads.plays_today()  # they count toward the daily limits
+
+
+def _clock_step(number=2, **fields):
+    return {
+        "index": number - 1,
+        "number": number,
+        "clock": "Morning",
+        "step": {"type": "ad_break", "max_spots": 3, "max_seconds": 0, **fields},
+    }
+
+
+def _open_clock_step(station, *steps):
+    player, _entries, _desk, ads, _clock, _break_id, _renders = station
+    run_now(station)
+    with ads._lock:
+        ads._pending.clear()
+    player._slot_plan.ad_steps = tuple(steps)
+    return player._slot_plan
+
+
+def test_clockwheel_step_books_once_and_airs_in_standalone_render(station):
+    player, _entries, desk, ads, clock, _break_id, renders = station
+    opened = _open_clock_step(station, _clock_step())
+    ads.tick()
+    assert ads.handled_count(opened.slot_id) == 1
+    assert len(booked_spots(desk)) == 2
+    ads.tick()
+    assert len(booked_spots(desk)) == 2
+    assert all(line.source == "clockwheel" for line in log_lines(ads))
+    player._on_track_start(renders[1])
+    rendered = player._next_rendered()
+    assert len(rendered.break_events) == 2
+    assert all(desk.get(item.break_id).mixed_as == "standalone" for item in booked_spots(desk))
+    player._on_track_start(rendered)
+    for first, _id, end in rendered.break_events:
+        player._on_position(first + 1)
+        player._on_position(end)
+    clock.now += 60
+    ads.tick()
+    assert {line.status for line in latest(log_lines(ads)).values()} == {"aired"}
+
+
+def test_two_clockwheel_steps_book_distinct_advertisers(station):
+    _player, _entries, desk, ads, _clock, _break_id, _renders = station
+    _open_clock_step(station, _clock_step(max_spots=1), _clock_step(3, max_spots=1))
+    ads.tick()
+    assert len(booked_spots(desk)) == 2
+    assert {line.advertiser for line in log_lines(ads)} == {"Example Motors", "Sample Bakery"}
+
+
+def test_clockwheel_step_with_ads_off_writes_no_report_line(station):
+    player, _entries, _desk, ads, _clock, _break_id, renders = station
+    _open_clock_step(station, _clock_step())
+    player._cfg.ads = AdsConfig(enabled=False)
+    ads.tick()
+    player._on_track_start(renders[1])
+    player._next_rendered()
+    ads.tick()
+    assert not log_lines(ads)
+
+
+def test_clockwheel_step_refusal_is_reported(station):
+    player, _entries, _desk, ads, _clock, _break_id, _renders = station
+    _open_clock_step(station, _clock_step())
+    player._cfg.playback = replace(player._cfg.playback, transition_mode="fixed")
+    ads.tick()
+    lines = log_lines(ads)
+    assert len(lines) == 1 and "saved segue playback" in lines[0].reason
+
+
+def test_clockwheel_step_requests_slot_and_plan_keeps_snapshot(station, monkeypatch):
+    player, entries, _desk, ads, _clock, _break_id, _renders = station
+    player._cfg.playback = replace(player._cfg.playback, pick_mode="clock")
+    player._clock_has_ad_steps = True
+    assert ads.wants_slots()
+    step = _clock_step()
+
+    def choose(*_args, **_kwargs):
+        player._chosen_clock_ad_steps = (step,)
+        player._chosen_clock_revision = player._clock_revision
+        return entries[3], "clock", (), 0, ""
+
+    monkeypatch.setattr(player, "_choose_station_next", choose)
+    plan(station)
+    assert player._slot_plan.ad_steps == (step,)
+
+
+def test_clockwheel_step_missing_spot_and_render_race_are_reported(station):
+    _player, _entries, _desk, ads, _clock, _break_id, _renders = station
+    _open_clock_step(station, _clock_step(advertiser="Missing"))
+    ads.tick()
+    missed = log_lines(ads)
+    assert len(missed) == 1 and missed[0].status == "missed"
+    assert "no spot is from advertiser Missing" in missed[0].reason
+
+
+def test_clockwheel_step_rendered_before_booking_is_reported(station):
+    player, _entries, _desk, ads, _clock, _break_id, renders = station
+    _open_clock_step(station, _clock_step(4))
+    player._on_track_start(renders[1])
+    player._next_rendered()
+    ads.tick()
+    assert any(
+        "rendered before its spots could be booked" in line.reason for line in log_lines(ads)
+    )
+
+
+def test_clockwheel_forecast_does_not_book_or_log(station):
+    _player, _entries, desk, ads, clock, _break_id, _renders = station
+    heard = ads.heard_snapshot()
+    forecast = ads.forecast_step(_clock_step(), clock.now, heard)
+    assert forecast is not None and forecast.seconds == 4.0
+    assert len(heard) == 2
+    assert not booked_spots(desk) and not log_lines(ads)
+
+
+def test_consecutive_clockwheel_forecasts_share_heard_spots(station):
+    _player, _entries, _desk, ads, clock, _break_id, _renders = station
+    heard = ads.heard_snapshot()
+    first = ads.forecast_step(_clock_step(max_spots=1), clock.now, heard)
+    second = ads.forecast_step(_clock_step(3, max_spots=1), clock.now, heard)
+    assert first is not None and second is not None
+    assert first.seconds == second.seconds == 2.0
+    assert len({play.advertiser for play in heard}) == 2
 
 
 def test_delayed_break_uses_expected_airtime_across_midnight_and_separation(station, monkeypatch):
