@@ -575,15 +575,32 @@ carry the same album name counts as one album, again the stricter limit.
   library) does AutoDJ break one: it plays a song that breaks the fewest limits,
   and logs a warning naming each one. The music never stops.
 - Songs you queue from Search or Library: Play now, Play next and Add to queue
-  check the limits at the time the song is expected to start, worked out from
-  the lengths of the song playing and the songs queued before it. If the song
-  would break a limit, nothing is queued; a dialog names the limit in words and
-  offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing Queue
-  anyway queues it and logs a warning; Cancel leaves the queue as it was. The
-  result is spoken either way. The expected start is an estimate: crossfades and
-  skips move it, so near a three-hour boundary, check again before relying on it.
+  check the limits at the time the song is expected to start, timed as the
+  hour preview times the queue (see [Expected start times](#expected-start-times)).
+  If the song would break a limit, nothing is queued; a dialog names the limit in
+  words and offers **Queue anyway** (or **Play anyway**) and **Cancel**. Choosing
+  Queue anyway queues it and logs a warning; Cancel leaves the queue as it was.
+  The result is spoken either way. The expected start is an estimate: skips and
+  later queue edits move it, so near a three-hour boundary, check again before
+  relying on it.
   A queued song plays even if it breaks a limit when it starts, and the log
   says so.
+
+### Expected start times
+
+The DMCA and repeat checks on queued songs, listener requests and shows use the hour preview's
+timing for when a song will start:
+
+- The song playing counts from where it is now, so a seek moves the queue.
+- A song the server has already mixed keeps its mixed handoff and the speed it was mixed at.
+- Other songs hand over at their saved start and segue cues, or the crossfade, at the current
+  music speed. Liners keep their own length and overlap cues.
+- A song put ahead of one that is already mixed counts as taking its place, as it does once the
+  mix is redone. If the song playing ends before the new mix is ready, the change lands one song
+  later.
+
+Automatic liners, breaks not yet booked and skips are not known in advance, so the time is an
+estimate.
 
 ### Public pages
 
@@ -829,9 +846,13 @@ the show's waiting songs and the listener is told only that it plays "after the 
 
 For the last check, AutoDJ looks at each place in the queue that would start within
 `window_minutes`. The first place, after the song playing and any "play next" song, always counts.
-For each place, AutoDJ projects when the song would start. It then checks the repeat rules (track,
+For each place, AutoDJ works out when the song would start, as the hour preview times the queue
+([Expected start times](#expected-start-times)). It then checks the repeat rules (track,
 artist, album, title, and related tracks and artists) as of then, and in
-[DMCA mode](#dmca-mode) the DMCA limits too. Of the places that break nothing, it picks the one
+[DMCA mode](#dmca-mode) the DMCA limits too. It also checks the queued songs after that place
+again: a place where a later song would break a rule only because the request is ahead of it
+counts as breaking that rule, named as "Artist — Song after it: same artist". A rule a queued
+song breaks already does not count against the request. Of the places that break nothing, it picks the one
 where the song joins its neighbours most smoothly. It weighs sound (the embeddings), tempo (half
 and double time count as a match), Camelot key and the step in energy, and the sooner place wins a
 tie. Working out the place and adding the song there happen as one step, so the queue cannot
@@ -846,7 +867,7 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
 - **Approve** queues it at that place, checked again at that moment. It is left out while no place
   keeps the rules.
 - **Play next** queues it first, after the song playing and any "play next" song, whatever fits.
-  DMCA limits still hold, counting that "play next" song.
+  DMCA limits still hold, counting that "play next" song, and for the queued songs after it.
 - **Turn down**.
 
 Focus moves to the next request's Approve button (its first button when Approve is not offered),

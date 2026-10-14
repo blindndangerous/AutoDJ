@@ -719,21 +719,20 @@ class _OnAir:
 def dmca_limits_at(bridge: Any, entry: Any, view: Any, position: int) -> tuple[str, ...]:
     """The DMCA limits *entry* would break at *position* of the user queue in *view*.
 
-    Its start is projected from track lengths: after the playing song, any
-    "play next" song and the queue before *position*.  Empty when DMCA mode
-    is off.  Takes ``history_lock`` for a copy, never ``queue_lock``.
+    Its start is timed as the hour preview times the queue (#217): after
+    the playing song, any "play next" song and the queue before *position*
+    (:meth:`~autodj._bridge.PlayerBridge.history_ahead`).  Empty when DMCA
+    mode is off.  Never holds ``queue_lock`` while it works.
     """
     player = bridge.player
     if not player._cfg.dmca.enabled:
         return ()
-    from autodj.dmca import complement, projected_history
+    from autodj.dmca import complement
 
-    state = player._state
-    with state.history_lock:
-        history = list(state.play_history)
-    before = [view.queued_next] if view.queued_next is not None else []
-    before.extend(view.queue[:position])
-    records, when = projected_history(history, state.clock(), view.current, before)
+    waiting = [view.queued_next] if view.queued_next is not None else []
+    index = len(waiting) + position
+    waiting.extend(view.queue)
+    records, when = bridge.history_ahead(waiting, index, entry)
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 

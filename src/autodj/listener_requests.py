@@ -12,7 +12,9 @@ who can reach the server searches the library and requests a song (see
    blocked artist, not already playing, coming up or waiting;
 5. where it would play: :meth:`PlayerBridge.request_slots` checks the
    repeat rules, the same-song window and, in DMCA mode, the DMCA limits
-   at each place in the queue within ``window_minutes``.
+   at each place in the queue within ``window_minutes``, timed as the hour
+   preview times the queue, and the queued songs after each place again
+   with the request ahead of them (#218).
 
 With ``approval = "manual"`` an accepted request waits for the operator;
 with ``"auto"`` it joins the queue at once.  Either way it goes to the
@@ -1045,6 +1047,9 @@ class RequestDesk:
 
     def play_next(self, request_id: str) -> ListenerRequest:
         """Queue a waiting request first, whatever fits; DMCA limits still hold.
+
+        They hold for the queued songs after it too: a limit one of them
+        would break only because of the request refuses it (#218).
 
         Raises:
             KeyError: No request with that id is waiting.

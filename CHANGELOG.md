@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- DMCA checks on queued songs, listener request placement and show songs now use the hour
+  preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
+  overlapping liners and music speed, instead of whole file lengths (#217).
+- A listener request is no longer placed where a queued song after it would then break a repeat
+  rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
+
 - History shows only the time on each play, with a date heading for each day instead of
   repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
 

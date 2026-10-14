@@ -27,6 +27,7 @@ from autodj.audience import StreamAudience
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
+    from autodj.repeat_rules import PlayRecord
     from autodj.settings_bodies import PlaybackSettingsBody
 
 logger = logging.getLogger(__name__)
@@ -160,10 +161,13 @@ class RequestSlot:
 
     Attributes:
         position: Its index in the user queue; 0 plays first.
-        starts_in: Seconds from now until it would start, from track lengths.
+        starts_in: Seconds from now until it would start, timed as the hour
+            preview times the queue.
         before: The track it would follow, or ``None``.
         after: The queued track that would follow it, or ``None``.
-        problems: The rules it would break there, in words ("same artist").
+        problems: The rules it would break there, in words ("same artist"),
+            and the ones it would make a queued song after it break ("Artist
+            — Song after it: same artist").
         dmca: Those of *problems* that are DMCA limits.
     """
 
@@ -1518,39 +1522,69 @@ class PlayerBridge:
         self.skip()
         return True
 
-    def _played_seconds(self, entry: IndexEntry) -> float:
-        """How long *entry* plays at the station's music speed, in seconds."""
-        length = float(entry.length)
-        rate = getattr(self.player, "music_playback_rate", None)
-        value = rate(entry) if callable(rate) else 1.0
-        if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
-            return length
-        return length / float(value)
+    def _playout_head(self, now: float) -> Any:
+        """The fixed part of the playout, as the hour preview reads it (#217).
+
+        Only the song on the air, timed from its cues, while the live read
+        finds nothing (the station stopped, or between songs).  Takes no
+        lock beyond the brief copies the preview's read takes.
+        """
+        from autodj.hour_preview import read_head, rough_head
+
+        desk = getattr(self.player, "break_desk", None)
+        return read_head(self.player, desk, now=now) or rough_head(self.player, now=now)
+
+    def history_ahead(
+        self, waiting: list[IndexEntry], index: int, entry: IndexEntry
+    ) -> tuple[list[PlayRecord], float]:
+        """The play history as it will stand when *entry*, put at *index* of *waiting*, starts.
+
+        Also returns that start.  *waiting* is the "play next" song and the
+        user queue.  Timed as the hour preview times the queue (#217): from
+        the playing song's position, the renders' own handoffs and music
+        speed, and saved cues for the rest (:func:`autodj.hour_preview.time_queue`).
+        Takes ``history_lock`` and the preview's brief locks one after the
+        other, never ``queue_lock`` together with another.
+        """
+        from autodj.hour_preview import history_at, time_queue
+
+        state = self.player._state
+        now = state.clock()
+        with state.history_lock:
+            history = list(state.play_history)
+        head = self._playout_head(now)
+        timed = time_queue(self.player, head, waiting, insert=(index, entry), limit=None)
+        when = timed.starts[index]
+        when = timed.handoff if when is None else when
+        return history_at(history, head, timed.unplayed, when), when
 
     def dmca_queue_limits(self, entry: IndexEntry, *, now: bool, append: bool) -> tuple[str, ...]:
         """The DMCA limits *entry* would break where it is about to be queued.
 
-        Its start is projected from track lengths at the music speed: after
-        the playing track (unless *now*), and with *append* after everything already queued
-        too.  Empty when DMCA mode is off or no limit is broken.
+        Now (*now*), next in the "play next" place, or with *append* after
+        everything already queued, its start timed as the hour preview
+        times the queue (:meth:`history_ahead`).  Empty when DMCA mode is
+        off or no limit is broken.
         """
-        from autodj.dmca import complement, projected_history
+        from autodj.dmca import complement
 
         player = self.player
         if not player._cfg.dmca.enabled:
             return ()
         state = player._state
-        with state.history_lock:
-            history = list(state.play_history)
-        with state.queue_lock:
-            waiting = [*([state.queued_next] if state.queued_next else []), *state.queue]
-        records, when = projected_history(
-            history,
-            state.clock(),
-            None if now else state.current_track,
-            waiting if append else [],
-            length=self._played_seconds,
-        )
+        if now:
+            with state.history_lock:
+                records, when = list(state.play_history), state.clock()
+        else:
+            with state.queue_lock:
+                queue = list(state.queue)
+                queued_next = state.queued_next
+            if append:
+                waiting = [*([queued_next] if queued_next else []), *queue]
+                records, when = self.history_ahead(waiting, len(waiting), entry)
+            else:
+                # Play next takes the "play next" place, ahead of the queue.
+                records, when = self.history_ahead(queue, 0, entry)
         return complement(records, when, player._track_keys()).broken(entry)
 
     def queue_add(self, path: str) -> bool:
@@ -1585,9 +1619,14 @@ class PlayerBridge:
 
         One slot per queue position whose projected start is within
         *horizon_s* of now (the first, after the playing track and any
-        "play next" track, always counts).  Each start is projected from
-        track lengths at the music speed, and the repeat rules, the same-song window and, in
-        DMCA mode, the DMCA limits are checked as of that start.
+        "play next" track, always counts).  Starts are timed as the hour
+        preview times the queue (#217, :func:`autodj.hour_preview.time_queue`),
+        and the repeat rules, the same-song window and, in DMCA mode, the
+        DMCA limits are checked as of each start.  The queued songs after
+        the place are checked again with *entry* there (#218): a rule one
+        of them would break only because of it counts as a problem of the
+        place ("Song after it: same artist"); one it breaks already does
+        not, so an operator's earlier choice never stops a request.
 
         Lock order: this holds no lock while it works.  It copies the
         history under ``history_lock`` and the queue (*view*) under
@@ -1595,7 +1634,8 @@ class PlayerBridge:
         it never makes the mix bus (which takes ``queue_lock``) wait on the
         projection, the key cache or the library.
         """
-        from autodj.dmca import complement, projected_history
+        from autodj.dmca import complement
+        from autodj.hour_preview import Timed, history_at, time_queue
         from autodj.repeat_rules import SongVersions, build_filter
 
         player = self.player
@@ -1607,6 +1647,7 @@ class PlayerBridge:
         view = view if view is not None else self._queue_view()
         fixed = [view.queued_next] if view.queued_next is not None else []
         queue = list(view.queue)
+        waiting = [*fixed, *queue]
         current = view.current
         now = state.clock()
         rules = state.rules
@@ -1617,33 +1658,66 @@ class PlayerBridge:
         found = song_versions() if callable(song_versions) else None
         versions = found if isinstance(found, SongVersions) else None
         dmca = bool(player._cfg.dmca.enabled)
-        slots: list[RequestSlot] = []
-        for position in range(len(queue) + 1):
-            waiting = [*fixed, *queue[:position]]
-            records, when = projected_history(
-                history, now, current, waiting, length=self._played_seconds
-            )
-            if position and when - now > horizon_s:
-                break
+        head = self._playout_head(now)
+        liners = head.liners
+
+        def check(song: IndexEntry, timed: Timed, when: float) -> tuple[list[str], list[str]]:
+            """The rules *song* breaks starting at *when*, and the DMCA limits among them."""
+            records = history_at(history, head, timed.unplayed, when)
+            before = [e.path for e, at in timed.unplayed if at < when]
             repeat, minute_paths = build_filter(records, rules, when, keys)
-            ahead = [*recent, *(e.path for e in (current, *waiting) if e is not None)]
+            ahead = [*recent, *([current.path] if current is not None else []), *before]
             window = deque(ahead, maxlen=track_window) if track_window else deque()
             problems: list[str] = []
             held = {*window, *minute_paths}
             if versions is not None:
                 # With Count versions as one song, every version of a song held back.
                 held = set(versions.with_versions(held))
-            if entry.path in held:
+            if song.path in held:
                 problems.append("same song")
-            if (why := repeat.reason(entry)) is not None:
+            if (why := repeat.reason(song)) is not None:
                 problems.append(why)
-            broken = complement(records, when, keys).broken(entry) if dmca else ()
+            broken = list(complement(records, when, keys).broken(song)) if dmca else []
             problems.extend(broken)
+            return problems, broken
+
+        # What the queued songs break as they are: an earlier choice, not the request's doing.
+        base = time_queue(player, head, waiting, limit=None)
+        already: list[tuple[set[str], set[str]]] = []
+        for index, song in enumerate(waiting):
+            when = base.starts[index]
+            if song.path in liners or when is None:
+                already.append((set(), set()))
+                continue
+            problems, broken = check(song, base, when)
+            already.append((set(problems), set(broken)))
+        slots: list[RequestSlot] = []
+        for position in range(len(queue) + 1):
+            index = len(fixed) + position
+            timed = time_queue(player, head, waiting, insert=(index, entry), limit=None)
+            when = timed.starts[index]
+            when = timed.handoff if when is None else when
+            if position and when - now > horizon_s:
+                break
+            problems, broken = check(entry, timed, when)
+            order = [*waiting[:index], entry, *waiting[index:]]
+            for later in range(index + 1, len(order)):
+                song = order[later]
+                later_when = timed.starts[later]
+                if song.path in liners or later_when is None:
+                    continue
+                was, was_dmca = already[later - 1]
+                now_problems, now_broken = check(song, timed, later_when)
+                name = song.display_name
+                problems.extend(f"{name} after it: {why}" for why in now_problems if why not in was)
+                broken.extend(
+                    f"{name} after it: {why}" for why in now_broken if why not in was_dmca
+                )
             slots.append(
                 RequestSlot(
                     position=position,
                     starts_in=max(0.0, when - now),
-                    before=waiting[-1] if waiting else current,
+                    before=waiting[index - 1] if index else current,
                     after=queue[position] if position < len(queue) else None,
                     problems=tuple(problems),
                     dmca=tuple(broken),
