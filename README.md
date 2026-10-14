@@ -382,9 +382,8 @@ a focused button and arrow keys operate the focused slider or tab. Open dialogs 
 shortcuts inactive. With NVDA in browse mode, press NVDA+F2 and then a shortcut to pass that one
 key through to the page.
 
-A new track is announced while the Now Playing tab is showing. To hear it on every tab, turn on
-**Announce track changes on every tab** under Settings, Display and keys; the choice is saved in this
-browser only.
+A new track is announced while the Now Playing tab is showing. **Announce track changes** under
+Settings, Display and keys can make that every tab, or off; the choice is saved in this browser only.
 
 To turn the shortcuts off, clear **Enable keyboard shortcuts** under Settings, Display and keys. The
 setting is on by default and is saved in this browser only, not on the server. With it off, no

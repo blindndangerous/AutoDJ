@@ -1169,24 +1169,30 @@ describe("app request behavior", () => {
     expect(document.querySelector("#badges-announce")).toBeNull();
   });
 
-  it("speaks a track change on other tabs only when Settings asks for it", async () => {
+  it("speaks a track change on every tab, only on Now Playing, or not at all", async () => {
     const { webSocket } = await setupApp();
     const region = document.querySelector("#track-announce");
-    const optIn = document.querySelector("#announce-all-tabs");
+    const choice = document.querySelector("#announce-track-changes");
     const push = (path) => webSocket.onmessage({ data: JSON.stringify({
       current_track: { path, artist: "Artist", title: path },
       queue: [], eq: {}, volume: 1,
     }) });
     document.querySelector("#panel-now").hidden = true;
 
-    expect(optIn.checked).toBe(false);
+    expect(choice.value).toBe("now");
     push("one.mp3");
     expect(region.textContent).not.toContain("one.mp3");
 
-    optIn.checked = true;
-    optIn.dispatchEvent(new Event("change"));
+    choice.value = "all";
+    choice.dispatchEvent(new Event("change"));
     push("two.mp3");
     expect(region.textContent).toBe("Artist — two.mp3");
+
+    document.querySelector("#panel-now").hidden = false;
+    choice.value = "off";
+    choice.dispatchEvent(new Event("change"));
+    push("three.mp3");
+    expect(region.textContent).not.toContain("three.mp3");
   });
 
   it("leaves focus where a skip or mute key found it, and says the mute state", async () => {

@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Announce track changes is now a choice: on every tab, only on Now Playing, or off (#309).
+- The handoff note under Up Next is no longer spoken and is shorter (#308).
 - Times the server writes on the page, such as the hour preview, now use 24-hour time like the
   rest of the server's text. Predicted ad breaks give their length as 1:00 rather than about 60
   seconds (#281).
