@@ -2491,22 +2491,35 @@ ends.
 
 ### Keys
 
-- **Right bracket** and **Left bracket** move to the next and previous landmark and say it, for
-  example "Drop, 1 minute 35 seconds, bar 49". While Track info shows, they move the cue point
-  preview, whether it is playing or paused, so **Use preview position** then copies that time into
-  a cue point. On any other tab they move the song on air, as Comma and Period do, which is not
-  possible in stream mode. Left bracket goes back to the start of the landmark you are in, or to
-  the one before when you are within a second of it.
+- **Right bracket** and **Left bracket** go to the next and previous landmark and say it. Each
+  answer starts with what it is about: "Preview:" or "On air:".
+  - While Track info shows, they move the cue point preview, whether it is playing or paused, and
+    say "Preview: Drop, 1 minute 35 seconds, bar 49". **Use preview position** then copies that
+    time into a cue point.
+  - On any other tab they speak about the song on air, from where it is playing: "On air: Drop,
+    1 minute 35 seconds, bar 49, in 12 seconds" (or "8 seconds ago" for Left bracket). They do not
+    move it, because listeners would hear the jump.
+  - To have them move the song on air too, turn on **Bracket keys seek the song on air** under
+    Settings, Display and keys, Keyboard. It is off by default and saved in this browser only.
+    Seeking is not possible in stream mode, and a seek names the song it is for: when another song
+    is playing by the time it reaches the server, nothing moves and the page says "The song on air
+    has changed, so it was not moved."
+  - Left bracket goes back to the start of the landmark you are in, or to the one before when you
+    are within a second of it.
 - **Shift+U** says what is coming next in the song on air, with the seconds and, when the tempo is
-  known, the bars: "Drop in 12 seconds, 6 bars", "Outro starts in 30 seconds, 15 bars". After the
-  last landmark it says how long the song has left. With several stations it starts with the
-  station's name.
+  known, the bars: "On air: Drop in 12 seconds, 6 bars", "On air: Outro starts in 30 seconds, 15
+  bars". After the last landmark it says how long the song has left. With several stations it
+  starts with the station's name.
 
 Each key says its answer once, politely, and never moves focus. They are single-key shortcuts, so
 **Enable keyboard shortcuts** (Settings, Display and keys) turns them off with the rest. Neither
 bracket nor Shift+U is used by the browsers or by NVDA and JAWS outside browse mode; in browse
 mode, use focus mode, or press NVDA+F2 or JAWS Insert+3 first to pass the key through. On a
-keyboard layout that types brackets with AltGr, AltGr and the bracket key work.
+keyboard layout that types brackets with AltGr, AltGr and the bracket key work; Ctrl+Alt with the
+bracket keys of a US layout is left to the browser and the screen reader.
+
+The song on air is looked up afresh on every key press, and the server keeps each song's answer
+until its cue points, its analysis or its lyrics (the audio file or its `.lrc` sidecar) change.
 
 The landmarks are read through the station the page controls, at `GET /api/landmarks?path=...`
 or `/api/stations/<slug>/landmarks?path=...`, for a song in the library only.

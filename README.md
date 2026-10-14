@@ -361,11 +361,14 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Shift+J** — speak the library job status: what is running, for how long, and how far it has
   got as a percentage when the job shows one, or how the last job ended.
 - **Shift+H** — speak how the hour lands, from the hour preview.
-- **Right bracket** / **Left bracket** — move to the next / previous landmark of the song (intro,
-  vocals, drop, breakdown, outro, phrase) and say it, such as "Drop, 1 minute 35 seconds, bar 49".
-  In Track info they move the cue point preview; on other tabs, the song on air (not in stream
-  mode).
-- **Shift+U** — speak what is coming next in the song on air, such as "Drop in 12 seconds, 6 bars".
+- **Right bracket** / **Left bracket** — the next / previous landmark of the song (intro, vocals,
+  drop, breakdown, outro, phrase). In Track info they move the cue point preview and say it ("Preview:
+  Drop, 1 minute 35 seconds, bar 49"). On other tabs they say the landmark of the song on air ("On
+  air: Drop, 1 minute 35 seconds, bar 49, in 12 seconds") and move the song there only with
+  **Bracket keys seek the song on air** on (Settings, Display and keys; off by default; never in
+  stream mode).
+- **Shift+U** — speak what is coming next in the song on air, such as "On air: Drop in 12 seconds,
+  6 bars".
 - **?** — open the shortcut list.
 
 Every shortcut works from any tab, except Space and the Up and Down arrows, which work on Now

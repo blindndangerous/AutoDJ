@@ -114,23 +114,34 @@ describe("landmark keys and Track info", () => {
   let request;
   let speak;
   let playing;
-  let seekPlaying;
+  let seekOn;
+  let streaming;
+  let applyLocalSeek;
+  let seekReply;
   let landmarks;
 
   function openTrackInfo(path = ANSWER.path) {
     el("panel-track-info").hidden = false;
     el("points-preview").setAttribute("src", `/api/audio?path=${encodeURIComponent(path)}`);
   }
+  const seeks = () => request.mock.calls.filter(([url]) => url === "/api/seek");
+  const landmarkCalls = () => request.mock.calls.filter(([url]) => url.startsWith("/api/landmarks"));
 
   beforeEach(() => {
     selectStation("default");
     document.body.innerHTML = `<section id="panel-track-info" hidden>${section}<audio id="points-preview"></audio></section>
       <button id="elsewhere">Elsewhere</button>`;
-    request = vi.fn(async () => ANSWER);
+    seekReply = async () => ({ elapsed: 0 });
+    request = vi.fn(async (url) => (url === "/api/seek" ? seekReply() : ANSWER));
     speak = vi.fn();
     playing = { path: ANSWER.path, position: 50, duration: 250, bpm: 120 };
-    seekPlaying = vi.fn();
-    landmarks = installLandmarks({ document, request, speak, getPlaying: () => playing, seekPlaying });
+    seekOn = false;
+    streaming = false;
+    applyLocalSeek = vi.fn();
+    landmarks = installLandmarks({
+      document, request, speak, getPlaying: () => playing, applyLocalSeek,
+      seekOnAir: () => seekOn, isStreamMode: () => streaming,
+    });
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -166,7 +177,7 @@ describe("landmark keys and Track info", () => {
     expect(empty.closest("[aria-live], [role=status]")).toBeNull();
   });
 
-  it("moves the cue point preview from landmark to landmark in Track info and says each once", async () => {
+  it("moves the cue point preview in Track info and says each landmark once, as the preview's", async () => {
     landmarks.load({ path: ANSWER.path, kind: "music" });
     await settle();
     openTrackInfo();
@@ -176,24 +187,27 @@ describe("landmark keys and Track info", () => {
     preview.currentTime = 50;
     await landmarks.jump(1);
     expect(preview.currentTime).toBeCloseTo(63);
-    expect(speak).toHaveBeenLastCalledWith("Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1 minute 3 seconds, bar 33");
     await landmarks.jump(1);
     expect(preview.currentTime).toBeCloseTo(95.2);
-    expect(speak).toHaveBeenLastCalledWith("Drop, 1 minute 35 seconds, bar 49");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Drop, 1 minute 35 seconds, bar 49");
     await landmarks.jump(-1);
-    expect(speak).toHaveBeenLastCalledWith("Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("Preview: Phrase, 1 minute 3 seconds, bar 33");
     expect(speak).toHaveBeenCalledTimes(3);
-    // Never the song on air, never focus.
-    expect(seekPlaying).not.toHaveBeenCalled();
+    // Never the song on air, never focus, whatever the seek setting.
+    seekOn = true;
+    await landmarks.jump(1);
+    expect(seeks()).toHaveLength(0);
+    expect(applyLocalSeek).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(focused);
     preview.currentTime = 240;
     await landmarks.jump(1);
-    expect(speak).toHaveBeenLastCalledWith("No more landmarks after the preview position.");
+    expect(speak).toHaveBeenLastCalledWith("Preview: No more landmarks after the preview position.");
     preview.currentTime = 0;
     await landmarks.jump(-1);
-    expect(speak).toHaveBeenLastCalledWith("No landmark before the preview position.");
-    // One answer served every key.
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenLastCalledWith("Preview: No landmark before the preview position.");
+    // The song shown in Track info is asked about once.
+    expect(landmarkCalls()).toHaveLength(1);
   });
 
   it("asks for a song when Track info shows none", async () => {
@@ -203,31 +217,76 @@ describe("landmark keys and Track info", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("moves the song on air on other tabs, through the page's seek", async () => {
+  it("only says the landmark of the song on air by default, never moving it", async () => {
     await landmarks.jump(1);
-    expect(seekPlaying).toHaveBeenCalledWith(63, "Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1 minute 3 seconds, bar 33, in 13 seconds");
     playing = { ...playing, position: 100 };
     await landmarks.jump(-1);
-    expect(seekPlaying).toHaveBeenLastCalledWith(95.2, "Drop, 1 minute 35 seconds, bar 49");
-    // The answer is kept: two keys, one request.
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenLastCalledWith("On air: Drop, 1 minute 35 seconds, bar 49, 5 seconds ago");
+    expect(seeks()).toHaveLength(0);
+    expect(applyLocalSeek).not.toHaveBeenCalled();
+    // Asked afresh on every key: the song on air moves on.
+    expect(landmarkCalls()).toHaveLength(2);
     playing = { ...playing, position: 245 };
     await landmarks.jump(1);
-    expect(speak).toHaveBeenLastCalledWith("No more landmarks after this point in the song.");
+    expect(speak).toHaveBeenLastCalledWith("On air: No more landmarks after this point in the song.");
     playing = null;
     await landmarks.jump(1);
-    expect(speak).toHaveBeenLastCalledWith("Nothing is playing.");
-    expect(seekPlaying).toHaveBeenCalledTimes(2);
+    expect(speak).toHaveBeenLastCalledWith("On air: Nothing is playing.");
   });
 
-  it("says what is coming next on air", async () => {
+  it("moves the song on air with the setting on, naming the song, then follows locally", async () => {
+    seekOn = true;
+    await landmarks.jump(1);
+    expect(seeks()).toHaveLength(1);
+    expect(JSON.parse(seeks()[0][1].body)).toEqual({ seconds: 63, path: ANSWER.path });
+    expect(applyLocalSeek).toHaveBeenCalledWith(63);
+    expect(speak).toHaveBeenLastCalledWith("On air: Phrase, 1 minute 3 seconds, bar 33");
+    expect(speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to seek in stream mode, saying so once", async () => {
+    seekOn = true;
+    streaming = true;
+    await landmarks.jump(1);
+    expect(seeks()).toHaveLength(0);
+    expect(applyLocalSeek).not.toHaveBeenCalled();
+    expect(speak.mock.calls).toEqual([["Seeking is not available while streaming."]]);
+  });
+
+  it("says once that the song changed when the server refuses the seek, and does not move", async () => {
+    seekOn = true;
+    seekReply = async () => {
+      throw Object.assign(new Error("The song on air has changed, so it was not moved."), { status: 409 });
+    };
+    await landmarks.jump(1);
+    expect(applyLocalSeek).not.toHaveBeenCalled();
+    expect(speak.mock.calls).toEqual([["The song on air has changed, so it was not moved."]]);
+    seekReply = async () => { throw Object.assign(new Error("Server error"), { status: 500 }); };
+    await landmarks.jump(1);
+    expect(speak).toHaveBeenLastCalledWith("Could not move the song on air: Server error");
+  });
+
+  it("says nothing when the song changes while its landmarks load", async () => {
+    seekOn = true;
+    request.mockImplementationOnce(async () => {
+      playing = { ...playing, path: "/music/next.flac" };
+      return ANSWER;
+    });
+    await landmarks.jump(1);
+    expect(seeks()).toHaveLength(0);
+    expect(speak).not.toHaveBeenCalled();
+  });
+
+  it("says what is coming next on air, asked afresh each time", async () => {
     playing = { ...playing, position: 87.2 };
-    await expect(landmarks.upcoming()).resolves.toBe("Drop in 8 seconds, 4 bars.");
+    await expect(landmarks.upcoming()).resolves.toBe("On air: Drop in 8 seconds, 4 bars.");
     // The server's tempo and length stand in when the page has none.
     playing = { path: ANSWER.path, position: 200, duration: 0, bpm: 0 };
-    await expect(landmarks.upcoming()).resolves.toBe("Outro starts in 30 seconds, 15 bars.");
+    await expect(landmarks.upcoming()).resolves.toBe("On air: Outro starts in 30 seconds, 15 bars.");
+    expect(landmarkCalls()).toHaveLength(2);
     playing = null;
-    await expect(landmarks.upcoming()).resolves.toBe("Nothing is playing.");
+    await expect(landmarks.upcoming()).resolves.toBe("On air: Nothing is playing.");
   });
 
   it("says nothing for a reply from a station the page has left", async () => {
@@ -239,20 +298,7 @@ describe("landmark keys and Track info", () => {
     expect(speak).not.toHaveBeenCalled();
   });
 
-  it("asks again after cue points are saved, and per station", async () => {
-    await landmarks.upcoming();
-    await landmarks.upcoming();
-    expect(request).toHaveBeenCalledTimes(1);
-    landmarks.invalidate(ANSWER.path);
-    await landmarks.upcoming();
-    expect(request).toHaveBeenCalledTimes(2);
-    selectStation("night");
-    await landmarks.upcoming();
-    expect(request).toHaveBeenCalledTimes(3);
-    selectStation("default");
-  });
-
-  it("draws the station's own answer again on a station switch", async () => {
+  it("draws the station's own answer again on a station switch or a save", async () => {
     landmarks.load({ path: ANSWER.path, kind: "music" });
     await settle();
     request.mockResolvedValueOnce({ ...ANSWER, landmarks: LANDMARKS.slice(0, 2) });
@@ -262,6 +308,6 @@ describe("landmark keys and Track info", () => {
     landmarks.clear();
     expect(el("landmarks-section").hidden).toBe(true);
     landmarks.refresh();
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(landmarkCalls()).toHaveLength(2);
   });
 });

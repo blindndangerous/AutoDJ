@@ -40,7 +40,7 @@ export function formatPointTime(value) {
 }
 
 
-const NO_LANDMARKS = { load() {}, clear() {}, refresh() {}, invalidate() {} };
+const NO_LANDMARKS = { load() {}, clear() {}, refresh() {} };
 
 // landmarks: Track info's Song structure (modules/landmarks.js, #60).
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders, landmarks = NO_LANDMARKS }) {
@@ -436,7 +436,6 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
       // New cue points can move the intro, outro and segue landmarks.
-      landmarks.invalidate(currentPath);
       landmarks.refresh();
       pointSay(`Saved changes to ${currentName}.`);
       return true;

@@ -558,6 +558,41 @@ describe("keyboard shortcut toggle (WCAG 2.1.4)", () => {
     expect(jumpLandmark).toHaveBeenCalledWith(1);
   });
 
+  it("keeps \"Bracket keys seek the song on air\" off by default, and saves the choice (#60)", async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+    vi.resetModules();
+    const hotkeys = await import("../../src/autodj/static/modules/hotkeys.js");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    hotkeys.installHotkeys({ bracketSeekToggle: box });
+    expect(box.checked).toBe(false);
+    expect(hotkeys.bracketSeekEnabled()).toBe(false);
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    expect(hotkeys.bracketSeekEnabled()).toBe(true);
+    expect(storage.setItem).toHaveBeenLastCalledWith("autodj.bracketSeek", "on");
+
+    vi.stubGlobal("localStorage", memoryStorage({ "autodj.bracketSeek": "on" }));
+    vi.resetModules();
+    const saved = await import("../../src/autodj/static/modules/hotkeys.js");
+    expect(saved.bracketSeekEnabled()).toBe(true);
+
+    vi.stubGlobal("localStorage", {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+    });
+    vi.resetModules();
+    const blocked = await import("../../src/autodj/static/modules/hotkeys.js");
+    const offBox = document.createElement("input");
+    offBox.type = "checkbox";
+    blocked.installHotkeys({ bracketSeekToggle: offBox });
+    expect(offBox.checked).toBe(false);
+    offBox.checked = true;
+    expect(() => offBox.dispatchEvent(new Event("change"))).not.toThrow();
+    expect(blocked.bracketSeekEnabled()).toBe(true);
+  });
+
   it("starts with the saved choice and defaults on when storage throws", async () => {
     vi.stubGlobal("localStorage", memoryStorage({ [STORAGE_KEY]: "off" }));
     vi.resetModules();
@@ -612,14 +647,26 @@ describe("landmark keys (#60)", () => {
     expect(jumpLandmark).toHaveBeenCalledTimes(2);
   });
 
-  it("accepts a bracket typed with AltGr, which the browser reports as Ctrl+Alt", () => {
+  it("accepts a bracket the layout typed with AltGr, which the browser reports as Ctrl+Alt", () => {
     const jumpLandmark = vi.fn();
     const press = install({ jumpLandmark });
-    const altGraph = { ctrlKey: true, altKey: true, getModifierState: (name) => name === "AltGraph" };
-    expect(press("[", altGraph).preventDefault).toHaveBeenCalled();
-    expect(jumpLandmark).toHaveBeenCalledWith(-1);
+    // German AltGr+8 and AltGr+9: the layout makes the bracket.
+    const altGraph = (code) => ({
+      ctrlKey: true, altKey: true, code, getModifierState: (name) => name === "AltGraph",
+    });
+    expect(press("[", altGraph("Digit8")).preventDefault).toHaveBeenCalled();
+    expect(press("]", altGraph("Digit9")).preventDefault).toHaveBeenCalled();
+    expect(jumpLandmark.mock.calls).toEqual([[-1], [1]]);
+    // Ctrl+Alt on the bracket keys themselves is never a landmark key, even
+    // where Windows reports it as AltGraph.
+    expect(press("[", altGraph("BracketLeft")).preventDefault).not.toHaveBeenCalled();
+    expect(press("]", altGraph("BracketRight")).preventDefault).not.toHaveBeenCalled();
+    const plainCtrlAlt = { ctrlKey: true, altKey: true, code: "BracketLeft", getModifierState: () => false };
+    expect(press("[", plainCtrlAlt).preventDefault).not.toHaveBeenCalled();
+    expect(press("[", { ...plainCtrlAlt, code: "Digit8" }).preventDefault).not.toHaveBeenCalled();
+    expect(jumpLandmark).toHaveBeenCalledTimes(2);
     // AltGr does not open any other shortcut.
-    expect(press("U", altGraph).preventDefault).not.toHaveBeenCalled();
+    expect(press("U", altGraph("KeyU")).preventDefault).not.toHaveBeenCalled();
   });
 
   it("says what is coming next on air with Shift+U, with the station's name", async () => {

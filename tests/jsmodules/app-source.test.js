@@ -152,6 +152,7 @@ async function setupApp({
     installLiners: vi.fn(onInstallLiners),
   }));
   vi.doMock(moduleMocks[2], () => ({
+    bracketSeekEnabled: vi.fn(() => false),
     installHotkeys: vi.fn(),
     toggleShortcutsModal: vi.fn(),
   }));

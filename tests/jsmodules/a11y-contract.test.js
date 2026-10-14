@@ -2760,6 +2760,22 @@ describe("static accessibility contracts", () => {
     for (const rule of rules) expect(rule).not.toMatch(/display:\s*(?:flex|grid)/);
   });
 
+  it("gives \"Bracket keys seek the song on air\" a native checkbox, off, with linked help (#60)", () => {
+    installDocument({ html: htmlSource });
+    const box = document.getElementById("hotkeys-bracket-seek");
+    expect(box.type).toBe("checkbox");
+    expect(box.hasAttribute("checked")).toBe(false);
+    expect(box.hasAttribute("aria-label")).toBe(false);
+    expect(document.querySelector('label[for="hotkeys-bracket-seek"]').textContent.trim())
+      .toBe("Bracket keys seek the song on air");
+    expect(box.closest("fieldset").querySelector("legend").textContent).toBe("Keyboard");
+    expect(box.parentElement.classList.contains("settings-check")).toBe(true);
+    const help = document.getElementById(box.getAttribute("aria-describedby"));
+    expect(help.classList.contains("setting-desc")).toBe(true);
+    expect(help.textContent).toMatch(/Off by default\./);
+    expect(help.closest("[aria-live], [role=status]")).toBeNull();
+  });
+
   it("lists the landmark keys in the shortcut help with spoken names (#60)", () => {
     installDocument();
     const modal = document.getElementById("hotkey-help-modal");

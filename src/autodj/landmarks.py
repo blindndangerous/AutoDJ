@@ -434,12 +434,15 @@ def station_landmarks(bridge: Any, path: str) -> dict:
     if library is not None:
         if library.entry_for_path(path) is None:
             raise LookupError(path)
+        # The counter first: a save between the two reads then leaves an
+        # answer stamped with the older counter, which the next call
+        # rebuilds, never old points stamped with the new counter.
+        version = int(library.catalog.change_versions()["records"])
         record = library.catalog.record_for_path(path)
         if record is None:
             raise LookupError(path)
         path = record["path"]
         length, bpm, kind = float(record["length"] or 0), record["bpm"], record["kind"]
-        version = int(library.catalog.change_versions()["records"])
     else:
         entry = bridge.entry_for_path(path)
         if entry is None:

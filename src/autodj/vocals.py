@@ -22,6 +22,7 @@ read once however many times the mix asks.
 from __future__ import annotations
 
 import math
+import os
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
@@ -173,35 +174,68 @@ def guard_fade(
     return None
 
 
+def _file_stamp(path: str) -> tuple[int, int] | None:
+    """``(mtime_ns, size)`` of *path*, or ``None`` when it cannot be read."""
+    try:
+        info = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
+
+def lyric_stamp(path: str) -> tuple:
+    """What a track's synced lyrics are read from, as it stands now.
+
+    The audio file (its embedded lyric tag) and its ``.lrc`` sidecar, each
+    by modification time and size: editing either changes the stamp.
+    Lyrics kept only in the beets database are not covered.
+    """
+    root, _ext = os.path.splitext(path)
+    return (_file_stamp(path), _file_stamp(root + ".lrc"))
+
+
 class VocalCache:
-    """Sung spans of recently mixed tracks, each read once.
+    """Sung spans of recently mixed tracks, each read once while unchanged.
 
     Thread-safe.  The loader runs outside the lock, so two threads asking
     for the same new track at once may both read it; the result is the
-    same either way.
+    same either way.  Each track's spans are kept with its
+    :func:`lyric_stamp` and read again when the stamp changes (lyrics
+    edited, a sidecar added); while it is unchanged the same tuple is
+    returned, so callers can compare it by identity.
 
     Args:
         loader: Returns a track's timed lyric lines (empty when it has
             none or they cannot be read).
         size: Tracks remembered.
+        stamp: What the lyrics are read from, compared on every call.
     """
 
-    def __init__(self, loader: Callable[[str], Sequence[LyricLine]], size: int = 64) -> None:
+    def __init__(
+        self,
+        loader: Callable[[str], Sequence[LyricLine]],
+        size: int = 64,
+        stamp: Callable[[str], object] = lyric_stamp,
+    ) -> None:
         """Create an empty cache around *loader*."""
         self._loader = loader
         self._size = size
-        self._spans: OrderedDict[str, tuple[Span, ...]] = OrderedDict()
+        self._stamp = stamp
+        self._spans: OrderedDict[str, tuple[object, tuple[Span, ...]]] = OrderedDict()
         self._lock = threading.Lock()
 
     def spans(self, path: str) -> tuple[Span, ...]:
         """Return the sung spans of the track at *path*."""
+        stamp = self._stamp(path)
         with self._lock:
-            if path in self._spans:
+            held = self._spans.get(path)
+            if held is not None and held[0] == stamp:
                 self._spans.move_to_end(path)
-                return self._spans[path]
+                return held[1]
         spans = sung_spans(self._loader(path))
         with self._lock:
-            self._spans[path] = spans
+            self._spans[path] = (stamp, spans)
+            self._spans.move_to_end(path)
             while len(self._spans) > self._size:
                 self._spans.popitem(last=False)
         return spans
@@ -214,5 +248,6 @@ __all__ = [
     "VocalCache",
     "first_vocal_s",
     "guard_fade",
+    "lyric_stamp",
     "sung_spans",
 ]

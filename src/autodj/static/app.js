@@ -2070,19 +2070,13 @@ function _seekByDelta(deltaSec) {
   void postJsonBestEffort("/api/seek", { delta: deltaSec }, reportBackgroundRequestError);
 }
 
-// A landmark key (#60) moves the song on air to *seconds* and says
-// *speech* in place of the slider's "1:35 of 3:20".
-function _seekToSeconds(seconds, speech) {
-  if (_lastStreamMode) {
-    srSpeak("Seeking is not available while streaming.");
-    return;
-  }
+// A landmark key (#60) moved the song on air: once the server has taken
+// the seek, this page follows, as a slider seek does (_seekToFrac moves the
+// browser deck and tells the server too, so the server's clock and the
+// hour preview stay in step).
+function _applyLandmarkSeek(seconds) {
   const dur = _seekTrackDuration();
-  if (!(dur > 0)) {
-    srSpeak("Position unknown");
-    return;
-  }
-  const target = Math.max(0, Math.min(dur - 0.1, seconds));
+  const target = dur > 0 ? Math.max(0, Math.min(dur - 0.1, seconds)) : Math.max(0, seconds);
   if (_lastBrowserPlayback) {
     try {
       decks[activeIdx].audio.currentTime = target;
@@ -2090,9 +2084,7 @@ function _seekToSeconds(seconds, speech) {
   } else {
     _keyboardSeek = { seconds: target, at: performance.now() };
   }
-  srSpeak(speech);
   hourPreviewControls?.noteSeek();
-  void postJsonBestEffort("/api/seek", { seconds: target }, reportBackgroundRequestError);
 }
 
 function _seekToFrac(frac, opts) {
@@ -2439,6 +2431,7 @@ function sendVolume(val) {
 // Keyboard shortcuts.  Wired here,
 // after every DOM ref it needs has been declared above.
 import {
+  bracketSeekEnabled,
   installHotkeys,
   toggleShortcutsModal,
 } from "./modules/hotkeys.js";
@@ -2458,7 +2451,9 @@ const landmarkControls = installLandmarks({
       bpm: track.bpm || 0,
     };
   },
-  seekPlaying: _seekToSeconds,
+  seekOnAir: bracketSeekEnabled,
+  isStreamMode: () => _lastStreamMode,
+  applyLocalSeek: _applyLandmarkSeek,
 });
 
 installHotkeys({
@@ -2492,6 +2487,7 @@ installHotkeys({
   getUpcomingLandmark: () => landmarkControls.upcoming(),
   isEnabled: authenticatedInteractionEnabled,
   shortcutToggle: document.getElementById("hotkeys-enabled"),
+  bracketSeekToggle: document.getElementById("hotkeys-bracket-seek"),
   focusStationSwitcher: () => {
     if (!severalStations()) return false;
     stationSwitcher?.focus();

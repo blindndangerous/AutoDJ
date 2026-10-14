@@ -581,7 +581,13 @@ def test_state_in_browser_mode_is_unchanged(client) -> None:
 
 def test_seek_refused_in_stream_mode(stream_app) -> None:
     client, *_ = stream_app
-    for body in ({"seconds": 10}, {"delta": 5}, {}):
+    # A landmark key's seek, naming its song (#60), is refused the same way.
+    for body in (
+        {"seconds": 10},
+        {"delta": 5},
+        {},
+        {"seconds": 10, "path": "Z:/Music/song_0.flac"},
+    ):
         response = client.post("/api/seek", json=body)
         assert response.status_code == 409
         assert response.json()["detail"] == "Seeking is not available while streaming."

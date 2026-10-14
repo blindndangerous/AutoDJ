@@ -48,7 +48,12 @@
 // shortcuts, so a key reaches the page in focus mode or after the
 // pass-through key (NVDA+F2, JAWS Insert+3).  On layouts that type a
 // bracket with AltGr (German, French, Nordic) the browser reports Ctrl+Alt,
-// so a bracket typed with AltGr is accepted.
+// so a bracket the layout typed with AltGr is accepted: e.key is "[" or "]",
+// AltGraph is down, and the physical key is not the bracket key itself.
+// Ctrl+Alt on the US bracket keys stays the browser's and the screen
+// reader's.  Outside Track info the brackets only say the landmark of the
+// song on air unless "Bracket keys seek the song on air" (Settings,
+// Keyboard; off by default, kept per browser like the toggle below) is on.
 //
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
@@ -154,6 +159,35 @@ function installShortcutToggle(checkbox) {
   checkbox.addEventListener("change", () => setShortcutsEnabled(checkbox.checked));
 }
 
+// "Bracket keys seek the song on air" (#60): off unless chosen, since a
+// stray bracket would otherwise jump what listeners hear.
+const BRACKET_SEEK_STORAGE_KEY = "autodj.bracketSeek";
+let _bracketSeekOn = null;
+
+export function bracketSeekEnabled() {
+  if (_bracketSeekOn === null) {
+    try {
+      _bracketSeekOn = globalThis.localStorage?.getItem(BRACKET_SEEK_STORAGE_KEY) === "on";
+    } catch (_) {
+      _bracketSeekOn = false;
+    }
+  }
+  return _bracketSeekOn;
+}
+
+function installBracketSeekToggle(checkbox) {
+  if (!checkbox) return;
+  checkbox.checked = bracketSeekEnabled();
+  checkbox.addEventListener("change", () => {
+    _bracketSeekOn = checkbox.checked;
+    try {
+      globalThis.localStorage?.setItem(BRACKET_SEEK_STORAGE_KEY, checkbox.checked ? "on" : "off");
+    } catch (_) {
+      // Still honoured for this page load; it just will not be remembered.
+    }
+  });
+}
+
 const _pressed = new Set();
 
 export function installHotkeys({
@@ -178,8 +212,11 @@ export function installHotkeys({
   // Shift+U resolves to the sentence about what is coming next on air.
   jumpLandmark = null,
   getUpcomingLandmark = null,
+  // Settings, Keyboard: "Bracket keys seek the song on air".
+  bracketSeekToggle = null,
 }) {
   installShortcutToggle(shortcutToggle);
+  installBracketSeekToggle(bracketSeekToggle);
   const active = () => isEnabled() && shortcutsEnabled();
   // The latch only has to stop a held key from firing again before it
   // is released, so any keyup clears all of it.  Keys NVDA passes
@@ -225,7 +262,8 @@ export function installHotkeys({
     const nowVisible = nowPanel && !nowPanel.hasAttribute("hidden");
     const key = e.key;
     const altGraphBracket = (key === "[" || key === "]")
-      && typeof e.getModifierState === "function" && e.getModifierState("AltGraph");
+      && typeof e.getModifierState === "function" && e.getModifierState("AltGraph")
+      && e.code !== "BracketLeft" && e.code !== "BracketRight";
     if (e.metaKey || ((e.ctrlKey || e.altKey) && !altGraphBracket)) return;
 
     const scrollsPage = key === " " || key === "ArrowUp" || key === "ArrowDown";

@@ -55,7 +55,8 @@
 //         dialog, and Matched intros with a song intro (skipped now) and an
 //         artist intro, then Upload intro refused with its error linked;
 //         the Right bracket key moves the cue point preview to the next
-//         landmark, says it once in #sr-status and leaves focus where it is;
+//         landmark, says it once in #sr-status ("Preview: ...") and leaves
+//         focus where it is;
 //       - Library tools > Shows, its server answers stood in for: a show on
 //         the air with a skipped song, the saved shows, one show's list open
 //         with its Move up, Move down and Remove buttons and a search result,
@@ -305,7 +306,7 @@ async function checkTrackLandmarks(page) {
     watch.disconnect();
     return { said, time: preview.currentTime, focus: document.activeElement?.id };
   });
-  if (result.said.join("|") !== "Vocals, 13 seconds, bar 7" || Math.abs(result.time - 12.5) > 0.01
+  if (result.said.join("|") !== "Preview: Vocals, 13 seconds, bar 7" || Math.abs(result.time - 12.5) > 0.01
       || result.focus !== "track-info-heading") {
     throw new Error(`Right bracket in Track info: ${JSON.stringify(result)}`);
   }

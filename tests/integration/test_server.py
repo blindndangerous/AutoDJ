@@ -208,6 +208,26 @@ class TestSeek:
         assert resp.status_code == 200
         assert "elapsed" in resp.json()
 
+    def test_seek_for_a_named_song_moves_only_that_song(self, bridge) -> None:
+        """A landmark key names the song it meant (#60); old pages name none."""
+        from fastapi.testclient import TestClient
+
+        client = TestClient(
+            create_app(bridge), headers={"Host": "testserver", "Origin": "http://testserver"}
+        )
+        playing = bridge.player._state.current_track.path
+        bridge.player.seek_to.reset_mock()
+        assert client.post("/api/seek", json={"seconds": 30.0, "path": playing}).status_code == 200
+        assert bridge.player.seek_to.call_count == 1
+        moved = client.post("/api/seek", json={"seconds": 30.0, "path": "Z:/Music/other.flac"})
+        assert moved.status_code == 409
+        assert moved.json()["detail"] == "The song on air has changed, so it was not moved."
+        assert bridge.player.seek_to.call_count == 1
+        bridge.player._state.current_track = None
+        nothing = client.post("/api/seek", json={"seconds": 30.0, "path": playing})
+        assert nothing.status_code == 409
+        assert client.post("/api/seek", json={"seconds": 1.0, "path": ""}).status_code == 422
+
     def test_seek_no_args_is_query(self, client) -> None:
         # Empty body -> just reports current position (used by the web UI
         # to read back state without changing anything).

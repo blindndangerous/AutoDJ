@@ -31,7 +31,12 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationErr
 from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
-from autodj._bridge import STREAM_SEEK_UNAVAILABLE, StreamSeekUnavailable
+from autodj._bridge import (
+    SEEK_TRACK_CHANGED,
+    STREAM_SEEK_UNAVAILABLE,
+    SeekTrackChanged,
+    StreamSeekUnavailable,
+)
 from autodj.clockwheel import parse_pal
 from autodj.clockwheel_store import (
     OLD_CLOCK_MESSAGE,
@@ -278,6 +283,8 @@ class SeekBody(BaseModel):
 
     seconds: FiniteFloat | None = None
     delta: FiniteFloat | None = None
+    # The song the seek is for (#60); older pages leave it out.
+    path: str | None = PydanticField(default=None, min_length=1, max_length=4096)
 
 
 class PlayNextBody(BaseModel):
@@ -1266,9 +1273,11 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_seek(station: StationDep, body: SeekBody) -> dict[str, float]:
         """Seek the active track (absolute or relative seconds)."""
         try:
-            new_pos = station.bridge.seek(seconds=body.seconds, delta=body.delta)
+            new_pos = station.bridge.seek(seconds=body.seconds, delta=body.delta, path=body.path)
         except StreamSeekUnavailable as exc:
             raise HTTPException(status_code=409, detail=STREAM_SEEK_UNAVAILABLE) from exc
+        except SeekTrackChanged as exc:
+            raise HTTPException(status_code=409, detail=SEEK_TRACK_CHANGED) from exc
         return {"elapsed": round(new_pos, 2)}
 
     # ------------------------------------------------------------------

@@ -46,11 +46,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   synced lyrics (where the singing starts) into named landmarks, merged when they fall together
   and kept in a cache until the song's cue points, analysis or lyrics change. Track info lists
   them under **Song structure** ("Intro, 0:00 to 0:32", "Vocals from 0:45", "Drop, 1:35, bar 49"),
-  with each time read in words. **Right bracket** and **Left bracket** move to the next or
-  previous landmark and say it ("Drop, 1 minute 35 seconds, bar 49"): the cue point preview in
-  Track info, the song on air elsewhere (not in stream mode). **Shift+U** says what is coming next
-  on air ("Drop in 12 seconds, 6 bars"). Each answer is said once, politely, without moving focus,
+  with each time read in words. **Right bracket** and **Left bracket** go to the next or
+  previous landmark and say it: in Track info they move the cue point preview ("Preview: Drop,
+  1 minute 35 seconds, bar 49"); elsewhere they say the landmark of the song on air ("On air: ...,
+  in 12 seconds") and move the song only with the new **Bracket keys seek the song on air**
+  setting (Settings, Keyboard; off by default). **Shift+U** says what is coming next on air ("On
+  air: Drop in 12 seconds, 6 bars"). Each answer is said once, politely, without moving focus,
   and the keys follow Enable keyboard shortcuts.
+- `POST /api/seek` takes an optional `path`: the song the seek is for. When another song is
+  playing, the server refuses with 409 ("The song on air has changed, so it was not moved.").
+  Pages that leave it out seek as before.
+- The lyric timing the mix and the landmarks use is read again when a song's file or its `.lrc`
+  sidecar changes, instead of being kept until restart.
 - `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a

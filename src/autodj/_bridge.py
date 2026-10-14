@@ -13,6 +13,7 @@ server stack.
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 import threading
 from collections import deque
@@ -36,6 +37,18 @@ STREAM_SEEK_UNAVAILABLE = "Seeking is not available while streaming."
 
 class StreamSeekUnavailable(Exception):
     """Seeking was asked for while serving the mix as a radio stream."""
+
+
+SEEK_TRACK_CHANGED = "The song on air has changed, so it was not moved."
+
+
+class SeekTrackChanged(Exception):
+    """A seek named a song that is no longer the one playing (#60)."""
+
+
+def _same_path(a: str, b: str) -> bool:
+    """Whether two paths name the same file, ignoring case where the OS does."""
+    return a == b or os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 def _build_why(player: Any, cur: Any) -> list[str]:
@@ -573,19 +586,31 @@ class PlayerBridge:
                 row = self._append_history(entry)
                 self._open_play = (entry, row)
 
-    def seek(self, seconds: float | None = None, delta: float | None = None) -> float:
+    def seek(
+        self,
+        seconds: float | None = None,
+        delta: float | None = None,
+        path: str | None = None,
+    ) -> float:
         """Seek the active track and return the resulting position in seconds.
 
         ``seconds`` is absolute (from track start); ``delta`` is relative
         to the current playback position.  When both are provided
         ``seconds`` wins.  Clamps inside :meth:`Player.seek_to` so callers
-        never overshoot the buffer.
+        never overshoot the buffer.  *path*, when given, is the song the
+        seek was meant for (a landmark key, #60): a time in one song must
+        never move another.
 
         Raises:
             StreamSeekUnavailable: In stream mode, where seeking is off.
+            SeekTrackChanged: *path* is not the song playing now.
         """
         if self.stream_mode:
             raise StreamSeekUnavailable(STREAM_SEEK_UNAVAILABLE)
+        if path is not None:
+            current = self.player._state.current_track
+            if current is None or not _same_path(str(current.path), path):
+                raise SeekTrackChanged(SEEK_TRACK_CHANGED)
         if seconds is not None:
             return float(self.player.seek_to(float(seconds)))
         if delta is not None:

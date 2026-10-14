@@ -1505,6 +1505,13 @@
       <span class="setting-desc" id="hotkeys-enabled-desc">
         Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
       </span>
+      <div class="settings-check">
+        <input type="checkbox" id="hotkeys-bracket-seek" aria-describedby="hotkeys-bracket-seek-desc">
+        <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
+      </div>
+      <span class="setting-desc" id="hotkeys-bracket-seek-desc">
+        Outside Track info, the Left and Right bracket keys say the previous and next landmark of the song on air, such as its drop or outro.  With this on they also move the song there, which listeners hear; not in stream mode.  In Track info they always move the cue point preview.  Off by default.  Saved in this browser only.
+      </span>
     </fieldset>
   </div>
 
@@ -3294,7 +3301,7 @@
     <dt><kbd>Shift+Q</kbd></dt><dd>Speak how many tracks are queued, and the first one</dd>
     <dt><kbd>Shift+J</kbd></dt><dd>Speak the library job status</dd>
     <dt><kbd>Shift+H</kbd></dt><dd>Speak how the hour lands, from the hour preview</dd>
-    <dt style="margin-top:0.5rem"><kbd><span aria-hidden="true">]</span><span class="visually-hidden">Right bracket</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">[</span><span class="visually-hidden">Left bracket</span></kbd></dt><dd style="margin-top:0.5rem">Move to the next <span aria-hidden="true">/</span><span class="visually-hidden">or</span> previous landmark (intro, vocals, drop, breakdown, outro, phrase) and speak it. In Track info, moves the cue point preview; on other tabs, the song on air (not in stream mode).</dd>
+    <dt style="margin-top:0.5rem"><kbd><span aria-hidden="true">]</span><span class="visually-hidden">Right bracket</span></kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd><span aria-hidden="true">[</span><span class="visually-hidden">Left bracket</span></kbd></dt><dd style="margin-top:0.5rem">Move to the next <span aria-hidden="true">/</span><span class="visually-hidden">or</span> previous landmark (intro, vocals, drop, breakdown, outro, phrase) and speak it. In Track info, moves the cue point preview. On other tabs, says the landmark of the song on air, and moves the song there only with “Bracket keys seek the song on air” on in Settings, Keyboard.</dd>
     <dt><kbd>Shift+U</kbd></dt><dd>Speak what is coming next in the song on air, such as “Drop in 12 seconds, 6 bars”</dd>
     <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
     <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>

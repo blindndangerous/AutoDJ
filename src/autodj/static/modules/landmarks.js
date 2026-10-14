@@ -11,23 +11,24 @@
 //   seconds": a bare "1:35" can be read as a clock time.  The list is
 //   never live; it is drawn when a song opens.
 // - moves to the next or previous landmark (Right and Left bracket).  With
-//   Track info showing, the cue point preview moves there; on any other
-//   tab the playing song does, where seeking is allowed.  Either way the
-//   landmark is said once ("Drop, 1 minute 35 seconds, bar 49") through
-//   the page's polite #sr-status, and focus stays where it is.
-// - says what is coming next on air (Shift+U): "Drop in 12 seconds,
-//   4 bars", "Outro starts in 30 seconds, 16 bars".  Phrases and unnamed
-//   cues are stops for the bracket keys only, never "coming next".
+//   Track info showing, the cue point preview moves there ("Preview: Drop,
+//   1 minute 35 seconds, bar 49").  On any other tab the keys speak about
+//   the song on air ("On air: Drop, 1 minute 35 seconds, bar 49, in 12
+//   seconds") and only move it when Settings, Keyboard, "Bracket keys seek
+//   the song on air" is on (off by default): a seek names its song, and the
+//   server refuses it once another song plays.  Each answer is said once
+//   through the page's polite #sr-status, and focus stays where it is.
+// - says what is coming next on air (Shift+U): "On air: Drop in 12
+//   seconds, 6 bars".  Phrases and unnamed cues are stops for the bracket
+//   keys only, never "coming next".
 //
-// Answers are kept for a minute per station and song; saving a song's cue
-// points forgets its answer.
+// The song on air is asked about afresh on every key; Track info keeps the
+// answer for the song it shows until it opens another or is refreshed.
 
 import { isStaleStationReply, requestJson } from "./api-client.js";
 import { fmtDurationWords, srSpeak } from "./dom-helpers.js";
 import { stationEpoch } from "./stations.js";
 
-const CACHE_MS = 60_000;
-const CACHE_SIZE = 8;
 // A landmark this close ahead counts as where you are, not the next one.
 const AHEAD_S = 0.25;
 // Previous goes back to the start of the landmark you are in, unless you
@@ -144,8 +145,12 @@ export function renderStructure(listEl, landmarks) {
 }
 
 const NO_LANDMARKS = {
-  load() {}, clear() {}, refresh() {}, invalidate() {}, jump() {}, upcoming: async () => "",
+  load() {}, clear() {}, refresh() {}, jump() {}, upcoming: async () => "",
 };
+
+// Who a key spoke about: the cue point preview or the song on air.
+const PREVIEW = "Preview: ";
+const ON_AIR = "On air: ";
 
 export function installLandmarks({
   document: doc = document,
@@ -153,33 +158,27 @@ export function installLandmarks({
   isCurrent = () => true,
   // The song on air: { path, position, duration, bpm }, or null.
   getPlaying = () => null,
-  // Moves the song on air to *seconds* and says *speech*; it says why
-  // instead where seeking is not allowed (stream mode).
-  seekPlaying = null,
+  // Whether the bracket keys move the song on air (Settings, Keyboard,
+  // "Bracket keys seek the song on air"; off by default).  Off, they only
+  // say the landmark.
+  seekOnAir = () => false,
+  isStreamMode = () => false,
+  // Moves this page's own playback to *seconds* after the server took the
+  // seek (the browser deck in browser mode, the slider's clock otherwise).
+  applyLocalSeek = () => {},
   speak = srSpeak,
 } = {}) {
   if (!doc) return NO_LANDMARKS;
   const el = (id) => doc.getElementById(id);
-  const cache = new Map();
-  // The song open in Track info: { path, data } once its answer is in.
+  // The song open in Track info: { path, data } once its answer is in,
+  // with the request still running in *pending* until then.
   let shown = null;
   let generation = 0;
 
-  function answerFor(path, { fresh = false } = {}) {
-    const key = `${stationEpoch()}\n${path}`;
-    const held = cache.get(key);
-    if (!fresh && held && Date.now() - held.at < CACHE_MS) return held.promise;
-    const promise = request(`/api/landmarks?path=${encodeURIComponent(path)}`);
-    const entry = { at: Date.now(), promise };
-    cache.delete(key);
-    cache.set(key, entry);
-    while (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
-    promise.catch(() => { if (cache.get(key) === entry) cache.delete(key); });
-    return promise;
-  }
-
-  function invalidate(path) {
-    for (const key of [...cache.keys()]) if (key.endsWith(`\n${path}`)) cache.delete(key);
+  // Always asked afresh: the song on air moves on, and its cue points can
+  // change in another tab.  The server keeps its own cache.
+  function answerFor(path) {
+    return request(`/api/landmarks?path=${encodeURIComponent(path)}`);
   }
 
   function showState(text, note = false) {
@@ -201,16 +200,18 @@ export function installLandmarks({
     showState("");
   }
 
-  async function fill(path, mine, fresh) {
+  async function fill(path, mine) {
+    const pending = answerFor(path);
+    if (shown?.path === path) shown.pending = pending;
     try {
-      const data = await answerFor(path, { fresh });
+      const data = await pending;
       if (mine !== generation || !isCurrent()) return;
-      shown = { path, data };
+      shown = { path, data, pending: null };
       const count = renderStructure(el("landmarks-list"), data.landmarks);
       showState(count ? "" : "No landmarks for this song yet.", !data.analysed);
     } catch (error) {
       if (mine !== generation || !isCurrent() || isStaleStationReply(error)) return;
-      shown = null;
+      shown = { path, data: null, pending: null };
       showState(`Could not load the song structure: ${error.message}`);
     }
   }
@@ -223,23 +224,20 @@ export function installLandmarks({
     const section = el("landmarks-section");
     if (section) section.hidden = false;
     showState("Loading the song structure.");
-    const mine = generation;
-    shown = { path, data: null };
-    void fill(path, mine, true);
+    shown = { path, data: null, pending: null };
+    void fill(path, generation);
   }
 
-  // Another station now (#70): its answer for the song shown.
+  // Another station now (#70), or new cue points saved: draw it again.
   function refresh() {
     if (!shown?.path) return;
     generation += 1;
-    void fill(shown.path, generation, true);
+    void fill(shown.path, generation);
   }
 
-  // The cue point preview, when Track info shows with a song open.
-  function trackInfoPreview() {
+  function trackInfoShowing() {
     const panel = el("panel-track-info");
-    if (!panel || panel.hidden) return null;
-    return { preview: el("points-preview") };
+    return Boolean(panel && !panel.hidden);
   }
 
   function chooseLandmark(landmarks, position, direction) {
@@ -250,42 +248,73 @@ export function installLandmarks({
     return direction > 0 ? `No more landmarks after ${where}.` : `No landmark before ${where}.`;
   }
 
-  async function jumpPreview(preview, direction) {
+  async function jumpPreview(direction) {
+    const preview = el("points-preview");
     if (!shown?.path || !preview
         || preview.getAttribute("src") !== `/api/audio?path=${encodeURIComponent(shown.path)}`) {
       speak("Open a song in Track info to move through its landmarks.");
       return;
     }
     const path = shown.path;
-    const data = shown.data || await answerFor(path);
+    const data = shown.data || await (shown.pending || answerFor(path));
     if (shown?.path !== path) return;
     const list = data.landmarks || [];
-    if (!list.length) { speak("No landmarks for this song yet."); return; }
+    if (!list.length) { speak(`${PREVIEW}No landmarks for this song yet.`); return; }
     const landmark = chooseLandmark(list, Number(preview.currentTime) || 0, direction);
-    if (!landmark) { speak(noneLeft(direction, "the preview position")); return; }
+    if (!landmark) { speak(`${PREVIEW}${noneLeft(direction, "the preview position")}`); return; }
     preview.currentTime = landmark.time_s;
-    speak(landmarkSpeech(landmark));
+    speak(`${PREVIEW}${landmarkSpeech(landmark)}`);
+  }
+
+  // Moves the song on air, but only the song the landmark is in: the
+  // server refuses (409) when another song is playing by then.
+  async function seekTo(path, landmark) {
+    if (isStreamMode()) {
+      speak("Seeking is not available while streaming.");
+      return;
+    }
+    const station = stationEpoch();
+    try {
+      await request("/api/seek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds: landmark.time_s, path }),
+      });
+    } catch (error) {
+      if (isStaleStationReply(error) || station !== stationEpoch()) return;
+      speak(error.status === 409 ? error.message : `Could not move the song on air: ${error.message}`);
+      return;
+    }
+    if (station !== stationEpoch()) return;
+    applyLocalSeek(landmark.time_s);
+    speak(`${ON_AIR}${landmarkSpeech(landmark)}`);
   }
 
   async function jumpPlaying(direction) {
     const playing = getPlaying();
-    if (!playing?.path) { speak("Nothing is playing."); return; }
+    if (!playing?.path) { speak(`${ON_AIR}Nothing is playing.`); return; }
     const station = stationEpoch();
     const data = await answerFor(playing.path);
     const now = getPlaying();
     if (station !== stationEpoch() || now?.path !== playing.path) return;
     const list = data.landmarks || [];
-    if (!list.length) { speak("No landmarks for this song yet."); return; }
+    if (!list.length) { speak(`${ON_AIR}No landmarks for this song yet.`); return; }
     const landmark = chooseLandmark(list, now.position, direction);
-    if (!landmark) { speak(noneLeft(direction, "this point in the song")); return; }
-    if (seekPlaying) seekPlaying(landmark.time_s, landmarkSpeech(landmark));
+    if (!landmark) { speak(`${ON_AIR}${noneLeft(direction, "this point in the song")}`); return; }
+    if (seekOnAir()) {
+      await seekTo(playing.path, landmark);
+      return;
+    }
+    // Only said: how far it is from where the song is now.
+    const gap = landmark.time_s - now.position;
+    const when = gap >= 0 ? `in ${fmtDurationWords(gap)}` : `${fmtDurationWords(-gap)} ago`;
+    speak(`${ON_AIR}${landmarkSpeech(landmark)}, ${when}`);
   }
 
   // Right bracket (direction 1) or Left bracket (-1).
   async function jump(direction) {
     try {
-      const context = trackInfoPreview();
-      if (context) await jumpPreview(context.preview, direction);
+      if (trackInfoShowing()) await jumpPreview(direction);
       else await jumpPlaying(direction);
     } catch (error) {
       if (!isStaleStationReply(error)) speak(`Could not load the landmarks: ${error.message}`);
@@ -305,15 +334,15 @@ export function installLandmarks({
 
   async function upcomingOnAir() {
     const playing = getPlaying();
-    if (!playing?.path) return "Nothing is playing.";
+    if (!playing?.path) return `${ON_AIR}Nothing is playing.`;
     const data = await answerFor(playing.path);
     const now = getPlaying();
-    if (now?.path !== playing.path) return "The song has just changed.";
-    return upcomingSpeech(data.landmarks, now.position, {
+    if (now?.path !== playing.path) return `${ON_AIR}The song has just changed.`;
+    return ON_AIR + upcomingSpeech(data.landmarks, now.position, {
       bpm: now.bpm || data.bpm || 0,
       duration: now.duration || data.length || 0,
     });
   }
 
-  return { load, clear, refresh, invalidate, jump, upcoming };
+  return { load, clear, refresh, jump, upcoming };
 }

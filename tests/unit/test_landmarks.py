@@ -295,3 +295,45 @@ def test_route_answers_404_for_a_path_outside_the_library(station, tmp_path):
     assert os.path.normcase(str(outside)) not in station.reads
     found = asyncio.run(endpoint(SimpleNamespace(bridge=station.bridge), str(station.music)))
     assert found["landmarks"]
+
+
+def test_edited_lyrics_change_the_answer(station):
+    """The lyric spans come from a stamped VocalCache, so an edit is seen (#60)."""
+    from autodj.audio_meta import LyricLine
+    from autodj.vocals import VocalCache
+
+    lines = [LyricLine(20.0, "hello")]
+    station.bridge.player._sung_spans = VocalCache(lambda _path: list(lines)).spans
+    first = station_landmarks(station.bridge, str(station.music))
+    assert station_landmarks(station.bridge, str(station.music)) is first
+    vocals = [lm["time_s"] for lm in first["landmarks"] if lm["kind"] == "vocals"]
+    assert vocals == [20.0]
+    lines[:] = [LyricLine(30.0, "later")]
+    station.music.with_suffix(".lrc").write_text("[00:30.00]later\n", encoding="utf-8")
+    again = station_landmarks(station.bridge, str(station.music))
+    assert [lm["time_s"] for lm in again["landmarks"] if lm["kind"] == "vocals"] == [30.0]
+
+
+def test_a_save_racing_the_read_is_never_cached_as_current(station):
+    """The records counter is read before the record (#60)."""
+    catalog = station.bridge.library.catalog
+    real = catalog.record_for_path
+    raced = []
+
+    def record_then_save(path):
+        record = real(path)
+        if not raced:
+            # A save lands after the record was read, before the answer is stored.
+            raced.append(True)
+            catalog.set_points(station.music, {"outro": 150.0})
+        return record
+
+    catalog.record_for_path = record_then_save
+    try:
+        stale = station_landmarks(station.bridge, str(station.music))
+    finally:
+        catalog.record_for_path = real
+    assert "Outro" not in [lm["name"] for lm in stale["landmarks"]]
+    fresh = station_landmarks(station.bridge, str(station.music))
+    assert fresh is not stale
+    assert "Outro" in [lm["name"] for lm in fresh["landmarks"]]
