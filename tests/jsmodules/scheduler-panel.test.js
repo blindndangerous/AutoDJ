@@ -161,7 +161,7 @@ describe("Schedule panel", () => {
     const next = byId("schedule-upcoming").textContent;
     expect(next).toContain("Morning show. Switch profile: Morning.");
     expect(next).toContain("in 2 hours");
-    const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone: "UTC" });
+    const clock = new Intl.DateTimeFormat(undefined, { hourCycle: "h23", hour: "numeric", minute: "2-digit", timeZone: "UTC" });
     expect(next).toContain(clock.format(new Date("2026-10-11T14:00:00Z")));
     expect(byId("schedule-runs").textContent).toContain("Morning show. Switch profile: Morning. Failed: Profile Morning was not found.");
     expect(byId("schedule-upcoming").getAttribute("aria-live")).toBeNull();

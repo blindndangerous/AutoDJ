@@ -23,6 +23,8 @@ from autodj.server import (
     LibraryFolderUpdateBody,
     LibraryRescanBody,
     SongPointsBody,
+    TimeSettingsBody,
+    _apply_time_settings,
     create_app,
 )
 from tests.unit.test_library import Similarity, make_config, make_entry
@@ -113,6 +115,38 @@ def test_auto_rescan_routes_store_shared_interval(library_api):
         "minutes": 0,
     }
     assert manager.auto_rescan_minutes() == 0
+
+
+def test_time_settings_are_saved_and_the_zone_applies_at_the_next_start(library_api, monkeypatch):
+    from autodj import timefmt
+
+    monkeypatch.setattr(timefmt, "time_format", "24")
+    manager, _call, app = library_api
+    routes = {
+        (method, route.path): route.endpoint
+        for route in app.routes
+        if route.path == "/api/time-settings"
+        for method in (route.methods or set())
+    }
+    running = asyncio.run(routes[("GET", "/api/time-settings")]())["running_timezone"]
+    saved = asyncio.run(
+        routes[("PUT", "/api/time-settings")](
+            TimeSettingsBody(timezone="Pacific/Auckland", time_format="12")
+        )
+    )
+    assert (saved["timezone"], saved["running_timezone"]) == ("Pacific/Auckland", running)
+    assert timefmt.time_format == "12"
+    with pytest.raises(HTTPException) as unknown:
+        asyncio.run(
+            routes[("PUT", "/api/time-settings")](
+                TimeSettingsBody(timezone="Mars/Olympus", time_format="24")
+            )
+        )
+    assert unknown.value.status_code == 400
+    timefmt.time_format = "24"
+    _apply_time_settings(manager.cfg, manager)
+    assert manager.cfg.server.station_timezone == "Pacific/Auckland"
+    assert timefmt.time_format == "12"
 
 
 def test_auto_rescan_rejects_interval_below_five_minutes(library_api):

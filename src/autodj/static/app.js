@@ -1365,8 +1365,11 @@ installAccess(_accessEls, {
 // its subtab is shown.
 import { installAnalysisWorkers } from "./modules/analysis-workers.js";
 import { installStationCreator } from "./modules/station-create.js";
+import { installTimeSettings } from "./modules/time-settings.js";
+import { setTimeFormat } from "./modules/time-format.js";
 
 installAnalysisWorkers();
+installTimeSettings();
 
 // ----------------------------------------------------------------
 // WebSocket
@@ -1667,6 +1670,7 @@ async function refreshStationList() {
   let loaded = false;
   try {
     const body = await requestJson("/api/stations");
+    setTimeFormat(body.time_format);
     setKnownStations(body.stations);
     loaded = true;
   } catch (errorValue) {
