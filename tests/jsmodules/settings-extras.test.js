@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { formatPlayedAt, historyNeedsDates } from
-  "../../src/autodj/static/modules/history-format.js";
+import { formatPlayedAt } from "../../src/autodj/static/modules/history-format.js";
 import { applyMixSettings, installMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
 import { installProfiles, profileFromSettings } from
@@ -56,15 +55,10 @@ afterEach(() => {
 });
 
 describe("history dates", () => {
-  const now = new Date(2026, 8, 27, 12, 0, 0);
-
-  it("adds the date only when the rows are not all from today", () => {
-    const today = { played_at: new Date(2026, 8, 27, 9, 0, 0).toISOString() };
-    const yesterday = { played_at: new Date(2026, 8, 26, 23, 0, 0).toISOString() };
-    expect(historyNeedsDates([today, today], now)).toBe(false);
-    expect(historyNeedsDates([today, yesterday], now)).toBe(true);
-    expect(formatPlayedAt(yesterday.played_at, true, "en-GB")).toContain("2026");
-    expect(formatPlayedAt(yesterday.played_at, false, "en-GB")).not.toContain("2026");
+  it("formats a play as a time or a date and time for last-played views", () => {
+    const yesterday = new Date(2026, 8, 26, 23, 0, 0).toISOString();
+    expect(formatPlayedAt(yesterday, true, "en-GB")).toContain("2026");
+    expect(formatPlayedAt(yesterday, false, "en-GB")).not.toContain("2026");
   });
 });
 

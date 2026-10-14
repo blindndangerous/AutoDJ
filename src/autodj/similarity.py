@@ -246,6 +246,27 @@ class SimilarityIndex:
             vb = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(b))
         return float(np.dot(va, vb))
 
+    def bridge_candidates(self, seed_path: str, limit: int = 48) -> tuple[IndexEntry, ...]:
+        """A bounded nearest-neighbour pool for a transition from *seed_path*.
+
+        Unlike normal picking this does not expand to the whole index or relax
+        filters. The caller checks every candidate against the projected rules.
+        """
+        with self._reload_lock:
+            index = self._path_to_idx.get(seed_path)
+            if index is None or not self.ntotal:
+                return ()
+            vector = cast(npt.NDArray[np.float32], self.faiss_index.reconstruct(index))
+            if not np.all(np.isfinite(vector)) or not np.any(vector):
+                return ()
+            query = vector.reshape(1, -1).astype(np.float32)
+            _scores, indices = self.faiss_index.search(query, min(max(1, limit + 1), self.ntotal))
+            return tuple(
+                self._public_entries[int(hit)]
+                for hit in indices[0]
+                if hit >= 0 and hit != index and not self.entries[int(hit)].is_silent
+            )[:limit]
+
     def _public_entry(self, entry: IndexEntry) -> IndexEntry:
         """Return immutable public view for one internal candidate."""
         idx = self._path_to_idx[entry.path]
