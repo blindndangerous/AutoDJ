@@ -114,10 +114,12 @@ def test_worker_results_match_local_analysis_exactly(server, tmp_path):
     # The same songs analysed on this machine by the server's own job.
     local_cfg = make_config(tmp_path / "local")
     seed = LibraryManager(local_cfg, Similarity())
+    seed.catalog.add_source(local_cfg.library.music_dir)
     for song in server.songs:
         copy = local_cfg.library.music_dir / song.name
         copy.write_bytes(song.read_bytes())
         seed.catalog.put_entry(make_entry(copy))
+    assert len(seed.analysis_pending()) == 3
     seed.close()
     assert analyse_library(local_cfg, FakeModel()) == 3
     local = LibraryManager(local_cfg, Similarity())
@@ -597,6 +599,7 @@ def test_worker_command_refuses_plain_http_to_another_machine():
 def _pending_manager(tmp_path, count=2):
     cfg = make_config(tmp_path)
     manager = LibraryManager(cfg, Similarity())
+    manager.catalog.add_source(cfg.library.music_dir)
     songs = []
     for n in range(count):
         song = cfg.library.music_dir / f"song-{n}.flac"
@@ -735,6 +738,7 @@ def test_a_rescan_clears_holds_on_songs_whose_file_changed(tmp_path):
     write_tone(same, 330.0)
     manager = LibraryManager(cfg, Similarity())
     try:
+        manager.catalog.add_source(cfg.library.music_dir)
         manager.scan()
         queue = manager.analysis_queue
         songs = []

@@ -13,7 +13,7 @@ import {
 
 const byId = (id) => document.getElementById(id);
 
-function item(title, status, fixed, starts = ["12:09:10 PM", "12:09 PM and 10 seconds"]) {
+function item(title, status, fixed, starts = ["12:09:10 PM", "12:09:10 PM"]) {
   return {
     kind: "song",
     status,
@@ -23,7 +23,7 @@ function item(title, status, fixed, starts = ["12:09:10 PM", "12:09 PM and 10 se
     starts_text: starts[0],
     starts_words: starts[1],
     length_text: "3:20",
-    length_words: "3 minutes 20 seconds",
+    length_words: "3:20",
   };
 }
 
@@ -34,8 +34,8 @@ function view(overrides = {}) {
     summary: "Top of the hour, 1:00 PM: lands about 0:35 early. Next hour: 2 fixed and 1 predicted, until 1:10 PM.",
     items: [
       item("Gold 0, Song 100", "on_air", true),
-      item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12 PM and 30 seconds"]),
-      item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15 PM and 50 seconds"]),
+      item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12:30 PM"]),
+      item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15:50 PM"]),
     ],
     points: [{ kind: "hour", text: "Top of the hour, 1:00 PM: lands about 0:35 early." }],
     notes: ["Predicted songs come from a dry run."],

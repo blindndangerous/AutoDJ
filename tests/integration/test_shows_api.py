@@ -72,7 +72,7 @@ def test_plan_edit_generate_and_remove_a_show(client: TestClient, station, tmp_p
     paths = [row["path"] for row in view["songs"]]
     assert paths and set(paths) <= members
     assert view["total_text"] == "30:00"
-    assert view["total_words"] == "30 minutes"
+    assert view["total_words"] == "30:00"
     assert view["generated_at"]
 
     # Reorder, remove one and add one from the library.

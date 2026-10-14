@@ -10,9 +10,7 @@ import pytest
 
 from autodj.indexer import (
     IndexEntry,
-    PruneSafetyError,
     _apply_beets_row,
-    _check_prune_safety,
     load_index,
 )
 
@@ -124,26 +122,6 @@ class TestApplyBeetsRowKey:
         row = _row(initial_key="anything")
         assert _apply_beets_row(e, row, (), True, lambda _s: (7, 0)) is True
         assert (e.key, e.mode) == (7, 0)
-
-
-# ---------------------------------------------------------------------------
-# _check_prune_safety
-# ---------------------------------------------------------------------------
-
-
-class TestCheckPruneSafety:
-    def test_zero_total_is_safe(self) -> None:
-        _check_prune_safety(0, 0, allow_mass_prune=False)  # no raise
-
-    def test_under_threshold_is_safe(self) -> None:
-        _check_prune_safety(1, 100, allow_mass_prune=False)
-
-    def test_over_threshold_raises(self) -> None:
-        with pytest.raises(PruneSafetyError):
-            _check_prune_safety(50, 100, allow_mass_prune=False)
-
-    def test_mass_prune_override(self) -> None:
-        _check_prune_safety(50, 100, allow_mass_prune=True)
 
 
 # ---------------------------------------------------------------------------

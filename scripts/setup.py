@@ -101,7 +101,6 @@ def parser() -> argparse.ArgumentParser:
     """Describe the first-run flow and unattended options."""
     result = argparse.ArgumentParser(description="Set up AutoDJ locally, outside Docker.")
     result.add_argument("--backend", choices=("auto", "cpu", "nvidia", "amd"), default="auto")
-    result.add_argument("--music-dir", type=Path, help="Music folder for a new configuration.")
     result.add_argument(
         "--port", type=port_number, help="Local web port for a new configuration (8080)."
     )
@@ -131,43 +130,29 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def configure(args: argparse.Namespace, root: Path, interactive: bool) -> tuple[Path | None, int]:
+def configure(args: argparse.Namespace, root: Path, interactive: bool) -> int:
     """Collect new settings while preserving existing base and local configuration."""
     if (root / "config.toml").exists():
         for name in ("config.toml", "config.local.toml"):
             if (root / name).exists():
                 with (root / name).open("rb") as stream:
                     tomllib.load(stream)
-        if args.music_dir is not None or args.port is not None:
+        if args.port is not None:
             raise ValueError(
-                "Configuration already exists. Edit config.toml or config.local.toml to change its music folder or port."
+                "Configuration already exists. Edit config.toml or config.local.toml to change its port."
             )
         print("Keeping existing config.toml and any config.local.toml overrides.")
-        return None, 8080
+        return 8080
     if (root / "config.local.toml").exists():
         raise ValueError(
             "config.local.toml exists without config.toml. Create the base configuration before running setup."
-        )
-    music = args.music_dir
-    if music is None and interactive:
-        music = Path(ask("Path to your music folder", str(root / "music")))
-    if music is None:
-        if not args.dry_run:
-            raise ValueError(
-                "Supply --music-dir for a new installation when running without prompts."
-            )
-        music = root / "music"
-    music = (root / music.expanduser()).resolve()
-    if not music.is_dir() and not args.dry_run:
-        raise ValueError(
-            f"Music folder does not exist: {music}. Create it or choose another folder."
         )
     port = args.port or 8080
     if args.port is None and interactive:
         port = port_number(ask("Local web port", str(port)))
     if not port_available(port):
         raise ValueError(f"Port {port} is already in use. Choose another with --port.")
-    return music, port
+    return port
 
 
 def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
@@ -212,11 +197,10 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     python = python_path(environment)
     if reuse and not python.is_file():
         raise ValueError(f"No Python interpreter in {environment}.")
-    music, port = configure(args, root, interactive)
+    port = configure(args, root, interactive)
     issues = prerequisites()
     print(f"\nProcessing: {backend}\nEnvironment: {environment}")
-    if music is not None:
-        print(f"Music: {music}\nWeb address: http://localhost:{port}")
+    print(f"Web address: http://localhost:{port}")
     notice = profiles(root)[backend].get("notice")
     if notice:
         print(notice)
@@ -279,8 +263,8 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         raise ValueError(
             "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
         )
-    if music is not None:
-        create_configuration(root, music, port)
+    if not (root / "config.toml").exists():
+        create_configuration(root, port)
     initialize_paths(root, python, env)
     doctor = subprocess.run(
         [str(python), "-m", "autodj", "doctor", "--no-fix", "--json"],
@@ -311,6 +295,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     )
     print("\nSetup verified. Start AutoDJ with:")
     print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
+    print("Your library is empty. Add music folders from the Library page in AutoDJ.")
     test_import = args.test_import or (
         interactive
         and confirm("Test importing up to three tracks? This may download a large audio model.")

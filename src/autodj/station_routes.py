@@ -1028,7 +1028,7 @@ def equip_station(
             requests_cfg,
             bridge,
             RequestBook(station.paths.listener_requests, timezone=station.timezone),
-            music_dir=Path(station.cfg.library.music_dir),
+            music_dir=station.cfg.library.music_dir,
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,

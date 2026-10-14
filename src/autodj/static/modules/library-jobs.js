@@ -2,6 +2,8 @@
 // All controls are no-ops on pages that don't include the library
 // section markup, so this module is safe to wire unconditionally.
 //
+import { confirmAction } from "./confirm-dialog.js";
+
 // Live-region contract (NVDA repeat fix):
 //   #lib-job-status is the ONLY announcing node in this panel.  It is
 //   keyed on the job *phase* (idle / running / finished), never on the
@@ -258,7 +260,7 @@ export function installLibraryJobs(els) {
   }
   if (runEnrich) runEnrich.addEventListener("click", (event) => void _run(els, "enrich", [], event.currentTarget));
   if (runAnalyse) runAnalyse.addEventListener("click", (event) => void _run(els, "analyse", [], event.currentTarget));
-  if (runPrune)  runPrune.addEventListener("click",  (event) => void _run(els, "prune", [], event.currentTarget));
+  if (runPrune) runPrune.addEventListener("click", (event) => void _removeMissing(els, event.currentTarget));
   if (runStats)  runStats.addEventListener("click",  (event) => void _run(els, "stats", [], event.currentTarget));
   if (runStop) {
     runStop.addEventListener("click", (event) => {
@@ -279,6 +281,50 @@ export function installLibraryJobs(els) {
     void refreshLibStats(els, event.currentTarget);
   });
   if (statCount) void refreshLibStats(els);
+}
+
+async function _removeMissing(els, control) {
+  const epoch = captureAuthenticatedRequestEpoch();
+  try {
+    const preview = await withDisabled(control, () => requestJson("/api/library/missing"));
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    if (!preview.ready) {
+      reportJobError(els.jobStatus, "Run a complete, successful rescan before reviewing missing tracks.");
+      return;
+    }
+    if (!preview.count) {
+      setJobPhase(els.jobStatus, "missing:none", "No missing tracks to remove.");
+      return;
+    }
+    const names = preview.tracks.map((track) =>
+      `${[track.artist, track.title].filter(Boolean).join(" — ")}\n  ${track.path}`,
+    );
+    const remainder = preview.count > names.length ? `\n…and ${preview.count - names.length} more` : "";
+    const doc = control.ownerDocument;
+    const message = `Remove ${preview.count} missing catalog tracks? Saved cues and analysis are removed with their catalog records; audio files and play history are kept. Disconnected folders are protected.\n\n${names.join("\n")}${remainder}`;
+    if (!await confirmAction(doc, {
+      title: "Remove missing tracks",
+      message,
+      confirmLabel: "Remove tracks",
+    })) return;
+    const allowMass = preview.requires_override && await confirmAction(doc, {
+      title: "Confirm large removal",
+      message: `${preview.percentage.toFixed(1)}% of catalog tracks are missing. Confirm removal of this large set? Audio files and play history remain unchanged.`,
+      confirmLabel: "Confirm large removal",
+    });
+    if (preview.requires_override && !allowMass) return;
+    const result = await withDisabled(control, () => requestJson("/api/library/remove-missing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: preview.token, confirmed: true, allow_mass: allowMass }),
+    }));
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    setJobPhase(els.jobStatus, "missing:removed", `Removed ${result.removed} missing tracks; play history was kept.`);
+    await refreshLibStats(els);
+  } catch (errorValue) {
+    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    reportJobError(els.jobStatus, `Could not remove missing tracks: ${errorValue.message || errorValue}`);
+  }
 }
 
 async function _run(els, name, args = [], control = null) {

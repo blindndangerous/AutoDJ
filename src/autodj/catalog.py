@@ -90,7 +90,7 @@ _SCHEMA = """
         tempo_confidence REAL NOT NULL DEFAULT 0,
         embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
         fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
-        point_sources TEXT NOT NULL DEFAULT '{}', prepared_path TEXT,
+        point_sources TEXT NOT NULL DEFAULT '{}',
         intro_lift_db REAL,
         loudness TEXT NOT NULL DEFAULT '{}',
         user_tags TEXT NOT NULL DEFAULT '{}',
@@ -124,7 +124,6 @@ _RECORD_COLUMNS = (
     "allow_outro",
     "points",
     "point_sources",
-    "prepared_path",
     "intro_lift_db",
     "loudness",
 )
@@ -376,7 +375,6 @@ class LibraryCatalog:
             self._add_missing_columns()
             self._conn.executescript(_CHANGE_TRACKING)
             _tune(self._conn)
-            self._migrate_legacy_history()
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
             self._conn.close()
@@ -453,7 +451,8 @@ class LibraryCatalog:
             return None
         return value if math.isfinite(value) and value >= 0 else None
 
-    def _migrate_legacy_history(self) -> None:
+    def migrate_legacy_history(self) -> None:
+        """Explicitly import the old JSON log, refusing to discard invalid rows."""
         db = self._db()
         with self._lock:
             try:
@@ -471,31 +470,75 @@ class LibraryCatalog:
                     return
                 try:
                     rows = json.loads(legacy[0])
-                except (TypeError, json.JSONDecodeError):
-                    rows = []
-                if isinstance(rows, list):
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        duration = self._duration(row.get("duration"))
-                        if (
-                            not isinstance(row.get("title"), str)
-                            or not isinstance(row.get("artist"), str)
-                            or duration is None
-                            or not self._valid_played_at(row.get("played_at"))
-                        ):
-                            continue
-                        db.execute(
-                            "INSERT INTO play_history "
-                            "(event_id,title,artist,duration,played_at) VALUES (?,?,?,?,?)",
-                            (
-                                uuid.uuid4().hex,
-                                row["title"],
-                                row["artist"],
-                                duration,
-                                row["played_at"],
-                            ),
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError("legacy play-history JSON is invalid") from exc
+                if not isinstance(rows, list):
+                    raise ValueError("legacy play-history must be a JSON list")
+                valid_rows = []
+                invalid = 0
+                for row in rows:
+                    if not isinstance(row, dict):
+                        invalid += 1
+                        continue
+                    duration = self._duration(row.get("duration"))
+                    if (
+                        not isinstance(row.get("title"), str)
+                        or not isinstance(row.get("artist"), str)
+                        or duration is None
+                        or not self._valid_played_at(row.get("played_at"))
+                        or ("path" in row and not isinstance(row["path"], str))
+                        or (
+                            "event_id" in row
+                            and (not isinstance(row["event_id"], str) or not row["event_id"])
                         )
+                        or (
+                            "station" in row
+                            and (not isinstance(row["station"], str) or not row["station"])
+                        )
+                        or ("interrupted" in row and type(row["interrupted"]) is not bool)
+                        or ("performances" in row and self._count(row["performances"]) is None)
+                    ):
+                        invalid += 1
+                        continue
+                    valid_rows.append((row, duration))
+                if invalid:
+                    raise ValueError(
+                        f"legacy play-history has {invalid} invalid row(s); no history was migrated"
+                    )
+                for row, duration in valid_rows:
+                    path = _path(row["path"]) if isinstance(row.get("path"), str) else None
+                    entry = (
+                        db.execute(
+                            "SELECT id FROM catalog_entries WHERE path=?", (path,)
+                        ).fetchone()
+                        if path
+                        else None
+                    )
+                    event_id = row.get("event_id")
+                    if not isinstance(event_id, str) or not event_id:
+                        event_id = uuid.uuid4().hex
+                    station = row.get("station", DEFAULT_STATION)
+                    if not isinstance(station, str) or not station:
+                        station = DEFAULT_STATION
+                    interrupted = int(row.get("interrupted") is True)
+                    performances = self._count(row.get("performances"))
+                    db.execute(
+                        "INSERT INTO play_history "
+                        "(event_id,entry_id,path,title,artist,duration,played_at,interrupted,station,performances) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            event_id,
+                            entry[0] if entry else None,
+                            path,
+                            row["title"],
+                            row["artist"],
+                            duration,
+                            row["played_at"],
+                            interrupted,
+                            station,
+                            performances,
+                        ),
+                    )
                 db.execute("INSERT INTO catalog_settings VALUES ('play_history_migrated','true')")
                 db.commit()
             except BaseException:
@@ -702,7 +745,7 @@ class LibraryCatalog:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def seed_sources(self, music_root: Path | str, liner_root: Path | str) -> bool:
+    def seed_sources(self, music_root: Path | str | None, liner_root: Path | str) -> bool:
         """Import legacy config roots once; an intentional empty list stays empty."""
         with self._lock:
             self._db()
@@ -801,13 +844,35 @@ class LibraryCatalog:
             self._db().commit()
             return cur.rowcount > 0
 
+    def remove_entries(
+        self, paths: list[str], *, expected_versions: dict[str, int] | None = None
+    ) -> int:
+        """Remove records if the catalog still matches a previewed version snapshot."""
+        normalized = list(dict.fromkeys(_path(path) for path in paths))
+        if not normalized:
+            return 0
+        with self._lock:
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                if expected_versions is not None and _versions(db) != expected_versions:
+                    raise RuntimeError("The catalog changed; preview the removal again")
+                cursor = db.executemany(
+                    "DELETE FROM catalog_entries WHERE path=?", ((p,) for p in normalized)
+                )
+                removed = cursor.rowcount
+                db.commit()
+                return removed
+            except BaseException:
+                db.rollback()
+                raise
+
     def _put(
         self,
         entry: IndexEntry,
         kind: str,
         points: dict | None,
         point_source: str,
-        prepared_path: str | None,
     ) -> str:
         if kind not in {"music", "liner"}:
             raise ValueError("kind must be 'music' or 'liner'")
@@ -835,7 +900,7 @@ class LibraryCatalog:
                 # Changed bytes, including retagging, invalidate cues and derived audio too.
                 self._db().execute("DELETE FROM catalog_vectors WHERE entry_id=?", (record_id,))
                 self._db().execute(
-                    "UPDATE catalog_entries SET prepared_path=NULL, intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}', user_tags='{}' "
+                    "UPDATE catalog_entries SET intro_lift_db=NULL, loudness='{}', points='{}', point_sources='{}', user_tags='{}' "
                     "WHERE id=?",
                     (record_id,),
                 )
@@ -859,11 +924,6 @@ class LibraryCatalog:
                 f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
                 (record_id, path, kind, *values),
             )
-        if prepared_path is not None:
-            self._db().execute(
-                "UPDATE catalog_entries SET prepared_path=? WHERE path=?",
-                (_path(prepared_path), path),
-            )
         self._merge_points(path, points or {}, point_source)
         return record_id
 
@@ -873,11 +933,10 @@ class LibraryCatalog:
         kind: str = "music",
         points: dict | None = None,
         point_source: str = "auto",
-        prepared_path: str | None = None,
     ) -> str:
         with self._lock:
             try:
-                record_id = self._put(entry, kind, points, point_source, prepared_path)
+                record_id = self._put(entry, kind, points, point_source)
                 self._db().commit()
                 return record_id
             except BaseException:
@@ -971,7 +1030,7 @@ class LibraryCatalog:
             for entry in entries:
                 path = _path(entry.path)
                 if path not in existing:
-                    self._put(entry, "music", None, "auto", None)
+                    self._put(entry, "music", None, "auto")
                     existing.add(path)
                     count += 1
             self._db().commit()
@@ -1101,7 +1160,6 @@ class LibraryCatalog:
                 "allow_outro": bool(row["allow_outro"]),
                 "points": json.loads(row["points"]),
                 "point_sources": json.loads(row["point_sources"]),
-                "prepared_path": row["prepared_path"],
                 "intro_lift_db": row["intro_lift_db"],
                 "loudness": loudness,
                 "last_played": row["last_played"],

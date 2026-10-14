@@ -313,21 +313,21 @@ const HOUR_PREVIEW_ITEM = (title, status, fixed, starts, words) => ({
   starts_words: words,
   seconds: 200,
   length_text: "3:20",
-  length_words: "3 minutes 20 seconds",
+  length_words: "3:20",
 });
 const HOUR_PREVIEW = {
   station: "default",
   minutes: 60,
   reason: null,
-  summary: "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59 PM and 25 seconds. That song runs 2 minutes 45 seconds past 1 PM. Next hour: 3 fixed and 2 predicted, until 1:10 PM.",
+  summary: "Top of the hour, 1:00:00 PM: lands about 35 seconds early, at the song change into Example Artist, Song 4 (predicted) at 12:59:25 PM. That song runs 2:45 past 1:00:00 PM. Next hour: 3 fixed and 2 predicted, until 1:10:00 PM.",
   items: [
-    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49 PM and 10 seconds"),
-    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52 PM and 30 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55 PM and 50 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59 PM and 25 seconds"),
-    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02 PM and 45 seconds"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 1", "on_air", true, "12:49:10 PM", "12:49:10 PM"),
+    HOUR_PREVIEW_ITEM("Another Example, An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001", "ready", true, "12:52:30 PM", "12:52:30 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 3", "queued", true, "12:55:50 PM", "12:55:50 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 4", "predicted", false, "12:59:25 PM", "12:59:25 PM"),
+    HOUR_PREVIEW_ITEM("Example Artist, Song 5", "predicted", false, "1:02:45 PM", "1:02:45 PM"),
   ],
-  points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+  points: [{ kind: "hour", text: "Top of the hour, 1:00:00 PM: lands about 35 seconds early." }],
   counts: { fixed: 3, predicted: 2 },
   stopped: null,
   notes: ["Predicted songs come from a dry run of the station's own picker."],
@@ -429,6 +429,9 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-cancel").click();
   await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
+  const condition = page.locator("#clock-step-conditions").getByRole("group").first();
+  await condition.getByLabel("Condition type", { exact: true }).selectOption("title");
+  await condition.getByLabel("Value", { exact: true }).fill("Audit");
   await page.locator("#clock-step-hours-from").fill("22:00");
   await page.locator("#clock-add-step").click();
   await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
@@ -621,7 +624,6 @@ async function openStationMenu(page, visit) {
   await button.focus();
   await page.keyboard.press("Enter");
   await page.locator("#station-menu").waitFor({ state: "visible" });
-  await settle(page);
   await visit("now/station-menu");
   if (await page.locator("#station-menu").isVisible()) await page.keyboard.press("Escape");
 }
@@ -657,8 +659,18 @@ async function newPage(context) {
 }
 
 // Every view, and with Settings every subtab this server shows (Stream only
-// in stream mode).  `visit` runs once per target with that target shown.
-async function eachTarget(page, visit) {
+// in stream mode).  `measure` runs once per target with that target shown,
+// after the running transitions have ended: the states opened by a click
+// (a refused form, a dialog) are measured too.  After the click on
+// #clock-add-step that shows its hours error, WebKit was still running the
+// button's change from pressed (black on light blue in Dark) to hover
+// (white on blue) most times the error was found, and axe-core now and then
+// failed its text contrast on a colour read part way through.
+async function eachTarget(page, measure) {
+  const visit = async (target) => {
+    await settle(page);
+    await measure(target);
+  };
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
@@ -679,7 +691,6 @@ async function eachTarget(page, visit) {
       if (view === "now") {
         await page.locator("#hour-preview-table").waitFor({ state: "visible", timeout: 10000 });
       }
-      await settle(page);
       await visit(view);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
@@ -696,7 +707,6 @@ async function eachTarget(page, visit) {
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
       await openEveryCard(page);
-      await settle(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
       if (id === "stab-picking") {
         await openRotationTest(page, visit);
@@ -944,7 +954,18 @@ async function focusProblems(page, startSelector, { maxStops = MAX_TAB_STOPS, me
   )]);
   for (let stop = 0; stop < maxStops; stop += 1) {
     await page.keyboard.press("Tab");
-    await page.waitForTimeout(30);
+    // WebKit scrolls a newly focused control into view at its next
+    // rendering update, not during the key press: read at once,
+    // #clock-step-type was still a screen below the window.  Wait for that
+    // scroll (or for focus to leave the page); a control never scrolled in
+    // still fails below.
+    await page.waitForFunction(() => {
+      const element = document.activeElement;
+      if (!element || element === document.body) return true;
+      const rect = element.getBoundingClientRect();
+      return rect.top >= -1 && rect.bottom <= window.innerHeight + 1
+        && rect.left >= -1 && rect.right <= window.innerWidth + 1;
+    }, null, { timeout: 2000 }).catch(() => {});
     await settle(page);
     const info = await page.evaluate((colour) => {
       const element = document.activeElement;
@@ -1516,11 +1537,13 @@ async function previewOutputProblems(page) {
     const element = document.getElementById("preview-device");
     const button = document.getElementById("preview-device-choose");
     const note = document.getElementById("preview-device-note");
+    const help = document.getElementById("preview-device-desc");
     const box = (node) => node && node.getClientRects().length
       ? node.getBoundingClientRect().toJSON() : null;
     return {
       label: element.labels?.[0]?.textContent.trim(),
       describedBy: element.getAttribute("aria-describedby") || "",
+      helpShown: Boolean(help && !help.hidden && help.getClientRects().length && help.textContent.trim()),
       disabled: element.disabled,
       select: box(element),
       button: box(button),
@@ -1531,7 +1554,7 @@ async function previewOutputProblems(page) {
     };
   });
   if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
-  if (!info.describedBy.split(" ").includes("preview-device-desc")) problems.push("help is not linked");
+  if (!info.helpShown) problems.push("help is not visible");
   if (info.buttonDesc === "") problems.push("button has no description");
   for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
     if (rect && (rect.width < 24 || rect.height < 24)) {
