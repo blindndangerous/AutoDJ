@@ -72,7 +72,7 @@ export function renderRows(doc, tbody, items) {
       if (td.textContent !== cell) td.textContent = cell;
     });
     const actionCell = row.children[4];
-    const path = item.kind === "song" ? item.path : null;
+    const path = item.kind === "song" || item.kind === "liner" ? item.path : null;
     let button = actionCell.querySelector("button");
     if (!path) {
       button?.remove();
@@ -84,6 +84,7 @@ export function renderRows(doc, tbody, items) {
         actionCell.append(button);
       }
       button.dataset.path = path;
+      button.dataset.kind = item.kind === "liner" ? "liner" : "music";
       button.setAttribute("aria-label", `Track info for ${item.title}`);
     }
   });
@@ -141,7 +142,7 @@ export function installHourPreview({
     const button = event.target.closest?.("button[data-path]");
     if (!button || !tbody.contains(button)) return;
     doc.dispatchEvent(new CustomEvent("autodj:edit-points", {
-      detail: { path: button.dataset.path, kind: "music", opener: button },
+      detail: { path: button.dataset.path, kind: button.dataset.kind, opener: button },
     }));
   });
   let lastView = null;
