@@ -41,20 +41,6 @@ mode during setup. An old index or another doctor finding is reported without st
 rebuild or preventing a verified runtime from being remembered. Run `doctor` afterwards to review
 its repair offers. Model downloads and indexing are separate actions unless `--test-import` is supplied.
 
-## Starting from the Windows Run dialog
-
-You do not need to open a command prompt first. Press Windows+R and enter this, replacing
-`C:\git\AutoDJ` with your checkout folder:
-
-```text
-cmd /k "cd /d C:\git\AutoDJ && autodj.cmd setup"
-```
-
-This opens a terminal in the AutoDJ folder and keeps it open after setup finishes or fails,
-so you can read its messages. Use `autodj.cmd` without `setup` in the same command to start
-AutoDJ after installation. Starting in the checkout folder ensures that AutoDJ finds your
-configuration and relative paths. Entering just `.\autodj.cmd` in Run does not select that folder.
-
 ## CPU-only installation
 
 No backend flag is needed on a fresh CPU-only computer. Setup detects the hardware and saves

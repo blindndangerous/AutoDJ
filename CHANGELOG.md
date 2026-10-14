@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
   does, and gives manual installation steps when needed. The quick start uses one launcher
-  command, with instructions for the Windows Run dialog and moving to another computer.
+  command, with instructions for moving to another computer.
 
 - New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
   root, and startup never registers one implicitly. Legacy relative paths remain supported, with

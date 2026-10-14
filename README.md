@@ -49,7 +49,6 @@ On first start, the launcher offers to install missing uv and FFmpeg through
 [WinGet](https://learn.microsoft.com/windows/package-manager/winget/), then runs guided setup
 and starts AutoDJ. On later starts, the same command starts your saved installation.
 Python and application dependencies are installed by setup; Node.js is not needed.
-You can also [start from the Windows Run dialog](docs/setup.md#starting-from-the-windows-run-dialog).
 
 On macOS or Linux, install [Git](https://git-scm.com/downloads),
 [uv](https://docs.astral.sh/uv/getting-started/installation/), and
