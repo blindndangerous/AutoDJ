@@ -25,6 +25,7 @@ from urllib.parse import urlencode
 import pytest
 
 from autodj.config import PlayerPageConfig, RequestsConfig, ServerConfig, TimeChecksConfig
+from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge, create_app
 from autodj.settings_bodies import PlaybackSettingsBody
@@ -2024,7 +2025,9 @@ class TestServeFunction:
         # Keyed stream links are gone: stream mode keeps no secret file.
         assert not (tmp_path / ".stream-secret").exists()
         assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
-        assert captured["uvicorn_kwargs"]["http"] == "h11"
+        # Connections past the listeners' share and the pages' room get 503 (#48).
+        assert captured["uvicorn_kwargs"]["limit_concurrency"] >= 256
+        assert captured["uvicorn_kwargs"]["http"] is IcecastSourceH11Protocol
         player = captured["player"]
         assert player.on_track_started is not None
 
@@ -2057,7 +2060,7 @@ class TestServeFunction:
         assert extra.player_page == PlayerPageConfig(enabled=True)
         # The default station is browser-driven, but radio players still need h11.
         assert captured["create_app_kwargs"]["stream_mode"] is False
-        assert captured["uvicorn_kwargs"]["http"] == "h11"
+        assert captured["uvicorn_kwargs"]["http"] is IcecastSourceH11Protocol
 
     def test_serve_without_stream_is_unchanged(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=True)

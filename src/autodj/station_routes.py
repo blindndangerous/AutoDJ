@@ -1054,6 +1054,15 @@ def equip_station(
         station.paths.intros,
         day_at=lambda at: station_wall(station.cfg, at).date(),
     )
+    from autodj.intro_rules import IntroRules
+
+    # Rules share the intros' day and random source (never the picker's).
+    station.intros.rules = IntroRules(
+        station.paths.state_dir / "intro_rules.json",
+        station.intros._day_at,
+        station.intros._rng,
+        library=lambda: bridge.library,
+    )
     bridge.player.matched_intros = station.intros
 
 
@@ -1160,6 +1169,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.carts import install_carts
     from autodj.hour_preview import install_hour_preview
     from autodj.landmarks import install_landmarks
+    from autodj.live_routes import install_live_api
     from autodj.matched_intros_api import install_matched_intros
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
@@ -1171,6 +1181,7 @@ def install_station_routes(router: StationRouter) -> None:
     async def api_status(station: StationDep) -> JSONResponse:
         """Return the current player state snapshot."""
         state = await asyncio.to_thread(station.bridge.get_state)
+        state.update(station.live_state())
         if station.recorder is not None:
             state["recording"] = station.recorder.status()
         return JSONResponse(state)
@@ -1813,6 +1824,12 @@ def install_station_routes(router: StationRouter) -> None:
             return {"played": None, "message": "Nobody is listening, so the liner was not played."}
         if state == "paused":
             return {"played": None, "message": "Playback is paused, so the liner was not played."}
+        if station.live.status() is not None:
+            # AutoDJ does not talk over a live DJ (#48).
+            return {
+                "played": None,
+                "message": "A live DJ is on the air, so the liner was not played.",
+            }
         # Test never plays a liner outside its play dates, as the automatic
         # liners skip it; the page says why.
         refused = await asyncio.to_thread(scheduler.refusal, body.name) if body.name else None
@@ -1853,7 +1870,8 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, body: PlayNextBody
     ) -> dict[str, bool] | JSONResponse:
         """Insert a track at the head of the queue."""
-        if refusal := _dmca_refusal(station, body, append=False):
+        # Off the event loop: the check reads the renders and the library (#217).
+        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=False):
             return refusal
         if not station.bridge.play_next(body.path, now=body.now):
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
@@ -1865,7 +1883,8 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, body: PlayNextBody
     ) -> dict[str, bool] | JSONResponse:
         """Append a track to the user-ordered queue."""
-        if refusal := _dmca_refusal(station, body, append=True):
+        # Off the event loop: the check reads the renders and the library (#217).
+        if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=True):
             return refusal
         if not station.bridge.queue_add(body.path):
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
@@ -2208,6 +2227,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_rotation_test(router)
     install_hour_preview(router)
     install_landmarks(router)
+    install_live_api(router)
 
 
 __all__ = [

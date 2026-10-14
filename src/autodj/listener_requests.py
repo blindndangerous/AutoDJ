@@ -12,7 +12,9 @@ who can reach the server searches the library and requests a song (see
    blocked artist, not already playing, coming up or waiting;
 5. where it would play: :meth:`PlayerBridge.request_slots` checks the
    repeat rules, the same-song window and, in DMCA mode, the DMCA limits
-   at each place in the queue within ``window_minutes``.
+   at each place in the queue within ``window_minutes``, timed as the hour
+   preview times the queue, and the queued songs after each place again
+   with the request ahead of them (#218).
 
 With ``approval = "manual"`` an accepted request waits for the operator;
 with ``"auto"`` it joins the queue at once.  Either way it goes to the
@@ -54,7 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
-from autodj._bridge import QueueChanged
+from autodj._bridge import QueueChanged, QueueView, RequestInsert
 from autodj.dj_meta import harmonic_compatible
 from autodj.fsutil import atomic_write
 from autodj.repeat_rules import ArtistSplitter, artist_key
@@ -411,6 +413,9 @@ class Placement:
     slot: RequestSlot | None
     note: str
     problems: tuple[str, ...] = ()
+    cost: float = math.inf
+    bridges: tuple[IndexEntry, ...] = ()
+    bridge_clock_next: tuple[int | None, ...] = ()
 
 
 def place(
@@ -446,7 +451,7 @@ def place(
         note = f"Fits after {slot.before.display_name}: {', '.join(joined.words)}."
     else:
         note = f"Fits after {slot.before.display_name}."
-    return Placement(slot, note)
+    return Placement(slot, note, cost=_cost)
 
 
 def _join(problems: Sequence[str]) -> str:
@@ -481,11 +486,13 @@ class ListenerRequest:
     requested_at: float
     decided_at: float | None = None
     note: str = ""
+    bridges: list[str] = field(default_factory=list)
 
     def public(self) -> dict[str, Any]:
         """The fields the operator's page shows: no path."""
         data = asdict(self)
         del data["path"]
+        data["reason"] = self.note
         return data
 
 
@@ -608,7 +615,14 @@ class RequestBook:
         with self.lock:
             return next((r for r in self.requests if r.id == request_id), None)
 
-    def add(self, entry: IndexEntry, name: str, status: str, note: str) -> ListenerRequest:
+    def add(
+        self,
+        entry: IndexEntry,
+        name: str,
+        status: str,
+        note: str,
+        bridges: Sequence[IndexEntry] = (),
+    ) -> ListenerRequest:
         """Record an accepted request and count it for today; saved at once."""
         with self.lock:
             now = self.clock()
@@ -627,15 +641,23 @@ class RequestBook:
                 requested_at=now,
                 decided_at=now if status != PENDING else None,
                 note=note,
+                bridges=[song.display_name for song in bridges],
             )
             self.requests.append(request)
             self.save()
             return request
 
-    def decide(self, request: ListenerRequest, status: str, note: str) -> None:
+    def decide(
+        self,
+        request: ListenerRequest,
+        status: str,
+        note: str,
+        bridges: Sequence[IndexEntry] = (),
+    ) -> None:
         """Mark *request* queued or rejected; saved at once."""
         with self.lock:
             request.status, request.decided_at, request.note = status, self.clock(), note
+            request.bridges = [song.display_name for song in bridges]
             self.save()
 
 
@@ -827,8 +849,8 @@ class RequestDesk:
         )
         return [slot for slot in slots if slot.position > last]
 
-    def _placed(self, entry: IndexEntry, slots: Sequence[RequestSlot]) -> Placement:
-        placement = place(entry, self._after_show(slots), self._similarity)
+    def _after_show_note(self, placement: Placement) -> Placement:
+        """Say a placed request waits for the show on the air (#106)."""
         show = self._show_on_air()
         if show is None or placement.slot is None:
             return placement
@@ -859,9 +881,185 @@ class RequestDesk:
                     logger.warning("Could not save the listener requests", exc_info=True)
 
     def _placement(self, entry: IndexEntry) -> Placement:
-        return self._placed(entry, self.bridge.request_slots(entry, self._horizon()))
+        """Where *entry* would go if approved now, without the bridge search.
 
-    def _queue_where_it_fits(self, entry: IndexEntry) -> Placement:
+        For the operator's list and a request that waits for approval: the
+        list is read often, so the bridge search (up to six vector searches)
+        runs only when a request is queued.
+        """
+        view = self.bridge._queue_view()
+        slots = self.bridge.request_slots(entry, self._horizon(), view)
+        return self._plan(entry, slots, view, search=False, operator=True)
+
+    def _plan(
+        self,
+        entry: IndexEntry,
+        slots: Sequence[RequestSlot],
+        view: QueueView,
+        *,
+        search: bool = True,
+        operator: bool = False,
+    ) -> Placement:
+        """The best place, a bridge into it, or what to do when no place is smooth.
+
+        Only places after a show's own waiting songs count (#106): the show wins.
+
+        Args:
+            search: Look for bridge songs (outside every lock).
+            operator: The operator is approving it, which uses the best
+                legal place even when the station waits for a smooth one.
+        """
+        return self._after_show_note(
+            self._plan_slots(entry, self._after_show(slots), view, search=search, operator=operator)
+        )
+
+    def _plan_slots(
+        self,
+        entry: IndexEntry,
+        slots: Sequence[RequestSlot],
+        view: QueueView,
+        *,
+        search: bool,
+        operator: bool,
+    ) -> Placement:
+        chosen = place(entry, slots, self._similarity)
+        slot = chosen.slot
+        if slot is None:
+            return chosen
+        threshold = self.cfg.bridge_cost_threshold
+        if chosen.cost <= threshold:
+            return chosen
+        bridging = self.cfg.bridges_enabled and slot.before is not None
+        if bridging and not search:
+            return Placement(
+                slot,
+                f"{chosen.note} It is far from the songs around it, so approving it looks for "
+                f"up to {_counted(self.cfg.max_bridges, 'bridge song')} to lead into it first.",
+                cost=chosen.cost,
+            )
+        if bridging:
+            bridged = self._find_bridges(entry, slot, view)
+            if bridged is not None:
+                return bridged
+        reason = f"No smooth spot within the next {_minutes(self.cfg.window_minutes)}."
+        if self.cfg.no_smooth_spot == "wait" and not operator:
+            return Placement(None, f"{reason} Keeping this request waiting.", ("no smooth spot",))
+        how = "Approving it uses" if operator and not search else "Using"
+        return Placement(
+            slot, f"{chosen.note} {reason} {how} the best legal spot.", cost=chosen.cost
+        )
+
+    def _find_bridges(
+        self, entry: IndexEntry, slot: RequestSlot, view: QueueView
+    ) -> Placement | None:
+        """Search at most three bounded nearest-neighbour pools, validating each projected play."""
+        from dataclasses import replace
+
+        sim = self.bridge.sim
+        if not hasattr(sim, "bridge_candidates"):
+            return None
+        player = getattr(self.bridge, "player", None)
+        is_liner = getattr(player, "_is_liner", None)
+        before = slot.before
+        assert before is not None
+        current: IndexEntry = before
+        used = {song.path for song in view.queue}
+        used.update(song.path for song in (view.current, view.queued_next, entry) if song)
+        used.update(request.path for request in self.book.pending())
+        versions_reader = getattr(getattr(self.bridge, "player", None), "_song_versions", None)
+        versions = versions_reader() if callable(versions_reader) else None
+        if versions is not None:
+            from autodj.repeat_rules import SongVersions
+
+            if isinstance(versions, SongVersions):
+                used = set(versions.with_versions(used))
+        bridges: list[IndexEntry] = []
+        next_steps: list[int | None] = []
+        cursor: int | None = None
+        direct = fit(current, entry, self._similarity).cost
+        for _ in range(self.cfg.max_bridges):
+            pool: dict[str, IndexEntry] = {}
+            for song in (
+                *sim.bridge_candidates(current.path, 24),
+                *sim.bridge_candidates(entry.path, 24),
+            ):
+                if song.path in used:
+                    continue
+                live = self.bridge.entry_for_path(song.path)
+                if (
+                    live is not None
+                    and not live.is_silent
+                    and not self.blocklist.blocks(live)
+                    and not (callable(is_liner) and is_liner(live) is True)
+                ):
+                    pool[live.path] = live
+            ranked = sorted(
+                pool.values(),
+                key=lambda song: (
+                    max(
+                        fit(current, song, self._similarity).cost,
+                        fit(song, entry, self._similarity).cost,
+                    ),
+                    fit(current, song, self._similarity).cost
+                    + fit(song, entry, self._similarity).cost,
+                ),
+            )[:12]
+            found: tuple[IndexEntry, RequestSlot] | None = None
+            for candidate in ranked:
+                first = fit(current, candidate, self._similarity).cost
+                remaining = fit(candidate, entry, self._similarity).cost
+                if first >= direct or remaining >= direct or first > self.cfg.bridge_cost_threshold:
+                    continue
+                synthetic = replace(
+                    view,
+                    queue=(*view.queue[: slot.position], *bridges, *view.queue[slot.position :]),
+                )
+                position = slot.position + len(bridges)
+                options = self.bridge.request_slots(
+                    candidate, self._horizon(), synthetic, cursor, only_position=position
+                )
+                if options and not options[0].problems:
+                    found = candidate, options[0]
+                    break
+            if found is None:
+                break
+            candidate, candidate_slot = found
+            bridges.append(candidate)
+            next_steps.append(candidate_slot.clock_next)
+            used.add(candidate.path)
+            current = candidate
+            direct = fit(current, entry, self._similarity).cost
+            synthetic = replace(
+                view, queue=(*view.queue[: slot.position], *bridges, *view.queue[slot.position :])
+            )
+            request_slots = self.bridge.request_slots(
+                entry,
+                self._horizon(),
+                synthetic,
+                candidate_slot.clock_next,
+                only_position=slot.position + len(bridges),
+            )
+            if (
+                direct <= self.cfg.bridge_cost_threshold
+                and request_slots
+                and not request_slots[0].problems
+            ):
+                final = request_slots[0]
+                names = ", ".join(song.display_name for song in bridges)
+                return Placement(
+                    replace(slot, starts_in=final.starts_in, clock_next=final.clock_next),
+                    f"Bridge to {entry.display_name} through {names}.",
+                    cost=max(
+                        fit(a, b, self._similarity).cost
+                        for a, b in zip((before, *bridges), (*bridges, entry), strict=True)
+                    ),
+                    bridges=tuple(bridges),
+                    bridge_clock_next=tuple(next_steps),
+                )
+            cursor = candidate_slot.clock_next
+        return None
+
+    def _queue_where_it_fits(self, entry: IndexEntry, *, operator: bool = False) -> Placement:
         """Place *entry* and queue it there (:meth:`PlayerBridge.insert_request`).
 
         The place is checked against the queue as it is when the song is
@@ -872,11 +1070,16 @@ class RequestDesk:
         """
         chosen: list[Placement] = []
 
-        def choose(slots: list[RequestSlot]) -> RequestSlot | None:
-            chosen.append(self._placed(entry, slots))
-            return chosen[-1].slot
+        def choose(slots: list[RequestSlot], view: QueueView) -> RequestInsert | None:
+            chosen.append(self._plan(entry, slots, view, operator=operator))
+            placement = chosen[-1]
+            return (
+                RequestInsert(placement.slot, placement.bridges, placement.bridge_clock_next)
+                if placement.slot is not None
+                else None
+            )
 
-        self.bridge.insert_request(entry, self._horizon(), choose)
+        self.bridge.insert_request(entry, self._horizon(), choose, with_view=True)
         return chosen[-1]
 
     def _coming_up(self, entry: IndexEntry) -> bool:
@@ -933,7 +1136,11 @@ class RequestDesk:
                 "The station's queue was changing. Please send the request again.",
                 retry_after=5,
             )
-        if placement.slot is None:
+        can_wait = placement.slot is None and (
+            "no smooth spot" in placement.problems
+            or any("clockwheel" in problem for problem in placement.problems)
+        )
+        if placement.slot is None and not can_wait:
             return Outcome(
                 409,
                 "Not right now",
@@ -942,10 +1149,10 @@ class RequestDesk:
                 "later.",
             )
         self.accepted.hit(address)
-        if auto:
+        if auto and placement.slot is not None:
             slot = placement.slot
             self._on_queued()
-            request = self.book.add(entry, name, QUEUED, placement.note)
+            request = self.book.add(entry, name, QUEUED, placement.note, placement.bridges)
             logger.info("Listener request queued: %s (%s)", entry.display_name, placement.note)
             # During a show, or with one about to start, the song waits for
             # the show's end: no time is promised.
@@ -954,6 +1161,13 @@ class RequestDesk:
                 200,
                 "Request accepted",
                 f"Thanks{_for(request.name)}. {_song(entry)} should play {when}.",
+            )
+        if len(self.book.pending()) >= cfg.max_pending:
+            return Outcome(
+                429,
+                "Too many requests waiting",
+                "The station has many requests waiting already. Please try again later.",
+                retry_after=600,
             )
         request = self.book.add(entry, name, PENDING, placement.note)
         logger.info("Listener request waiting: %s", entry.display_name)
@@ -982,15 +1196,22 @@ class RequestDesk:
             entry = self.bridge.entry_for_path(request.path)
             if entry is None:
                 row["fit"] = "The song is no longer in the library."
+                row["reason"] = row["fit"]
                 row["can_approve"] = False
             else:
                 placement = self._placement(entry)
                 row["fit"] = placement.note
+                row["reason"] = placement.note
+                row["bridges"] = [song.display_name for song in placement.bridges]
                 row["can_approve"] = placement.slot is not None
             pending.append(row)
         return {
             "enabled": self.cfg.enabled,
             "approval": self.cfg.approval,
+            "bridges_enabled": self.cfg.bridges_enabled,
+            "max_bridges": self.cfg.max_bridges,
+            "bridge_cost_threshold": self.cfg.bridge_cost_threshold,
+            "no_smooth_spot": self.cfg.no_smooth_spot,
             "today": self.book.count_today(),
             "daily_limit": self.cfg.daily_limit,
             "pending": pending,
@@ -1031,7 +1252,7 @@ class RequestDesk:
         with self._lock:
             request, entry = self._waiting(request_id)
             try:
-                placement = self._queue_where_it_fits(entry)
+                placement = self._queue_where_it_fits(entry, operator=True)
             except QueueChanged as exc:
                 raise ValueError(f"{exc} Try again.") from exc
             if placement.slot is None:
@@ -1040,11 +1261,14 @@ class RequestDesk:
                     f"{_minutes(self.cfg.window_minutes)}: {_join(placement.problems)}."
                 )
             self._on_queued()
-            self.book.decide(request, QUEUED, placement.note)
+            self.book.decide(request, QUEUED, placement.note, placement.bridges)
             return request
 
     def play_next(self, request_id: str) -> ListenerRequest:
         """Queue a waiting request first, whatever fits; DMCA limits still hold.
+
+        They hold for the queued songs after it too: a limit one of them
+        would break only because of the request refuses it (#218).
 
         Raises:
             KeyError: No request with that id is waiting.
@@ -1059,7 +1283,12 @@ class RequestDesk:
 
             def choose(slots: list[RequestSlot]) -> RequestSlot | None:
                 first.append(slots[0])
-                return None if slots[0].dmca else slots[0]
+                return (
+                    None
+                    if slots[0].dmca
+                    or any("clockwheel" in problem for problem in slots[0].problems)
+                    else slots[0]
+                )
 
             try:
                 self.bridge.insert_request(entry, 0.0, choose)
@@ -1069,6 +1298,8 @@ class RequestDesk:
                 raise ValueError(
                     f"DMCA mode: playing this song next would mean {_join(first[-1].dmca)}."
                 )
+            if any("clockwheel" in problem for problem in first[-1].problems):
+                raise ValueError("The next clockwheel step is not a matching music slot.")
             self._on_queued()
             self.book.decide(request, QUEUED, "Play next, chosen by the operator.")
             return request
@@ -1097,6 +1328,12 @@ def _songs(count: int) -> str:
 
 def _for(name: str) -> str:
     return f", {name}" if name else ""
+
+
+def _counted(count: int, noun: str) -> str:
+    words = ("no", "one", "two", "three")
+    word = words[count] if 0 <= count < len(words) else str(count)
+    return f"{word} {noun}" if count == 1 else f"{word} {noun}s"
 
 
 def _minutes(minutes: int) -> str:

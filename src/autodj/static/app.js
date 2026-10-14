@@ -31,6 +31,7 @@ import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
+import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
 import { installShowsPanel } from "./modules/shows-panel.js";
 import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
@@ -43,6 +44,8 @@ import { installAdsPanel } from "./modules/ads-panel.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installRelaySettings } from "./modules/relay-settings.js";
+import { installLiveDesk } from "./modules/live-talk.js";
+import { installLiveSettings } from "./modules/live-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { installStreamFormats } from "./modules/stream-formats.js";
@@ -280,12 +283,33 @@ let _lastStreamMode = false;
 // Stream mode with --server-audio: the page's volume and Mute also drive
 // the machine's own speakers.
 let _lastStreamServerAudio = false;
+// Live DJ (#48): the live line and Talk on Now Playing, and Settings >
+// Live DJ.  The tab shows in stream mode (saying why when the station
+// cannot go live) or whenever the server says it can; Talk shows only
+// when it can.
+const liveDesk = installLiveDesk({ doc: document, srStatus: document.getElementById("sr-status") });
+let _liveInfo = null;
+function renderLiveTab() {
+  settingsTabs.setTabHidden("live", !(_liveInfo?.available || _lastStreamMode));
+}
+const liveSettings = installLiveSettings({
+  doc: document,
+  request: requestJson,
+  announce: (message, error = false) => announceStatus(settingsStatus, message,
+    { tone: error ? "error" : "success", force: true, dwellMs: 6000 }),
+  onInfo: (info) => {
+    _liveInfo = info;
+    liveDesk?.setInfo(info);
+    renderLiveTab();
+  },
+});
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
 let libraryFoldersControls = null;
 let clockwheelPanelControls = null;
 let categoriesPanelControls = null;
+let introRulesControls = null;
 let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
@@ -328,6 +352,11 @@ function clearStationViews() {
   streamFormats.reset();
   relaySettings.reset();
   recordingControls.reset();
+  // Switching stations or signing out stops talking and lets the
+  // microphone go; the next station's live line is shown in silence.
+  liveDesk?.clear();
+  liveSettings?.reset();
+  _liveInfo = null;
   nowPlayingSettings?.reset();
   listenerControls.reset();
   listenerStats.reset();
@@ -376,6 +405,7 @@ function clearStationViews() {
   resetSettingsState(_settingsEls());
   settingsStatus.textContent = "";
   clockwheelPanelControls?.clearProtectedData();
+  introRulesControls?.clear();
   // Shows are the station's own (#106).
   showsPanelControls?.clearProtectedData();
   schedulerPanelControls?.clear();
@@ -420,6 +450,7 @@ function clearProtectedSessionData() {
   libraryKind.value = "music";
   libraryFoldersControls?.clearProtectedData();
   categoriesPanelControls?.clearProtectedData();
+  introRulesControls?.clearProtectedData();
   const browseFolder = document.getElementById("library-folder");
   if (browseFolder) {
     const option = (value, label) => {
@@ -588,6 +619,8 @@ function applyState(s) {
   streamSettings.apply(s);
   if (s.stream_mode) recordingControls.apply(s.recording);
   else recordingControls.reset();
+  liveDesk?.applyState(s);
+  renderLiveTab();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
   streamFormats.apply(s);
@@ -621,15 +654,7 @@ function applyState(s) {
         { mirror: false, dwellMs: 10000 });
     }
     lastTrackKey = trackKey;
-    // Update browser titlebar: "AutoDJ - Artist - Title - Album"
-    const t = s.current_track;
-    const segs = [];
-    if (t) {
-      if (t.artist) segs.push(t.artist);
-      if (t.title)  segs.push(t.title);
-      if (t.album)  segs.push(t.album);
-    }
-    document.title = pageTitle(segs);
+    document.title = pageTitle(titleSegments(s.current_track));
     // Reset lyric tracking — new track may have different lyrics
     resetLyricState(_lyricEls);
     // Refresh cover art and full lyric list for the new track
@@ -875,6 +900,7 @@ const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
   djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
+  pbHourFit: document.getElementById("pb-hour-fit"),
   pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
@@ -1250,6 +1276,7 @@ const _mixEls = {
   pbBassCutoff:   document.getElementById("pb-bass-cutoff"),
   pbPickTopK:     document.getElementById("pb-pick-top-k"),
   pbPickTemperature: document.getElementById("pb-pick-temperature"),
+  pbHourFitWindow: document.getElementById("pb-hour-fit-window"),
   djMaxStretch:   document.getElementById("dj-max-stretch"),
   djGlideBars:    document.getElementById("dj-glide-bars"),
   djSweepFloor:   document.getElementById("dj-sweep-floor"),
@@ -1502,6 +1529,7 @@ function connectWS({ quiet = false } = {}) {
           libraryFoldersControls?.resume();
           clockwheelPanelControls?.resume();
           categoriesPanelControls?.resume();
+          introRulesControls?.resume();
           showsPanelControls?.resume();
           void schedulerPanelControls?.refresh();
           void rotationTestControls?.refresh();
@@ -1557,12 +1585,12 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => void switchStation(slug),
 });
 
-// "Artist - Title - Night Owl Radio - AutoDJ": the station is named while
-// the server has several.
+// "Artist - Title - Night Owl Radio - AutoDJ": the station is named unless
+// it is called AutoDJ.
 function pageTitle(segments) {
   const parts = [...segments];
   const name = stationName();
-  if (severalStations() && name !== "AutoDJ") parts.push(name);
+  if (name !== "AutoDJ") parts.push(name);
   parts.push("AutoDJ");
   return parts.join(" - ");
 }
@@ -1598,7 +1626,7 @@ function renderStationContext() {
 }
 
 function titleSegments(track) {
-  return track ? [track.artist, track.title, track.album].filter(Boolean) : [];
+  return track ? [track.artist, track.title].filter(Boolean) : [];
 }
 
 // Listen here says which station it plays once the page controls another.
@@ -1702,11 +1730,13 @@ function refreshStationPanels() {
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void voiceTrackerControls?.refresh();
+  void liveSettings?.refresh();
   void adsControls?.refresh();
   void linerControls?.refresh();
   void profileControls?.refresh();
   void fetchHistory(1);
   void libraryFoldersControls?.refreshIntros?.();
+  introRulesControls?.refresh();
 }
 
 // Shows the station this page now controls: its state, its socket, its
@@ -2650,34 +2680,46 @@ const _libEls = {
 // ----------------------------------------------------------------
 // History tab
 // ----------------------------------------------------------------
-import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
+import { formatPlayedAt, updateHistoryDateHeadings } from "./modules/history-format.js";
 import { installHistoryExport } from "./modules/history-export.js";
 
 let _histPage = 1;
 const historyNavigation = installTableNavigation(document.getElementById("history-tbody"));
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
-// Page 1's newest played_at and whether its rows show dates; null when
+// Page 1's newest played_at; null when
 // page 1 is not on screen, so a track change rebuilds instead of adding.
 let _histNewestAt = null;
-let _histWithDate = false;
 // The playing track's path, to notice a track change on the 1 Hz push.
 let _histPlayingPath = null;
 
-function historyRowHtml(it, withDate) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "history-info";
-  button.dataset.path = it.path || "";
-  button.dataset.historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
-  button.textContent = "Track info";
-  const title = document.createElement("span");
-  title.textContent = it.title ?? "";
-  const titleAndInfo = document.createDocumentFragment();
-  titleAndInfo.append(title, " ", button);
-  return tableRow(document, [
-    formatPlayedAt(it.played_at, withDate), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
+// A live DJ session (#48) is a row too: kind "live", the DJ as the artist,
+// no file and so no Track info, and "On the air" until it ends.
+function historyRowHtml(it) {
+  const historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
+  const live = it.kind === "live";
+  let titleCell;
+  if (live) {
+    titleCell = it.title || "Live";
+  } else {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-info";
+    button.dataset.path = it.path || "";
+    button.dataset.historyId = historyId;
+    button.textContent = "Track info";
+    const title = document.createElement("span");
+    title.textContent = it.title ?? "";
+    titleCell = document.createDocumentFragment();
+    titleCell.append(title, " ", button);
+  }
+  const row = tableRow(document, [
+    formatPlayedAt(it.played_at, false), titleCell, it.artist ?? "",
+    live && !it.ended_at ? "On the air" : _fmtDuration(it.duration),
   ], { rowHeaderIndex: 1 });
+  row.dataset.historyId = historyId;
+  row.dataset.playedAt = it.played_at;
+  return row;
 }
 
 function showHistoryPaging(data) {
@@ -2701,11 +2743,12 @@ function _fmtDuration(sec) {
 }
 
 function focusRemainingHistoryRow(tbody, index, message, column = null) {
-  const buttons = [...tbody.querySelectorAll(".history-info")];
-  const rows = [...tbody.querySelectorAll("tr")];
+  const rows = [...tbody.querySelectorAll("tr[data-played-at]")];
   const row = rows[Math.min(index, rows.length - 1)];
-  const target = column === null ? buttons[Math.min(index, buttons.length - 1)]
-    : row?.querySelectorAll("td[role=gridcell], td[role=rowheader]")[column];
+  const cells = row?.querySelectorAll("td[role=gridcell], td[role=rowheader]");
+  // A live session's row has no Track info button: its title cell instead.
+  const target = column === null ? row?.querySelector(".history-info") || cells?.[1]
+    : cells?.[column];
   const fallback = target
     || document.querySelector("#panel-history > h2");
   if (fallback?.tagName !== "BUTTON") fallback?.setAttribute("tabindex", "-1");
@@ -2734,10 +2777,10 @@ async function fetchHistory(page, { announce = false } = {}) {
     const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
     const focusedButton = active?.closest(".history-info") || null;
     const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
-    const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+    const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr[data-played-at]")].indexOf(focusedRow) : -1;
     const focusedColumn = focusedCell
       ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
-    const focusedId = focusedRow?.querySelector(".history-info")?.dataset.historyId;
+    const focusedId = focusedRow?.dataset.historyId;
     let focusLost = false;
     if (!data.total) {
       tbody.replaceChildren();
@@ -2759,16 +2802,16 @@ async function fetchHistory(page, { announce = false } = {}) {
     }
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
-    const withDate = historyNeedsDates(data.items);
-    tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, withDate)));
+    tbody.replaceChildren(...data.items.map(historyRowHtml));
+    updateHistoryDateHeadings(tbody);
     historyNavigation.refresh();
     if (focusedId) {
-      const replacement = [...tbody.querySelectorAll(".history-info")]
-        .find((button) => button.dataset.historyId === focusedId);
+      const replacement = [...tbody.querySelectorAll("tr")]
+        .find((row) => row.dataset.historyId === focusedId);
+      const cells = replacement?.querySelectorAll("td[role=gridcell], td[role=rowheader]");
       if (replacement) {
-        if (focusedCell) replacement.closest("tr")
-          .querySelectorAll("td[role=gridcell], td[role=rowheader]")[focusedColumn]?.focus();
-        else replacement.focus();
+        if (focusedCell) cells[focusedColumn]?.focus();
+        else (replacement.querySelector(".history-info") || cells[1])?.focus();
       }
       else {
         focusRemainingHistoryRow(tbody, focusedIndex,
@@ -2778,7 +2821,6 @@ async function fetchHistory(page, { announce = false } = {}) {
     }
     if (data.page === 1) {
       _histNewestAt = data.items[0].played_at;
-      _histWithDate = withDate;
     }
     const pageText = showHistoryPaging(data);
     pag.removeAttribute("hidden");
@@ -2842,21 +2884,18 @@ async function addNewHistoryRows() {
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown) return;
   const fresh = data.items.filter((it) => it.played_at > newestShown);
   if (!fresh.length) return;
-  if (historyNeedsDates(data.items) !== _histWithDate) {
-    await fetchHistory(1);  // Every row's time changes format.
-    return;
-  }
   const tbody = document.getElementById("history-tbody");
   const active = tbody.contains(document.activeElement) ? document.activeElement : null;
   const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
   const focusedButton = active?.closest(".history-info") || null;
   const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
-  const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+  const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr[data-played-at]")].indexOf(focusedRow) : -1;
   const focusedColumn = focusedCell
     ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
   const focusedElement = focusedCell || focusedButton;
-  tbody.prepend(...fresh.map((it) => historyRowHtml(it, _histWithDate)));
-  while (tbody.children.length > 50) tbody.lastElementChild.remove();
+  tbody.prepend(...fresh.map(historyRowHtml));
+  for (const row of [...tbody.querySelectorAll("tr[data-played-at]")].slice(50)) row.remove();
+  updateHistoryDateHeadings(tbody);
   historyNavigation.refresh();
   if (focusedElement && !focusedElement.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
     "That play is no longer in the displayed History rows.", focusedColumn);
@@ -2864,12 +2903,19 @@ async function addNewHistoryRows() {
   showHistoryPaging(data);
 }
 
+// A live DJ going on or off the air changes History too: the session's
+// row appears, then gets its length, so page 1 is asked for again.
 function noteTrackForHistory(s) {
   const path = (s && s.current_track && s.current_track.path) || null;
-  if (path === _histPlayingPath) return;
-  const changed = _histPlayingPath !== null && path !== null;
-  _histPlayingPath = path;
-  if (changed && historyViewShown() && _histPage === 1) void addNewHistoryRows();
+  const liveSince = (s && s.live && s.live.since) || null;
+  const key = path === null && liveSince === null ? null : `${path}\u0000${liveSince}`;
+  if (key === _histPlayingPath) return;
+  const was = _histPlayingPath;
+  _histPlayingPath = key;
+  if (was === null || key === null || !historyViewShown() || _histPage !== 1) return;
+  const liveChanged = !was.endsWith(`\u0000${liveSince}`);
+  if (liveChanged) void fetchHistory(1);
+  else void addNewHistoryRows();
 }
 
 {
@@ -2934,7 +2980,12 @@ libraryFoldersControls = installLibraryFolders({
 
 clockwheelPanelControls = installClockwheelPanel();
 // A saved or deleted category reaches the clockwheel step form at once.
-categoriesPanelControls = installCategoriesPanel({ onChange: () => clockwheelPanelControls?.refresh() });
+// A saved or deleted category reaches intro rules' condition choices too.
+categoriesPanelControls = installCategoriesPanel({ onChange: () => {
+  void clockwheelPanelControls?.refresh();
+  introRulesControls?.refresh();
+} });
+introRulesControls = installIntroRulesPanel();
 showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
@@ -3043,6 +3094,7 @@ function startAuthenticatedApp(initialState) {
   libraryFoldersControls?.resume();
   clockwheelPanelControls?.resume();
   categoriesPanelControls?.resume();
+  introRulesControls?.resume();
   showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();
@@ -3092,6 +3144,7 @@ function startAuthenticatedApp(initialState) {
   void voiceTrackerControls?.refresh();
   adsControls = installAdsPanel();
   void adsControls?.refresh();
+  void liveSettings?.refresh();
   if (initialState) {
     applyState(initialState);
     connectWS();

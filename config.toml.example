@@ -101,6 +101,11 @@ liner_upload_max_mib = 50
 # docs/operations.md for a Let's Encrypt certificate and remote access.
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
+# Live DJs (stream mode): BUTT or Mixxx log in to the station's source mount with a DJ
+# password.  Over plain HTTP that is accepted only from this machine unless this is true,
+# which also accepts it from the local network, the password then crossing the LAN
+# unencrypted.  HTTPS needs nothing here.  See "Live DJs and talkover" in docs/operations.md.
+live_plain_http_lan = false
 
 # ---------------------------------------------------------------------------
 # Radio-style MP3 stream — server mixes the set and serves it as a live
@@ -289,6 +294,12 @@ post_queue_seed = "last_queued"
 # temperature 0.3; higher temperature flattens the weighting.
 pick_top_k = 1
 pick_temperature = 0.3
+
+# Optional hour fitting. During last 10 minutes before next top of hour,
+# clockwheel restart or hard schedule event, prefer an eligible song whose
+# end is closest to that time. Window accepts 1 to 30 minutes.
+hour_fit = false
+hour_fit_window_minutes = 10
 
 # How the current key is shown: "camelot" (8A / 8B, matching the in-page
 # wheel) or "musical" (C, Am, F#m).  Picker maths is unaffected.

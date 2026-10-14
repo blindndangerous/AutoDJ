@@ -52,6 +52,9 @@ def test_words_match_the_page_script() -> None:
         "Unknown title by an unknown artist."
     )
     assert track_text(None, empty=NOTHING_PLAYING) == NOTHING_PLAYING
+    live = {"artist": "DJ Alice", "title": "Live", "kind": "live"}
+    assert track_text(live, empty="") == "Live: DJ Alice."
+    assert track_text({**live, "artist": " "}, empty="") == "Live: a DJ."
     assert listeners_text(1) == "1 listener"
     assert listeners_text(0) == "0 listeners"
     assert listeners_text("bad") == "0 listeners"

@@ -2557,6 +2557,40 @@ describe("static accessibility contracts", () => {
     expect(css).toContain('input[aria-invalid="true"]');
   });
 
+  it("gives hour fitting and a hard event's wait labelled native fields with linked help", () => {
+    installDocument({ html: htmlSource });
+    const css = stripCssComments(cssSource);
+    const toggle = document.getElementById("pb-hour-fit");
+    expect(toggle.getAttribute("type")).toBe("checkbox");
+    expect(toggle.closest("#spanel-picking")).not.toBeNull();
+    expect(document.querySelector('label[for="pb-hour-fit"]').textContent.trim())
+      .toBe("Fit songs to the hour");
+    expect(document.getElementById(toggle.getAttribute("aria-describedby")).textContent)
+      .toMatch(/repeat rules, DMCA limits/);
+    for (const [id, label, min, max, showWhen, rule] of [
+      ["pb-hour-fit-window", "Minutes before to start fitting", "1", "30", "pb-hour-fit",
+        'body:has(#pb-hour-fit:not(:checked)) [data-show-when="pb-hour-fit"]'],
+      ["schedule-wait", "Wait up to seconds", "0", "300", "schedule-timing=hard",
+        'body:not(:has(#schedule-timing option[value="hard"]:checked)) [data-show-when="schedule-timing=hard"]'],
+    ]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("number");
+      expect(input.getAttribute("inputmode")).toBe("numeric");
+      expect([input.min, input.max, input.step]).toEqual([min, max, "1"]);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // The help says the range in words, and hides with its field: both
+      // leave the accessibility tree together while the setting has no effect.
+      const help = document.getElementById(input.getAttribute("aria-describedby"));
+      expect(help.textContent).toMatch(new RegExp(`from ${min} to ${max}`));
+      expect(help.hasAttribute("aria-live")).toBe(false);
+      expect(help.dataset.showWhen).toBe(showWhen);
+      expect(input.closest(".settings-row").dataset.showWhen).toBe(showWhen);
+      expect(css).toContain(rule);
+    }
+    // The wait's refusal joins the schedule form's linked error text.
+    expect(document.getElementById("schedule-wait").closest("#schedule-form")).not.toBeNull();
+  });
+
   it("gives the hour preview a headed table, one polite status and token colours", () => {
     installDocument({ html: htmlSource });
     const card = document.querySelector("#hour-preview-card");
@@ -2789,6 +2823,66 @@ describe("static accessibility contracts", () => {
     expect(names).toEqual(expect.arrayContaining(["Right bracket", "Left bracket"]));
   });
 
+  it("gives Library tools' intro rules labelled native fields, linked help and errors, and one status", () => {
+    installDocument({ html: htmlSource });
+    const section = document.querySelector("#panel-library #intro-rules");
+    expect(document.getElementById(section.getAttribute("aria-labelledby")).tagName).toBe("H2");
+    const list = document.getElementById("intro-rules-list");
+    expect(list.getAttribute("role")).toBe("list");
+    expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    expect(list.closest("[aria-live], [role=status]")).toBeNull();
+    const form = section.querySelector("form#intro-rules-form");
+    expect(form.hasAttribute("novalidate")).toBe(true);
+    expect(form.hidden).toBe(true);
+    const fields = [
+      ["label", "Label", "text"], ["chance", "Chance (percent)", "text"],
+      ["cooldown", "Wait between plays (minutes)", "text"], ["not-before", "Not before", "date"],
+      ["not-after", "Do not play after", "date"],
+    ];
+    for (const [name, label, type] of fields) {
+      const input = document.getElementById(`intro-rules-${name}`);
+      expect(input.getAttribute("type"), name).toBe(type);
+      expect(form.querySelector(`label[for="intro-rules-${name}"]`).textContent.trim()).toBe(label);
+      // Help is linked; the error is hidden words, linked only while shown, never live.
+      const described = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+      expect(described.length, name).toBeGreaterThan(0);
+      for (const id of described) expect(document.getElementById(id).classList.contains("setting-desc")).toBe(true);
+      const error = document.getElementById(`intro-rules-${name}-error`);
+      expect(error.classList.contains("field-error")).toBe(true);
+      expect(error.hidden).toBe(true);
+      expect(error.hasAttribute("role")).toBe(false);
+      expect(error.closest("[aria-live]")).toBeNull();
+    }
+    for (const [id, label] of [["intro-rules-match", "Match conditions"], ["intro-rules-priority", "Priority"], ["intro-rules-folder", "Liner folder"]]) {
+      expect(document.getElementById(id).tagName).toBe("SELECT");
+      expect(form.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+    }
+    // The conditions are a named group; the liners a fieldset with a legend and linked help.
+    const group = document.getElementById("intro-rules-conditions");
+    expect(group.getAttribute("role")).toBe("group");
+    expect(document.getElementById(group.getAttribute("aria-labelledby")).textContent).toBe("Conditions the next song must meet");
+    const clips = document.getElementById("intro-rules-clips");
+    expect(clips.tagName).toBe("FIELDSET");
+    expect(clips.querySelector(":scope > legend").textContent).toBe("Voice liners to choose from");
+    expect(document.getElementById(clips.getAttribute("aria-describedby")).classList.contains("setting-desc")).toBe(true);
+    for (const id of ["intro-rules-conditions-error", "intro-rules-clips-error", "intro-rules-folder-error", "intro-rules-problem"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error"), id).toBe(true);
+      expect(error.hidden, id).toBe(true);
+      expect(error.hasAttribute("role"), id).toBe(false);
+    }
+    expect(document.getElementById("intro-rules-save").getAttribute("type")).toBe("submit");
+    // One polite status, not nested in another live region.
+    const live = [...section.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["intro-rules-status"]);
+    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // The layout uses the shared tokens only: no colour of its own.
+    const rules = stripCssComments(cssSource).match(/[^{}]*(?:#intro-rules|\.intro-rule-liners)[^{}]*\{[^{}]*\}/g);
+    expect(rules.length).toBeGreaterThan(0);
+    for (const rule of rules) expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+  });
+
   it("gives Shows labelled native fields, keyboard list buttons, one status and token colours", () => {
     installDocument({ html: htmlSource });
     const card = document.getElementById("shows-card");
@@ -2984,6 +3078,115 @@ describe("static accessibility contracts", () => {
     expect(keys).toContain("Alt+R");
   });
 
+  it("gives Live DJ a fixed-name hold-to-talk toggle, a silent live line and labelled settings", () => {
+    installDocument({ html: htmlSource });
+    const idsOf = (element) => (element.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    const quiet = (element) => element.closest("[aria-live], [role=status], [role=alert], [role=log]") === null;
+    // The live line is plain text under the title; #sr-status says the change.
+    const line = document.getElementById("live-on-air");
+    expect(line.tagName).toBe("P");
+    expect(line.hidden).toBe(true);
+    expect(quiet(line)).toBe(true);
+    expect(line.closest("#now-playing-card")).not.toBeNull();
+    // Talk: a native button with a name that never changes and aria-pressed.
+    const desk = document.getElementById("talk-desk");
+    expect(desk.hidden).toBe(true);
+    expect(desk.closest("[role=group]").getAttribute("aria-label")).toBe("Playback controls");
+    const talk = document.getElementById("btn-talk");
+    expect(talk.tagName).toBe("BUTTON");
+    expect(talk.getAttribute("type")).toBe("button");
+    expect(talk.textContent).toBe("Talk");
+    expect(talk.hasAttribute("aria-label")).toBe(false);
+    expect(talk.getAttribute("aria-pressed")).toBe("false");
+    expect(idsOf(talk)).toEqual(["talk-help", "station-context"]);
+    expect(document.getElementById("talk-help").textContent).toMatch(/hold Space or Enter on it, or hold Alt\+M/);
+    for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
+      expect(quiet(document.getElementById(id)), id).toBe(true);
+    }
+    // Latched talk is shown in words while it lasts (live-talk.js fills it).
+    const latched = document.getElementById("talk-latched");
+    expect(latched.tagName).toBe("P");
+    expect(latched.hidden).toBe(true);
+    expect(latched.classList.contains("talk-latched")).toBe(true);
+    // Alt+M is hold-only; only the button latches, for 2 minutes at most.
+    expect(document.getElementById("talk-help").textContent)
+      .toMatch(/for 2 minutes at most; Alt\+M talks only while held/);
+    // Without sign-in anyone who can open the page can talk: said plainly.
+    for (const id of ["talk-help", "live-intro"]) {
+      expect(document.getElementById(id).textContent, id)
+        .toMatch(/no sign-in \(pairing is off\), anyone who can open this page can talk on the air/);
+    }
+    expect(document.getElementById("talk-error").classList.contains("field-error")).toBe(true);
+    // The shortcut is listed with the others, in words.
+    const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
+    expect(keys).toContain("Alt+M");
+    // Settings > Live DJ: its own tab and panel, hidden until the station can go live.
+    const tab = document.getElementById("stab-live");
+    expect(tab.hidden).toBe(true);
+    expect(tab.textContent).toBe("Live DJ");
+    const panel = document.getElementById(tab.dataset.panel);
+    expect(panel.getAttribute("aria-labelledby")).toBe("stab-live");
+    expect(panel.querySelector(":scope > h3").textContent).toBe("Live DJ");
+    expect(panel.querySelector("[aria-live], [role=status], [role=alert]")).toBeNull();
+    const labelText = (id) => document.querySelector(`label[for="${id}"]`)?.textContent.trim();
+    for (const [id, label] of [
+      ["live-source-url", "Source address"],
+      ["live-dj-username", "Username"],
+      ["live-dj-name", "Display name"],
+      ["live-dj-password", "Password"],
+      ["live-return-seconds", "Return time (seconds)"],
+      ["live-duck-db", "Duck amount (dB)"],
+    ]) {
+      expect(labelText(id), id).toBe(label);
+      for (const ref of idsOf(document.getElementById(id))) {
+        expect(document.getElementById(ref), `${id} -> ${ref}`).not.toBeNull();
+      }
+    }
+    expect(document.getElementById("live-source-url").readOnly).toBe(true);
+    const password = document.getElementById("live-dj-password");
+    expect(password.getAttribute("type")).toBe("password");
+    expect(password.getAttribute("autocomplete")).toBe("new-password");
+    for (const id of ["live-return-seconds", "live-duck-db"]) {
+      expect(document.getElementById(id).getAttribute("type"), id).toBe("number");
+    }
+    expect(document.getElementById("live-talkover").tagName).toBe("FIELDSET");
+    expect(document.querySelector("#live-talkover > legend").textContent).toBe("Talk over the music");
+    const table = document.getElementById("live-dj-table");
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(document.getElementById(table.getAttribute("aria-labelledby")).textContent).toBe("DJ accounts");
+    expect([...table.querySelectorAll("th")].map((th) => th.textContent))
+      .toEqual(["DJ", "Password", "Edit", "Remove"]);
+    expect(document.getElementById("live-djs-desc").textContent).toMatch(/backups leave them out/);
+    for (const button of panel.querySelectorAll("button")) {
+      expect(button.textContent.trim(), button.id).not.toBe("");
+      expect(["button", "submit"], button.id).toContain(button.getAttribute("type"));
+    }
+    for (const id of ["live-dj-error", "live-talkover-error"]) {
+      const error = document.getElementById(id);
+      expect(error.classList.contains("field-error"), id).toBe(true);
+      expect(error.hidden, id).toBe(true);
+    }
+  });
+
+  it("styles the live line and Talk from theme tokens, not colour alone", () => {
+    const css = stripCssComments(cssSource);
+    const rule = (selector) => {
+      const at = css.indexOf(`${selector} {`);
+      expect(at, selector).toBeGreaterThanOrEqual(0);
+      return css.slice(at, css.indexOf("}", at));
+    };
+    // An edge and weight mark the live line as well as its words.
+    expect(rule(".live-on-air")).toMatch(/border-left: 3px solid var\(--accent\)/);
+    expect(rule(".live-on-air")).toMatch(/font-weight: 600/);
+    // Talk is held, not selected: no scrolling or text selection under a finger.
+    expect(rule("#btn-talk")).toMatch(/touch-action: none/);
+    // Latched talk: words with an edge, not colour alone.
+    expect(rule(".talk-latched")).toMatch(/border-left: 3px solid var\(--accent\)/);
+    for (const selector of [".live-on-air", ".talk-desk", ".talk-latched", ".live-facts", "#live-talkover", "#btn-talk"]) {
+      expect(rule(selector), selector).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(/i);
+    }
+  });
+
   it("gives the Ads tab labelled forms, one polite status and report tables with headers", () => {
     installDocument({ html: htmlSource });
     const panel = document.getElementById("panel-ads");
@@ -3103,6 +3306,44 @@ describe("listener request contracts", () => {
     expect(requestsScript).toMatch(/which\.className = "visually-hidden";/);
     expect(requestsScript).not.toMatch(/aria-live/);
   });
+
+  it("labels every smooth-transition setting, groups the give-up choice and links its help and error", () => {
+    const start = htmlSource.indexOf('<form id="requests-settings"');
+    const form = htmlSource.slice(start, htmlSource.indexOf("</form>", start));
+    expect(form).toMatch(/aria-labelledby="requests-settings-heading"/);
+    expect(form).toMatch(/<h3 id="requests-settings-heading">/);
+    for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",
+      "requests-no-smooth-best", "requests-no-smooth-wait"]) {
+      expect(form).toMatch(new RegExp(`<label for="${id}">[^<]+</label>`));
+    }
+    for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold"]) {
+      expect(form).toMatch(new RegExp(`id="${id}"[^>]*aria-describedby="${id}-help"`));
+      expect(form).toMatch(new RegExp(`class="setting-desc" id="${id}-help"`));
+    }
+    expect(form).toMatch(/<fieldset id="requests-no-smooth">\s*<legend>When no smooth spot is found<\/legend>/);
+    expect(form).toMatch(/<p id="requests-threshold-error" class="field-error" hidden><\/p>/);
+    expect(form).toMatch(/<button type="submit" id="requests-settings-save">Save request settings<\/button>/);
+    expect(form).not.toMatch(/aria-live|role="status"/);
+    // A refused value is marked, linked, shown and focused; its words are said once.
+    expect(requestsScript).toMatch(/threshold\.setAttribute\("aria-invalid", "true"\)/);
+    expect(requestsScript).toMatch(/linkThresholdError\(true\)/);
+    expect(requestsScript).toMatch(/threshold\.focus\(\)/);
+  });
+
+  it("says a bridge song in words with tokens only for its colour", () => {
+    const rule = cssSource.match(/#queue-list \.queue-bridge \{[^}]*\}/)?.[0] || "";
+    expect(rule).toMatch(/color: var\(--text-dim\);/);
+    expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    for (const selector of ["#requests-settings", "#requests-no-smooth"]) {
+      const start = cssSource.indexOf(`${selector} {`);
+      const block = start < 0 ? "" : cssSource.slice(start, cssSource.indexOf("}", start));
+      expect(block).toMatch(/\S/);
+      expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    }
+    const queueScript = readFileSync(staticPath("modules", "queue.js"), "utf8");
+    expect(queueScript).toMatch(/`Bridge to \$\{target\}`/);
+    expect(queueScript).toMatch(/<span class="queue-bridge">/);
+  });
 });
 
 describe("public player page contracts", () => {
@@ -3184,6 +3425,7 @@ describe("station switcher and station context contracts (#70)", () => {
     for (const id of [
       "btn-pause", "btn-skip", "queue-clear", "recording-toggle", "stream-station-name",
       "stream-bitrate", "stream-continuous", "station-stop", "station-start",
+      "btn-talk", "live-dj-add", "live-talkover-save",
     ]) {
       const control = document.getElementById(id);
       expect(control, id).not.toBeNull();

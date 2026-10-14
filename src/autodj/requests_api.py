@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from autodj.listener_requests import RequestDesk
+from autodj.settings_bodies import RequestSettingsBody
 from autodj.station_routes import StationDep, StationRouter
 from autodj.stations import StationRuntime
 
@@ -48,6 +49,17 @@ def install_requests(router: StationRouter) -> None:
             return {"enabled": False, "pending": [], "recent": []}
         return await asyncio.to_thread(station.requests.snapshot)
 
+    @router.post("/requests/settings")
+    async def save_request_settings(
+        station: StationDep, body: RequestSettingsBody
+    ) -> dict[str, Any]:
+        """Change bridge songs and what happens when no smooth spot is found; saved at once."""
+        desk = _desk(station)
+        for field, value in body.model_dump(exclude_none=True).items():
+            setattr(desk.cfg, field, float(value) if field == "bridge_cost_threshold" else value)
+        await asyncio.to_thread(station.bridge.save_persistent_state)
+        return await asyncio.to_thread(desk.snapshot)
+
     @router.post("/requests/{request_id}/approve")
     async def approve_request(station: StationDep, request_id: str) -> dict[str, Any]:
         """Queue a waiting request where it fits best; 409 says which rule stops it."""
@@ -55,7 +67,7 @@ def install_requests(router: StationRouter) -> None:
 
     @router.post("/requests/{request_id}/play-next")
     async def play_request_next(station: StationDep, request_id: str) -> dict[str, Any]:
-        """Queue a waiting request first, whatever fits; DMCA limits still hold."""
+        """Queue a waiting request first; DMCA and clockwheel limits still hold."""
         return await _decide(station, "play-next", request_id)
 
     @router.post("/requests/{request_id}/reject")

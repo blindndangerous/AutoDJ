@@ -79,6 +79,16 @@ def test_the_search_form_is_labelled_and_says_how_requests_work() -> None:
     assert "script-src 'self'" in REQUEST_PAGE_CSP and "form-action 'self'" in REQUEST_PAGE_CSP
 
 
+def test_auto_requests_can_still_wait_for_a_smoother_place() -> None:
+    html = render_request_page(
+        "Night Owl Radio",
+        page_path="/requests",
+        status_path="/status",
+        desk=SimpleNamespace(cfg=RequestsConfig(enabled=True, approval="auto")),
+    )
+    assert "Some wait for a smoother place." in html
+
+
 def test_results_are_links_named_by_their_songs_and_carry_no_path() -> None:
     other = replace(SONG, path="/srv/private/b.flac", title="B side", album="")
     html = _page(query="song", results=[("a" * 24, SONG), ("b" * 24, other)])

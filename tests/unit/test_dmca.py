@@ -14,7 +14,6 @@ from autodj.config import DmcaConfig, NowPlayingConfig, PlaybackConfig, load_con
 from autodj.dmca import (
     WINDOW_SECONDS,
     complement,
-    projected_history,
     relaxed,
     set_key,
 )
@@ -192,37 +191,6 @@ def test_relaxed_falls_back_to_the_fewest_broken_limits_of_the_widest_tier() -> 
         ("also bad", ("y",)),
     ]
     assert relaxed([[], []], limits) == []
-
-
-def test_projected_history_counts_the_playing_track_and_the_queue() -> None:
-    history = plays(song(1), start=1000.0)
-    playing = SimpleNamespace(path="1.flac", artist="Lead", album="Album", title="", length=200)
-    queued = SimpleNamespace(path="2.flac", artist="Q", album="Q", title="Q", length=100)
-    records, when = projected_history(history, 1050.0, playing, [queued])
-    assert [(record.path, record.started) for record in records] == [
-        ("1.flac", 1000.0),
-        ("2.flac", 1200.0),
-    ]
-    assert when == 1300.0
-
-
-def test_projected_history_uses_the_played_length_when_given() -> None:
-    history = plays(song(1), start=1000.0)
-    playing = SimpleNamespace(path="1.flac", artist="Lead", album="Album", title="", length=220)
-    queued = SimpleNamespace(path="2.flac", artist="Q", album="Q", title="Q", length=110)
-    records, when = projected_history(
-        history, 1050.0, playing, [queued], length=lambda entry: entry.length / 1.1
-    )
-    assert [record.started for record in records] == [1000.0, pytest.approx(1200.0)]
-    assert when == pytest.approx(1300.0)
-
-
-def test_projected_history_adds_an_unrecorded_playing_track_and_play_now_skips_it() -> None:
-    playing = SimpleNamespace(path="p.flac", artist="A", album="B", title="C", length=60)
-    records, when = projected_history([], 10.0, playing, [])
-    assert [(record.path, record.started) for record in records] == [("p.flac", 10.0)]
-    assert when == 70.0
-    assert projected_history([], 10.0, None, []) == ([], 10.0)
 
 
 # ---------------------------------------------------------------------------

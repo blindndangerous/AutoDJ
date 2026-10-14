@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from autodj.hour_fit import FIT_CANDIDATES
+
 if TYPE_CHECKING:
     from autodj.repeat_rules import SongVersions
 
@@ -180,12 +182,14 @@ def least_recent(
     *,
     allowed: Callable[[Any], bool] | None = None,
     versions: SongVersions | None = None,
+    fit: Callable[[Sequence[Any]], Any] | None = None,
     preferred_path: str | None = None,
 ) -> Any | None:
     """Choose the oldest allowed entry; prefer never-played and randomize ties.
 
     With *versions*, a song's age is that of its latest played version,
-    and the oldest version of the oldest song wins.
+    and the oldest version of the oldest song wins.  With *fit* (hour
+    fitting), it chooses among the oldest few allowed songs, oldest first.
     """
     return _least_recent(
         entries,
@@ -194,6 +198,7 @@ def least_recent(
         allowed=allowed,
         versions=versions,
         preferred_path=preferred_path,
+        fit=fit,
     )
 
 
@@ -204,6 +209,7 @@ def _least_recent(
     *,
     allowed: Callable[[Any], bool] | None = None,
     versions: SongVersions | None = None,
+    fit: Callable[[Sequence[Any]], Any] | None = None,
     preferred_path: str | None = None,
 ) -> Any | None:
     if not entries:
@@ -247,7 +253,7 @@ def _least_recent(
             stamp,
         )
 
-    if allowed is not None:
+    if allowed is not None or fit is not None:
         ordered = list(entries)
         chooser.shuffle(ordered)
         heap = [
@@ -263,10 +269,24 @@ def _least_recent(
             for index, entry in enumerate(ordered)
         ]
         heapq.heapify(heap)
+        fitting: list[Any] = []
+        fitted_songs: set[str] = set()
         while heap:
             entry = heapq.heappop(heap)[-1]
-            if allowed(entry):
-                return entry
+            if allowed is None or allowed(entry):
+                if fit is None:
+                    return entry
+                if versions is not None:
+                    song = versions.song(entry.path)
+                    if song in fitted_songs:
+                        continue
+                    fitted_songs.add(song)
+                fitting.append(entry)
+                if len(fitting) == FIT_CANDIDATES:
+                    break
+        if fitting:
+            assert fit is not None
+            return fit(fitting)
         return None
     ages = [age(entry) for entry in entries]
     oldest = min(ages)
@@ -463,6 +483,7 @@ def pick_slot(
     closed_categories: Mapping[str, str] | None = None,
     normalized_history: Mapping[str, Any] | None = None,
     versions: SongVersions | None = None,
+    fit: Callable[[Sequence[Any]], Any] | None = None,
     preferred_path: str | None = None,
 ) -> ClockPick:
     """Scan one clock cycle and select its next eligible music entry.
@@ -524,6 +545,7 @@ def pick_slot(
                 chooser,
                 allowed=allowed if slot.enforce_rules else None,
                 versions=versions,
+                fit=fit,
                 preferred_path=preferred_path,
             )
         else:
@@ -531,9 +553,20 @@ def pick_slot(
             if not candidates:
                 selected = None
             elif versions:
-                selected = versions.choice(candidates, chooser)
+                if fit is None:
+                    selected = versions.choice(candidates, chooser)
+                else:
+                    songs: dict[str, list[Any]] = {}
+                    for entry in candidates:
+                        songs.setdefault(versions.song(entry.path), []).append(entry)
+                    sampled = chooser.sample(list(songs), min(FIT_CANDIDATES, len(songs)))
+                    selected = fit([chooser.choice(songs[song]) for song in sampled])
             else:
-                selected = chooser.choice(candidates)
+                selected = (
+                    fit(chooser.sample(candidates, min(FIT_CANDIDATES, len(candidates))))
+                    if fit is not None
+                    else chooser.choice(candidates)
+                )
         if selected is None:
             return (
                 None,

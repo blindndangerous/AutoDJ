@@ -97,6 +97,8 @@ def test_config_transition_modes_include_saved_points() -> None:
         ("crossfade_bass_cutoff_hz", 180.0, 10.0),
         ("pick_top_k", 5, 0),
         ("pick_temperature", 0.0, 11.0),
+        ("hour_fit", True, "yes"),
+        ("hour_fit_window_minutes", 10, 31),
         ("replaygain_max_clip_safe_gain", 1.0, 0.0),
         ("prefetch_next_track", False, "maybe"),
         ("silence_trigger_crossfade", True, "maybe"),

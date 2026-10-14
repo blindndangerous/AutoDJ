@@ -1566,7 +1566,12 @@ describe("app request behavior", () => {
         onRequest: (url) => url.startsWith("/api/history")
           ? jsonResponse({
             total: 60, page: pageOf(url), pages: 2,
-            items: [{ played_at: "2026-01-01T00:00:00Z", title: `T${pageOf(url)}`, artist: "A", duration: 60 }],
+            items: pageOf(url) === 1 ? [
+              { played_at: new Date(2026, 0, 2, 0, 1).toISOString(), title: "Newest", artist: "A", duration: 60 },
+              { played_at: new Date(2026, 0, 1, 23, 0).toISOString(), title: "Previous day", artist: "B", duration: 60 },
+            ] : [
+              { played_at: new Date(2025, 11, 31, 23, 0).toISOString(), title: "Older", artist: "C", duration: 60 },
+            ],
           })
           : jsonResponse({ ok: true }),
       });
@@ -1576,14 +1581,23 @@ describe("app request behavior", () => {
       document.dispatchEvent(new Event("DOMContentLoaded"));
       const prev = document.querySelector("#hist-prev");
       const next = document.querySelector("#hist-next");
+      const tbody = document.querySelector("#history-tbody");
+      const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
       const status = document.querySelector("#sr-status");
       await vi.waitFor(() => expect(prev.getAttribute("aria-disabled")).toBe("true"));
+      expect(trackRows().map((row) => row.cells[1].firstChild.textContent)).toEqual(["Newest", "Previous day"]);
+      expect([...tbody.querySelectorAll(".history-date")]).toHaveLength(2);
+      for (const row of trackRows()) {
+        expect(row.cells[0].textContent).not.toMatch(/202[0-9]/);
+      }
       // The automatic first load is not announced; only user paging is.
       expect(status.textContent).toBe("");
 
       next.focus();
       next.click();
       await vi.waitFor(() => expect(status.textContent).toBe("Page 2 of 2"));
+      expect(trackRows().map((row) => row.cells[1].firstChild.textContent)).toEqual(["Older"]);
+      expect(tbody.querySelectorAll(".history-date")).toHaveLength(1);
       expect(next.getAttribute("aria-disabled")).toBe("true");
       expect(next.disabled).toBe(false);
       expect(document.activeElement).toBe(next);
@@ -1625,7 +1639,7 @@ describe("app request behavior", () => {
       expect(button.hasAttribute("aria-label")).toBe(false);
       expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
-      const cells = [...tbody.querySelectorAll("td")];
+      const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];
       expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
         "gridcell", "rowheader", "gridcell", "gridcell",
         "gridcell", "rowheader", "gridcell", "gridcell",
@@ -1665,6 +1679,62 @@ describe("app request behavior", () => {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+  });
+
+  it("lists a live DJ session in History without Track info", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      await setupApp({
+        onRequest: (url) => url.startsWith("/api/history")
+          ? jsonResponse({ total: 3, page: 1, pages: 1, items: [{
+            event_id: "live-1", kind: "live", path: null, played_at: "2026-01-01T01:00:00Z",
+            title: "Live", artist: "DJ Alice", duration: 0, ended_at: null,
+          }, {
+            event_id: "live-0", kind: "live", path: null, played_at: "2026-01-01T00:30:00Z",
+            title: "Live", artist: "DJ Bob", duration: 754, ended_at: "2026-01-01T00:42:34Z",
+          }, {
+            event_id: "play-1", kind: "song", path: "M:/song.flac", played_at: "2026-01-01T00:00:00Z",
+            title: "Song", artist: "Artist", duration: 60,
+          }] })
+          : jsonResponse({ ok: true }),
+      });
+      const rows = await vi.waitFor(() => {
+        // The rows themselves; a date heading row comes before them.
+        const found = [...document.querySelectorAll("#history-tbody tr[data-played-at]")];
+        expect(found).toHaveLength(3);
+        return found;
+      });
+      const text = (row) => [...row.cells].map((cell) => cell.textContent.trim());
+      expect(text(rows[0]).slice(1)).toEqual(["Live", "DJ Alice", "On the air"]);
+      expect(text(rows[1]).slice(1)).toEqual(["Live", "DJ Bob", "12:34"]);
+      expect(rows[0].querySelector("button")).toBeNull();
+      expect(rows[1].querySelector("button")).toBeNull();
+      expect(rows[2].querySelector(".history-info").textContent).toBe("Track info");
+      // The title cell is still the row header, so the row reads the same.
+      expect(rows[0].cells[1].getAttribute("role")).toBe("rowheader");
+      expect(rows.map((row) => row.dataset.historyId)).toEqual(["live-1", "live-0", "play-1"]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("shows Settings > Live DJ and Talk when the station can go live", async () => {
+    await setupApp({
+      onRequest: (url) => url === "/api/live"
+        ? jsonResponse({
+          available: true, reason: null, live: { dj: "DJ Alice", since: "2026-01-01T00:00:00Z" },
+          talkover: false, source_path: "/live", plain_http_lan: false,
+          settings: { mic_return_seconds: 0.5, mic_duck_db: 12 }, djs: [],
+        })
+        : jsonResponse({ ok: true }),
+    });
+    await vi.waitFor(() => expect(document.querySelector("#stab-live").hidden).toBe(false));
+    expect(document.querySelector("#talk-desk").hidden).toBe(false);
+    expect(document.querySelector("#live-on-air").textContent).toMatch(/^Live: DJ Alice since /);
+    expect(document.querySelector("#live-dj-none").hidden).toBe(false);
   });
 
   it("keeps the History page on Return but opens page 1 on a normal visit", async () => {
@@ -1969,8 +2039,8 @@ describe("app request behavior", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const first = { played_at: "2026-01-01T00:00:00Z", title: "First", artist: "A", duration: 60 };
-    const second = { played_at: "2026-01-01T00:03:00Z", title: "Second", artist: "B", duration: 60 };
+    const first = { played_at: new Date(2026, 0, 1, 23, 58).toISOString(), title: "First", artist: "A", duration: 60 };
+    const second = { played_at: new Date(2026, 0, 2, 0, 1).toISOString(), title: "Second", artist: "B", duration: 60 };
     let items = [first];
     try {
       const { webSocket } = await setupApp({
@@ -1980,8 +2050,10 @@ describe("app request behavior", () => {
           : jsonResponse({ ok: true }),
       });
       const tbody = document.querySelector("#history-tbody");
-      await vi.waitFor(() => expect(tbody.children).toHaveLength(1));
-      const firstRow = tbody.children[0];
+      const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(1));
+      const firstRow = trackRows()[0];
+      firstRow.cells[2].focus();
       const status = document.querySelector("#sr-status");
       const pushTrack = (path, title) => webSocket.onmessage({ data: JSON.stringify({
         browser_playback: false, current_track: { path, title }, discovery_available: false,
@@ -1993,9 +2065,16 @@ describe("app request behavior", () => {
       items = [second, first];
       pushTrack("second.flac", "Second");
 
-      await vi.waitFor(() => expect(tbody.children).toHaveLength(2));
-      expect(tbody.children[0].textContent).toContain("Second");
-      expect(tbody.children[1]).toBe(firstRow);
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(2));
+      expect(trackRows()[0].textContent).toContain("Second");
+      expect(trackRows()[1]).toBe(firstRow);
+      expect(document.activeElement).toBe(firstRow.cells[2]);
+      expect(tbody.querySelectorAll(".history-date")).toHaveLength(2);
+      const sameDay = { ...second, played_at: new Date(2026, 0, 2, 0, 4).toISOString(), title: "Third" };
+      items = [sameDay, second, first];
+      pushTrack("third.flac", "Third");
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(3));
+      expect(tbody.querySelectorAll(".history-date")).toHaveLength(2);
       expect(status.textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -2022,8 +2101,9 @@ describe("app request behavior", () => {
           ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }),
       });
       const tbody = document.querySelector("#history-tbody");
-      await vi.waitFor(() => expect(tbody.children).toHaveLength(50));
-      const focused = tbody.querySelectorAll("tr")[49].cells[2];
+      const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(50));
+      const focused = trackRows()[49].cells[2];
       focused.focus();
       items = [fresh, ...old.slice(0, 49)];
       webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
@@ -2031,7 +2111,7 @@ describe("app request behavior", () => {
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
       await vi.waitFor(() => expect(tbody.querySelector("[data-history-id='new']")).not.toBeNull());
       expect(focused.isConnected).toBe(false);
-      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[49].cells[2]);
+      expect(document.activeElement).toBe(trackRows()[49].cells[2]);
       await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent).toContain("no longer in the displayed History rows"));
     } finally {
       window.location.hash = "";
@@ -2039,7 +2119,7 @@ describe("app request behavior", () => {
     }
   });
 
-  it("keeps stale History rows and announces a background refresh error", async () => {
+  it("keeps History after a failed live check and reports a failed manual refresh", async () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
     window.location.hash = "#history";
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2052,7 +2132,7 @@ describe("app request behavior", () => {
         onRequest: (url) => {
           if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
           historyCall += 1;
-          if (historyCall === 3) return jsonResponse({ detail: "History offline" }, 503);
+          if (historyCall >= 2) return jsonResponse({ detail: "History offline" }, 503);
           const item = historyCall === 1
             ? { event_id: "old", played_at: yesterday, path: "M:/old.flac", title: "Old" }
             : { event_id: "new", played_at: today, path: "M:/new.flac", title: "New" };
@@ -2068,12 +2148,17 @@ describe("app request behavior", () => {
       webSocket.onmessage({ data: JSON.stringify({ current_track: { path: "M:/new.flac" },
         browser_playback: false, discovery_available: false, duration: 60, elapsed: 0, eq: {},
         is_muted: false, is_paused: false, next_track: null, queue: [], settings: null, volume: 1 }) });
-      await vi.waitFor(() => expect(historyCall).toBe(3));
-      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
-        .toContain("Could not refresh history: History offline"));
+      await vi.waitFor(() => expect(historyCall).toBe(2));
+      expect(document.querySelector("#sr-status").textContent).toBe("");
       expect(document.activeElement).toBe(button);
       expect(button.isConnected).toBe(true);
       expect(document.querySelector("#history-table").hidden).toBe(false);
+      document.querySelector("#hist-refresh").click();
+      await vi.waitFor(() => expect(historyCall).toBe(3));
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toContain("Could not load history: History offline"));
+      expect(button.isConnected).toBe(false);
+      expect(document.querySelector("#history-table").hidden).toBe(true);
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2092,16 +2177,17 @@ describe("app request behavior", () => {
       await setupApp({ onRequest: (url) => url.startsWith("/api/history")
         ? jsonResponse({ total: items.length, page: 1, pages: 1, items }) : jsonResponse({ ok: true }) });
       const tbody = document.querySelector("#history-tbody");
-      await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(3));
-      const focusedCell = tbody.querySelectorAll("tr")[1].cells[2];
+      const trackRows = () => [...tbody.querySelectorAll("tr[data-played-at]")];
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(3));
+      const focusedCell = trackRows()[1].cells[2];
       focusedCell.focus();
       document.querySelector("#hist-refresh").click();
-      await vi.waitFor(() => expect(tbody.querySelectorAll("tr")).toHaveLength(3));
-      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
+      await vi.waitFor(() => expect(trackRows()).toHaveLength(3));
+      expect(document.activeElement).toBe(trackRows()[1].cells[2]);
       items = [items[0], items[2]];
       document.querySelector("#hist-refresh").click();
       await vi.waitFor(() => expect(tbody.querySelectorAll(".history-info")).toHaveLength(2));
-      expect(document.activeElement).toBe(tbody.querySelectorAll("tr")[1].cells[2]);
+      expect(document.activeElement).toBe(trackRows()[1].cells[2]);
       expect(document.activeElement.closest("tr").querySelector(".history-info").dataset.historyId).toBe("three");
       expect(document.querySelector("#sr-status").textContent).toContain("no longer on this History page");
     } finally {
@@ -3451,6 +3537,14 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("station-context").textContent).toBe("");
     expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
+  });
+
+  it("titles the page without the album and names a lone station not called AutoDJ", async () => {
+    await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B", album: "C" } },
+      stations: [{ ...AUTODJ, name: "Night Owl Radio" }],
+    });
+    await vi.waitFor(() => expect(document.title).toBe("A - B - Night Owl Radio - AutoDJ"));
   });
 
   it("switches inside the page: socket, requests, names and the announcement", async () => {

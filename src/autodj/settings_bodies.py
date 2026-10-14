@@ -92,6 +92,22 @@ class PresetBody(BaseModel):
     name: str | None = None
 
 
+class RequestSettingsBody(BaseModel):
+    """Partial listener request settings: bridge songs and the give-up rule (#49).
+
+    The same limits as ``[requests]`` in config.toml (:class:`RequestsConfig`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    bridges_enabled: bool | None = Field(default=None, strict=True)
+    max_bridges: Annotated[int, Field(ge=1, le=3, strict=True)] | None = None
+    bridge_cost_threshold: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = (
+        None
+    )
+    no_smooth_spot: Literal["best", "wait"] | None = None
+
+
 class StreamSettingsBody(BaseModel):
     """Partial stream settings update: bitrates, continuous playback, name and statistics."""
 
@@ -241,6 +257,8 @@ class PlaybackSettingsBody(BaseModel):
     ) = None
     pick_top_k: Annotated[int, Field(ge=1, le=100)] | None = None
     pick_temperature: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = None
+    hour_fit: bool | None = Field(default=None, strict=True)
+    hour_fit_window_minutes: Annotated[int, Field(ge=1, le=30, strict=True)] | None = None
     prefetch_next_track: bool | None = None
     silence_trigger_crossfade: bool | None = None
     intro_lift_max_db: Annotated[float, Field(ge=0.0, le=6.0, allow_inf_nan=False)] | None = None

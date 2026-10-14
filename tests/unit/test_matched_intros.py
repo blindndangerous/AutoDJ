@@ -247,6 +247,14 @@ def test_the_songs_own_intro_comes_before_its_artists(tmp_path: Path) -> None:
     assert store.choose("song-d", "Somebody Else", NOW) is None
 
 
+def test_priority_tiers_can_choose_song_and_artist_separately(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    by_artist = _add(store, track_id=None, artist="Example Band")
+    own = _add(store, track_id="song-a")
+    assert store.choose("song-a", "Example Band", NOW, "artist").intro_id == by_artist
+    assert store.choose("song-a", "Example Band", NOW, "song").intro_id == own
+
+
 def test_outside_its_dates_an_intro_is_passed_over_by_the_day_it_airs(tmp_path: Path) -> None:
     days = {NOW: date(2026, 12, 27), NOW + 1: date(2026, 12, 26)}
     store = _store(tmp_path, day_at=lambda at: days[at])

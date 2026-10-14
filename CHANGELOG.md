@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- DMCA checks on queued songs, listener request placement and show songs now use the hour
+  preview's timing: the playing song's position, mixed handoffs, saved start and segue cues,
+  overlapping liners and music speed, instead of whole file lengths (#217).
+- A listener request is no longer placed where a queued song after it would then break a repeat
+  rule or DMCA limit. Rules a queued song already broke do not count against the request (#218).
+
+- The page title no longer shows the album. It names the station whenever the station is not
+  called AutoDJ, even on a server with one station (#251).
+- Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
+  does, and gives manual installation steps when needed. The quick start uses one launcher
+  command, with instructions for moving to another computer.
+- History shows only the time on each play, with a date heading for each day instead of
+  repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
+
 - Settings keep longer help available to read without repeating it on every field focus.
   Track counts, hour preview and matched-intro explanations are shorter (#235).
 - Preview columns, show lengths and duration messages use numeric times for both visual
@@ -88,6 +102,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
   the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
   [Ad breaks](docs/operations.md#ad-breaks).
+- Intro rules (#127): Library tools > Intro rules plays a voice liner as the next song starts
+  when that song matches clockwheel conditions, such as an artist name drop, a genre, a decade, the
+  first-release year, any Beets field, a folder or a saved category. Each rule chooses registered
+  voice liners or a liner folder, with a chance, a wait between plays that holds across restarts,
+  play dates and a priority next to the song's and artist's own matched intros (after them by
+  default). Each station keeps its own rules in `intro_rules.json`, which backups include.
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
@@ -138,16 +158,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is now kept exactly as it was with every save instead of being set aside, so moving between
   versions loses no event. An event with settings its action does not accept is still set
   aside as before.
+- Live DJs and talkover (#48): in stream mode a live DJ can take over a station from BUTT,
+  Mixxx or another Icecast source client, connecting to AutoDJ's own address and port at the
+  mount `live` (or `stations/<name>/live`) with their own username and password, added in
+  **Settings > Live DJ** (passwords are stored as scrypt hashes and never shown).
+  When the DJ's audio arrives AutoDJ crossfades to it and holds automation exactly where it
+  was; when they leave, or go silent for 15 seconds, it comes back with the next song,
+  rendered again for the time it airs. Hard-timed schedule events during a set take effect
+  when the DJ hands back, and liners, time checks and carts are not played over them. The page
+  says "Live: <name> since <time>" once when a DJ goes on or off, and the public feed, status
+  page and stream title show the DJ. Each set is a History row and a `live` row in the CSV
+  play log, left out of SoundExchange reports. Hold **Talk** on Now Playing (mouse, touch,
+  Space or Enter on the button, or Alt+M anywhere) to speak over the music from the browser's
+  microphone, with the duck amount and return time set per station; one person talks at a
+  time. Sources need HTTPS or this machine, unless `[server] live_plain_http_lan = true` also
+  allows plain HTTP from the local network. Backups keep the DJs but not their password
+  hashes, so set DJ passwords again after a restore. See
+  [Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
 - Settings > Stream can edit Icecast and Shoutcast relays while the station runs. Relay definitions
   and passwords are saved per station; environment-managed passwords remain read-only. Station
   name, genre, description and website URL are sent where each stream protocol supports them. The
   saved relay file is readable only by the account AutoDJ runs as, on Windows too, and backups
   leave it and its passwords out; a restore keeps each station's own relay settings.
+- Listener requests can use up to three optional bridge songs to approach a distant request.
+  Requests now check the active clockwheel music step and daypart at their projected start.
+  Operators can choose whether a request with no smooth spot waits or uses the best legal spot;
+  bridge status and the reason appear in queue, preview and request API data (#49). Queue &
+  Search > Listener requests has a Smooth transitions form for these settings, and the queue
+  marks each bridge "Bridge to <request>". Removing a request removes only its own bridges.
 - Music speed (#162): Settings > Sound > Music speed has a slider and exact numeric field for
   10% slower to 10% faster. Speed and pitch change together. Browser music changes speed when
   safe; voice liners and previews stay at their normal speed. In stream and server-audio modes,
   the new speed takes effect at the next unrendered audio-buffer boundary. Cue points, lyrics,
   catalog durations and playback progress remain on the source-file timeline.
+- Hour fitting (#126): **Fit songs to the hour** in Settings > Song picking chooses, near the
+  top of the hour, a clockwheel restart or a hard scheduled event, the song whose end lands
+  closest to it, out of up to 20 songs the station would allow anyway. A song that would end
+  just short of the hour, leaving a gap the next whole song overruns, counts as a poor fit.
+  **Minutes before to start fitting** is 10 by default (1 to 30). Off by default; in
+  `config.toml` they are `[playback] hour_fit` and `hour_fit_window_minutes`. The rotation tester
+  and the hour preview pick the same way.
+- Hard schedule events have **Wait up to seconds** (0 to 300, default 0) in the schedule editor:
+  when the song playing will end within that many seconds after the event's time, the event waits
+  and runs at the song change without fading it out; if the song runs past the limit, the event
+  runs then with the usual hard fade. The hour preview shows the wait. A schedule with no waits
+  set is still read by older versions of AutoDJ.
 - Daypart and hourpart song separation (#129): two new repeat rules in Settings > Song picking >
   Repeats keep a song from playing at the same time every day. **Prevent a song from playing in
   the same daypart** holds back a song that played in the daypart the next song starts in (such
