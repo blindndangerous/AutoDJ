@@ -1374,7 +1374,7 @@ over silence rather than the next song. The interrupted song's History row ends 
 came on. While the DJ is on, automation waits exactly where it was: nothing is added to the play history or the repeat rules, the clockwheel does not move
 on, and the queue, a show on the air and any waiting breaks stay as they were. The stream
 title, the status page and the public feed show the DJ's name and "Live", and the page says
-"Live: DJ Alice since 9:02 PM" once, politely. The station keeps playing while a DJ or a talker
+"Live: DJ Alice since 21:02" once, politely. The station keeps playing while a DJ or a talker
 is connected, even with no listeners.
 
 **Handing back.** When the DJ disconnects, or sends only silence for 15 seconds, automation
@@ -3711,7 +3711,11 @@ A seasonal clockwheel, such as a holiday one from 27 November to 26 December, ta
 Use **Run now** on the first event to start the season at once when you add it partway through.
 
 Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
-zone when that is not set (UTC when the system has no IANA name). The Schedule panel shows the
+zone when that is not set (UTC when the system has no IANA name). **Time for every station** in
+Settings > Stations sets the time zone from the page instead; a saved one takes the place of
+`config.toml`'s from the next time AutoDJ starts. The same fieldset sets **Time format**, 24 hour
+(the default) or 12 hour, for the times every page shows; it applies at once and changes nothing
+but how times look. The Schedule panel shows the
 zone in use. When daylight saving time skips a time, the event runs at the moment the clock
 jumps; when a time happens twice, the event runs the first time only.
 

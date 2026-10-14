@@ -125,7 +125,7 @@ afterEach(() => {
 
 describe("live line", () => {
   it("names the DJ and the local start time, and nothing for automation", () => {
-    expect(liveLine({ dj: "DJ Alice", since: "2026-10-13T20:15:00" }, "en-US")).toBe("Live: DJ Alice since 8:15 PM");
+    expect(liveLine({ dj: "DJ Alice", since: "2026-10-13T20:15:00" }, "en-US")).toBe("Live: DJ Alice since 20:15");
     expect(liveLine({ dj: "DJ Alice", since: "not a time" })).toBe("Live: DJ Alice");
     expect(liveLine(null)).toBe("");
     expect(liveLine({ dj: "" })).toBe("");
@@ -142,7 +142,7 @@ describe("live line", () => {
       desk.setInfo({ available: true, live: { dj: "DJ Alice", since: "2026-10-13T20:15:00" }, talkover: false });
       vi.runAllTimers();
       expect(line.hidden).toBe(false);
-      expect(line.textContent).toBe("Live: DJ Alice since 8:15 PM");
+      expect(line.textContent).toBe("Live: DJ Alice since 20:15");
       expect(status.textContent).toBe("");
       expect(line.closest("[aria-live], [role=status]")).toBeNull();
       // The same DJ on every push: nothing more.
@@ -156,11 +156,11 @@ describe("live line", () => {
       vi.runAllTimers();
       desk.applyState({ live: { dj: "DJ Bob", since: "2026-10-13T21:00:00" } });
       vi.advanceTimersByTime(1);
-      expect(status.textContent).toBe("Live: DJ Bob since 9:00 PM.");
+      expect(status.textContent).toBe("Live: DJ Bob since 21:00.");
       // A push without the key (an older server) changes nothing.
       vi.runAllTimers();
       desk.applyState({ current_track: null });
-      expect(line.textContent).toBe("Live: DJ Bob since 9:00 PM");
+      expect(line.textContent).toBe("Live: DJ Bob since 21:00");
     } finally {
       vi.useRealTimers();
     }

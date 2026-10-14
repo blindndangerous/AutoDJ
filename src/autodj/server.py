@@ -613,6 +613,14 @@ class LibraryRescanBody(BaseModel):
     override_tags: StrictBool = False
 
 
+class TimeSettingsBody(BaseModel):
+    """The station time zone and time format, shared by every station (#282, #286)."""
+
+    model_config = ConfigDict(extra="forbid")
+    timezone: StrictStr
+    time_format: Literal["12", "24"]
+
+
 class LibraryAutoRescanBody(BaseModel):
     """Shared library automatic rescan interval."""
 
@@ -1669,9 +1677,11 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.get("/api/stations")
-    async def api_stations() -> dict[str, list[dict[str, Any]]]:
+    async def api_stations() -> dict[str, Any]:
         """List every configured station: name, state, listeners, song and stream address."""
-        return {"stations": stations.summaries()}
+        from autodj import timefmt
+
+        return {"stations": stations.summaries(), "time_format": timefmt.time_format}
 
     @app.post("/api/stations", status_code=201)
     async def api_station_create(body: CreateStationBody) -> dict[str, Any]:
@@ -2002,6 +2012,38 @@ def create_app(
     async def api_library_auto_rescan() -> dict[str, int]:
         hours, minutes = divmod(_catalog_library().auto_rescan_minutes(), 60)
         return {"hours": hours, "minutes": minutes}
+
+    def _time_settings() -> dict[str, Any]:
+        from zoneinfo import available_timezones
+
+        from autodj import timefmt
+
+        saved = _catalog_library().catalog.get_setting("station_timezone")
+        return {
+            "timezone": saved or station_timezone,
+            "running_timezone": station_timezone,
+            "time_format": timefmt.time_format,
+            "timezones": sorted(available_timezones()),
+        }
+
+    @app.get("/api/time-settings")
+    async def api_time_settings() -> dict[str, Any]:
+        """The station time zone and time format; a saved zone applies at the next start."""
+        return await asyncio.to_thread(_time_settings)
+
+    @app.put("/api/time-settings")
+    async def api_set_time_settings(body: TimeSettingsBody) -> dict[str, Any]:
+        from zoneinfo import available_timezones
+
+        from autodj import timefmt
+
+        if body.timezone not in available_timezones():
+            raise HTTPException(status_code=400, detail="Choose a time zone from the list")
+        catalog = _catalog_library().catalog
+        await asyncio.to_thread(catalog.set_setting, "station_timezone", body.timezone)
+        await asyncio.to_thread(catalog.set_setting, "time_format", body.time_format)
+        timefmt.time_format = body.time_format
+        return await asyncio.to_thread(_time_settings)
 
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
@@ -2614,6 +2656,23 @@ def _missing_audio_modules() -> list[str]:
     return missing
 
 
+def _apply_time_settings(cfg: AutoDJConfig, library: Any) -> None:
+    """Use the time zone and time format saved in Settings over config.toml (#282, #286)."""
+    from zoneinfo import available_timezones
+
+    from autodj import timefmt
+
+    catalog = getattr(library, "catalog", None)
+    if catalog is None:
+        return
+    zone = catalog.get_setting("station_timezone")
+    if zone in available_timezones():
+        cfg.server.station_timezone = zone
+    elif zone is not None:
+        logger.warning("Ignoring the saved time zone %r: it is not a known time zone", zone)
+    timefmt.time_format = "12" if catalog.get_setting("time_format") == "12" else "24"
+
+
 def serve(
     cfg: AutoDJConfig,
     sim: SimilarityIndex,
@@ -2706,6 +2765,7 @@ def serve(
     if library is None:
         library = LibraryManager(cfg, sim)
     player._library = library
+    _apply_time_settings(cfg, library)
     bridge = PlayerBridge(player=player, sim=sim, library=library)
     # The mix bus announces every track it starts: play history, the
     # stream title and liner counting all hang off this hook.

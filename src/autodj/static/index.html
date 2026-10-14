@@ -2239,6 +2239,25 @@
       Every station on this server shares the music library, song analysis, song cue points and Stereo Tool preset files. Each has its own settings, queue, history, schedule, carts and stream.
     </p>
     <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <!-- Time for every station (#282, #286): time-settings.js. -->
+    <fieldset id="time-settings">
+      <legend>Time for every station</legend>
+      <div class="settings-row">
+        <label for="time-zone">Time zone</label>
+        <select id="time-zone" aria-describedby="time-zone-help"></select>
+      </div>
+      <span class="setting-desc" id="time-zone-help">
+        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time AutoDJ starts.
+      </span>
+      <div class="settings-row">
+        <label for="time-format">Time format</label>
+        <select id="time-format">
+          <option value="24">24 hour (15:04)</option>
+          <option value="12">12 hour (3:04 PM)</option>
+        </select>
+      </div>
+      <button type="button" id="time-settings-save">Save time settings</button>
+    </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <ul id="stations-list" aria-labelledby="stations-list-heading"></ul>
     <form id="station-create-form" novalidate>
