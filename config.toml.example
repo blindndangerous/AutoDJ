@@ -120,6 +120,11 @@ liner_upload_max_mib = 50
 # docs/operations.md for a Let's Encrypt certificate and remote access.
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
+# Live DJs (stream mode): BUTT or Mixxx log in to the station's source mount with a DJ
+# password.  Over plain HTTP that is accepted only from this machine unless this is true,
+# which also accepts it from the local network, the password then crossing the LAN
+# unencrypted.  HTTPS needs nothing here.  See "Live DJs and talkover" in docs/operations.md.
+live_plain_http_lan = false
 
 # ---------------------------------------------------------------------------
 # Radio-style MP3 stream — server mixes the set and serves it as a live

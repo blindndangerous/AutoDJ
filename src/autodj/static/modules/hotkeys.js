@@ -38,6 +38,20 @@
 // the page gives no element accesskey="r", and NVDA and JAWS pass it
 // through to the page in browse and focus mode alike.
 //
+// Reserved for Talk (modules/live-talk.js, #48): Alt+M, held to talk over
+// the music while the station can go live, from anywhere on the page.  It
+// is hold-only: letting go always stops, so it never leaves a microphone
+// on (only the Talk button latches, for 2 minutes at most).  It
+// matches the M key by position (KeyM), so Option+M on a Mac works too,
+// and never with Control or Meta, so AltGr+M (Control+Alt on Windows),
+// which types a character on many layouts, is left alone.  Alt+M is free
+// in Firefox, Chrome and Edge on Windows (Firefox's menu bar keys are
+// F E V S B T H; Chrome and Edge give it no command), no element has
+// accesskey="m", and NVDA and JAWS pass Alt+letter through to the page in
+// browse and focus mode.  Plain m and M stay Mute: these shortcuts ignore
+// Alt.  Not switched off by the Settings > Keyboard checkbox: WCAG 2.1.4
+// covers single-character shortcuts, and this one needs Alt.
+//
 // WCAG 2.1.4: single-key shortcuts can be switched off with the
 // Settings > Keyboard checkbox.  The choice is kept per browser in
 // localStorage and defaults to on; storage that is blocked or throws

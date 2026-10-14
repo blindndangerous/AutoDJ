@@ -42,6 +42,8 @@ import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installRelaySettings } from "./modules/relay-settings.js";
+import { installLiveDesk } from "./modules/live-talk.js";
+import { installLiveSettings } from "./modules/live-settings.js";
 import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { initSubtabs } from "./modules/subtabs.js";
@@ -257,6 +259,26 @@ let _lastStreamMode = false;
 // Stream mode with --server-audio: the page's volume and Mute also drive
 // the machine's own speakers.
 let _lastStreamServerAudio = false;
+// Live DJ (#48): the live line and Talk on Now Playing, and Settings >
+// Live DJ.  The tab shows in stream mode (saying why when the station
+// cannot go live) or whenever the server says it can; Talk shows only
+// when it can.
+const liveDesk = installLiveDesk({ doc: document, srStatus: document.getElementById("sr-status") });
+let _liveInfo = null;
+function renderLiveTab() {
+  settingsTabs.setTabHidden("live", !(_liveInfo?.available || _lastStreamMode));
+}
+const liveSettings = installLiveSettings({
+  doc: document,
+  request: requestJson,
+  announce: (message, error = false) => announceStatus(settingsStatus, message,
+    { tone: error ? "error" : "success", force: true, dwellMs: 6000 }),
+  onInfo: (info) => {
+    _liveInfo = info;
+    liveDesk?.setInfo(info);
+    renderLiveTab();
+  },
+});
 
 const auth = initAuthDialog({ document });
 let authExpiryHandled = false;
@@ -303,6 +325,11 @@ function clearStationViews() {
   streamSettings.reset();
   relaySettings.reset();
   recordingControls.reset();
+  // Switching stations or signing out stops talking and lets the
+  // microphone go; the next station's live line is shown in silence.
+  liveDesk?.clear();
+  liveSettings?.reset();
+  _liveInfo = null;
   nowPlayingSettings?.reset();
   listenerControls.reset();
   resetTrackCaches();
@@ -561,6 +588,8 @@ function applyState(s) {
   streamSettings.apply(s);
   if (s.stream_mode) recordingControls.apply(s.recording);
   else recordingControls.reset();
+  liveDesk?.applyState(s);
+  renderLiveTab();
   nowPlayingSettings?.apply(s);
   listenerControls.apply(s);
   const browserMode = Boolean(s.browser_playback) && !inStream;
@@ -1671,6 +1700,7 @@ function refreshStationPanels() {
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void voiceTrackerControls?.refresh();
+  void liveSettings?.refresh();
   void linerControls?.refresh();
   void profileControls?.refresh();
   void fetchHistory(1);
@@ -2591,20 +2621,32 @@ let _histWithDate = false;
 // The playing track's path, to notice a track change on the 1 Hz push.
 let _histPlayingPath = null;
 
+// A live DJ session (#48) is a row too: kind "live", the DJ as the artist,
+// no file and so no Track info, and "On the air" until it ends.
 function historyRowHtml(it, withDate) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "history-info";
-  button.dataset.path = it.path || "";
-  button.dataset.historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
-  button.textContent = "Track info";
-  const title = document.createElement("span");
-  title.textContent = it.title ?? "";
-  const titleAndInfo = document.createDocumentFragment();
-  titleAndInfo.append(title, " ", button);
-  return tableRow(document, [
-    formatPlayedAt(it.played_at, withDate), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
+  const historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
+  const live = it.kind === "live";
+  let titleCell;
+  if (live) {
+    titleCell = it.title || "Live";
+  } else {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-info";
+    button.dataset.path = it.path || "";
+    button.dataset.historyId = historyId;
+    button.textContent = "Track info";
+    const title = document.createElement("span");
+    title.textContent = it.title ?? "";
+    titleCell = document.createDocumentFragment();
+    titleCell.append(title, " ", button);
+  }
+  const row = tableRow(document, [
+    formatPlayedAt(it.played_at, withDate), titleCell, it.artist ?? "",
+    live && !it.ended_at ? "On the air" : _fmtDuration(it.duration),
   ], { rowHeaderIndex: 1 });
+  row.dataset.historyId = historyId;
+  return row;
 }
 
 function showHistoryPaging(data) {
@@ -2628,11 +2670,12 @@ function _fmtDuration(sec) {
 }
 
 function focusRemainingHistoryRow(tbody, index, message, column = null) {
-  const buttons = [...tbody.querySelectorAll(".history-info")];
   const rows = [...tbody.querySelectorAll("tr")];
   const row = rows[Math.min(index, rows.length - 1)];
-  const target = column === null ? buttons[Math.min(index, buttons.length - 1)]
-    : row?.querySelectorAll("td[role=gridcell], td[role=rowheader]")[column];
+  const cells = row?.querySelectorAll("td[role=gridcell], td[role=rowheader]");
+  // A live session's row has no Track info button: its title cell instead.
+  const target = column === null ? row?.querySelector(".history-info") || cells?.[1]
+    : cells?.[column];
   const fallback = target
     || document.querySelector("#panel-history > h2");
   if (fallback?.tagName !== "BUTTON") fallback?.setAttribute("tabindex", "-1");
@@ -2664,7 +2707,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
     const focusedColumn = focusedCell
       ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
-    const focusedId = focusedRow?.querySelector(".history-info")?.dataset.historyId;
+    const focusedId = focusedRow?.dataset.historyId;
     let focusLost = false;
     if (!data.total) {
       tbody.replaceChildren();
@@ -2690,12 +2733,12 @@ async function fetchHistory(page, { announce = false } = {}) {
     tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, withDate)));
     historyNavigation.refresh();
     if (focusedId) {
-      const replacement = [...tbody.querySelectorAll(".history-info")]
-        .find((button) => button.dataset.historyId === focusedId);
+      const replacement = [...tbody.querySelectorAll("tr")]
+        .find((row) => row.dataset.historyId === focusedId);
+      const cells = replacement?.querySelectorAll("td[role=gridcell], td[role=rowheader]");
       if (replacement) {
-        if (focusedCell) replacement.closest("tr")
-          .querySelectorAll("td[role=gridcell], td[role=rowheader]")[focusedColumn]?.focus();
-        else replacement.focus();
+        if (focusedCell) cells[focusedColumn]?.focus();
+        else (replacement.querySelector(".history-info") || cells[1])?.focus();
       }
       else {
         focusRemainingHistoryRow(tbody, focusedIndex,
@@ -2791,12 +2834,19 @@ async function addNewHistoryRows() {
   showHistoryPaging(data);
 }
 
+// A live DJ going on or off the air changes History too: the session's
+// row appears, then gets its length, so page 1 is asked for again.
 function noteTrackForHistory(s) {
   const path = (s && s.current_track && s.current_track.path) || null;
-  if (path === _histPlayingPath) return;
-  const changed = _histPlayingPath !== null && path !== null;
-  _histPlayingPath = path;
-  if (changed && historyViewShown() && _histPage === 1) void addNewHistoryRows();
+  const liveSince = (s && s.live && s.live.since) || null;
+  const key = path === null && liveSince === null ? null : `${path}\u0000${liveSince}`;
+  if (key === _histPlayingPath) return;
+  const was = _histPlayingPath;
+  _histPlayingPath = key;
+  if (was === null || key === null || !historyViewShown() || _histPage !== 1) return;
+  const liveChanged = !was.endsWith(`\u0000${liveSince}`);
+  if (liveChanged) void fetchHistory(1);
+  else void addNewHistoryRows();
 }
 
 {
@@ -3016,6 +3066,7 @@ function startAuthenticatedApp(initialState) {
   void cartWallControls?.refresh();
   voiceTrackerControls = installVoiceTracker();
   void voiceTrackerControls?.refresh();
+  void liveSettings?.refresh();
   if (initialState) {
     applyState(initialState);
     connectWS();

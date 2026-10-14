@@ -179,6 +179,15 @@ when nobody listens to AutoDJ directly. Settings, Stream shows each relay's stat
 [Relaying to Icecast and Shoutcast](docs/operations.md#relaying-to-icecast-and-shoutcast) for
 every option.
 
+### Live DJs and talkover
+
+In stream mode a live DJ can take over a station from BUTT, Mixxx or another Icecast source
+client, connecting to AutoDJ's own address with their own username and password (Settings,
+Live DJ). AutoDJ crossfades to the DJ, holds automation where it was, and comes back
+with the next song when they leave. Anyone signed in can also hold **Talk** (or Alt+M) to speak
+over the music from the browser's microphone. See
+[Live DJs and talkover](docs/operations.md#live-djs-and-talkover).
+
 ### Several stations
 
 One server can run more than one station from the same library. The root sections of

@@ -824,7 +824,8 @@ def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> 
             time.sleep(0.01)
     audio = player.bus.play_liner.call_args.args[0]
     assert audio.shape == (441, 2)
-    assert player.bus.play_liner.call_args.kwargs == {"duck_db": -9.0}
+    # A liner waits for a live DJ to hand back rather than being dropped (#48).
+    assert player.bus.play_liner.call_args.kwargs == {"duck_db": -9.0, "after_live": True}
     assert bridge._liner_worker is None
 
 

@@ -13,6 +13,7 @@ import pytest
 
 from autodj.backup import STATION_FILES, BackupError, create_backup, restore_backup
 from autodj.config import AutoDJConfig, load_config
+from autodj.live import strip_secrets
 from autodj.version import current_version
 
 
@@ -62,6 +63,17 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
         for name in STATION_FILES:
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
         put(base / "relays.json", b'{"password": "' + who + b'-relay-secret"}')
+        # Live DJ accounts (#48): the backup keeps them without their hashes,
+        # so that is what a restore puts back.
+        djs = json.dumps(
+            {
+                "version": 1,
+                "users": {"dj": {"name": who.decode(), "salt": "ab" * 16, "hash": "cd" * 64}},
+                "settings": {"mic_return_seconds": 1.0, "mic_duck_db": 9.0},
+            }
+        ).encode()
+        put(base / "live_djs.json", djs)
+        written[base / "live_djs.json"] = strip_secrets(djs)
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
         put(base / "time_checks" / "03_05.wav", who + b" clip")
@@ -83,6 +95,8 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
         manifest = json.loads(opened.read("manifest.json"))
         default_relays = opened.read("index/relays.json")
         owl_relays = opened.read("stations/nightowl/index/relays.json")
+        default_live_djs = opened.read("index/live_djs.json")
+        owl_live_djs = opened.read("stations/nightowl/index/live_djs.json")
         archive_manifest = opened.read("manifest.json")
     assert manifest["stations"] == ["nightowl"]
     # The default station keeps today's names; Night Owl's are under its slug.
@@ -98,11 +112,17 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
         "stations/nightowl/intros/intro.wav",
         "stations/nightowl/index/matched_intros.json",
         "stations/nightowl/index/relays.json",
+        "stations/nightowl/index/live_djs.json",
         "stations/nightowl/profiles/Party.json",
     } <= names
     assert "index/relays.json" in names
+    assert "index/live_djs.json" in names
     assert default_relays == written[cfg.index.active_dir / "relays.json"]
     assert owl_relays == written[_station_dir(cfg, "nightowl") / "relays.json"]
+    assert default_live_djs == written[cfg.index.active_dir / "live_djs.json"]
+    assert owl_live_djs == written[_station_dir(cfg, "nightowl") / "live_djs.json"]
+    for djs in (default_live_djs, owl_live_djs):
+        assert b"hash" not in djs and b"salt" not in djs and b'"dj"' in djs
     assert b"relay-secret" not in archive_manifest
     assert "relay-secret" not in caplog.text
     # A station never holds the shared categories, and nothing is stored twice.

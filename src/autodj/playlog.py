@@ -17,9 +17,11 @@ that started inside the requested range:
 - ``isrc`` and ``label``, read from the file's tags at export time, so no
   re-index is needed.  An ISRC is written as 12 characters without
   hyphens; a tag that does not hold a valid one counts as missing.
-- ``kind``: ``song`` or ``liner``.  The mix bus logs only the tracks it
-  starts, so liners mixed over a transition are not in the log, and
-  nothing yet marks a file as an ad or a station ID.
+- ``kind``: ``song``, ``liner`` or ``live`` (a live DJ's set, #48: the DJ's
+  name as artist, its length to when they left, no path; never in a
+  SoundExchange report, whose music came from the DJ's own software).  The
+  mix bus logs only the tracks it starts, so liners mixed over a transition
+  are not in the log, and nothing yet marks a file as an ad or a station ID.
 - ``path``: relative to the music or liner folder that holds the file,
   with ``/`` separators; absolute when no folder holds it.
 - ``performances``: how many listeners heard the play, each counted once:
@@ -174,11 +176,15 @@ def plays_between(
         if started is None or not start <= started < end:
             continue
         length = float(row["duration"])
-        following = history_start(row["following_at"])
+        following = (
+            history_start(row["ended_at"])
+            if row["kind"] == "live"
+            else history_start(row["following_at"])
+        )
         if following is not None and following >= started:
             length = min(length, (following - started).total_seconds())
         path = row["path"] or ""
-        if path and path not in files:
+        if path and row["kind"] != "live" and path not in files:
             isrc, label = read_tags(path)
             files[path] = (_relative(path, sources), isrc, label)
         relative, isrc, label = files.get(path, ("", "", ""))
@@ -197,7 +203,7 @@ def plays_between(
                 album=row["album"] or "",
                 isrc=isrc,
                 label=label,
-                kind="liner" if kind == "liner" else "song",
+                kind="live" if kind == "live" else "liner" if kind == "liner" else "song",
                 path=relative,
                 performances=row["performances"],
             )

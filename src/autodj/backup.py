@@ -10,8 +10,9 @@ that wrote it and the list of files) and these members:
   ``index/carts.json``,
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
   ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json``,
-  ``index/shows.json`` and ``index/relays.json`` from the active index folder. Relay files
-  contain source passwords.
+  ``index/shows.json``, ``index/relays.json`` and ``index/live_djs.json`` from the active
+  index folder. Relay files contain source passwords.  The live DJ accounts are kept
+  without their password hashes, so each DJ's password is set again after a restore.
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -82,6 +83,7 @@ INDEX_FILES = (
     "matched_intros.json",
     "shows.json",
     "relays.json",
+    "live_djs.json",
     im.MANIFEST_NAME,
 )
 _FOLDERS = (
@@ -106,6 +108,7 @@ _STATE_FILES = (
     "matched_intros.json",
     "shows.json",
     "relays.json",
+    "live_djs.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
@@ -383,6 +386,15 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             copy.parent.mkdir(parents=True, exist_ok=True)
             # With its permission bits, so a private file is restored private.
             shutil.copy(original, copy)
+            if original.name == "live_djs.json":
+                # The DJ accounts without their password hashes (#48).
+                from autodj.live import strip_secrets
+
+                stripped = strip_secrets(copy.read_bytes())
+                if not stripped:
+                    copy.unlink()
+                    continue
+                copy.write_bytes(stripped)
             members[member] = copy
     for name, digest in digests:
         if im.sha256_file(index / name) != digest:

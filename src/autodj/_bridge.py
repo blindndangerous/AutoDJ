@@ -473,13 +473,20 @@ class PlayerBridge:
             self._audience.disconnected(client)
 
     def history_snapshot(self) -> list[dict]:
-        """Return the latest plays across sessions, oldest first."""
+        """Return the latest plays across sessions, oldest first.
+
+        A live DJ's set (#48) also has ``kind`` ``"live"`` and ``ended_at``
+        (``None`` while it is on the air); songs keep their usual fields.
+        """
+        keys = ("event_id", "path", "title", "artist", "duration", "played_at")
         with self._history_lock:
             return [
-                {
-                    key: row.get(key)
-                    for key in ("event_id", "path", "title", "artist", "duration", "played_at")
-                }
+                {key: row.get(key) for key in keys}
+                | (
+                    {"kind": "live", "ended_at": row.get("ended_at")}
+                    if row.get("kind") == "live"
+                    else {}
+                )
                 for row in self._play_history
             ]
 

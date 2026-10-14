@@ -110,6 +110,11 @@ export const STATION_ROUTES = Object.freeze([
   "/requests/{request_id}/approve",
   "/requests/{request_id}/play-next",
   "/requests/{request_id}/reject",
+  "/live",
+  "/live/settings",
+  "/live/djs",
+  "/live/djs/{username}",
+  "/live/mic",
 ]);
 
 // The routes are plain letters, hyphens and slashes, so only the {name}

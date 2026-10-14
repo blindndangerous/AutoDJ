@@ -92,6 +92,7 @@ from autodj.listener_access import (
     normalize_address,
     trusted_proxy_setting,
 )
+from autodj.live_routes import install_live_routes
 from autodj.machine_tokens import MachineTokenStore
 from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
@@ -102,6 +103,7 @@ from autodj.scheduler import system_timezone
 from autodj.secret_files import machine_tokens_path, paired_devices_path
 from autodj.security import (
     COOKIE_NAME,
+    LIVE_SOURCE_PATH,
     PAIRING_BODY_MAX_BYTES,
     SecurityMiddleware,
     SecurityPolicy,
@@ -166,6 +168,9 @@ STARTUP_COMPLETE = threading.Event()
 
 
 _WS_SEND_TIMEOUT_SECONDS = 2.0
+# Connections beyond every station's stream listeners that the server
+# accepts at once (see serve()'s limit_concurrency).
+_CONNECTION_ROOM = 256
 # Stream listeners stay connected until they hang up, so uvicorn would wait
 # for them forever on Ctrl+C; give them this long, then cancel them.
 _STREAM_SHUTDOWN_GRACE_SECONDS = 3
@@ -366,6 +371,7 @@ async def _broadcast_state_once(
     listener_revision: int | None = None,
     recording_status: Callable[[], dict[str, object]] | None = None,
     station_list: Callable[[], list[dict[str, Any]]] | None = None,
+    live_state: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """Push the player state to every WebSocket client, if any are connected.
 
@@ -388,6 +394,8 @@ async def _broadcast_state_once(
             state["recording"] = recording_status()
         if station_list is not None:
             state["stations"] = station_list()
+        if live_state is not None:
+            state.update(live_state())
         payload = json.dumps(state)
         await _broadcast_and_prune(clients, clients_lock, payload)
     except Exception as exc:
@@ -461,12 +469,16 @@ class _GZipExceptStream(GZipMiddleware):
     Starlette leaves audio/*, images, 206 partial responses and bodies that
     are already encoded alone.  But it holds back every response's headers
     until the first body bytes, and a live stream's first bytes can take a
-    while, so stream routes bypass it: a speaker gets its 200 at once.
+    while, so stream routes bypass it: a speaker gets its 200 at once.  So
+    do the live DJ source mounts (#48), whose answer must reach the DJ's
+    software before it sends any audio.
     """
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Pass stream requests straight through; gzip the rest."""
-        if scope["type"] == "http" and _is_stream_path(scope["path"]):
+        """Pass stream and live source requests straight through; gzip the rest."""
+        if scope["type"] == "http" and (
+            _is_stream_path(scope["path"]) or LIVE_SOURCE_PATH.fullmatch(scope["path"])
+        ):
             await self.app(scope, receive, send)
             return
         await super().__call__(scope, receive, send)
@@ -1017,6 +1029,8 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
@@ -2026,6 +2040,11 @@ def create_app(
 
     app.add_api_websocket_route("/ws", websocket_endpoint)
     app.add_api_websocket_route(STATION_PREFIX + "/ws", websocket_endpoint)
+    install_live_routes(
+        app,
+        policy,
+        allow_lan_plain_http=bool(getattr(bridge.player._cfg.server, "live_plain_http_lan", False)),
+    )
 
     for station in stations.all():
         _equip_station(station)
@@ -2089,6 +2108,13 @@ def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
         station.station_list = stations.summaries
 
 
+def _connection_limit(cfg: Any) -> int:
+    """Connections the server takes at once: every station's listeners, and room besides."""
+    configs = (cfg, *(spec.cfg for spec in cfg.stations))
+    listeners = (getattr(getattr(c, "stream", None), "max_listeners", 0) for c in configs)
+    return _CONNECTION_ROOM + sum(n for n in listeners if isinstance(n, int))
+
+
 def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, Any, None]]:
     """The loop that pushes *station*'s state to its WebSocket clients once a second."""
 
@@ -2111,6 +2137,7 @@ def _station_broadcast(station: StationRuntime) -> Callable[[], Coroutine[Any, A
                 listener_access.revision if listener_access is not None else None,
                 recorder.status if recorder is not None else None,
                 station.station_list,
+                station.live_state,
             )
 
     return broadcast
@@ -2515,13 +2542,20 @@ def serve(
     # Without [stream] trusted_proxies, an existing FORWARDED_ALLOW_IPS is
     # honoured; without either, only a proxy on this machine.
     uvicorn_kwargs["proxy_headers"] = True
+    # Open connections and requests the server takes at once; past it new
+    # ones get 503.  Room for every station's stream listeners, plus the
+    # pages, their sockets, live DJs and talkers (#48).
+    uvicorn_kwargs["limit_concurrency"] = _connection_limit(cfg)
     allow, proxy_warnings = trusted_proxy_setting(cfg.stream.trusted_proxies, os.environ)
     uvicorn_kwargs["forwarded_allow_ips"] = allow
     for warning in proxy_warnings:
         logger.warning("%s", warning)
     if stream or extra_stations:
-        # HTTP/1.0 radio players need close-delimited audio, not chunked framing.
-        uvicorn_kwargs["http"] = "h11"
+        # HTTP/1.0 radio players need close-delimited audio, not chunked
+        # framing; and live DJs' source clients send it (#48).
+        from autodj.live_protocol import IcecastSourceH11Protocol
+
+        uvicorn_kwargs["http"] = IcecastSourceH11Protocol
         uvicorn_kwargs["timeout_graceful_shutdown"] = _STREAM_SHUTDOWN_GRACE_SECONDS
     reloaders: list[CertificateReloader] = []
     if ssl_certfile is not None and ssl_keyfile is not None:

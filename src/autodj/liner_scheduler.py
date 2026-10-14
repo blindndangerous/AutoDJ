@@ -500,10 +500,13 @@ class LinerScheduler:
     def _play_locked(self, liner: _Prepared, cue: LinerCue | None) -> str:
         """Play decoded *liner* into the bus, at *cue* when given. Caller holds ``_lock``."""
         duck_db = float(self._cfg.liners_duck_db)
+        # Under a live DJ (#48) a station ID or other liner waits to play once
+        # when they hand back; a time check ("announcement") would be stale.
+        after_live = liner.name != "announcement"
         if cue is None:
-            self._bus.play_liner(liner.audio, duck_db=duck_db)
+            self._bus.play_liner(liner.audio, duck_db=duck_db, after_live=after_live)
         else:
-            self._bus.play_liner(liner.audio, duck_db=duck_db, at=cue)
+            self._bus.play_liner(liner.audio, duck_db=duck_db, at=cue, after_live=after_live)
         self._fired_locked()
         return liner.name
 

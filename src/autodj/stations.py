@@ -32,15 +32,17 @@ import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
+from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -247,6 +249,11 @@ class StationPaths:
     def relays(self) -> Path:
         """Private web-managed relay definitions and source passwords."""
         return self.state_dir / "relays.json"
+
+    @property
+    def live_djs(self) -> Path:
+        """Hashed credentials for this station's live source clients."""
+        return self.state_dir / "live_djs.json"
 
     @property
     def clockwheels(self) -> Path:
@@ -804,6 +811,21 @@ class StationRuntime:
         # A plain function avoids deep-copying the store with player settings.
         bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
         self.nowplaying = NowPlaying(bridge, timezone=timezone)
+        from autodj.live import LiveDesk
+
+        # Live DJ input (#48): the source mount, DJ accounts and talkover.
+        self._live_row: dict[str, Any] | None = None
+        self.live = LiveDesk(
+            self.paths.live_djs,
+            on_start=self._live_started,
+            before_return=self._ready_automation,
+            on_end=self._live_ended,
+        )
+        self.nowplaying.live_status = self.live.status
+        self.nowplaying.live_title = self.live.title
+        # Only stream mode has a mix bus to take the DJ.
+        if callable(attach := getattr(getattr(bridge.player, "bus", None), "set_live", None)):
+            attach(self.live)
         self.webhooks: WebhookWorker = WebhookWorker(getattr(bridge.player._cfg, "webhooks", ()))
         self.listener_access: ListenerAccess | None = (
             ListenerAccess(
@@ -895,7 +917,11 @@ class StationRuntime:
             "name": self.name,
             "state": state,
             "listeners": int(stream.listener_count) if stream is not None else 0,
-            "title": getattr(track, "display_name", None) if track is not None else None,
+            "title": (
+                f"{live['dj']}: {self.live.title}"
+                if (live := self.live.status()) is not None
+                else (getattr(track, "display_name", None) if track is not None else None)
+            ),
             **public_addresses(
                 self.slug, streams=bool(bridge.stream_mode), player_page=self.cfg.player_page
             ),
@@ -931,6 +957,100 @@ class StationRuntime:
             self.nowplaying.refresh()
         except Exception:
             logger.exception("Could not refresh now-playing state")
+
+    def live_state(self) -> dict[str, Any]:
+        """The live DJ and talkover state for the page's push and ``/api/status``."""
+        return {"live": self.live.status(), "talkover": self.live.talkover}
+
+    def _ready_automation(self, source: Any) -> None:
+        """Ready automation to take back the air from a live DJ (#48).
+
+        Runs on the releasing thread while the DJ's last audio is still
+        playing.  The track rendered to follow the interrupted song waited
+        through the live set, so it is rendered again for now (its liners
+        and time checks were planned for then), keeping the old render to
+        fall back on; this waits for the new one no longer than the DJ's
+        buffered audio lasts, at most a second and a half.  Then the
+        interrupted song is dropped, so automation comes back with the
+        next song rather than the rest of that one.
+        """
+        player = self.player
+        if self.stopped or player.bus is None or not player.bus.playing:
+            return  # no set is held under the DJ: the station goes back to idle
+        buffered = source.buffer.frames / SAMPLE_RATE
+        try:
+            player.prepare_live_return(min(1.5, buffered))
+        finally:
+            if player.bus is not None:
+                player.bus.drop_held_track()
+
+    def _live_started(self) -> None:
+        """Record a DJ going on the air: History, the stream title and the feed."""
+        bridge = self.bridge
+        with bridge._history_lock:
+            # Checked under the lock _live_ended takes, so a DJ who left at
+            # once leaves no session open.
+            status = self.live.status()
+            if status is None:
+                return
+            row = {
+                "event_id": secrets.token_hex(16),
+                "path": None,
+                "title": self.live.title,
+                "artist": status["dj"],
+                "kind": "live",
+                "duration": 0.0,
+                "played_at": status["since"],
+                "ended_at": None,
+                "performances": None,
+            }
+            self._live_row = row
+            # The song the DJ cut off ends here; listeners who join now hear
+            # the DJ, not it.
+            interrupted = bridge._open_play[1] if bridge._open_play is not None else None
+            bridge._open_play = None
+            if interrupted is not None and interrupted.get("ended_at") is None:
+                interrupted["ended_at"] = status["since"]
+            bridge._play_history.append(row)
+            if (ledger := self.ledger) is not None:
+                if interrupted is not None:
+                    ledger.remember_history(interrupted)
+                ledger.remember_history(row)
+        logger.info("Live DJ %s is on the air", status["dj"])
+        # A voice break waiting for the next song change misses its slot (#88);
+        # the missed and late rules of #215 will decide this in time.
+        desk = getattr(self.player, "break_desk", None)
+        if desk is not None:
+            try:
+                missed = desk.drop_unaired("live DJ on air")
+                if isinstance(missed, int) and missed:
+                    logger.info("%d planned break(s) missed: live DJ on air", missed)
+            except Exception:
+                logger.exception("Could not mark the planned breaks missed")
+        for out in (bridge.stream, bridge.relays):
+            if out is not None:
+                try:
+                    out.set_title(status["dj"], self.live.title)
+                except Exception:
+                    logger.exception("Could not set the stream title for the live DJ")
+        self.public_state_changed()
+
+    def _live_ended(self) -> None:
+        """Close the live session's History row with its end time and length."""
+        bridge = self.bridge
+        with bridge._history_lock:
+            row, self._live_row = self._live_row, None
+            if row is not None:
+                ended = datetime.now(UTC)
+                row["ended_at"] = ended.isoformat()
+                row["duration"] = max(
+                    0.0, (ended - datetime.fromisoformat(row["played_at"])).total_seconds()
+                )
+                if (ledger := self.ledger) is not None:
+                    ledger.remember_history(row)
+        if row is not None:
+            logger.info("Live DJ %s is off the air; automation is back", row["artist"])
+        self.public_state_changed()
 
     async def start(self) -> None:
         """Start the schedule, the stream or liners, the WebSocket push and webhooks."""
@@ -979,6 +1099,8 @@ class StationRuntime:
                 self.paths,
                 self.owns_liner,
             )
+            if bridge.station is not None:
+                bridge.station.live_active = lambda: self.live.active
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         elif self.server_audio:
             await asyncio.to_thread(
@@ -1023,6 +1145,12 @@ class StationRuntime:
             Whether every cache writer stopped in time.
         """
         self.stopped = True
+        if (source := self.live.source) is not None:
+            await _step(
+                "disconnecting its live DJ",
+                lambda: asyncio.to_thread(self.live.release, source),
+                self.stop_problems,
+            )
         problems = self.stop_problems
         bridge = self.bridge
         bridge.scheduler_track_changed = None

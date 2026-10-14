@@ -92,6 +92,9 @@ DEFAULT_STATION_PUBLIC = frozenset(
         "/stations/{slug}/requests",
     }
 )
+# Live DJ source mounts (#48): an Icecast client streams to the default
+# station's or a station's by name, with its own Basic credentials.
+SOURCE_MOUNTS = frozenset({"/live", "/stations/{slug}/live"})
 # Routes that act on one station, relative to the API root.  Each answers
 # at /api<route> for the default station (/ws for the socket) and at
 # /api/stations/{slug}<route>.
@@ -192,6 +195,12 @@ STATION = frozenset(
         "/shows/{show_id}/songs",
         "/shows/{show_id}/generate",
         "/shows/{show_id}/start",
+        # Live DJs (#48): the DJ accounts, talkover settings and microphone.
+        "/live",
+        "/live/settings",
+        "/live/djs",
+        "/live/djs/{username}",
+        "/live/mic",
         "/ws",
     }
 )
@@ -225,7 +234,7 @@ def test_every_route_is_classified_as_shared_or_station() -> None:
     for route in client.app.routes:
         path = route.path
         assert isinstance(route, Mount) or not path.endswith("/") or path == "/", path
-        if path in SHARED or path in DEFAULT_STATION_PUBLIC:
+        if path in SHARED or path in DEFAULT_STATION_PUBLIC or path in SOURCE_MOUNTS:
             continue
         if path.startswith(STATION_PREFIX + "/"):
             relative = path.removeprefix(STATION_PREFIX)
@@ -247,6 +256,7 @@ def test_every_route_is_classified_as_shared_or_station() -> None:
     assert default_forms == STATION
     assert paths >= SHARED
     assert paths >= DEFAULT_STATION_PUBLIC
+    assert paths >= SOURCE_MOUNTS
     assert not {STATION_PREFIX + path.removeprefix("/api") for path in SHARED} & paths
 
 
