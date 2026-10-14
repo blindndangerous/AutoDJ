@@ -74,7 +74,7 @@ from pydantic import (
 )
 
 from autodj.clip_dates import ClipDates, day_words
-from autodj.fsutil import atomic_write, confirm_missing, fsync_directory
+from autodj.fsutil import atomic_write, file_signature, fsync_directory, set_aside
 from autodj.liners import LINER_EXTS
 
 if TYPE_CHECKING:
@@ -437,21 +437,10 @@ class AdStore:
     # -- the file ----------------------------------------------------------
 
     def _stat(self) -> tuple[int, int, int] | None:
-        try:
-            found = self.path.stat()
-        except FileNotFoundError as exc:
-            confirm_missing(self.path, exc)
-            return None
-        return found.st_mtime_ns, found.st_size, found.st_ino
+        return file_signature(self.path)
 
     def _keep_bad_copy(self, reason: str) -> None:
-        bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-        try:
-            self.path.replace(bad)
-        except OSError:
-            logger.exception("Could not set aside the invalid ads file %s", self.path)
-            return
-        logger.error("Ads file %s is invalid (%s); set it aside as %s", self.path, reason, bad)
+        set_aside(self.path, "ads file", reason)
 
     def _load_locked(self) -> AdState:
         """Every spot and break, read again if the file changed.  Caller holds ``_lock``.
