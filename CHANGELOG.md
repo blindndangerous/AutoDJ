@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Windows setup offers to install missing uv and FFmpeg with WinGet, explains what each tool
+  does, and gives manual installation steps when needed. The quick start uses one launcher
+  command, with instructions for moving to another computer.
 - History shows only the time on each play, with a date heading for each day instead of
   repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
 
