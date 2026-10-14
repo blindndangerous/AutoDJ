@@ -168,6 +168,7 @@ const FIELDS = [
   { key: "pbShowLyrics", field: "show_lyrics",
     read: (st) => Boolean(st.playback) && st.playback.show_lyrics !== false },
   { key: "pbAnchorSeed", field: "anchor_to_seed" },
+  { key: "pbHourFit", field: "hour_fit" },
   {
     key: "pbLoudness", field: "loudness_processing",
     read: (st) => st.playback?.loudness_processing ??

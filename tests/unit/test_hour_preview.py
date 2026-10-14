@@ -63,8 +63,11 @@ NOW = datetime(2026, 10, 12, 12, 10, tzinfo=UTC).timestamp()
 
 def _station(tmp_path: Path, **changes: Any):
     """Power (6 songs) and Gold (60) under a liner, Power, Gold clockwheel; no restarts."""
-    power = [song(n, f"Power {n}") for n in range(6)]
-    gold = [song(100 + n, f"Gold {n}") for n in range(60)]
+    varied = changes.pop("varied", False)
+    power = [song(n, f"Power {n}", length=150 + n * 24 if varied else 200) for n in range(6)]
+    gold = [
+        song(100 + n, f"Gold {n}", length=150 + n % 8 * 24 if varied else 200) for n in range(60)
+    ]
     options: dict[str, Any] = {
         "liners": [liner(1), liner(2)],
         "categories": [
@@ -308,6 +311,15 @@ def test_events_wait_or_cut_by_their_timing() -> None:
         "News (Play a liner: News), hard, at 1:00 PM: on time. It cuts Artist 0, Song 0 "
         "(predicted) short by about 1:30.",
     )
+
+
+def test_hard_event_with_wait_limit_reports_late_without_cutting() -> None:
+    songs = song_changes(_songs(TOP - 100, TOP + 25))
+    waited = land(Point("event", TOP, "News", "hard", "Liner", 30), songs, TOP + 300)
+    assert (waited.offset, waited.cut) == (pytest.approx(25), 0.0)
+    assert "hard event waits" in landing_words(waited, UTC_ZONE)[1]
+    cut = land(Point("event", TOP, "News", "hard", "Liner", 20), songs, TOP + 300)
+    assert cut.cut == pytest.approx(25)
 
 
 def test_a_point_past_the_preview_is_not_guessed() -> None:
@@ -1249,9 +1261,9 @@ class _Plays:
         return []
 
 
-def _parity_station(tmp_path: Path, timed: bool = False):
+def _parity_station(tmp_path: Path, timed: bool = False, fit: bool = False):
     """The parity station; *timed* turns on the daypart and quarter-hour rules (#129)."""
-    playback: dict[str, Any] = {"pick_mode": "clock"}
+    playback: dict[str, Any] = {"pick_mode": "clock", "hour_fit": fit}
     if timed:
         playback["repeat_rules"] = {"daypart": {"days": 2}, "hourpart": {"plays": 2}}
     source, power, gold = _station(
@@ -1259,6 +1271,7 @@ def _parity_station(tmp_path: Path, timed: bool = False):
         dmca=True,
         related={"Power 1": ["Power 2"], "Gold 3": ["Gold 4"]},
         playback=playback,
+        varied=fit,
     )
     source.player._ledger = source.ledger = _Plays()
     # As the station's library tick does every two seconds.
@@ -1316,8 +1329,11 @@ def _live_picks(player: Any, current: Any, handoff: float, end: float, seed: int
 
 
 @pytest.mark.parametrize("timed", [False, True], ids=["repeat rules", "with time of day rules"])
-def test_the_preview_picks_what_the_live_station_would(tmp_path: Path, timed: bool) -> None:
-    source, _power, gold = _parity_station(tmp_path, timed)
+@pytest.mark.parametrize("fit", [False, True], ids=["normal", "hour fit"])
+def test_the_preview_picks_what_the_live_station_would(
+    tmp_path: Path, timed: bool, fit: bool
+) -> None:
+    source, _power, gold = _parity_station(tmp_path, timed, fit)
     player = source.player
     _playing(source, gold[0], NOW - 50)
     player._state.next_track = gold[1]
@@ -1339,8 +1355,11 @@ def test_the_preview_picks_what_the_live_station_would(tmp_path: Path, timed: bo
 
 
 @pytest.mark.parametrize("timed", [False, True], ids=["repeat rules", "with time of day rules"])
-def test_the_rotation_tester_picks_what_the_live_station_would(tmp_path: Path, timed: bool) -> None:
-    source, _power, _gold = _parity_station(tmp_path, timed)
+@pytest.mark.parametrize("fit", [False, True], ids=["normal", "hour fit"])
+def test_the_rotation_tester_picks_what_the_live_station_would(
+    tmp_path: Path, timed: bool, fit: bool
+) -> None:
+    source, _power, _gold = _parity_station(tmp_path, timed, fit)
     tested: list[str] = []
     simulate(
         source,

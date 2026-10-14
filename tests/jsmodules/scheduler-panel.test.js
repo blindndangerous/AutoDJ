@@ -193,7 +193,7 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(status()).toBe("Event Morning show saved"));
     expect(server.calls.find((call) => call.method === "POST").body).toEqual({
       name: "Morning show", action: "profile", params: { name: "Night" }, repeat: "daily",
-      time: "07:00", timing: "hard", enabled: true,
+      time: "07:00", timing: "hard", wait_seconds: 0, enabled: true,
     });
     expect(byId("schedule-form").hidden).toBe(true);
     expect(document.activeElement).toBe(rowButton("Morning show", "edit"));
@@ -305,6 +305,44 @@ describe("Schedule panel", () => {
     repeat.dispatchEvent(new Event("change", { bubbles: true }));
     expect(byId("schedule-days").hasAttribute("aria-describedby")).toBe(false);
     expect(byId("schedule-days-desc").hidden).toBe(true);
+  });
+
+  it("saves a hard event's wait, checks it in words and lists it", async () => {
+    const server = fakeServer();
+    await openPanel(server);
+    byId("schedule-add").click();
+    byId("schedule-name").value = "News";
+    byId("schedule-time").value = "13:00";
+    const wait = byId("schedule-wait");
+    expect(wait.value).toBe("0");
+    expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc");
+    expect(wait.closest(".settings-row").dataset.showWhen).toBe("schedule-timing=hard");
+    byId("schedule-timing").value = "hard";
+    wait.value = "301";
+    submit();
+    const message = "Wait up to seconds must be a whole number from 0 to 300";
+    await vi.waitFor(() => expect(status()).toBe(message));
+    expect(document.activeElement).toBe(wait);
+    expect(wait.getAttribute("aria-invalid")).toBe("true");
+    expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc schedule-form-error");
+    expect(byId("schedule-form-error").textContent).toBe(message);
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+    wait.value = "45";
+    wait.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc");
+    submit();
+    await vi.waitFor(() => expect(status()).toBe("Event News saved"));
+    expect(server.calls.find((call) => call.method === "POST").body)
+      .toMatchObject({ timing: "hard", wait_seconds: 45 });
+    expect(rowButton("News", "edit").closest("li").textContent).toContain("Hard timing, waits up to 45 seconds.");
+
+    // Soft timing never waits, whatever the hidden field still holds.
+    rowButton("News", "edit").click();
+    expect(byId("schedule-wait").value).toBe("45");
+    byId("schedule-timing").value = "soft";
+    submit();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(server.calls.find((call) => call.method === "PUT").body.wait_seconds).toBe(0);
   });
 
   it("names a backwards date range and links the error to the field", async () => {

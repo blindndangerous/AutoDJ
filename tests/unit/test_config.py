@@ -343,6 +343,20 @@ class TestValidateIndexName:
 
 
 class TestPlaybackConfig:
+    def test_hour_fit_defaults_bounds_and_unknown_key(self, caplog) -> None:
+        defaults = PlaybackConfig.from_dict({})
+        assert defaults.hour_fit is False
+        assert defaults.hour_fit_window_minutes == 10
+        fitted = PlaybackConfig.from_dict({"hour_fit": True, "hour_fit_window_minutes": 30})
+        assert (fitted.hour_fit, fitted.hour_fit_window_minutes) == (True, 30)
+        for value in (0, 31, True, 1.5):
+            with pytest.raises(ValueError, match="hour_fit_window_minutes"):
+                PlaybackConfig.from_dict({"hour_fit_window_minutes": value})
+        with pytest.raises(ValueError, match="hour_fit must"):
+            PlaybackConfig.from_dict({"hour_fit": "true"})
+        PlaybackConfig.from_dict({"hour_fit_old": True})
+        assert "hour_fit_old" in caplog.text
+
     def test_defaults(self) -> None:
         pb = PlaybackConfig.from_dict({})
         assert pb.crossfade_seconds == 3.0

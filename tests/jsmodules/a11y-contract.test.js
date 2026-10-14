@@ -2557,6 +2557,40 @@ describe("static accessibility contracts", () => {
     expect(css).toContain('input[aria-invalid="true"]');
   });
 
+  it("gives hour fitting and a hard event's wait labelled native fields with linked help", () => {
+    installDocument({ html: htmlSource });
+    const css = stripCssComments(cssSource);
+    const toggle = document.getElementById("pb-hour-fit");
+    expect(toggle.getAttribute("type")).toBe("checkbox");
+    expect(toggle.closest("#spanel-picking")).not.toBeNull();
+    expect(document.querySelector('label[for="pb-hour-fit"]').textContent.trim())
+      .toBe("Fit songs to the hour");
+    expect(document.getElementById(toggle.getAttribute("aria-describedby")).textContent)
+      .toMatch(/repeat rules, DMCA limits/);
+    for (const [id, label, min, max, showWhen, rule] of [
+      ["pb-hour-fit-window", "Minutes before to start fitting", "1", "30", "pb-hour-fit",
+        'body:has(#pb-hour-fit:not(:checked)) [data-show-when="pb-hour-fit"]'],
+      ["schedule-wait", "Wait up to seconds", "0", "300", "schedule-timing=hard",
+        'body:not(:has(#schedule-timing option[value="hard"]:checked)) [data-show-when="schedule-timing=hard"]'],
+    ]) {
+      const input = document.getElementById(id);
+      expect(input.getAttribute("type")).toBe("number");
+      expect(input.getAttribute("inputmode")).toBe("numeric");
+      expect([input.min, input.max, input.step]).toEqual([min, max, "1"]);
+      expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
+      // The help says the range in words, and hides with its field: both
+      // leave the accessibility tree together while the setting has no effect.
+      const help = document.getElementById(input.getAttribute("aria-describedby"));
+      expect(help.textContent).toMatch(new RegExp(`from ${min} to ${max}`));
+      expect(help.hasAttribute("aria-live")).toBe(false);
+      expect(help.dataset.showWhen).toBe(showWhen);
+      expect(input.closest(".settings-row").dataset.showWhen).toBe(showWhen);
+      expect(css).toContain(rule);
+    }
+    // The wait's refusal joins the schedule form's linked error text.
+    expect(document.getElementById("schedule-wait").closest("#schedule-form")).not.toBeNull();
+  });
+
   it("gives the hour preview a headed table, one polite status and token colours", () => {
     installDocument({ html: htmlSource });
     const card = document.querySelector("#hour-preview-card");
