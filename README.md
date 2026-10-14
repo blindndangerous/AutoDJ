@@ -37,50 +37,43 @@ uploaded to a cloud service.
 
 ## Quick start
 
-Install [Git](https://git-scm.com/downloads) and
-[uv](https://docs.astral.sh/uv/getting-started/installation/) first. The project requires Python
-3.14; the launcher can obtain that interpreter. Running AutoDJ does not need Node.js; the server
-serves the web UI files as they are in the checkout. Install [FFmpeg](https://ffmpeg.org/download.html)
-and put it on the PATH if your library has `.mp3`, `.m4a`, `.mp4` or `.aac` files: AutoDJ indexes,
-analyses and plays those with FFmpeg, and without it `autodj index` skips them with a warning.
-Stream mode also needs it.
+On Windows, install [Git](https://git-scm.com/downloads), then open PowerShell and run:
+
+```powershell
+git clone https://github.com/blindndangerous/AutoDJ
+cd AutoDJ
+.\autodj.cmd
+```
+
+On first start, the launcher offers to install missing uv and FFmpeg through
+[WinGet](https://learn.microsoft.com/windows/package-manager/winget/), then runs guided setup
+and starts AutoDJ. On later starts, the same command starts your saved installation.
+Python and application dependencies are installed by setup; Node.js is not needed.
+
+On macOS or Linux, install [Git](https://git-scm.com/downloads),
+[uv](https://docs.astral.sh/uv/getting-started/installation/), and
+[FFmpeg](https://ffmpeg.org/download.html), then run:
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
+./autodj
 ```
 
-On Windows PowerShell:
+Setup detects supported hardware, verifies it, and remembers the CPU, NVIDIA, or AMD choice.
+You do not need a backend flag: a fresh CPU-only machine uses CPU automatically.
 
-```powershell
-.\autodj.cmd setup
-.\autodj.cmd serve
-```
+Open the address printed by `serve` (normally `http://127.0.0.1:8080`), then add music folders
+from the Library page. Use this launcher
+for other commands too, such as `.\autodj.cmd doctor` on Windows; no environment activation
+or separate AMD launcher is needed.
 
-On macOS or Linux:
+**Moving an existing station?** Follow [Moving an existing station](docs/setup.md#moving-an-existing-station)
+before starting playback. Run `.\autodj.cmd setup` to install without starting the server.
+Install fresh on the new computer; do not copy `.venv` or `.uv` from the old one.
 
-```bash
-./autodj setup
-./autodj serve
-```
-
-Setup detects supported hardware, installs the appropriate CPU, NVIDIA, or AMD runtime, verifies
-it with a real calculation, and remembers it. It asks for the port and preserves existing configuration.
-A new library starts empty; add folders from the Library page. Unsupported hardware gets an explicit CPU recommendation. Starting a command
-interactively before setup also opens this flow. There is no separate AMD launcher to remember.
-
-Open the address printed by `serve` (normally `http://127.0.0.1:8080`). Use the same launcher for
-diagnostics and indexing after registering folders; substitute `./autodj.cmd` in Windows PowerShell:
-
-```bash
-./autodj doctor
-./autodj index --limit 50 --no-enrich --no-analyse   # optional small trial
-./autodj index                                    # full library
-```
-
-Future indexing runs skip unchanged tracks. See [Setup](docs/setup.md) for supported runtime
-selection, unattended installation, and development; [AMD GPU support](docs/windows-amd.md) for
-AMD compatibility; and [Operations](docs/operations.md) for diagnosis, backups, and upgrades.
+See [Setup](docs/setup.md) for options and development, [AMD GPU support](docs/windows-amd.md)
+for compatibility, and [Operations](docs/operations.md) for indexing, backups, and upgrades.
 
 ## Use it from other devices
 
@@ -95,7 +88,7 @@ Startup prints the addresses to open, such as `http://nas:8080` and `http://192.
 While no browser is paired yet, it also prints an 8-digit pairing code with how many seconds it
 stays valid. Open one of the addresses on the other device and enter the code once; that browser
 stays paired. Each code pairs one device and works only after someone asks for it: run
-`uv run autodj devices pairing-code` for the next device. In the web page, Settings, Profiles
+`./autodj devices pairing-code` for the next device. In the web page, Settings, Profiles
 and access lists the paired devices with Rename and Revoke buttons, has **Show pairing code** for
 adding another device, and **Sign out this browser** ends this browser's pairing. To make
 it permanent, set `[server] lan = true` in `config.toml` or `config.local.toml`, or
@@ -208,7 +201,7 @@ indexing use only the catalog; a leftover manifest does not replace it. Use Libr
 
 ## Commands
 
-Every command takes `--help`, for example `uv run autodj serve --help`. The global options
+Every command takes `--help`, for example `./autodj serve --help`. The global options
 `--config FILE` and `-v` go before the command name.
 
 - `autodj index` rescans the registered library folders, adds songs, and saves advanced analysis
@@ -471,10 +464,10 @@ stops AutoDJ with an error naming the section and key, so delete it rather than 
 For anonymous access on the same computer, keep the default loopback binding:
 
 ```bash
-uv run autodj serve
+./autodj serve
 ```
 
-For a LAN server, run `uv run autodj serve --lan` or start the Docker container (see
+For a LAN server, run `./autodj serve --lan` or start the Docker container (see
 [Containers](#containers)). AutoDJ generates its server secret, saves it in the index folder, and
 prints an 8-digit pairing code during startup while no browser is paired. Enter that code in the first browser; each code pairs one device, and
 `autodj devices pairing-code` gives one for the next. Paired browsers receive distinct, persistent device sessions and do not
@@ -514,7 +507,7 @@ pairing codes and session cookies on the wire.
 For non-loopback bindings, including LAN access, authentication can be disabled only with an explicit trusted-LAN acknowledgement.  This still enforces the Host and Origin allowlists that `--lan` detects:
 
 ```bash
-uv run autodj serve --lan --insecure-lan
+./autodj serve --lan --insecure-lan
 ```
 
 `--insecure-lan` disables authentication; use it only on a trusted private network.  Multi-user accounts, roles, cloud identity, and public Internet hosting are not supported.
@@ -655,9 +648,9 @@ mutagen, and the web server, so omitting extras does not produce a lightweight i
 without model or analysis dependencies. The extras add server-side audio output (`play`, for
 `serve --server-audio`) and explicit torch floors (`index`).
 
-Installing a wheel resolves dependencies fresh from PyPI instead of from `uv.lock`, so you give up
-the exact versions CI tested. The clone plus `uv sync --frozen --all-extras` above stays the
-supported path; reach for the wheel only when you want AutoDJ without a source tree.
+Installing a wheel resolves dependencies fresh from PyPI and does not run the checkout's
+hardware-aware setup. The [quick start](#quick-start) is the recommended installation path;
+use the wheel when you want AutoDJ without a source tree and will manage its dependencies yourself.
 
 ## Uninstall
 

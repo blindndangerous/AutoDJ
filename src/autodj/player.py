@@ -60,6 +60,7 @@ from autodj.beatmatch import (
 )
 from autodj.breaks import Break, BreakError, SlotPlan, new_id, placement_for, speech_cues
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
+from autodj.identity_map import attached
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.music_speed import resample_music
@@ -2245,6 +2246,28 @@ class Player:
             self._seed_clock_following = seed = None
         if queued is not None:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
+            marked_cursor = attached(self, "_request_clock_steps").get(queued)
+            if marked_cursor is not None and self._cfg.playback.pick_mode == "clock":
+                starting_cursor = (self._clock or {}).get("cursor", 0) if cursor is None else cursor
+                picked = self._clock_pick(context, starting_cursor)
+                expected_step = (marked_cursor - 1) % len(self._clock_slots)
+                if picked.step_index == expected_step:
+                    self._chosen_clock_step = picked.step_snapshot
+                    boundary = self._pending_clock_boundary or getattr(
+                        self, "_clock_next_boundary", None
+                    )
+                    if picked.liner is not None and (
+                        not picked.liner_requires_following
+                        or self._clock_liner_fits(
+                            current,
+                            picked.liner,
+                            upcoming,
+                            self._handoff_time(current, lead_s=lead_s) if boundary else 0.0,
+                            boundary,
+                        )
+                    ):
+                        liners.append(picked.liner)
+                cursor = marked_cursor
         elif self._cfg.playback.pick_mode == "clock":
             if seed is not None:
                 self._chosen_clock_step = (
@@ -3746,6 +3769,8 @@ class Player:
                 source = "Playing from queue: %s"
             else:
                 return None
+            if not peek:
+                self._last_request_clock_cursor = attached(self, "_request_clock_steps").pop(entry)
         logger.info(source, entry.display_name)
         return entry
 
@@ -4191,6 +4216,15 @@ class Player:
         """
         queued = self._pop_user_queue(context.peek_queue, context.queue_reserved)
         if queued is not None:
+            marked_cursor = (
+                attached(self, "_request_clock_steps").get(queued)
+                if context.peek_queue
+                else getattr(self, "_last_request_clock_cursor", None)
+            )
+            if marked_cursor is not None and self._cfg.playback.pick_mode == "clock":
+                clock = getattr(self, "_clock", None)
+                if isinstance(clock, dict) and not context.peek_queue:
+                    clock["cursor"] = marked_cursor
             return self._dmca_checked(queued, context, queued=True), "queue"
         try:
             entry, mode = self._choose_by_mode(current, context)

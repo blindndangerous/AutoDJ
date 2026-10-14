@@ -2351,6 +2351,43 @@
     <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
     <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
     <ul id="requests-recent" aria-labelledby="requests-recent-heading" hidden></ul>
+    <!-- Bridge songs and the give-up rule (#49): saved for this station
+         with Save request settings; the result is said in #requests-status. -->
+    <form id="requests-settings" novalidate aria-labelledby="requests-settings-heading">
+      <h3 id="requests-settings-heading">Smooth transitions</h3>
+      <div class="settings-check">
+        <input type="checkbox" id="requests-bridges" aria-describedby="requests-bridges-help">
+        <label for="requests-bridges">Add bridge songs before a request that would sound abrupt</label>
+      </div>
+      <span class="setting-desc" id="requests-bridges-help">AutoDJ picks songs that move step by step from the song before toward the request. Each one keeps the station&rsquo;s rules. Off by default.</span>
+      <div class="settings-row tag-field">
+        <label for="requests-max-bridges">Most bridge songs</label>
+        <select id="requests-max-bridges" aria-describedby="requests-max-bridges-help">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+        <span class="setting-desc" id="requests-max-bridges-help">From 1 to 3 before one request.</span>
+      </div>
+      <div class="settings-row tag-field">
+        <label for="requests-threshold">Roughness limit</label>
+        <input type="text" id="requests-threshold" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="requests-threshold-help">
+        <span class="setting-desc" id="requests-threshold-help">From 0 to 10, 2 by default. A request that would join the songs around it more roughly than this gets bridge songs, or the choice below. Lower is stricter.</span>
+        <p id="requests-threshold-error" class="field-error" hidden></p>
+      </div>
+      <fieldset id="requests-no-smooth">
+        <legend>When no smooth spot is found</legend>
+        <div class="settings-check">
+          <input type="radio" name="requests-no-smooth" id="requests-no-smooth-best" value="best" checked>
+          <label for="requests-no-smooth-best">Use the best spot that keeps the rules</label>
+        </div>
+        <div class="settings-check">
+          <input type="radio" name="requests-no-smooth" id="requests-no-smooth-wait" value="wait">
+          <label for="requests-no-smooth-wait">Keep the request waiting for you to decide</label>
+        </div>
+      </fieldset>
+      <button type="submit" id="requests-settings-save">Save request settings</button>
+    </form>
   </details>
 
   <!-- Search and browse share one paginated result list. -->

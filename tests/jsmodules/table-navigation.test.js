@@ -33,6 +33,23 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
+  it("moves between data rows across browsable date headings", () => {
+    document.body.innerHTML = `<table><tbody id="rows">
+      <tr><td role="gridcell">Newer</td></tr>
+      <tr><td colspan="4"><h3>13 Oct 2026</h3></td></tr>
+      <tr><td role="gridcell">Older</td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [newer, older] = body.querySelectorAll("td[role=gridcell]");
+    newer.focus();
+    newer.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(older);
+    older.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(document.activeElement).toBe(newer);
+    expect(body.querySelector("h3").textContent).toBe("13 Oct 2026");
+  });
+
   it("leaves modifiers alone and activates the cell's native checkbox by Space", () => {
     document.body.innerHTML = `<table><tbody id="rows"><tr><td role="gridcell" tabindex="-1"><input type="checkbox" tabindex="-1"></td></tr></tbody></table>`;
     const body = document.getElementById("rows");

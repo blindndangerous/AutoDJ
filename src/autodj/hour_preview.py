@@ -50,6 +50,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Query, Request
 
+from autodj.identity_map import attached
 from autodj.rotation_sim import (
     _PICKING_ACTIONS,
     _UNSIMULATED_ACTIONS,
@@ -612,6 +613,10 @@ def read_station(
             last = entry
             moment += seconds
     cursor, clock_name, boundary = clock
+    marks = attached(player, "_request_clock_steps")
+    for item in sorted(items, key=lambda item: item.starts):
+        if item.kind == "song" and item.status != "on_air" and item.entry is not None:
+            cursor = marks.get(item.entry, cursor)
     return Decided(
         now=now,
         items=tuple(sorted(items, key=lambda item: item.starts)),
@@ -1469,6 +1474,12 @@ def build_preview(
         ends = max(ends, last.starts + last.seconds)
     shown = [item for item in timeline if item.starts < end]
     view["items"] = [_item_view(item, zone) for item in shown]
+    bridge_of = attached(source.player, "_request_bridge_of")
+    for item, row in zip(shown, view["items"], strict=True):
+        request = bridge_of.get(item.entry) if item.entry is not None else None
+        if request is not None:
+            row["bridge_to"] = request.display_name
+            row["status_text"] += f"; bridge to {request.display_name}"
     view["counts"] = {
         "fixed": sum(1 for item in shown if item.fixed),
         "predicted": sum(1 for item in shown if not item.fixed),
