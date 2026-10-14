@@ -3802,6 +3802,7 @@ supply a song. Saving or activating a step with a missing category asks you to c
 The editor lists numbered steps with their names as Edit buttons. With focus in the step list,
 Up and Down move to the previous or next step name. Left and Right move between the actions in a
 row; Home and End go to its first or last available action. Enter or Space presses that action.
+Ctrl+Home and Ctrl+End move to the first or last step. The same keys work in the other action lists.
 Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
 Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
 

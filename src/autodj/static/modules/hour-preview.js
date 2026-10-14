@@ -20,6 +20,7 @@
 import { requestJson } from "./api-client.js";
 import { srSpeak } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { installTableNavigation } from "./table-navigation.js";
 
 const ENDPOINT = "/api/hour-preview";
 const REFRESH_MS = 30000;
@@ -52,7 +53,11 @@ export function renderRows(doc, tbody, items) {
     let row = rows[index];
     if (!row) {
       row = doc.createElement("tr");
-      for (let column = 0; column < 4; column += 1) row.append(doc.createElement("td"));
+      for (let column = 0; column < 5; column += 1) {
+        const cell = doc.createElement("td");
+        cell.setAttribute("role", column === 1 ? "rowheader" : "gridcell");
+        row.append(cell);
+      }
       tbody.append(row);
     }
     const kind = item.fixed ? "is-fixed" : "is-predicted";
@@ -65,6 +70,21 @@ export function renderRows(doc, tbody, items) {
       const td = row.children[column];
       if (td.textContent !== cell) td.textContent = cell;
     });
+    const actionCell = row.children[4];
+    const path = item.kind === "song" ? item.path : null;
+    let button = actionCell.querySelector("button");
+    if (!path) {
+      button?.remove();
+    } else {
+      if (!button) {
+        button = doc.createElement("button");
+        button.type = "button";
+        button.textContent = "Track info";
+        actionCell.append(button);
+      }
+      button.dataset.path = path;
+      button.setAttribute("aria-label", `Track info for ${item.title}`);
+    }
   });
   for (const row of rows.slice(items.length)) row.remove();
 }
@@ -102,6 +122,7 @@ export function installHourPreview({
   const pointsNote = get("points-note");
   const table = get("table");
   const tbody = get("tbody");
+  const tableNavigation = installTableNavigation(tbody);
   const notes = get("notes");
   const status = get("status");
   const nowPanel = doc.getElementById("panel-now");
@@ -115,6 +136,13 @@ export function installHourPreview({
       clear() {},
     };
   }
+  tbody.addEventListener("click", (event) => {
+    const button = event.target.closest?.("button[data-path]");
+    if (!button || !tbody.contains(button)) return;
+    doc.dispatchEvent(new CustomEvent("autodj:edit-points", {
+      detail: { path: button.dataset.path, kind: "music", opener: button },
+    }));
+  });
   let lastView = null;
   let lastAt = 0;
   let timer = null;
@@ -143,6 +171,7 @@ export function installHourPreview({
     stopped.hidden = !stopText;
     const items = view.items || [];
     renderRows(doc, tbody, items);
+    tableNavigation.refresh();
     table.hidden = items.length === 0;
     renderPoints(doc, points, view.points || []);
     backtiming.hidden = !(view.points || []).length;

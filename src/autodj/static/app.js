@@ -2698,24 +2698,20 @@ let _histPlayingPath = null;
 function historyRowHtml(it) {
   const historyId = it.event_id || `${it.played_at}:${it.path || ""}`;
   const live = it.kind === "live";
-  let titleCell;
-  if (live) {
-    titleCell = it.title || "Live";
-  } else {
+  let actionCell = "";
+  if (!live) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "history-info";
     button.dataset.path = it.path || "";
     button.dataset.historyId = historyId;
     button.textContent = "Track info";
-    const title = document.createElement("span");
-    title.textContent = it.title ?? "";
-    titleCell = document.createDocumentFragment();
-    titleCell.append(title, " ", button);
+    button.setAttribute("aria-label", `Track info for ${it.artist ?? ""}, ${it.title ?? ""}`);
+    actionCell = button;
   }
   const row = tableRow(document, [
-    formatPlayedAt(it.played_at, false), titleCell, it.artist ?? "",
-    live && !it.ended_at ? "On the air" : _fmtDuration(it.duration),
+    formatPlayedAt(it.played_at, false), live ? it.title || "Live" : it.title ?? "", it.artist ?? "",
+    live && !it.ended_at ? "On the air" : _fmtDuration(it.duration), actionCell,
   ], { rowHeaderIndex: 1 });
   row.dataset.historyId = historyId;
   row.dataset.playedAt = it.played_at;

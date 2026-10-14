@@ -262,6 +262,10 @@ describe("now-playing settings", () => {
     expect(button.type).toBe("button");
     expect(button.textContent).toBe("Send test");
     expect(button.getAttribute("aria-label")).toBe("Send test to webhook 1, discord.com");
+    expect(list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
+    button.focus();
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(second.querySelector("button"));
     // The list is plain text: reading it never speaks by itself.
     expect(list.closest("[aria-live], [role=status], [role=alert]")).toBeNull();
   });

@@ -259,6 +259,11 @@ describe("profiles", () => {
     });
     const { els, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    expect(els.list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
+    const firstApply = els.list.querySelector('[aria-label="Apply profile Early"]');
+    firstApply.focus();
+    firstApply.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Apply profile Late");
 
     els.list.querySelector('[aria-label="Delete profile Early"]').click();
     await answer("confirm");

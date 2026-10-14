@@ -572,7 +572,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
   steps.addEventListener("keydown", (event) => {
     const row = event.target.closest?.("li[data-index]");
     if (!row || !clock) return;
-    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+    if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+        && (event.key === "Home" || event.key === "End")) {
+      event.preventDefault();
+      focusRow(event.key === "Home" ? 0 : clock.steps.length - 1, "edit");
+    } else if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       event.preventDefault();
       move(Number(row.dataset.index), event.key === "ArrowUp" ? -1 : 1, event.target.dataset?.action || "edit");

@@ -256,6 +256,7 @@ describe("liner file controls", () => {
   it("keeps duplicate filenames distinct and offers a Track info action", async () => {
     const { renderLinerFileList } = await import("../../src/autodj/static/modules/liners.js");
     const list = document.createElement("ul");
+    document.body.append(list);
     const onDelete = vi.fn();
     renderLinerFileList(list, [
       { id: "record-a", name: "same.wav", path: "X:/one/same.wav" },
@@ -263,6 +264,12 @@ describe("liner file controls", () => {
     ], onDelete);
     expect(list.querySelectorAll("li")).toHaveLength(2);
     expect(list.querySelectorAll('button[aria-label="Track info for same.wav"]')).toHaveLength(2);
+    expect([...list.querySelectorAll("li")].every((row) => row.lastElementChild.textContent === "Track info")).toBe(true);
+    expect(list.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
+    const first = list.querySelector("button[tabindex='0']");
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    expect(document.activeElement.textContent).toBe("Track info");
     expect([...list.querySelectorAll("button")].some((button) => button.textContent === "Track info")).toBe(true);
     const info = list.querySelectorAll('button[aria-label="Track info for same.wav"]')[1];
     const edit = vi.fn();

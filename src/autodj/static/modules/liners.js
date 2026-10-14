@@ -6,6 +6,7 @@
 // of AudioContext + decks state.
 
 import { confirmAction } from "./confirm-dialog.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { dbg, listRow, nextRowControl, rowButton, stationDay } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
@@ -82,6 +83,7 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
     empty.className = "no-results";
     empty.textContent = "No liner files yet.";
     fileList.replaceChildren(empty);
+    installActionListNavigation(fileList).refresh();
     return;
   }
   fileList.replaceChildren(...files.map((item) => {
@@ -89,16 +91,17 @@ export function renderLinerFileList(fileList, files, onDelete, onEdit = (path, k
     const liner = legacyName ? { id: item, name: item, path: null } : item;
     const buttons = [rowButton(document, "Delete", `Delete ${liner.name}`, (button) =>
       legacyName ? onDelete(liner.id, button) : onDelete(liner.id, button, liner.name))];
-    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, (button) => onEdit(liner.path, "liner", button)));
     if (!legacyName) {
       const dates = rowButton(document, "Play dates", `Play dates for ${liner.name}`, (button) => onDates(liner, button));
       dates.dataset.linerDates = liner.id;
       buttons.push(dates);
     }
+    if (liner.path && liner.editable !== false) buttons.push(rowButton(document, "Track info", `Track info for ${liner.name}`, (button) => onEdit(liner.path, "liner", button)));
     const row = listRow(document, legacyName ? liner.name : linerText(liner), "", ...buttons);
     row.dataset.linerId = liner.id;
     return row;
   }));
+  installActionListNavigation(fileList).refresh();
 }
 
 // Where focus goes when the list has no liner left: the list's heading,

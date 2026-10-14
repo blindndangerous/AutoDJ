@@ -20,6 +20,7 @@ import { DEFAULT_STATION, currentStation } from "./stations.js";
 import { announceStatus } from "./live-region.js";
 import { saveHolds } from "./settings-panel.js";
 import { listRow, rowButton } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { isLoopbackHost } from "./stream-mode.js";
 
 export const FEED_PATH = "/api/nowplaying";
@@ -108,6 +109,7 @@ export function installNowPlayingSettings({
   const list = doc.getElementById("np-webhooks-list");
   const empty = doc.getElementById("np-webhooks-empty");
   if (!link || !copy || !showNext || !list || !empty) return null;
+  const listNavigation = installActionListNavigation(list);
 
   const statusOpen = doc.getElementById("np-status-open");
   // The addresses follow the station the page controls.
@@ -203,6 +205,7 @@ export function installNowPlayingSettings({
       if (hadFocus) (list.querySelector("button") || copy).focus();
     }
     list.hidden = hooks.length === 0;
+    listNavigation.refresh();
     if (hooks.length === 0) setEmptyText(NO_WEBHOOKS_TEXT);
     else empty.hidden = true;
   }

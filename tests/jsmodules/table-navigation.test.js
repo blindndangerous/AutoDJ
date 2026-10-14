@@ -30,6 +30,14 @@ describe("native table grid navigation", () => {
     expect(document.activeElement).toBe(four.querySelector("button"));
     four.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
     expect(document.activeElement).toBe(three);
+    const first = new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true, cancelable: true });
+    three.dispatchEvent(first);
+    expect(first.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(one);
+    const last = new KeyboardEvent("keydown", { key: "End", ctrlKey: true, bubbles: true, cancelable: true });
+    one.dispatchEvent(last);
+    expect(last.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(three);
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 

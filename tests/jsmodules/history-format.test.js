@@ -18,7 +18,7 @@ describe("history date headings", () => {
     updateHistoryDateHeadings(body, "en-GB");
     expect([...body.querySelectorAll("h3")].map((heading) => heading.textContent))
       .toEqual(["1 Jan 2027", "31 Dec 2026"]);
-    expect(body.querySelectorAll(".history-date td[colspan='4']")).toHaveLength(2);
+    expect(body.querySelectorAll(".history-date td[colspan='5']")).toHaveLength(2);
   });
 
   it("reuses a day's heading on prepend and removes it when its last play is trimmed", () => {

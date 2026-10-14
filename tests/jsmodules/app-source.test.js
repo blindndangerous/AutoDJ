@@ -1636,22 +1636,22 @@ describe("app request behavior", () => {
         expect(found).not.toBeNull();
         return found;
       });
-      expect(button.hasAttribute("aria-label")).toBe(false);
+      expect(button.getAttribute("aria-label")).toBe("Track info for Artist, Song");
       expect(button.textContent).toBe("Track info");
       const tbody = document.querySelector("#history-tbody");
       const cells = [...tbody.querySelectorAll("tr[data-played-at] td")];
       expect(cells.map((cell) => cell.getAttribute("role"))).toEqual([
-        "gridcell", "rowheader", "gridcell", "gridcell",
-        "gridcell", "rowheader", "gridcell", "gridcell",
+        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
+        "gridcell", "rowheader", "gridcell", "gridcell", "gridcell",
       ]);
       expect(cells.filter((cell) => cell.tabIndex === 0)).toEqual([cells[0]]);
       expect(button.tabIndex).toBe(-1);
       cells[0].focus();
       cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-      expect(document.activeElement).toBe(cells[4]);
-      cells[4].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+      expect(document.activeElement).toBe(cells[5]);
+      cells[5].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
       expect(document.activeElement).toBe(cells[0]);
-      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      cells[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
       expect(document.activeElement).toBe(button);
       button.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
@@ -1672,8 +1672,8 @@ describe("app request behavior", () => {
       expect(document.querySelector("#history-tbody .history-info")).toBe(button);
       expect(focusEvents.filter((node) => node.classList?.contains("history-info"))).toEqual([button]);
       expect(button.tabIndex).toBe(0);
-      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-      expect(document.activeElement).toBe(cells[2]);
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      expect(document.activeElement).toBe(cells[3]);
       expect(document.querySelector("#sr-status").textContent).toBe("");
     } finally {
       window.location.hash = "";
@@ -1707,8 +1707,8 @@ describe("app request behavior", () => {
         return found;
       });
       const text = (row) => [...row.cells].map((cell) => cell.textContent.trim());
-      expect(text(rows[0]).slice(1)).toEqual(["Live", "DJ Alice", "On the air"]);
-      expect(text(rows[1]).slice(1)).toEqual(["Live", "DJ Bob", "12:34"]);
+      expect(text(rows[0]).slice(1)).toEqual(["Live", "DJ Alice", "On the air", ""]);
+      expect(text(rows[1]).slice(1)).toEqual(["Live", "DJ Bob", "12:34", ""]);
       expect(rows[0].querySelector("button")).toBeNull();
       expect(rows[1].querySelector("button")).toBeNull();
       expect(rows[2].querySelector(".history-info").textContent).toBe("Track info");

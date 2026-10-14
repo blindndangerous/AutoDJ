@@ -5,6 +5,7 @@
 // immediately without waiting for the server round trip.
 
 import { escHtml, fmtTrack } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import {
   captureAuthenticatedRequestEpoch,
@@ -105,8 +106,6 @@ export function renderQueue(queue, { queueList, queueCount }) {
     const bridgeNote = bridge ? `<span class="queue-bridge">${escHtml(bridge)}</span>` : "";
     return `<li data-path="${path}" data-queue-index="${i}"${bridgeAttr}>
       <span class="queue-name" title="${shown}">${i + 1}. ${shown}</span>${bridgeNote}
-      <button type="button" class="queue-btn" data-action="info" data-path="${path}"
-              aria-label="Track info for ${name}">Track info</button>
       <button class="queue-btn" data-action="top"    data-path="${path}"
               aria-label="Move ${name} to top of queue" aria-describedby="station-context" ${isFirst ? "disabled" : ""}>
         Top
@@ -123,8 +122,11 @@ export function renderQueue(queue, { queueList, queueCount }) {
               aria-label="Remove ${name} from queue" aria-describedby="station-context">
         <span aria-hidden="true">✕</span> Remove
       </button>
+      <button type="button" class="queue-btn" data-action="info" data-path="${path}"
+              aria-label="Track info for ${name}">Track info</button>
     </li>`;
   }).join("");
+  installActionListNavigation(queueList).refresh();
 }
 
 // Up and Down said only "Moved X up.", which left the listener counting
@@ -185,6 +187,8 @@ export function installQueueButtons(els) {
   const { queueList, queueAnnounce } = els;
   if (!queueList) return;
   let mutationPending = false;
+
+  installActionListNavigation(queueList);
 
   // Delegated from the document, not the <ol>: a click listener on the
   // list made NVDA call the whole list "clickable".

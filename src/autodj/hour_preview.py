@@ -1865,12 +1865,14 @@ def _status_text(item: Item) -> str:
 
 
 def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
+    path = getattr(item.entry, "path", None) if item.kind == "song" else None
     return {
         "kind": item.kind,
         "status": item.status,
         "fixed": item.fixed,
         "status_text": _status_text(item),
         "title": item_title(item),
+        "path": str(path) if path else None,
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
         "starts_words": clock_words(item.starts, zone),

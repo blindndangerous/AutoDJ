@@ -420,6 +420,8 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert items[0]["starts_words"] == "12:09:10 PM"
     assert items[0]["length_text"] == "3:20"
     assert items[0]["length_words"] == "3:20"
+    assert items[0]["path"] == str(gold[0].path)
+    assert all(item["path"] for item in items if item["kind"] == "song")
     # Each item starts as the one before ends, up to the end of the span.
     songs = [item for item in items if item["kind"] == "song"]
     assert all(

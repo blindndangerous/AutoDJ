@@ -32,7 +32,9 @@ export function installTableNavigation(body) {
     setRovingFocus(control === event.target ? event.target : cell);
   });
   body.addEventListener("keydown", (event) => {
-    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const rowEdge = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+      && (event.key === "Home" || event.key === "End");
+    if ((event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) && !rowEdge) return;
     const cell = event.target.closest?.("td[role=gridcell], td[role=rowheader]");
     if (!cell || !body.contains(cell)) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -54,8 +56,9 @@ export function installTableNavigation(body) {
     } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
       target = row.querySelectorAll("td[role=gridcell], td[role=rowheader]")[column + (event.key === "ArrowLeft" ? -1 : 1)];
     } else if (event.key === "Home" || event.key === "End") {
-      const rowCells = row.querySelectorAll("td[role=gridcell], td[role=rowheader]");
-      target = rowCells[event.key === "Home" ? 0 : rowCells.length - 1];
+      const destination = rowEdge ? rows[event.key === "Home" ? 0 : rows.length - 1] : row;
+      const rowCells = destination.querySelectorAll("td[role=gridcell], td[role=rowheader]");
+      target = rowCells[rowEdge ? Math.min(column, rowCells.length - 1) : event.key === "Home" ? 0 : rowCells.length - 1];
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) event.preventDefault();
     if (target) (cellControl(target) || target).focus();

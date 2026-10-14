@@ -4,6 +4,39 @@ import { applyQueueState, installQueueButtons, installQueueClear, renderQueue, r
   "../../src/autodj/static/modules/queue.js";
 
 describe("queue mutations", () => {
+  it("uses one Tab stop and row and action shortcuts", () => {
+    document.body.innerHTML = '<ul id="queue"></ul>';
+    const els = { queueList: document.querySelector("#queue") };
+    renderQueue([
+      { path: "one.mp3", display_name: "One" },
+      { path: "two.mp3", display_name: "Two" },
+      { path: "three.mp3", display_name: "Three" },
+    ], els);
+    installQueueButtons(els);
+    const rows = [...els.queueList.querySelectorAll("li[data-path]")];
+    const buttons = (row) => [...row.querySelectorAll(".queue-btn")];
+    const press = (button, key, ctrlKey = false) => button.dispatchEvent(
+      new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true }),
+    );
+    expect(buttons(rows[0]).at(-1).dataset.action).toBe("info");
+    expect([...els.queueList.querySelectorAll(".queue-btn[tabindex='0']")]).toHaveLength(1);
+    const first = buttons(rows[0]).find((button) => !button.disabled);
+    first.focus();
+    press(first, "End");
+    expect(document.activeElement).toBe(buttons(rows[0]).at(-1));
+    press(document.activeElement, "ArrowDown");
+    expect(document.activeElement).toBe(buttons(rows[1]).at(-1));
+    press(document.activeElement, "Home", true);
+    expect(document.activeElement).toBe(buttons(rows[0]).at(-1));
+    press(document.activeElement, "End", true);
+    expect(document.activeElement).toBe(buttons(rows[2]).at(-1));
+    const middleTop = buttons(rows[1]).find((button) => button.dataset.action === "top");
+    middleTop.focus();
+    press(middleTop, "ArrowUp");
+    expect(document.activeElement).toBe(first);
+    expect([...els.queueList.querySelectorAll(".queue-btn[tabindex='0']")]).toEqual([document.activeElement]);
+  });
+
   it("opens Track info without changing or posting the queue", () => {
     document.body.innerHTML = '<p id="announce"></p><ul id="queue"></ul>';
     const els = {
