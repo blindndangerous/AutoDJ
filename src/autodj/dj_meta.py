@@ -41,6 +41,7 @@ import atexit
 import contextlib
 import json
 import logging
+import ntpath
 import os
 import re
 import sqlite3
@@ -650,6 +651,8 @@ class DjMetaCache:
         # Expiring them lets rows another process writes show up, while
         # get_state's few lookups a second stay off SQLite meanwhile.
         self._misses: dict[str, tuple[float, DjMeta]] = {}
+        self._normalized_paths: dict[str, str] | None = None
+        self._normalized_paths_version = -1
         self._clock = clock
         self._warned_closed = False
         self._conn: sqlite3.Connection | None = None
@@ -708,9 +711,6 @@ class DjMetaCache:
         # connection in autocommit mode so our explicit
         # ``immediate_transaction`` blocks bracket each transaction cleanly.
         self._conn = sqlite3.connect(self._path, check_same_thread=False, isolation_level=None)
-        self._conn.create_function(
-            "dj_meta_normcase", 1, lambda value: os.path.normcase(str(value)), deterministic=True
-        )
         self._conn.executescript(self._SCHEMA)
         # Caches written before intro_start_s existed lack the column; NULL
         # marks their rows as not measured.
@@ -752,11 +752,43 @@ class DjMetaCache:
         assert self._conn is not None
         row = self._conn.execute("SELECT path FROM dj_meta WHERE path = ?", (key,)).fetchone()
         if row is None and os.name == "nt":
-            row = self._conn.execute(
-                "SELECT path FROM dj_meta WHERE dj_meta_normcase(path) = ? LIMIT 1",
-                (os.path.normcase(key),),
-            ).fetchone()
+            return self._normalized_paths_locked().get(ntpath.normcase(key))
         return None if row is None else str(row[0])
+
+    def _normalized_paths_locked(self) -> dict[str, str]:
+        """Return the Windows-normalized path map, refreshed after external writes."""
+        assert self._conn is not None
+        while True:
+            version = int(self._conn.execute("PRAGMA data_version").fetchone()[0])
+            if self._normalized_paths is not None and version == self._normalized_paths_version:
+                return self._normalized_paths
+            paths = (str(row[0]) for row in self._conn.execute("SELECT path FROM dj_meta"))
+            normalized: dict[str, str] = {}
+            for path in paths:
+                normalized.setdefault(ntpath.normcase(path), path)
+            if version != int(self._conn.execute("PRAGMA data_version").fetchone()[0]):
+                continue
+            self._normalized_paths = normalized
+            self._normalized_paths_version = version
+            return normalized
+
+    def _remember_normalized_paths_locked(self, paths: Iterable[str]) -> None:
+        """Add committed local writes to an existing normalized-path map."""
+        assert self._conn is not None
+        if self._normalized_paths is None:
+            return
+        if int(self._conn.execute("PRAGMA data_version").fetchone()[0]) != (
+            self._normalized_paths_version
+        ):
+            self._normalized_paths = None
+            return
+        for path in paths:
+            key = ntpath.normcase(path)
+            existing = self._normalized_paths.get(key)
+            if existing is not None and existing != path:
+                self._normalized_paths = None
+                return
+            self._normalized_paths[key] = path
 
     def get(self, path: str) -> DjMeta:
         """Return the cached :class:`DjMeta` for *path*, or a fresh empty one."""
@@ -855,8 +887,10 @@ class DjMetaCache:
                 self._buf.clear()
                 self._dirty = 0
                 return
+            flushed_paths = tuple(self._buf)
             with immediate_transaction(self._conn):
                 self._write_buffer_locked()
+            self._remember_normalized_paths_locked(flushed_paths)
             self._buf.clear()
             self._dirty = 0
 
@@ -893,6 +927,7 @@ class DjMetaCache:
                     self._conn.executemany(
                         "DELETE FROM dj_meta WHERE path = ?", [(path,) for path in stale]
                     )
+            self._normalized_paths = None
             self._buf.clear()
             self._dirty = 0
             for path in stale:
@@ -970,6 +1005,7 @@ class DjMetaCache:
                                     self._conn.execute(
                                         "DELETE FROM dj_meta WHERE path = ?", (stored_alias,)
                                     )
+            self._normalized_paths = None
             self._buf.clear()
             self._dirty = 0
             for old, old_absolute, old_legacy, new, new_absolute, new_legacy in pairs:

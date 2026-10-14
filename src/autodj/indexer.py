@@ -1246,13 +1246,13 @@ def backfill_dj_meta(
     entries: list[IndexEntry],
     *,
     limit: int | None = None,
-    prune: bool = True,
+    prune: bool = False,
 ) -> None:
     """Analyse DJ metadata (intro/outro, beats, cues) for tracks that lack it.
 
-    First drops ``dj_meta.db`` rows of tracks no longer in *entries*.  Then
-    decodes each track whose row is missing or not analysed, one at a
-    time, runs :func:`autodj.dj_meta.analyse_audio`, merges cues imported
+    When ``prune`` is enabled, drops ``dj_meta.db`` rows of tracks no longer
+    in *entries*. Then decodes each track whose row is missing or not
+    analysed, runs :func:`autodj.dj_meta.analyse_audio`, merges cues imported
     from DJ software when ``[playback] import_external_cues`` is on, and
     stores the result.  Rows are flushed every 25 tracks, so an interrupted
     run loses at most that many.  ``[index] throttle_ms`` pauses before each
@@ -1262,7 +1262,7 @@ def backfill_dj_meta(
         cfg: Configuration naming the index, the library and the settings above.
         entries: Every track in the index, with absolute paths.
         limit: Analyse at most this many of the tracks that need it.
-        prune: Remove rows outside entries; disable when passing only eligible folders.
+        prune: Remove rows outside entries. Enable only with a complete library snapshot.
     """
     from autodj.dj_meta import get_cache
 
