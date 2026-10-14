@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does, and gives manual installation steps when needed. The quick start uses one launcher
   command, with instructions for moving to another computer.
 
+- Settings keep longer help available to read without repeating it on every field focus.
+  Track counts, hour preview and matched-intro explanations are shorter (#235).
+- Preview columns, show lengths and duration messages use numeric times for both visual
+  and screen-reader output, with hours shown for durations of an hour or more (#235).
+
 - New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
   root, and startup never registers one implicitly. Legacy relative paths remain supported, with
   an explicit `migrate-index --music-dir` option for old index imports.
@@ -43,6 +48,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
   preview, recovery copy, and safe retry after interruption.
+- Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
+  advertiser, campaign, competing category, flight dates and daily and hourly limits) and ad
+  breaks (the minutes past the hour they run at, such as :15 and :45, with hours, days and a date
+  range, and how many spots and seconds they hold). A break also runs from a Schedule event with
+  the new **Ad break** action, or from **Run now**. When a break falls due, its spots are picked
+  (in flight, under their limits, the one heard longest ago first, never two from one advertiser
+  or competing category in a break, and kept apart by the separation time) and booked on the
+  open song change through the announcer breaks' slot model, so they play between two songs and
+  never cut one; the render-ahead worker mixes them, nothing new runs on the audio thread. Every
+  spot booked, aired or missed is appended to the station's ad play log, flushed line by line, so
+  a crash loses at most the line being written. Late spots (past **Late after**) and missed ones
+  (no song change in time, skipped, no spot could play, the computer slept, AutoDJ stopped) are
+  logged with the reason in words, under one rule (**Missed after**) for late, slept, stalled and
+  stopped time; breaks due while AutoDJ was down are logged at the next start, a long gap's extra
+  breaks in one summary line, and a spot cut off on the air as "may have aired". Song changes are
+  planned only from 20 minutes before a break is due, so with no break due songs are picked
+  exactly as with ads off. **Ad report** shows, for chosen days, totals by advertiser and
+  campaign and every spot, as tables with column and row headers, and exports either as CSV for
+  an affidavit; the play log export lists aired spots as `kind` `ad`. The hour preview shows a
+  booked ad break as fixed and a coming one as predicted, with its time as a fixed point to time
+  to. Turn it on with `[ads] enabled = true` (saved-point playback with server audio or a stream).
+  Spots and breaks are kept per station in `ads.json` (a bad entry is skipped and kept, a bad file
+  set aside), the audio in `ads` and the log in `ad_plays`, all in backups. Uploads are capped by
+  `[ads] max_upload_mb` before the body is read and decoded one at a time off the event loop with
+  the breaks' bounded decoder. Routes: `/api/ads` and `/api/stations/<name>/ads`. See
+  [Ad breaks](docs/operations.md#ad-breaks).
 - More stream formats (#50): beside the MP3 stream, a station can serve the same mix in AAC
   (`/stream.aac`) and Opus (`/stream.opus`), and at `/stations/<name>.aac` and `.opus`, each at
   its own bitrate. Turn them on in Settings, Stream, **More formats** (AAC quality, Opus
@@ -142,8 +173,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or predicted. The prediction is a dry run of the station's own picker from where the fixed part
   ends, so nothing on the air changes. The card then says how early or late the song changes
   land against the top of the hour, each clockwheel restart and each scheduled event, and which
-  song is the reason. The list is a table with column headers; times read as "2:04 PM and 30
-  seconds". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
+  song is the reason. The list is a table with column headers; times use numeric text such as
+  "2:04:30 PM". It refreshes every 30 seconds while open, in place and silently; **Refresh preview**
   and the new **Shift+H** shortcut say the summary. Every station has its own, at
   `/api/hour-preview` and `/api/stations/<name>/hour-preview`. Previews run on one low-priority
   worker thread, stop after 80 songs or about 4 seconds, and are shared and reused for 45 seconds

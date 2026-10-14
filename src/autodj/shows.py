@@ -401,16 +401,8 @@ def length_text(seconds: float) -> str:
 
 
 def length_words(seconds: float) -> str:
-    """ "1 hour 2 minutes 5 seconds": a length in words, for a screen reader."""
-    total = max(0, round(seconds))
-    hours, rest = divmod(total, 3600)
-    minutes, secs = divmod(rest, 60)
-    parts = [
-        f"{count} {unit}{'' if count == 1 else 's'}"
-        for count, unit in ((hours, "hour"), (minutes, "minute"), (secs, "second"))
-        if count
-    ]
-    return " ".join(parts) or "0 seconds"
+    """Compatibility name for the same concise duration shown on screen."""
+    return length_text(seconds)
 
 
 def song_title(entry: Any) -> str:

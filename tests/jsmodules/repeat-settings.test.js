@@ -108,17 +108,20 @@ describe("Repeats markup", () => {
       expect(els[`${rule}Minutes`].labels[0].textContent).toBe("Minutes");
       expect(els[`${rule}Tracks`].max).toBe(rule === "track" ? "100000" : "5000");
       expect(els[`${rule}Minutes`].max).toBe("10080");
+      expect(els[`${rule}Tracks`].closest(".settings-row").textContent)
+        .toContain(`0 to ${rule === "track" ? "100000" : "5000"} tracks`);
+      expect(els[`${rule}Minutes`].closest(".settings-row").textContent)
+        .toContain("0 to 10080 minutes");
     }
   });
 
-  it("describes the rules once, on the Repeats group, not on each box", () => {
+  it("keeps the Repeats introduction and field range hints visible", () => {
     const els = installPage();
     const outer = els.save.closest("fieldset");
-    const [description] = describedBy(outer);
-    expect(description.id).toBe("repeat-rules-desc");
+    const description = document.getElementById("repeat-rules-desc");
+    expect(outer.hasAttribute("aria-describedby")).toBe(false);
+    expect(description.hidden).toBe(false);
     expect(description.textContent).toContain("0 turns a limit off");
-    expect(description.textContent).toContain("5000");
-    // Plain text before the groups too, for reading down the page.
     expect(description.parentElement).toBe(outer);
     expect(description.compareDocumentPosition(els.artistTracks)
       & globalThis.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -133,7 +136,10 @@ describe("Repeats markup", () => {
     const group = els.useRelatedArtists.closest("fieldset");
     expect(group.querySelector(":scope > legend").textContent).toBe("Related artists");
     expect(els.useRelatedArtists.labels[0].textContent).toBe("Use related artists");
-    const [note, status] = describedBy(els.useRelatedArtists);
+    const [status] = describedBy(els.useRelatedArtists);
+    const note = document.getElementById("repeat-related-desc");
+    expect(describedBy(els.useRelatedArtists)).toEqual([els.fileStatus]);
+    expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
     expect(note.textContent).toContain("related-artists.toml in the index folder");
     expect(note.contains(els.defaultFile)).toBe(true);
@@ -153,7 +159,10 @@ describe("Repeats markup", () => {
     expect(group.querySelector(":scope > legend").textContent).toBe("Related tracks");
     expect(els.useRelatedTracks.labels[0].textContent).toBe("Use related tracks");
     expect(els.useRelatedTracks.checked).toBe(false);
-    const [note, status] = describedBy(els.useRelatedTracks);
+    const [status] = describedBy(els.useRelatedTracks);
+    const note = document.getElementById("repeat-related-tracks-desc");
+    expect(describedBy(els.useRelatedTracks)).toEqual([els.tracksFileStatus]);
+    expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
     expect(note.textContent).toContain("related-tracks.toml in the index folder");
     expect(note.textContent).toContain("Artist - Title");
@@ -165,7 +174,7 @@ describe("Repeats markup", () => {
     expect(els.relatedTrackTracks.value).toBe("20");
   });
 
-  it("groups the daypart and quarter-hour rules, off by default, each with its description", () => {
+  it("keeps daypart and quarter-hour help visible without linking it to the groups", () => {
     const els = installPage();
     const daypart = els.daypartDays.closest("fieldset");
     expect(els.daypartHours.closest("fieldset")).toBe(daypart);
@@ -174,31 +183,39 @@ describe("Repeats markup", () => {
     expect(els.daypartDays.max).toBe("7");
     expect(els.daypartHours.labels[0].textContent).toBe("Daypart start hours");
     expect(els.daypartHours.value).toBe("0, 6, 10, 15, 19");
-    const [groupNote] = describedBy(daypart);
+    const groupNote = document.getElementById("repeat-daypart-desc");
+    expect(daypart.hasAttribute("aria-describedby")).toBe(false);
+    expect(groupNote.hidden).toBe(false);
     expect(groupNote.closest("fieldset")).toBe(daypart);
     expect(groupNote.textContent).toContain("0 days turns this off");
     const [hoursNote] = describedBy(els.daypartHours);
     expect(hoursNote.textContent).toContain("separated by commas");
-    expect(hoursNote.textContent).toContain("morning drive");
+    expect(hoursNote.textContent).toContain("Hours 0–23");
+    expect(hoursNote.textContent).not.toContain("morning drive");
+    expect(hoursNote.nextElementSibling.textContent).toContain("morning drive");
 
     const hourpart = els.hourpartPlays.closest("fieldset");
     expect(hourpart).not.toBe(daypart);
     expect(els.hourpartPlays.labels[0].textContent).toBe("Plays");
     expect(els.hourpartPlays.value).toBe("0");
     expect(els.hourpartPlays.max).toBe("3");
-    const [playsNote] = describedBy(hourpart);
+    const playsNote = document.getElementById("repeat-hourpart-desc");
+    expect(hourpart.hasAttribute("aria-describedby")).toBe(false);
+    expect(playsNote.hidden).toBe(false);
     expect(playsNote.closest("fieldset")).toBe(hourpart);
     expect(playsNote.textContent).toContain("quarter of the hour");
     expect(playsNote.textContent).toContain("0 plays turns this off");
   });
 
-  it("puts Count versions as one song in the same track group with its description", () => {
+  it("keeps Count versions as one song help visible without describing the checkbox", () => {
     const els = installPage();
     const group = els.versionsAsOneSong.closest("fieldset");
     expect(group).toBe(els.trackTracks.closest("fieldset"));
     expect(els.versionsAsOneSong.labels[0].textContent).toBe("Count versions as one song");
     expect(els.versionsAsOneSong.checked).toBe(false);
-    const [note] = describedBy(els.versionsAsOneSong);
+    const note = document.getElementById("repeat-versions-desc");
+    expect(els.versionsAsOneSong.hasAttribute("aria-describedby")).toBe(false);
+    expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
     expect(note.textContent).toContain("same lead artist");
     expect(note.textContent).toContain("all of its versions");

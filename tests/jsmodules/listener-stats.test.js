@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   dayText,
-  durationText,
   hoursText,
   installListenerStats,
   spanText,
@@ -71,15 +70,7 @@ const cells = (table) => [...table.querySelectorAll("tbody tr")]
   .map((row) => [...row.querySelectorAll("th, td")].map((cell) => cell.textContent));
 
 describe("listener statistics text", () => {
-  it("writes lengths, hours and days in words", () => {
-    expect(durationText(0)).toBe("0 seconds");
-    expect(durationText(1)).toBe("1 second");
-    expect(durationText(59)).toBe("59 seconds");
-    expect(durationText(60)).toBe("1 minute");
-    expect(durationText(45 * 60)).toBe("45 minutes");
-    expect(durationText(3600)).toBe("1 hour");
-    expect(durationText(3900)).toBe("1 hour 5 minutes");
-    expect(durationText(2 * 3600 + 60)).toBe("2 hours 1 minute");
+  it("formats listening hours and calendar days", () => {
     expect(hoursText(7200)).toBe("2.0");
     expect(hoursText(15120)).toBe("4.2");
     expect(dayText("2026-10-13", "en-GB")).toBe("Tue 13 Oct");
@@ -91,7 +82,7 @@ describe("listener statistics text", () => {
     expect(summaryText(stats(), "en-GB")).toBe(
       "Listening now: 3 (MP3 2, AAC 1). Today: peak 4 at 14:05, 6 sessions, 2.0 listening hours."
       + " In the last 30 days: 6 sessions, 2.0 listening hours, peak 4 on Tue 13 Oct at 14:05,"
-      + " longest session 1 hour 5 minutes.",
+      + " longest session 1:05:00.",
     );
     const quiet = stats({
       now: { total: 0, formats: { mp3: 0 } },
@@ -133,7 +124,7 @@ describe("listener statistics view", () => {
     const days = document.getElementById("listener-stats-days");
     expect(days.caption.textContent).toBe("Listeners by day, the last 30 days, newest first");
     expect(cells(days)).toEqual([
-      ["Tue 13 Oct", "4 at 14:05", "6", "2.0", "20 minutes", "1 hour 5 minutes"],
+      ["Tue 13 Oct", "4 at 14:05", "6", "2.0", "20:00", "1:05:00"],
       ["Mon 12 Oct", "0", "0", "0.0", "None", "None"],
     ]);
     expect([...document.querySelectorAll("#listener-stats-lengths li")].map((li) => li.textContent))

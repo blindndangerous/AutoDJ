@@ -63,9 +63,12 @@ QUEUED, RENDERED, ON_AIR, AIRED, DROPPED, EXPIRED = (
     "expired",
 )
 TERMINAL = frozenset({AIRED, DROPPED, EXPIRED})
-#: Where a break came from: an announcer program with a token, or an
-#: operator recording it in the browser's voice tracker (#128).
-ANNOUNCER, VOICE_TRACK = "announcer", "voice_track"
+#: Where a break came from: an announcer program with a token, an
+#: operator recording it in the browser's voice tracker (#128), or the
+#: station's ad schedule (#51).
+ANNOUNCER, VOICE_TRACK, AD_SCHEDULE = "announcer", "voice_track", "ads"
+#: The kind of an ad spot booked by the ad schedule: it plays between the songs.
+AD = "ad"
 #: File types a break may be.
 EXTENSIONS: tuple[str, ...] = LINER_EXTS
 #: Finished breaks kept for status requests.
@@ -203,7 +206,11 @@ class Break:
         eta: When it was expected to air, once it is rendered.
         aired_at: When its voice started.
         updated_at: When its state last changed.
-        source: :data:`ANNOUNCER` or :data:`VOICE_TRACK`.
+        source: :data:`ANNOUNCER`, :data:`VOICE_TRACK` or :data:`AD_SCHEDULE`.
+        keep_file: The file is the station's own (an ad spot), not an upload:
+            it is never deleted, and it takes no room in the upload caps.
+        limit_s: The longest the file may be when it is decoded to air, or
+            ``None`` for ``[breaks] max_seconds``.
     """
 
     break_id: str
@@ -227,6 +234,8 @@ class Break:
     aired_at: float | None = None
     updated_at: float = 0.0
     source: str = ANNOUNCER
+    keep_file: bool = False
+    limit_s: float | None = None
 
     def view(self) -> dict[str, Any]:
         """What the API says about the break: never its file path or token."""
@@ -379,6 +388,9 @@ class BreakDesk:
         self._logs: list[tuple[int, str, tuple[Any, ...]]] = []
         self._swept = False
         self.on_slot_empty: Callable[[str], None] | None = None
+        # Another feature that books breaks of its own (the ad schedule,
+        # #51) says here whether the station must plan song changes for it.
+        self.wants_slots: Callable[[], bool] | None = None
 
     @property
     def config(self) -> BreaksConfig:
@@ -387,8 +399,20 @@ class BreakDesk:
 
     @property
     def enabled(self) -> bool:
-        """Whether the station takes breaks."""
+        """Whether the station takes breaks from the announcer and the voice tracker."""
         return self.config.enabled is True
+
+    @property
+    def plans_slots(self) -> bool:
+        """Whether the station plans song changes for breaks: its own, or the ad schedule's."""
+        if self.enabled:
+            return True
+        wants = self.wants_slots
+        try:
+            return wants is not None and bool(wants())
+        except Exception:  # a broken hook must not stop the station picking
+            logger.exception("Could not ask whether ad breaks need song changes planned")
+            return False
 
     def _log(self, level: int, message: str, *args: Any) -> None:
         """Queue a log line (hold the lock); :meth:`_flush` writes it."""
@@ -419,7 +443,8 @@ class BreakDesk:
     def _counts(self, slot_id: str) -> _Counts:
         counts = _Counts()
         for item in self._breaks.values():
-            if item.state in (QUEUED, RENDERED, ON_AIR):
+            # The station's own files (ad spots) are not uploads waiting.
+            if item.state in (QUEUED, RENDERED, ON_AIR) and not item.keep_file:
                 counts.waiting += 1
                 counts.waiting_bytes += item.size
                 if item.slot_id == slot_id:
@@ -510,7 +535,8 @@ class BreakDesk:
         with self._lock:
             held = self._reserved.pop(item.break_id, None)
             try:
-                self._room_locked(item.slot_id, item.size)
+                if not item.keep_file:
+                    self._room_locked(item.slot_id, item.size)
             except BreakError:
                 if held is not None:
                     self._reserved[item.break_id] = held
@@ -681,7 +707,8 @@ class BreakDesk:
         item.state = state
         item.reason = reason
         item.updated_at = self._clock()
-        self._doomed.setdefault(item.path, 0.0)
+        if not item.keep_file:
+            self._doomed.setdefault(item.path, 0.0)
         if state == AIRED:
             self._log(logging.INFO, "Break %s aired", item.break_id[:8])
         else:
@@ -738,7 +765,11 @@ class BreakDesk:
             finished = [key for key, item in self._breaks.items() if item.state in TERMINAL]
             for key in finished[: max(0, len(self._breaks) - HISTORY)]:
                 del self._breaks[key]
-            keep = {item.path.name for item in self._breaks.values() if item.state not in TERMINAL}
+            keep = {
+                item.path.name
+                for item in self._breaks.values()
+                if item.state not in TERMINAL and not item.keep_file
+            }
             keep.update(held.name for held in self._reserved.values())
             sweep = not self._swept
             self._swept = True
@@ -823,6 +854,8 @@ def placement_for(
 
 
 __all__ = [
+    "AD",
+    "AD_SCHEDULE",
     "AIRED",
     "ANNOUNCER",
     "DROPPED",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { describeOnAir, describeShow, installShowsPanel, summaryText } from "../../src/autodj/static/modules/shows-panel.js";
+import { fmtTime } from "../../src/autodj/static/modules/dom-helpers.js";
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -17,13 +18,12 @@ const songTitles = () => songRows().map((row) => row.querySelector(".show-song")
 const ID = "a".repeat(32);
 const song = (n, seconds = 180) => ({
   path: `/music/${n}.flac`, title: `Artist ${n}, Song ${n}`, missing: false, seconds,
-  length_text: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
-  length_words: `${Math.floor(seconds / 60)} minutes`,
+  length_text: fmtTime(seconds),
 });
 const SHOW = {
   id: ID, name: "Remembering the 2000s", source: "category", category: "hits", clockwheel: "",
   source_text: "Category Remembering the 2000s", target_minutes: 60, count: 3, missing: 0,
-  total_seconds: 540, total_text: "9:00", total_words: "9 minutes", generated_at: null, note: "",
+  total_seconds: 540, total_text: "9:00", generated_at: null, note: "",
   events: ["Saturday throwback"],
 };
 
@@ -55,7 +55,7 @@ function fakeServer() {
   const view = (show) => {
     const songs = server.songs[show.id] || [];
     const total = songs.reduce((sum, item) => sum + item.seconds, 0);
-    return { ...show, count: songs.length, total_seconds: total, total_words: `${total / 60} minutes`, songs: copy(songs) };
+    return { ...show, count: songs.length, total_seconds: total, total_text: fmtTime(total), songs: copy(songs) };
   };
   const listing = () => ({
     shows: server.shows.map((show) => { const { songs: _songs, ...rest } = view(show); return rest; }),
@@ -141,14 +141,14 @@ describe("shows markup", () => {
   });
 });
 
-describe("shows in words", () => {
+describe("shows use numeric durations", () => {
   it("says a show, its list and the show on the air", () => {
     expect(describeShow(SHOW)).toBe(
-      "Remembering the 2000s: 3 songs, 9 minutes. From Category Remembering the 2000s, target 60 minutes. Played by Saturday throwback.",
+      "Remembering the 2000s: 3 songs, 9:00. From Category Remembering the 2000s, target 60 minutes. Played by Saturday throwback.",
     );
     expect(describeShow({ ...SHOW, count: 0, events: [], missing: 0 })).toContain("0 songs, no list yet. ");
     expect(summaryText({ ...SHOW, missing: 1 })).toBe(
-      "3 songs, 9 minutes; target 60 minutes. 1 song is no longer in the library and will be skipped.",
+      "3 songs, 9:00; target 60 minutes. 1 song is no longer in the library and will be skipped.",
     );
     expect(describeOnAir(null)).toBe("No show is on the air.");
     expect(describeOnAir({
@@ -200,11 +200,22 @@ describe("planning a show", () => {
     byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(byId("shows-category").getAttribute("aria-invalid")).toBe("true"));
     expect(document.activeElement).toBe(byId("shows-category"));
-    expect(byId("shows-category").getAttribute("aria-describedby")).toBe("shows-category-help shows-form-error");
+    expect(byId("shows-category").getAttribute("aria-describedby")).toBe("shows-form-error");
+    expect(byId("shows-category-help").hidden).toBe(false);
   });
 });
 
 describe("editing a list", () => {
+  it("shows numeric durations without hidden spoken alternatives, including hours", async () => {
+    const server = fakeServer();
+    server.songs[ID][0] = { ...song(1, 3725), length_text: "1:02:05" };
+    await open(server);
+    await openList(server);
+    expect(songRows()[0].querySelector(".show-song").textContent).toBe("Artist 1, Song 1, 1:02:05");
+    expect(songRows()[0].querySelector(".show-song .visually-hidden")).toBeNull();
+    expect(byId("shows-summary").textContent).toContain("1:08:05");
+  });
+
   it("moves songs by keyboard buttons, keeping focus on the moved song", async () => {
     const server = await open();
     await openList(server);
@@ -216,7 +227,7 @@ describe("editing a list", () => {
     songButton(1, "up").click();
     expect(songTitles()).toEqual(["Artist 2, Song 2", "Artist 1, Song 1", "Artist 3, Song 3"]);
     expect(document.activeElement).toBe(songButton(0, "up"));
-    await vi.waitFor(() => expect(status()).toBe("Moved Artist 2, Song 2 to number 1 of 3. 3 songs, 9 minutes; target 60 minutes."));
+    await vi.waitFor(() => expect(status()).toBe("Moved Artist 2, Song 2 to number 1 of 3. 3 songs, 9:00; target 60 minutes."));
     expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.songs)
       .toEqual(["/music/2.flac", "/music/1.flac", "/music/3.flac"]);
     // At the top, Move up stays focusable and says why it does nothing.
@@ -256,7 +267,7 @@ describe("editing a list", () => {
     byId("shows-generate").click();
     await vi.waitFor(() => expect(songRows()).toHaveLength(2));
     expect(server.calls.find((call) => call.url.endsWith("/generate")).body).toEqual({ start: "2026-12-24T20:00" });
-    await vi.waitFor(() => expect(status()).toBe("Generated 2 songs, 6 minutes; target 60 minutes."));
+    await vi.waitFor(() => expect(status()).toBe("Generated 2 songs, 6:00; target 60 minutes."));
     expect(byId("shows-generate").hasAttribute("aria-disabled")).toBe(false);
   });
 

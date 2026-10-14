@@ -105,6 +105,7 @@
     <button type="button" role="tab" id="tab-queue"    data-view="queue"    aria-selected="false" tabindex="-1">Queue &amp; Search</button>
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
+    <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
     <button type="button" role="tab" id="tab-track-info" data-view="track-info" aria-selected="false" tabindex="-1">Track info</button>
     <button type="button" role="tab" id="tab-history"  data-view="history"  aria-selected="false" tabindex="-1">History</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
@@ -351,10 +352,10 @@
        only a colour or a style. -->
   <details class="card" id="hour-preview-card">
     <summary><h2>Hour preview</h2></summary>
-    <p class="setting-desc" id="hour-preview-desc">Estimated start times for what plays next. Fixed items are already decided: the song on the air, what is ready to play, the songs picked to follow, booked breaks and the queue. Predicted items come from a dry run of the station's song picking and can change. Nothing on air changes.</p>
+    <p class="setting-desc" id="hour-preview-desc">Estimated start times. Fixed items are already decided; predicted items can change.</p>
     <div class="settings-row">
       <label for="hour-preview-span">Show</label>
-      <select id="hour-preview-span" aria-describedby="hour-preview-desc">
+      <select id="hour-preview-span">
         <option value="30">Next 30 minutes</option>
         <option value="60" selected>Next hour</option>
         <option value="120">Next 2 hours</option>
@@ -470,7 +471,7 @@
       <h3 id="points-heading">Cue points</h3>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
       <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the earliest time after the liner’s saved Start at which the next song may enter. Every overlap value respects the next song’s intro: with no intro, the song waits until the liner’s Segue, while its remaining tail may overlap. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
-      <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro" aria-describedby="points-liner-help"> Allow start over outro</label>
+      <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
       <div id="points-fields">
@@ -500,7 +501,7 @@
           <button type="button" data-preview="end">Preview End</button>
         </div>
         <div class="cue-point-row">
-          <label>Overlap start (seconds or MM:SS; minimum -15) <input type="text" inputmode="decimal" data-point="overlap_start" aria-describedby="negative-overlap-help"><span data-point-source="overlap_start"></span></label>
+          <label>Overlap start (seconds or MM:SS; minimum -15) <input type="text" inputmode="decimal" data-point="overlap_start"><span data-point-source="overlap_start"></span></label>
           <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to preview position">Use preview position</button>
           <button type="button" data-preview="overlap_start">Preview Overlap start</button>
         </div>
@@ -516,7 +517,11 @@
          any other result is said once in #intros-status. -->
     <section id="intros-editor" aria-labelledby="intros-heading" hidden>
       <h3 id="intros-heading">Matched intros</h3>
-      <p class="setting-desc" id="intros-help">Short voice clips that play as this song starts, such as “Here’s the new one from this artist”. When the song’s intro, from Start to Intro, is long enough, the voice talks it up and ends as the singing starts; otherwise it plays just before the song. An intro for this song comes first; an intro for the artist plays on any of the artist’s songs. By default, a matched intro can take the place of the automatic liner at that song change. Voice liners has an option to use matched intros only when no liner is scheduled.</p>
+      <p class="setting-desc" id="intros-help">Short voice clips that introduce this song or its artist.</p>
+      <details class="setting-desc setting-help">
+        <summary>Intro timing and priority</summary>
+        <p>When the song’s intro, from Start to Intro, is long enough, the voice ends as the singing starts; otherwise it plays just before the song. A song intro takes priority over an artist intro. By default, a matched intro can replace an automatic liner. In Voice liners, choose Only when no liner is scheduled to prevent that.</p>
+      </details>
       <p class="setting-desc" id="intros-inactive" hidden></p>
       <!-- Intros the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
@@ -693,7 +698,7 @@
       <legend>Crossfade</legend>
       <div class="settings-row">
         <label for="pb-transition-mode">Transition mode</label>
-        <select id="pb-transition-mode" aria-describedby="pb-transition-mode-desc">
+        <select id="pb-transition-mode">
           <option value="full_intro_outro">Full intro and outro</option>
           <option value="outro_fade">Outro fade</option>
           <option value="fixed_skip_silence">Fixed (skip silence)</option>
@@ -707,7 +712,7 @@
       <p id="pb-saved-points-note" hidden>Uses each track’s saved Segue point and the configured crossfade length. Other transition effects and alignment options are not used.</p>
       <div class="settings-row">
         <label for="pb-crossfade">Crossfade seconds</label>
-        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3" aria-describedby="pb-crossfade-desc">
+        <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
         How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 cuts from one track to the next with no fade and no transition effect.  In Full intro and outro and Outro fade modes, tracks with detected markers fade for 1 to 12 seconds instead, even at 0.
@@ -715,13 +720,13 @@
 
       <div class="settings-row">
         <label for="pb-fade-in">Fade-in seconds</label>
-        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" aria-describedby="pb-fade-in-desc">
+        <input type="number" id="pb-fade-in" min="0" max="20" step="0.5" value="3" data-help="pb-fade-in-desc">
       </div>
       <span class="setting-desc" id="pb-fade-in-desc">
         How long the incoming track takes to reach full volume.  0 <span aria-hidden="true">=</span><span class="visually-hidden">means</span> incoming track starts at full volume immediately when the crossfade begins (no ramp-up).  Capped at crossfade length.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="pb-eq-duck" aria-describedby="pb-eq-duck-desc">
+        <input type="checkbox" id="pb-eq-duck" data-help="pb-eq-duck-desc">
         <label for="pb-eq-duck">EQ-ducked crossfade</label>
       </div>
       <span class="setting-desc" id="pb-eq-duck-desc">
@@ -730,7 +735,7 @@
       <div class="settings-row" data-show-when="pb-eq-duck">
         <label for="pb-bass-cutoff">EQ duck cutoff (hertz)</label>
         <input type="number" id="pb-bass-cutoff" min="20" max="1000" step="10" value="180"
-               inputmode="numeric" aria-describedby="pb-bass-cutoff-desc">
+               inputmode="numeric" data-help="pb-bass-cutoff-desc">
       </div>
       <span class="setting-desc" id="pb-bass-cutoff-desc" data-show-when="pb-eq-duck">
         Bass below this frequency is lowered in the ending song during the overlap, from 20 to 1000.  The default, 180, covers kick drums and bass lines.  For stream and server audio playback.
@@ -741,7 +746,7 @@
       <legend>Transition effect</legend>
       <div class="settings-row">
         <label for="transition-select">Transition effect</label>
-        <select id="transition-select" aria-describedby="transition-desc">
+        <select id="transition-select" data-help="transition-desc">
           <option value="none">none</option>
           <option value="echo_out">echo out</option>
           <option value="reverb_tail">reverb tail</option>
@@ -792,7 +797,7 @@
       <div class="settings-row" data-show-when="transition-select!=none">
         <label for="tx-wet-mix">Transition effect level (percent)</label>
         <input type="number" id="tx-wet-mix" min="0" max="100" step="5" value="100"
-               inputmode="decimal" aria-describedby="tx-wet-mix-desc">
+               inputmode="decimal" data-help="tx-wet-mix-desc">
       </div>
       <span class="setting-desc" id="tx-wet-mix-desc" data-show-when="transition-select!=none">
         How much of the transition effect sits on top of the plain crossfade, from 0 (plain crossfade only) to 100 (full effect).
@@ -843,7 +848,7 @@
         </ul>
       </details>
       <div class="settings-check" data-show-when="transition-select!=none">
-        <input type="checkbox" id="pb-beat-sync-fx" aria-describedby="pb-beat-sync-fx-desc">
+        <input type="checkbox" id="pb-beat-sync-fx" data-help="pb-beat-sync-fx-desc">
         <label for="pb-beat-sync-fx">Beat-sync transition FX</label>
       </div>
       <span class="setting-desc" id="pb-beat-sync-fx-desc" data-show-when="transition-select!=none">
@@ -851,7 +856,7 @@
       </span>
 
       <div class="settings-check" data-show-when="transition-select!=none">
-        <input type="checkbox" id="pb-key-sync-fx" aria-describedby="pb-key-sync-fx-desc">
+        <input type="checkbox" id="pb-key-sync-fx" data-help="pb-key-sync-fx-desc">
         <label for="pb-key-sync-fx">Key-sync pitched FX</label>
       </div>
       <span class="setting-desc" id="pb-key-sync-fx-desc" data-show-when="transition-select!=none">
@@ -862,7 +867,7 @@
     <fieldset>
       <legend>Skip</legend>
       <div class="settings-check">
-        <input type="checkbox" id="pb-beatmatch-on-skip" aria-describedby="pb-beatmatch-on-skip-desc">
+        <input type="checkbox" id="pb-beatmatch-on-skip">
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
@@ -871,7 +876,7 @@
 
       <div class="settings-row">
         <label for="pb-skip-style">Skip style</label>
-        <select id="pb-skip-style" aria-describedby="pb-skip-style-desc">
+        <select id="pb-skip-style">
           <option value="fade" selected>Quick fade</option>
           <option value="echo_out">Echo out</option>
           <option value="backspin">Backspin</option>
@@ -890,7 +895,7 @@
     <fieldset data-saved-points="hide">
       <legend>Tempo and key</legend>
       <div class="settings-check">
-        <input type="checkbox" id="dj-beatmatch" aria-describedby="dj-beatmatch-desc">
+        <input type="checkbox" id="dj-beatmatch" data-help="dj-beatmatch-desc">
         <label for="dj-beatmatch">Beatmatch</label>
       </div>
       <span class="setting-desc" id="dj-beatmatch-desc">
@@ -899,7 +904,7 @@
       <div class="settings-row" data-show-when="dj-beatmatch">
         <label for="dj-max-stretch">Beatmatch stretch limit (percent)</label>
         <input type="number" id="dj-max-stretch" min="0" max="50" step="1" value="8"
-               inputmode="decimal" aria-describedby="dj-max-stretch-desc">
+               inputmode="decimal" data-help="dj-max-stretch-desc">
       </div>
       <span class="setting-desc" id="dj-max-stretch-desc" data-show-when="dj-beatmatch">
         The most the new song’s tempo may change to match the ending song, from 0 to 50 percent.  Songs further apart than this mix without beatmatching.  The default is 8.
@@ -907,13 +912,13 @@
       <div class="settings-row" data-show-when="dj-beatmatch|dj-key-shift">
         <label for="dj-glide-bars">Glide back (bars)</label>
         <input type="number" id="dj-glide-bars" min="0" max="64" step="1" value="8"
-               inputmode="numeric" aria-describedby="dj-glide-bars-desc">
+               inputmode="numeric" data-help="dj-glide-bars-desc">
       </div>
       <span class="setting-desc" id="dj-glide-bars-desc" data-show-when="dj-beatmatch|dj-key-shift">
         After a beatmatched or key-shifted crossfade, how many bars the new song takes to ease back to its own tempo and key, a whole number from 0 to 64.  0 returns it at once.  The default is 8.  For stream and server audio playback.
       </span>
       <div class="settings-check" data-show-when="dj-beatmatch">
-        <input type="checkbox" id="dj-drop-mix" aria-describedby="dj-drop-mix-desc">
+        <input type="checkbox" id="dj-drop-mix" data-help="dj-drop-mix-desc">
         <label for="dj-drop-mix">Drop mixing</label>
       </div>
       <span class="setting-desc" id="dj-drop-mix-desc" data-show-when="dj-beatmatch">
@@ -921,7 +926,7 @@
       </span>
 
       <div class="settings-check">
-        <input type="checkbox" id="dj-key-shift" aria-describedby="dj-key-shift-desc">
+        <input type="checkbox" id="dj-key-shift" data-help="dj-key-shift-desc">
         <label for="dj-key-shift">Key shift</label>
       </div>
       <span class="setting-desc" id="dj-key-shift-desc">
@@ -932,7 +937,7 @@
     <fieldset data-saved-points="hide">
       <legend>Timing</legend>
       <div class="settings-check">
-        <input type="checkbox" id="dj-phrase-align" aria-describedby="dj-phrase-desc">
+        <input type="checkbox" id="dj-phrase-align" data-help="dj-phrase-desc">
         <label for="dj-phrase-align">Phrase align</label>
       </div>
       <span class="setting-desc" id="dj-phrase-desc">
@@ -941,20 +946,20 @@
       <div class="settings-row" data-show-when="dj-phrase-align">
         <label for="dj-phrase-bars">Phrase length (bars)</label>
         <input type="number" id="dj-phrase-bars" min="1" max="64" step="1" value="8"
-               inputmode="numeric" aria-describedby="dj-phrase-bars-desc">
+               inputmode="numeric" data-help="dj-phrase-bars-desc">
       </div>
       <span class="setting-desc" id="dj-phrase-bars-desc" data-show-when="dj-phrase-align">
         How many bars make one phrase, a whole number from 1 to 64.  8 suits most dance music; 16 or 32 waits for longer phrases.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="dj-outro-intro" aria-describedby="dj-outro-desc">
+        <input type="checkbox" id="dj-outro-intro" data-help="dj-outro-desc">
         <label for="dj-outro-intro">Outro <span aria-hidden="true">/</span><span class="visually-hidden">and</span> intro align</label>
       </div>
       <span class="setting-desc" id="dj-outro-desc">
         Auto-detect each track's outro on first play and start the crossfade there, with the new track coming in at its first sound.  For stream and server audio playback.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="dj-vocal-guard" checked aria-describedby="dj-vocal-guard-desc">
+        <input type="checkbox" id="dj-vocal-guard" checked data-help="dj-vocal-guard-desc">
         <label for="dj-vocal-guard">Keep vocals apart</label>
       </div>
       <span class="setting-desc" id="dj-vocal-guard-desc">
@@ -965,7 +970,7 @@
     <fieldset data-saved-points="hide">
       <legend>Filter sweep</legend>
       <div class="settings-check">
-        <input type="checkbox" id="dj-filter-sweep" aria-describedby="dj-filter-sweep-desc">
+        <input type="checkbox" id="dj-filter-sweep" data-help="dj-filter-sweep-desc">
         <label for="dj-filter-sweep">Filter sweep</label>
       </div>
       <span class="setting-desc" id="dj-filter-sweep-desc">
@@ -974,7 +979,7 @@
       <div class="settings-row" data-show-when="dj-filter-sweep">
         <label for="dj-sweep-floor">Filter sweep floor (hertz)</label>
         <input type="number" id="dj-sweep-floor" min="20" max="5000" step="10" value="250"
-               inputmode="numeric" aria-describedby="dj-sweep-floor-desc">
+               inputmode="numeric" data-help="dj-sweep-floor-desc">
       </div>
       <span class="setting-desc" id="dj-sweep-floor-desc" data-show-when="dj-filter-sweep">
         How far down the filter closes by the end of the crossfade, from 20 to 5000.  Lower sounds more muffled.  The default is 250.
@@ -988,7 +993,7 @@
       <legend>Picking</legend>
       <div class="settings-row">
         <label for="preset-select">Preset</label>
-        <select id="preset-select" aria-describedby="preset-desc">
+        <select id="preset-select">
           <option value="">(none)</option>
         </select>
       </div>
@@ -997,7 +1002,7 @@
       </span>
       <div class="settings-row">
         <label for="pb-pick-mode">Pick mode</label>
-        <select id="pb-pick-mode" aria-describedby="pb-pick-mode-desc">
+        <select id="pb-pick-mode">
           <option value="similarity">Similarity (default)</option>
           <option value="random">Random walk (uniform random)</option>
           <option value="least_recent">Least recently played</option>
@@ -1010,7 +1015,7 @@
       <div class="settings-row" data-show-when="pb-pick-mode=similarity">
         <label for="pb-pick-top-k">Choose among the closest songs</label>
         <input type="number" id="pb-pick-top-k" min="1" max="100" step="1" value="1"
-               inputmode="numeric" aria-describedby="pb-pick-top-k-desc">
+               inputmode="numeric">
       </div>
       <span class="setting-desc" id="pb-pick-top-k-desc" data-show-when="pb-pick-mode=similarity">
         How many of the closest-sounding songs a similarity pick chooses among, a whole number from 1 to 100.  1, the default, always takes the closest one.
@@ -1018,14 +1023,14 @@
       <div class="settings-row" data-show-when="pb-pick-mode=similarity">
         <label for="pb-pick-temperature">Pick randomness</label>
         <input type="number" id="pb-pick-temperature" min="0" max="10" step="0.05" value="0.3"
-               inputmode="decimal" aria-describedby="pb-pick-temperature-desc">
+               inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-pick-temperature-desc" data-show-when="pb-pick-mode=similarity">
         How evenly a pick spreads over those closest songs, from 0 to 10.  0 always takes the closest; higher numbers give the others more of a chance.  No effect while the number above is 1.  The default is 0.3.
       </span>
       <div class="settings-row">
         <label for="harmonic-mode">Harmonic mixing</label>
-        <select id="harmonic-mode" aria-describedby="dj-harmonic-desc">
+        <select id="harmonic-mode">
           <option value="off">off (no key filter)</option>
           <option value="compatible">compatible (Camelot match, plus or minus 1, relative)</option>
           <option value="strict">strict (same Camelot position only)</option>
@@ -1043,7 +1048,7 @@
         <strong>energy boost</strong> picks two steps up the wheel — each track is two semitones up, so the set lifts over time.  Pick <strong>off</strong> to disable the harmonic filter completely.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="pb-anchor-seed" aria-describedby="pb-anchor-desc">
+        <input type="checkbox" id="pb-anchor-seed">
         <label for="pb-anchor-seed">Anchor to seed</label>
       </div>
       <span class="setting-desc" id="pb-anchor-desc">
@@ -1051,7 +1056,7 @@
       </span>
       <div class="settings-row">
         <label for="pb-post-queue-seed">After queue empties, seed from</label>
-        <select id="pb-post-queue-seed" aria-describedby="pb-post-queue-seed-desc">
+        <select id="pb-post-queue-seed">
           <option value="last_queued">Last queued track</option>
           <option value="pre_queue">Track playing before queue</option>
         </select>
@@ -1063,24 +1068,26 @@
 
     <!-- The rules' shared help is the outer group's description, read once
          when focus enters Repeats, not repeated on all twelve boxes. -->
-    <fieldset aria-describedby="repeat-rules-desc">
+    <fieldset>
       <legend>Repeats</legend>
-      <p class="setting-desc" id="repeat-rules-desc">The artist, album, track, title and related rules each have a Tracks limit and a Minutes limit; when both are set, a repeat waits for both. 0 turns a limit off. Tracks are whole numbers, up to 100000 for the same track and up to 5000 for the others. Minutes go up to 10080 (one week) and can have decimals. The daypart and quarter-hour rules, last, keep a song from playing at the same time every day. When no song passes the rules, they give way for that pick rather than stop the music.</p>
+      <p class="setting-desc" id="repeat-rules-desc">Keep songs, artists and albums apart. 0 turns a limit off. If no song passes, the rules give way for that pick so music can continue.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
         <div class="settings-row">
           <label for="repeat-artist-tracks">Tracks</label>
           <input type="number" id="repeat-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+          <span class="setting-desc">0 to 5000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-artist-minutes">Minutes</label>
           <input type="number" id="repeat-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
       </fieldset>
       <fieldset>
         <legend>Related artists</legend>
         <div class="settings-check">
-          <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-desc repeat-related-status">
+          <input type="checkbox" id="repeat-use-related-artists" aria-describedby="repeat-related-status">
           <label for="repeat-use-related-artists">Use related artists</label>
         </div>
         <p class="setting-desc" id="repeat-related-desc">Also holds back the artists linked in related-artists.toml in the index folder to an artist that played within the limits below: <code id="repeat-related-default">index/&lt;name&gt;/related-artists.toml</code>. Edit that file, then save repeat settings to reload it.</p>
@@ -1090,10 +1097,12 @@
         <div class="settings-row">
           <label for="repeat-related-artist-tracks">Tracks</label>
           <input type="number" id="repeat-related-artist-tracks" min="0" max="5000" step="1" value="8" inputmode="numeric">
+          <span class="setting-desc">0 to 5000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-related-artist-minutes">Minutes</label>
           <input type="number" id="repeat-related-artist-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
       </fieldset>
       <fieldset>
@@ -1101,10 +1110,12 @@
         <div class="settings-row">
           <label for="repeat-album-tracks">Tracks</label>
           <input type="number" id="repeat-album-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+          <span class="setting-desc">0 to 5000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-album-minutes">Minutes</label>
           <input type="number" id="repeat-album-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
       </fieldset>
       <fieldset>
@@ -1112,13 +1123,15 @@
         <div class="settings-row">
           <label for="repeat-track-tracks">Tracks</label>
           <input type="number" id="repeat-track-tracks" min="0" max="100000" step="1" value="50" inputmode="numeric">
+          <span class="setting-desc">0 to 100000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-track-minutes">Minutes</label>
           <input type="number" id="repeat-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
         <div class="settings-check">
-          <input type="checkbox" id="repeat-versions-as-one-song" aria-describedby="repeat-versions-desc">
+          <input type="checkbox" id="repeat-versions-as-one-song">
           <label for="repeat-versions-as-one-song">Count versions as one song</label>
         </div>
         <p class="setting-desc" id="repeat-versions-desc">Treats the versions of a song by the same lead artist, such as a radio edit and a remix, as one song. The song comes up as often as a song with one version, and the limits above hold back all of its versions.</p>
@@ -1128,16 +1141,18 @@
         <div class="settings-row">
           <label for="repeat-title-tracks">Tracks</label>
           <input type="number" id="repeat-title-tracks" min="0" max="5000" step="1" value="0" inputmode="numeric">
+          <span class="setting-desc">0 to 5000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-title-minutes">Minutes</label>
           <input type="number" id="repeat-title-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
       </fieldset>
       <fieldset>
         <legend>Related tracks</legend>
         <div class="settings-check">
-          <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-desc repeat-related-tracks-status">
+          <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-status">
           <label for="repeat-use-related-tracks">Use related tracks</label>
         </div>
         <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it, when one of them played within the limits below. Each group in related-tracks.toml in the index folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/&lt;name&gt;/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
@@ -1147,13 +1162,15 @@
         <div class="settings-row">
           <label for="repeat-related-track-tracks">Tracks</label>
           <input type="number" id="repeat-related-track-tracks" min="0" max="5000" step="1" value="20" inputmode="numeric">
+          <span class="setting-desc">0 to 5000 tracks.</span>
         </div>
         <div class="settings-row">
           <label for="repeat-related-track-minutes">Minutes</label>
           <input type="number" id="repeat-related-track-minutes" min="0" max="10080" step="any" value="0" inputmode="decimal">
+          <span class="setting-desc">0 to 10080 minutes (one week); decimals allowed.</span>
         </div>
       </fieldset>
-      <fieldset aria-describedby="repeat-daypart-desc">
+      <fieldset>
         <legend>Prevent a song from playing in the same daypart</legend>
         <p class="setting-desc" id="repeat-daypart-desc">Holds back a song that played in the daypart the next song starts in, earlier today or on any of the days before. 0 days turns this off; up to 7.</p>
         <div class="settings-row">
@@ -1164,9 +1181,10 @@
           <label for="repeat-daypart-hours">Daypart start hours</label>
           <input type="text" id="repeat-daypart-hours" value="0, 6, 10, 15, 19" inputmode="numeric" autocomplete="off" spellcheck="false" aria-describedby="repeat-daypart-hours-desc">
         </div>
-        <p class="setting-desc" id="repeat-daypart-hours-desc">Hours from 0 to 23 on the station's clock, separated by commas. Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
+        <p class="setting-desc" id="repeat-daypart-hours-desc">Hours 0–23, separated by commas, on the station clock.</p>
+        <p class="setting-desc">Each daypart lasts until the next start, and the last one runs past midnight to the first. 0, 6, 10, 15, 19 is overnight, morning drive, midday, afternoon drive and evening. List all 24 hours to keep a song out of the hour it played in the day before.</p>
       </fieldset>
-      <fieldset aria-describedby="repeat-hourpart-desc">
+      <fieldset>
         <legend>Prevent a song from playing in the same quarter of the hour</legend>
         <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 0 plays turns this off; at 3, a song moves round all four quarters.</p>
         <div class="settings-row">
@@ -1184,11 +1202,11 @@
       <legend>BPM range</legend>
       <div class="settings-row">
         <label for="bpm-lo">Minimum</label>
-        <input type="number" id="bpm-lo" min="0" max="300" step="1" aria-describedby="bpm-desc">
+        <input type="number" id="bpm-lo" min="0" max="300" step="1">
       </div>
       <div class="settings-row">
         <label for="bpm-hi">Maximum</label>
-        <input type="number" id="bpm-hi" min="0" max="300" step="1" aria-describedby="bpm-desc">
+        <input type="number" id="bpm-hi" min="0" max="300" step="1">
       </div>
       <span class="setting-desc" id="bpm-desc">
         Hard filter on track tempo. Picks only fall within this range, and tracks
@@ -1200,13 +1218,13 @@
     <fieldset>
       <legend>Discovery</legend>
       <div class="settings-check">
-        <input type="checkbox" id="disc-enabled" aria-describedby="disc-desc">
+        <input type="checkbox" id="disc-enabled">
         <label for="disc-enabled">Inject distant tracks</label>
       </div>
       <div class="settings-row" data-show-when="disc-enabled">
         <label for="disc-every">Every N tracks</label>
         <input type="number" id="disc-every" min="1" max="500" step="1" value="20"
-               disabled aria-describedby="disc-desc">
+               disabled>
       </div>
       <span class="setting-desc" id="disc-desc">
         Occasionally choose from the quarter of the library that sounds least like the current selection. This adds variety when similarity picks sound too alike.
@@ -1218,7 +1236,7 @@
          focus never lands on a hidden or dead control.  The start and the
          end are said once through #rotation-status; the progress line is
          plain text, and the results are headings and lists, not live. -->
-    <fieldset id="rotation-test" aria-describedby="rotation-test-desc">
+    <fieldset id="rotation-test">
       <legend>Test rotation</legend>
       <p class="setting-desc" id="rotation-test-desc">Simulate song picking with the current clockwheel, categories, schedule, repeat rules and DMCA limits, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent. Nothing on air changes.</p>
       <div class="settings-row">
@@ -1267,7 +1285,7 @@
       <legend>Output processing</legend>
       <div class="settings-row">
         <label for="pb-replaygain">Output processing</label>
-        <select id="pb-replaygain" aria-describedby="pb-rg-desc">
+        <select id="pb-replaygain">
           <option value="off">Off</option>
           <option value="replaygain">ReplayGain</option>
           <option value="smooth">Smooth</option>
@@ -1280,7 +1298,7 @@
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
         <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
-               inputmode="decimal" aria-describedby="pb-rg-target-desc">
+               inputmode="decimal" data-help="pb-rg-target-desc">
       </div>
       <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain=replaygain">
         The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  For stream and server audio playback.
@@ -1296,7 +1314,7 @@
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
         <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
-               inputmode="decimal" aria-describedby="pb-intro-lift-desc">
+               inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain=replaygain">
         Raise a song's quiet opening by up to this much, from 0 to 6, so it does not sound too low after a loud song. The lift holds for one second, then falls back to the song's own level by eight seconds, and never raises the opening's peaks above 1.8 decibels below full scale. 4 is the default; 0 turns it off. A song is measured on its next library scan. For ReplayGain playback.
@@ -1314,8 +1332,9 @@
       </div>
       <p class="setting-desc" id="stereo-preset-warning" hidden></p>
       <span class="setting-desc" id="stereo-preset-desc">
-        Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.  Included is the free preset that comes with AutoDJ and cannot be deleted.  Uploaded presets are kept with the station's data and saved in backups.
+        Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.
       </span>
+      <p class="setting-desc">Included is the free preset that comes with AutoDJ and cannot be deleted. Uploaded presets are kept with the station's data and saved in backups.</p>
       <div class="settings-row">
         <label for="stereo-preset-file">Preset file to upload (.sts, up to 2 MB)</label>
         <input type="file" id="stereo-preset-file" accept=".sts">
@@ -1324,7 +1343,7 @@
       <div class="settings-row">
         <label for="pb-stereo-trim">Input trim (decibels)</label>
         <input type="number" id="pb-stereo-trim" min="-12" max="6" step="0.5" value="0"
-               inputmode="decimal" aria-describedby="pb-stereo-trim-desc">
+               inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-stereo-trim-desc">
         Lower or raise the mix before Stereo Tool, from minus 12 to plus 6.  Lower it when the preset sounds squashed; raise it when the preset barely acts.  The output limiter still holds the same ceiling.  0 is the default.  For stream and server audio playback.
@@ -1335,8 +1354,9 @@
                inputmode="decimal" aria-describedby="pb-stereo-agc-drive-desc">
       </div>
       <span class="setting-desc" id="pb-stereo-agc-drive-desc">
-        Controls how strongly Stereo Tool brings up quieter passages. 7 dB is the default. 0 keeps the selected preset's original drive; it does not turn AGC off. Changing this reloads Stereo Tool, with a brief bypass while it warms up. For stream and server audio playback.
+        Changing this reloads Stereo Tool, with a brief bypass while it warms up.
       </span>
+      <p class="setting-desc">Controls how strongly Stereo Tool brings up quieter passages. 7 dB is the default. 0 keeps the selected preset's original drive; it does not turn AGC off. For stream and server audio playback.</p>
     </fieldset>
 
     <fieldset>
@@ -1344,12 +1364,12 @@
       <div class="settings-row">
         <label for="pb-music-speed-number">Music speed (%)</label>
         <input type="number" id="pb-music-speed-number" min="-10" max="10" step="0.01" value="0"
-               inputmode="decimal" aria-describedby="pb-music-speed-desc">
+               inputmode="decimal">
       </div>
       <div class="settings-row music-speed-slider-row">
         <label for="pb-music-speed-slider" class="visually-hidden">Music speed</label>
         <input type="range" id="pb-music-speed-slider" min="-10" max="10" step="0.01" value="0"
-               aria-describedby="pb-music-speed-desc">
+              >
         <output id="pb-music-speed-value" for="pb-music-speed-slider" aria-live="off">0%</output>
       </div>
       <span class="setting-desc" id="pb-music-speed-desc">
@@ -1361,7 +1381,7 @@
       <legend>Browser playback</legend>
       <div class="settings-row">
         <label for="audio-device">Audio output device</label>
-        <select id="audio-device" aria-describedby="audio-device-desc">
+        <select id="audio-device">
           <option value="">System default</option>
         </select>
         <button type="button" id="audio-device-refresh"
@@ -1374,7 +1394,7 @@
       </span>
       <div class="settings-row">
         <label for="preview-device">Preview output device</label>
-        <select id="preview-device" aria-describedby="preview-device-desc">
+        <select id="preview-device">
           <option value="">System default</option>
         </select>
         <button type="button" id="preview-device-choose" aria-describedby="preview-device-choose-desc">Show preview device names</button>
@@ -1385,14 +1405,14 @@
       </span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
       <div class="settings-check">
-        <input type="checkbox" id="pb-prefetch" checked aria-describedby="pb-prefetch-desc">
+        <input type="checkbox" id="pb-prefetch" checked>
         <label for="pb-prefetch">Load the next song early</label>
       </div>
       <span class="setting-desc" id="pb-prefetch-desc">
         Start loading the next song as soon as it is picked, so it starts without a gap.  Turn this off only on a slow or metered connection.  On by default.  For browser playback.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="pb-silence-trigger" checked aria-describedby="pb-silence-trigger-desc">
+        <input type="checkbox" id="pb-silence-trigger" checked>
         <label for="pb-silence-trigger">Crossfade when a song goes quiet</label>
       </div>
       <span class="setting-desc" id="pb-silence-trigger-desc">
@@ -1406,7 +1426,7 @@
     <!-- Kept in this browser only (modules/theme.js); applied before first
          paint by modules/theme-init.js.  No status message on change: the
          checked radio button is the whole report. -->
-    <fieldset id="theme-choice" aria-describedby="theme-choice-desc">
+    <fieldset id="theme-choice">
       <legend>Theme</legend>
       <div class="settings-check">
         <input type="radio" name="theme" id="theme-system" value="system" checked>
@@ -1428,7 +1448,7 @@
     <fieldset>
       <legend>Display</legend>
       <div class="settings-check">
-        <input type="checkbox" id="pb-show-lyrics" aria-describedby="pb-show-lyrics-desc">
+        <input type="checkbox" id="pb-show-lyrics">
         <label for="pb-show-lyrics">Show lyrics</label>
       </div>
       <span class="setting-desc" id="pb-show-lyrics-desc">
@@ -1436,7 +1456,7 @@
       </span>
       <div class="settings-row">
         <label for="key-notation">Key notation</label>
-        <select id="key-notation" aria-describedby="key-notation-desc">
+        <select id="key-notation">
           <option value="camelot">Camelot (8A or 8B)</option>
           <option value="musical">Musical (C, A minor, F sharp minor)</option>
         </select>
@@ -1446,7 +1466,7 @@
       </span>
       <div class="settings-row" data-show-when="key-notation=musical">
         <label for="key-prefer-flats">Use flats</label>
-        <input type="checkbox" id="key-prefer-flats" aria-describedby="key-prefer-flats-desc">
+        <input type="checkbox" id="key-prefer-flats">
       </div>
       <span class="setting-desc" id="key-prefer-flats-desc" data-show-when="key-notation=musical">
         Show flats such as D flat instead of sharps such as C sharp.
@@ -1456,7 +1476,7 @@
     <fieldset>
       <legend>Announcements</legend>
       <div class="settings-check">
-        <input type="checkbox" id="announce-all-tabs" aria-describedby="announce-all-tabs-desc">
+        <input type="checkbox" id="announce-all-tabs">
         <label for="announce-all-tabs">Announce track changes on every tab</label>
       </div>
       <span class="setting-desc" id="announce-all-tabs-desc">
@@ -1467,7 +1487,7 @@
     <fieldset>
       <legend>Keyboard</legend>
       <div class="settings-check">
-        <input type="checkbox" id="hotkeys-enabled" checked aria-describedby="hotkeys-enabled-desc">
+        <input type="checkbox" id="hotkeys-enabled" checked>
         <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
       </div>
       <span class="setting-desc" id="hotkeys-enabled-desc">
@@ -1485,14 +1505,14 @@
     <div id="ln-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
     <div class="settings-check">
-      <input type="checkbox" id="ln-enabled" aria-describedby="ln-enabled-desc">
+      <input type="checkbox" id="ln-enabled">
       <label for="ln-enabled">Enable voice liners</label>
     </div>
     <span class="setting-desc" id="ln-enabled-desc">
         Enable automatic liners at the intervals below. Queued liners and clockwheel liner slots still play when this is off.
     </span>
     <div class="settings-check">
-      <input type="checkbox" id="ln-matched-intro-only-without-liner" aria-describedby="ln-matched-intro-only-without-liner-desc">
+      <input type="checkbox" id="ln-matched-intro-only-without-liner">
       <label for="ln-matched-intro-only-without-liner">Only when no liner is scheduled</label>
     </div>
     <span class="setting-desc" id="ln-matched-intro-only-without-liner-desc">
@@ -1504,7 +1524,7 @@
       <div class="settings-row">
         <label for="ln-every-n">Every N tracks</label>
         <input type="number" id="ln-every-n" min="0" max="500" step="1" inputmode="numeric"
-               aria-describedby="ln-every-n-desc">
+              >
       </div>
       <span class="setting-desc" id="ln-every-n-desc">
         Play a liner after this many tracks.  Blank or 0 turns this trigger off.
@@ -1512,7 +1532,7 @@
       <div class="settings-row">
         <label for="ln-every-min">Every N minutes</label>
         <input type="number" id="ln-every-min" min="0" max="240" step="1" inputmode="decimal"
-               aria-describedby="ln-every-min-desc">
+              >
       </div>
       <span class="setting-desc" id="ln-every-min-desc">
         Play a liner when this many minutes have passed since the last one.  Blank or 0 turns this trigger off.
@@ -1520,12 +1540,12 @@
       <div class="settings-row">
         <label for="ln-rand-min">Random window minimum (minutes)</label>
         <input type="number" id="ln-rand-min" min="0" max="240" step="1" inputmode="decimal"
-               aria-describedby="ln-rand-desc">
+              >
       </div>
       <div class="settings-row">
         <label for="ln-rand-max">Random window maximum (minutes)</label>
         <input type="number" id="ln-rand-max" min="0" max="240" step="1" inputmode="decimal"
-               aria-describedby="ln-rand-desc">
+              >
       </div>
       <span class="setting-desc" id="ln-rand-desc">
         Play a liner at a random time between the minimum and the maximum number of minutes after the last one.  Both must be above 0 and the minimum must not be larger than the maximum; otherwise the random trigger is off.
@@ -1536,7 +1556,7 @@
       <legend>Mix</legend>
       <div class="settings-row">
         <label for="ln-pick-mode">Rotation mode</label>
-        <select id="ln-pick-mode" aria-describedby="ln-pick-mode-desc">
+        <select id="ln-pick-mode">
           <option value="random">Random</option>
           <option value="sequential">Sequential</option>
         </select>
@@ -1547,13 +1567,13 @@
       <div class="settings-row">
         <label for="ln-duck-db">Duck depth (decibels)</label>
         <input type="number" id="ln-duck-db" min="-30" max="0" step="1" value="-12" inputmode="decimal"
-               aria-describedby="ln-duck-db-desc">
+              >
       </div>
       <span class="setting-desc" id="ln-duck-db-desc">
         Lower the music during live liner overlays: 0 leaves it unchanged; minus 30 makes it very quiet. The default is minus 12. Saved segue playback fits liners using their cues and does not use this duck.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="ln-talk-up" aria-describedby="ln-talk-up-desc">
+        <input type="checkbox" id="ln-talk-up">
         <label for="ln-talk-up">Talk up to the vocal</label>
       </div>
       <span class="setting-desc" id="ln-talk-up-desc">
@@ -1585,8 +1605,8 @@
     <h4 id="ln-files-heading">Voice liner files</h4>
     <ul id="ln-file-list" role="list" aria-labelledby="ln-files-heading" tabindex="-1"></ul>
     <form id="ln-dates-form" novalidate hidden><fieldset><legend id="ln-dates-legend">Play dates</legend><p id="ln-dates-error" class="field-error" hidden></p>
-      <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before" aria-describedby="ln-dates-desc"></div>
-      <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after" aria-describedby="ln-dates-desc"></div>
+      <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before"></div>
+      <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after"></div>
       <span class="setting-desc" id="ln-dates-desc">Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.</span>
       <button type="submit" id="ln-dates-save">Save dates</button><button type="button" id="ln-dates-cancel">Cancel</button>
     </fieldset></form>
@@ -1606,7 +1626,7 @@
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
     <div class="settings-check">
-      <input type="checkbox" id="tc-enabled" aria-describedby="tc-enabled-desc">
+      <input type="checkbox" id="tc-enabled">
       <label for="tc-enabled">Enable time checks</label>
     </div>
     <span class="setting-desc" id="tc-enabled-desc">
@@ -1614,7 +1634,7 @@
     </span>
     <div class="settings-row">
       <label for="tc-hour-format">Hour format</label>
-      <select id="tc-hour-format" aria-describedby="tc-hour-format-desc">
+      <select id="tc-hour-format">
         <option value="12">12-hour</option>
         <option value="24">24-hour</option>
       </select>
@@ -1624,7 +1644,7 @@
     </span>
     <div class="settings-row">
       <label for="tc-rule">When to play</label>
-      <select id="tc-rule" aria-describedby="tc-rule-desc">
+      <select id="tc-rule">
         <option value="off">Only from Schedule or the button</option>
         <option value="after_hour_song">After the song that crosses the hour</option>
       </select>
@@ -1633,7 +1653,7 @@
       After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
     </span>
 
-    <fieldset id="tc-packs" aria-describedby="tc-packs-desc">
+    <fieldset id="tc-packs">
       <legend>Voice packs</legend>
       <span class="setting-desc" id="tc-packs-desc">
         Folders of hour and minute files, joined into one sentence like RadioBOSS does. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
@@ -1643,7 +1663,7 @@
     </fieldset>
     <div class="settings-row">
       <label for="tc-pack-order">When several packs are ticked</label>
-      <select id="tc-pack-order" aria-describedby="tc-pack-order-desc">
+      <select id="tc-pack-order">
         <option value="rotate">Take turns</option>
         <option value="random">Pick one at random</option>
       </select>
@@ -1655,7 +1675,7 @@
     <!-- Play dates for one pack at a time; the result is said through
          #tc-status, and a refused date is shown in #tc-dates-error and
          linked to its field. -->
-    <fieldset id="tc-dates" aria-describedby="tc-dates-desc" hidden>
+    <fieldset id="tc-dates" hidden>
       <legend>Voice pack play dates</legend>
       <span class="setting-desc" id="tc-dates-desc">
         Optional. A ticked pack speaks only from its Not before date to its Do not play after date, both days included, in the station time zone, such as a holiday voice in December. Outside them the other ticked packs speak instead. Choosing the pack in Voice to test still plays it.
@@ -1680,7 +1700,7 @@
     <p id="tc-clips-status"></p>
     <div class="settings-row">
       <label for="tc-test-voice">Voice to test</label>
-      <select id="tc-test-voice" aria-describedby="tc-test-voice-desc">
+      <select id="tc-test-voice">
         <option value="">The ticked packs, then clips, then text to speech</option>
       </select>
     </div>
@@ -1795,8 +1815,9 @@
           </select>
         </div>
         <span class="setting-desc" id="schedule-timing-desc">
-          Soft waits for the current song to end.  Hard runs on time and, except for stream events, fades the current song out.  A show starts at once with Hard, and a Play next song you chose plays right after its first song. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.
+          Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out.
         </span>
+        <p class="setting-desc">A show starts at once with Hard, and a Play next song you chose plays right after its first song. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.</p>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
           <label for="schedule-enabled">Enabled</label>
@@ -1840,7 +1861,7 @@
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-               aria-describedby="stream-station-name-desc station-context">
+               aria-describedby="station-context">
       </div>
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
@@ -1889,7 +1910,7 @@
         Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="stream-continuous-desc station-context">
+        <input type="checkbox" id="stream-continuous" aria-describedby="station-context">
         <label for="stream-continuous">Keep playing without listeners</label>
       </div>
       <span class="setting-desc" id="stream-continuous-desc">
@@ -1906,7 +1927,7 @@
         </p>
         <div class="settings-row">
           <label for="stream-aac-bitrate">AAC quality</label>
-          <select id="stream-aac-bitrate" aria-describedby="stream-aac-desc station-context">
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning station-context">
             <option value="0">Off</option>
             <option value="64">64 kbps</option>
             <option value="96">96 kbps</option>
@@ -1916,11 +1937,11 @@
           </select>
         </div>
         <span class="setting-desc" id="stream-aac-desc">
-          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. Changing it makes AAC listeners reconnect for a moment.
+          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. <span id="stream-aac-warning">Changing it makes AAC listeners reconnect for a moment.</span>
         </span>
         <div class="settings-row">
           <label for="stream-opus-bitrate">Opus quality</label>
-          <select id="stream-opus-bitrate" aria-describedby="stream-opus-desc station-context">
+          <select id="stream-opus-bitrate" aria-describedby="stream-opus-warning station-context">
             <option value="0">Off</option>
             <option value="48">48 kbps</option>
             <option value="64">64 kbps</option>
@@ -1930,7 +1951,7 @@
           </select>
         </div>
         <span class="setting-desc" id="stream-opus-desc">
-          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. Changing it makes Opus listeners reconnect for a moment.
+          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. <span id="stream-opus-warning">Changing it makes Opus listeners reconnect for a moment.</span>
         </span>
         <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
         <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
@@ -2000,7 +2021,7 @@
         <p class="stream-detail" id="recording-error" hidden></p>
         <div class="settings-row">
           <label for="recording-split">Start a new file</label>
-          <select id="recording-split" aria-describedby="recording-split-desc">
+          <select id="recording-split">
             <option value="hour">Every clock hour</option>
             <option value="show">For each show</option>
           </select>
@@ -2377,7 +2398,7 @@
         </div>
         <div class="settings-row">
           <label for="cart-mode">Music during the cart</label>
-          <select id="cart-mode" aria-describedby="cart-mode-desc">
+          <select id="cart-mode">
             <option value="duck">Duck</option>
             <option value="over">Over</option>
             <option value="replace">Replace</option>
@@ -2504,6 +2525,263 @@
         <p id="vt-none">No voice tracks yet.</p>
         <!-- role="list": list-style none drops the list role in Safari. -->
         <ul id="vt-list" role="list"></ul>
+      </section>
+    </div>
+  </section>
+  <!-- ============================================================
+       View: Ads -- spots, scheduled ad breaks and the ad report
+       (modules/ads-panel.js, #51).  The lists are plain text, not live
+       regions: each result of a button is said once through #ads-status.
+       The report is two tables with headers, shown on request.
+       ============================================================ -->
+  <section data-view="ads" id="panel-ads" role="tabpanel" hidden aria-labelledby="tab-ads">
+    <h2 id="ads-heading">Ads</h2>
+    <div id="ads-panel">
+      <p id="ads-help">
+        Spots are the ads. An ad break plays some of them between two songs, at the minutes past
+        the hour you choose or from a Schedule event, and never cuts a song: it joins the next song
+        change it can, about a song later. Every spot that aired or was missed goes into the ad report.
+        Times are in the station time zone: <span id="ads-timezone"></span>.
+      </p>
+      <!-- Why this station does not air ads, or a problem with ads.json: words on the page. -->
+      <p id="ads-reason" class="ads-notice" hidden></p>
+      <p id="ads-problem" class="ads-notice" hidden></p>
+      <div id="ads-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+
+      <section class="card" aria-labelledby="ads-spots-heading">
+        <h3 id="ads-spots-heading">Spots</h3>
+        <!-- role="list": list-style none drops the list role in Safari. -->
+        <ul id="ads-spots" class="ads-list" role="list" aria-labelledby="ads-spots-heading"></ul>
+        <button type="button" id="ads-spot-add">Add spot</button>
+        <!-- Add and Edit share this form.  A refused field is named in
+             #ads-spot-error, marked aria-invalid, linked and focused. -->
+        <form id="ads-spot-form" novalidate hidden>
+          <fieldset>
+            <legend id="ads-spot-legend">Add spot</legend>
+            <p id="ads-spot-error" class="field-error" hidden></p>
+            <div class="settings-row" id="ads-spot-file-row">
+              <label for="ads-spot-file">Audio file</label>
+              <input type="file" id="ads-spot-file" aria-describedby="ads-spot-file-desc"
+                     accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
+            </div>
+            <span class="setting-desc" id="ads-spot-file-desc">
+              MP3, WAV, OGG, M4A, FLAC or AAC. AutoDJ trims the silence before and after the sound.
+            </span>
+            <div class="settings-row">
+              <label for="ads-spot-title">Spot title</label>
+              <input type="text" id="ads-spot-title" maxlength="100" autocomplete="off" required>
+            </div>
+            <div class="settings-row">
+              <label for="ads-spot-advertiser">Advertiser</label>
+              <input type="text" id="ads-spot-advertiser" maxlength="100" autocomplete="off" required>
+            </div>
+            <div class="settings-row">
+              <label for="ads-spot-campaign">Campaign</label>
+              <input type="text" id="ads-spot-campaign" maxlength="100" autocomplete="off">
+            </div>
+            <div class="settings-row">
+              <label for="ads-spot-category">Competing category</label>
+              <input type="text" id="ads-spot-category" maxlength="100" autocomplete="off" aria-describedby="ads-spot-category-desc">
+            </div>
+            <span class="setting-desc" id="ads-spot-category-desc">
+              Optional, such as Car dealers. Spots with the same category compete: they never share a break
+              and keep the separation time apart, as spots from one advertiser do.
+            </span>
+            <div class="settings-row">
+              <label for="ads-spot-start">First day</label>
+              <input type="date" id="ads-spot-start" aria-describedby="ads-spot-dates-desc">
+            </div>
+            <div class="settings-row">
+              <label for="ads-spot-end">Last day</label>
+              <input type="date" id="ads-spot-end" aria-describedby="ads-spot-dates-desc">
+            </div>
+            <span class="setting-desc" id="ads-spot-dates-desc">
+              The flight: the spot airs only from its first day to its last day, both included. Leave either empty for no limit on that side.
+            </span>
+            <div class="settings-row">
+              <label for="ads-spot-day">Plays a day</label>
+              <input type="number" id="ads-spot-day" min="0" max="500" step="1" aria-describedby="ads-spot-limits-desc">
+            </div>
+            <div class="settings-row">
+              <label for="ads-spot-hour">Plays an hour</label>
+              <input type="number" id="ads-spot-hour" min="0" max="60" step="1" aria-describedby="ads-spot-limits-desc">
+            </div>
+            <span class="setting-desc" id="ads-spot-limits-desc">
+              The most times the spot airs in one day and in one clock hour. 0 is no limit.
+            </span>
+            <div class="settings-check">
+              <input type="checkbox" id="ads-spot-enabled">
+              <label for="ads-spot-enabled">Airs</label>
+            </div>
+            <button type="submit" id="ads-spot-save">Save spot</button>
+            <button type="button" id="ads-spot-cancel">Cancel</button>
+          </fieldset>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="ads-breaks-heading">
+        <h3 id="ads-breaks-heading">Ad breaks</h3>
+        <ul id="ads-breaks" class="ads-list" role="list" aria-labelledby="ads-breaks-heading"></ul>
+        <button type="button" id="ads-break-add">Add ad break</button>
+        <form id="ads-break-form" novalidate hidden>
+          <fieldset>
+            <legend id="ads-break-legend">Add ad break</legend>
+            <p id="ads-break-error" class="field-error" hidden></p>
+            <div class="settings-row">
+              <label for="ads-break-name">Break name</label>
+              <input type="text" id="ads-break-name" maxlength="100" autocomplete="off" required>
+            </div>
+            <div class="settings-row">
+              <label for="ads-break-minutes">Minutes past the hour</label>
+              <input type="text" id="ads-break-minutes" inputmode="numeric" maxlength="60" autocomplete="off" aria-describedby="ads-break-minutes-desc">
+            </div>
+            <span class="setting-desc" id="ads-break-minutes-desc">
+              Numbers from 0 to 59, separated by commas, such as 15, 45. Leave empty to run the break only from a Schedule event or Run now.
+            </span>
+            <div class="settings-row">
+              <label for="ads-break-from">From hour</label>
+              <select id="ads-break-from" aria-describedby="ads-break-hours-desc"></select>
+            </div>
+            <div class="settings-row">
+              <label for="ads-break-until">Until hour</label>
+              <select id="ads-break-until" aria-describedby="ads-break-hours-desc"></select>
+            </div>
+            <span class="setting-desc" id="ads-break-hours-desc">
+              The break runs at its minutes from the start of From hour to the start of Until hour.
+            </span>
+            <fieldset id="ads-break-days" aria-describedby="ads-break-days-desc">
+              <legend>Days</legend>
+              <p class="setting-desc" id="ads-break-days-desc">Leave every day unchecked to run every day.</p>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-0" value="0"><label for="ads-break-day-0">Monday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-1" value="1"><label for="ads-break-day-1">Tuesday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-2" value="2"><label for="ads-break-day-2">Wednesday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-3" value="3"><label for="ads-break-day-3">Thursday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-4" value="4"><label for="ads-break-day-4">Friday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-5" value="5"><label for="ads-break-day-5">Saturday</label></div>
+              <div class="settings-check"><input type="checkbox" id="ads-break-day-6" value="6"><label for="ads-break-day-6">Sunday</label></div>
+            </fieldset>
+            <div class="settings-row">
+              <label for="ads-break-start">First day</label>
+              <input type="date" id="ads-break-start" aria-describedby="ads-break-dates-desc">
+            </div>
+            <div class="settings-row">
+              <label for="ads-break-end">Last day</label>
+              <input type="date" id="ads-break-end" aria-describedby="ads-break-dates-desc">
+            </div>
+            <span class="setting-desc" id="ads-break-dates-desc">
+              Optional. The break runs by itself only from its first day to its last day, both included.
+            </span>
+            <div class="settings-row">
+              <label for="ads-break-spots">Spots in the break</label>
+              <input type="number" id="ads-break-spots" min="1" max="10" step="1">
+            </div>
+            <div class="settings-row">
+              <label for="ads-break-seconds">Longest break in seconds</label>
+              <input type="number" id="ads-break-seconds" min="0" max="900" step="1" aria-describedby="ads-break-seconds-desc">
+            </div>
+            <span class="setting-desc" id="ads-break-seconds-desc">0 is no limit. Otherwise from 10 to 900 seconds.</span>
+            <div class="settings-check">
+              <input type="checkbox" id="ads-break-enabled">
+              <label for="ads-break-enabled">Runs</label>
+            </div>
+            <button type="submit" id="ads-break-save">Save ad break</button>
+            <button type="button" id="ads-break-cancel">Cancel</button>
+          </fieldset>
+        </form>
+        <h4 id="ads-pending-heading">Waiting for a song change</h4>
+        <ul id="ads-pending" class="ads-plain" aria-labelledby="ads-pending-heading"></ul>
+        <h4 id="ads-recent-heading">Latest results</h4>
+        <ul id="ads-recent" class="ads-plain" aria-labelledby="ads-recent-heading"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="ads-rules-heading">
+        <h3 id="ads-rules-heading">Rules for every break</h3>
+        <form id="ads-rules-form" novalidate>
+          <p id="ads-rules-error" class="field-error" hidden></p>
+          <div class="settings-row">
+            <label for="ads-rules-separation">Separation in minutes</label>
+            <input type="number" id="ads-rules-separation" min="0" max="1440" step="1" aria-describedby="ads-rules-separation-desc">
+          </div>
+          <span class="setting-desc" id="ads-rules-separation-desc">
+            Spots from one advertiser, or with one competing category, keep at least this far apart. 0 lets them follow each other in the next break.
+          </span>
+          <div class="settings-row">
+            <label for="ads-rules-late">Late after, in minutes</label>
+            <input type="number" id="ads-rules-late" min="1" max="240" step="1" aria-describedby="ads-rules-late-desc">
+          </div>
+          <span class="setting-desc" id="ads-rules-late-desc">A spot that airs more than this long after its break's time is reported as aired late.</span>
+          <div class="settings-row">
+            <label for="ads-rules-missed">Missed after, in minutes</label>
+            <input type="number" id="ads-rules-missed" min="5" max="720" step="1" aria-describedby="ads-rules-missed-desc">
+          </div>
+          <span class="setting-desc" id="ads-rules-missed-desc">A break that cannot air this long after its time is dropped and reported as missed.</span>
+          <button type="submit" id="ads-rules-save">Save rules</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="ads-report-heading">
+        <h3 id="ads-report-heading">Ad report</h3>
+        <form id="ads-report-form" novalidate>
+          <p class="setting-desc" id="ads-report-desc">
+            What aired and when, late or on time, and what was missed, for the days you choose, both included.
+            Export saves every spot (for an affidavit) or the totals by advertiser and campaign as CSV.
+          </p>
+          <p id="ads-report-error" class="field-error" hidden></p>
+          <div class="settings-row">
+            <label for="ads-report-from">From</label>
+            <input type="date" id="ads-report-from" required aria-describedby="ads-report-desc">
+          </div>
+          <div class="settings-row">
+            <label for="ads-report-to">To</label>
+            <input type="date" id="ads-report-to" required>
+          </div>
+          <button type="submit" id="ads-report-show">Show report</button>
+          <div class="settings-row">
+            <label for="ads-report-format">Export</label>
+            <select id="ads-report-format">
+              <option value="affidavit">Every spot (CSV)</option>
+              <option value="summary">Totals by advertiser and campaign (CSV)</option>
+            </select>
+            <button type="button" id="ads-report-export">Export report</button>
+          </div>
+        </form>
+        <!-- Not live: Show report says the totals once through #ads-status. -->
+        <p id="ads-report-summary" hidden></p>
+        <div class="ads-table-wrap" id="ads-totals-wrap" role="region" tabindex="0" aria-labelledby="ads-totals-caption" hidden>
+          <table id="ads-totals-table" class="ads-table">
+            <caption id="ads-totals-caption">Totals by advertiser and campaign</caption>
+            <thead>
+              <tr>
+                <th scope="col">Advertiser</th>
+                <th scope="col">Campaign</th>
+                <th scope="col">Aired</th>
+                <th scope="col">Aired late</th>
+                <th scope="col">Missed</th>
+                <th scope="col">May have aired</th>
+                <th scope="col">Waiting</th>
+                <th scope="col">Seconds aired</th>
+              </tr>
+            </thead>
+            <tbody id="ads-totals"></tbody>
+          </table>
+        </div>
+        <div class="ads-table-wrap" id="ads-rows-wrap" role="region" tabindex="0" aria-labelledby="ads-rows-caption" hidden>
+          <table id="ads-rows-table" class="ads-table">
+            <caption id="ads-rows-caption">Every spot</caption>
+            <thead>
+              <tr>
+                <th scope="col">Break time</th>
+                <th scope="col">Aired</th>
+                <th scope="col">Result</th>
+                <th scope="col">Spot</th>
+                <th scope="col">Break</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody id="ads-rows"></tbody>
+          </table>
+        </div>
+        <p id="ads-report-note" class="setting-desc" hidden></p>
       </section>
     </div>
   </section>
@@ -2653,7 +2931,7 @@
           <div id="categories-query-field">
             <div class="settings-row">
               <label for="categories-query">Beets query</label>
-              <input id="categories-query" type="text" maxlength="500" autocomplete="off" spellcheck="false" aria-describedby="categories-query-help">
+              <input id="categories-query" type="text" maxlength="500" autocomplete="off" spellcheck="false">
             </div>
             <p class="setting-desc" id="categories-query-help">
               Any beets field, including ones plugins add, such as original_year:2000..2009 or genre:rock ^artist:"bon jovi". field:value matches part of the text, a..b is a range of numbers, ^ leaves out what follows it, and quotes keep words together; every part must match. original_year is the first release, and the release year stands in when beets has none. Regular expressions, alternatives with commas and plugin queries are not supported.
@@ -2662,7 +2940,7 @@
           <div id="categories-playlist-field" hidden>
             <div class="settings-row">
               <label for="categories-playlist">Playlist file</label>
-              <select id="categories-playlist" aria-describedby="categories-playlist-help"></select>
+              <select id="categories-playlist"></select>
             </div>
             <p class="setting-desc" id="categories-playlist-help">
               M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library, by its full path or by a path from the playlist's folder or the music folder; lines that match none are counted as missing.
@@ -2676,7 +2954,7 @@
             <button type="button" id="categories-filter-add">Add condition</button>
             <p class="setting-desc">Uses the same folder, metadata and Beets filters as music clockwheel steps. Unknown metadata never matches an exclusion.</p>
           </div>
-          <fieldset id="categories-daypart" aria-describedby="categories-daypart-help">
+          <fieldset id="categories-daypart">
             <legend>When the songs may play</legend>
             <p class="setting-desc" id="categories-daypart-help">
               Optional. Outside these days, hours and dates no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, both times empty for all day, and both dates empty for every day of the year; both dates are included, such as 1 December until 26 December for seasonal songs. Times and dates are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
@@ -2738,11 +3016,12 @@
       <label for="clock-pal-file">.PAL file to import</label>
       <input id="clock-pal-file" type="file" accept=".pal,text/plain" aria-describedby="clock-pal-help">
       <button type="button" id="clock-import">Import .PAL</button>
-      <p id="clock-pal-help">Import makes a new clockwheel from a SAM Broadcaster .PAL file. Only Dir and SubDir queue lines are read, and nothing in the file runs. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
+      <p id="clock-pal-help">Only Dir and SubDir queue lines are imported; nothing in the file runs.</p>
+      <p>Import makes a new clockwheel from a SAM Broadcaster .PAL file. Each folder must be a registered music or voice liner folder, or a folder inside one that adds subfolders.</p>
 
       <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
       <p id="clock-steps-help">Up and Down move between step names; Left and Right move between row buttons; Home and End move to the first and last row buttons. Enter or Space presses the focused button, so Enter on a step name edits it; Delete removes the step, just like its Delete button. Delete and Undo step change are unavailable while editing a step. Ctrl+Z or Undo step change restores the last step change until you save or open another clockwheel. Alt+Up and Alt+Down move the focused step. Changes are kept only when you press Save clockwheel.</p>
-      <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading" aria-describedby="clock-steps-help"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
+      <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
       <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
       <p id="clock-next"></p>
       <fieldset id="clock-step-form" class="flow-form">
@@ -2794,7 +3073,7 @@
         </div>
         <!-- step-hours.js: the step's days and hours.  A refused field is
              linked to #clock-step-hours-error and focused; #clock-status says it. -->
-        <fieldset id="clock-step-hours" aria-describedby="clock-step-hours-help">
+        <fieldset id="clock-step-hours">
           <legend>When this step plays</legend>
           <p class="setting-desc" id="clock-step-hours-help">
             Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
@@ -2824,7 +3103,8 @@
       </fieldset>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
-      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. The clockwheel goes back to step 1 at the song change nearest each minute. Leave empty to restart only when the wheel wraps.</p>
+      <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. Leave empty to restart only when the wheel wraps.</p>
+      <p>The clockwheel goes back to step 1 at the song change nearest each minute.</p>
       <label for="clock-apply-timing">Apply saved changes</label>
       <select id="clock-apply-timing" aria-describedby="clock-apply-help">
         <option value="next_restart" selected>At the next clock restart</option>
@@ -2871,12 +3151,12 @@
           </fieldset>
           <div class="settings-row" id="shows-category-field">
             <label for="shows-category">Category</label>
-            <select id="shows-category" aria-describedby="shows-category-help"></select>
+            <select id="shows-category"></select>
           </div>
           <p class="setting-desc" id="shows-category-help">Songs are picked from the category at random, with the repeat rules. Make categories, such as one from the beets query original_year:2000..2009, under Categories above.</p>
           <div class="settings-row" id="shows-clockwheel-field" hidden>
             <label for="shows-clockwheel">Clockwheel</label>
-            <select id="shows-clockwheel" aria-describedby="shows-clockwheel-help"></select>
+            <select id="shows-clockwheel"></select>
           </div>
           <p class="setting-desc" id="shows-clockwheel-help" hidden>Songs are picked by the clockwheel's steps and conditions, in its order. Its voice liners are left out of the list.</p>
           <div class="settings-row">
@@ -2895,10 +3175,11 @@
         <p id="shows-note" hidden></p>
         <label for="shows-start">Pick as if at</label>
         <input id="shows-start" type="datetime-local" aria-describedby="shows-start-help">
-        <p class="setting-desc" id="shows-start-help">Optional. Generate picks as the station would at this time, in the station time zone, so a category's days, hours and dates and a step's hours count then. Leave it empty for now.</p>
+        <p class="setting-desc" id="shows-start-help">Optional. In the station time zone; leave empty for now.</p>
+        <p class="setting-desc">Generate picks as the station would at this time, so a category's days, hours and dates and a step's hours count then.</p>
         <button type="button" id="shows-generate">Generate list</button>
         <p id="shows-songs-help">Move up and Move down change a song's place; Remove takes it out. Each change is saved at once, and the show plays its list as it is when it starts.</p>
-        <ol id="shows-songs" aria-labelledby="shows-editor-heading" aria-describedby="shows-songs-help"><li class="no-results">No songs yet. Press Generate list, or add songs below.</li></ol>
+        <ol id="shows-songs" aria-labelledby="shows-editor-heading"><li class="no-results">No songs yet. Press Generate list, or add songs below.</li></ol>
         <h4 id="shows-add-heading">Add songs</h4>
         <label for="shows-search">Search the library</label>
         <input id="shows-search" type="search" autocomplete="off" spellcheck="false" aria-describedby="shows-search-help">

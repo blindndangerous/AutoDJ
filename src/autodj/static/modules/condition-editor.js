@@ -29,7 +29,6 @@ export function createConditionRow({
   genreChoices = [],
   beetsChoices = [],
   categoryChoices = null,
-  helpId = "",
   onFieldChange = () => {},
   onRemove = () => {},
 }) {
@@ -64,11 +63,6 @@ export function createConditionRow({
   upper.type = "text";
   const genre = control("Genre", "select", optionsWithMissing(genreChoices, value.field === "genre" ? value.value : ""));
   const name = control("Beets field", "select", optionsWithMissing(beetsChoices, value.name));
-  if (helpId) {
-    input.setAttribute("aria-describedby", helpId);
-    upper.setAttribute("aria-describedby", helpId);
-    name.setAttribute("aria-describedby", helpId);
-  }
   let category = null;
   if (categoryChoices !== null) category = control("Music category", "select", optionsWithMissing(categoryChoices, value.category));
 
