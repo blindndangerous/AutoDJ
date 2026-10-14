@@ -117,6 +117,44 @@ when `pick_top_k <= 1` or `pick_temperature <= 0`. The config defaults in
 the default pick is deterministic. Raise `pick_top_k` to sample from the top
 entries with softmax weights.
 
+## Hour fitting
+
+Tick **Fit songs to the hour** in Settings > Song picking (`[playback] hour_fit = true`) to
+prefer a song that lands near the next top of hour, clockwheel restart or hard schedule event.
+It starts considering lengths when that fixed point is within **Minutes before to start
+fitting** (`hour_fit_window_minutes`) of the next song's estimated start. The window defaults to
+10 minutes and accepts 1 to 30; fitting is off by default.
+
+Fitting changes only selection among songs that the current pick path already accepts. A
+clockwheel stays in its selected music step and tests at most 20 eligible songs. Random picking
+samples at most 20 eligible songs. Least recently played tests the first 20 eligible songs in age
+order. Similarity tests the first 20 filtered, ranked candidates. Discovery samples at most 20
+songs from its eligible distant quarter. Repeat, category, daypart,
+harmonic, BPM and DMCA limits retain their usual order and relaxation; fitting never adds an
+ineligible song. Queued tracks, specific-track clock steps and fallback picks keep their existing
+choice. The duration estimate uses saved start and segue points in saved-point mode, or track
+length less crossfade otherwise. Missing or unusable lengths lose to known lengths. Preview and
+rotation tests use the same player choice code, so they show fitted picks as the station makes them.
+
+How a song is scored: one that hands off at or after the fixed point scores how late it is. One
+that hands off before it scores how well whole songs can fill the rest, taking the candidates'
+average length as a typical song, so a song that would end 30 seconds short of the hour, leaving
+a gap the next song overruns by minutes, is a poor fit, and far from the hour a song that leaves
+room for two typical songs is preferred over the longest one. Up to 10 seconds early counts as on
+time for a top of hour or clockwheel restart; a hard event allows none, since a song started just
+before it would be cut a few seconds in, and a hard event's **Wait up to seconds** covers a song
+that runs a little over. Among equal scores the picker's own order decides: the least recently
+played or the most similar song first.
+
+Cost, measured on the Windows development machine with a synthetic 77,000-song library in random
+pick mode (31 paired picks per setting after three warmup pairs): the target lookup, the 20-song
+sample and the fitting choice add a median of 0.14 ms per pick (1,001 repetitions). Whole picks
+took a median of 477 ms with fitting off and 454 ms with it on, a paired difference of minus
+3.5 ms, within run-to-run noise; an earlier run measured plus 2.55 ms. The full pick
+includes existing library-wide repeat checks, so its difference varies between runs, and other
+libraries and pick modes will differ. Only the existing picker worker does this work, never the
+audio thread.
+
 ## Repeat avoidance and discovery
 
 New installations start with a 50-track limit for the same track and an 8-track

@@ -343,6 +343,7 @@ class Rig:
         self.calls: list[str] = []
         self.messages: list[dict[str, Any]] = []
         self.playing = playing
+        self.remaining = float("inf")
         self.fail: Exception | None = None
         self.schedule = Scheduler(
             path,
@@ -350,10 +351,12 @@ class Rig:
             self.publish,
             interrupt=lambda: self.calls.append("skip"),
             song_playing=lambda: self.playing,
+            song_remaining=lambda: self.remaining,
             clock=lambda: self.now,
         )
         self.schedule.register(Action("noop", "Do nothing", self.handle))
         self.schedule.register(Action("liner", "Air a liner", self.prepare, interrupt="before"))
+        self.schedule.register(Action("stream", "Set stream", self.handle, interrupt="none"))
 
     async def publish(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
@@ -441,7 +444,8 @@ def test_an_event_for_an_unknown_action_is_kept_as_it_was_but_never_runs(tmp_pat
     assert saved == {
         key: value
         for key, value in other.model_dump(mode="json").items()
-        if key not in ("start_date", "end_date") or value is not None
+        if (key not in ("start_date", "end_date") or value is not None)
+        and (key != "wait_seconds" or value)
     }
     rig.tick_at("2026-10-12 07:00")
     assert "b" * 32 not in {run.event_id for run in rig.schedule.runs}
@@ -544,6 +548,105 @@ def test_hard_timing_fades_through_the_skip_path(tmp_path: Path) -> None:
     liner = rig.add(action="liner", time="12:05", timing="hard")
     asyncio.run(rig.schedule.run(liner))
     assert rig.calls == ["prepare", "skip", "action"]
+
+
+def test_hard_event_waits_only_when_song_ends_within_limit(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    rig.schedule.start()
+    event = rig.add(time="12:01", timing="hard", wait_seconds=30)
+    rig.remaining = 25
+    rig.tick_at("2026-10-11 12:01")
+    assert rig.calls == []
+    assert rig.schedule.pending == [event.id]
+
+    async def song_ends() -> None:
+        rig.schedule.track_changed()
+        await asyncio.gather(*rig.schedule._tasks)
+
+    asyncio.run(song_ends())
+    assert rig.calls == ["action"]
+    rig.calls.clear()
+    rig.add(time="12:05", timing="hard", wait_seconds=30)
+    rig.remaining = 31
+    rig.tick_at("2026-10-11 12:05")
+    assert rig.calls == ["action", "skip"]
+    rig.calls.clear()
+    rig.add(time="12:10", timing="hard", wait_seconds=30)
+    rig.remaining = 29
+    rig.tick_at("2026-10-11 12:10:02")
+    assert rig.calls == ["action", "skip"]
+    rig.calls.clear()
+    rig.add(time="12:15", timing="hard", wait_seconds=30)
+    rig.remaining = 20
+    rig.tick_at("2026-10-11 12:15")
+    assert rig.calls == []
+    rig.tick_at("2026-10-11 12:15:30")
+    assert rig.calls == ["action", "skip"]
+
+
+def test_hard_wait_deadline_counts_real_seconds_across_a_clock_change(tmp_path: Path) -> None:
+    # 01:59 happens twice in Denver on 1 November 2026; the first is 07:59 UTC.
+    rig = Rig(
+        tmp_path / "schedule.json",
+        playing=True,
+        now="2026-11-01 07:58",
+        timezone="America/Denver",
+    )
+    rig.schedule.start()
+    rig.add(time="01:59", timing="hard", wait_seconds=120)
+    rig.remaining = 90
+    rig.tick_at("2026-11-01 07:59")
+    rig.tick_at("2026-11-01 08:00:30")
+    assert rig.calls == []
+    rig.tick_at("2026-11-01 08:01")
+    assert rig.calls == ["action", "skip"]
+
+
+def test_no_wait_is_left_out_of_the_file_for_older_versions(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json")
+    rig.schedule.start()
+    rig.add(time="12:01", timing="hard")
+    rig.add(time="12:02", timing="hard", wait_seconds=45)
+    saved = json.loads((tmp_path / "schedule.json").read_text(encoding="utf-8"))["events"]
+    assert "wait_seconds" not in saved[0]
+    assert saved[1]["wait_seconds"] == 45
+    again = Rig(tmp_path / "schedule.json")
+    again.schedule.start()
+    assert [event.wait_seconds for event in again.schedule.events.values()] == [0, 45]
+
+
+def test_wait_limit_validates_hard_timing_and_range() -> None:
+    assert spec(timing="hard").wait_seconds == 0
+    for value in (-1, 301, True):
+        with pytest.raises((ValidationError, EventError)):
+            spec(timing="hard", wait_seconds=value)
+    with pytest.raises(ValidationError, match="hard timing"):
+        spec(timing="soft", wait_seconds=20)
+
+
+def test_hard_wait_does_not_delay_an_action_that_never_skips(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    rig.schedule.start()
+    rig.add(action="stream", timing="hard", time="12:01", wait_seconds=30)
+    rig.remaining = 10
+    rig.tick_at("2026-10-11 12:01")
+    assert rig.calls == ["action"]
+
+
+def test_hard_liner_waits_then_plays_without_skip(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", playing=True)
+    rig.schedule.start()
+    rig.add(action="liner", timing="hard", time="12:01", wait_seconds=20)
+    rig.remaining = 10
+    rig.tick_at("2026-10-11 12:01")
+    assert rig.calls == []
+
+    async def song_ends() -> None:
+        rig.schedule.track_changed()
+        await asyncio.gather(*rig.schedule._tasks)
+
+    asyncio.run(song_ends())
+    assert rig.calls == ["prepare", "action"]
 
 
 def test_a_failing_action_is_recorded_and_the_scheduler_continues(tmp_path: Path) -> None:
@@ -660,6 +763,13 @@ def test_an_action_can_run_hard_events_itself_and_soft_ones_at_once(tmp_path: Pa
     rig.tick_at("2026-10-11 12:02")
     assert rig.calls == ["queue", "now"]
     assert [run.result for run in rig.schedule.runs] == ["ok", "ok"]
+    # A show never fades the song out, so a wait does not hold it back.
+    rig.add(action="show", time="12:03", timing="hard", name="Waits", wait_seconds=60)
+    rig.remaining = 20
+    rig.tick_at("2026-10-11 12:03")
+    assert rig.calls == ["queue", "now", "now"]
+    assert rig.schedule.pending == []
+    assert [event.name for event in rig.schedule.hard_events()] == ["Hard", "Waits"]
 
 
 def test_a_known_action_with_bad_settings_is_set_aside_as_before(tmp_path: Path) -> None:
