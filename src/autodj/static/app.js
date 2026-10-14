@@ -2611,21 +2611,20 @@ const _libEls = {
 // ----------------------------------------------------------------
 // History tab
 // ----------------------------------------------------------------
-import { formatPlayedAt, historyNeedsDates } from "./modules/history-format.js";
+import { formatPlayedAt, updateHistoryDateHeadings } from "./modules/history-format.js";
 import { installHistoryExport } from "./modules/history-export.js";
 
 let _histPage = 1;
 const historyNavigation = installTableNavigation(document.getElementById("history-tbody"));
 // The history request in flight: a newer one aborts it.
 let historyRequest = null;
-// Page 1's newest played_at and whether its rows show dates; null when
+// Page 1's newest played_at; null when
 // page 1 is not on screen, so a track change rebuilds instead of adding.
 let _histNewestAt = null;
-let _histWithDate = false;
 // The playing track's path, to notice a track change on the 1 Hz push.
 let _histPlayingPath = null;
 
-function historyRowHtml(it, withDate) {
+function historyRowHtml(it) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "history-info";
@@ -2636,9 +2635,11 @@ function historyRowHtml(it, withDate) {
   title.textContent = it.title ?? "";
   const titleAndInfo = document.createDocumentFragment();
   titleAndInfo.append(title, " ", button);
-  return tableRow(document, [
-    formatPlayedAt(it.played_at, withDate), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
+  const row = tableRow(document, [
+    formatPlayedAt(it.played_at, false), titleAndInfo, it.artist ?? "", _fmtDuration(it.duration),
   ], { rowHeaderIndex: 1 });
+  row.dataset.playedAt = it.played_at;
+  return row;
 }
 
 function showHistoryPaging(data) {
@@ -2663,7 +2664,7 @@ function _fmtDuration(sec) {
 
 function focusRemainingHistoryRow(tbody, index, message, column = null) {
   const buttons = [...tbody.querySelectorAll(".history-info")];
-  const rows = [...tbody.querySelectorAll("tr")];
+  const rows = [...tbody.querySelectorAll("tr[data-played-at]")];
   const row = rows[Math.min(index, rows.length - 1)];
   const target = column === null ? buttons[Math.min(index, buttons.length - 1)]
     : row?.querySelectorAll("td[role=gridcell], td[role=rowheader]")[column];
@@ -2695,7 +2696,7 @@ async function fetchHistory(page, { announce = false } = {}) {
     const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
     const focusedButton = active?.closest(".history-info") || null;
     const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
-    const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+    const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr[data-played-at]")].indexOf(focusedRow) : -1;
     const focusedColumn = focusedCell
       ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
     const focusedId = focusedRow?.querySelector(".history-info")?.dataset.historyId;
@@ -2720,8 +2721,8 @@ async function fetchHistory(page, { announce = false } = {}) {
     }
     empty.setAttribute("hidden", "");
     table.removeAttribute("hidden");
-    const withDate = historyNeedsDates(data.items);
-    tbody.replaceChildren(...data.items.map((it) => historyRowHtml(it, withDate)));
+    tbody.replaceChildren(...data.items.map(historyRowHtml));
+    updateHistoryDateHeadings(tbody);
     historyNavigation.refresh();
     if (focusedId) {
       const replacement = [...tbody.querySelectorAll(".history-info")]
@@ -2739,7 +2740,6 @@ async function fetchHistory(page, { announce = false } = {}) {
     }
     if (data.page === 1) {
       _histNewestAt = data.items[0].played_at;
-      _histWithDate = withDate;
     }
     const pageText = showHistoryPaging(data);
     pag.removeAttribute("hidden");
@@ -2803,21 +2803,18 @@ async function addNewHistoryRows() {
   if (request.signal.aborted || _histPage !== 1 || _histNewestAt !== newestShown) return;
   const fresh = data.items.filter((it) => it.played_at > newestShown);
   if (!fresh.length) return;
-  if (historyNeedsDates(data.items) !== _histWithDate) {
-    await fetchHistory(1);  // Every row's time changes format.
-    return;
-  }
   const tbody = document.getElementById("history-tbody");
   const active = tbody.contains(document.activeElement) ? document.activeElement : null;
   const focusedCell = active?.matches("td[role=gridcell], td[role=rowheader]") ? active : null;
   const focusedButton = active?.closest(".history-info") || null;
   const focusedRow = focusedCell?.closest("tr") || focusedButton?.closest("tr") || null;
-  const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr")].indexOf(focusedRow) : -1;
+  const focusedIndex = focusedRow ? [...tbody.querySelectorAll("tr[data-played-at]")].indexOf(focusedRow) : -1;
   const focusedColumn = focusedCell
     ? [...focusedCell.parentElement.children].indexOf(focusedCell) : null;
   const focusedElement = focusedCell || focusedButton;
-  tbody.prepend(...fresh.map((it) => historyRowHtml(it, _histWithDate)));
-  while (tbody.children.length > 50) tbody.lastElementChild.remove();
+  tbody.prepend(...fresh.map(historyRowHtml));
+  for (const row of [...tbody.querySelectorAll("tr[data-played-at]")].slice(50)) row.remove();
+  updateHistoryDateHeadings(tbody);
   historyNavigation.refresh();
   if (focusedElement && !focusedElement.isConnected) focusRemainingHistoryRow(tbody, focusedIndex,
     "That play is no longer in the displayed History rows.", focusedColumn);

@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- History shows only the time on each play, with a date heading for each day instead of
+  repeating dates on every row. Live updates keep existing rows and keyboard focus in place.
+
 - Settings keep longer help available to read without repeating it on every field focus.
   Track counts, hour preview and matched-intro explanations are shorter (#235).
 - Preview columns, show lengths and duration messages use numeric times for both visual
