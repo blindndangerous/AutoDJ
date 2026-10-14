@@ -205,7 +205,9 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     if notice:
         print(notice)
     if reuse:
-        print("Use existing Python packages; check that AutoDJ and the selected backend work.")
+        print(
+            "Setup will use your existing Python packages and verify the selected CPU or GPU runtime."
+        )
     else:
         for command in install_commands(
             root,
@@ -217,7 +219,9 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         ):
             print("Install: " + subprocess.list2cmdline(command))
         print("Installing PyTorch and audio dependencies can download several GB.")
-    print("Check the runtime and run AutoDJ doctor.")
+    print(
+        "After installation, setup will verify the runtime and run AutoDJ doctor to check for problems."
+    )
     print(
         "Close any running AutoDJ server or import jobs before applying setup so doctor can check the databases."
     )
@@ -293,7 +297,7 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     write_json(
         root / STATE, {"environment": str(environment), "backend": backend, "external": external}
     )
-    print("\nSetup verified. Start AutoDJ with:")
+    print("\nRuntime verified and saved. Start AutoDJ with:")
     print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
     print("Your library is empty. Add music folders from the Library page in AutoDJ.")
     test_import = args.test_import or (

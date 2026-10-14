@@ -22,8 +22,9 @@ box set tagged with one album name for every disc counts as one album,
 again the stricter limit.
 
 The module is pure: the player builds a :class:`Complement` from its play
-history for each pick, and the queue projects the history to a queued
-song's expected start with :func:`projected_history`.
+history for each pick, and the queue checks build one from the history as
+it will stand at a queued song's expected start, timed as the hour preview
+times the queue (:func:`autodj.hour_preview.time_queue`, #217).
 """
 
 from __future__ import annotations
@@ -209,42 +210,6 @@ def relaxed[T](
     return [pair for pair in widest if len(pair[1]) == fewest]
 
 
-def projected_history(
-    history: Sequence[PlayRecord],
-    now: float,
-    playing: Any | None,
-    waiting: Sequence[Any],
-    *,
-    length: Callable[[Any], float] | None = None,
-) -> tuple[list[PlayRecord], float]:
-    """The history as it will stand when a song queued after *waiting* starts, and that time.
-
-    Args:
-        history: The plays so far, oldest first.
-        now: The time now.
-        playing: The track playing, which ends its length after its
-            recorded start (it counts as starting now when it is not the
-            latest play); ``None`` when the queued song starts now.
-        waiting: Tracks that play first, each for its length.
-        length: How long a track plays, in seconds; its file length when
-            ``None``.  Music speed makes music play shorter or longer.
-    """
-    played = length if length is not None else (lambda entry: float(entry.length))
-    records = list(history)
-    when = now
-    if playing is not None:
-        if records and records[-1].path == playing.path:
-            started = records[-1].started
-        else:
-            started = now
-            records.append(PlayRecord.of(playing, now))
-        when = max(now, started + max(0.0, played(playing)))
-    for entry in waiting:
-        records.append(PlayRecord.of(entry, when))
-        when += max(0.0, played(entry))
-    return records, when
-
-
 __all__ = [
     "ALBUM_IN_A_ROW",
     "ALBUM_LIMIT",
@@ -255,7 +220,6 @@ __all__ = [
     "WINDOW_SECONDS",
     "Complement",
     "complement",
-    "projected_history",
     "relaxed",
     "set_key",
 ]

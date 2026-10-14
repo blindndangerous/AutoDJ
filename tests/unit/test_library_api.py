@@ -1,6 +1,7 @@
 """Folder and point operations through the web route boundary."""
 
 import asyncio
+import dataclasses
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -150,6 +151,37 @@ def test_points_validate_and_keep_manual_values_without_analysis(library_api, tm
     with pytest.raises(HTTPException) as invalid:
         call("POST", "/api/library/points", SongPointsBody(path=str(liner), points={"intro": 1}))
     assert invalid.value.status_code == 400
+
+
+def test_unchanged_track_info_cues_save_after_display_rounding(library_api):
+    """#237: Track info shows cues to 0.01 s, so a saved End can read past the length."""
+    manager, call, _app = library_api
+    music = manager.cfg.library.music_dir / "song.flac"
+    music.touch()
+    length = 213.4567
+    stored = {"start": 1.2351, "intro": 12.3456, "outro": 200.0049, "segue": 205.555}
+    manager.catalog.put_entry(
+        dataclasses.replace(make_entry(music), length=length), points={**stored, "end": length}
+    )
+    manager.refresh()
+    loaded = call("GET", "/api/library/points", str(music))["points"]
+    # What the editor sends back after formatPointTime/parsePointTime.
+    shown = {name: round(value, 2) for name, value in loaded.items() if value is not None}
+    assert shown["end"] > length
+
+    saved = call("POST", "/api/library/points", SongPointsBody(path=str(music), points=shown))
+
+    assert saved["points"]["end"] == length
+    for name, value in stored.items():
+        assert abs(saved["points"][name] - value) <= 0.005
+    with pytest.raises(HTTPException) as invalid:
+        call(
+            "POST",
+            "/api/library/points",
+            SongPointsBody(path=str(music), points={"end": round(length + 0.02, 2)}),
+        )
+    assert invalid.value.status_code == 400
+    assert manager.catalog.points(music)["end"] == length
 
 
 def test_track_points_reports_playback_and_analysis_state(library_api):
