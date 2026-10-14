@@ -9,11 +9,11 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 from click.testing import CliRunner
 
 from autodj.backup import BackupError, create_backup, restore_backup
+from autodj.catalog import LibraryCatalog
 from autodj.cli import cli
 from autodj.config import (
     AutoDJConfig,
@@ -24,8 +24,6 @@ from autodj.config import (
     PlaybackConfig,
 )
 from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport
-from autodj.index_manifest import read_manifest
-from autodj.indexer import FEATURE_DIM, IndexEntry, save_index
 from autodj.version import current_version
 
 
@@ -40,6 +38,8 @@ def _config(root: Path) -> AutoDJConfig:
         config_path=root / "config.toml",
     )
     cfg.index.active_dir.mkdir(parents=True)
+    with LibraryCatalog(cfg.index.active_dir / "library.db"):
+        pass
     return cfg
 
 
@@ -144,34 +144,6 @@ def test_recording_state_is_backed_up_but_recordings_are_not(tmp_path: Path) -> 
     assert newer.read_bytes() == b"NEW"
 
 
-def _publish(cfg: AutoDJConfig, title: str) -> None:
-    entry = IndexEntry(
-        path=str(cfg.library.music_dir / "song.flac"),
-        title=title,
-        artist="Artist",
-        album="",
-        genre="",
-        bpm=0.0,
-        year=0,
-        length=1.0,
-        energy=0.0,
-        key=-1,
-        mode=-1,
-        tempo_confidence=0.0,
-    )
-    vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
-    live = read_manifest(cfg.index.active_dir)
-    base = 0 if live is None else live.generation
-    save_index([entry], vectors, cfg.index.active_dir, cfg.library.music_dir, base_generation=base)
-
-
-def _indexed_title(cfg: AutoDJConfig) -> str:
-    manifest = read_manifest(cfg.index.active_dir)
-    assert manifest is not None
-    with closing(sqlite3.connect(cfg.index.active_dir / manifest.tracks_file)) as conn:
-        return str(conn.execute("SELECT title FROM tracks").fetchone()[0])
-
-
 def _dj_meta(cfg: AutoDJConfig) -> sqlite3.Connection:
     conn = sqlite3.connect(cfg.index.active_dir / "dj_meta.db")
     conn.execute("PRAGMA journal_mode=WAL")
@@ -181,18 +153,18 @@ def _dj_meta(cfg: AutoDJConfig) -> sqlite3.Connection:
 
 def _catalog(cfg: AutoDJConfig) -> sqlite3.Connection:
     conn = sqlite3.connect(cfg.index.active_dir / "library.db")
-    conn.executescript(
-        """
-        CREATE TABLE catalog_sources(id TEXT PRIMARY KEY, path TEXT, kind TEXT);
-        CREATE TABLE catalog_entries(id TEXT PRIMARY KEY, path TEXT, points TEXT);
-        CREATE TABLE play_history(event_id TEXT PRIMARY KEY, title TEXT);
-        """
-    )
-    conn.execute("INSERT INTO catalog_sources VALUES ('folder', '/music', 'music')")
     conn.execute(
-        "INSERT INTO catalog_entries VALUES ('track', '/music/song.flac', '{\"start\": 1}')"
+        "INSERT INTO catalog_sources(id,path,kind,recursive,advanced) VALUES "
+        "('folder','/music','music',1,0)"
     )
-    conn.execute("INSERT INTO play_history VALUES ('play', 'Kept')")
+    conn.execute(
+        "INSERT INTO catalog_entries(id,path,kind,title,points) "
+        "VALUES ('track','/music/song.flac','music','Kept','{\"start\": 1}')"
+    )
+    conn.execute(
+        "INSERT INTO play_history(event_id,title,artist,duration,played_at) "
+        "VALUES ('play','Kept','Artist',1,'2026-10-13T12:00:00+00:00')"
+    )
     conn.commit()
     return conn
 
@@ -211,7 +183,7 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     active = cfg.index.active_dir
     liners = active / "liners"
     profiles = active.parent / "profiles"
-    _publish(cfg, "Kept")
+    catalog = _catalog(cfg)
     (active / "web_state.json").write_text(
         '{"playback": {"nowplaying_show_next": false}}', encoding="utf-8"
     )
@@ -228,14 +200,16 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     dj_meta = _dj_meta(cfg)
     dj_meta.execute("INSERT INTO cues VALUES ('in the WAL')")
     dj_meta.commit()
-    catalog = _catalog(cfg)
     with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
         backup = CliRunner().invoke(cli, ["backup", str(tmp_path / "backup.zip")])
     dj_meta.close()
     catalog.close()
     assert backup.exit_code == 0, backup.output
 
-    _publish(cfg, "Replaced")
+    with closing(sqlite3.connect(active / "library.db")) as conn:
+        conn.execute("UPDATE catalog_entries SET title='Replaced'")
+        conn.execute("UPDATE play_history SET title='Replaced'")
+        conn.commit()
     (active / "web_state.json").write_text('{"volume": 0}', encoding="utf-8")
     (active / "listener_bans.json").write_text('{"bans": []}', encoding="utf-8")
     (active / "related-artists.toml").write_text("replaced links", encoding="utf-8")
@@ -254,12 +228,15 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
 
     assert "pass --force" in refused.output
     assert restored.exit_code == 0, restored.output
-    assert "Restored 11 files." in restored.output
-    assert _indexed_title(cfg) == "Kept"
-    assert sorted(path.name for path in active.glob("*.g*")) == [
-        "tracks.g00000000000000000001.db",
-        "vectors.g00000000000000000001.index",
-    ]
+    with zipfile.ZipFile(tmp_path / "backup.zip") as backup:
+        count = len(json.loads(backup.read("manifest.json"))["files"])
+    assert f"Restored {count} files." in restored.output
+    with zipfile.ZipFile(tmp_path / "backup.zip") as backup:
+        members = backup.namelist()
+    assert "index/index-manifest.json" not in members
+    assert not any(
+        name.startswith("index/tracks.g") or name.startswith("index/vectors.g") for name in members
+    )
     assert (active / "web_state.json").read_text(encoding="utf-8") == (
         '{"playback": {"nowplaying_show_next": false}}'
     )
@@ -278,17 +255,28 @@ def test_restore_reproduces_what_was_backed_up(tmp_path: Path) -> None:
     with closing(sqlite3.connect(active / "library.db")) as conn:
         assert conn.execute("SELECT path FROM catalog_sources").fetchall() == [("/music",)]
         assert conn.execute("SELECT points FROM catalog_entries").fetchall() == [('{"start": 1}',)]
+        assert conn.execute("SELECT title FROM catalog_entries").fetchall() == [("Kept",)]
         assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
     assert not list(active.parent.glob(".*restore-*"))
 
 
-def test_old_backup_without_catalog_preserves_current_catalog(tmp_path: Path) -> None:
+def test_restore_refuses_a_backup_without_catalog_before_changing_current_data(
+    tmp_path: Path,
+) -> None:
     cfg = _config(tmp_path)
-    archive = create_backup(cfg, tmp_path / "old.zip", force=False)
     catalog = _catalog(cfg)
     catalog.close()
+    archive = _archive(
+        tmp_path / "old.zip",
+        {
+            "index/index-manifest.json": b'{"schema_version":2}',
+            "index/tracks.g00000000000000000001.db": b"legacy tracks",
+            "index/vectors.g00000000000000000001.index": b"legacy vectors",
+        },
+    )
 
-    restore_backup(cfg, archive, force=True)
+    with pytest.raises(BackupError, match=r"no catalog database.*migrate-index --apply"):
+        restore_backup(cfg, archive, force=True)
 
     with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
         assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
@@ -301,6 +289,24 @@ def test_restore_refuses_corrupt_catalog_before_overwrite(tmp_path: Path) -> Non
     archive = _archive(tmp_path / "corrupt.zip", {"index/library.db": b"not sqlite"})
 
     with pytest.raises(BackupError, match="integrity_check"):
+        restore_backup(cfg, archive, force=True)
+
+    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM play_history").fetchall() == [("Kept",)]
+
+
+def test_restore_refuses_valid_sqlite_that_is_not_a_catalog_before_overwrite(
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    catalog = _catalog(cfg)
+    catalog.close()
+    unrelated = sqlite3.connect(":memory:")
+    unrelated.execute("CREATE TABLE unrelated (value TEXT)")
+    archive = _archive(tmp_path / "non-catalog.zip", {"index/library.db": unrelated.serialize()})
+    unrelated.close()
+
+    with pytest.raises(BackupError, match=r"not a current AutoDJ catalog.*migrate-index --apply"):
         restore_backup(cfg, archive, force=True)
 
     with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
@@ -363,33 +369,66 @@ def test_restore_refuses_unsafe_member_names(tmp_path: Path, name: str) -> None:
     assert not list(tmp_path.rglob("*.mp3"))
 
 
-def test_restore_refuses_an_old_format_index(tmp_path: Path) -> None:
+def test_restore_refuses_legacy_generations_even_with_a_catalog(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    old_manifest = json.dumps({"schema_version": 2}).encode()
+    catalog = _catalog(cfg)
+    catalog.close()
     files = {
+        "index/library.db": (cfg.index.active_dir / "library.db").read_bytes(),
         "index/tracks.g00000000000000000001.db": b"old",
         "index/vectors.g00000000000000000001.index": b"old",
-        "index/index-manifest.json": old_manifest,
+        "index/index-manifest.json": b'{"schema_version":2}',
     }
     archive = _archive(tmp_path / "old.zip", files)
 
-    with pytest.raises(BackupError, match=r"this backup was made by an older AutoDJ.*--force`"):
+    with pytest.raises(BackupError, match=r"3 legacy index files.*migrate-index --apply"):
         restore_backup(cfg, archive, force=True)
 
-    # Nothing from the archive is installed.  The index's own publication
-    # lock file may remain: filelock keeps it on POSIX and removes it on Windows.
-    leftovers = [p.name for p in cfg.index.active_dir.iterdir()]
-    assert leftovers in ([], [".index-publication.lock"])
+    assert not (cfg.index.active_dir / "index-manifest.json").exists()
+    assert not list(cfg.index.active_dir.glob("tracks.g*"))
+    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as conn:
+        assert conn.execute("SELECT title FROM catalog_entries").fetchall() == [("Kept",)]
 
 
-def test_backup_refuses_an_old_format_index(tmp_path: Path) -> None:
+def test_backup_ignores_legacy_generation_files(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    (cfg.index.active_dir / "tracks.db").write_bytes(b"made before index manifests")
+    active = cfg.index.active_dir
+    (active / "tracks.g00000000000000000001.db").write_bytes(b"obsolete tracks")
+    (active / "vectors.g00000000000000000001.index").write_bytes(b"obsolete vectors")
+    (active / "index-manifest.json").write_text("{}", encoding="utf-8")
 
-    with pytest.raises(BackupError, match=r"older AutoDJ.*autodj index --force"):
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+
+    with zipfile.ZipFile(archive) as backup:
+        names = set(backup.namelist())
+    assert "index/library.db" in names
+    assert "index/index-manifest.json" not in names
+    assert not any(
+        name.startswith("index/tracks.g") or name.startswith("index/vectors.g") for name in names
+    )
+
+
+def test_backup_requires_a_current_catalog(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    (cfg.index.active_dir / "library.db").unlink()
+
+    with pytest.raises(BackupError, match=r"no catalog database.*autodj index"):
         create_backup(cfg, tmp_path / "backup.zip", force=False)
 
-    assert not list(tmp_path.glob("*backup.zip*"))
+    assert not (tmp_path / "backup.zip").exists()
+
+
+def test_backup_refuses_valid_sqlite_that_is_not_a_catalog(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    database = cfg.index.active_dir / "library.db"
+    database.unlink()
+    with closing(sqlite3.connect(database)) as unrelated:
+        unrelated.execute("CREATE TABLE unrelated (value TEXT)")
+
+    with pytest.raises(BackupError, match=r"not a current AutoDJ catalog.*migrate-index --apply"):
+        create_backup(cfg, tmp_path / "backup.zip", force=False)
+
+    assert not (tmp_path / "backup.zip").exists()
 
 
 def test_categories_are_backed_up_but_their_playlists_are_not(tmp_path: Path) -> None:
@@ -440,3 +479,15 @@ def test_matched_intros_and_their_audio_are_backed_up_and_restored(tmp_path: Pat
     restore_backup(cfg, archive, force=True)
     assert json.loads(state.read_text(encoding="utf-8"))["schema_version"] == 1
     assert audio.read_bytes() == b"RIFF"
+
+
+def test_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    state = cfg.index.active_dir / "shows.json"
+    state.write_text('{"schema_version": 1, "shows": {}}', encoding="utf-8")
+    archive = create_backup(cfg, tmp_path / "shows.zip", force=False)
+    with zipfile.ZipFile(archive) as backup:
+        assert backup.read("index/shows.json") == state.read_bytes()
+    state.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert json.loads(state.read_text(encoding="utf-8")) == {"schema_version": 1, "shows": {}}

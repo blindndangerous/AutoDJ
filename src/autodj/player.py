@@ -1684,6 +1684,7 @@ class Player:
                 closed_categories=context.closed_categories if hours else None,
                 normalized_history=normalized_history,
                 versions=self._song_versions(),
+                preferred_path=getattr(self, "_preview_preferred_path", None),
             )
 
         # Like the other pick modes, relax rather than stop the music: first
@@ -3959,7 +3960,12 @@ class Player:
                 from autodj.clockwheel import least_recent
 
                 return least_recent(
-                    entries, history, self._random, allowed=allowed, versions=versions
+                    entries,
+                    history,
+                    self._random,
+                    allowed=allowed,
+                    versions=versions,
+                    preferred_path=getattr(self, "_preview_preferred_path", None),
                 )
             pool = [entry for entry in entries if allowed(entry)]
             return self._choose(pool) if pool else None

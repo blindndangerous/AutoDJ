@@ -65,12 +65,12 @@ On macOS or Linux:
 ```
 
 Setup detects supported hardware, installs the appropriate CPU, NVIDIA, or AMD runtime, verifies
-it with a real calculation, and remembers it. It asks for your music folder and port and preserves
-existing configuration. Unsupported hardware gets an explicit CPU recommendation. Starting a command
+it with a real calculation, and remembers it. It asks for the port and preserves existing configuration.
+A new library starts empty; add folders from the Library page. Unsupported hardware gets an explicit CPU recommendation. Starting a command
 interactively before setup also opens this flow. There is no separate AMD launcher to remember.
 
 Open the address printed by `serve` (normally `http://127.0.0.1:8080`). Use the same launcher for
-diagnostics and indexing; substitute `./autodj.cmd` in Windows PowerShell:
+diagnostics and indexing after registering folders; substitute `./autodj.cmd` in Windows PowerShell:
 
 ```bash
 ./autodj doctor
@@ -135,6 +135,13 @@ controls still require pairing in LAN mode. Older
 keyed addresses such as `/stream/<secret>.mp3` no longer work, so set any player saved with one
 to `/stream.mp3`.
 
+The same mix can also be served in AAC (`/stream.aac`) and Opus (`/stream.opus`), each at its own
+bitrate, from Settings, Stream, More formats. Settings, Stream, Listener statistics shows the
+listeners on each format, daily peaks, sessions and listening hours as text and tables, with a
+CSV download; it keeps only daily counts, never addresses. See
+[More formats](docs/operations.md#more-formats-aac-and-opus) and
+[Listener statistics](docs/operations.md#listener-statistics).
+
 The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
 webhooks can send the same metadata to other services or Discord; configure their URLs in
@@ -191,12 +198,13 @@ station. See [Several stations](docs/operations.md#several-stations), including
 [ADR 5](docs/adr/0005-a-station-owns-its-playout-chain.md) for the design.
 
 `autodj serve` loads the current library from `library.db` and shows its song and analysis
-counts. Add music in Library tools; songs become available before advanced analysis finishes.
+counts. A new library starts empty: open Library tools and add one or more folders. No music
+root is required. Songs become available before advanced analysis finishes.
 The published-index format (`index-manifest.json` and its generation files) is deprecated.
-`serve` and `index` import it when a library has no catalog yet, keeping the original files for
-recovery. Once the catalog exists, neither command reads or watches the old manifest. Use
-Library folders or `autodj index` to update the current library. Migration tools remain available
-for older indexes during this transition.
+Stop AutoDJ and run `autodj migrate-index` to preview an upgrade, then add `--apply` to
+import the old data into `library.db`. The command keeps a recovery copy. Normal startup and
+indexing use only the catalog; a leftover manifest does not replace it. Use Library folders or
+`autodj index` to update the current library.
 
 ## Commands
 
@@ -204,12 +212,12 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
 `--config FILE` and `-v` go before the command name.
 
 - `autodj index` rescans the registered library folders, adds songs, and saves advanced analysis
-  directly in `library.db`. On first use it registers `[library] music_dir`. The folder list controls
+  directly in `library.db`. Add folders in Library tools first. The folder list controls
   what is imported; beets supplies metadata when configured. Folder advanced-analysis switches
   are respected. `--limit N` caps the advanced pass, while all songs are added first. `--force`
   replaces analysis without clearing cues, history or settings; failed songs retain their previous
   vectors. `--workers N` controls audio prefetch. `--no-enrich` skips the beets refresh and
-  `--no-analyse` skips the extra beat/cue backfill for the configured music root.
+  `--no-analyse` skips the extra beat/cue backfill for eligible registered folders.
 - `autodj analyse` fills in intro, outro, beat grid, and cue points for indexed tracks.
 - `autodj analyse-library` runs advanced analysis for tracks added through Library folders.
   The web interface starts this job in the background when requested.
@@ -226,8 +234,8 @@ Every command takes `--help`, for example `uv run autodj serve --help`. The glob
   [Announcer breaks](docs/operations.md#announcer-breaks-dj-breaks-news-and-weather). The
   web UI's Voice tracks tab records and books a DJ break from the browser's microphone with no
   token; see [Voice tracking](docs/operations.md#voice-tracking-from-the-browser).
-- `autodj migrate-index` previews a schema-3 to schema-4 conversion; add `--apply` to save a
-  recovery copy and convert without repeating analysis. Interactive `serve` offers this too.
+- `autodj migrate-index` previews importing an older library and its settings; add `--apply`
+  to save a recovery copy and complete the upgrade without repeating analysis.
 - `autodj enrich` refreshes key and mode from your beets database.
 - `autodj prune` removes index entries whose audio files no longer exist.
 - `autodj stats` prints an overview of the indexed library.
@@ -281,17 +289,17 @@ AUTODJ_UID=1000
 AUTODJ_GID=1000
 ```
 
-Then build, index, and start:
+Then build and start:
 
 ```bash
 git clone https://github.com/blindndangerous/AutoDJ
 cd AutoDJ
 mkdir -p index models
-docker compose run --rm --build autodj index
 docker compose up -d --build
 ```
 
-Startup prints the addresses to open and an 8-digit pairing code; `docker compose logs autodj`
+Open Library and add `/music` (or other folders you mounted). Startup prints the addresses to open
+and an 8-digit pairing code; `docker compose logs autodj`
 shows them again. The container uses the host network, so those are the machine's own names and
 addresses, and it restarts after a crash or a reboot.
 
@@ -521,7 +529,6 @@ Common things to set:
 
 ```toml
 [library]
-music_dir = "/mnt/nas/music"
 beets_db  = "/home/me/.config/beets/library.db"   # optional
 
 [playback]

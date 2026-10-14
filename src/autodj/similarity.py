@@ -1,21 +1,7 @@
 """FAISS-based next-song similarity engine.
 
-Loads the pre-built FAISS index and provides :class:`SimilarityIndex`, which
-wraps the index with recently-played exclusion and candidate ranking logic.
-
-Cosine similarity is computed via inner product on L2-normalized vectors
-(``IndexFlatIP``), so higher scores mean more similar tracks.
-
-Vectors are pre-computed during ``autodj index`` and stored in the FAISS index.
-Playback looks them up by path — no model inference needed at play time.
-
-Example:
-    >>> from autodj.similarity import SimilarityIndex
-    >>> from collections import deque
-    >>> sim = SimilarityIndex.from_index_dir(Path("index"))
-    >>> next_track = sim.find_next_for_path("Z:/Music/song.flac", recently_played=deque())
-    >>> print(next_track.display_name)
-    Portishead — Mysterons
+LibraryManager builds the in-memory index from vectors in library.db. Matching
+uses inner products of normalized vectors, with no model inference at play time.
 """
 
 from __future__ import annotations
@@ -27,15 +13,13 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, fields
-from pathlib import Path
 from typing import cast
 
 import faiss
 import numpy as np
 import numpy.typing as npt
 
-from autodj.index_manifest import IndexManifest
-from autodj.indexer import IndexEntry, load_index
+from autodj.indexer import IndexEntry
 from autodj.repeat_rules import RELAXED_RULES
 
 logger = logging.getLogger(__name__)
@@ -184,7 +168,6 @@ class SimilarityIndex:
     def __post_init__(self) -> None:
         """Validate consistency and build the path → FAISS index position map."""
         self._reload_lock = threading.RLock()
-        self._manifest: IndexManifest | None = None
         if self.faiss_index.ntotal != len(self.entries):
             raise ValueError(
                 f"Index/metadata mismatch: FAISS has {self.faiss_index.ntotal} vectors "
@@ -204,19 +187,13 @@ class SimilarityIndex:
         with self._reload_lock:
             return len(self.entries)
 
-    @property
-    def manifest(self) -> IndexManifest | None:
-        """Manifest of the loaded generation; ``None`` for :meth:`empty`."""
-        with self._reload_lock:
-            return self._manifest
-
     def entries_snapshot(self) -> tuple[IndexEntry, ...]:
         """Return immutable view of entries from one index generation."""
         with self._reload_lock:
             return self._public_entries
 
     def replace_catalog_index(self, entries: list[IndexEntry], vectors: np.ndarray) -> None:
-        """Refresh real matching vectors without changing the legacy disk generation."""
+        """Refresh the matching view from catalog vectors."""
         from autodj.indexer import build_faiss_index
 
         self.replace_catalog_faiss(entries, build_faiss_index(vectors))
@@ -310,61 +287,6 @@ class SimilarityIndex:
         from autodj.indexer import FEATURE_DIM
 
         return cls(faiss_index=faiss.IndexFlatIP(FEATURE_DIM), entries=[])
-
-    def reload_from_disk(self, index_dir: Path, music_dir: Path | None = None) -> int:
-        """Load the live generation from disk, replacing in-memory state in place.
-
-        Loads files published by ``autodj index``. The running server uses
-        the library catalog instead.
-
-        Args:
-            index_dir: The index directory.
-            music_dir: Library root for resolving relative paths.
-
-        Returns:
-            New track count after reload.
-        """
-        candidate = SimilarityIndex.from_index_dir(index_dir, music_dir)
-        with self._reload_lock:
-            self.entries = candidate.entries
-            self.faiss_index = candidate.faiss_index
-            self._path_to_idx = candidate._path_to_idx
-            self._public_entries = candidate._public_entries
-            self._manifest = candidate._manifest
-            return len(self.entries)
-
-    @classmethod
-    def from_index_dir(
-        cls,
-        index_dir: Path,
-        music_dir: Path | None = None,
-    ) -> SimilarityIndex:
-        """Load a :class:`SimilarityIndex` from the index directory on disk.
-
-        Used for legacy indexes before their first catalog import. When
-        *music_dir* is provided, the relative paths stored in the index are
-        resolved against it, so one index works on any machine that mounts
-        the library at a different location.
-
-        Args:
-            index_dir: The index directory, as written by
-                :func:`autodj.indexer.save_index`.
-            music_dir: Library root for resolving relative paths.
-
-        Returns:
-            A fully populated :class:`SimilarityIndex`.
-
-        Raises:
-            FileNotFoundError: If the directory holds no index.
-            IndexConsistencyError: See :func:`autodj.indexer.load_index`.
-
-        Example:
-            >>> sim = SimilarityIndex.from_index_dir(Path("index"))
-        """
-        entries, faiss_index, manifest = load_index(index_dir, music_dir=music_dir)
-        sim = cls(faiss_index=faiss_index, entries=entries)
-        sim._manifest = manifest
-        return sim
 
     # ------------------------------------------------------------------
     # Core query

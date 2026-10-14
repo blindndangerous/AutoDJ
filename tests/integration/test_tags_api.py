@@ -26,6 +26,7 @@ def tagged(tmp_path: Path):
     """A client, its library and one analysed FLAC song in the music folder."""
     cfg = make_config(tmp_path)
     manager = LibraryManager(cfg, Similarity())
+    manager.catalog.add_source(cfg.library.music_dir)
     song = make_audio(cfg.library.music_dir, ".flac")
     entry = make_entry(song, title="Old Title")
     manager.catalog.put_entry(entry, points={"start": 0.0, "end": 0.1}, point_source="user")

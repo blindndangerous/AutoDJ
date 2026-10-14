@@ -76,6 +76,9 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
         *REQUEST_SETTING_KEYS,
+        "stream_aac_bitrate",
+        "stream_opus_bitrate",
+        "stream_stats_days",
     }
 )
 #: Playback keys mirrored into ``web_state.json``.
@@ -133,24 +136,53 @@ def _migrate_v1(data: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
-def _backup_v1_state(path: Path) -> bool:
-    """Preserve a v1 file once before replacing it; false means do not save."""
-    backup = path.with_name(f"{path.name}.v1.bak")
-    if backup.exists():
-        return True
+def migrate_state_file(path: Path, *, apply: bool = False) -> bool:
+    """Upgrade a v1 web-state file explicitly, preserving its original bytes.
+
+    Return whether the file needs migration. Preview mode validates and reports
+    without writing; applying writes the v1 recovery copy before replacing the
+    file. This is used by ``autodj migrate-index`` so serving can treat saved
+    state as current-format data only.
+    """
     try:
         original = path.read_bytes()
         data = json.loads(original)
+    except FileNotFoundError:
+        return False
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    version = data.get("schema_version")
+    if type(version) is int and version == STATE_VERSION:
+        return False
+    if type(version) is not int or version != 1:
+        raise ValueError(f"{path} has unsupported schema_version {version!r}")
+    if not apply:
+        return True
+
+    backup = path.with_name(f"{path.name}.v1.bak")
+    if backup.exists():
+        if backup.read_bytes() != original:
+            raise ValueError(f"recovery copy already exists with different data: {backup}")
+    else:
+        atomic_write(backup, original)
+    atomic_write(path, json.dumps(_migrate_v1(data), indent=2, ensure_ascii=False))
+    return True
+
+
+def _can_save_state(path: Path) -> bool:
+    """Do not overwrite old settings that have not been explicitly migrated."""
+    try:
+        data = json.loads(path.read_bytes())
     except (OSError, UnicodeError, json.JSONDecodeError):
         return True
-    if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
-        return True
-    if data["schema_version"] != 1:
-        return True
-    try:
-        atomic_write(backup, original)
-    except OSError as exc:
-        logger.warning("Failed to back up v1 web_state.json; keeping original: %s", exc)
+    if (
+        isinstance(data, dict)
+        and type(data.get("schema_version")) is int
+        and data["schema_version"] == 1
+    ):
+        logger.warning("Keeping old web_state.json; run `autodj migrate-index --apply` first")
         return False
     return True
 
@@ -271,6 +303,13 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         )
         if limit is not _INVALID and limit is not None:
             player._cfg.stream.max_listeners_per_address = limit
+    for field in ("aac_bitrate", "opus_bitrate", "stats_days"):
+        key = f"stream_{field}"
+        if key in playback:
+            # The stream is not running yet, so only the configured value changes.
+            value = _checked(StreamSettingsBody, field, playback[key], key)
+            if value is not _INVALID and value is not None:
+                setattr(player._cfg.stream, field, value)
 
     for key in REQUEST_SETTING_KEYS:
         if key in playback:
@@ -317,8 +356,8 @@ def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
 def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Restore previously-saved settings through *bridge*.
 
-    Version 1 state is migrated conservatively; unsupported versions are
-    ignored. Other saved fields continue to be validated individually.
+    Version 1 state needs explicit migration. Unsupported versions are ignored;
+    current fields continue to be validated individually.
 
     Args:
         bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
@@ -338,7 +377,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         return
     version = data.get("schema_version")
     if type(version) is int and version == 1:
-        data = _migrate_v1(data)
+        raise ValueError(f"{path} needs migration; run `autodj migrate-index --apply` first")
     elif type(version) is not int or version != STATE_VERSION:
         logger.warning(
             "ignoring web_state.json: schema_version must be %d, got %r",
@@ -423,7 +462,7 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and not _backup_v1_state(path):
+        if path.exists() and not _can_save_state(path):
             return
         atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False))
     except OSError as exc:

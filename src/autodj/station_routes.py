@@ -43,7 +43,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
-from autodj.config import MAX_RELAYS, RelayConfig, _relay_target
+from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RelayConfig, _relay_target
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -79,6 +79,8 @@ from autodj.station_ledger import StationLedger, setting_key
 from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
+from autodj.stream_formats import FORMATS
+from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
@@ -297,6 +299,24 @@ class QueueReorderBody(BaseModel):
     """
 
     paths: list[str]
+    # The queue as the page showed it, and each new slot's place in it: with
+    # both, the entries themselves move (a show's copy and a listener's
+    # request of the same file keep who they are, #106).
+    from_paths: list[str] | None = None
+    order: list[int] | None = None
+
+
+class QueueRemoveBody(BaseModel):
+    """Request body for POST /api/queue/remove.
+
+    Attributes:
+        path: The track to remove.
+        position: Its place in the queue as the page showed it; that entry
+            goes when the queue still has *path* there.
+    """
+
+    path: str
+    position: int | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -965,6 +985,29 @@ def equip_station(
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.shows import ShowRunner, ShowStore, show_action
+
+    # Shows (#106): a list of songs prepared ahead that a schedule event airs.
+    station.shows = ShowStore(station.paths.shows)
+    station.show_runner = ShowRunner(
+        bridge, station.shows, publish, state_path=station.paths.show_on_air
+    )
+    schedule.register(show_action(station.show_runner, station.shows))
+
+    def show_starts_within(within_s: float) -> str | None:
+        # Called from the request desk's threads: only show events, copied
+        # under the scheduler's lock.
+        from datetime import timedelta
+
+        for _when, event in schedule.runs_within("show", timedelta(seconds=within_s)):
+            show = station.shows.get(str(event.params.get("show", "")))
+            return show.name if show is not None else event.name
+        return None
+
+    station.show_runner.starts_within = show_starts_within
+    # A remove or reorder by path never takes the show's own copy by mistake.
+    bridge.show_entry = station.show_runner.is_show_entry
+
     from autodj.breaks import BreakDesk
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
@@ -985,11 +1028,14 @@ def equip_station(
             requests_cfg,
             bridge,
             RequestBook(station.paths.listener_requests, timezone=station.timezone),
-            music_dir=Path(station.cfg.library.music_dir),
+            music_dir=station.cfg.library.music_dir,
             tokens=FORM_TOKENS,
             track_ids=TrackIds(TRACK_SECRET),
             on_queued=station.nowplaying.refresh,
+            shows=station.show_runner,
         )
+        # A show that starts ahead of queued requests updates their notes.
+        station.show_runner.on_started = station.requests.show_started
 
     from autodj.categories import station_wall
     from autodj.matched_intros import MatchedIntros
@@ -1067,6 +1113,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.requests_api import install_requests
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
+    from autodj.shows_api import install_shows
     from autodj.time_checks import install_time_checks
 
     @router.get("/status")
@@ -1302,11 +1349,46 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=404, detail="Ban not found")
         return {"address": address}
 
+    @router.get("/stream/stats")
+    async def api_stream_stats(
+        station: StationDep, days: Annotated[int, Query(ge=1, le=MAX_STATS_DAYS)] = 30
+    ) -> JSONResponse:
+        """Listener statistics for the last *days* days: counts only, no addresses (#50)."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        bridge = station.bridge
+        listening = (
+            bridge.mounts.counts()
+            if bridge.mounts is not None
+            else {"mp3": int(bridge.stream.listener_count)}
+        )
+        summary = await asyncio.to_thread(stats.summary, days, listening)
+        return JSONResponse(summary, headers=_NO_STORE)
+
+    @router.get("/stream/stats/export")
+    async def api_stream_stats_export(station: StationDep) -> Response:
+        """Download every kept day of listener statistics as CSV."""
+        _require_stream_mode(station)
+        stats = station.listener_stats
+        if stats is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        body = await asyncio.to_thread(stats.csv_text)
+        return Response(
+            body.encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                **_NO_STORE,
+                "Content-Disposition": f'attachment; filename="autodj-listeners-{station.slug}.csv"',
+            },
+        )
+
     @router.post("/stream/settings")
     async def api_stream_settings(
         station: StationDep, body: StreamSettingsBody, request: Request
     ) -> dict:
-        """Change the stream bitrate (listeners reconnect), continuous play or name."""
+        """Change the stream bitrates (listeners reconnect), continuous play, name or statistics."""
         access = _require_stream_mode(station)
         bridge = station.bridge
         cfg = station.cfg
@@ -1320,11 +1402,44 @@ def install_station_routes(router: StationRouter) -> None:
                 status_code=409,
                 detail="DMCA mode is on, so the next song is never shown publicly.",
             )
+        # The AAC and Opus changes go first, all or none: each is checked and
+        # ffmpeg is tried on it before anything changes (#50).
+        formats: dict[str, int] = {
+            name: value
+            for name, value in (("aac", body.aac_bitrate), ("opus", body.opus_bitrate))
+            if value is not None
+        }
+        changed_formats: list[str] = []
+        if formats:
+            try:
+                changed_formats = await asyncio.to_thread(bridge.set_stream_formats, formats)
+            except EncoderUnavailableError as exc:
+                logger.error("A stream format could not be turned on: %s", exc)
+                raise HTTPException(status_code=503, detail=f"{exc}. Nothing was changed.") from exc
+            except (ValueError, MountsClosedError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         if body.bitrate is not None:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
             except EncoderUnavailableError as exc:
-                raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+                if not changed_formats:
+                    raise HTTPException(status_code=503, detail="stream encoder failed") from exc
+                # Say exactly what did change before the MP3 encoder failed.
+                await asyncio.to_thread(bridge.save_persistent_state)
+                labels = " and ".join(FORMATS[name].label for name in changed_formats)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "The MP3 stream encoder failed, so its quality is unchanged. "
+                        f"The {labels} change was saved; nothing else was changed."
+                    ),
+                ) from exc
+        if body.stats_days is not None:
+            cfg.stream.stats_days = body.stats_days
+            if station.listener_stats is not None:
+                # Days no longer kept go now, not at the next tick.
+                await asyncio.to_thread(station.listener_stats.tick)
+                await asyncio.to_thread(station.listener_stats.flush)
         if body.continuous is not None:
             cfg.stream.continuous = body.continuous
         if body.station_name is not None:
@@ -1698,9 +1813,9 @@ def install_station_routes(router: StationRouter) -> None:
         return {"ok": True}
 
     @router.post("/queue/remove")
-    async def api_queue_remove(station: StationDep, body: PlayNextBody) -> dict[str, bool]:
+    async def api_queue_remove(station: StationDep, body: QueueRemoveBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        removed = station.bridge.queue_remove(body.path)
+        removed = station.bridge.queue_remove(body.path, body.position)
         if removed:
             station.nowplaying.refresh()
         return {"ok": removed}
@@ -1708,7 +1823,9 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/reorder")
     async def api_queue_reorder(station: StationDep, body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        changed = station.bridge.queue_reorder(body.paths)
+        changed = station.bridge.queue_reorder(
+            body.paths, from_paths=body.from_paths, order=body.order
+        )
         if changed:
             station.nowplaying.refresh()
         return {"ok": changed}
@@ -2026,6 +2143,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_breaks(router)
     install_requests(router)
     install_matched_intros(router)
+    install_shows(router)
     install_rotation_test(router)
     install_hour_preview(router)
 

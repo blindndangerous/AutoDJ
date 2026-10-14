@@ -16,6 +16,7 @@ from autodj.listener_access import (
     BannedAddressError,
     ListenerAccess,
     ListenerAuthLimiter,
+    StationFullError,
     normalize_address,
     player_name,
     proxy_allowlist,
@@ -265,3 +266,23 @@ def test_trusted_proxies_come_from_config_then_the_environment_with_warnings() -
     assert trusted_proxy_setting(["127.0.0.1"], {})[1] == []
     _allow, warnings = trusted_proxy_setting([], {"FORWARDED_ALLOW_IPS": "*"})
     assert "from *" in warnings[0]
+
+
+def test_max_listeners_counts_every_format_together(tmp_path: Path) -> None:
+    """``max_listeners`` holds across MP3, AAC and Opus, not per format (#50)."""
+    access = ListenerAccess(tmp_path / "bans.json", 0, max_total=3)
+    mp3, aac, opus = FakeStream(), FakeStream(), FakeStream()
+    first, _ = access.add(mp3, "192.0.2.4", "VLC", icy=False)
+    access.add(aac, "192.0.2.5", "Phone", icy=False, fmt="aac")
+    access.add(opus, "192.0.2.6", "Browser", icy=False, fmt="opus")
+    with pytest.raises(StationFullError):
+        access.add(mp3, "192.0.2.7", "VLC", icy=False)
+    with pytest.raises(StationFullError):
+        access.add(opus, "192.0.2.7", "VLC", icy=False, fmt="opus")
+    assert [item["format"] for item in access.listeners()] == ["mp3", "aac", "opus"]
+    # A listener that leaves frees a place on any format.
+    access.remove(first)
+    access.add(opus, "192.0.2.7", "VLC", icy=False, fmt="opus")
+    # One that was dropped (closed) no longer counts either.
+    aac.open[0].closed = True
+    access.add(mp3, "192.0.2.8", "VLC", icy=False)

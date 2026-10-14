@@ -251,6 +251,38 @@ def test_the_blocklist_holds_artists_and_folders(tmp_path: Path) -> None:
     assert not Blocklist([], [], music).blocks(_entry(1))
 
 
+def test_rootless_blocked_folders_follow_registered_music_sources(tmp_path: Path) -> None:
+    roots = [tmp_path / "music one"]
+    block = Blocklist(
+        [],
+        ["Holiday", str(tmp_path / "private")],
+        None,
+        music_roots=lambda: roots,
+    )
+    first = _entry(1, path=str(roots[0] / "Holiday" / "song.flac"))
+    other = _entry(2, path=str(tmp_path / "music two" / "Holiday" / "song.flac"))
+    absolute = _entry(3, path=str(tmp_path / "private" / "song.flac"))
+
+    assert block.blocks(first)
+    assert not block.blocks(other)
+    assert block.blocks(absolute)
+
+    roots[:] = [tmp_path / "music two"]
+    block.refresh()
+    assert not block.blocks(first)
+    assert block.blocks(other)
+
+
+def test_request_search_refreshes_blocked_folders_when_sources_change(tmp_path: Path) -> None:
+    desk, bridge, _ids, _clock = _desk(tmp_path)
+    roots: list[Path] = []
+    desk.blocklist = Blocklist([], ["rock"], None, music_roots=lambda: roots)
+    assert any(entry is bridge.entries[1] for _, entry in desk.search("song 1"))
+
+    roots.append(Path("/music"))
+    assert desk.search("song 1") == []
+
+
 # ---------------------------------------------------------------------------
 # Where a request fits
 # ---------------------------------------------------------------------------
@@ -728,3 +760,55 @@ def test_a_queue_that_keeps_changing_turns_a_request_away(tmp_path: Path) -> Non
     outcome = desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1")
     assert (outcome.status, outcome.headline) == (503, "The station is busy")
     assert desk.book.recent() == []
+
+
+class _ShowOnAir:
+    """A show on the air (#106) whose own waiting entry is *mine*."""
+
+    def __init__(self, mine: IndexEntry | None, name: str | None = "Remembering the 2000s"):
+        self.mine = mine
+        self.name = name
+
+    def on_air_name(self) -> str | None:
+        return self.name
+
+    def ahead(self, _within_s: float) -> str | None:
+        return self.name
+
+    def is_show_entry(self, entry: IndexEntry) -> bool:
+        return entry is self.mine
+
+
+def test_a_request_goes_after_the_show_on_the_air_and_promises_no_time(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+    show_song = bridge.entries[1]
+    desk.shows = _ShowOnAir(show_song)
+    # Before the show's waiting song would fit best, but the show keeps its place.
+    bridge.slots = [_slot(0, bridge.playing, show_song), _slot(1, show_song)]
+    outcome = desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.1")
+    assert outcome.headline == "Request accepted"
+    assert outcome.detail == "Thanks. Song 4 by Artist 4 should play after the station's show."
+    assert bridge.queue == [bridge.entries[4].path]
+    assert desk.book.recent()[0].note.startswith("After the show Remembering the 2000s. Fits after")
+
+
+def test_a_show_about_to_start_also_holds_back_the_promise(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path)
+    desk.shows = _ShowOnAir(None, name=None)
+    desk.shows.ahead = lambda _within_s: "Remembering the 2000s"  # type: ignore[method-assign]
+    outcome = desk.submit(ids.shown(bridge.entries[3].path), "Sam", "192.0.2.1")
+    assert outcome.detail.endswith("If it is approved, it should play after the station's show.")
+
+
+def test_a_show_that_starts_says_queued_requests_now_follow_it(tmp_path: Path) -> None:
+    desk, bridge, ids, _ = _desk(tmp_path, approval="auto")
+    desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.1")
+    assert desk.book.recent()[0].note.startswith("Fits after")
+    desk.show_started("Remembering the 2000s")
+    note = desk.book.recent()[0].note
+    assert note.startswith("After the show Remembering the 2000s. Fits after")
+    # Said once, however often a show starts.
+    desk.show_started("Remembering the 2000s")
+    assert desk.book.recent()[0].note == note
+    saved = json.loads((tmp_path / "requests.json").read_text(encoding="utf-8"))
+    assert "After the show" in json.dumps(saved)

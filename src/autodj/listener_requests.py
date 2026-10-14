@@ -48,7 +48,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -281,15 +281,46 @@ class TrackIds:
 class Blocklist:
     """The artists and folders a station keeps out of requests."""
 
-    def __init__(self, artists: Iterable[str], folders: Iterable[str], music_dir: Path) -> None:
+    def __init__(
+        self,
+        artists: Iterable[str],
+        folders: Iterable[str],
+        music_dir: Path | None,
+        music_roots: Callable[[], Iterable[Path | str]] | None = None,
+    ) -> None:
         self._artists = frozenset(key for key in map(artist_key, artists) if key)
         self._splitter = ArtistSplitter()
-        self._folders = tuple(
-            os.path.normcase(
-                os.path.abspath(Path(folder) if Path(folder).is_absolute() else music_dir / folder)
-            )
-            for folder in folders
+        self._music_roots = music_roots
+        absolute: list[str] = []
+        relative: list[str] = []
+        for folder in folders:
+            path = Path(folder)
+            if path.is_absolute():
+                absolute.append(os.path.normcase(os.path.abspath(path)))
+            elif music_dir is not None:
+                # Keep the legacy configured-root meaning for existing stations.
+                absolute.append(os.path.normcase(os.path.abspath(music_dir / path)))
+            else:
+                # Rootless stations resolve this against current catalog roots
+                # when checking an entry, so source edits take effect at once.
+                relative.append(os.path.normcase(os.path.normpath(str(path))))
+        self._fixed_folders = tuple(absolute)
+        self._relative_folders = tuple(relative)
+        self._folders = self._fixed_folders
+        self.refresh()
+
+    def refresh(self) -> bool:
+        """Resolve rootless relative folders against the current catalog roots."""
+        roots = self._music_roots() if self._relative_folders and self._music_roots else ()
+        resolved = tuple(
+            os.path.normcase(os.path.abspath(Path(root) / relative))
+            for root in roots
+            for relative in self._relative_folders
         )
+        folders = (*self._fixed_folders, *resolved)
+        changed = folders != self._folders
+        self._folders = folders
+        return changed
 
     def blocks(self, entry: IndexEntry) -> bool:
         """Whether *entry* is by a blocked artist or in a blocked folder."""
@@ -302,9 +333,8 @@ class Blocklist:
                 return True
         if self._folders:
             path = os.path.normcase(os.path.abspath(entry.path))
-            return any(
-                path == folder or path.startswith(folder + os.sep) for folder in self._folders
-            )
+            if any(path == folder or path.startswith(folder + os.sep) for folder in self._folders):
+                return True
         return False
 
 
@@ -669,13 +699,17 @@ class RequestDesk:
         bridge: PlayerBridge,
         book: RequestBook,
         *,
-        music_dir: Path,
+        music_dir: Path | None,
         tokens: FormTokens,
         track_ids: TrackIds,
         monotonic: Callable[[], float] = time.monotonic,
         on_queued: Callable[[], object] = lambda: None,
+        shows: Any = None,
     ) -> None:
         self.slug = slug
+        # The station's ShowRunner (#106): a show on the air keeps its place
+        # ahead of requests, and no request is promised a time it cannot keep.
+        self.shows = shows
         # Called after a request joins the queue (refreshes the public feed).
         self._on_queued = on_queued
         self.cfg = cfg
@@ -683,7 +717,21 @@ class RequestDesk:
         self.book = book
         self.tokens = tokens
         self.track_ids = track_ids
-        self.blocklist = Blocklist(cfg.blocked_artists, cfg.blocked_folders, music_dir)
+        catalog = getattr(getattr(bridge, "library", None), "catalog", None)
+
+        def music_roots() -> Iterable[Path | str]:
+            return (
+                (source["path"] for source in catalog.sources("music"))
+                if catalog is not None
+                else ()
+            )
+
+        self.blocklist = Blocklist(
+            cfg.blocked_artists,
+            cfg.blocked_folders,
+            music_dir,
+            music_roots=music_roots if music_dir is None else None,
+        )
         prefix = cfg.ipv6_prefix
         self.searches = AddressLimiter(
             SEARCHES_PER_MINUTE, 60.0, clock=monotonic, ipv6_prefix=prefix
@@ -734,7 +782,10 @@ class RequestDesk:
         key = " ".join(tokens)
         indexed = self.bridge.search_index()
         now = self._monotonic()
+        roots_changed = self.blocklist.refresh()
         with self._search_lock:
+            if roots_changed:
+                self._searches.clear()
             cached = self._searches.get(key)
             if (
                 cached is not None
@@ -760,6 +811,9 @@ class RequestDesk:
         """The requestable song a search showed under *track_id*, or ``None``."""
         path = self.track_ids.path_for(track_id)
         entry = self.bridge.entry_for_path(path) if path is not None else None
+        if self.blocklist.refresh():
+            with self._search_lock:
+                self._searches.clear()
         if entry is None or self.blocklist.blocks(entry):
             return None
         return entry
@@ -769,6 +823,60 @@ class RequestDesk:
 
     def _similarity(self, a: str, b: str) -> float | None:
         return self.bridge.sim.similarity(a, b)
+
+    def _show_on_air(self) -> str | None:
+        """The name of the show on the air, or ``None``."""
+        return self.shows.on_air_name() if self.shows is not None else None
+
+    def _show_ahead(self) -> str | None:
+        """A show on the air or due within the request window, or ``None``."""
+        return self.shows.ahead(self._horizon()) if self.shows is not None else None
+
+    def _after_show(self, slots: Sequence[RequestSlot]) -> list[RequestSlot]:
+        """Only the places after the show's own waiting songs (#106): the show wins."""
+        shows = self.shows
+        if shows is None:
+            return list(slots)
+        last = max(
+            (
+                slot.position
+                for slot in slots
+                if slot.after is not None and shows.is_show_entry(slot.after)
+            ),
+            default=-1,
+        )
+        return [slot for slot in slots if slot.position > last]
+
+    def _after_show_note(self, placement: Placement) -> Placement:
+        """Say a placed request waits for the show on the air (#106)."""
+        show = self._show_on_air()
+        if show is None or placement.slot is None:
+            return placement
+        return replace(placement, note=f"After the show {show}. {placement.note}")
+
+    def show_started(self, name: str) -> None:
+        """A show went on the air ahead of the queued requests (#106): their notes say so.
+
+        Requests still waiting in the queue now play after the show, so the
+        operator's list stops promising where they fit.  Listeners were told
+        only roughly, once, and are not told again.
+        """
+        waiting = {entry.path for entry in self.bridge.coming_up()}
+        changed = False
+        with self.book.lock:
+            for request in self.book.recent():
+                if (
+                    request.status == QUEUED
+                    and request.path in waiting
+                    and not request.note.startswith("After the show")
+                ):
+                    request.note = f"After the show {name}. {request.note}".strip()
+                    changed = True
+            if changed:
+                try:
+                    self.book.save()
+                except OSError:
+                    logger.warning("Could not save the listener requests", exc_info=True)
 
     def _placement(self, entry: IndexEntry) -> Placement:
         """Where *entry* would go if approved now, without the bridge search.
@@ -792,11 +900,26 @@ class RequestDesk:
     ) -> Placement:
         """The best place, a bridge into it, or what to do when no place is smooth.
 
+        Only places after a show's own waiting songs count (#106): the show wins.
+
         Args:
             search: Look for bridge songs (outside every lock).
             operator: The operator is approving it, which uses the best
                 legal place even when the station waits for a smooth one.
         """
+        return self._after_show_note(
+            self._plan_slots(entry, self._after_show(slots), view, search=search, operator=operator)
+        )
+
+    def _plan_slots(
+        self,
+        entry: IndexEntry,
+        slots: Sequence[RequestSlot],
+        view: QueueView,
+        *,
+        search: bool,
+        operator: bool,
+    ) -> Placement:
         chosen = place(entry, slots, self._similarity)
         slot = chosen.slot
         if slot is None:
@@ -1029,10 +1152,13 @@ class RequestDesk:
             self._on_queued()
             request = self.book.add(entry, name, QUEUED, placement.note, placement.bridges)
             logger.info("Listener request queued: %s (%s)", entry.display_name, placement.note)
+            # During a show, or with one about to start, the song waits for
+            # the show's end: no time is promised.
+            when = "after the station's show" if self._show_ahead() else rough_wait(slot.starts_in)
             return Outcome(
                 200,
                 "Request accepted",
-                f"Thanks{_for(request.name)}. {_song(entry)} should play {rough_wait(slot.starts_in)}.",
+                f"Thanks{_for(request.name)}. {_song(entry)} should play {when}.",
             )
         if len(self.book.pending()) >= cfg.max_pending:
             return Outcome(
@@ -1047,7 +1173,12 @@ class RequestDesk:
             200,
             "Request received",
             f"Thanks{_for(request.name)}. The station will look at your request for "
-            f"{_song(entry)}. If it is approved, it should play within the next hour or so.",
+            f"{_song(entry)}. If it is approved, it should play "
+            + (
+                "after the station's show."
+                if self._show_ahead() is not None
+                else "within the next hour or so."
+            ),
         )
 
     # -- what the operator does ---------------------------------------------

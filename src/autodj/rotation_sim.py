@@ -165,6 +165,12 @@ class SimulationSource:
         events: The station's scheduled events.
         timezone: The station's time zone, which the schedule reads.
         liner_dates: The station's liner play dates file, if any.
+        clockwheel: A clockwheel to play in place of a saved one of the same
+            name, as its definition and its slots (a show's category, #106);
+            ``None`` reads every clockwheel from the station's folder.
+        shows: The station's shows, for the hour preview (a
+            :class:`~autodj.shows.PreviewShows`); the rotation tester leaves
+            shows out.
     """
 
     player: Any
@@ -175,6 +181,8 @@ class SimulationSource:
     timezone: str = "UTC"
     liner_dates: Path | None = None
     snapshot: PlayerSnapshot | None = None
+    clockwheel: tuple[Mapping[str, Any], Sequence[Any]] | None = None
+    shows: Any = None
 
 
 #: The picker settings a run copies from the live player.
@@ -521,9 +529,17 @@ class _SimPlayer(Player):
     """A :class:`Player` whose clock is the dry run's."""
 
     _sim_now: float = 0.0
+    # A clockwheel that is not saved, played by its name (see SimulationSource).
+    _clock_override: tuple[Mapping[str, Any], Sequence[Any]] | None = None
 
     def _now(self) -> float:
         return self._sim_now
+
+    def _load_clockwheel(self, name: str) -> tuple[dict[str, Any], list[Any]]:
+        override = self._clock_override
+        if override is not None and override[0].get("name") == name:
+            return dict(override[0]), list(override[1])
+        return super()._load_clockwheel(name)
 
 
 def _copy_player(
@@ -540,6 +556,7 @@ def _copy_player(
     player.settings_lock = threading.RLock()
     # The station's own folders: another station keeps its own clockwheels.
     player.station_paths = snapshot.station_paths
+    player._clock_override = source.clockwheel
     player._sim_now = start
     player._state.clock = lambda: player._sim_now
     if snapshot.related_artists is not None:
@@ -610,9 +627,18 @@ _UNSIMULATED_ACTIONS = frozenset({"profile"})
 
 
 class _Schedule:
-    """The station's enabled events that change song picking, in time order."""
+    """The station's enabled events that change song picking, in time order.
 
-    def __init__(self, events: Sequence[Any], timezone: str, start: float) -> None:
+    *actions* are the actions it lines up; the hour preview adds shows (#106).
+    """
+
+    def __init__(
+        self,
+        events: Sequence[Any],
+        timezone: str,
+        start: float,
+        actions: frozenset[str] = _PICKING_ACTIONS | _UNSIMULATED_ACTIONS,
+    ) -> None:
         from autodj.scheduler import next_run
 
         self._next_run = next_run
@@ -622,7 +648,7 @@ class _Schedule:
         for number, event in enumerate(events):
             if not getattr(event, "enabled", False):
                 continue
-            if event.action not in _PICKING_ACTIONS | _UNSIMULATED_ACTIONS:
+            if event.action not in actions:
                 continue
             when = self._after(event, after)
             if when is not None:

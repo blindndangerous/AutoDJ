@@ -157,7 +157,7 @@ class TestDefaultAndEnvironmentConfig:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         cfg = load_config(None, environ={})
-        assert cfg.library.music_dir == Path("music")
+        assert cfg.library.music_dir is None
         assert cfg.index.index_dir == Path("index")
         assert cfg.index.model_dir == Path("models")
         assert cfg.server.host == "127.0.0.1"
@@ -240,9 +240,8 @@ class TestDefaultAndEnvironmentConfig:
 
 
 class TestLibraryConfig:
-    def test_music_dir_required(self) -> None:
-        with pytest.raises((TypeError, KeyError, ValueError)):
-            LibraryConfig.from_dict({})
+    def test_music_dir_not_required(self) -> None:
+        assert LibraryConfig.from_dict({}).music_dir is None
 
     def test_default_formats(self) -> None:
         lib = LibraryConfig.from_dict({"music_dir": "Z:/Music"})

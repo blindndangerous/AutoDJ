@@ -467,8 +467,28 @@ describe("queue Top and Clear queue", () => {
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toBe("Moved Charlie to position 1 of 3."));
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body))
-      .toEqual({ paths: ["c.mp3", "a.mp3", "b.mp3"] });
+      .toEqual({
+        paths: ["c.mp3", "a.mp3", "b.mp3"],
+        // The queue as shown and where each slot came from, so the server
+        // moves these very entries (#106).
+        from_paths: ["a.mp3", "b.mp3", "c.mp3"],
+        order: [2, 0, 1],
+      });
     expect(document.activeElement.dataset.path).toBe("c.mp3");
+    vi.unstubAllGlobals();
+  });
+
+  it("removes the very entry shown, by its place in the queue", async () => {
+    const fetchImpl = vi.fn(ok);
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els } = setup();
+
+    els.queueList.querySelector('[data-path="b.mp3"][data-action="remove"]').click();
+
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/queue/remove");
+    // The place lets the server tell a show's copy (#106) from a request of the same file.
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ path: "b.mp3", position: 1 });
     vi.unstubAllGlobals();
   });
 

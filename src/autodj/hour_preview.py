@@ -7,7 +7,9 @@ of it is already fixed and which is a guess:
 * fixed: the song on the air; what the render-ahead worker has rendered,
   with the liners and announcer breaks mixed into it; the song picked to
   follow it; the open song change and the breaks booked on it (#88); and
-  the request queue, which plays before any pick;
+  the request queue, which plays before any pick; and the songs of a show
+  (#106): the rest of the one on the air, and a scheduled one's from the
+  first song after its time;
 * predicted: what the station's own picker would choose after that, from a
   dry run (:mod:`autodj.rotation_sim`) that starts where the fixed part
   ends, with the station's clockwheel place, history and schedule.
@@ -47,6 +49,8 @@ from fastapi import HTTPException, Query, Request
 
 from autodj.identity_map import attached
 from autodj.rotation_sim import (
+    _PICKING_ACTIONS,
+    _UNSIMULATED_ACTIONS,
     PlayerSnapshot,
     SimulationSource,
     _apply_event,
@@ -103,8 +107,13 @@ STATUS_WORDS = {
     "picked": "Fixed: picked",
     "booked": "Fixed: booked break",
     "queued": "Fixed: in the queue",
+    "show": "Fixed: from a show",
+    "skipped": "Skipped: it would break a DMCA limit",
     "predicted": "Predicted",
 }
+
+# The schedule's actions the dry run follows: the picking changes, and shows.
+_PREVIEW_ACTIONS = _PICKING_ACTIONS | _UNSIMULATED_ACTIONS | {"show"}
 
 BREAK_KINDS = {"dj": "DJ", "news": "News", "weather": "Weather", "music_news": "Music news"}
 
@@ -118,6 +127,8 @@ NOTES = (
     "Automatic liners, matched intros not yet mixed, time checks and carts are left out; a "
     "scheduled change of song picking "
     "applies from the first song after its time.",
+    "A show's songs are listed as saved, from the first song after its time; on the air one "
+    "that would break a DMCA limit is skipped.",
 )
 
 NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
@@ -488,11 +499,19 @@ def _liner_paths(player: Any) -> set[str]:
     return {entry.path for entry in library.entries_snapshot("liner")}
 
 
-def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> Decided:
+def read_station(
+    player: Any,
+    desk: Any = None,
+    *,
+    now: float | None = None,
+    show: tuple[str, Sequence[Any]] | None = None,
+) -> Decided:
     """What *player* has decided, read without changing anything.
 
     *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
-    breaks' names and the ones booked on the open song change.
+    breaks' names and the ones booked on the open song change.  *show* is
+    the show on the air, its name and its songs not yet queued (#106): they
+    follow the queue, fixed.
     """
     now = time.time() if now is None else now
     state = player._state
@@ -569,6 +588,19 @@ def read_station(player: Any, desk: Any = None, *, now: float | None = None) -> 
         last = entry
         moment += seconds
         index += 1
+    if show is not None:
+        name, entries_left = show
+        for entry in list(entries_left)[: max(0, MAX_QUEUED - len(queued))]:
+            # As on the air: a song that would break a DMCA limit is skipped.
+            before = [song for song, _at in unplayed if song.path not in liners]
+            if _dmca_breaks(player, now, current, before, entry):
+                items.append(Item("skipped", moment, 0.0, "skipped", entry, name))
+                continue
+            seconds = _remaining(player, entry, 0.0, average)
+            items.append(Item("song", moment, seconds, "show", entry, name))
+            unplayed.append((entry, moment))
+            last = entry
+            moment += seconds
     cursor, clock_name, boundary = clock
     marks = attached(player, "_request_clock_steps")
     for item in sorted(items, key=lambda item: item.starts):
@@ -596,6 +628,20 @@ _Found = tuple[
     float,
     tuple[int | None, str | None, float | None],
 ]
+
+
+def _dmca_breaks(
+    player: Any, now: float, current: Any, before: Sequence[Any], entry: Any
+) -> tuple[str, ...]:
+    """The DMCA limits *entry* would break after *current* and *before*; none when the mode is off."""
+    if not player._cfg.dmca.enabled:
+        return ()
+    from autodj.dmca import complement, projected_history
+
+    with player._pick_lock:
+        history = list(player._state.play_history)
+    records, when = projected_history(history, now, current, list(before))
+    return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
 def _read_bus(player: Any, desk: Any, now: float, average: float) -> _Found | None:
@@ -801,6 +847,8 @@ def predict(
     seed: int,
     budget: float = BUDGET_SECONDS,
     limit: int | None = None,
+    preferred_choices: dict[str, str] | None = None,
+    on_choice: Callable[[str, str], None] | None = None,
 ) -> tuple[list[Item], float, str | None]:
     """Pick on from where *decided* ends until *end*, with a copy of the station's player.
 
@@ -814,7 +862,17 @@ def predict(
     """
     with _quiet_logs():
         songs = MAX_PREDICTED if limit is None else limit
-        return _predict(source, snapshot, decided, end, seed, budget, songs)
+        return _predict(
+            source,
+            snapshot,
+            decided,
+            end,
+            seed,
+            budget,
+            songs,
+            preferred_choices or {},
+            on_choice,
+        )
 
 
 def _predict(
@@ -825,6 +883,8 @@ def _predict(
     seed: int,
     budget: float,
     limit: int,
+    preferred_choices: dict[str, str],
+    on_choice: Callable[[str, str], None] | None,
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
     current = decided.last
@@ -861,10 +921,16 @@ def _predict(
     from autodj._bridge import PlayerBridge
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=source.library, ledger=ledger)
-    schedule = _Schedule(source.events, source.timezone, decided.now)
+    schedule = _Schedule(source.events, source.timezone, decided.now, _PREVIEW_ACTIONS)
+    shows = getattr(source, "shows", None)
+    scheduled = getattr(shows, "scheduled", None) or {}
+    # The songs of a scheduled show that has started, still to play.
+    show_name = ""
+    show_songs: list[Any] = []
     found: list[Item] = []
     stopped: str | None = None
     songs = 0
+    choice_occurrences: dict[str, int] = {}
     while handoff < end:
         if songs >= limit:
             stopped = "it reached its limit of songs"
@@ -876,8 +942,31 @@ def _predict(
         # start, and dayparting the hours at the next song's.
         player._sim_now = handoff - song_seconds(player, current, average) / current_rate
         for _at, event in schedule.due(handoff):
-            _apply_event(player, bridge, event)
+            if event.action == "show":
+                # As on the air: a show replaces the one before it.
+                show_name, entries = scheduled.get(str(event.params.get("show", "")), ("", ()))
+                show_songs = list(entries)
+            else:
+                _apply_event(player, bridge, event)
+        if show_songs:
+            entry = show_songs.pop(0)
+            # As on the air: a song that would break a DMCA limit is skipped.
+            limits = player._pick_context(at=handoff).complement
+            if limits is not None and limits.broken(entry):
+                found.append(Item("skipped", handoff, 0.0, "skipped", entry, show_name))
+                continue
+            record(entry, handoff)
+            seconds = song_seconds(player, entry, average)
+            found.append(Item("song", handoff, seconds, "show", entry, show_name))
+            current, handoff = entry, handoff + seconds
+            songs += 1
+            continue
         context = player._pick_context(at=handoff)
+        choice_base = _choice_key(player, current)
+        occurrence = choice_occurrences.get(choice_base, 0)
+        choice_occurrences[choice_base] = occurrence + 1
+        choice_key = f"{choice_base}:{occurrence}"
+        player._preview_preferred_path = preferred_choices.get(choice_key)  # type: ignore[attr-defined]
         added: tuple[tuple[Any, bool], ...] = ()
         try:
             if player._cfg.playback.transition_mode == "saved_points":
@@ -888,6 +977,8 @@ def _predict(
         except Exception as exc:
             stopped = f"no song could be picked after {current.display_name}: {exc}"
             break
+        if on_choice is not None:
+            on_choice(choice_key, entry.path)
         moment = handoff
         next_rate = music_rate(player, entry)
         if added and player._cfg.playback.transition_mode == "saved_points":
@@ -922,6 +1013,20 @@ def _predict(
 
 def _ignore(_event: str, _detail: Any) -> None:
     """The dry run's pick observer: the preview counts nothing."""
+
+
+def _choice_key(player: Any, current: Any) -> str:
+    """Identify a logical pick position so changed fixed prefixes do not shift preferences."""
+    if not player._pure_shuffle and player._cfg.playback.pick_mode == "clock":
+        clock = player._clock or {}
+        name = getattr(player, "_pending_clock_name", None) or clock.get("name")
+        cursor = getattr(player, "_pending_clock_cursor", None)
+        if cursor is None:
+            cursor = clock.get("cursor")
+        boundary = getattr(player, "_pending_clock_boundary", None)
+        return f"clock:{name}:{cursor}:{boundary}"
+    mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
+    return f"{mode}:{current.path}"
 
 
 def _on_air_song(decided: Decided) -> Any:
@@ -1136,7 +1241,7 @@ def _wall(stamp: float, zone: ZoneInfo) -> datetime:
 
 
 def clock_text(stamp: float, zone: ZoneInfo) -> str:
-    """ "2:04:30 PM": the time for the screen."""
+    """A compact timestamp such as "2:04:30 PM"."""
     moment = _wall(stamp, zone)
     hour = moment.hour % 12 or 12
     half = "AM" if moment.hour < 12 else "PM"
@@ -1144,16 +1249,8 @@ def clock_text(stamp: float, zone: ZoneInfo) -> str:
 
 
 def clock_words(stamp: float, zone: ZoneInfo) -> str:
-    """ "2:04 PM and 30 seconds", or "2 PM": the time as a screen reader says it well."""
-    moment = _wall(stamp, zone)
-    hour = moment.hour % 12 or 12
-    half = "AM" if moment.hour < 12 else "PM"
-    if moment.minute == 0 and moment.second == 0:
-        return f"{hour} {half}"
-    base = f"{hour}:{moment.minute:02d} {half}"
-    if moment.second == 0:
-        return base
-    return f"{base} and {moment.second} second{'' if moment.second == 1 else 's'}"
+    """Return the same compact timestamp that appears on screen."""
+    return clock_text(stamp, zone)
 
 
 def length_text(seconds: float) -> str:
@@ -1163,14 +1260,8 @@ def length_text(seconds: float) -> str:
 
 
 def length_words(seconds: float) -> str:
-    """ "3 minutes 45 seconds": a length in words, as the page's other lengths say it."""
-    whole = max(0, round(seconds))
-    minutes, rest = divmod(whole, 60)
-    second_words = f"{rest} second{'' if rest == 1 else 's'}"
-    if minutes == 0:
-        return second_words
-    minute_words = f"{minutes} minute{'' if minutes == 1 else 's'}"
-    return minute_words if rest == 0 else f"{minute_words} {second_words}"
+    """Return the same compact duration that appears on screen."""
+    return length_text(seconds)
 
 
 def item_title(item: Item) -> str:
@@ -1278,6 +1369,8 @@ def build_preview(
     decided: Decided | None = None,
     describe: Callable[[Any], str] | None = None,
     budget: float = BUDGET_SECONDS,
+    preferred_choices: dict[str, str] | None = None,
+    on_prediction: Callable[[tuple[tuple[str, str], ...]], None] | None = None,
 ) -> dict[str, Any]:
     """The preview of *source*'s next *minutes*, as the page reads it (JSON shape).
 
@@ -1286,7 +1379,7 @@ def build_preview(
     minutes = check_minutes(minutes)
     zone = ZoneInfo(source.timezone)
     if decided is None:
-        decided = read_station(source.player, desk, now=now)
+        decided = read_station(source.player, desk, now=now, show=_on_air_show(source))
     now = decided.now
     end = now + minutes * 60
     view: dict[str, Any] = {
@@ -1309,12 +1402,25 @@ def build_preview(
     if decided.reason is not None:
         return view
     snapshot = source.snapshot or snapshot_player(source.player)
+    choices: list[tuple[str, str]] = []
     predicted, ends, stopped = predict(
-        source, snapshot, decided, end, seed=seed_for(decided.signature()), budget=budget
+        source,
+        snapshot,
+        decided,
+        end,
+        seed=seed_for(decided.signature()),
+        budget=budget,
+        preferred_choices=preferred_choices,
+        on_choice=(
+            (lambda key, path: choices.append((key, path))) if on_prediction is not None else None
+        ),
     )
+    if on_prediction is not None:
+        on_prediction(tuple(choices))
     timeline = [*decided.items, *predicted]
     songs = [item for item in timeline if item.kind == "song"]
-    changes = song_changes(timeline)
+    # A skipped show song takes no time and opens no song change.
+    changes = song_changes([item for item in timeline if item.kind != "skipped"])
     if not predicted and songs:
         last = songs[-1]
         ends = max(ends, last.starts + last.seconds)
@@ -1361,12 +1467,27 @@ def build_preview(
     return view
 
 
+def _on_air_show(source: SimulationSource) -> tuple[str, Sequence[Any]] | None:
+    """The show on the air and its songs not yet queued, from *source*, or ``None``."""
+    shows = getattr(source, "shows", None)
+    return getattr(shows, "on_air", None)
+
+
+def _status_text(item: Item) -> str:
+    """What an item's status says; a show's songs name the show."""
+    if item.status == "show" and item.label:
+        return f"Fixed: show {item.label}"
+    if item.status == "skipped" and item.label:
+        return f"Skipped from show {item.label}: it would break a DMCA limit"
+    return STATUS_WORDS[item.status]
+
+
 def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
     return {
         "kind": item.kind,
         "status": item.status,
         "fixed": item.fixed,
-        "status_text": STATUS_WORDS[item.status],
+        "status_text": _status_text(item),
         "title": item_title(item),
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
@@ -1454,6 +1575,7 @@ class HourPreviews:
         self._limit = waiting
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
+        self._choices: dict[_Key, dict[str, str]] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
@@ -1561,7 +1683,7 @@ class HourPreviews:
 
         Blocking: the worker thread calls it.
         """
-        decided = read_station(source.player, desk)
+        decided = read_station(source.player, desk, show=_on_air_show(source))
         key = (source.station, minutes)
         player = source.player
         settings = tuple(
@@ -1596,11 +1718,13 @@ class HourPreviews:
                     source.events,
                     versions,
                     category_signature,
+                    source.shows.signature() if source.shows is not None else None,
                 )
             ).encode("utf-8")
         ).hexdigest()
         with self._cond:
             kept = self._kept.get(key)
+            previous_choices = self._choices.get(key, {})
         if (
             not force
             and kept is not None
@@ -1608,9 +1732,23 @@ class HourPreviews:
             and time.monotonic() - kept[0] < self._keep
         ):
             return kept[2]
-        view = build_preview(source, minutes, desk=desk, decided=decided, describe=describe)
+        choices: dict[str, str] = {}
+
+        def remember_choices(picks: tuple[tuple[str, str], ...]) -> None:
+            choices.update(picks)
+
+        view = build_preview(
+            source,
+            minutes,
+            desk=desk,
+            decided=decided,
+            describe=describe,
+            preferred_choices=previous_choices,
+            on_prediction=remember_choices,
+        )
         with self._cond:
             self._kept[key] = (time.monotonic(), signature, view)
+            self._choices[key] = choices
         return view
 
 
@@ -1656,6 +1794,19 @@ def install_hour_preview(router: StationRouter) -> None:
     ) -> dict[str, Any]:
         """The station's next *minutes*: estimated start times, fixed or predicted, and backtiming."""
         source = _source(station)
+        shows = getattr(station, "shows", None)
+        if shows is not None:
+            from autodj.shows import preview_shows
+
+            # Reads the shows file: in a worker thread, never on the event loop.
+            found = await asyncio.to_thread(
+                preview_shows,
+                shows,
+                getattr(station, "show_runner", None),
+                source.events,
+                station.bridge.entry_for_path,
+            )
+            source = replace(source, shows=found)
         schedule = getattr(station, "schedule", None)
         describe = schedule.summary if schedule is not None else None
         previews = _previews(request)

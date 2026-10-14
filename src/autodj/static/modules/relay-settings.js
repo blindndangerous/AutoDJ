@@ -147,13 +147,18 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     }
   }
 
-  async function save(payload) {
-    const ok = await post(`${root(slug)}/stream/relays`, payload, form, { onError: validationError });
+  // *fromForm*: the form's own Save; a row's Enable or Disable keeps focus
+  // on that button.
+  async function save(payload, fromForm = false) {
+    const onError = fromForm ? validationError : (error) => announce(error.message, true);
+    const ok = await post(`${root(slug)}/stream/relays`, payload, form, { onError });
     if (!ok) return false;
     form.hidden = true;
     id("relay-password").value = "";
     await refresh();
-    (rowByName.get(payload.name)?.row.querySelector("button") || returnFocus || id("relay-add")).focus();
+    if (fromForm) {
+      (rowByName.get(payload.name)?.row.querySelector("button") || returnFocus || id("relay-add")).focus();
+    }
     announce("Relay settings saved.");
     return true;
   }
@@ -183,7 +188,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
     const payload = values();
     payload.is_edit = editing !== null;
     if (editing && !payload.password) payload.password = null;
-    await save(payload);
+    await save(payload, true);
   });
   id("metadata-save").addEventListener("click", async (event) => {
     const body = {

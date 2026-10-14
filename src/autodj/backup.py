@@ -1,16 +1,17 @@
-"""Back up and restore the index and the data that exists only on this machine.
+"""Back up and restore the catalog and the data that exists only on this machine.
 
 An archive is a plain ZIP file holding ``manifest.json`` (the AutoDJ version
 that wrote it and the list of files) and these members:
 
-- ``index/index-manifest.json`` and the two generation files it names
-  (``tracks.gN.db`` and ``vectors.gN.index``): the live index generation.
-- ``index/dj_meta.db``, ``index/library.db``, ``index/web_state.json``,
+- ``index/library.db``: the current catalog.
+- ``index/dj_meta.db``, ``index/web_state.json``,
   ``index/related-artists.toml``, ``index/related-tracks.toml``, ``index/schedule.json``,
   ``index/carts.json``,
-  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/recording.json``,
-  ``index/categories.json``, ``index/liner_dates.json``, ``index/matched_intros.json`` and
-  ``index/relays.json`` from the active index folder. Relay files contain source passwords.
+  ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
+  ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
+  ``index/matched_intros.json`` and ``index/shows.json`` from the active index folder.
+  ``relays.json``, which holds relay source passwords, is never backed up
+  (:data:`SECRET_STATE_FILES`).
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``
   and ``intros/...`` (the matched intros' audio): every file in those folders and their
   subfolders.  Time check
@@ -25,9 +26,12 @@ that wrote it and the list of files) and these members:
   lists those stations under ``"stations"``, and restore refuses a station the
   configuration does not define.
 
-Every station's state files are copied with the index generation under its
-publication lock; each SQLite database is copied through SQLite's backup API.
-The ZIP is not encrypted; protect it as you would the relay passwords it contains.
+Every station's state files are copied under the index publication lock; each SQLite database
+is copied through SQLite's backup API. Old archives without ``index/library.db`` are not
+restored here: restore them with a compatible older release, then run
+``autodj migrate-index --apply``.
+Relay settings stay out of backups, and restore skips them in older archives,
+leaving the station's own file in place.
 Restore is all or nothing: what it replaces is set aside first
 (``.<name>.old-<id>``), each step written to a journal (``.autodj-restore.json``),
 and put back if any replacement fails; after a crash, :func:`recover_restore`
@@ -64,7 +68,7 @@ from autodj.version import current_version
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
 
-# Files of the index folder a backup holds besides the generation files.
+# Current files of the index folder stored by a backup.
 INDEX_FILES = (
     "dj_meta.db",
     "library.db",
@@ -75,13 +79,17 @@ INDEX_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
-    "relays.json",
-    im.MANIFEST_NAME,
+    "shows.json",
 )
+# Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
+_LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
+#: Relay source passwords stay on the machine, including when restoring older archives.
+SECRET_STATE_FILES = frozenset({"relays.json"})
 _FOLDERS = (
     "liners",
     "carts",
@@ -98,11 +106,12 @@ _STATE_FILES = (
     "carts.json",
     "time_checks.json",
     "listener_bans.json",
+    "listener_stats.json",
     "recording.json",
     "categories.json",
     "liner_dates.json",
     "matched_intros.json",
-    "relays.json",
+    "shows.json",
 )
 # Another station's state files, in ``stations/<slug>/``.  The categories
 # are shared, so they are only in the default station's list.
@@ -338,52 +347,28 @@ def _state_sources(cfg: AutoDJConfig, roots: dict[str, Path]) -> list[tuple[str,
 
 
 def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict[str, Path]:
-    """Copy the index and every station's state files into *snapshot*.
+    """Copy the catalog and every station's state files into *snapshot*.
 
-    The index generation, its manifest and the state files are copied under
-    the index's publication lock, so they belong together; the copies are
-    checked against the manifest's digests after the lock is released, so
-    hashing a large generation never holds up indexing.  Each SQLite
-    database is copied through SQLite's backup API, which gives a
-    consistent copy of it, a moment after the other files.  Returns the
-    archive members, by name.
+    Station state files are copied under the index publication lock. Each
+    SQLite database is copied through SQLite's backup API for a consistent
+    snapshot. Returns the archive members, by name.
     """
     active = roots["index"]
     index = snapshot / "index"
     index.mkdir(parents=True)
     members: dict[str, Path] = {}
-    digests: list[tuple[str, str]] = []
+    if not (active / "library.db").is_file():
+        raise BackupError(
+            f"there is no catalog database at {active / 'library.db'}; "
+            "run `autodj migrate-index --apply` for an older library, or `autodj index` for a new one"
+        )
     with im.publication_lock(active):
-        try:
-            manifest: im.IndexManifest | None = im.require_manifest(active)
-        except FileNotFoundError:
-            manifest = None
-        except im.UnsupportedIndexError as exc:
-            raise BackupError(str(exc)) from exc
-        except im.IndexConsistencyError as exc:
-            raise BackupError(f"the published index is invalid: {exc}") from exc
-        if manifest is not None:
-            for name, digest in (
-                (manifest.tracks_file, manifest.tracks_sha256),
-                (manifest.vectors_file, manifest.vectors_sha256),
-            ):
-                _within_root(active / name, active)
-                _single_link(active / name)
-                shutil.copyfile(active / name, index / name)
-                digests.append((name, digest))
-            manifest_path = active / im.MANIFEST_NAME
-            _within_root(manifest_path, active)
-            _single_link(manifest_path)
-            shutil.copyfile(manifest_path, index / im.MANIFEST_NAME)
         for member, original in _state_sources(cfg, roots):
             copy = snapshot / member
             copy.parent.mkdir(parents=True, exist_ok=True)
             # With its permission bits, so a private file is restored private.
             shutil.copy(original, copy)
             members[member] = copy
-    for name, digest in digests:
-        if im.sha256_file(index / name) != digest:
-            raise BackupError(f"{active / name} does not match its SHA-256 in the manifest")
     for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
         if (active / name).exists():
             _within_root(active / name, active)
@@ -403,6 +388,8 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         ):
             source.backup(target)
         _check_sqlite(index / name)
+        if name == "library.db":
+            _check_catalog(index / name)
     for name in ("related-artists.toml", "related-tracks.toml"):
         related = active / name
         if related.is_file():
@@ -429,6 +416,26 @@ def _check_sqlite(path: Path) -> None:
         raise BackupError(f"{path} failed SQLite integrity_check: {'; '.join(map(str, result))}")
 
 
+def _check_catalog(path: Path) -> None:
+    """Check a staged database has the catalog schema; discard its temporary sidecars."""
+    try:
+        from autodj.catalog import catalog_counts
+
+        catalog_counts(path)
+        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as conn:
+            conn.execute("SELECT key, value FROM catalog_settings LIMIT 0")
+            conn.execute("SELECT id, path, kind, recursive, advanced FROM catalog_sources LIMIT 0")
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise BackupError(
+            f"{path} is not a current AutoDJ catalog; restore it with a compatible older "
+            "release, then run `autodj migrate-index --apply`"
+        ) from exc
+
+    finally:
+        for suffix in _SQLITE_SIDECARS:
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
+
+
 def _file_size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -441,14 +448,15 @@ def _check_backup_space(
 ) -> None:
     """Refuse a backup that cannot fit: the snapshot in *temp*, the archive beside *destination*.
 
-    The snapshot holds the index generation, the databases and the state
+    The snapshot holds the catalog database, metadata database and state
     files; the archive at most everything, uncompressed.
     """
     active = roots["index"]
-    snapshot = (
-        sum(_file_size(path) for path in active.iterdir() if path.is_file())
-        if active.is_dir()
-        else 0
+    snapshot = sum(_file_size(active / name) for name in INDEX_FILES)
+    snapshot += sum(
+        _file_size(active / f"{database}{suffix}")
+        for database in ("dj_meta.db", "library.db")
+        for suffix in _SQLITE_SIDECARS
     )
     for key, root in roots.items():
         if key != "index" and _is_files(key) and root.is_dir():
@@ -469,15 +477,13 @@ def _check_backup_space(
 def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     """Write a backup archive to *destination* and return its absolute path.
 
-    Safe while AutoDJ serves: the index generation and every station's state
-    files are copied together under the index's publication lock, the index
-    checked against its manifest, and each SQLite database copied through
-    SQLite's backup API.  The free space for the snapshot and the archive is
-    checked first.
+    Safe while AutoDJ serves: every station's state files are copied under
+    the index publication lock, and SQLite databases use SQLite's backup API.
+    The free space for the snapshot and archive is checked first.
 
     Raises:
-        BackupError: If *destination* exists without *force*, the index is
-            old, damaged or unreadable, two folders overlap, a link leaves its
+        BackupError: If *destination* exists without *force*, the catalog is
+            missing or unreadable, two folders overlap, a link leaves its
             folder, or there is not enough free space.
     """
     destination = destination.expanduser().resolve()
@@ -595,6 +601,12 @@ def _unsafe_part(part: str) -> bool:
     return part.split(".", 1)[0].rstrip(" ").upper() in _DEVICE_NAMES
 
 
+def _is_secret(name: str) -> bool:
+    """Whether archive member *name* is a station's secret state file."""
+    key, rest = _split(name)
+    return _is_files(key) and len(rest) == 1 and rest[0] in SECRET_STATE_FILES
+
+
 def _target(roots: dict[str, Path], name: str) -> Path:
     """Return where archive member *name* is restored, refusing unsafe or unknown names."""
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
@@ -617,7 +629,11 @@ def _target(roots: dict[str, Path], name: str) -> Path:
             raise _unknown_station(slug)
     key, rest = _split(name)
     if key == "index":
-        if len(rest) == 1 and (rest[0] in INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0])):
+        if len(rest) == 1 and (
+            rest[0] in INDEX_FILES
+            or rest[0] in _LEGACY_INDEX_FILES
+            or im.GENERATION_FILE_RE.match(rest[0])
+        ):
             return roots["index"] / rest[0]
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in STATION_FILES:
@@ -627,18 +643,14 @@ def _target(roots: dict[str, Path], name: str) -> Path:
     raise BackupError(f"unknown file in archive: {name!r}")
 
 
-def _check_index(stage: Path) -> None:
-    """Refuse a staged index that the loader would refuse."""
-    from autodj.indexer import load_index
-
-    try:
-        load_index(stage)
-    except FileNotFoundError:
-        return  # the backup holds no index
-    except im.UnsupportedIndexError as exc:
-        raise BackupError(str(im.UnsupportedIndexError("this backup", exc.reason))) from exc
-    except im.IndexConsistencyError as exc:
-        raise BackupError(f"the index in this backup is invalid: {exc}") from exc
+def _is_legacy_index_member(name: str) -> bool:
+    """Whether a validated archive member is an obsolete index generation file."""
+    key, rest = _split(name)
+    return (
+        key == "index"
+        and len(rest) == 1
+        and (rest[0] in _LEGACY_INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0]) is not None)
+    )
 
 
 def _nearest_existing(path: Path) -> Path:
@@ -838,18 +850,12 @@ def _install(
         for name in names:
             for suffix in (*_SQLITE_SIDECARS, ""):
                 swap.move_aside(root / f"{name}{suffix}")
-        if key == "index" and im.MANIFEST_NAME in names and root.is_dir():
-            # The backup's generation replaces every other one.
-            for path in sorted(root.iterdir()):
-                if im.GENERATION_FILE_RE.match(path.name) and path.name not in names:
-                    swap.move_aside(path)
     for key in folder_keys:
         swap.make_dir(roots[key].parent)
         swap.put(stages[key], roots[key])
     for key, names in file_names.items():
         swap.make_dir(roots[key])
-        # The manifest goes last, so it only names files that are in place.
-        for name in sorted(names, key=lambda name: name == im.MANIFEST_NAME):
+        for name in sorted(names):
             swap.put(stages[key] / name, roots[key] / name)
     swap.installed()
 
@@ -918,18 +924,39 @@ def _restore(
             "or finish it before restoring again"
         )
     manifest = _read_manifest(archive)
-    files = manifest.files
+    archive_files = [name for name in manifest.files if not _is_secret(name)]
+    if len(archive_files) != len(manifest.files):
+        warnings.append(
+            "Relay settings in this backup were skipped; each station keeps its own relays.json."
+        )
     for slug in manifest.stations:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
-    targets = {name: _target(roots, name) for name in files}
-    if sorted(files) != sorted(name for name in archive.namelist() if name != "manifest.json"):
+    archive_targets = {name: _target(roots, name) for name in archive_files}
+    if sorted(manifest.files) != sorted(
+        name for name in archive.namelist() if name != "manifest.json"
+    ):
         raise BackupError("the archive's files do not match its manifest.json")
-    for name, place in targets.items():
+    for name, place in archive_targets.items():
         # A destination that a link takes elsewhere would be written there.
         _within_root(place, roots[_split(name)[0]])
         if stat.S_ISLNK(archive.getinfo(name).external_attr >> 16):
             raise BackupError(f"linked file in archive: {name}")
+    if "index/library.db" not in archive_files:
+        raise BackupError(
+            "this backup has no catalog database; restore it with a compatible older AutoDJ "
+            "release, then run `autodj migrate-index --apply`"
+        )
+    # Generations may contain vectors not yet migrated into library.db.
+    legacy_count = sum(_is_legacy_index_member(name) for name in archive_files)
+    if legacy_count:
+        raise BackupError(
+            f"this backup contains {legacy_count} legacy index files; restore it with a "
+            "compatible older AutoDJ release, then run `autodj migrate-index --apply` "
+            "and create a new backup"
+        )
+    files = archive_files
+    targets = {name: archive_targets[name] for name in files}
     keys = list(dict.fromkeys(_split(name)[0] for name in files))
     _check_layout(roots, keys)
     folders = [key for key in keys if not _is_files(key)]
@@ -962,11 +989,12 @@ def _restore(
                 key, rest = _split(name)
                 _stage_member(archive, name, stages[key].joinpath(*rest))
             if "index" in stages:
-                _check_index(stages["index"])
                 for name in ("dj_meta.db", "library.db"):
                     database = stages["index"] / name
                     if database.is_file():
                         _check_sqlite(database)
+                        if name == "library.db":
+                            _check_catalog(database)
             try:
                 _install(swap, files, roots, stages)
             except BaseException as exc:
@@ -1001,13 +1029,15 @@ def restore_backup(
     """Restore a backup made by this major.minor version and return its file count.
 
     AutoDJ must be stopped first: a running ``autodj serve`` holds a lock on
-    its index folder, and restore refuses while it is held.  Every file is
-    unpacked beside its destination and the index checked before anything
+    its index folder, and restore refuses while it is held. Every file is
+    unpacked beside its destination and the catalog databases checked before anything
     is replaced, and a replacement that fails is undone, so a damaged
     archive or a full disk changes nothing.  A journal beside the index
     records each step, so a crash part way can be rolled back by
-    ``autodj doctor``.  Restored ``liners`` and ``profiles`` folders replace
-    the current ones whole, and a restored index replaces every generation.
+    ``autodj doctor``. Restored ``liners`` and ``profiles`` folders replace
+    the current ones whole. Archives with legacy generations are refused;
+    archives without ``library.db`` must be restored by a compatible older
+    release before running ``autodj migrate-index --apply``.
     Another station's files go back to its own folder; a station the
     configuration does not define is refused before anything is unpacked.
 
@@ -1021,19 +1051,40 @@ def restore_backup(
 
     Raises:
         BackupError: If AutoDJ is serving, an earlier restore did not finish,
-            the archive is invalid, from another version, holds an old-format
-            index or a station the configuration lacks, is too big for the free
+            the archive is invalid, from another version, lacks a catalog or a
+            station the configuration lacks, is too big for the free
             space, or would replace existing files without *force*.
     """
+    said = warnings if warnings is not None else []
     try:
         with zipfile.ZipFile(archive) as opened:
-            return _restore(
-                opened, _roots(cfg), force=force, warnings=warnings if warnings is not None else []
-            )
+            restored = _restore(opened, _roots(cfg), force=force, warnings=said)
     except BackupError:
         raise
     except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:
         raise BackupError(f"could not restore {archive}: {exc}") from exc
+    _forget_shows_on_air(cfg, said)
+    return restored
+
+
+def _forget_shows_on_air(cfg: AutoDJConfig, warnings: list[str]) -> None:
+    """Forget every station's show on the air (#106) after a restore.
+
+    ``show_on_air.json`` is runtime state, never in a backup: the show it
+    names belongs to the time before the restore, so it must not resume.
+    """
+    from autodj.stations import StationPaths
+
+    places = [StationPaths.default(cfg)]
+    places += [StationPaths.for_station(cfg, spec.slug) for spec in cfg.stations]
+    for paths in places:
+        try:
+            paths.show_on_air.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(
+                f"Could not remove {paths.show_on_air} ({exc}); delete it before serving, "
+                "or the show it names resumes."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1167,11 +1218,15 @@ def recover_restore(cfg: AutoDJConfig, keep: Path) -> list[str]:
                             _keep(target, keep)
                     elif step.get("op") == "aside":
                         path, aside = Path(step["path"]), Path(step["aside"])
-                        if (aside.exists() or aside.is_symlink()) and not (
-                            path.exists() or path.is_symlink()
-                        ):
-                            os.replace(aside, path)
-                            done.append(f"Put {path} back.")
+                        if aside.exists() or aside.is_symlink():
+                            if not (path.exists() or path.is_symlink()):
+                                os.replace(aside, path)
+                                done.append(f"Put {path} back.")
+                            else:
+                                kept = _keep(aside, keep)
+                                done.append(
+                                    f"Kept the earlier copy {kept} because {path} already exists."
+                                )
                     elif step.get("op") == "mkdir":
                         folder = Path(step["path"])
                         if folder.is_dir() and not any(folder.iterdir()):

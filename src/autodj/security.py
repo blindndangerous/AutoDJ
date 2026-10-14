@@ -490,7 +490,8 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     """Return whether a request path is accessible without authentication.
 
     Listening (``/stream.mp3`` and ``/stream.m3u``, and
-    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station) does
+    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station, and the
+    same with ``.aac`` and ``.opus``, the other stream formats) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
     and so are its pages, ``/stations/<slug>/status``, ``/player``,
@@ -501,7 +502,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
         return relative in _PUBLIC_STATION_ROUTES
     return (
         path in _PUBLIC_FILES
-        or path in {"/stream.mp3", "/stream.m3u"}
+        or path in _STREAM_FILES
         or _is_station_stream(path, slugs)
         or _is_station_page(path, slugs)
         or _safe_public_prefix(path, "/modules/")
@@ -519,13 +520,19 @@ def _is_station_page(path: str, slugs: AbstractSet[str]) -> bool:
     return name != path and bool(slash) and rest in _STATION_PAGES and slug in slugs
 
 
+#: A stream address's extensions: each format's (#50) and the playlist's.
+_STREAM_EXTENSIONS = frozenset({"mp3", "aac", "opus", "m3u"})
+#: The default station's stream addresses.
+_STREAM_FILES = frozenset(f"/stream.{ext}" for ext in _STREAM_EXTENSIONS)
+
+
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:
-    """Whether *path* is ``/stations/<slug>.mp3`` or ``.m3u`` for a configured *slug*."""
+    """Whether *path* is ``/stations/<slug>.mp3`` (or another stream extension) for *slug*."""
     name = path.removeprefix("/stations/")
     if name == path:
         return False
     slug, dot, ext = name.rpartition(".")
-    return bool(dot) and ext in {"mp3", "m3u"} and slug in slugs
+    return bool(dot) and ext in _STREAM_EXTENSIONS and slug in slugs
 
 
 def _route_template(scope: Scope) -> str:
@@ -658,6 +665,15 @@ def frame_guard(send: Send) -> Send:
     return guarded
 
 
+def _segment_pattern(path: str) -> re.Pattern[str]:
+    """*path* as a pattern in which each ``{name}`` segment matches any one segment."""
+    parts = [
+        "[^/]+" if part.startswith("{") and part.endswith("}") else re.escape(part)
+        for part in path.split("/")
+    ]
+    return re.compile("^" + "/".join(parts) + "$")
+
+
 class SecurityMiddleware:
     """Enforce HTTP request policy before any downstream body consumer."""
 
@@ -670,7 +686,10 @@ class SecurityMiddleware:
         machine_auth: Callable[[str, str], object | None] | None = None,
         station_slugs: Callable[[], AbstractSet[str]] | None = None,
     ) -> None:
-        """Wrap *app*; *body_limits* maps a POST path to its request-body cap in bytes.
+        """Wrap *app*; *body_limits* maps a path to its request-body cap in bytes.
+
+        The cap applies to POST and PUT.  A ``{name}`` segment in a path
+        stands for any one segment (``/api/shows/{show_id}/songs``).
 
         *station_slugs* names the configured stations.  A path under
         ``/api/stations/<slug>/`` for one of them is checked as the default
@@ -688,10 +707,20 @@ class SecurityMiddleware:
         """
         self.app = app
         self._policy = policy
-        self._body_limits = body_limits
+        self._body_limits = {key: cap for key, cap in body_limits.items() if "{" not in key}
+        self._body_patterns = [
+            (_segment_pattern(key), cap) for key, cap in body_limits.items() if "{" in key
+        ]
         self._machine_scopes = dict(machine_scopes or {})
         self._machine_auth = machine_auth
         self._station_slugs = station_slugs or frozenset
+
+    def _body_limit(self, path: str) -> Callable[[], int] | None:
+        """The body cap for *path*: its own, or a pattern's with ``{name}`` segments."""
+        found = self._body_limits.get(path)
+        if found is not None:
+            return found
+        return next((cap for pattern, cap in self._body_patterns if pattern.match(path)), None)
 
     def _machine_scope(self, path: str) -> str | None:
         """The token scope *path* needs, or ``None`` for a browser route."""
@@ -810,7 +839,7 @@ class SecurityMiddleware:
         # Capped like the default station's route even for a name that is no
         # station: that request answers 404, but only after reading its body.
         limited = station_relative(path, None) or path
-        body_limit = self._body_limits.get(limited) if method == "POST" else None
+        body_limit = self._body_limit(limited) if method in ("POST", "PUT") else None
         downstream_receive = receive
         if body_limit is not None:
             cap = body_limit()
