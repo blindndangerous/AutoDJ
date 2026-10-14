@@ -1924,6 +1924,9 @@ is interrupted, run `migrate-index --apply` again. Existing catalog records and 
 missing records and vectors are filled from the published generation. Unsupported older index
 schemas still require rebuilding.
 
+Applying holds the index's serve lock and refuses to run while `autodj serve` is using that index.
+Stop the server and rerun the command after it releases the lock.
+
 The command validates the published files before importing them. Missing music files keep their
 existing vectors and metadata, but cannot be recognized as moved until their files can be
 fingerprinted. Old index imports use `--music-dir` (or an existing legacy `[library] music_dir`).

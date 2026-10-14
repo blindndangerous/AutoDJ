@@ -171,6 +171,26 @@ def _recovery_catalog_copy(index_dir: Path, web_states: Iterable[Path] = ()) -> 
     for name in ("web_state.json", "index-manifest.json"):
         if (index_dir / name).is_file():
             shutil.copyfile(index_dir / name, backup / name)
+    try:
+        manifest = json.loads((index_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        manifest = None
+    if (
+        isinstance(manifest, dict)
+        and type(manifest.get("generation")) is int
+        and manifest["generation"] > 0
+        and manifest.get("schema_version") in (3, 4)
+    ):
+        gen = f"g{manifest['generation']:020d}"
+        for name, digest in (
+            (f"tracks.{gen}.db", manifest.get("tracks_sha256")),
+            (f"vectors.{gen}.index", manifest.get("vectors_sha256")),
+        ):
+            source = index_dir / name
+            if source.is_file() and isinstance(digest, str) and sha256_file(source) == digest:
+                shutil.copyfile(source, backup / name)
+                if sha256_file(backup / name) != digest:
+                    raise IndexConsistencyError(f"Recovery copy verification failed: {name}")
     station_states = [
         Path(path) for path in web_states if Path(path) != index_dir / "web_state.json"
     ]
@@ -403,7 +423,10 @@ def _import_published_generation(index_dir: Path, music_dir: Path) -> tuple[int,
                         if value is not None and value > 0
                     }
                     if points:
-                        catalog.set_points(entry.path, points, source="analysis")
+                        try:
+                            catalog.set_points(entry.path, points, source="analysis")
+                        except ValueError as exc:
+                            print(f"Skipped analysis points for {entry.path}: {exc}")
         catalog.set_setting("imported_index_generation", signature)
         catalog.set_setting("published_index_import_state", {**signature, "status": "complete"})
     return len(entries), imported
@@ -423,7 +446,7 @@ def _mark_import_pending(index_dir: Path, music_dir: Path) -> None:
         catalog.set_setting("published_index_import_state", {**signature, "status": "pending"})
 
 
-def migrate_catalog(
+def _migrate_catalog(
     index_dir: Path,
     music_dir: Path | None,
     liner_dir: Path,
@@ -546,6 +569,39 @@ def migrate_catalog(
         "Recovery copy retained. It is safe to rerun migrate-index after an interrupted migration."
     )
     return 0
+
+
+def migrate_catalog(
+    index_dir: Path,
+    music_dir: Path,
+    liner_dir: Path,
+    moves: dict[str, str],
+    *,
+    apply: bool,
+    station_web_states: Iterable[Path] = (),
+) -> int:
+    """Preview freely; hold the serve lock for every migration write."""
+    if not apply:
+        return _migrate_catalog(
+            index_dir,
+            music_dir,
+            liner_dir,
+            moves,
+            apply=False,
+            station_web_states=station_web_states,
+        )
+    from autodj.backup import hold_serve_lock
+
+    index_dir = Path(index_dir).resolve()
+    with hold_serve_lock(index_dir):
+        return _migrate_catalog(
+            index_dir,
+            music_dir,
+            liner_dir,
+            moves,
+            apply=True,
+            station_web_states=station_web_states,
+        )
 
 
 def _identify(paths: tuple[Path, Path]) -> tuple[int, str]:
