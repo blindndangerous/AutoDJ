@@ -641,11 +641,85 @@ def test_a_due_break_is_booked_rendered_aired_and_logged(station):
     final = latest(log_lines(ads))
     assert sorted(line.status for line in final.values()) == ["aired", "aired"]
     assert all(line.aired_at is not None for line in final.values())
+    assert sorted(play.at for play in ads._heard) == pytest.approx(
+        sorted(line.aired_at.timestamp() for line in final.values())
+    )
     assert len(ads.recent()) == 2
+    restarted = AdDesk(lambda: player._cfg.ads, ads.store, ads.log, "UTC", clock=clock)
+    restarted.tick()
+    assert sorted(play.at for play in restarted._heard) == pytest.approx(
+        sorted(line.aired_at.timestamp() for line in final.values())
+    )
     # The spots' files stay: they are the station's, not uploads.
     desk.maintain()
     assert all(item.path.exists() for item in booked)
     assert ads.plays_today()  # they count toward the daily limits
+
+
+def test_delayed_break_uses_expected_airtime_across_midnight_and_separation(station, monkeypatch):
+    player, _entries, _desk, ads, clock, break_id, _renders = station
+    now = datetime(2026, 10, 13, 23, 58, tzinfo=UTC).timestamp()
+    airtime = now + 180
+    clock.now = now
+    run = ads.request(break_id, "manual", at=now + 60)
+    plan(station)
+    slot, _closes_in, _airs_in = player.slot_status()
+    monkeypatch.setattr(player, "slot_status", lambda: (slot, 0, 180))
+
+    target_id, other_id = sorted(ads.store.state().spots)
+    target = ads.store.state().spots[target_id]
+    ads.store.update_spot(
+        target_id,
+        SpotFields.model_validate(
+            {
+                **target.model_dump(
+                    exclude={"file", "cue_start", "cue_segue", "cue_end", "length_s", "created_at"}
+                ),
+                "category": "cars",
+                "start_date": date(2026, 10, 14),
+            }
+        ),
+    )
+    other = ads.store.state().spots[other_id]
+    ads.store.update_spot(
+        other_id,
+        SpotFields.model_validate(
+            {
+                **other.model_dump(
+                    exclude={"file", "cue_start", "cue_segue", "cue_end", "length_s", "created_at"}
+                ),
+                "enabled": False,
+            }
+        ),
+    )
+    ads.store.set_settings(AdSettings(separation_minutes=15))
+    target = ads.store.state().spots[target_id]
+    prior_play = Heard(target_id, target.advertiser, target.category, airtime - 15 * 60)
+    ads._heard.append(prior_play)
+    state = ads.store.cached()
+    item = state.breaks[break_id]
+    assert not choose(state, item, run.scheduled, UTC_ZONE, [prior_play]).spots
+
+    fields = SpotFields.model_validate(
+        {
+            **target.model_dump(
+                exclude={"file", "cue_start", "cue_segue", "cue_end", "length_s", "created_at"}
+            ),
+            "start_date": None,
+        }
+    )
+    ads.store.update_spot(target_id, fields)
+    state = ads.store.cached()
+    assert not choose(state, item, run.scheduled, UTC_ZONE, [prior_play]).spots
+    assert [key for key, _spot in choose(state, item, airtime, UTC_ZONE, [prior_play]).spots] == [
+        target_id
+    ]
+    ads.store.update_spot(target_id, fields.model_copy(update={"start_date": date(2026, 10, 14)}))
+
+    records = ads._try_book(run, now, now + 30 * 60)
+
+    assert records is not None and [record.spot_id for record in records] == [target_id]
+    assert ads._booked[records[0].id].heard.at == airtime
 
 
 def test_a_skipped_spot_is_logged_as_missed_with_its_reason(station):
@@ -677,11 +751,15 @@ def test_a_spot_skipped_on_the_air_may_have_aired(station):
     render_d = player._next_rendered()
     player._on_track_start(render_d)  # then the song is skipped
     ads.tick()
-    final = sorted((line.status, line.reason) for line in latest(log_lines(ads)).values())
+    final_records = latest(log_lines(ads)).values()
+    final = sorted((line.status, line.reason) for line in final_records)
     assert final == [
         ("interrupted", "it may have aired in part: cut short: the song was skipped"),
         ("missed", "skipped before it aired"),
     ]
+    interrupted = next(line for line in final_records if line.status == "interrupted")
+    assert interrupted.aired_at is not None
+    assert [play.at for play in ads._heard] == pytest.approx([interrupted.aired_at.timestamp()])
 
 
 def test_a_stop_records_the_spot_on_the_air_and_the_ones_waiting(station):

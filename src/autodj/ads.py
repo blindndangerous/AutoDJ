@@ -1506,17 +1506,16 @@ class AdDesk:
                     self._final(record, MISSED, "AutoDJ stopped before it aired", None, now)
                 )
                 continue
-            if (
-                record.status in (AIRED, INTERRUPTED)
-                and record.scheduled >= start
-                and record.spot_id
-            ):
+            if record.status in (AIRED, INTERRUPTED) and record.spot_id:
+                heard_at = record.aired_at or record.scheduled
+                if heard_at < start:
+                    continue
                 heard.append(
                     Heard(
                         record.spot_id,
                         record.advertiser,
                         record.category,
-                        record.scheduled.timestamp(),
+                        heard_at.timestamp(),
                     )
                 )
         heard.sort(key=lambda play: play.at)
@@ -1680,7 +1679,8 @@ class AdDesk:
                 return [self._run_missed(run, "its ad break is turned off", now)]
             with self._lock:
                 heard = list(self._heard)
-            choice = choose(state, item, run.scheduled, self.zone, heard, usable=self._usable)
+            expected_airtime = now + airs_in
+            choice = choose(state, item, expected_airtime, self.zone, heard, usable=self._usable)
             if not choice.spots:
                 logger.warning("Ad break %r has no spot to air: %s", item.name, choice.reason)
                 return [self._run_missed(run, choice.reason, now)]
@@ -1732,7 +1732,9 @@ class AdDesk:
             ]
             with self._lock:
                 for record in records:
-                    entry = Heard(record.spot_id, record.advertiser, record.category, run.scheduled)
+                    entry = Heard(
+                        record.spot_id, record.advertiser, record.category, expected_airtime
+                    )
                     self._booked[record.id] = _Tracked(record, entry)
                     self._heard.append(entry)
                 self._forget_old_locked(now)
@@ -1757,6 +1759,7 @@ class AdDesk:
         records: list[PlayRecord] = []
         finished: list[str] = []
         not_aired: set[str] = set()
+        aired_at_by_id: dict[str, float] = {}
         for break_id, entry in tracked:
             item = self.breaks.get(break_id) if self.breaks is not None else None
             if item is None:
@@ -1767,12 +1770,15 @@ class AdDesk:
             elif item.state not in TERMINAL:
                 continue
             elif item.state == BREAK_AIRED:
-                aired = item.aired_at if item.aired_at is not None else now
-                records.append(self._final(entry.record, AIRED, "", aired, now))
+                aired_at = item.aired_at if item.aired_at is not None else now
+                records.append(self._final(entry.record, AIRED, "", aired_at, now))
+                # Store the measured airtime; the provisional entry was for selection.
+                aired_at_by_id[break_id] = aired_at
             elif item.aired_at is not None:
                 # It started, then a skip or a stop cut it off.
                 reason = f"it may have aired in part: {item.reason or item.state}"
                 records.append(self._final(entry.record, INTERRUPTED, reason, item.aired_at, now))
+                aired_at_by_id[break_id] = item.aired_at
             else:
                 records.append(
                     self._final(entry.record, MISSED, item.reason or item.state, None, now)
@@ -1786,6 +1792,19 @@ class AdDesk:
                     # It did not air: it no longer counts toward limits.
                     with contextlib.suppress(ValueError):
                         self._heard.remove(gone.heard)
+                elif gone is not None and break_id in aired_at_by_id:
+                    with contextlib.suppress(ValueError):
+                        self._heard.remove(gone.heard)
+                    self._heard.append(
+                        Heard(
+                            gone.heard.spot_id,
+                            gone.heard.advertiser,
+                            gone.heard.category,
+                            aired_at_by_id[break_id],
+                        )
+                    )
+            if aired_at_by_id:
+                self._heard = deque(sorted(self._heard, key=lambda play: play.at))
         return records
 
     def _forget_old_locked(self, now: float) -> None:
