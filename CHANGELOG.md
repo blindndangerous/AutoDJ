@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The History Track info button no longer reads a stray comma for a song with no artist (#283).
 - AutoDJ is now licensed under the GNU Affero General Public License, version 3 or later
   (AGPL-3.0-or-later), instead of MIT. Anyone who runs a modified AutoDJ that people use over a
-  network must offer them its source code. Releases up to and including 0.21.0 stay available under
+  network must offer them its source code. Releases up to and including 0.19.1 stay available under
   MIT (#276).
 
 ### Changed
