@@ -1,5 +1,9 @@
 import json
 import os
+import subprocess
+import sys
+
+import pytest
 
 from autodj.config import RelayConfig, relay_password_variable, station_relay_password_variable
 from autodj.relay_settings import load_relays, public_relay, save_relays
@@ -173,3 +177,18 @@ def test_add_cannot_replace_existing_relay(tmp_path):
     with pytest.raises(HTTPException) as error:
         _save_stream_relay(station, _body("main"), registry)
     assert error.value.status_code == 409
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows access lists")
+def test_relay_file_is_owner_only_on_windows(tmp_path):
+    path = tmp_path / "relays.json"
+    save_relays(path, {"main": relay()}, "default")
+    save_relays(path, {"main": relay(), "second": relay("second", host="two.example")}, "default")
+    listing = subprocess.run(
+        ["icacls", str(path)], capture_output=True, text=True, check=True
+    ).stdout
+    whoami = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    entries = [line.replace(str(path), "").strip() for line in listing.splitlines()]
+    entries = [line for line in entries if line and ":" in line and "processed" not in line]
+    # One entry, for this user, full control and not inherited ("(I)").
+    assert [line.lower() for line in entries] == [f"{whoami.lower()}:(f)"]

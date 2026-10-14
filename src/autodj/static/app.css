@@ -682,6 +682,25 @@
     }
     #hour-preview-points li + li,
     #hour-preview-notes li + li { margin-top: 0.35rem; }
+    /* The relay table keeps its buttons whole; under about 350 px it
+       scrolls sideways inside its own box, never the page (1.4.10 lets a
+       data table scroll in two dimensions). */
+    #stream-relay-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    #stream-relay-table {
+      border-collapse: collapse;
+    }
+    #stream-relay-table th,
+    #stream-relay-table td {
+      padding: 0.25rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    #stream-relay-table td:nth-child(-n+2) {
+      overflow-wrap: anywhere;
+    }
     #hour-preview-table {
       width: 100%;
       /* As History: fixed layout keeps the table inside a narrow window. */
@@ -726,6 +745,50 @@
       font-style: italic;
       color: var(--text-dim);
     }
+
+    /* ---- Settings, Stream, Listener statistics (#50): tables like the
+       Hour preview's, and a plain list of session lengths.  Every
+       number is text in a cell; nothing is shown by colour or shape. ---- */
+    #listener-stats-formats,
+    #listener-stats-days {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 0.5rem 0 0.75rem;
+    }
+    #listener-stats-formats caption,
+    #listener-stats-days caption {
+      text-align: left;
+      font-weight: 600;
+      padding-bottom: 0.4rem;
+    }
+    #listener-stats-formats th,
+    #listener-stats-formats td,
+    #listener-stats-days th,
+    #listener-stats-days td {
+      padding: 0.45rem 0.5rem;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
+      overflow-wrap: anywhere;
+      font-variant-numeric: tabular-nums;
+    }
+    #listener-stats-formats thead th,
+    #listener-stats-days thead th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-dim);
+    }
+    #listener-stats-formats tbody th,
+    #listener-stats-days tbody th { font-weight: 600; }
+    #listener-stats-formats tbody tr:nth-child(even),
+    #listener-stats-days tbody tr:nth-child(even) { background: var(--tint); }
+    #listener-stats-formats tbody tr:last-child :is(th, td),
+    #listener-stats-days tbody tr:last-child :is(th, td) { border-bottom: none; }
+    #listener-stats-lengths { margin-left: 1.25rem; }
+    #stream-formats-list { padding-left: 1.25rem; }
+    #stream-formats-list li { overflow-wrap: anywhere; margin: 0.25rem 0; }
 
     /* ---- Queue: Clear queue sits under the rows ---- */
     #queue-clear { margin-top: 0.75rem; }
@@ -1395,7 +1458,7 @@
     /* Rows that end in a button (Revoke, Remove folder, Unban) touched the
        next row's button: 44 px targets with no space between them. */
     :where(#token-list, #workers-list, #listener-ban-list, #listener-control-list,
-      #clock-list, #categories-list) > li + li {
+      #clock-list, #categories-list, #shows-list) > li + li {
       margin-top: 0.4rem;
     }
     /* Links: the card colour scheme's own link blue, underlined, so a link
@@ -1485,6 +1548,36 @@
     #clock-slots [role="gridcell"] {
       display: inline-flex;
       border-radius: var(--radius);
+    }
+
+    /* ---- Shows (#106) ----
+       Each song is a row: its number (the list's own), its words, then
+       Move up, Move down and Remove wrapping inside the row, so a long
+       title never pushes a button past the card. */
+    #shows-editor {
+      margin-top: 1rem;
+    }
+    :is(#shows-songs, #shows-results) > li {
+      padding: 0.3rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    :is(#shows-songs, #shows-results) > li:last-child {
+      border-bottom: none;
+    }
+    :is(#shows-songs, #shows-results) .show-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem 0.75rem;
+    }
+    :is(#shows-songs, #shows-results) .show-song {
+      flex: 1 1 14rem;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    #shows-songs .show-missing {
+      color: var(--text-dim);
+      font-style: italic;
     }
 
     /* ----------------------------------------------------------------

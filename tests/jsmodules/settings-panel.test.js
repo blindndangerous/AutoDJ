@@ -137,6 +137,19 @@ describe("applySettingsState", () => {
     expect(els.pbMusicSpeed.value).toBe("1.23");
   });
 
+  it("keeps the music speed value while the pointer holds an unfocused slider", () => {
+    // WebKit drags a range input without focusing it; :active still holds.
+    const els = makeEls();
+    els.pbMusicSpeed.value = "-4.5";
+    document.body.append(els.pbMusicSpeedSlider);
+    els.pbMusicSpeedSlider.matches = (selector) => selector === ":active";
+    applySettingsState({ playback: { music_speed_percent: 0 } }, els);
+    expect(els.pbMusicSpeed.value).toBe("-4.5");
+    els.pbMusicSpeedSlider.matches = () => false;
+    applySettingsState({ playback: { music_speed_percent: 0 } }, els);
+    expect(els.pbMusicSpeed.value).toBe("0");
+  });
+
   it("shows the skip style, talk-up and vocal guard the server reports", () => {
     const els = makeEls();
     applySettingsState({
