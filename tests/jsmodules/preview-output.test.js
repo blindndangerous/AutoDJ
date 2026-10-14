@@ -40,7 +40,7 @@ function memoryStorage(initial = {}) {
 function installDom() {
   document.body.innerHTML = `
     <label for="preview-device">Preview output device</label>
-    <select id="preview-device" aria-describedby="preview-device-desc">
+    <select id="preview-device">
       <option value="">System default</option>
     </select>
     <button type="button" id="preview-device-choose"
@@ -205,7 +205,7 @@ describe("installPreviewOutput", () => {
     expect(button.hidden).toBe(true);
     expect(note.hidden).toBe(false);
     expect(note.textContent).toBe(UNSUPPORTED_TEXT);
-    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc preview-device-note");
+    expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
     expect(preview.setSinkId).not.toHaveBeenCalled();
     expect(announce).not.toHaveBeenCalled();
   });
@@ -226,7 +226,7 @@ describe("installPreviewOutput", () => {
     expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones (not connected)"]);
     expect(select.value).toBe("phones");
     expect(note.textContent).toBe(MISSING_TEXT);
-    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc preview-device-note");
+    expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
     expect(announce).toHaveBeenCalledTimes(1);
     expect(announce).toHaveBeenLastCalledWith(MISSING_TEXT, expect.anything());
@@ -243,7 +243,7 @@ describe("installPreviewOutput", () => {
     expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones"]);
     expect(select.value).toBe("phones");
     expect(note.hidden).toBe(true);
-    expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc");
+    expect(select.getAttribute("aria-describedby")).toBeNull();
     expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones again.", expect.anything());
   });
 
@@ -385,7 +385,7 @@ describe("installPreviewOutput", () => {
       button.click();
       await settle();
       expect(note.textContent).toBe(text);
-      expect(select.getAttribute("aria-describedby")).toBe("preview-device-desc preview-device-note");
+      expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
       expect(announce).toHaveBeenLastCalledWith(text, expect.objectContaining({ tone: "error" }));
       expect(document.activeElement).toBe(button);
 

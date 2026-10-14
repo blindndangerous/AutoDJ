@@ -472,9 +472,9 @@ describe("browser access", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(els.pairPanel.hidden).toBe(false);
       expect(els.pairToggle.getAttribute("aria-expanded")).toBe("true");
-      expect(said).toEqual(["Pairing code 1 2 3 4, 5 6 7 8, valid for 8 minutes."]);
+      expect(said).toEqual(["Pairing code 1 2 3 4, 5 6 7 8, valid for 8:20."]);
       expect(els.pairCode.textContent).toContain("1234 5678");
-      expect(els.pairCountdown.textContent).toBe("Valid for 8 minutes 20 seconds.");
+      expect(els.pairCountdown.textContent).toBe("Valid for 8:20.");
       const live = '[aria-live]:not([aria-live="off"]), [role="status"], [role="alert"]';
       expect(els.pairCountdown.closest(live)).toBeNull();
       expect(els.pairCode.closest(live)).toBeNull();
@@ -482,7 +482,7 @@ describe("browser access", () => {
       // The code rotates while shown: new digits, nothing said.
       code = "87654321";
       await vi.advanceTimersByTimeAsync(3_000);
-      expect(els.pairCountdown.textContent).toBe("Valid for 8 minutes 17 seconds.");
+      expect(els.pairCountdown.textContent).toBe("Valid for 8:17.");
       await vi.advanceTimersByTimeAsync(197_000);
       expect(els.pairCode.textContent).toContain("8765 4321");
       expect(said).toHaveLength(1);
@@ -490,7 +490,7 @@ describe("browser access", () => {
       // Refresh code says the current code again, once.
       els.pairRefresh.click();
       await vi.advanceTimersByTimeAsync(0);
-      expect(said.at(-1)).toMatch(/^Pairing code 8 7 6 5, 4 3 2 1, valid for \d+ minutes\.$/);
+      expect(said.at(-1)).toMatch(/^Pairing code 8 7 6 5, 4 3 2 1, valid for \d+:\d{2}\.$/);
       expect(said).toHaveLength(2);
 
       // Another device pairs while the code is shown: said once, and the
