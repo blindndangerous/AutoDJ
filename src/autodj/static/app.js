@@ -621,15 +621,7 @@ function applyState(s) {
         { mirror: false, dwellMs: 10000 });
     }
     lastTrackKey = trackKey;
-    // Update browser titlebar: "AutoDJ - Artist - Title - Album"
-    const t = s.current_track;
-    const segs = [];
-    if (t) {
-      if (t.artist) segs.push(t.artist);
-      if (t.title)  segs.push(t.title);
-      if (t.album)  segs.push(t.album);
-    }
-    document.title = pageTitle(segs);
+    document.title = pageTitle(titleSegments(s.current_track));
     // Reset lyric tracking — new track may have different lyrics
     resetLyricState(_lyricEls);
     // Refresh cover art and full lyric list for the new track
@@ -1559,12 +1551,12 @@ const stationSwitcher = installStationSwitcher({
   onChoose: (slug) => void switchStation(slug),
 });
 
-// "Artist - Title - Night Owl Radio - AutoDJ": the station is named while
-// the server has several.
+// "Artist - Title - Night Owl Radio - AutoDJ": the station is named unless
+// it is called AutoDJ.
 function pageTitle(segments) {
   const parts = [...segments];
   const name = stationName();
-  if (severalStations() && name !== "AutoDJ") parts.push(name);
+  if (name !== "AutoDJ") parts.push(name);
   parts.push("AutoDJ");
   return parts.join(" - ");
 }
@@ -1600,7 +1592,7 @@ function renderStationContext() {
 }
 
 function titleSegments(track) {
-  return track ? [track.artist, track.title, track.album].filter(Boolean) : [];
+  return track ? [track.artist, track.title].filter(Boolean) : [];
 }
 
 // Listen here says which station it plays once the page controls another.
