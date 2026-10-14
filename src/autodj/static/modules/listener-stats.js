@@ -11,6 +11,7 @@
 //   - Download keeps focus on its button.
 
 import { requestFile, requestJson } from "./api-client.js";
+import { fmtTime } from "./dom-helpers.js";
 import { saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
 
@@ -22,17 +23,6 @@ export function spanText(days) {
 
 function plural(count, one, many = `${one}s`) {
   return `${count} ${count === 1 ? one : many}`;
-}
-
-// "1 hour 5 minutes", "12 minutes", "40 seconds".
-export function durationText(seconds) {
-  const total = Math.round(Number(seconds) || 0);
-  if (total < 60) return plural(total, "second");
-  const minutes = Math.round(total / 60);
-  if (minutes < 60) return plural(minutes, "minute");
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest ? `${plural(hours, "hour")} ${plural(rest, "minute")}` : plural(hours, "hour");
 }
 
 // Listening time in hours, one decimal: "4.2".
@@ -79,7 +69,7 @@ export function summaryText(stats, locale) {
     text += `, peak ${period.peak} on ${dayText(period.peak_date, locale)}`
       + `${period.peak_at ? ` at ${period.peak_at}` : ""}`;
   }
-  if (period.longest) text += `, longest session ${durationText(period.longest)}`;
+  if (period.longest) text += `, longest session ${fmtTime(period.longest)}`;
   return `${text}.`;
 }
 
@@ -151,8 +141,8 @@ export function installListenerStats({
       row.peak ? `${row.peak}${row.peak_at ? ` at ${row.peak_at}` : ""}` : "0",
       String(row.sessions),
       hoursText(row.seconds),
-      row.sessions ? durationText(row.seconds / row.sessions) : "None",
-      row.sessions ? durationText(row.longest) : "None",
+      row.sessions ? fmtTime(row.seconds / row.sessions) : "None",
+      row.sessions ? fmtTime(row.longest) : "None",
     ]);
     daysCaption.textContent = `Listeners by day, ${period}, newest first`;
     fillBody(doc, days, dayRows);

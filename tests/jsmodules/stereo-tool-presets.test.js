@@ -136,7 +136,9 @@ describe("Stereo Tool preset markup", () => {
     expect([trim.min, trim.max]).toEqual(["-12", "6"]);
     for (const input of [lift, trim]) {
       expect(panel.querySelector(`label[for="${input.id}"]`).textContent).toContain("decibels");
-      const desc = page.getElementById(input.getAttribute("aria-describedby"));
+      const desc = page.getElementById(`${input.id}-desc`);
+      expect(input.hasAttribute("aria-describedby")).toBe(false);
+      expect(desc.hidden).toBe(false);
       expect(desc.textContent).toMatch(/from (0|minus 12) to (6|plus 6)/);
     }
   });

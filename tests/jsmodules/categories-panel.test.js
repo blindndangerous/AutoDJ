@@ -104,8 +104,10 @@ describe("categories markup", () => {
     const fieldsets = [...section.querySelectorAll("fieldset")];
     expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add category", "Songs come from", "When the songs may play", "Days"]);
     expect([...section.querySelectorAll('input[type="radio"]')].every((radio) => radio.name === "categories-source")).toBe(true);
-    expect(byId("categories-query").getAttribute("aria-describedby")).toBe("categories-query-help");
-    expect(byId("categories-playlist").getAttribute("aria-describedby")).toBe("categories-playlist-help");
+    for (const id of ["categories-query", "categories-playlist"]) {
+      expect(byId(id).hasAttribute("aria-describedby")).toBe(false);
+      expect(byId(`${id}-help`).textContent.trim()).not.toBe("");
+    }
     expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
     expect(byId("categories-match").getAttribute("aria-live")).toBe("off");
@@ -218,7 +220,8 @@ describe("categories form", () => {
     byId("categories-query").value = "genre:rock";
     byId("categories-query").dispatchEvent(new Event("input", { bubbles: true }));
     expect(status()).toBe("");
-    await vi.waitFor(() => expect(status()).toContain("match the selection before playback restrictions."), { timeout: 1500 });
+    await vi.waitFor(() => expect(status()).toBe(
+      "1 song; 1 uses the release year because the first-release year is missing."), { timeout: 1500 });
     expect(server.calls.filter((call) => call.url === "/api/categories/check")).toHaveLength(1);
   });
 
@@ -230,7 +233,7 @@ describe("categories form", () => {
     expect(byId("categories-query-field").hidden).toBe(true);
     expect(byId("categories-playlist-field").hidden).toBe(false);
     expect(byId("categories-playlist").value).toBe("A.m3u8");
-    expect(byId("categories-match").textContent).toBe("Matching selection: 300 songs; 7 playlist lines match no library track before playback restrictions.");
+    expect(byId("categories-match").textContent).toBe("Matching selection: 300 songs; 7 playlist lines match no library track.");
     byId("categories-cancel").click();
     expect(document.activeElement).toBe(rowButton(1, "edit"));
     await vi.waitFor(() => expect(status()).toBe("Cancelled. Nothing was saved."));

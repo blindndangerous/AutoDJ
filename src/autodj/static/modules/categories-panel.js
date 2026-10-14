@@ -369,7 +369,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (category?.playlist) playlistSelect.value = category.playlist;
     showSource();
     match.textContent = category
-      ? `Matching selection: ${countsText(category)} before playback restrictions.`
+      ? `Matching selection: ${countsText(category)}.`
       : "Not checked yet.";
     if (legend) legend.textContent = category ? `Edit category ${category.name}` : "Add category";
     form.hidden = false;
@@ -436,7 +436,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
           if (!countCurrent(item.epoch, item.mine)) continue;
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
-            : `${countsText(result)} match the selection before playback restrictions.`;
+            : `${countsText(result)}.`;
           announceStatus(status, match.textContent, { tone: result.error ? "error" : "info" });
         } catch (error) {
           if (countCurrent(item.epoch, item.mine)) {

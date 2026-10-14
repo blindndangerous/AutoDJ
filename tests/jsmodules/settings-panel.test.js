@@ -224,7 +224,7 @@ describe("applySettingsState", () => {
       parent.append(control);
       const description = document.createElement("span");
       description.id = descriptionId;
-      control.setAttribute("aria-describedby", descriptionId);
+      control.setAttribute("data-help", descriptionId);
       document.body.append(parent, description);
       return { parent, description };
     };
@@ -241,7 +241,7 @@ describe("applySettingsState", () => {
     expect(els.pbSavedPointsNote.hidden).toBe(true);
   });
 
-  it("hides every description of a control that has two", () => {
+  it("hides settings help without hiding aria-describedby errors", () => {
     const els = makeEls();
     const parent = document.createElement("div");
     parent.className = "settings-row";
@@ -250,11 +250,16 @@ describe("applySettingsState", () => {
     first.id = "fade-desc";
     const second = document.createElement("span");
     second.id = "fade-note";
-    els.pbFadeIn.setAttribute("aria-describedby", "fade-desc  fade-note");
-    document.body.append(parent, first, second);
+    const error = document.createElement("span");
+    error.id = "fade-error";
+    els.pbFadeIn.setAttribute("aria-describedby", "fade-error");
+    els.pbFadeIn.setAttribute("data-help", "fade-desc  fade-note");
+    document.body.append(parent, first, second, error);
     applySettingsState({ playback: { transition_mode: "saved_points" } }, els);
     expect(first.hidden).toBe(true);
     expect(second.hidden).toBe(true);
+    expect(error.hidden).toBe(false);
+    expect(els.pbFadeIn.getAttribute("aria-describedby")).toBe("fade-error");
     applySettingsState({ playback: { transition_mode: "fixed" } }, els);
     expect(first.hidden).toBe(false);
     expect(second.hidden).toBe(false);
@@ -296,7 +301,7 @@ describe("applySettingsState", () => {
     parent.className = "settings-row";
     const description = document.createElement("span");
     description.id = "quiet-boost-desc";
-    els.pbQuietBoost.setAttribute("aria-describedby", description.id);
+    els.pbQuietBoost.setAttribute("data-help", description.id);
     parent.append(els.pbQuietBoost);
     document.body.append(parent, description);
 

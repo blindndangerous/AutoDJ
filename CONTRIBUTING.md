@@ -48,6 +48,8 @@ the format is wrong.
 The PR template lists the first two; check the rest as well:
 
 - Tests added or updated for the new behaviour.
+- Use short native form labels; keep longer help outside the label, readable on demand without `aria-describedby`. Keep concise format hints, active restrictions, station context and validation errors associated with their controls, including `aria-invalid` and error focus. In Settings, use `data-help` when visibility logic needs to hide or show that help.
+- Use the same numeric times and concise counts for visual and screen-reader output; follow the [UI wording guidance](docs/accessibility-testing.md#ui-wording) rather than assuming numbers need spoken-word replacements.
 - `CHANGELOG.md` updated under `[Unreleased]`.
 - `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. Commits run
   only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
