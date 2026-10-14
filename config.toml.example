@@ -57,13 +57,10 @@ supported_formats = ["mp3", "flac", "m4a"]
 # playlists_folder = "/srv/autodj/playlists"
 
 [index]
-# Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
-# index generation it names (tracks.g<number>.db and vectors.g<number>.index),
-# dj_meta.db (SQLite), web_state.json, and liner files.
-# Default liner path: <index_dir>/<name>/liners/.
-# Can be a local path or a NAS path — if you run `autodj index` on a GPU machine
-# and `autodj serve` on another machine, point both configs here to the same NAS path.
-# Example: "Z:/autodj-index"
+# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
+# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# Keep a separate catalog per machine and register folders using that machine's paths.
+# Do not share this directory between an indexing machine and a playout machine.
 index_dir = "index"
 
 # Directory where the MuQ model checkpoint is cached after download

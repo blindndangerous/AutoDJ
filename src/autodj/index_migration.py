@@ -45,11 +45,10 @@ import numpy as np
 
 from autodj.backup import _check_sqlite
 from autodj.dj_meta import DjMetaCache
-from autodj.fsutil import atomic_write, fsync_directory
+from autodj.fsutil import atomic_write, fsync_directory, is_absolute_storage
 from autodj.index_manifest import (
     MANIFEST_NAME,
     IndexConsistencyError,
-    is_absolute_storage,
     publication_lock,
     publish_generation,
     sha256_file,

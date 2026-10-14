@@ -26,15 +26,14 @@ import numpy as np
 
 from autodj.beets import Track
 from autodj.config import AutoDJConfig
+from autodj.fsutil import is_absolute_storage, relative_storage_path
 from autodj.index_manifest import (
     REBUILD_COMMAND,
     IndexConsistencyError,
     IndexManifest,
     UnsupportedIndexError,
-    is_absolute_storage,
     publication_lock,
     publish_generation,
-    relative_storage_path,
     require_manifest,
     sha256_file,
 )

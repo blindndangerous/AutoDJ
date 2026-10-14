@@ -630,14 +630,14 @@ class TestDetectStaleEntries:
 
 class TestRelativizeForStorage:
     def test_strips_music_dir_prefix(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
         assert relative_storage_path(str(md / "Artist" / "song.flac"), md) == "Artist/song.flac"
 
     def test_rejects_path_outside_music_dir(self, tmp_path: Path) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"
         md.mkdir()
@@ -646,9 +646,9 @@ class TestRelativizeForStorage:
 
     def test_does_not_stat_filesystem(self, tmp_path: Path) -> None:
         # Resolve() / is_relative_to() on real Paths used to dominate save_index
-        # for libraries on NFS — see index_manifest.relative_storage_path.
+        # for libraries on NFS — see fsutil.relative_storage_path.
         # Must work on paths that don't exist.
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = tmp_path / "Music"  # never created
         fake = md / "Artist" / "song.flac"
@@ -657,13 +657,13 @@ class TestRelativizeForStorage:
     @pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are a Windows rule")
     def test_case_and_separator_mismatch_is_under_music_dir(self) -> None:
         """Beets may spell the drive or folders differently from music_dir on Windows."""
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         md = Path("c:/music")
         assert relative_storage_path(r"C:\Music\Artist/Song.flac", md) == "Artist/Song.flac"
 
     def test_no_music_dir_keeps_relative_path(self) -> None:
-        from autodj.index_manifest import relative_storage_path
+        from autodj.fsutil import relative_storage_path
 
         assert relative_storage_path("Artist/song.flac", None) == "Artist/song.flac"
 

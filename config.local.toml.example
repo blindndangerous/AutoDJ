@@ -7,10 +7,10 @@
 # beets_db = "/srv/beets/library.db"
 
 [index]
-# Each named index directory <index_dir>/<name>/ holds index-manifest.json, the
-# index generation it names (tracks.g<number>.db and vectors.g<number>.index),
-# dj_meta.db (SQLite), web_state.json, and liner files.
-# Default liner path: <index_dir>/<name>/liners/.
+# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
+# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# Keep a separate catalog per machine and register folders using that machine's paths.
+# Do not share this directory between an indexing machine and a playout machine.
 index_dir = "/srv/autodj/index"
 model_dir = "/srv/autodj/models"
 
