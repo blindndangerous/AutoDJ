@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Times the server writes on the page, such as the hour preview, now use 24-hour time like the
+  rest of the server's text. Predicted ad breaks give their length as 1:00 rather than about 60
+  seconds (#281).
 - Save tags in Track info now saves the tags in AutoDJ only and leaves the file alone. Check
   Also save the tags to the file to write them into the file as before; it starts unchecked
   for every track (#258).

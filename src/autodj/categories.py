@@ -63,6 +63,7 @@ from pydantic import (
 from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
 from autodj.fsutil import atomic_write, set_aside
+from autodj.timefmt import clock_text
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -421,7 +422,7 @@ def describe_daypart(spec: Any) -> str:
             # All seven days ticked and no hours: nothing is held back.
             return "Plays every day, at any hour"
     else:
-        start, end = spec.hours_from.strftime("%H:%M"), spec.hours_until.strftime("%H:%M")
+        start, end = clock_text(spec.hours_from), clock_text(spec.hours_until)
         text = f"Plays only {days} from {start} until {end}"
     return f"{text}, {season}" if season else text
 

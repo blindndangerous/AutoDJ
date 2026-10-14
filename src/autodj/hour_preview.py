@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Query, Request
 
+from autodj import timefmt
 from autodj.identity_map import attached
 from autodj.rotation_sim import (
     _PICKING_ACTIONS,
@@ -69,6 +70,7 @@ from autodj.rotation_sim import (
 )
 from autodj.station_routes import StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
+from autodj.timefmt import length_text
 
 logger = logging.getLogger(__name__)
 
@@ -1596,30 +1598,9 @@ def _wall(stamp: float, zone: ZoneInfo) -> datetime:
 
 
 def clock_text(stamp: float, zone: ZoneInfo) -> str:
-    """A compact timestamp such as "2:04:30 PM"."""
+    """ "14:04:30", or "14:00" on a whole minute."""
     moment = _wall(stamp, zone)
-    hour = moment.hour % 12 or 12
-    half = "AM" if moment.hour < 12 else "PM"
-    seconds = f":{moment.second:02d}" if moment.second else ""
-    return f"{hour}:{moment.minute:02d}{seconds} {half}"
-
-
-def clock_words(stamp: float, zone: ZoneInfo) -> str:
-    """Return the same compact timestamp that appears on screen."""
-    return clock_text(stamp, zone)
-
-
-def length_text(seconds: float) -> str:
-    """ "3:45": a length for the screen."""
-    whole = max(0, round(seconds))
-    hours, rest = divmod(whole, 3600)
-    minutes, seconds = divmod(rest, 60)
-    return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{whole // 60}:{seconds:02d}"
-
-
-def length_words(seconds: float) -> str:
-    """Return the same compact duration that appears on screen."""
-    return length_text(seconds)
+    return timefmt.clock_text(moment, seconds=bool(moment.second))
 
 
 def item_title(item: Item) -> str:
@@ -1751,7 +1732,6 @@ def build_preview(
         "generated_at": datetime.fromtimestamp(now, UTC).isoformat(),
         "start": _wall(now, zone).isoformat(),
         "end": _wall(end, zone).isoformat(),
-        "end_words": clock_words(end, zone),
         "reason": decided.reason,
         "summary": decided.reason or "",
         "items": [],
@@ -1875,10 +1855,8 @@ def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
         "path": str(path) if path else None,
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
-        "starts_words": clock_words(item.starts, zone),
         "seconds": round(item.seconds, 1),
         "length_text": length_text(item.seconds),
-        "length_words": length_words(item.seconds),
     }
 
 
@@ -1892,7 +1870,6 @@ def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
         "detail": point.detail or None,
         "at": _wall(point.at, zone).isoformat(),
         "at_text": clock_text(point.at, zone),
-        "at_words": clock_words(point.at, zone),
         "offset_s": round(landing.offset),
         "cut_s": round(landing.cut),
         "landing": short,

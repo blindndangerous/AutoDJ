@@ -16,6 +16,7 @@
 import { requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { clockText } from "./time-format.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -77,12 +78,12 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   // The weekday and date are always said; the year only when it is not
   // this year's in the station time zone.
   function formatWhen(iso) {
-    const options = { weekday: "long", day: "numeric", month: "long", hour: "numeric", minute: "2-digit" };
+    const options = { weekday: "long", day: "numeric", month: "long" };
     if (stationYear(new Date(iso)) !== stationYear(now())) options.year = "numeric";
     try {
-      return new Intl.DateTimeFormat(undefined, { ...options, timeZone: data.timezone || undefined }).format(new Date(iso));
+      return clockText(new Date(iso), { ...options, timeZone: data.timezone || undefined });
     } catch {
-      return new Intl.DateTimeFormat(undefined, options).format(new Date(iso));
+      return clockText(new Date(iso), options);
     }
   }
 

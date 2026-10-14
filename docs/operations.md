@@ -3377,7 +3377,7 @@ saying nothing and leaving focus where it is; if those refreshes start failing, 
 said once, and not again until one succeeds. Choosing another span under **Show** says the new
 summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
 says so. Timestamps and durations use the same compact text on screen and in speech, such as
-"2:04:30 PM" and "3:45". Times are in the station
+"14:04:30" and "3:45" (24 hour). Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
