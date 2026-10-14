@@ -799,7 +799,7 @@ class TestBackfillDjMeta:
             patch("autodj.indexer._analyse_one_track", side_effect=analyse),
             patch("autodj.indexer.TrackProgress") as progress,
         ):
-            backfill_dj_meta(cfg, entries)
+            backfill_dj_meta(cfg, entries, prune=True)
 
         assert [
             call.args[0]
@@ -809,6 +809,23 @@ class TestBackfillDjMeta:
         assert cache.get(entries[0].path).intro_end_s == 1.0
         assert not cache.get(entries[1].path).analysed
         assert not cache.get(gone).analysed
+
+    def test_backfill_keeps_stale_rows_by_default(self, tmp_path: Path) -> None:
+        from autodj.dj_meta import DjMeta, get_cache
+        from autodj.indexer import backfill_dj_meta
+
+        cfg = _backfill_cfg(tmp_path)
+        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        assert cache is not None
+        stale = str(cfg.library.music_dir / "stale.flac")
+        entry = self._entries(cfg, "done.flac")[0]
+        cache.set(stale, DjMeta(analysed=True))
+        cache.set(entry.path, DjMeta(analysed=True))
+        cache.flush(force=True)
+
+        backfill_dj_meta(cfg, [entry])
+
+        assert cache.get(stale).analysed is True
 
     def test_limit_analyses_only_that_many_and_keeps_every_other_row(self, tmp_path: Path) -> None:
         """``analyse --limit`` used to delete the DJ data of every track past the limit."""

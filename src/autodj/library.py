@@ -22,6 +22,7 @@ from autodj.catalog import (
     _covered_by,
     _path,
     _prefix,
+    _under,
 )
 from autodj.categories import CategoryIndex
 from autodj.clock_condition_data import BeetsConditions
@@ -496,7 +497,7 @@ class LibraryManager:
     def _missing_candidates(
         self, *, scan_lock_held: bool = False, cleanup_lock_held: bool = False
     ) -> tuple[list[dict[str, str]], int] | tuple[None, int]:
-        """Return missing files covered by currently reachable, mounted sources."""
+        """Return missing files covered by sources with at least one reachable catalog file."""
         with self._lock:
             if (
                 (self._scan_lock.locked() and not scan_lock_held)
@@ -508,6 +509,18 @@ class LibraryManager:
             missing = set(self._missing)
             generation = self._scan_generation
         stored = {entry.path: (kind, entry) for kind, entry in self.catalog.stored_entries()}
+        sources = self.catalog.sources()
+        sources_with_files: set[str] = set()
+        for stored_path, (kind, _entry) in stored.items():
+            if not Path(stored_path).is_file():
+                continue
+            normalized = _path(stored_path)
+            sources_with_files.update(
+                source["id"]
+                for source in sources
+                if source["kind"] == kind
+                and _under(normalized, source["path"], source["recursive"])
+            )
         candidates: list[dict[str, str]] = []
         for path in sorted(missing):
             try:
@@ -525,7 +538,10 @@ class LibraryManager:
             kind, entry = stored_item
             relevant = self.catalog.sources_for_path(path, kind)
             # A path covered by a disconnected source is never considered safe to remove.
-            if not relevant or any(not Path(source["path"]).is_dir() for source in relevant):
+            if not relevant or any(
+                not Path(source["path"]).is_dir() or source["id"] not in sources_with_files
+                for source in relevant
+            ):
                 continue
             candidates.append(
                 {"path": path, "title": entry.title or Path(path).name, "artist": entry.artist}

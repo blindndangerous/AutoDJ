@@ -381,6 +381,20 @@ class TestDjMetaCache:
         with DjMetaCache(path) as cache2:
             assert cache2.get("new.flac").intro_start_s == 0.5
 
+    def test_normcase_path_map_tracks_local_and_external_writes(self, tmp_path) -> None:
+        with DjMetaCache(tmp_path / "cache.db") as cache:
+            cache._normalized_paths_locked()
+            cache.set("song.flac", DjMeta(analysed=True))
+            cache.flush(force=True)
+            assert cache._normalized_paths_locked()["song.flac"] == "song.flac"
+
+            with closing(sqlite3.connect(tmp_path / "cache.db")) as external, external:
+                external.execute(
+                    "INSERT INTO dj_meta (path, analysed) VALUES (?, 1)", ("Other.flac",)
+                )
+
+            assert cache._normalized_paths_locked()["other.flac"] == "Other.flac"
+
     def test_flush_skips_when_not_dirty_enough(self, tmp_path) -> None:
         path = tmp_path / "cache.db"
         with DjMetaCache(path) as cache:

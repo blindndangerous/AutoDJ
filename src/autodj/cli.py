@@ -119,6 +119,7 @@ def _analyse_catalog_dj_meta(
     cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
     if cache is None:
         return
+    invalid_points = 0
     for entry in entries:
         meta = cache.get(entry.path)
         if meta is None or not meta.analysed:
@@ -131,7 +132,17 @@ def _analyse_catalog_dj_meta(
             )
             if value is not None
         }
-        catalog.set_points(entry.path, points, source="analysis")
+        try:
+            catalog.set_points(entry.path, points, source="analysis")
+        except ValueError as exc:
+            invalid_points += 1
+            logging.getLogger(__name__).warning(
+                "Could not publish DJ cues for %s, skipped: %s", entry.path, exc
+            )
+    if invalid_points:
+        console.print(
+            f"[yellow]Skipped automatic cue updates for {invalid_points} tracks with invalid points.[/]"
+        )
 
 
 def _load_cfg_or_exit(

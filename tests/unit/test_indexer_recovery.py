@@ -162,3 +162,32 @@ def test_chunked_faiss_write_survives_unsupported_fsync(tmp_path: Path) -> None:
     restored = faiss.read_index(str(destination))
     assert restored.ntotal == 1
     assert np.array_equal(restored.reconstruct(0), _vector()[0])
+
+
+def test_enrich_skips_index_entries_absent_from_beets(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    entry = _entry(str(tmp_path / "indexed.flac"))
+    from autodj.catalog import LibraryCatalog
+
+    with LibraryCatalog(index_dir / "library.db") as catalog:
+        catalog.add_source(tmp_path)
+        catalog.put_entry(entry)
+    beets_db = tmp_path / "beets.db"
+    connection = sqlite3.connect(beets_db)
+    try:
+        connection.execute(
+            """CREATE TABLE items (
+                id INTEGER PRIMARY KEY, path BLOB, title TEXT, artist TEXT,
+                album TEXT, genre TEXT, bpm REAL, year INTEGER, length REAL,
+                initial_key TEXT
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO items VALUES (1, ?, 'Other', '', '', '', 0, 0, 0, '')",
+            (str(tmp_path / "other.flac").encode(),),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert indexer.enrich_from_beets(index_dir, music_dir=tmp_path, beets_db=beets_db) == (0, 1)
