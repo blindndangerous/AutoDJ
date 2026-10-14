@@ -65,6 +65,50 @@ def test_store_round_trip_and_strict_loading(tmp_path):
     assert store.delete("Morning") is False
 
 
+def test_ad_break_step_normalizes_round_trips_and_keeps_old_wheels_unchanged(tmp_path):
+    store = ClockwheelStore(tmp_path / "clockwheels")
+    old = store.save(clock([MUSIC]))
+    before = (store.root / "Morning.json").read_bytes()
+    store.save(old)
+    assert (store.root / "Morning.json").read_bytes() == before
+    ad = {"type": "ad_break", "advertiser": "  Example Motors  ", "category": " "}
+    saved = store.save(clock([ad, MUSIC]))
+    assert saved["steps"][0] == {
+        "type": "ad_break",
+        "max_spots": 3,
+        "max_seconds": 0,
+        "advertiser": "Example Motors",
+    }
+    assert store.load("Morning") == saved
+    conditioned = validate_clockwheel(
+        clock([{**ad, "days": [1], "hours_from": "09:00", "hours_until": "17:00"}, MUSIC])
+    )
+    assert conditioned["steps"][0]["days"] == [1]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_spots", True),
+        ("max_spots", 2.0),
+        ("max_spots", "2"),
+        ("max_spots", 0),
+        ("max_spots", 11),
+        ("max_seconds", False),
+        ("max_seconds", "60"),
+        ("max_seconds", 5),
+        ("max_seconds", 901),
+        ("advertiser", "x" * 101),
+        ("unexpected", 1),
+    ],
+)
+def test_ad_break_rejects_invalid_fields(field, value):
+    with pytest.raises(ValueError, match="Step 1"):
+        validate_clockwheel(clock([{"type": "ad_break", field: value}, MUSIC]))
+    with pytest.raises(ValueError, match="at least one music"):
+        validate_clockwheel(clock([{"type": "ad_break"}]))
+
+
 @pytest.mark.parametrize("name", ["", " Morning", "../x", "a.b", "CON", "lpt1", "x" * 65, 3])
 def test_unsafe_names_are_refused(name):
     with pytest.raises(ValueError, match="clockwheel name needs"):

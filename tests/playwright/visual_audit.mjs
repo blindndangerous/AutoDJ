@@ -573,8 +573,9 @@ async function openRepeatHoursError(page, visit) {
   await hours.fill(before);
 }
 
-// Library tools: a category's season and a clockwheel step's hours, each
-// refused with its error on the page, linked to the field and focused.
+// Library tools: a category's season, a clockwheel step's hours and an ad
+// break step's length, each refused with its error on the page, linked to
+// the field and focused.
 async function openDaypartErrors(page, visit) {
   await page.locator("#categories-add").click();
   await page.locator("#categories-name").fill("Christmas");
@@ -594,6 +595,17 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#clock-add-step").click();
   await page.locator("#clock-step-hours-error").waitFor({ state: "visible" });
   await visit("library/step-hours-error");
+  // An ad break step (#51) with its fields, the server's reason the station
+  // airs no ads, and a refused length linked to its field.
+  await page.locator("#clock-step-hours-from").fill("");
+  await page.locator("#clock-step-type").selectOption("ad_break");
+  await page.locator("#clock-step-ad-seconds").fill("5");
+  await page.locator("#clock-add-step").click();
+  await page.locator('#clock-step-ad-seconds[aria-invalid="true"]').waitFor();
+  await page.locator("#clock-step-ad-error").waitFor({ state: "visible" });
+  await visit("library/ad-step-error");
+  await page.locator("#clock-step-ad-seconds").fill("0");
+  await page.locator("#clock-step-type").selectOption("music");
 }
 
 // Library tools: an automatic rescan under 5 minutes refused in the

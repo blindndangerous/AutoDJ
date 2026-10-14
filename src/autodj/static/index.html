@@ -3200,6 +3200,7 @@
           <option value="liner">Voice liner matching conditions</option>
           <option value="track">A specific track</option>
           <option value="settings">Switch preset</option>
+          <option value="ad_break">Ad break</option>
         </select>
         <div class="clock-step-field" id="clock-step-conditions-field">
           <label for="clock-step-match">Match conditions</label>
@@ -3223,6 +3224,29 @@
         <div class="clock-step-field">
           <label for="clock-step-preset">Preset</label>
           <select id="clock-step-preset"></select>
+        </div>
+        <!-- An ad break step: spots from the Ads tab, by its rules.  A refused
+             field is linked to #clock-step-ad-error and focused. -->
+        <div class="clock-step-field" id="clock-step-ad-field">
+          <p class="setting-desc" id="clock-step-ad-help">Plays spots from the Ads tab at the song change before the next song this clockwheel picks, by the rules of every ad break. Longest break is 10 to 900 seconds, or 0 for no limit. When no spot can play, the step is skipped and the ad report says why.</p>
+          <p class="setting-desc" id="clock-step-ads-notice" hidden></p>
+          <div class="settings-row">
+            <label for="clock-step-ad-spots">Spots in the break</label>
+            <input type="number" id="clock-step-ad-spots" min="1" max="10" step="1" value="3">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-seconds">Longest break in seconds</label>
+            <input type="number" id="clock-step-ad-seconds" min="0" max="900" step="1" value="0">
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-advertiser">Advertiser</label>
+            <select id="clock-step-ad-advertiser"><option value="">Any advertiser</option></select>
+          </div>
+          <div class="settings-row">
+            <label for="clock-step-ad-category">Competing category</label>
+            <select id="clock-step-ad-category"><option value="">Any category</option></select>
+          </div>
+          <p id="clock-step-ad-error" class="field-error" hidden></p>
         </div>
         <div class="clock-step-field">
           <label for="clock-step-selection">Choose</label>

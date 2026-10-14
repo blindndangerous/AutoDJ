@@ -58,6 +58,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
   upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
   preview, recovery copy, and safe retry after interruption.
+- Ad breaks as a clockwheel step (#51): the new **Ad break** step type plays spots from the Ads
+  tab at the song change before the next song the clockwheel picks. It holds up to **Spots in the
+  break** and **Longest break in seconds**, and can keep to one **Advertiser** or **Competing
+  category**. Its spots are picked, booked and reported like any ad break's (flight dates, limits,
+  separation, late and missed), with the source "Clockwheel step". When no spot can play, the
+  step is skipped, the music goes on and the ad report says why. The hour preview shows each ad
+  step as a predicted ad break with its expected length.
 - Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
   advertiser, campaign, competing category, flight dates and daily and hourly limits) and ad
   breaks (the minutes past the hour they run at, such as :15 and :45, with hours, days and a date
