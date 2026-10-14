@@ -55,7 +55,7 @@ describe("relay settings", () => {
     button.focus();
     ui.applyStatuses([{ name: "main", state: "connected" }]);
     expect(document.querySelector("#stream-relay-rows tr")).toBe(row);
-    expect(document.activeElement).toBe(button);
+    expect(document.activeElement).toBe(button.closest("td"));
     ui.reset();
   });
 
@@ -83,7 +83,7 @@ describe("relay settings", () => {
     toggle.click();
     await vi.waitFor(() => expect(post).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.activeElement).toBe(toggle);
+    expect(document.activeElement).toBe(toggle.closest("td"));
     ui.reset();
   });
 });

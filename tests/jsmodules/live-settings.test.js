@@ -81,7 +81,7 @@ describe("Live DJ settings", () => {
     const rows = [...byId("live-dj-rows").querySelectorAll("tr")];
     expect(rows).toHaveLength(1);
     expect([...rows[0].cells].slice(0, 2).map((cell) => cell.textContent)).toEqual(["DJ Alice, username alice", "Saved"]);
-    expect(rows[0].cells[0].getAttribute("role")).toBe("rowheader");
+    expect(rows[0].cells[0].getAttribute("role")).toBe("gridcell");
     expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Edit DJ alice");
     expect(byId("live-dj-none").hidden).toBe(true);
     expect(byId("live-return-seconds").value).toBe("0.5");
