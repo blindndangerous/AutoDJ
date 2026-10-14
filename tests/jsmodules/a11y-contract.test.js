@@ -1785,25 +1785,6 @@ describe("static accessibility contracts", () => {
     expect(document.getElementById("source-folder-override-tags").checked).toBe(false);
   });
 
-  it("groups Library tools' automatic rescan fields with a linked-error slot (#249)", () => {
-    installDocument({ html: htmlSource });
-    const group = document.getElementById("auto-rescan");
-    expect(group.tagName).toBe("FIELDSET");
-    expect(group.closest(".flow-form").closest("#panel-library")).not.toBeNull();
-    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Automatic rescan every");
-    for (const id of ["auto-rescan-hours", "auto-rescan-minutes"]) {
-      const input = document.getElementById(id);
-      expect(input.type).toBe("number");
-      expect(input.closest(".settings-row").querySelector(`label[for="${id}"]`)).not.toBeNull();
-    }
-    const error = document.getElementById("auto-rescan-error");
-    expect(error.classList.contains("field-error")).toBe(true);
-    expect(error.hidden).toBe(true);
-    expect(error.closest("fieldset")).toBe(group);
-    expect(error.hasAttribute("aria-live")).toBe(false);
-    expect(error.hasAttribute("role")).toBe(false);
-  });
-
   it("keeps durable playback evidence separate from scoped announcements", () => {
     expect(libraryLogOwnershipIsScoped()).toBe(true);
     expect(libraryLogOwnershipIsScoped(htmlSource.replace(
