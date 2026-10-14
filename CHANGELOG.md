@@ -10,11 +10,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- New libraries start empty; add music folders in Library tools. Setup no longer asks for a music
+  root, and startup never registers one implicitly. Legacy relative paths remain supported, with
+  an explicit `migrate-index --music-dir` option for old index imports.
+
+- Startup and backups use `library.db` without loading old index generations. Older libraries
+  must be upgraded with `migrate-index`; leftover manifests no longer affect a current catalog (#223).
+
 - Multiple stations can use independent Stereo Tool processing instances when configured with the
   required per-instance licences and executable paths (#163).
+- Library Analyse, Enrich and Detailed Stats now read the current catalog. Analyse runs CPU DJ-meta
+  work without MuQ, publishes automatic cues while preserving manual cues, and skips completed
+  tracks across all registered folders. Existing DJ-meta cache entries are preserved. The web summary
+  stats remain separate. The web no longer starts the legacy prune job.
+- The Library panel can preview and confirm removal of tracks missing from available source folders.
+  A clean scan and unchanged preview are required; more than 20% missing requires a second
+  confirmation. Catalog cues and vectors are removed with the record, while audio files and play
+  history remain. Disconnected and unreadable sources are protected.
+- `prepared_path` is no longer part of the catalog schema API, serialization or change tracking.
+  Existing SQLite columns are ignored without rebuilding the database.
+- Hour preview rows now use the same compact timestamp and duration on screen and in screen-reader
+  output. A refresh keeps a predicted choice while it remains eligible and tied for best, while
+  still following the picker when eligibility or play history changes.
 
 ### Added
 
+- `autodj migrate-index` now completes the move from supported schema-3/4 published indexes into
+  `library.db`, carrying vectors and catalog state without reanalyzing audio. It also explicitly
+  upgrades version-1 web settings, old play-history JSON, and initial folder registrations, with a
+  preview, recovery copy, and safe retry after interruption.
 - Scheduled ad breaks with reports (#51): a new **Ads** tab keeps spots (an audio file with its
   advertiser, campaign, competing category, flight dates and daily and hourly limits) and ad
   breaks (the minutes past the hour they run at, such as :15 and :45, with hours, days and a date

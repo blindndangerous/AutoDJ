@@ -29,6 +29,7 @@ from tests.unit.test_library import Similarity, make_config, make_entry
 def library_api(tmp_path):
     cfg = make_config(tmp_path)
     manager = LibraryManager(cfg, Similarity())
+    manager.catalog.add_source(cfg.library.music_dir)
     manager.start_scan = Mock()
     bridge = SimpleNamespace(player=SimpleNamespace(_cfg=cfg), library=manager)
     app = create_app(bridge)

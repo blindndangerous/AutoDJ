@@ -56,9 +56,8 @@ serving and indexing before accepting this repair. `serve --lan` runs until stop
 change the saved configuration. Doctor redacts both server and Hugging Face tokens in its
 configuration report.
 
-The `index` check reads the current catalog when one exists. Before its first import, it checks
-the legacy index that `serve` or `index` would import. It reports catalog counts, warns when the
-library is empty, and reports an error that would prevent startup or import. The `dj-meta-db`
+The `index` check reads the current catalog. It reports catalog counts, warns when the library
+is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
 basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
@@ -76,8 +75,8 @@ liner folder is missing. With several stations, each station is checked on its o
 
 `autodj index` scans the registered folders and saves basic song records in `library.db` before
 loading the model. It then embeds eligible songs that do not yet have vectors. By default it also
-refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks under
-the configured music root whose folders have advanced analysis enabled. This backfill adds intro,
+refreshes metadata from beets and runs the DJ-meta backfill (`autodj analyse`) for tracks in
+registered music folders with advanced analysis enabled. This backfill adds intro,
 outro, beat-grid and cue data; `--no-analyse` skips it, while advanced embedding still runs.
 In a terminal, analysis commands show completed-track progress. Redirected output and web job
 logs keep plain progress messages.
@@ -108,19 +107,34 @@ directory that lists each file and its messages: `decode-indexing.log` for embed
 report removes it. FFmpeg's routine note that an MP3's duration is estimated from its bitrate is
 left out, because the decode itself is complete.
 
-`autodj index` uses the same registered folders as Library tools. `--limit` caps the advanced
+A new library starts empty. Add folders in Library tools; setup and startup do not choose a
+music folder for you. `autodj index` uses those same registered folders. `--limit` caps the advanced
 embedding pass, not the basic import. Folders with advanced analysis disabled stay playable
 without embedding. Each completed vector is saved in `library.db`, so an interrupted run resumes
 with remaining songs. `--force` replaces vectors for eligible songs without deleting cues,
 history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
 audio prefetch. `--no-enrich` skips the optional beets refresh.
 
-The old published-index format, including `index-manifest.json`, is deprecated. If there is no
-catalog, `index` or `serve` imports a valid old index once and keeps the originals for recovery.
-A stale manifest is ignored when the catalog already exists. For an unreadable legacy index,
-`index --force` can build a catalog from the configured folders without importing that index.
-`migrate-index` remains available for older formats. Legacy `analyse`, `prune`, and `stats`
-commands still use the old files; `enrich` uses the catalog when present.
+The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
+and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
+data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
+not bypass migration. A leftover manifest is ignored when the current catalog already exists.
+
+`analyse`, `enrich`, and `stats` use the
+current catalog: Analyse backfills CPU intro/outro and beat data without MuQ, Enrich refreshes
+beets metadata without re-embedding, and Stats prints the detailed catalog report. Analyse covers
+all registered folders. New DJ-meta cache entries use full track paths; existing
+relative cache entries remain readable with the old `music_dir` setting. That setting does not
+limit which registered folders can be analysed. It is optional and kept only to resolve older
+relative cache or beets paths; leave it out of new setups. For a legacy index import, pass
+`migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
+
+The Library panel's **Remove missing tracks** action is
+available after a successful rescan; it previews catalog records missing from mounted sources,
+requires confirmation, asks again above the 20% safety threshold, deletes saved catalog cues and
+analysis data for those records, and preserves audio files and play history. Disconnected sources
+and incomplete scans are excluded from cleanup.
+
 
 To give network drives a rest during a long run, set a pause before each track, in milliseconds,
 in `config.toml`:
@@ -295,8 +309,9 @@ AUTODJ_GID=1000
 #AUTODJ_BEETS_PATH=/home/you/.config/beets
 ```
 
-Without `.env`, music comes from `./music` and the index and model live in the named volumes
-`autodj-index` and `autodj-models`.
+Without `.env`, `./music` is mounted at `/music` and the index and model live in the named
+volumes `autodj-index` and `autodj-models`. Add `/music` in Library after starting the container;
+mounting a folder does not register it automatically.
 
 ```bash
 docker compose up -d --build
@@ -766,7 +781,7 @@ daily_limit = 50             # requests the station takes per day, from everyone
 max_pending = 20             # requests that may wait for you at once (manual approval)
 window_minutes = 30          # how far ahead in the queue a request may be placed
 blocked_artists = ["Night Owl Jingles"]
-blocked_folders = ["Christmas"]   # full paths, or folders inside [library] music_dir
+blocked_folders = ["Christmas"]   # full paths, or folders relative to registered music folders
 ipv6_prefix = 56             # an IPv6 listener's limits count over this network
 ```
 
@@ -1516,9 +1531,10 @@ directly if it is an intended backup source. Restore refuses linked archive entr
 destinations that point outside their configured folder.
 
 `autodj backup` includes every configured station. The default station's files keep their names
-in the archive; another station's are under `stations/<slug>/`, for example
-`stations/nightowl/index/web_state.json` and `stations/nightowl/liners/...`. A backup holds no
-secrets: each station's `relays.json`, which holds relay source passwords, stays out of it, and a
+in the archive, including the current catalog at `index/library.db`; another station's are under
+`stations/<slug>/`, for example `stations/nightowl/index/web_state.json` and
+`stations/nightowl/liners/...`. New backups omit legacy index manifests and generation files.
+Each station's `relays.json`, which holds relay source passwords, stays out of the backup, and a
 restore leaves the station's own `relays.json` in place (it skips one found in an archive made by
 an older build). Keep a separate private copy of `relays.json` if you need one. A folder two
 stations share, such as one liner folder for both, is stored once, under the default station's
@@ -1534,6 +1550,11 @@ check that its `stations/<slug>/` files are in it:
 uv run autodj backup backups/after-nightowl.zip
 unzip -l backups/after-nightowl.zip | grep stations/nightowl
 ```
+
+An older archive without `index/library.db` cannot be restored directly by this version. Restore
+it with a compatible older release, then run `autodj migrate-index --apply` and create a new
+backup. Archives containing old index generations are also refused, since those files may
+contain vectors that have not been imported into the catalog.
 
 Restore puts each station's files back in that station's folder. A backup that holds a station
 your configuration does not define is refused before anything changes: add its
@@ -1874,34 +1895,43 @@ exactly one new file match. A copy, two identical files, or a file whose bytes c
 is handled as a changed or new song. Register the destination folder before rescanning. This does
 not make a copied catalog portable to paths on another machine.
 
-Legacy imports need index schema 4. When started in an interactive terminal, `autodj serve` detects a
-schema-3 index and offers to save a recovery copy and convert it. Entering Yes converts the index
-and continues startup; No leaves it unchanged and stops startup. Stop any other AutoDJ serving,
-indexing or analysis process before accepting. Services and other non-interactive launches exit
-with instructions instead of waiting for input.
+Use `autodj migrate-index` to move a published index and supported old state into the current
+`library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
+reanalyze audio. It also upgrades version-1 `web_state.json`, imports legacy play-history JSON, and
+preserves existing folder registrations. When upgrading older folder state, it registers the
+configured liner folder and an explicitly supplied legacy music folder, if any.
+You can run it when the index itself is current but only saved settings, history, or folder
+registration still needs upgrading. The preview lists the work and writes nothing.
 
-To preview and convert manually, use the same configuration and named index as your server:
+Run it with the same configuration and named index as your server:
 
 ```bash
+# Current catalog: upgrade old settings/history without a music root
 uv run autodj migrate-index
 uv run autodj migrate-index --apply
+# Old published index: supply the base for its relative paths
+uv run autodj migrate-index --music-dir /path/to/music --apply
 # With another configuration or named index:
 uv run autodj --config station.toml migrate-index --name gold --apply
 ```
 
-The preview writes nothing. Applying copies the original index generation, cue database, station
-library database and saved web settings into a recovery folder under
-`index/.migration-backups/default.schema3-backup-...`. The location is printed. SQLite databases
-are copied with their committed changes, including changes still in the write-ahead log.
-The copy is verified before
-live files change and is retained after conversion. This is a migration recovery folder, not an
-`autodj restore` ZIP archive; it preserves the original files for recovery after an interrupted
-conversion. It does not copy music, external liner folders or configuration files.
+Applying saves a recovery copy of the index generation, `dj_meta.db`, `library.db`, and saved web
+settings before changing them. The recovery folder is under `index/.migration-backups/`; the exact
+path is printed. SQLite databases are copied with committed changes, including changes still in
+the write-ahead log. The recovery copy is retained. It is not an `autodj restore` ZIP archive and
+does not copy music, external liner folders or configuration files. The import is idempotent: if it
+is interrupted, run `migrate-index --apply` again. Existing catalog records and vectors are kept;
+missing records and vectors are filled from the published generation. Unsupported older index
+schemas still require rebuilding.
 
-Vectors are copied unchanged, so the expensive analysis does not run again. The converted index
-is checked before publication. Missing music files are listed and keep their existing analysis,
-but cannot be recognised as moved until they have a fingerprint. A conversion failure stops
-startup; it does not silently rebuild the index. Schema 2 still requires a rebuild.
+Applying holds the index's serve lock and refuses to run while `autodj serve` is using that index.
+Stop the server and rerun the command after it releases the lock.
+
+The command validates the published files before importing them. Missing music files keep their
+existing vectors and metadata, but cannot be recognized as moved until their files can be
+fingerprinted. Old index imports use `--music-dir` (or an existing legacy `[library] music_dir`).
+Settings/history-only upgrades need no music root. Existing folder registrations and saved
+catalog settings are preserved.
 
 For files that moved, `--map moves.json` accepts old to new paths relative to `music_dir`, such as
 `{"Old/a.flac": "New/a.flac"}`. Paths must use forward slashes, and destinations must be unique
@@ -1913,7 +1943,8 @@ uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /m
 uv run python scripts/convert_index_v3_to_v4.py --index-dir index --music-dir /music --map moves.json --apply
 ```
 
-The first command is a dry run. Both entry points use the same converter and recovery copy.
+The first command is a dry run for the schema-3 to schema-4 conversion; the `migrate-index` command
+then imports the published vectors into `library.db`.
 
 ## More than one machine
 
@@ -1932,11 +1963,11 @@ that machine; do not copy a populated `library.db` expecting it to adapt to a di
 
 ### Importing a legacy index on another machine
 
-Older published indexes store paths relative to `music_dir` and can still be imported when the
-destination has no catalog. Set `music_dir` to that machine's library root, then place the legacy
-index files in its named index directory before running `serve` or `index`. The first import keeps
-the source files for recovery; after a catalog exists, the legacy manifest is ignored. The
-`migrate-index` command remains available for older index schemas.
+Older published indexes store paths relative to `music_dir` and can be imported on the destination
+without re-embedding. Place the legacy index files in its named index directory, then run
+`autodj migrate-index --music-dir /path/to/old/music --apply` using the destination
+folder that contains the old relative paths. The catalog stores the
+destination's absolute paths and the command keeps a recovery copy.
 
 For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.
 Copy only the files needed by the old format from `index/<name>/`:
@@ -1944,9 +1975,8 @@ Copy only the files needed by the old format from `index/<name>/`:
 - The generation files named in `index-manifest.json`: `tracks.g<number>.db` and
   `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
-- `index-manifest.json` last, after the files it names are in place. AutoDJ loads only what the
-  manifest names and checks both files against the SHA-256 in it, so a missing or half-copied file
-  is refused with an error instead of being served.
+- `index-manifest.json` last, after the files it names are in place. The migration command checks
+  both files against the SHA-256 values in the manifest and refuses missing or half-copied files.
 
 Do not copy machine-specific data:
 
@@ -2950,8 +2980,8 @@ table refreshes every 30 seconds and shortly after the song changes, changing ce
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
 said once, and not again until one succeeds. Choosing another span under **Show** says the new
 summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
-says so. Times show as "2:04:30 PM" and read as "2:04 PM and
-30 seconds"; lengths show as "3:45" and read as "3 minutes 45 seconds". Times are in the station
+says so. Timestamps and durations use the same compact text on screen and in speech, such as
+"2:04:30 PM" and "3:45". Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
@@ -2980,15 +3010,13 @@ choose them to fit.
 
 `autodj backup` writes one ZIP file holding:
 
-- The live index generation: `index-manifest.json` and the `tracks.g<number>.db` and
-  `vectors.g<number>.index` files it names.
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
 - `related-artists.toml` and `related-tracks.toml` in the active index folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
-  complete play history.
+  complete play history, and matching vectors.
 - Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
@@ -3010,12 +3038,12 @@ and keep them with the archive. Backups also leave out the pairing secret and th
 after a restore on a new machine you pair your browsers again.
 Use the new machine's address followed by `/stream.mp3` to listen.
 
-Backup is safe while AutoDJ is serving: it copies the index under the index's own lock and
-both databases through SQLite's backup API, so it never picks up a half-written index. It refuses to
-overwrite an existing archive unless you pass `--force`, and it refuses an index made by an older
-AutoDJ; convert schema 3 with `autodj migrate-index --apply` first. That conversion saves its own
-recovery copy. Older backup archives that do not contain `library.db` leave the current station
-catalog unchanged when restored.
+Backup copies databases through SQLite's backup API, so saved records and vectors form a
+consistent database even while AutoDJ is serving. It refuses to overwrite an archive unless you
+pass `--force`. It requires `library.db` and does not include old manifests or generation files.
+An archive without `library.db` must be restored with a compatible older release, then upgraded
+with `autodj migrate-index --apply` and create a new backup. Archives containing old generation
+files are refused even if they also contain a catalog, to avoid losing unimported vectors.
 
 ```bash
 # Linux/WSL2 Bash
@@ -3060,7 +3088,7 @@ Restore only accepts an archive made by the same major and minor version of Auto
 backup restores on any 0.19.x release and on no other. To roll back to an earlier release, check
 out that release's tag as in the [upgrade checklist](#upgrade-checklist), then restore a backup made
 by that release. Restore also refuses an archive whose file names are absolute or contain `..`,
-files the manifest does not list, and an index made by an older AutoDJ. It also refuses file
+files the manifest does not list, and an archive without a current catalog. It also refuses file
 names Windows cannot hold, such as `CON`, `nul.mp3` or `COM1`, or a name ending in a dot or a
 space.
 
@@ -3075,7 +3103,8 @@ folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
-- The index in the archive replaces the current index, including its older generations.
+- The catalog in the archive replaces `library.db`, including its records, vectors and history.
+  Archives containing old index generations are refused; migrate them with an older release first.
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
@@ -3085,7 +3114,7 @@ Without `--force`, restore refuses when anything it would replace already exists
 
 Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
 or to more than the free space beside its destinations. It unpacks every file into a temporary
-folder beside its destination and checks the index before it replaces anything, so a damaged
+folder beside its destination and checks the catalog before it replaces anything, so a damaged
 archive changes nothing. It then sets every file and folder it replaces aside under a hidden name
 (`.<name>.old-<id>`), together with any SQLite journal or WAL files beside a database, puts the
 new ones in, and deletes what it set aside only once all are in. If any replacement fails,

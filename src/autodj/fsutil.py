@@ -1,4 +1,4 @@
-"""Durable file replacement shared by the index, backup and state writers."""
+"""Filesystem helpers shared by index, backup and state code."""
 
 from __future__ import annotations
 
@@ -7,6 +7,31 @@ import sys
 import uuid
 from contextlib import suppress
 from pathlib import Path
+
+
+def is_absolute_storage(path: str) -> bool:
+    """Whether stored *path* is absolute on any platform."""
+    return path.startswith(("/", "\\")) or path[1:2] == ":"
+
+
+def relative_storage_path(path: str | os.PathLike[str], music_dir: Path | None) -> str:
+    """Return *path* as a forward-slashed path relative to *music_dir*."""
+    parts = Path(os.path.normpath(path)).parts
+    if music_dir is not None:
+        root = Path(os.path.normpath(music_dir)).parts
+        if (
+            root
+            and len(parts) > len(root)
+            and all(
+                os.path.normcase(a) == os.path.normcase(b)
+                for a, b in zip(parts, root, strict=False)
+            )
+        ):
+            return "/".join(parts[len(root) :])
+    stored = Path(path).as_posix()
+    if is_absolute_storage(stored):
+        raise ValueError(f"{path} is not under music_dir {music_dir}")
+    return stored
 
 
 def fsync_directory(path: Path) -> None:

@@ -13,7 +13,7 @@ import {
 
 const byId = (id) => document.getElementById(id);
 
-function item(title, status, fixed, starts = ["12:09:10 PM", "12:09 PM and 10 seconds"]) {
+function item(title, status, fixed, starts = ["12:09:10 PM", "12:09:10 PM"]) {
   return {
     kind: "song",
     status,
@@ -23,7 +23,7 @@ function item(title, status, fixed, starts = ["12:09:10 PM", "12:09 PM and 10 se
     starts_text: starts[0],
     starts_words: starts[1],
     length_text: "3:20",
-    length_words: "3 minutes 20 seconds",
+    length_words: "3:20",
   };
 }
 
@@ -31,13 +31,13 @@ function view(overrides = {}) {
   return {
     minutes: 60,
     reason: null,
-    summary: "Top of the hour, 1 PM: lands about 35 seconds early. Next hour: 2 fixed and 1 predicted, until 1:10 PM.",
+    summary: "Top of the hour, 1:00:00 PM: lands about 35 seconds early. Next hour: 2 fixed and 1 predicted, until 1:10:00 PM.",
     items: [
       item("Gold 0, Song 100", "on_air", true),
-      item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12 PM and 30 seconds"]),
-      item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15 PM and 50 seconds"]),
+      item("Gold 1, Song 101", "picked", true, ["12:12:30 PM", "12:12:30 PM"]),
+      item("Gold 9, Song 109", "predicted", false, ["12:15:50 PM", "12:15:50 PM"]),
     ],
-    points: [{ kind: "hour", text: "Top of the hour, 1 PM: lands about 35 seconds early." }],
+    points: [{ kind: "hour", text: "Top of the hour, 1:00:00 PM: lands about 35 seconds early." }],
     notes: ["Predicted songs come from a dry run."],
     stopped: null,
     ...overrides,
@@ -95,19 +95,19 @@ async function open() {
 }
 
 describe("hour preview rendering", () => {
-  it("shows figures on screen and reads words", () => {
+  it("uses one compact accessible timestamp and duration", () => {
     const cells = rowCells(item("Gold 0, Song 100", "on_air", true));
     expect(cells).toEqual([
-      { shown: "12:09:10 PM", read: "12:09 PM and 10 seconds" },
-      { text: "Gold 0, Song 100" },
-      { shown: "3:20", read: "3 minutes 20 seconds" },
-      { text: "Fixed: on air" },
+      "12:09:10 PM",
+      "Gold 0, Song 100",
+      "3:20",
+      "Fixed: on air",
     ]);
     const tbody = document.createElement("tbody");
     renderRows(document, tbody, [item("Gold 0, Song 100", "on_air", true)]);
     const time = tbody.children[0].children[0];
-    expect(time.querySelector("[aria-hidden='true']").textContent).toBe("12:09:10 PM");
-    expect(time.querySelector(".visually-hidden").textContent).toBe("12:09 PM and 10 seconds");
+    expect(time.textContent).toBe("12:09:10 PM");
+    expect(time.querySelector(".visually-hidden, [aria-hidden='true']")).toBeNull();
     expect(tbody.children[0].className).toBe("is-fixed is-on-air");
   });
 

@@ -183,7 +183,6 @@ jobs:
           # operator's request card.
           printf '[player_page]\nenabled = true\nembed = true\n\n[requests]\nenabled = true\n' \
             >"$RUNNER_TEMP/config.toml"
-          AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/music" \
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
           uv run autodj --config "$RUNNER_TEMP/config.toml" serve >"$RUNNER_TEMP/autodj.log" 2>&1 &

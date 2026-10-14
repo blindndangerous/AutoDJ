@@ -56,6 +56,7 @@ class Server:
         if self.manager is not None:
             self.manager.start_scan = Mock()
             self.manager.analysis_queue._now = self.clock
+            self.manager.catalog.add_source(self.cfg.library.music_dir)
             for n in range(songs):
                 song = self.cfg.library.music_dir / f"song-{n}.flac"
                 song.write_bytes(os.urandom(1000 + n))

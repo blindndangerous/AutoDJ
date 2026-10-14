@@ -16,6 +16,7 @@ from autodj.config import (
     LibraryConfig,
     ModelConfig,
     PlaybackConfig,
+    StationSpec,
 )
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.library import LibraryManager, analyse_library
@@ -99,6 +100,7 @@ def manager_factory(tmp_path):
     def create(**kwargs):
         cfg = make_config(tmp_path, **kwargs)
         manager = LibraryManager(cfg, Similarity())
+        manager.catalog.add_source(cfg.library.music_dir)
         managers.append(manager)
         return manager
 
@@ -133,7 +135,7 @@ def fake_loudness(path: Path, kind: str = "music") -> dict:
     }
 
 
-def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -> None:
+def test_new_library_does_not_register_legacy_music_root(tmp_path: Path) -> None:
     cfg = make_config(
         tmp_path, music=tmp_path / "missing-music", liners=tmp_path / "missing-liners"
     )
@@ -141,7 +143,6 @@ def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -
     manager = LibraryManager(cfg, sim)
     try:
         assert {row["path"] for row in manager.catalog.sources()} == {
-            os.path.normcase(str(tmp_path / "missing-music")),
             os.path.normcase(str(tmp_path / "missing-liners")),
         }
         assert sim.replaced[1].shape == (0, FEATURE_DIM)
@@ -150,33 +151,55 @@ def test_seeds_missing_legacy_roots_and_does_not_rewrite_index(tmp_path: Path) -
         manager.close()
 
 
-def test_seeds_legacy_records_and_vectors_without_touching_faiss_generation(tmp_path: Path) -> None:
-    music = tmp_path / "Music"
-    music.mkdir()
-    song = music / "gold.flac"
-    song.write_bytes(b"gold")
-    original = make_entry(song, title="Gold title", energy=0.7)
-    vector = np.arange(FEATURE_DIM, dtype=np.float32)
-    cfg = make_config(tmp_path, music=music)
-    sim = Similarity([original], vector[None, :])
-    manager = LibraryManager(cfg, sim)
+@pytest.mark.parametrize("legacy_root", [False, True])
+def test_empty_library_requires_explicit_folder_and_keeps_it_after_restart(tmp_path, legacy_root):
+    cfg = make_config(tmp_path)
+    music = cfg.library.music_dir
+    song = music / "song.flac"
+    song.write_bytes(b"audio")
+    if not legacy_root:
+        cfg.library.music_dir = None
+    manager = LibraryManager(cfg, Similarity())
     try:
-        loaded = manager.entry_for_path(song)
-        assert loaded.title == "Gold title"
-        assert loaded.energy == 0.7
-        assert manager.catalog.has_vector(song)
-        np.testing.assert_array_equal(sim.replaced[1][0], vector)
+        with (
+            patch("autodj.library.analyze_basic", side_effect=fake_basic),
+            patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+            patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+        ):
+            manager.scan()
+            assert manager.catalog.sources("music") == []
+            assert manager.entry_for_path(song) is None
+            manager.catalog.add_source(music, advanced=False)
+            manager.scan()
+            assert manager.entry_for_path(song) is not None
     finally:
         manager.close()
+    reopened = LibraryManager(cfg, Similarity())
+    try:
+        assert len(reopened.catalog.sources("music")) == 1
+        assert reopened.entry_for_path(song) is not None
+    finally:
+        reopened.close()
 
 
-def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, monkeypatch):
-    music = tmp_path / "Music"
-    music.mkdir()
-    song = music / "gold.flac"
-    song.write_bytes(b"gold")
-    cfg = make_config(tmp_path, music=music)
-    invalid = Similarity([make_entry(song)], np.zeros((1, FEATURE_DIM - 1), dtype=np.float32))
+def test_constructor_refuses_legacy_settings_in_another_station(tmp_path):
+    from autodj.index_manifest import IndexConsistencyError
+    from autodj.stations import StationPaths
+
+    cfg = make_config(tmp_path)
+    cfg.stations = [StationSpec(slug="secondary", autostart=False, cfg=cfg)]
+    state = StationPaths.for_station(cfg, "secondary").web_state
+    state.parent.mkdir(parents=True)
+    original = '{"schema_version":1,"djmix":{"harmonic_mixing":false}}'
+    state.write_text(original, encoding="utf-8")
+    with pytest.raises(IndexConsistencyError, match="needs migration"):
+        LibraryManager(cfg, Similarity())
+    assert not (cfg.index.active_dir / "library.db").exists()
+    assert state.read_text(encoding="utf-8") == original
+
+
+def test_constructor_closes_catalog_when_refresh_fails(tmp_path):
+    cfg = make_config(tmp_path)
     opened = []
     catalog_factory = LibraryCatalog
 
@@ -187,9 +210,10 @@ def test_constructor_closes_catalog_when_legacy_vectors_are_invalid(tmp_path, mo
 
     with (
         patch("autodj.library.LibraryCatalog", side_effect=capture_catalog),
-        pytest.raises(ValueError, match="legacy vectors do not match"),
+        patch.object(LibraryManager, "refresh", side_effect=ValueError("invalid catalog")),
+        pytest.raises(ValueError, match="invalid catalog"),
     ):
-        LibraryManager(cfg, invalid)
+        LibraryManager(cfg, Similarity())
     assert len(opened) == 1
     assert opened[0]._conn is None
 
@@ -621,7 +645,7 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     old_prepared = tmp_path / "old-prepared.wav"
     old_prepared.write_bytes(b"old prepared audio")
     manager = manager_factory(music=music)
-    manager.catalog.put_entry(make_entry(song), prepared_path=str(old_prepared))
+    manager.catalog.put_entry(make_entry(song))
     manager.catalog.set_points(song, {"start": 0, "outro": 170, "end": 180}, source=point_source)
     manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
 
@@ -649,7 +673,6 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     assert record["length"] == 100.0
     assert record["points"]["outro"] == 90.0
     assert record["point_sources"]["outro"] == "analysis"
-    assert record["prepared_path"] is None
     assert old_prepared.exists()
     assert not manager.catalog.has_vector(song)
     assert not any("song.flac" in error for error in manager.snapshot()["import"]["errors"])
@@ -666,9 +689,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     prepared.write_bytes(b"prepared audio")
     manager = manager_factory(music=music)
     original = make_entry(old)
-    manager.catalog.put_entry(
-        original, points={"start": 0, "segue": 150, "end": 170}, prepared_path=str(prepared)
-    )
+    manager.catalog.put_entry(original, points={"start": 0, "segue": 150, "end": 170})
     manager.catalog.set_loudness(old, fake_loudness(old))
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
     manager.catalog.set_vector(old, vector)
@@ -685,7 +706,6 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     record = manager.catalog.record_for_path(new)
     assert record["id"] == record_id
     assert record["points"]["segue"] == 150
-    assert record["prepared_path"] == os.path.normcase(str(prepared))
     assert record["loudness"] == fake_loudness(new)
     assert manager.ledger.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
@@ -1054,6 +1074,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
     song.write_bytes(b"music")
     cfg = make_config(tmp_path, music=music)
     initial = LibraryManager(cfg, Similarity())
+    initial.catalog.add_source(music)
     try:
         initial.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 170.0})
     finally:
@@ -1079,7 +1100,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         check.close()
 
 
-def test_scan_preserves_prepared_reference_without_creating_audio(manager_factory, tmp_path):
+def test_scan_does_not_create_prepared_audio(manager_factory, tmp_path):
     music = tmp_path / "Music"
     song = music / "song.flac"
     music.mkdir()
@@ -1089,14 +1110,13 @@ def test_scan_preserves_prepared_reference_without_creating_audio(manager_factor
     cache.mkdir(parents=True)
     prepared = cache / "legacy.wav"
     prepared.write_bytes(b"existing prepared audio")
-    manager.catalog.put_entry(make_entry(song), prepared_path=str(prepared))
+    manager.catalog.put_entry(make_entry(song))
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
 
-    assert manager.catalog.record_for_path(song)["prepared_path"] == os.path.normcase(str(prepared))
     assert prepared.read_bytes() == b"existing prepared audio"
     assert list(cache.iterdir()) == [prepared]
 
@@ -1190,6 +1210,7 @@ def test_metadata_change_keeps_the_faiss_index_and_updates_its_entries(tmp_path)
     song.write_bytes(b"music")
     sim = SimilarityIndex.empty()
     manager = LibraryManager(make_config(tmp_path, music=music), sim)
+    manager.catalog.add_source(music)
     try:
         manager.catalog.put_entry(make_entry(song, title="Old"))
         manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
@@ -1265,6 +1286,73 @@ def test_scan_drops_deleted_tracks_but_not_an_unmounted_share(manager_factory, t
         "kept.flac",
         "remote.flac",
     }
+
+
+def test_missing_removal_requires_clean_preview_and_preserves_history(manager_factory, tmp_path):
+    music, share = tmp_path / "Music", tmp_path / "Share"
+    music.mkdir()
+    share.mkdir()
+    gone, kept, remote = music / "gone.flac", music / "kept.flac", share / "remote.flac"
+    for path in (gone, kept, remote):
+        path.write_bytes(path.name.encode())
+    manager = manager_factory(music=music)
+    manager.catalog.add_source(share)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        manager.catalog.write_history(
+            [
+                {
+                    "event_id": "gone-play",
+                    "path": str(gone),
+                    "title": "gone",
+                    "artist": "artist",
+                    "duration": 3.0,
+                    "played_at": "2025-01-01T00:00:00+00:00",
+                }
+            ]
+        )
+        gone.unlink()
+        moved = tmp_path / "Share-offline"
+        share.rename(moved)
+        manager.scan()
+    preview = manager.missing_removal_preview()
+    assert preview["ready"] is True
+    assert preview["count"] == 1
+    assert [item["title"] for item in preview["tracks"]] == ["gone"]
+    with pytest.raises(ValueError, match="confirmation"):
+        manager.remove_missing(preview["token"], confirmed=False)
+    gone.write_bytes(b"returned")
+    with pytest.raises(RuntimeError, match="changed"):
+        manager.remove_missing(preview["token"], confirmed=True, allow_mass=True)
+    gone.unlink()
+    assert manager.remove_missing(preview["token"], confirmed=True, allow_mass=True) == 1
+    assert manager.catalog.recent_history()[0]["path"] == os.path.normcase(str(gone))
+    assert manager.catalog.record_for_path(remote) is not None
+
+
+def test_missing_removal_rejects_an_empty_but_mounted_source(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    songs = [music / "one.flac", music / "two.flac"]
+    for song in songs:
+        song.write_bytes(song.name.encode())
+    manager = manager_factory(music=music)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+        for song in songs:
+            song.unlink()
+        manager.scan()
+
+    preview = manager.missing_removal_preview()
+    assert preview["ready"] is True
+    assert preview["count"] == 0
+    assert all(manager.catalog.record_for_path(song) is not None for song in songs)
 
 
 @pytest.mark.parametrize("processing", [None, "off", "replaygain"])
@@ -1378,49 +1466,31 @@ def _generation(number: int):
     return IndexManifest(1, number, 2, "2026-01-01T00:00:00Z", f"t{number}", f"v{number}")
 
 
-def test_legacy_generation_is_imported_once_in_chunks(tmp_path, monkeypatch):
-    import faiss
-
+def test_catalog_vectors_replace_stale_similarity_without_seeding(tmp_path, monkeypatch):
     from autodj.similarity import SimilarityIndex
 
-    music = tmp_path / "Music"
-    music.mkdir()
-    songs = [music / "a.flac", music / "b.flac"]
+    cfg = make_config(tmp_path)
+    songs = [cfg.library.music_dir / "a.flac", cfg.library.music_dir / "b.flac"]
     for song in songs:
         song.write_bytes(song.name.encode())
+    entries = [make_entry(song) for song in songs]
     vectors = np.eye(2, FEATURE_DIM, dtype=np.float32)
-    cfg = make_config(tmp_path, music=music)
-
-    def legacy(number):
-        index = faiss.IndexFlatIP(FEATURE_DIM)
-        index.add(vectors)
-        sim = SimilarityIndex(index, [make_entry(song) for song in songs])
-        sim._manifest = _generation(number)
-        return sim
-
-    # The first start imports the generation a chunk of rows at a time.
-    sim = legacy(1)
-    reconstruct = Mock(side_effect=AssertionError("one row at a time"))
-    monkeypatch.setattr(sim.faiss_index, "reconstruct", reconstruct, raising=False)
-    LibraryManager(cfg, sim).close()
-    monkeypatch.undo()
     with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        assert catalog.get_setting("imported_index_generation")["generation"] == 1
+        catalog.add_source(cfg.library.music_dir)
+        catalog.seed_entries(entries)
+        catalog.seed_vectors(entries, vectors)
 
     def no_seeding(*_args, **_kwargs):
         raise AssertionError("re-imported")
 
-    # Once the catalog exists, even a newer generation is not imported again.
     monkeypatch.setattr(LibraryCatalog, "seed_entries", no_seeding)
     sim = SimilarityIndex.empty()
     manager = LibraryManager(cfg, sim)
     try:
-        # The catalog's vectors reach sim.
         assert [Path(entry.path) for entry in sim.entries_snapshot()] == songs
         np.testing.assert_array_equal(sim.faiss_index.reconstruct_n(0, 2), vectors)
     finally:
         manager.close()
-    LibraryManager(cfg, legacy(2)).close()
 
 
 def test_library_database_uses_wal(tmp_path):

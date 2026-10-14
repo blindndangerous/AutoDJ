@@ -101,18 +101,138 @@ def _frames(seconds: float) -> np.ndarray:
 def test_times_and_lengths_read_well() -> None:
     two_pm = datetime(2026, 10, 12, 14, 0, tzinfo=UTC).timestamp()
     assert clock_text(two_pm + 270, UTC_ZONE) == "2:04:30 PM"
-    assert clock_words(two_pm + 270, UTC_ZONE) == "2:04 PM and 30 seconds"
-    assert clock_words(two_pm, UTC_ZONE) == "2 PM"
-    assert clock_words(two_pm + 61, UTC_ZONE) == "2:01 PM and 1 second"
+    assert clock_words(two_pm + 270, UTC_ZONE) == "2:04:30 PM"
+    assert clock_words(two_pm, UTC_ZONE) == "2:00:00 PM"
+    assert clock_words(two_pm + 61, UTC_ZONE) == "2:01:01 PM"
     midnight = datetime(2026, 10, 12, 0, 5, tzinfo=UTC).timestamp()
     assert clock_text(midnight, UTC_ZONE) == "12:05:00 AM"
     assert length_text(225) == "3:45"
-    assert length_words(225) == "3 minutes 45 seconds"
-    assert length_words(60) == "1 minute"
-    assert length_words(1) == "1 second"
+    assert length_words(225) == "3:45"
+    assert length_words(60) == "1:00"
+    assert length_words(1) == "0:01"
     assert span_words(60) == "hour"
     assert span_words(120) == "2 hours"
     assert span_words(30) == "30 minutes"
+
+
+def test_preview_lrp_preference_breaks_only_a_best_choice_tie() -> None:
+    from autodj.clockwheel import least_recent
+
+    entries = [song(i, f"Artist {i}") for i in range(3)]
+    preferred = entries[1]
+    assert least_recent(entries, {}, random.Random(1), preferred_path=preferred.path) is preferred
+
+    played = {entry.path: float(index) for index, entry in enumerate(entries, 1)}
+    assert (
+        least_recent(entries, played, random.Random(1), preferred_path=preferred.path) is entries[0]
+    )
+    assert (
+        least_recent(
+            entries,
+            {},
+            random.Random(1),
+            allowed=lambda entry: entry.path != preferred.path,
+            preferred_path=preferred.path,
+        )
+        is not preferred
+    )
+
+
+def test_preview_picker_keeps_only_an_eligible_best_lrp_choice(tmp_path: Path) -> None:
+    source, power, gold = _station(tmp_path)
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    player._clock = {**player._clock, "cursor": 2}
+    decided = read_station(player, now=NOW)
+
+    def first_song(
+        preferred: str,
+        played: dict[str, float] | None = None,
+        *,
+        state: Any = decided,
+    ) -> str:
+        source.ledger.played = dict(played or {})
+        items, _ends, _stopped = hour_preview.predict(
+            source,
+            hour_preview.snapshot_player(player),
+            state,
+            NOW + 900,
+            seed=1,
+            preferred_choices={f"{hour_preview._choice_key(player, state.last)}:0": preferred},
+        )
+        return next(item.entry.path for item in items if item.kind == "song")
+
+    # With every Gold song tied, keep the previous choice. A candidate that
+    # becomes strictly older wins over it, and the current/fixed song is never
+    # held in place even when it is supplied as the preference.
+    assert first_song(gold[3].path) == gold[3].path
+    played = {entry.path: NOW - 100 for entry in gold[1:]}
+    played[gold[4].path] = NOW - 200
+    assert first_song(gold[3].path, played) == gold[4].path
+    assert first_song(gold[0].path) != gold[0].path
+
+    player._clock = {**player._clock, "cursor": 0}
+    after_fixed = replace(
+        decided,
+        items=(*decided.items, Item("song", NOW + 200, 200, "picked", gold[3])),
+        unplayed=((gold[3], NOW + 200),),
+        last=gold[3],
+        handoff=NOW + 400,
+        clock_cursor=0,
+    )
+    assert first_song(power[3].path, state=after_fixed) == power[3].path
+
+
+def test_preview_clock_choice_survives_fixed_prefix_with_same_logical_slot(
+    tmp_path: Path,
+) -> None:
+    source, _power, _gold = _station(tmp_path)
+    player = source.player
+    gold = source.library.entries_snapshot("music")[-60:]
+    _playing(source, gold[0], NOW - 50)
+    player._clock = {**player._clock, "cursor": 1}
+    decided = read_station(player, now=NOW)
+    first_choices: list[tuple[str, str]] = []
+    first = build_preview(
+        source,
+        20,
+        now=NOW,
+        decided=decided,
+        on_prediction=first_choices.extend,
+    )
+    assert len(first_choices) >= 2
+    first_path = first_choices[0][1]
+    second_key, second_path = first_choices[1]
+    assert second_key.startswith("clock:Main:")
+
+    # The first prediction is now fixed. Starting at the same next clock step
+    # should preserve the following tied pick despite the changed prefix.
+    cursor = int(second_key.split(":")[2])
+    fixed_entry = source.library.entry_for_path(first_path)
+    assert fixed_entry is not None
+    after_fixed = replace(
+        decided,
+        items=(
+            *decided.items,
+            Item("song", decided.handoff, 200, "picked", fixed_entry),
+        ),
+        last=fixed_entry,
+        handoff=decided.handoff + 200,
+        unplayed=((fixed_entry, decided.handoff),),
+        clock_name="Main",
+        clock_cursor=cursor,
+    )
+    refreshed_choices: list[tuple[str, str]] = []
+    build_preview(
+        source,
+        20,
+        now=NOW,
+        decided=after_fixed,
+        preferred_choices={second_key: second_path},
+        on_prediction=refreshed_choices.extend,
+    )
+    assert first["counts"]["predicted"] >= 2
+    assert refreshed_choices[0] == (second_key, second_path)
 
 
 @pytest.mark.parametrize("minutes", [0, 14, 181, True, 60.0])
@@ -139,18 +259,18 @@ def test_the_hour_lands_at_the_nearer_song_change() -> None:
     assert early.offset == pytest.approx(-35)
     assert early.playing is not None and early.playing.entry.artist == "Artist 1"
     short, sentence = landing_words(early, UTC_ZONE)
-    assert short == "35 seconds early"
+    assert short == "0:35 early"
     assert sentence == (
-        "Top of the hour, 1 PM: lands about 35 seconds early, at the song change into "
-        "Artist 1, Song 1 (predicted) at 12:59 PM and 25 seconds. "
-        "That song runs 2 minutes 40 seconds past 1 PM."
+        "Top of the hour, 1:00:00 PM: lands about 0:35 early, at the song change into "
+        "Artist 1, Song 1 (predicted) at 12:59:25 PM. "
+        "That song runs 2:40 past 1:00:00 PM."
     )
     late = land(hour, song_changes(_songs(TOP - 150, TOP + 20)), TOP + 220)
     assert late.offset == pytest.approx(20)
     assert landing_words(late, UTC_ZONE) == (
-        "20 seconds late",
-        "Top of the hour, 1 PM: lands about 20 seconds late. Artist 0, Song 0 (predicted) is "
-        "playing then; the next song change is at 1:00 PM and 20 seconds.",
+        "0:20 late",
+        "Top of the hour, 1:00:00 PM: lands about 0:20 late. Artist 0, Song 0 (predicted) is "
+        "playing then; the next song change is at 1:00:20 PM.",
     )
     on_time = land(hour, song_changes(_songs(TOP - 200, TOP + 0.4)), TOP + 200)
     assert on_time.offset == 0
@@ -173,16 +293,16 @@ def test_events_wait_or_cut_by_their_timing() -> None:
     soft = land(Point("event", TOP, "News", "soft", "Play a liner: News"), songs, TOP + 300)
     assert soft.offset == pytest.approx(90)
     assert landing_words(soft, UTC_ZONE)[1] == (
-        "News (Play a liner: News), soft, at 1 PM: runs about 1 minute 30 seconds late, after "
-        "Artist 0, Song 0 (predicted) ends at 1:01 PM and 30 seconds. A soft event waits for "
+        "News (Play a liner: News), soft, at 1:00:00 PM: runs about 1:30 late, after "
+        "Artist 0, Song 0 (predicted) ends at 1:01:30 PM. A soft event waits for "
         "the song playing to end."
     )
     hard = land(Point("event", TOP, "News", "hard", "Play a liner: News"), songs, TOP + 300)
     assert (hard.offset, hard.cut) == (0.0, pytest.approx(90))
     assert landing_words(hard, UTC_ZONE) == (
-        "on time, cuts 1 minute 30 seconds",
-        "News (Play a liner: News), hard, at 1 PM: on time. It cuts Artist 0, Song 0 "
-        "(predicted) short by about 1 minute 30 seconds.",
+        "on time, cuts 1:30",
+        "News (Play a liner: News), hard, at 1:00:00 PM: on time. It cuts Artist 0, Song 0 "
+        "(predicted) short by about 1:30.",
     )
 
 
@@ -193,7 +313,7 @@ def test_a_point_past_the_preview_is_not_guessed() -> None:
     assert landing.starts is None
     assert landing_words(landing, UTC_ZONE) == (
         "not known",
-        "Top of the hour, 1 PM: the preview does not reach the song change after it.",
+        "Top of the hour, 1:00:00 PM: the preview does not reach the song change after it.",
     )
 
 
@@ -231,12 +351,12 @@ def test_fixed_points_are_hours_restarts_and_events_in_the_span() -> None:
     # The clockwheel restarts are read in the computer's zone, as the player
     # reads them; the station here uses that zone too.
     assert words == [
-        ("restart", "Clockwheel restart", "12:30 PM"),
-        ("event", "Weather", "12:45 PM"),
-        ("restart", "Top of the hour, clockwheel restart", "1 PM"),
-        ("event", "News", "1:30 PM"),
-        ("restart", "Clockwheel restart", "1:30 PM"),
-        ("restart", "Top of the hour, clockwheel restart", "2 PM"),
+        ("restart", "Clockwheel restart", "12:30:00 PM"),
+        ("event", "Weather", "12:45:00 PM"),
+        ("restart", "Top of the hour, clockwheel restart", "1:00:00 PM"),
+        ("event", "News", "1:30:00 PM"),
+        ("restart", "Clockwheel restart", "1:30:00 PM"),
+        ("restart", "Top of the hour, clockwheel restart", "2:00:00 PM"),
     ]
     assert points[1].timing == "hard"
     assert points[1].detail == "Play a liner: news.mp3"
@@ -281,9 +401,9 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     # The dry run goes on from the clockwheel's place: step 3 is Gold.
     assert predicted[0]["title"].startswith("Gold ")
     assert predicted[0]["starts_text"] == "12:19:10 PM"
-    assert items[0]["starts_words"] == "12:09 PM and 10 seconds"
+    assert items[0]["starts_words"] == "12:09:10 PM"
     assert items[0]["length_text"] == "3:20"
-    assert items[0]["length_words"] == "3 minutes 20 seconds"
+    assert items[0]["length_words"] == "3:20"
     # Each item starts as the one before ends, up to the end of the span.
     songs = [item for item in items if item["kind"] == "song"]
     assert all(
@@ -294,9 +414,9 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"].startswith("Top of the hour, 1 PM: lands about ")
+    assert view["summary"].startswith("Top of the hour, 1:00:00 PM: lands about ")
     assert view["summary"].endswith(
-        f"Next hour: 3 fixed and {len(predicted)} predicted, until 1:10 PM."
+        f"Next hour: 3 fixed and {len(predicted)} predicted, until 1:10:00 PM."
     )
     assert [point["kind"] for point in view["points"]] == ["hour"]
     assert view["stopped"] is None
@@ -420,7 +540,7 @@ def test_a_scheduled_change_of_picking_reaches_the_prediction(tmp_path: Path) ->
     # The change is a fixed point too: a soft event waits for the song playing.
     events = [point for point in view["points"] if point["kind"] == "event"]
     assert [(point["label"], point["timing"], point["at_words"]) for point in events] == [
-        ("Gold only", "soft", "12:20 PM")
+        ("Gold only", "soft", "12:20:00 PM")
     ]
     assert events[0]["landing"].endswith("late") or events[0]["landing"] == "on time"
 

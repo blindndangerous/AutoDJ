@@ -854,6 +854,8 @@ def predict(
     budget: float = BUDGET_SECONDS,
     limit: int | None = None,
     ad_runs: Sequence[Any] = (),
+    preferred_choices: dict[str, str] | None = None,
+    on_choice: Callable[[str, str], None] | None = None,
 ) -> tuple[list[Item], float, str | None]:
     """Pick on from where *decided* ends until *end*, with a copy of the station's player.
 
@@ -867,7 +869,18 @@ def predict(
     """
     with _quiet_logs():
         songs = MAX_PREDICTED if limit is None else limit
-        return _predict(source, snapshot, decided, end, seed, budget, songs, ad_runs)
+        return _predict(
+            source,
+            snapshot,
+            decided,
+            end,
+            seed,
+            budget,
+            songs,
+            preferred_choices or {},
+            on_choice,
+            ad_runs,
+        )
 
 
 def _predict(
@@ -878,6 +891,8 @@ def _predict(
     seed: int,
     budget: float,
     limit: int,
+    preferred_choices: dict[str, str],
+    on_choice: Callable[[str, str], None] | None,
     ad_runs: Sequence[Any] = (),
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
@@ -927,6 +942,7 @@ def _predict(
     found: list[Item] = []
     stopped: str | None = None
     songs = 0
+    choice_occurrences: dict[str, int] = {}
     while handoff < end:
         if songs >= limit:
             stopped = "it reached its limit of songs"
@@ -964,6 +980,11 @@ def _predict(
             songs += 1
             continue
         context = player._pick_context(at=handoff)
+        choice_base = _choice_key(player, current)
+        occurrence = choice_occurrences.get(choice_base, 0)
+        choice_occurrences[choice_base] = occurrence + 1
+        choice_key = f"{choice_base}:{occurrence}"
+        player._preview_preferred_path = preferred_choices.get(choice_key)  # type: ignore[attr-defined]
         added: tuple[tuple[Any, bool], ...] = ()
         try:
             if player._cfg.playback.transition_mode == "saved_points":
@@ -974,6 +995,8 @@ def _predict(
         except Exception as exc:
             stopped = f"no song could be picked after {current.display_name}: {exc}"
             break
+        if on_choice is not None:
+            on_choice(choice_key, entry.path)
         moment = handoff
         while ads and ads[0].at <= handoff:
             run = ads.popleft()
@@ -1013,6 +1036,20 @@ def _predict(
 
 def _ignore(_event: str, _detail: Any) -> None:
     """The dry run's pick observer: the preview counts nothing."""
+
+
+def _choice_key(player: Any, current: Any) -> str:
+    """Identify a logical pick position so changed fixed prefixes do not shift preferences."""
+    if not player._pure_shuffle and player._cfg.playback.pick_mode == "clock":
+        clock = player._clock or {}
+        name = getattr(player, "_pending_clock_name", None) or clock.get("name")
+        cursor = getattr(player, "_pending_clock_cursor", None)
+        if cursor is None:
+            cursor = clock.get("cursor")
+        boundary = getattr(player, "_pending_clock_boundary", None)
+        return f"clock:{name}:{cursor}:{boundary}"
+    mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
+    return f"{mode}:{current.path}"
 
 
 def _on_air_song(decided: Decided) -> Any:
@@ -1227,7 +1264,7 @@ def _wall(stamp: float, zone: ZoneInfo) -> datetime:
 
 
 def clock_text(stamp: float, zone: ZoneInfo) -> str:
-    """ "2:04:30 PM": the time for the screen."""
+    """A compact timestamp such as "2:04:30 PM"."""
     moment = _wall(stamp, zone)
     hour = moment.hour % 12 or 12
     half = "AM" if moment.hour < 12 else "PM"
@@ -1235,16 +1272,8 @@ def clock_text(stamp: float, zone: ZoneInfo) -> str:
 
 
 def clock_words(stamp: float, zone: ZoneInfo) -> str:
-    """ "2:04 PM and 30 seconds", or "2 PM": the time as a screen reader says it well."""
-    moment = _wall(stamp, zone)
-    hour = moment.hour % 12 or 12
-    half = "AM" if moment.hour < 12 else "PM"
-    if moment.minute == 0 and moment.second == 0:
-        return f"{hour} {half}"
-    base = f"{hour}:{moment.minute:02d} {half}"
-    if moment.second == 0:
-        return base
-    return f"{base} and {moment.second} second{'' if moment.second == 1 else 's'}"
+    """Return the same compact timestamp that appears on screen."""
+    return clock_text(stamp, zone)
 
 
 def length_text(seconds: float) -> str:
@@ -1254,14 +1283,8 @@ def length_text(seconds: float) -> str:
 
 
 def length_words(seconds: float) -> str:
-    """ "3 minutes 45 seconds": a length in words, as the page's other lengths say it."""
-    whole = max(0, round(seconds))
-    minutes, rest = divmod(whole, 60)
-    second_words = f"{rest} second{'' if rest == 1 else 's'}"
-    if minutes == 0:
-        return second_words
-    minute_words = f"{minutes} minute{'' if minutes == 1 else 's'}"
-    return minute_words if rest == 0 else f"{minute_words} {second_words}"
+    """Return the same compact duration that appears on screen."""
+    return length_text(seconds)
 
 
 def item_title(item: Item) -> str:
@@ -1369,6 +1392,8 @@ def build_preview(
     decided: Decided | None = None,
     describe: Callable[[Any], str] | None = None,
     budget: float = BUDGET_SECONDS,
+    preferred_choices: dict[str, str] | None = None,
+    on_prediction: Callable[[tuple[tuple[str, str], ...]], None] | None = None,
 ) -> dict[str, Any]:
     """The preview of *source*'s next *minutes*, as the page reads it (JSON shape).
 
@@ -1401,6 +1426,7 @@ def build_preview(
         return view
     snapshot = source.snapshot or snapshot_player(source.player)
     forecasts = _ad_forecasts(source, now, end)
+    choices: list[tuple[str, str]] = []
     predicted, ends, stopped = predict(
         source,
         snapshot,
@@ -1409,7 +1435,13 @@ def build_preview(
         seed=seed_for(decided.signature()),
         budget=budget,
         ad_runs=forecasts,
+        preferred_choices=preferred_choices,
+        on_choice=(
+            (lambda key, path: choices.append((key, path))) if on_prediction is not None else None
+        ),
     )
+    if on_prediction is not None:
+        on_prediction(tuple(choices))
     timeline = [*decided.items, *predicted]
     songs = [item for item in timeline if item.kind == "song"]
     # A skipped show song takes no time and opens no song change.
@@ -1580,6 +1612,7 @@ class HourPreviews:
         self._limit = waiting
         self._cond = threading.Condition()
         self._kept: dict[_Key, tuple[float, str, dict[str, Any]]] = {}
+        self._choices: dict[_Key, dict[str, str]] = {}
         self._asked: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._forced: dict[_Key, concurrent.futures.Future[dict[str, Any]]] = {}
         self._waiting: deque[_Job] = deque()
@@ -1729,6 +1762,7 @@ class HourPreviews:
         ).hexdigest()
         with self._cond:
             kept = self._kept.get(key)
+            previous_choices = self._choices.get(key, {})
         if (
             not force
             and kept is not None
@@ -1736,9 +1770,23 @@ class HourPreviews:
             and time.monotonic() - kept[0] < self._keep
         ):
             return kept[2]
-        view = build_preview(source, minutes, desk=desk, decided=decided, describe=describe)
+        choices: dict[str, str] = {}
+
+        def remember_choices(picks: tuple[tuple[str, str], ...]) -> None:
+            choices.update(picks)
+
+        view = build_preview(
+            source,
+            minutes,
+            desk=desk,
+            decided=decided,
+            describe=describe,
+            preferred_choices=previous_choices,
+            on_prediction=remember_choices,
+        )
         with self._cond:
             self._kept[key] = (time.monotonic(), signature, view)
+            self._choices[key] = choices
         return view
 
 

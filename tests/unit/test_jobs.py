@@ -61,7 +61,7 @@ class TestJobManagerStart:
             fake.stdout = iter(["line one\n", "line two\n"])
             fake.wait.return_value = 0
             popen.return_value = fake
-            ok = mgr.start("prune", [])
+            ok = mgr.start("stats", [])
             # Reader thread is daemonised; give it a beat to flush.
             for _ in range(20):
                 if not mgr.running:
@@ -69,7 +69,7 @@ class TestJobManagerStart:
                 time.sleep(0.05)
         assert ok is True
         snap = mgr.snapshot()
-        assert snap["name"] == "prune"
+        assert snap["name"] == "stats"
         assert any("line one" in s for s in snap["lines"])
         assert snap["exit_code"] == 0
 
@@ -81,7 +81,7 @@ class TestJobManagerStart:
             fake.stdout = iter([])
             fake.wait.return_value = 0
             popen.return_value = fake
-            assert mgr.start("prune") is True
+            assert mgr.start("index") is True
             # Force "running" so the second start sees a live process.
             mgr._proc.poll = lambda: None  # type: ignore[union-attr]
             assert mgr.start("stats") is False
@@ -173,7 +173,7 @@ class TestSpawnFailure:
     def test_oserror_on_spawn_records_failure(self) -> None:
         mgr = JobManager()
         with patch("autodj.jobs.subprocess.Popen", side_effect=OSError("no such")):
-            ok = mgr.start("prune")
+            ok = mgr.start("index")
         assert ok is False
         assert mgr.snapshot()["exit_code"] == -1
 
@@ -259,7 +259,7 @@ class TestJobPipeEncoding:
             fake.stdout = iter([])
             fake.wait.return_value = 0
             popen.return_value = fake
-            assert mgr.start("prune", []) is True
+            assert mgr.start("stats", []) is True
 
         kwargs = popen.call_args.kwargs
         assert kwargs["encoding"] == "utf-8"
@@ -279,7 +279,7 @@ class TestJobPipeEncoding:
             fake.stdout = exploding_lines()
             fake.wait.return_value = 0
             popen.return_value = fake
-            assert mgr.start("prune", []) is True
+            assert mgr.start("stats", []) is True
             for _ in range(50):
                 if fake.terminate.called:
                     break
@@ -323,7 +323,7 @@ class TestJobManagerConfigPassthrough:
         mgr = JobManager()
         mgr.configure(config_path="cfg.toml", index_name="party")
 
-        for name in ("index", "enrich", "analyse", "prune", "stats"):
+        for name in ("index", "enrich", "analyse", "stats"):
             argv = self._capture(mgr, name).args[0]
             assert argv[1:] == [
                 "-m",
