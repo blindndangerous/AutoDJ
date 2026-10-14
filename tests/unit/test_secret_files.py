@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -107,3 +108,17 @@ def test_paired_devices_path_with_minimal_config() -> None:
     cfg = MagicMock()
     cfg.index.index_dir = "/path/to/index"
     assert paired_devices_path(cfg) == Path("/path/to/index") / ".paired-devices.sqlite3"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows access lists")
+def test_file_is_private_on_windows(tmp_path: Path) -> None:
+    import subprocess
+
+    path = tmp_path / ".secret"
+    _load(path)
+    listing = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True)
+    user = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    entries = [line.replace(str(path), "").strip() for line in listing.stdout.splitlines()]
+    entries = [line for line in entries if line and ":" in line and "processed" not in line]
+    # One entry, for this user, full control and not inherited ("(I)").
+    assert [line.lower() for line in entries] == [f"{user.lower()}:(f)"]

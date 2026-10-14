@@ -131,6 +131,7 @@ def _rig(
             outputs=[SimpleNamespace(name="relay encoder")],
             close=lambda: log.append("relays closed"),
         ),
+        mounts=SimpleNamespace(close=lambda: log.append("extra formats closed")),
         liner_scheduler=None,
         station=None,
         library=None,
@@ -208,6 +209,7 @@ async def test_shutdown_keeps_the_order_of_the_single_station_server(
 
     assert log == [
         "webhooks closed",
+        "extra formats closed",
         "relay encoder detached",
         "relays closed",
         "stream encoder detached",
