@@ -1025,14 +1025,23 @@ def daypart_spans(
 HOURPART_DAYS = 7
 
 
-def quarter_hour(at: float) -> int:
-    """The quarter of the hour Unix time *at* falls in, 0 to 3.
+def quarter_hour(at: float, zone: tzinfo = UTC) -> int:
+    """The quarter of the hour Unix time *at* falls in on the clock in *zone*, 0 to 3.
 
-    Read in UTC.  Every time zone in use is a whole number of quarter
-    hours from UTC, so two times share a quarter in UTC exactly when they
-    share it on the station's clock; the quarter's number may differ.
+    Read on the station's clock, not in UTC: Lord Howe Island moves its
+    clock by half an hour, so across that change two times can share a
+    quarter in UTC but not on the station's clock.  A Unix time names one
+    wall time, so the hour a clock change repeats needs nothing special.
     """
-    return int(at // 900) % 4
+    if zone is UTC:
+        return int(at // 900) % 4
+    return _local_quarter(at, zone)
+
+
+@lru_cache(maxsize=16384)
+def _local_quarter(at: float, zone: tzinfo) -> int:
+    """:func:`quarter_hour` off UTC.  Cached: each pick reads a week of plays again."""
+    return datetime.fromtimestamp(at, zone).minute // 15
 
 
 class RepeatFilter:
@@ -1182,7 +1191,7 @@ def _time_separation(
     hourpart: set[str | TrackKey] = set()
     plays = rules.hourpart_plays
     if plays:
-        quarter = quarter_hour(at)
+        quarter = quarter_hour(at, zone)
         since = at - HOURPART_DAYS * 86400.0
         counted: dict[str | TrackKey, int] = {}
         for record in reversed(history):
@@ -1193,7 +1202,7 @@ def _time_separation(
             seen = counted.get(song, 0)
             if seen < plays:
                 counted[song] = seen + 1
-                if int(started // 900) % 4 == quarter:
+                if quarter_hour(started, zone) == quarter:
                     hourpart.add(song)
     return daypart, hourpart
 

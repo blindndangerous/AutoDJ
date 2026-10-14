@@ -756,6 +756,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Prevent a song from playing in the same quarter of the hour** reads quarters on the
+  station's clock. Across Lord Howe Island's half-hour clock change it compared UTC quarters, so
+  a song could return to the quarter it last played in. Listener request checks read it on the
+  station's clock too (#219).
+
 - Saving cue points in Track info no longer fails with "end exceeds track length" on some
   tracks when the End was left as loaded. Track info shows cue times to the nearest 0.01 s,
   which could round the End just past the song's length. The catalog now accepts a cue that
