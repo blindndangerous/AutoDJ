@@ -92,6 +92,10 @@ const NATIVE_KEYBOARD_SELECTOR = [
   '[role="option"]',
   '[role="switch"]',
   '[role="tab"]',
+  // Table cells: arrows move between rows and cells (table-navigation.js).
+  "td",
+  '[role="gridcell"]',
+  '[role="rowheader"]',
 ].join(",");
 
 const TYPEAHEAD_SELECTOR = [

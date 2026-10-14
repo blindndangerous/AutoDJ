@@ -55,7 +55,8 @@ export function renderRows(doc, tbody, items) {
       row = doc.createElement("tr");
       for (let column = 0; column < 5; column += 1) {
         const cell = doc.createElement("td");
-        cell.setAttribute("role", column === 1 ? "rowheader" : "gridcell");
+        cell.setAttribute("role", "gridcell");
+        if (column === 1) cell.dataset.name = "";
         row.append(cell);
       }
       tbody.append(row);
