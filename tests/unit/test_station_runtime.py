@@ -241,6 +241,45 @@ def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
         registry.get("daybreak")
 
 
+def test_a_stopped_station_shows_the_name_saved_in_settings(tmp_path: Path) -> None:
+    """Settings, Stream saves a new name in web_state.json, not in the configuration."""
+    log: list[str] = []
+    saved = tmp_path / "nightowl" / "web_state.json"
+    saved.parent.mkdir()
+    saved.write_text(
+        json.dumps({"schema_version": 2, "playback": {"stream_station_name": "Night Owl Radio"}}),
+        encoding="utf-8",
+    )
+    blank = tmp_path / "daybreak" / "web_state.json"
+    blank.parent.mkdir()
+    blank.write_text(json.dumps({"playback": {"stream_station_name": "  "}}), encoding="utf-8")
+    built: list[_Runtime] = []
+
+    def build(_registry: StationRegistry) -> _Runtime:
+        built.append(_Runtime("nightowl", log))
+        return built[-1]
+
+    registry = StationRegistry(
+        _Runtime("default", log),  # type: ignore[arg-type]
+        [
+            _extra("nightowl", build, tmp_path, autostart=False),
+            _extra("daybreak", build, tmp_path, autostart=False),
+        ],
+    )
+    registry.prepare = lambda station: None
+    assert registry.get("nightowl").name == "Night Owl Radio"
+    assert registry.summaries()[1]["name"] == "Night Owl Radio"
+    assert registry.get("daybreak").name == "Daybreak"  # a name not valid is not shown
+
+    async def scenario() -> None:
+        await registry.start("nightowl")
+        built[-1].name = "Owl After Dark"  # renamed while it ran
+        await registry.stop("nightowl")
+
+    asyncio.run(scenario())
+    assert registry.get("nightowl").name == "Owl After Dark"
+
+
 def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
     log: list[str] = []
     built: list[_Runtime] = []

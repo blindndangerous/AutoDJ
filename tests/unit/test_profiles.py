@@ -83,6 +83,18 @@ class TestProfileStore:
         store.save(ProfileSnapshot(name="C"))
         assert store.list_names() == ["A", "B", "C"]
 
+    def test_a_name_differing_only_in_case_is_refused(self, tmp_path: Path) -> None:
+        """Windows would overwrite the other profile's file; Linux would keep two."""
+        store = ProfileStore(tmp_path / "profiles")
+        store.save(ProfileSnapshot(name="late night", preset="sleep"))
+        with pytest.raises(ValueError, match="'late night' already exists"):
+            store.save(ProfileSnapshot(name="Late Night", preset="party"))
+        assert store.list_names() == ["late night"]
+        assert store.load("late night").preset == "sleep"
+        # The exact name still replaces it.
+        store.save(ProfileSnapshot(name="late night", preset="party"))
+        assert store.load("late night").preset == "party"
+
     def test_delete_returns_true_when_removed(self, tmp_path: Path) -> None:
         store = ProfileStore(tmp_path / "profiles")
         store.save(ProfileSnapshot(name="Tmp"))

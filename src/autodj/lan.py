@@ -317,6 +317,11 @@ def lan_urls(
     return [f"{scheme}://{f'[{name}]' if ':' in name else name}:{server.port}" for name in names]
 
 
+# A log record carrying this attribute shows its own text on the console but
+# this text in the log file (cli._add_log_file).  Start-up uses it to keep the
+# pairing code out of the file, which is kept for days and is not owner-only.
+LOG_FILE_TEXT = "log_file_text"
+
 PAIRING_ON_REQUEST_HINT = (
     "To pair a device, run `autodj devices pairing-code`, or choose Show pairing code in "
     "Settings, Browser access on a paired browser. Each code pairs one device."

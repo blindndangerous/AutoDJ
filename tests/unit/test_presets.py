@@ -221,6 +221,26 @@ class TestLoadUserPresets:
         result = load_user_presets(raw)
         assert result["party2"].discovery_every == 8
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"discovery_every": 0},
+            {"discovery_every": -1},
+            {"bpm_weight": float("nan")},
+            {"bpm_weight": float("inf")},
+            {"bpm_weight": -0.1},
+            {"bpm_weight": 1.5},
+        ],
+    )
+    def test_out_of_range_values_skip_the_preset(self, bad, caplog) -> None:
+        """A negative rate made every pick a discovery pick; NaN broke the BPM blend."""
+        raw = {"broken": {"bpm_target": 100, **bad}, "ok": {"bpm_target": 90}}
+        with caplog.at_level("WARNING"):
+            result = load_user_presets(raw)
+        assert "broken" not in result
+        assert "ok" in result
+        assert "Skipping invalid preset 'broken'" in caplog.text
+
     def test_non_dict_section_is_skipped(self) -> None:
         """A preset section that is not a table (e.g. a scalar) is skipped."""
         raw = {"bad": "not a dict", "good": {"bpm_target": 100}}

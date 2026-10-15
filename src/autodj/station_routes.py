@@ -446,7 +446,25 @@ def _save_stream_relay_locked(
     if body.is_edit and old is None:
         raise HTTPException(status_code=404, detail="Relay not found.")
     variable = password_variable(station.slug, body.name)
+    sharing = next(
+        (
+            name
+            for name in station.cfg.stream.relays
+            if name != body.name and password_variable(station.slug, name) == variable
+        ),
+        None,
+    )
     managed = variable in os.environ
+    if sharing is not None and managed:
+        # a-b and a_b (or Main and main) read one password variable; once it
+        # is set, both would send its password.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Relay {sharing} takes its password from the same environment variable, "
+                "which is set; choose another name."
+            ),
+        )
     if managed and body.password:
         raise HTTPException(
             status_code=409, detail="This relay password is managed by the environment."
@@ -1973,7 +1991,11 @@ def install_station_routes(router: StationRouter) -> None:
         blacklist = None
         try:
             body = await request.json()
-            blacklist = body.get("blacklist") if isinstance(body, dict) else None
+            if isinstance(body, dict) and isinstance(body.get("blacklist"), str):
+                # Only a path: any other JSON value would go into the
+                # no-repeat window, and an object or list there breaks
+                # every later pick (the picker builds a set from it).
+                blacklist = body["blacklist"]
         except (ValueError, TypeError):
             # No JSON body or malformed payload — endpoint accepts either.
             logger.debug("repick_next: no JSON body, blacklist not set")

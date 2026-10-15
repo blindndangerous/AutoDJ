@@ -275,6 +275,23 @@ def test_failed_listener_auth_is_throttled_before_ban_status(bridge, tmp_path: P
     assert client.get("/stream.m3u", auth=("radio", "secret")).status_code == 429
 
 
+def test_failed_listener_auth_counts_an_ipv6_64_together(bridge) -> None:
+    """New addresses inside one /64 do not get five fresh guesses each."""
+    bridge.player._cfg.stream.listener_user = "radio"
+    bridge.player._cfg.stream.listener_password = "secret"
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    app = create_app(bridge)
+    statuses = [
+        TestClient(app, client=(f"2001:db8:1:2::{i + 1:x}", 50000))
+        .get("/stream.m3u", auth=("radio", f"guess {i}"))
+        .status_code
+        for i in range(6)
+    ]
+    assert statuses == [401] * 5 + [429]
+    other = TestClient(app, client=("2001:db8:1:3::1", 50000))
+    assert other.get("/stream.m3u", auth=("radio", "secret")).status_code == 200
+
+
 def test_per_address_limit_kick_and_ban_routes(stream_app) -> None:
     client, stream = stream_app
     registry = client.app.state.listener_access

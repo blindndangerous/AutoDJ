@@ -141,6 +141,34 @@ def test_missing_files_are_skipped_until_they_return(pairs) -> None:
     assert reloader.check() is True
 
 
+def test_a_failed_read_is_tried_again_at_the_next_check(pairs, monkeypatch) -> None:
+    """One sharing violation must not leave the renewed certificate unloaded until the
+    next renewal: the files have not changed since, but they were never read."""
+    import autodj.tls as tls
+
+    live, first, renewed = pairs
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(*live)
+    reloader = CertificateReloader(context, *live)
+    _install(renewed, live, 1_000_000_000)
+
+    real_copy = shutil.copyfile
+    calls: list[int] = []
+
+    def flaky(src, dst, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise PermissionError(32, "The process cannot access the file")
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(tls.shutil, "copyfile", flaky)
+    assert reloader.check() is False
+    assert _served_certificate(context) == _der(first[0])
+    assert reloader.check() is True
+    assert _served_certificate(context) == _der(renewed[0])
+    assert reloader.check() is False
+
+
 async def _asgi_app(scope, receive, send) -> None:  # pragma: no cover - never called
     raise AssertionError("not served")
 

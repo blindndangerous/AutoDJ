@@ -301,7 +301,7 @@ host = "10.0.0.5"
     assert cfg.stations[0].cfg.stream.relays == {}
 
 
-def test_two_relays_sharing_one_variable_are_refused(tmp_path: Path) -> None:
+def test_two_relays_sharing_one_set_variable_are_refused(tmp_path: Path) -> None:
     text = (
         BASE
         + NIGHTOWL
@@ -310,8 +310,17 @@ def test_two_relays_sharing_one_variable_are_refused(tmp_path: Path) -> None:
         + '\n[stations.a.recording]\nfolder = "r2"\n'
         + '[stations.a.stream.relays.b-relay-c]\ntype = "shoutcast1"\nhost = "h2"\n'
     )
-    with pytest.raises(ValueError, match="would both read AUTODJ_STATION_A_RELAY_B_RELAY_C"):
-        _load(tmp_path, text)
+    variable = "AUTODJ_STATION_A_RELAY_B_RELAY_C_PASSWORD"
+    with pytest.raises(ValueError, match=f"would both read {variable}, which is set"):
+        _load(tmp_path, text, environ={variable: "from-env"})
+    # Unset, the variable sends nothing: each relay keeps its own TOML password.
+    text = text.replace('host = "h1"\n', 'host = "h1"\npassword = "p1"\n')
+    text = text.replace('host = "h2"\n', 'host = "h2"\npassword = "p2"\n')
+    passwords = {
+        spec.slug: [relay.password for relay in spec.cfg.stream.relays.values()]
+        for spec in _load(tmp_path, text).stations
+    }
+    assert passwords["a-relay-b"] == ["p1"] and passwords["a"] == ["p2"]
 
 
 def test_doctor_repair_removes_an_unknown_station_key(tmp_path: Path) -> None:

@@ -165,8 +165,23 @@ class ProfileStore:
         return out
 
     def save(self, snapshot: ProfileSnapshot) -> Path:
-        """Write *snapshot* to disk; returns the path written."""
+        """Write *snapshot* to disk; returns the path written.
+
+        Saving under a profile's exact name replaces it.
+
+        Raises:
+            ValueError: The name is not valid, or differs from a saved
+                profile's only in letter case: Windows would write that
+                profile's file, and other systems would keep two.
+        """
         target = self._path_for(snapshot.name)
+        wanted = snapshot.name.casefold()
+        for existing in self.list_names():
+            if existing != snapshot.name and existing.casefold() == wanted:
+                raise ValueError(
+                    f"A profile named {existing!r} already exists. Save under that name, "
+                    "or delete it first."
+                )
         self.root.mkdir(parents=True, exist_ok=True)
         target.write_text(
             json.dumps(snapshot.to_dict(), indent=2, sort_keys=True),
