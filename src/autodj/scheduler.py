@@ -580,6 +580,7 @@ class Scheduler:
         self._pending_hard_deadline: dict[str, datetime] = {}
         self.started = False
         self.cursor = clock()
+        self._startup_due: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
 
     def register(self, action: Action) -> None:
@@ -595,11 +596,18 @@ class Scheduler:
         self._load()
         self.started = True
         self.cursor = self._clock()
+        just_before = self.cursor - timedelta(microseconds=1)
+        self._startup_due = {
+            event.id
+            for event in self.events.values()
+            if event.enabled and next_run(event, just_before, self.zone) == self.cursor
+        }
         missed = [
             event
             for event in self.events.values()
             if event.enabled
             and event.repeat == "once"
+            and event.id not in self._startup_due
             and next_run(event, self.cursor, self.zone) is None
         ]
         for event in missed:
@@ -788,6 +796,7 @@ class Scheduler:
     def _forget_pending(self, event_id: str) -> None:
         self.pending = [item for item in self.pending if item != event_id]
         self._pending_hard_deadline.pop(event_id, None)
+        self._startup_due.discard(event_id)
 
     # -- running --------------------------------------------------------
 
@@ -851,31 +860,40 @@ class Scheduler:
         """Run, queue or log every event that fell due since the last tick."""
         now = self._clock()
         before = self.cursor
-        if now <= before:
+        if now < before or (now == before and not self._startup_due):
             # The clock went back: wait until it passes the last tick
             # rather than run those events a second time.
             return
         self.cursor = now
+        startup_due, self._startup_due = self._startup_due, set()
         disabled = False
         for event in list(self.events.values()):
             if not event.enabled:
                 continue
-            due = next_run(event, before, self.zone)
+            after = before - timedelta(microseconds=1) if event.id in startup_due else before
+            due = next_run(event, after, self.zone)
             if due is None or due > now:
                 continue
-            waiting_soft = (
-                now - due <= MISSED_AFTER
-                and event.timing == "soft"
-                and self._waits(event)
-                and self._song_playing()
-            )
+            latest = None
+            while due is not None and due <= now:
+                if now - due > MISSED_AFTER:
+                    logger.warning("Scheduled event %r due at %s was missed", event.name, due)
+                    await self._record(
+                        event, "missed", "Missed while the computer slept or stalled"
+                    )
+                else:
+                    latest = due
+                due = next_run(event, due, self.zone)
+            if latest is None:
+                if event.repeat == "once":
+                    event.enabled = False
+                    disabled = True
+                continue
+            waiting_soft = event.timing == "soft" and self._waits(event) and self._song_playing()
             if event.repeat == "once" and not waiting_soft:
                 event.enabled = False
                 disabled = True
-            if now - due > MISSED_AFTER:
-                logger.warning("Scheduled event %r due at %s was missed", event.name, due)
-                await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif waiting_soft:
+            if waiting_soft:
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             elif (
@@ -884,12 +902,14 @@ class Scheduler:
                 and (action := self.actions.get(event.action)) is not None
                 and action.interrupt != "none"
                 and self._song_playing()
-                and 0 <= self._song_remaining() + (now - due).total_seconds() <= event.wait_seconds
+                and 0
+                <= self._song_remaining() + (now - latest).total_seconds()
+                <= event.wait_seconds
             ):
                 if event.id not in self.pending:
                     self.pending.append(event.id)
                 self._pending_hard_deadline.setdefault(
-                    event.id, due + timedelta(seconds=event.wait_seconds)
+                    event.id, latest + timedelta(seconds=event.wait_seconds)
                 )
             else:
                 await self.run(event)

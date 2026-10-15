@@ -477,13 +477,79 @@ def test_missed_once_event_is_logged_and_disabled_not_replayed(tmp_path: Path) -
     assert saved["events"][0]["enabled"] is False
 
 
-def test_a_late_tick_records_a_miss_instead_of_running(tmp_path: Path) -> None:
+@pytest.mark.parametrize("repeat", ["daily", "once"])
+def test_a_late_tick_records_a_miss_instead_of_running(tmp_path: Path, repeat: str) -> None:
     rig = Rig(tmp_path / "schedule.json")
     rig.schedule.start()
-    rig.add(time="12:01")
+    fields: dict[str, Any] = {"repeat": repeat, "time": "12:01"}
+    if repeat == "once":
+        fields["date"] = "2026-10-11"
+    event = rig.add(**fields)
     rig.tick_at("2026-10-11 12:30")  # the computer slept
     assert rig.calls == []
     assert rig.schedule.runs[-1].result == "missed"
+    assert event.enabled is (repeat != "once")
+
+
+@pytest.mark.parametrize(("at", "missed"), [("12:04", 1), ("12:05", 2)])
+def test_interval_stall_records_old_runs_and_runs_latest_once(
+    tmp_path: Path, at: str, missed: int
+) -> None:
+    rig = Rig(tmp_path / "schedule.json")
+    rig.schedule.start()
+    rig.add(repeat="interval", interval_minutes=1, timing="hard")
+
+    rig.tick_at(f"2026-10-11 {at}")
+    rig.tick_at(f"2026-10-11 {at}:01")
+
+    # A hard event runs its action and skips the playing song, once.
+    assert rig.calls == ["action", "skip"]
+    assert [run.result for run in rig.schedule.runs] == ["missed"] * missed + ["ok"]
+
+
+@pytest.mark.parametrize("repeat", ["daily", "once"])
+@pytest.mark.parametrize("first_tick", ["12:00:00", "12:00:01"])
+def test_event_due_at_startup_runs_on_first_tick(
+    tmp_path: Path, repeat: str, first_tick: str
+) -> None:
+    path = tmp_path / "schedule.json"
+    before = Rig(path, now="2026-10-11 11:59")
+    before.schedule.start()
+    fields: dict[str, Any] = {"repeat": repeat, "time": "12:00", "timing": "hard"}
+    if repeat == "once":
+        fields["date"] = "2026-10-11"
+    event = before.add(**fields)
+
+    restarted = Rig(path, now="2026-10-11 12:00:00")
+    restarted.schedule.start()
+    assert restarted.schedule.events[event.id].enabled
+    assert restarted.schedule.runs == []
+    restarted.tick_at(f"2026-10-11 {first_tick}")
+    restarted.tick_at("2026-10-11 12:00:02")
+
+    assert restarted.calls == ["action", "skip"]
+    assert [run.result for run in restarted.schedule.runs] == ["ok"]
+    if repeat == "once":
+        assert not restarted.schedule.events[event.id].enabled
+
+
+def test_one_time_soft_event_due_at_startup_stays_enabled_until_run(tmp_path: Path) -> None:
+    path = tmp_path / "schedule.json"
+    before = Rig(path, now="2026-10-11 11:59")
+    before.schedule.start()
+    event = before.add(repeat="once", date="2026-10-11", time="12:00")
+
+    restarted = Rig(path, now="2026-10-11 12:00", playing=True)
+    restarted.schedule.start()
+    restarted.tick_at("2026-10-11 12:00:01")
+    assert restarted.schedule.pending == [event.id]
+    assert restarted.schedule.events[event.id].enabled
+
+    restarted.playing = False
+    restarted.tick_at("2026-10-11 12:00:02")
+    assert restarted.calls == ["action"]
+    assert not restarted.schedule.events[event.id].enabled
+    assert [run.result for run in restarted.schedule.runs] == ["ok"]
 
 
 def test_a_clock_moving_back_does_not_repeat_events(tmp_path: Path) -> None:
