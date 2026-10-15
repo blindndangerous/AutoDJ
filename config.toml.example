@@ -393,18 +393,30 @@ server_max_track_minutes = 15.0
 # are accepted.  Missing minutes fall back to the external TTS command, if
 # configured: an argument array (never a shell) that writes a WAV to {out},
 # with the text on stdin or in {text}.  docs/operations.md has espeak-ng and
-# Windows SAPI examples.  Only enabled, hour_format, rule, pack_order and
-# which packs are ticked can also be changed in Settings; the paths and the
-# command stay in this file.
+# Windows SAPI examples.
+#
+# Settings, Time checks manages the rest: every folder in the station's time
+# checks folder (clips_folder below, or its default) is a voice pack with no
+# line here, packs are added there from a zip and removed, and the recorded
+# clips folder and the intro and outro clips are chosen there by name.  The
+# values below are only the starting values until Settings saves its own.
+# Only tts_command is set nowhere else, because it runs a program on the
+# server.
 [time_checks]
 enabled = false
+# The station's time checks folder: minute clips, intro and outro clips and
+# one folder per voice pack.
 # clips_folder = "~/.autodj/time_checks"  # default: <index_dir>/<name>/time_checks
 hour_format = "12"                       # "12" or "24"
 rule = "off"                             # "off" or "after_hour_song"
+# Used until Settings chooses an intro or outro clip (or None).
 # intro_clip = "~/.autodj/time-intro.wav"
 # outro_clip = "~/.autodj/time-outro.wav"
 # tts_command = ["piper", "--model", "/path/to/model.onnx", "--output_file", "{out}"]
-# voice_packs = ["~/Voices/Studio", "~/Voices/Night"]   # every one ticked until Settings says otherwise
+# Packs kept outside the time checks folder; they are listed before the
+# folders found there, and keep their name when a found folder has the same
+# one.  Every pack is ticked until Settings saves a choice.
+# voice_packs = ["~/Voices/Studio", "~/Voices/Night"]
 pack_order = "rotate"                    # "rotate" (take turns) or "random"
 
 # ---------------------------------------------------------------------------

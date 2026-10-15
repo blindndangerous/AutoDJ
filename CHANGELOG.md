@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Time check voice packs and clips are managed in **Settings**, **Time checks** instead of
+  `config.toml` (#388). Every folder in the station's time checks folder is a voice pack, found
+  without a restart and without a `voice_packs` line; packs still listed in `voice_packs` keep
+  working, and **Look for new voice packs** finds folders copied in by hand. **Add a voice pack**
+  uploads a zip of the pack's WAV, MP3, FLAC or OGG files (up to 256 MB, and 2000 files or 512 MB
+  unpacked) and asks before it replaces a pack of the same name; any other file in the zip, a
+  path outside the pack or a link refuses the whole zip, and nothing is left behind. A pack added
+  here has a **Remove** button. **Recorded minute clips folder**, **Intro clip** and **Outro
+  clip** are chosen from the files in the time checks folder, and **Upload a clip** adds one.
+  Only the text-to-speech command stays in `config.toml`, because it runs a program on the
+  server; `clips_folder`, `intro_clip` and `outro_clip` there are now starting values.
+
 ### Changed
 
 - A new index name, given with `--name`, may not contain `:` or end with a dot or a space,

@@ -206,12 +206,34 @@ are never overwritten, and are deleted again if they do not decode. `carts.json`
 when the server starts, and a file that fails is set aside. Backups include the wall and the
 uploads. A paired browser can play carts into the server audio or stream output.
 
-Time check settings, preview, and test routes under `/api/time-checks` also require a paired
-browser. The browser receives clip and voice pack coverage, pack names (folder names) and the
-station time zone, but no configured paths or TTS command. It can change only enabled, hour
-format, rule, which configured packs are ticked and their order, and it names a pack to test
-or preview; a name that is not configured is refused, so no browser input becomes a path. Paths
-and executable arguments come from local configuration. TTS runs with an argument array and a 20-second timeout,
+Time check settings, preview, test, pack and clip routes under `/api/time-checks` also require a
+paired browser; a machine token is refused there like on every browser route. The browser
+receives clip and voice pack coverage, pack names (folder names), the names of the folders and
+audio files directly in the station's time checks folder, the file name (only) of a configured
+intro or outro, and the station time zone, but no paths or TTS command. It can change enabled,
+hour format, rule, which packs are ticked and their order, and choose the recorded clips folder
+and the intro and outro by name from what is in the time checks folder; each name must be one
+plain name (no separator, drive, colon, `..`, leading dot or device name) and exist there, and
+the saved file is checked the same way, so no browser input becomes a path. It names a pack to
+test or preview; an unknown name is refused.
+
+It can add a voice pack as a zip (`POST /api/time-checks/packs`, body capped at 256 MB plus
+64 KiB before any route reads it) and remove one (`DELETE /api/time-checks/packs/{name}`) only
+in the station's own time checks folder; packs listed in `voice_packs` and shared packs are
+refused. The zip is streamed to a hidden file in that folder, then every entry is checked before
+anything is unpacked: absolute paths, drive letters, `..`, links and encrypted entries are
+refused, and so are subfolders and anything but `.wav`, `.mp3`, `.flac` and `.ogg` plain file
+names (operating system leftovers such as `__MACOSX` are skipped). At most 2000 files and
+512 MB unpacked are allowed, counted from the headers and again while writing, so a header that
+understates a size cannot unpack more. Each file must then pass the break header check
+(libsndfile reads it as the type its extension says, at most 192 kHz, two channels and two
+minutes) before the hidden staging folder is renamed into place; a refused zip leaves nothing.
+Replacing renames the old folder aside first and puts it back if the rename fails; replace and
+remove refuse links and junctions. One clip (`POST /api/time-checks/clips`, capped like a liner
+upload) goes to the same folder under the same name and audio checks, written to a hidden file
+and hard-linked into place unless the request asks to replace. A paired browser can therefore
+fill that folder up to these caps per request, like the liner folder. The text-to-speech command
+and its arguments come only from local configuration. TTS runs with an argument array and a 20-second timeout,
 without a shell, on a worker thread. The spoken text is built on the server from the station clock
 ("It's 3:05"); no browser input reaches the command line or the SAPI script, which speaks its
 stdin as plain text. Preview and test can start the TTS program, once for each new minute's text,

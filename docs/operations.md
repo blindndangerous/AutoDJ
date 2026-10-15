@@ -2008,8 +2008,11 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    is in [Configuration](#configuration).
 4. **Liners and time checks.** Night Owl's liners go in
    `<index_dir>/<name>/stations/nightowl/liners/` unless you set
-   `[stations.nightowl.playback] liners_folder`. Set `[stations.nightowl.time_checks]
-   clips_folder` or `voice_packs` if it should speak the time.
+   `[stations.nightowl.playback] liners_folder`. Its time checks folder is
+   `<index_dir>/<name>/stations/nightowl/time_checks/` unless you set
+   `[stations.nightowl.time_checks] clips_folder`; add voice packs and clips to it from
+   **Settings**, **Time checks** while Night Owl is the station the page controls. It also finds
+   the packs in the shared `<index_dir>/<name>/time_checks/` folder.
 5. **Containers only:** make sure the new recording folder, and any liner folder outside the
    index, is mounted and writable. The station's own folder is inside the `/index` volume.
 6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
@@ -4299,21 +4302,50 @@ browser playback the page plays it when the next song starts; there it does not 
 liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server
 audio or stream mode, and in this browser otherwise.
 
-Record one clip per minute in the configured `clips_folder` (by default the `time_checks`
-folder in the active index folder): `00_00.wav` through `23_59.wav`, using 24-hour names even
-when speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays
-at 3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. The Settings panel says how
-many minute clips there are. Run `uv run autodj doctor` for the number missing, the first ten
-missing names, and warnings for a missing folder, intro or outro clip or TTS program. A minute
-without a clip uses TTS when it is configured. Without a clip or working TTS command, the check
-is skipped and the server logs one warning.
+Each station has a **time checks folder**: the `time_checks` folder in the station's folder (for
+the default station, `<index_dir>/<name>/time_checks`), or `[time_checks] clips_folder` when it
+is set. It holds the recorded minute clips, the intro and outro clips, and one folder per voice
+pack. Everything in it is managed from **Settings**, **Time checks**; only the text-to-speech
+command is set in `config.toml`, because it runs a program on the server.
+
+Record one clip per minute: `00_00.wav` through `23_59.wav`, using 24-hour names even when
+speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays at
+3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. Put them directly in the time
+checks folder, or in a folder inside it and choose that folder as **Recorded minute clips
+folder** (a zip of the clips can be added with **Add a voice pack**, below, and then chosen
+there). A folder chosen for the clips is not a voice pack. **Upload a clip** adds one clip, such
+as `15_05.wav`, an intro or an outro, to the time checks folder; when a clip of that name is
+there it asks before replacing it. The file must play as the audio its extension says, and may
+be up to `[server] liner_upload_max_bytes` and two minutes long.
+
+**Intro clip** and **Outro clip** wrap every check. Choose **None**, or an audio file directly in
+the time checks folder (minute clips are not offered). Until one is chosen here, `intro_clip`
+and `outro_clip` in `config.toml` are used, and the list shows that file's name followed by
+"from config.toml"; choosing **None** turns off one set there. The choices are saved in
+`time_checks.json` by name, never as paths. A chosen clip that is no longer in the folder is
+shown as "not found", and a check that needs it is skipped with a warning, as a missing
+`intro_clip` always was. When a station is duplicated, its clip choices are not copied, because
+its time checks folder is not.
+
+The Settings panel says how many minute clips there are. Run `uv run autodj doctor` for the
+number missing, the first ten missing names, and warnings for a missing folder, intro or outro
+clip or TTS program. A minute without a clip uses TTS when it is configured. Without a clip or
+working TTS command, the check is skipped and the server logs one warning.
 
 ### Voice packs
 
 A voice pack is a folder of short recordings that AutoDJ joins into one sentence, the way
 RadioBOSS does, so its packs work as they are: an hour file says "it's 5", a minute file says
-"fifty-six", and an exact-hour file says "it's 5 o'clock". List the folders in `config.toml`;
-the folder name is the pack's name in Settings, so two packs cannot share a folder name:
+"fifty-six", and an exact-hour file says "it's 5 o'clock". The folder name is the pack's name
+in Settings.
+
+AutoDJ finds packs by itself: every folder in the station's time checks folder is a pack, and so
+is every folder in the library's own `<index_dir>/<name>/time_checks` folder, which every station
+shares (for the default station without a `clips_folder`, the two are the same folder). Folders
+whose names start with a dot are not packs; AutoDJ uses such names while it unpacks an upload.
+Packs are looked for again each time the panel loads and before each check, so a folder copied
+in on the server needs no restart; **Look for new voice packs** looks straight away and names
+the new ones. Folders elsewhere can still be listed in `config.toml`, and those keep working:
 
 ```toml
 [time_checks]
@@ -4321,15 +4353,49 @@ voice_packs = ["D:/Voices/Studio", "D:/Voices/Night"]
 pack_order = "rotate"   # or "random"
 ```
 
+The packs are listed in this order: those in `voice_packs`, then the station's own folders, then
+the shared ones, each by name. One folder is one pack however it was found, so a `voice_packs`
+line for a folder that is also found by itself is fine. Names are compared without regard to
+case, and when two different folders have the same name the first in that order wins: a listed
+pack keeps its name over a found folder, and the station's folder over the shared one. The
+folder left out is logged once and reported by `uv run autodj doctor`; rename one of them to use
+both.
+
+To add a pack from the page, open **Add a voice pack**, choose a zip file of the pack's audio
+files, give it a **Pack name** or leave that blank to use the folder in the zip (or the zip
+file's name), and press **Add voice pack**. The new pack's checkbox takes focus. When a pack
+added from the page has that name, AutoDJ asks before replacing it; a replaced pack keeps its
+tick and play dates. A name taken by a pack listed in `config.toml`, a shared pack, or the
+recorded clips folder is refused. AutoDJ checks the whole zip before it keeps anything:
+
+- Only `.wav`, `.mp3`, `.flac` and `.ogg` files, each of which must play as the audio its
+  extension says and be at most two minutes long. Any other file refuses the zip, except the
+  `__MACOSX` folder, `.DS_Store`, `Thumbs.db` and `desktop.ini` that operating systems add,
+  which are skipped.
+- The files are at the top of the zip or all in one folder; subfolders are refused.
+- No entry may have an absolute path, a drive letter or `..`, no entry may be a link, and none
+  may be encrypted.
+- At most 2000 files and 512 MB unpacked, counted from the zip's headers and again as each file
+  is written; the zip itself may be up to 256 MB.
+
+The zip is unpacked into a hidden folder beside the packs and renamed into place only when all
+of that has passed, so a refused upload leaves nothing behind and a pack is never seen half
+written. A pack in the station's time checks folder has a **Remove** button. It asks first, then
+deletes the folder with the pack's tick and play dates, and focus moves to the next pack, or to
+the **Voice packs** group when none follows. Packs listed in `config.toml` and shared packs have
+no **Remove** button and say where they come from. Like every setting, adding and removing
+packs and clips needs a paired browser; a machine token cannot do it.
+
 **Settings**, **Time checks** shows each pack as a checkbox under **Voice packs**. Its
 description says how many of the 1440 minutes it can say, which hour, exact-hour and minute
 files are missing, the optional files it uses, and any files it does not use. Tick the packs to
-use; with no saved choice every listed pack is ticked. **When several packs are ticked**
-chooses whether they take turns, one per check, or one is picked at random. When the chosen
-pack cannot say the minute, the other ticked packs are tried before the recorded clips.
-**Voice to test** picks one pack, ticked or not, for **Play a time check now**; when the
-server plays it, the result says which source spoke. The browser only ever sends a pack's name; the folders stay
-in `config.toml`.
+use. Until a choice is saved, every pack is ticked, including one found later; once it is saved,
+a pack found or added later starts unticked, as a newly listed `voice_packs` folder always did.
+**When several packs are ticked** chooses whether they take turns, one per check, or one is
+picked at random. When the chosen pack cannot say the minute, the other ticked packs are tried
+before the recorded clips. **Voice to test** picks one pack, ticked or not, for **Play a time
+check now**; when the server plays it, the result says which source spoke. The browser only ever
+sends a pack's name, never a folder.
 
 A pack can have play dates, such as a holiday voice from 1 to 26 December. Under **Voice pack
 play dates**, choose the pack, enter **Not before**, **Do not play after** or both, and press
@@ -4338,7 +4404,9 @@ pack is passed over and the other ticked packs speak; **Voice to test** still pl
 pack's description says its dates in words and "Skipped now" when it is outside them. A refused
 date is shown under the form and linked to its field. The dates are kept beside the switches in
 `time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
-pack taken out of `config.toml` until it comes back. Dates that cannot be read, and keys this
+pack taken out of `config.toml`, or whose folder goes away, until it comes back. A pack removed
+with its **Remove** button loses its dates, and a new pack added from the page starts without
+any. Dates that cannot be read, and keys this
 version does not know, are logged and not used, and are written back as they were on the next
 save. Each save reads the file again first, so what another process wrote is kept. While the file
 cannot be read, saves are refused with a message rather than written over it; a file that is not
@@ -4390,16 +4458,16 @@ AutoDJ keeps about 32 MB of joined checks in memory, per pack and minute, and jo
 pack file is replaced, added or removed. The check then plays through the voice liner path like
 any other, with the same duck and talk-up timing.
 
-`uv run autodj doctor` shows one `voice-pack-<name>` line per pack, with the same coverage
-text and the folder, and warns when the folder is missing, a file is not used, or the pack
-cannot say every minute. The `time-checks` line warns about a missing TTS fallback only for
-minutes that neither a ticked pack nor a recorded clip can say, and warns when a saved pack
-name is not in `voice_packs`.
+`uv run autodj doctor` shows one `voice-pack-<name>` line per pack, listed or found, with the
+same coverage text and the folder, and warns when the folder is missing, a file is not used, or
+the pack cannot say every minute. The `time-checks` line warns about a missing TTS fallback only
+for minutes that neither a ticked pack nor a recorded clip can say, and warns when a saved pack
+name is not found, when a folder is left out because its name is taken, and when a chosen clips
+folder, intro or outro is missing.
 
-Backups include voice packs kept in subfolders of the `time_checks` folder (for example
-`<index>/time_checks/Studio`), because every file in that folder is backed up. Packs listed
-from other folders are not copied, like the music library: back them up yourself with
-`config.toml`.
+Backups include everything in the time checks folder, so the packs and clips added from the
+page come along (for example `<index>/time_checks/Studio`). Packs listed from other folders are
+not copied, like the music library: back them up yourself with `config.toml`.
 
 ### Text to speech
 
