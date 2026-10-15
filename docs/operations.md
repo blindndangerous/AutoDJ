@@ -4313,9 +4313,10 @@ speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.w
 3:05 in the morning and `15_05.wav` at 3:05 in the afternoon. Put them directly in the time
 checks folder, or in a folder inside it and choose that folder as **Recorded minute clips
 folder** (a zip of the clips can be added with **Add a voice pack**, below, and then chosen
-there). A folder chosen for the clips is not a voice pack. **Upload a clip** adds one clip, such
-as `15_05.wav`, an intro or an outro, to the time checks folder; when a clip of that name is
-there it asks before replacing it. The file must play as the audio its extension says, and may
+there). A folder chosen for the clips is not a voice pack. **Upload a clip** adds one clip: an
+intro or outro goes to the time checks folder, and a minute clip such as `15_05.wav` to the
+recorded minute clips folder in use. When a clip of that name is there it asks before replacing
+it. The file must play as the audio its extension says, and may
 be up to `[server] liner_upload_max_bytes` and two minutes long.
 
 **Intro clip** and **Outro clip** wrap every check. Choose **None**, or an audio file directly in

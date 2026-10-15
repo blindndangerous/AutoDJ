@@ -259,6 +259,25 @@ describe("adding and removing voice packs", () => {
 });
 
 describe("recorded clips, intro and outro", () => {
+  it("sends no save before the settings have loaded, so no pack is unticked", async () => {
+    const request = vi.fn(async () => { throw apiError("Server unavailable", 503); });
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    byId("tc-enabled").click();
+    expect(await liveText()).toBe("Time check settings are still loading; try again in a moment.");
+    expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
+  });
+
+  it("says where an uploaded minute clip went", async () => {
+    const request = vi.fn(async (url, options = {}) => (options.method === "POST"
+      ? state({ uploaded: "15_05.wav" }) : state()));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    choose(byId("tc-clip-file"), "15_05.wav", "audio/wav");
+    byId("tc-clip-add").click();
+    expect(await liveText()).toBe("Uploaded 15_05.wav to the recorded minute clips folder.");
+  });
+
   it("offers the time checks folder's folders and clips, and the config.toml clip", async () => {
     const request = vi.fn(async () => state({ folders: ["Clips", "Studio"],
       clip_files: ["hello.wav"], intro_config: "intro.wav", outro: "gone.wav" }));

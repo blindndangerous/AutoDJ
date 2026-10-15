@@ -53,12 +53,14 @@ from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.time_check_files import (
     MAX_PACK_UPLOAD_BYTES,
+    MINUTE_CLIP,
     PackConflict,
     PackError,
     PackExists,
     PackNotFound,
     PackTooLarge,
     check_clip_name,
+    check_directory,
     check_pack_name,
     clip_files,
     hidden_name,
@@ -648,6 +650,20 @@ class TimeChecks:
                 self.pack_dates = dates
                 self._unread_pack_dates = unread
 
+    def _forget_after_files_changed(self, name: str) -> None:
+        """:meth:`_forget_pack` once the folder is in place or gone; a failure is logged.
+
+        The folder change already happened, so it is not undone: a tick or
+        dates left for a removed pack are ignored, like those of a folder
+        that went away, and a new pack of that name forgets them again.
+        """
+        try:
+            self._forget_pack(name)
+        except OSError as exc:
+            logger.warning(
+                "Time checks: could not untick voice pack %s or drop its play dates: %s", name, exc
+            )
+
     def add_pack(self, name: str, upload: Path, *, replace: bool) -> str:
         """Unpack the zip *upload* as voice pack *name* in the time checks folder.
 
@@ -679,9 +695,9 @@ class TimeChecks:
                 raise PackConflict(
                     f"{name} is the recorded minute clips folder; choose another name"
                 )
-            if taken is None:
-                self._forget_pack(name)
             install_pack(self.root, name, upload, replace=replace)
+            if taken is None:
+                self._forget_after_files_changed(name)
             self.rescan()
         return name
 
@@ -701,19 +717,25 @@ class TimeChecks:
                 raise PackNotFound(f"No voice pack named {name}")
             if not found.removable:
                 raise PackConflict(f"{_pack_place(name, found)}, so it cannot be removed here")
-            self._forget_pack(name)
             remove_pack(self.root, name)
+            self._forget_after_files_changed(name)
             self.rescan()
 
     def add_clip(self, name: str, upload: Path, *, replace: bool) -> None:
-        """Check the received clip *upload* and move it to *name* in the time checks folder.
+        """Check the received clip *upload* and move it to *name*.
+
+        A minute clip (``15_05.wav``) goes to the recorded minute clips
+        folder in use, where it is played; any other clip, such as an intro,
+        to the time checks folder, where the intro and outro are chosen from.
 
         Raises:
             PackConflict: *name* exists and *replace* is false.
             PackError: The name or the audio is refused.
         """
         with self._files_lock:
-            install_clip(self.root, name, upload, replace=replace)
+            folder = self.folder if MINUTE_CLIP.fullmatch(Path(name).stem) else self.root
+            folder.mkdir(parents=True, exist_ok=True)
+            install_clip(folder, name, upload, replace=replace)
 
     def save_pack_dates(self, name: str, dates: ClipDates) -> None:
         """Save voice pack *name*'s play dates; empty dates remove them.
@@ -838,8 +860,10 @@ class TimeChecks:
             os.fsync(handle.fileno())
         os.replace(temp, self.state_path)
         self._seen = True
-        # The file now names the ticked packs, so a pack found later starts unticked.
-        self._packs_chosen = True
+        # The file now names the ticked packs, so a pack found later starts
+        # unticked; set under the lock rescan() reads it with.
+        with self._lock:
+            self._packs_chosen = True
 
     def pack_refusal(self, name: str, today: date) -> str | None:
         """Why voice pack *name* may not speak on the station's *today*, or ``None``."""
@@ -1166,6 +1190,7 @@ def _file_error(exc: PackError | OSError) -> JSONResponse:
 
 def _pack_name_from(zip_path: Path, filename: str) -> str:
     """The name for a pack uploaded without one: its zip's one folder, or the zip's name."""
+    check_directory(zip_path)
     try:
         with zipfile.ZipFile(zip_path) as archive:
             _planned, top = plan_pack(archive.infolist())

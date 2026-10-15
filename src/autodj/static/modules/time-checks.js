@@ -326,10 +326,16 @@ export function installTimeChecks({ doc = document, request = requestJson,
   }
 
   async function save() {
+    // Before the first load (or after a failed one) the pack list is
+    // empty: a save now would untick every pack on the server.
+    if (!settings) {
+      say("Time check settings are still loading; try again in a moment.", "error");
+      return;
+    }
     const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value,
       enabled_packs: packBoxes().filter((box) => box.checked).map((box) => box.value),
       pack_order: order.value };
-    if (hasFiles && settings) {
+    if (hasFiles) {
       body.recorded_folder = files.folder.value;
       body.intro = clipChoice("intro");
       body.outro = clipChoice("outro");
@@ -497,7 +503,9 @@ export function installTimeChecks({ doc = document, request = requestJson,
     settings = reply;
     showSettings();
     files.clipFile.value = "";
-    say(`Uploaded ${reply.uploaded}. Choose it as the intro or outro clip to use it.`);
+    say(/^\d{2}_\d{2}\.[a-z0-9]+$/i.test(reply.uploaded)
+      ? `Uploaded ${reply.uploaded} to the recorded minute clips folder.`
+      : `Uploaded ${reply.uploaded}. Choose it as the intro or outro clip to use it.`);
   }
 
   // Asks the server to look again; says which packs are new.

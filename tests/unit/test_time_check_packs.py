@@ -272,3 +272,51 @@ def test_an_intro_never_chosen_comes_from_config_and_status_shows_its_name_only(
     assert status["intro"] is None and status["intro_config"] == "intro.wav"
     assert status["outro_config"] is None
     assert "secret-folder" not in json.dumps(status)
+
+
+def test_a_failed_remove_or_refused_zip_keeps_the_tick_and_dates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import time_checks
+    from autodj.time_check_files import PackError
+
+    checks = _checks(tmp_path)
+    checks.add_pack("Studio", _zip_pack(tmp_path / "Studio.zip", [3], [5]), replace=False)
+    checks.save(_settings(enabled_packs=["Studio"]))
+    checks.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+
+    def locked(_root: Path, _name: str) -> None:
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(time_checks, "remove_pack", locked)
+    with pytest.raises(PermissionError):
+        checks.delete_pack("Studio")
+    assert checks.settings.enabled_packs == ["Studio"] and "Studio" in checks.pack_dates
+    monkeypatch.undo()
+    # A refused zip for a name with a leftover tick and dates leaves them too.
+    checks.delete_pack("Studio")
+    checks.save(_settings(enabled_packs=["Studio"]))
+    checks.save_pack_dates("Studio", ClipDates(not_after=date(2026, 12, 26)))
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as archive:
+        archive.writestr("notes.txt", b"x")
+    with pytest.raises(PackError):
+        checks.add_pack("Studio", bad, replace=False)
+    assert checks.settings.enabled_packs == ["Studio"] and "Studio" in checks.pack_dates
+
+
+def test_a_minute_clip_upload_goes_to_the_recorded_clips_folder(tmp_path: Path) -> None:
+    import io
+
+    checks = _checks(tmp_path)
+    (checks.root / "Clips").mkdir(parents=True)
+    checks.save(_settings(recorded_folder="Clips"))
+    for name in ("15_05.wav", "intro.wav"):
+        buffer = io.BytesIO()
+        sf.write(buffer, np.zeros((441, 2)), 44100, format="WAV")
+        upload = checks.root / f".clip-upload-{name}"
+        upload.write_bytes(buffer.getvalue())
+        checks.add_clip(name, upload, replace=False)
+    assert (checks.root / "Clips" / "15_05.wav").is_file()
+    assert (checks.root / "intro.wav").is_file()
+    assert checks.status()["missing_minutes"] == 1439

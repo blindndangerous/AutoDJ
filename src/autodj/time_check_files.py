@@ -35,6 +35,7 @@ import re
 import secrets
 import shutil
 import stat
+import struct
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -59,6 +60,9 @@ MAX_PIECE_SECONDS = 120.0
 MAX_PACK_NAME = 100
 #: Files an operating system leaves in a zip, skipped rather than refused.
 _OS_LEFTOVERS = frozenset({".ds_store", "thumbs.db", "desktop.ini"})
+#: The largest zip central directory read, in bytes: 2000 entries with long
+#: names and extra fields fit in well under this.
+MAX_DIRECTORY_BYTES = 8 * 1024 * 1024
 #: A recorded minute clip's name without its extension, such as ``03_05``.
 MINUTE_CLIP = re.compile(r"\d{2}_\d{2}")
 _CHUNK_BYTES = 1024 * 1024
@@ -293,6 +297,35 @@ def check_audio(path: Path, shown: str) -> None:
         ) from None
 
 
+def check_directory(zip_path: Path) -> None:
+    """Refuse a zip whose central directory is too big to read, before reading it.
+
+    ``zipfile`` makes an object for every entry in the central directory, so
+    a small upload listing millions of empty entries would take the memory
+    before the file count is checked.  The end-of-directory record says how
+    many entries there are and how big the directory is; zip64 (more than
+    65535 entries or 4 GB) is never needed for a pack and is refused.  A file
+    without the record is left for ``zipfile`` to call not a zip.
+
+    Raises:
+        PackTooLarge: Too many entries, too big a directory, or zip64.
+    """
+    with open(zip_path, "rb") as file:
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(max(0, size - (65535 + 22)))
+        tail = file.read()
+    at = tail.rfind(b"PK\x05\x06")
+    if at < 0 or len(tail) - at < 22:
+        return
+    entries, directory_bytes = struct.unpack("<HI", tail[at + 10 : at + 16])
+    zip64 = at >= 20 and tail[at - 20 : at - 16] == b"PK\x06\x07"
+    if zip64 or entries == 0xFFFF or directory_bytes == 0xFFFFFFFF:
+        raise PackTooLarge("The zip is too big for a voice pack (zip64)")
+    if entries > MAX_PACK_FILES + 1000 or directory_bytes > MAX_DIRECTORY_BYTES:
+        raise PackTooLarge(f"A pack may hold at most {MAX_PACK_FILES} files")
+
+
 def unpack(zip_path: Path, stage: Path) -> str:
     """Unpack a checked zip into the empty folder *stage* and check each file's audio.
 
@@ -303,6 +336,7 @@ def unpack(zip_path: Path, stage: Path) -> str:
         PackError: The zip is not a zip, or :func:`plan_pack` or
             :func:`check_audio` refuses it.
     """
+    check_directory(zip_path)
     try:
         archive = zipfile.ZipFile(zip_path)
     except (zipfile.BadZipFile, OSError) as exc:
@@ -457,6 +491,7 @@ __all__ = [
     "PackNotFound",
     "PackTooLarge",
     "check_clip_name",
+    "check_directory",
     "check_pack_name",
     "clip_files",
     "hidden_name",

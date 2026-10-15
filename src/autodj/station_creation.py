@@ -174,12 +174,13 @@ def stage_station(
                         or not isinstance(data.get("settings"), dict)
                     ):
                         raise ValueError("invalid time-check settings")
-                    # The clip choices name files in the old station's own
-                    # time checks folder, which is not copied (#388).
+                    # A clip chosen by name is a file in the old station's own
+                    # time checks folder, which is not copied (#388); "" (none)
+                    # is kept.
                     settings = {
                         key: value
                         for key, value in data["settings"].items()
-                        if key not in ("recorded_folder", "intro", "outro")
+                        if not (key in ("recorded_folder", "intro", "outro") and value)
                     }
                     atomic_write(state, json.dumps({"version": 1, "settings": settings}))
                 except (OSError, UnicodeError, ValueError) as exc:

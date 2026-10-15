@@ -262,3 +262,25 @@ def test_clip_choices_leave_out_minute_clips_and_hidden_files(tmp_path: Path) ->
     assert clip_files(tmp_path) == ["intro.wav", "Outro.MP3"]
     assert [path.name for path in subfolders(tmp_path)] == ["Studio"]
     assert clip_files(tmp_path / "missing") == [] and subfolders(tmp_path / "missing") == []
+
+
+def test_a_zip_listing_too_many_entries_is_refused_before_it_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upload = _zip(tmp_path / "pack.zip", {f"m_{index:04d}.wav": b"" for index in range(1100)})
+    monkeypatch.setattr(time_check_files, "MAX_PACK_FILES", 10)
+    opened: list[object] = []
+    monkeypatch.setattr(time_check_files.zipfile, "ZipFile", lambda *a, **k: opened.append(a))
+    with pytest.raises(PackTooLarge, match="at most 10 files"):
+        install_pack(tmp_path / "root", "Studio", upload, replace=False)
+    assert opened == []
+
+
+def test_a_zip64_directory_is_refused(tmp_path: Path) -> None:
+    upload = _zip(tmp_path / "pack.zip", {"hr_03.wav": _wav()})
+    data = bytearray(upload.read_bytes())
+    at = data.rfind(b"PK\x05\x06")
+    data[at + 10 : at + 12] = b"\xff\xff"
+    upload.write_bytes(bytes(data))
+    with pytest.raises(PackTooLarge, match="zip64"):
+        install_pack(tmp_path / "root", "Studio", upload, replace=False)

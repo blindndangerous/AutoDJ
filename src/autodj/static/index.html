@@ -1745,7 +1745,7 @@
       </span>
       <div class="settings-row">
         <label for="tc-pack-file">Voice pack zip file</label>
-        <input type="file" id="tc-pack-file" accept=".zip,application/zip">
+        <input type="file" id="tc-pack-file" accept=".zip,application/zip" aria-describedby="tc-add-pack-desc">
       </div>
       <div class="settings-row">
         <label for="tc-pack-name">Pack name</label>
@@ -1818,10 +1818,10 @@
       <legend>Upload a clip</legend>
       <div class="settings-row">
         <label for="tc-clip-file">Clip file</label>
-        <input type="file" id="tc-clip-file" accept=".wav,.mp3,.flac,.ogg,audio/*">
+        <input type="file" id="tc-clip-file" accept=".wav,.mp3,.flac,.ogg,audio/*" aria-describedby="tc-clip-file-desc">
       </div>
       <span class="setting-desc" id="tc-clip-file-desc">
-        An intro, an outro, or one recorded minute clip such as 15_05.wav. It goes in the time checks folder. When a clip with that name is already there, you are asked before it is replaced.
+        An intro or outro, which goes in the time checks folder, or one recorded minute clip such as 15_05.wav, which goes in the recorded minute clips folder. When a clip with that name is already there, you are asked before it is replaced.
       </span>
       <button type="button" id="tc-clip-add">Upload clip</button>
     </fieldset>
