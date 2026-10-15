@@ -8,7 +8,6 @@ import logging
 import sys
 import threading
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -339,30 +338,6 @@ def test_stereo_tool_diagnostics_and_every_stations_preset(tmp_path: Path) -> No
     ]
 
 
-def test_liners_belong_to_the_station_whose_folder_holds_them(tmp_path: Path) -> None:
-    log: list[str] = []
-    default = _Runtime("default", log)
-    default.paths = SimpleNamespace(liners=tmp_path / "liners")
-    registry = StationRegistry(
-        default,  # type: ignore[arg-type]
-        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)],
-    )
-    owl_liner = str(tmp_path / "nightowl" / "liners" / "id.mp3")
-    own_liner = str(tmp_path / "liners" / "id.mp3")
-    added_folder = str(tmp_path / "elsewhere" / "id.mp3")
-    assert registry.owns_liner("nightowl", owl_liner)
-    assert not registry.owns_liner("nightowl", own_liner)
-    assert not registry.owns_liner("nightowl", added_folder)
-    assert registry.owns_liner("default", own_liner)
-    assert registry.owns_liner("default", added_folder)  # as before: every other liner
-    assert not registry.owns_liner("default", owl_liner)
-    alone = StationRegistry(default)  # type: ignore[arg-type]
-    assert alone.owns_liner("default", owl_liner)
-
-
-# -- presets ----------------------------------------------------------------------
-
-
 def test_a_preset_any_station_names_cannot_be_deleted(tmp_path: Path) -> None:
     folder = preset_folder(tmp_path)
     folder.mkdir(parents=True)
@@ -566,57 +541,6 @@ def test_a_stop_cut_off_half_way_still_finishes(tmp_path: Path) -> None:
     ]
 
 
-def test_a_station_folder_inside_another_keeps_its_liners_to_itself(tmp_path: Path) -> None:
-    log: list[str] = []
-    default = _Runtime("default", log)
-    default.paths = SimpleNamespace(liners=tmp_path / "liners")
-    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
-    day = _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path)
-    # Night Owl's folder is inside the default station's, and Daybreak's inside Night Owl's.
-    object.__setattr__(owl, "paths", SimpleNamespace(liners=tmp_path / "liners" / "owl"))
-    object.__setattr__(day, "paths", SimpleNamespace(liners=tmp_path / "liners" / "owl" / "day"))
-    registry = StationRegistry(default, [owl, day])  # type: ignore[arg-type]
-    where = {
-        "default": str(tmp_path / "liners" / "id.mp3"),
-        "nightowl": str(tmp_path / "liners" / "owl" / "id.mp3"),
-        "daybreak": str(tmp_path / "liners" / "owl" / "day" / "id.mp3"),
-        "elsewhere": str(tmp_path / "added" / "id.mp3"),
-    }
-    owners = {
-        place: {slug for slug in registry.slugs() if registry.owns_liner(slug, path)}
-        for place, path in where.items()
-    }
-    assert owners == {
-        "default": {"default"},
-        "nightowl": {"nightowl"},
-        "daybreak": {"daybreak"},
-        "elsewhere": {"default"},
-    }
-
-
-def test_a_stations_clockwheel_picks_only_its_own_liners(tmp_path: Path) -> None:
-    from autodj.stations import StationRuntime
-
-    owned = SimpleNamespace(path="mine.mp3")
-    other = SimpleNamespace(path="theirs.mp3")
-    runtime = StationRuntime.__new__(StationRuntime)
-    calls: list[tuple[list[Any], float | None]] = []
-
-    def playable(entries: list[Any], at: float | None = None) -> list[Any]:
-        calls.append((entries, at))
-        return entries
-
-    runtime.liner_gate = SimpleNamespace(playable=playable)  # type: ignore[assignment]
-    runtime.owns_liner = lambda path: path == "mine.mp3"
-    at = datetime(2026, 10, 12, tzinfo=UTC).timestamp()  # the expected air time
-    assert runtime._playable_liners([owned, other], at) == [owned]
-    assert calls == [([owned], at)]
-    everything = [owned, other]
-    runtime.owns_liner = lambda _path: True
-    assert runtime._playable_liners(everything, at) is everything  # unchanged with one station
-    assert calls[-1] == (everything, at)
-
-
 def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
@@ -816,31 +740,6 @@ def test_a_shutdown_then_a_queued_stop_tears_down_once(tmp_path: Path) -> None:
     assert log.count("nightowl closed") == 1
 
 
-def test_liner_folders_are_compared_as_the_file_system_resolves_them(tmp_path: Path) -> None:
-    import os
-
-    real = tmp_path / "voice"
-    (real / "owl").mkdir(parents=True)
-    link = tmp_path / "voice-link"
-    try:
-        os.symlink(real, link, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("this system cannot make a symbolic link")
-    log: list[str] = []
-    default = _Runtime("default", log)
-    default.paths = SimpleNamespace(liners=real)
-    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
-    # Night Owl's folder is configured through the link; the library spelled it directly.
-    object.__setattr__(owl, "paths", SimpleNamespace(liners=link / "owl"))
-    registry = StationRegistry(default, [owl])  # type: ignore[arg-type]
-    liner = str(real / "owl" / "id.mp3")
-    assert registry.owns_liner("nightowl", liner)
-    assert not registry.owns_liner("default", liner)
-    via_link = str(link / "id.mp3")
-    assert registry.owns_liner("default", via_link)
-    assert not registry.owns_liner("nightowl", via_link)
-
-
 def test_a_failed_build_leaves_a_player_that_will_not_stop_and_its_master(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -867,31 +766,6 @@ def test_a_failed_build_leaves_a_player_that_will_not_stop_and_its_master(
     _abandon_player(player, stuck, 0.05)  # finished: the master is closed
     assert closed == ["master"]
     assert player._state.should_stop and player._skip_event.is_set()
-
-
-@pytest.mark.skipif(not hasattr(__import__("ctypes"), "windll"), reason="Windows short names")
-def test_liner_folders_given_by_a_windows_short_name_match(tmp_path: Path) -> None:
-    import ctypes
-
-    long_folder = tmp_path / "Night Owl voice liners"
-    (long_folder / "owl").mkdir(parents=True)
-    buffer = ctypes.create_unicode_buffer(1024)
-    ctypes.windll.kernel32.GetShortPathNameW(str(long_folder), buffer, 1024)
-    short = Path(buffer.value)
-    if not buffer.value or short.name == long_folder.name:
-        pytest.skip("short (8.3) names are off on this drive")
-    log: list[str] = []
-    default = _Runtime("default", log)
-    default.paths = SimpleNamespace(liners=long_folder)
-    owl = _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)
-    object.__setattr__(owl, "paths", SimpleNamespace(liners=short / "owl"))
-    registry = StationRegistry(default, [owl])  # type: ignore[arg-type]
-    liner = str(long_folder / "owl" / "id.mp3")
-    assert registry.owns_liner("nightowl", liner)
-    assert not registry.owns_liner("default", liner)
-
-
-# -- the Stereo Tool licence across threads ------------------------------------
 
 
 class _SlowCheck(_Runtime):

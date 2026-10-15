@@ -2431,12 +2431,7 @@ def _ad_upload_cap(stations: StationRegistry) -> int:
 
 
 def _share_station(stations: StationRegistry, station: StationRuntime) -> None:
-    """Give *station* what it shares with the other stations.
-
-    Each station's own liners out of the shared library.
-    """
-    slug = station.slug
-    station.owns_liner = functools.partial(stations.owns_liner, slug)
+    """Give *station* what it shares with the other stations."""
     if len(stations.slugs()) > 1:
         station.station_list = stations.summaries
 

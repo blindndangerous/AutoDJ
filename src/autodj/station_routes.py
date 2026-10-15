@@ -970,8 +970,6 @@ def equip_station(
         lambda: station.paths.liners,
         station.paths.state_dir,
         api_root,
-        # Looked up at each call: the registry sets it after this.
-        owns_liner=lambda path: station.owns_liner(path),
     )
 
     async def profile(name: str) -> dict:
@@ -1619,8 +1617,6 @@ def install_station_routes(router: StationRouter) -> None:
         library = station.bridge.library
         if library is not None:
             for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
-                if not station.owns_liner(entry.path):
-                    continue  # another station's liner folder
                 record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
                 if not record or record.get("kind") != "liner":
                     continue

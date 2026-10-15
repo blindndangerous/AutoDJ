@@ -567,7 +567,6 @@ def test_each_push_lists_the_stations_when_there_are_several() -> None:
             summaries=lambda: entries,
             stereo_tool_user=lambda exclude: None,
             stereo_tool_lock=None,
-            owns_liner=lambda slug, path: True,
         )
         runtime = station()
         _share_station(registry, runtime)  # type: ignore[arg-type]
