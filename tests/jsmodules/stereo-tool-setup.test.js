@@ -91,9 +91,9 @@ async function install(state, { confirm = answer(true), stationChanges = () => (
 describe("Stereo Tool setup markup", () => {
   const group = page.getElementById("stereo-setup");
 
-  it("is its own group, shown only for Stereo Tool", () => {
+  it("is the Stereo Tool group, shown only for Stereo Tool", () => {
     expect(group.tagName).toBe("FIELDSET");
-    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool library and licence");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool");
     expect(group.dataset.showWhen).toBe("pb-replaygain=stereotool");
   });
 

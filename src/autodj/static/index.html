@@ -1385,14 +1385,14 @@
     </fieldset>
 
     <fieldset id="stereo-setup" data-show-when="pb-replaygain=stereotool">
-      <legend>Stereo Tool library and licence</legend>
+      <legend>Stereo Tool</legend>
       <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
-      <p class="setting-desc" id="stereo-install-desc">AutoDJ cannot include Thimeo's Stereo Tool. Download Stereo Tool fetches Thimeo's Stereo Tool plugin (about 320 MB) for this server straight from thimeo.com, keeps only the library this server needs in AutoDJ's index folder, and runs it in a process of its own; press it again later to update.</p>
+      <p class="setting-desc" id="stereo-install-desc">Downloads Stereo Tool from thimeo.com, about 320 MB. Press it again to update.</p>
       <div class="settings-check">
         <input type="checkbox" id="stereo-accept-terms" aria-describedby="stereo-terms-desc">
         <label for="stereo-accept-terms">I accept Thimeo's terms for Stereo Tool</label>
       </div>
-      <p class="setting-desc" id="stereo-terms-desc">Read <a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms and conditions (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">Stereo Tool licensing (opens in a new tab)</a> first. Thimeo requires a licence for each station that broadcasts with Stereo Tool.</p>
+      <p class="setting-desc" id="stereo-terms-desc"><a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">licensing (opens in a new tab)</a>.</p>
       <div class="settings-row">
         <button type="button" id="stereo-download" aria-describedby="stereo-install-status">Download Stereo Tool</button>
       </div>
@@ -1401,21 +1401,17 @@
         <label for="stereo-license-key">Stereo Tool licence key</label>
         <input type="password" id="stereo-license-key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096" aria-describedby="stereo-license-status stereo-license-desc">
       </div>
-      <span class="setting-desc" id="stereo-license-desc">Paste the key Thimeo sent you, then press Save licence key. The server keeps it where only AutoDJ can read it, leaves it out of backups, and never shows it again.</span>
+      <span class="setting-desc" id="stereo-license-desc">Kept private and never shown again.</span>
       <div class="settings-check" id="stereo-license-station-row" hidden>
         <input type="checkbox" id="stereo-license-station-only" aria-describedby="stereo-license-station-desc">
         <label for="stereo-license-station-only">For this station only</label>
       </div>
-      <span class="setting-desc" id="stereo-license-station-desc" hidden>Unticked, the key is for every station that has no key of its own. Thimeo requires a separate licence for each station that runs Stereo Tool at the same time.</span>
+      <span class="setting-desc" id="stereo-license-station-desc" hidden>Unticked, it is for every station without its own key.</span>
       <p class="field-error" id="stereo-license-error" hidden></p>
       <div class="settings-row">
         <button type="button" id="stereo-license-save">Save licence key</button>
         <button type="button" id="stereo-license-clear">Clear licence</button>
       </div>
-    </fieldset>
-
-    <fieldset data-show-when="pb-replaygain=stereotool">
-      <legend>Stereo Tool</legend>
       <div class="settings-row">
         <label for="stereo-preset">Preset</label>
         <select id="stereo-preset" aria-describedby="stereo-preset-warning stereo-preset-desc">
@@ -1926,7 +1922,7 @@
       <div class="settings-row tag-field">
         <label for="brk-duck">Music under a break (decibels)</label>
         <input type="text" id="brk-duck" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-duck-help">
-        <span class="setting-desc" id="brk-duck-help">How far the music drops under a break's voice, from minus 30 to 0.  Leave it blank to use the voice liner duck depth<span id="brk-duck-liners"></span>.</span>
+        <span class="setting-desc" id="brk-duck-help">How far the music drops under a break's voice, from minus 30 to 0. Blank uses the voice liner duck depth<span id="brk-duck-liners"></span>.</span>
         <p id="brk-duck-error" class="field-error" hidden></p>
       </div>
       <button type="submit" id="brk-save">Save break settings</button>
@@ -2743,7 +2739,7 @@
         <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
         <label for="requests-enabled">Take listener requests</label>
       </div>
-      <span class="setting-desc" id="requests-enabled-help">Opens this station's public request page.  Off, the page says requests are closed, and requests already waiting are kept for when you turn them on again.  Off by default.</span>
+      <span class="setting-desc" id="requests-enabled-help">Opens this station's public request page. Waiting requests are kept while it is off.</span>
       <fieldset id="requests-approval">
         <legend>Approval</legend>
         <div class="settings-check">
