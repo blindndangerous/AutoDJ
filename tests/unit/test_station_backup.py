@@ -201,13 +201,13 @@ def test_a_station_folder_set_elsewhere_is_restored_there(tmp_path: Path) -> Non
     liners = tmp_path / "owl-liners"
     cfg = _config(
         tmp_path,
-        extra=f'\n[stations.nightowl.playback]\nliners_folder = "{liners.as_posix()}"\n',
+        extra=f'\n[stations.nightowl.time_checks]\nclips_folder = "{liners.as_posix()}"\n',
     )
     liners.mkdir()
     (liners / "owl.mp3").write_bytes(b"owl")
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     with zipfile.ZipFile(archive) as opened:
-        assert opened.read("stations/nightowl/liners/owl.mp3") == b"owl"
+        assert opened.read("stations/nightowl/time_checks/owl.mp3") == b"owl"
     (liners / "owl.mp3").unlink()
 
     restore_backup(cfg, archive, force=True)
@@ -215,13 +215,13 @@ def test_a_station_folder_set_elsewhere_is_restored_there(tmp_path: Path) -> Non
     assert (liners / "owl.mp3").read_bytes() == b"owl"
 
 
-def test_a_shared_liner_folder_is_stored_once(tmp_path: Path) -> None:
+def test_a_shared_clip_folder_is_stored_once(tmp_path: Path) -> None:
     shared = tmp_path / "liners"
     cfg = _config(
         tmp_path,
         extra=(
-            f'\n[playback]\nliners_folder = "{shared.as_posix()}"\n'
-            f'\n[stations.nightowl.playback]\nliners_folder = "{shared.as_posix()}"\n'
+            f'\n[time_checks]\nclips_folder = "{shared.as_posix()}"\n'
+            f'\n[stations.nightowl.time_checks]\nclips_folder = "{shared.as_posix()}"\n'
         ),
     )
     shared.mkdir()
@@ -229,8 +229,8 @@ def test_a_shared_liner_folder_is_stored_once(tmp_path: Path) -> None:
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     with zipfile.ZipFile(archive) as opened:
         names = opened.namelist()
-    assert "liners/id.mp3" in names
-    assert not [name for name in names if name.startswith("stations/nightowl/liners/")]
+    assert "time_checks/id.mp3" in names
+    assert not [name for name in names if name.startswith("stations/nightowl/time_checks/")]
     (shared / "id.mp3").unlink()
 
     restore_backup(cfg, archive, force=True)
@@ -241,10 +241,12 @@ def test_a_shared_liner_folder_is_stored_once(tmp_path: Path) -> None:
 def test_a_station_folder_holding_its_own_state_folder_is_refused_by_the_config(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(ValueError, match=r"\[stations.nightowl\] playback.liners_folder .* holds"):
+    with pytest.raises(
+        ValueError, match=r"\[stations.nightowl\] time_checks.clips_folder .* holds"
+    ):
         _config(
             tmp_path,
-            extra=f'\n[stations.nightowl.playback]\nliners_folder = "{tmp_path.as_posix()}/index"\n',
+            extra=f'\n[stations.nightowl.time_checks]\nclips_folder = "{tmp_path.as_posix()}/index"\n',
         )
 
 
@@ -259,8 +261,8 @@ def test_folders_that_hold_each_other_are_refused_at_backup(
     cfg = _config(
         tmp_path,
         extra=(
-            f'\n[playback]\nliners_folder = "{(tmp_path / default).as_posix()}"\n'
-            f'\n[stations.nightowl.playback]\nliners_folder = "{(tmp_path / owl).as_posix()}"\n'
+            f'\n[time_checks]\nclips_folder = "{(tmp_path / default).as_posix()}"\n'
+            f'\n[stations.nightowl.time_checks]\nclips_folder = "{(tmp_path / owl).as_posix()}"\n'
         ),
     )
 
@@ -269,14 +271,14 @@ def test_folders_that_hold_each_other_are_refused_at_backup(
 
 
 def test_a_folder_holding_a_state_folder_is_refused_at_restore(tmp_path: Path) -> None:
-    # The default station's liner folder set to the index folder itself: a
-    # restore of liners would replace the whole index folder.
+    # The default station's clip folder set to the index folder itself: a
+    # restore of clips would replace the whole index folder.
     cfg = _config(
         tmp_path,
         stations="",
-        extra=f'\n[playback]\nliners_folder = "{(tmp_path / "index" / "default").as_posix()}"\n',
+        extra=f'\n[time_checks]\nclips_folder = "{(tmp_path / "index" / "default").as_posix()}"\n',
     )
-    archive = _archive(tmp_path / "b.zip", {"liners/id.mp3": b"x"})
+    archive = _archive(tmp_path / "b.zip", {"time_checks/id.mp3": b"x"})
 
     with pytest.raises(BackupError, match="overlap"):
         restore_backup(cfg, archive, force=True)
@@ -427,13 +429,13 @@ def test_restore_refuses_two_folders_that_land_in_one_place(tmp_path: Path) -> N
     cfg = _config(
         tmp_path,
         extra=(
-            f'\n[playback]\nliners_folder = "{shared.as_posix()}"\n'
-            f'\n[stations.nightowl.playback]\nliners_folder = "{shared.as_posix()}"\n'
+            f'\n[time_checks]\nclips_folder = "{shared.as_posix()}"\n'
+            f'\n[stations.nightowl.time_checks]\nclips_folder = "{shared.as_posix()}"\n'
         ),
     )
     archive = _archive(
         tmp_path / "two.zip",
-        {"liners/a.mp3": b"a", "stations/nightowl/liners/b.mp3": b"b"},
+        {"time_checks/a.mp3": b"a", "stations/nightowl/time_checks/b.mp3": b"b"},
         stations=["nightowl"],
     )
 
@@ -686,12 +688,12 @@ def test_restore_refuses_an_archive_bigger_than_the_free_space(tmp_path: Path) -
 def test_a_shared_folder_restored_where_it_is_no_longer_shared_is_warned_about(
     tmp_path: Path,
 ) -> None:
-    shared = tmp_path / "old" / "liners"
+    shared = tmp_path / "old" / "clips"
     old = _config(
         tmp_path / "old",
         extra=(
-            f'\n[playback]\nliners_folder = "{shared.as_posix()}"\n'
-            f'\n[stations.nightowl.playback]\nliners_folder = "{shared.as_posix()}"\n'
+            f'\n[time_checks]\nclips_folder = "{shared.as_posix()}"\n'
+            f'\n[stations.nightowl.time_checks]\nclips_folder = "{shared.as_posix()}"\n'
         ),
     )
     shared.mkdir()
@@ -699,17 +701,17 @@ def test_a_shared_folder_restored_where_it_is_no_longer_shared_is_warned_about(
     archive = create_backup(old, tmp_path / "backup.zip", force=False)
     with zipfile.ZipFile(archive) as opened:
         assert json.loads(opened.read("manifest.json"))["shared"] == {
-            "stations/nightowl/liners": "liners"
+            "stations/nightowl/time_checks": "time_checks"
         }
 
     apart = _config(tmp_path / "new")
     warnings: list[str] = []
     restore_backup(apart, archive, force=True, warnings=warnings)
 
-    assert (apart.index.active_dir / "liners" / "id.mp3").read_bytes() == b"both"
+    assert (apart.index.active_dir / "time_checks" / "id.mp3").read_bytes() == b"both"
     assert len(warnings) == 1
-    assert "stations/nightowl/liners shared the liners folder" in warnings[0]
-    assert str(_station_dir(apart, "nightowl") / "liners") in warnings[0]
+    assert "stations/nightowl/time_checks shared the time_checks folder" in warnings[0]
+    assert str(_station_dir(apart, "nightowl") / "time_checks") in warnings[0]
 
     # Restored where they are still shared, nothing is said.
     warnings.clear()

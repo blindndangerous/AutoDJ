@@ -369,7 +369,6 @@ skip_style = "fade"
 # --server-audio or --stream; any combination may be set, and a null /
 # absent value disables that trigger.
 liners_enabled = false
-# liners_folder = "~/.autodj/liners"   # default: <index_dir>/<name>/liners
 # liners_every_n_songs = 5             # after every N tracks
 # liners_every_minutes = 20.0          # on a wall-clock timer
 # liners_random_min_minutes = 10.0     # random window, lower bound

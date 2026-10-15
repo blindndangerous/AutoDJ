@@ -236,11 +236,7 @@ class DjMixBody(BaseModel):
 class PlaybackSettingsBody(BaseModel):
     """Request body for POST /api/playback-settings.
 
-    Unknown fields are rejected rather than ignored.  In particular the liner
-    root (``playback.liners_folder``) is configuration-only: the liner fetch
-    and delete routes resolve names under it, so letting a request move it
-    would let any client that can reach this route point those routes at the
-    config or index directory.
+    Unknown fields are rejected rather than ignored.
     """
 
     model_config = ConfigDict(extra="forbid")
