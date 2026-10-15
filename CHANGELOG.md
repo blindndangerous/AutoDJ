@@ -19,9 +19,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   automatic), in the Listener requests card in Queue & Search, which now shows while requests
   are off. The request page opens or closes at once. While closed it says "Requests are closed",
   also to a listener whose page was open when requests were turned off.
-- What you save for breaks and requests is kept with the station's other settings and takes the
-  place of `[breaks]` and `[requests]` in `config.toml`, which give only the starting values. The
-  break upload limits and quotas, and the request limits, stay in `config.toml`.
+- `[breaks]` and `[requests]` in `config.toml` stay in charge of these settings until you save
+  them on the page for the station; saving another setting, such as the volume, does not change
+  that. Once saved there, the page's values are kept with the station's other settings and win at
+  every start, and the log says so once when they differ from `config.toml`. The break upload
+  limits and quotas, and the request limits, stay in `config.toml`.
 
 ### Changed
 

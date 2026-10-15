@@ -142,7 +142,8 @@ webhooks can send the same metadata to other services or Discord; configure thei
 An optional public request page (`/requests`) lets listeners search the library and request
 songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
 by hand or automatically in Queue & Search. It is off until you turn it on in the Listener
-requests card (or with `[requests]` in config.toml, the starting value). See
+requests card, or with `[requests]` in config.toml, which is used until the card saves its own
+switch for the station. See
 [Operations](docs/operations.md#listener-requests).
 An optional public player page (`/player`) lets listeners press Play to hear the station in the
 browser, and an embeddable version (`/embed`) puts the same player on another website; both are

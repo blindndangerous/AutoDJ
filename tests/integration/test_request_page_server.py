@@ -439,3 +439,90 @@ def test_request_switches_are_checked(bridge, tmp_path: Path, refused: dict) -> 
     answer = client.post("/api/requests/settings", json=refused, headers=ORIGIN)
     assert answer.status_code == 422, refused
     assert client.get("/requests").status_code == 404
+
+
+def _stored(tmp_path: Path) -> dict:
+    import json
+
+    return json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+
+
+def test_only_the_request_cards_own_save_keeps_the_switches(bridge, tmp_path: Path) -> None:
+    from autodj.runtime_state import load_into_bridge
+
+    client = _client(bridge, tmp_path, token=False)
+    # Another setting saved, and the bridge settings alone: config.toml stays in charge.
+    assert client.post("/api/volume", json={"volume": 0.5}, headers=ORIGIN).status_code == 200
+    assert (
+        client.post("/api/requests/settings", json={"max_bridges": 2}, headers=ORIGIN).status_code
+        == 200
+    )
+    stored = _stored(tmp_path)
+    assert stored["requests_max_bridges"] == 2
+    assert "requests_enabled" not in stored and "requests_approval" not in stored
+    # The card's own save of the switch keeps it, and later saves keep it too.
+    on = client.post("/api/requests/settings", json={"enabled": True}, headers=ORIGIN)
+    assert on.status_code == 200
+    assert client.post("/api/volume", json={"volume": 0.4}, headers=ORIGIN).status_code == 200
+    assert (_stored(tmp_path)["requests_enabled"], _stored(tmp_path)["requests_approval"]) == (
+        True,
+        "manual",
+    )
+    # A restart keeps it, whatever config.toml says, and keeps saving it.
+    bridge.page_saved.clear()
+    bridge.player._cfg.requests = RequestsConfig(enabled=False)
+    load_into_bridge(bridge, tmp_path)
+    assert bridge.player._cfg.requests.enabled is True
+    assert "requests" in bridge.page_saved
+
+
+def test_a_desk_that_cannot_open_puts_every_setting_back(
+    bridge, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import requests_api
+
+    client = _client(bridge, tmp_path, token=False)
+
+    def broken(_station):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(requests_api, "request_desk", broken)
+    answer = client.post(
+        "/api/requests/settings",
+        json={"enabled": True, "approval": "auto", "max_bridges": 1, "no_smooth_spot": "wait"},
+        headers=ORIGIN,
+    )
+    assert answer.status_code == 500
+    cfg = bridge.player._cfg.requests
+    assert (cfg.enabled, cfg.approval, cfg.max_bridges, cfg.no_smooth_spot) == (
+        False,
+        "manual",
+        3,
+        "best",
+    )
+    assert not (tmp_path / "web_state.json").exists() or "requests_enabled" not in _stored(tmp_path)
+
+
+def test_a_desk_built_as_the_station_stops_is_closed_not_attached(
+    bridge, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autodj import requests_api
+
+    client = _client(bridge, tmp_path, token=False)
+    station = client.app.state.stations.default
+    real = requests_api.request_desk
+    built = []
+
+    def stopping(target):
+        desk = real(target)
+        built.append(desk)
+        target.stopped = True  # the station stops while the desk is built
+        return desk
+
+    monkeypatch.setattr(requests_api, "request_desk", stopping)
+    answer = client.post("/api/requests/settings", json={"enabled": True}, headers=ORIGIN)
+    station.stopped = False
+    assert answer.status_code == 409
+    assert station.requests is None
+    assert built and built[0]._closed.is_set()
+    assert bridge.player._cfg.requests.enabled is False

@@ -14,7 +14,10 @@ can set.  On restore every saved field is checked on its own against the
 rule of the route that sets it (:mod:`autodj.settings_bodies`) and applied
 through the same :class:`~autodj._bridge.PlayerBridge` setter: a bad value
 is skipped with a warning and the other saved settings still apply.  A
-saved value wins over config.toml, which gives only the starting value.  The
+saved value wins over config.toml, which gives only the starting value.
+Whether the station takes listener requests and breaks, and how, is saved
+only once its own card has saved it for the station; until then other
+saves leave it out and config.toml stays in charge.  The
 Library source folders are catalog-owned. The configured liner upload
 destination remains config-owned; neither is copied into browser-owned state.
 """
@@ -31,6 +34,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from autodj.fsutil import atomic_write
 from autodj.repeat_settings import ignore_unknown_repeat_keys
 from autodj.settings_bodies import (
+    PAGE_SAVED_BREAKS,
+    PAGE_SAVED_REQUESTS,
     BpmRangeBody,
     BreakSettingsBody,
     DiscoveryBody,
@@ -65,6 +70,8 @@ REQUEST_SETTING_KEYS = (
     "requests_bridge_cost_threshold",
     "requests_no_smooth_spot",
 )
+#: The two of them that config.toml keeps until the card first saves them.
+_REQUEST_SWITCH_KEYS = frozenset({"requests_enabled", "requests_approval"})
 #: Announcer break settings Settings, Breaks saves (``/api/breaks/settings``),
 #: by their ``[breaks]`` names.  ``breaks_duck_db`` may be null: the voice
 #: liner duck depth.
@@ -331,8 +338,12 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             field = key.removeprefix("requests_")
             value = _checked(RequestSettingsBody, field, playback[key], key)
             if value is not _INVALID and value is not None:
+                if key in _REQUEST_SWITCH_KEYS:
+                    # Saved by the Listener requests card: kept on later saves.
+                    bridge.page_saved.add(PAGE_SAVED_REQUESTS)
+                    _note_switch(bridge, key, getattr(player._cfg.requests, field), value)
                 setattr(player._cfg.requests, field, value)
-    _restore_breaks(getattr(player._cfg, "breaks", None), playback)
+    _restore_breaks(bridge, getattr(player._cfg, "breaks", None), playback)
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
@@ -355,8 +366,39 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
 
 
-def _restore_breaks(breaks: Any, playback: dict[str, Any]) -> None:
-    """Restore the saved announcer break settings over the ``[breaks]`` ones."""
+#: How the log names each saved switch and its values.
+_SWITCH_WORDS: dict[str, tuple[str, dict[object, str]]] = {
+    "requests_enabled": ("Listener requests", {True: "on", False: "off"}),
+    "requests_approval": (
+        "Listener request approval",
+        {"auto": "automatic", "manual": "each one approved"},
+    ),
+    "breaks_enabled": ("Breaks", {True: "on", False: "off"}),
+}
+
+
+def _note_switch(bridge: PlayerBridge, key: str, configured: object, saved: object) -> None:
+    """Log, once at start, a saved switch that differs from config.toml's."""
+    words = _SWITCH_WORDS.get(key)
+    if words is None or configured == saved:
+        return
+    what, values = words
+    slug = getattr(getattr(bridge, "paths", None), "slug", None) or "default"
+    logger.info(
+        "%s %s for %s (saved in Settings; config.toml says %s)",
+        what,
+        values.get(saved, saved),
+        slug,
+        values.get(configured, configured),
+    )
+
+
+def _restore_breaks(bridge: PlayerBridge, breaks: Any, playback: dict[str, Any]) -> None:
+    """Restore the saved announcer break settings over the ``[breaks]`` ones.
+
+    Any of them saved marks the group as Settings, Breaks', so later saves
+    keep writing it.
+    """
     if breaks is None:
         return
     for key in BREAK_SETTING_KEYS:
@@ -367,9 +409,12 @@ def _restore_breaks(breaks: Any, playback: dict[str, Any]) -> None:
         if field == "duck_db" and saved is None:
             # Null: the voice liner duck depth, as an unset [breaks] duck_db.
             breaks.duck_db = None
+            bridge.page_saved.add(PAGE_SAVED_BREAKS)
             continue
         value = _checked(BreakSettingsBody, field, saved, key)
         if value is not _INVALID and value is not None:
+            bridge.page_saved.add(PAGE_SAVED_BREAKS)
+            _note_switch(bridge, key, getattr(breaks, field), value)
             setattr(breaks, field, value)
 
 

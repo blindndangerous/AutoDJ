@@ -992,6 +992,10 @@ def test_bad_saved_switches_are_warned_and_config_kept(tmp_path, caplog, key, va
     assert player._cfg.requests.max_bridges == 2
 
 
+def _saved_playback(tmp_path) -> dict:
+    return json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+
+
 def test_request_and_break_settings_round_trip(tmp_path) -> None:
     player = _with_switches(_make_player())
     player._cfg.requests.enabled = True
@@ -999,11 +1003,74 @@ def test_request_and_break_settings_round_trip(tmp_path) -> None:
     player._cfg.breaks.enabled = True
     player._cfg.breaks.dj_placement = "talk_up"
     player._cfg.breaks.duck_db = -4.0
-    save_from_player(PlayerBridge(player, player._sim).get_settings(), tmp_path)
-    saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    bridge = PlayerBridge(player, player._sim)
+    bridge.page_saved |= {"requests", "breaks"}  # as their own routes mark them
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
     assert saved["requests_enabled"] is True and saved["breaks_duck_db"] == -4.0
     again = _with_switches(_make_player())
     _load(again, tmp_path)
     assert (again._cfg.requests.enabled, again._cfg.requests.approval) == (True, "auto")
     assert (again._cfg.breaks.enabled, again._cfg.breaks.dj_placement) == (True, "talk_up")
     assert again._cfg.breaks.duck_db == -4.0
+
+
+def test_an_unrelated_save_leaves_the_switches_to_config(tmp_path) -> None:
+    """A volume or EQ save must not freeze [requests] and [breaks] from config.toml."""
+    player = _with_switches(_make_player())
+    player._cfg.requests.enabled = True
+    player._cfg.breaks.enabled = True
+    bridge = PlayerBridge(player, player._sim)
+    bridge.set_volume(0.5)
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
+    assert saved["volume"] == 0.5
+    for key in (
+        "requests_enabled",
+        "requests_approval",
+        "breaks_enabled",
+        "breaks_dj_placement",
+        "breaks_min_intro_seconds",
+        "breaks_duck_db",
+    ):
+        assert key not in saved, key
+    # config.toml changed later is still followed at the next start.
+    again = _with_switches(_make_player())
+    _load(again, tmp_path)
+    assert (again._cfg.requests.enabled, again._cfg.breaks.enabled) == (False, False)
+
+
+def test_saved_switches_are_kept_by_later_unrelated_saves(tmp_path) -> None:
+    _write_state(tmp_path, {"playback": {"requests_enabled": True, "breaks_enabled": True}})
+    player = _with_switches(_make_player())
+    bridge = PlayerBridge(player, player._sim)
+    load_into_bridge(bridge, tmp_path)
+    assert bridge.page_saved == {"requests", "breaks"}
+    bridge.set_volume(0.25)
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
+    assert (saved["requests_enabled"], saved["breaks_enabled"]) == (True, True)
+    assert saved["requests_approval"] == "manual" and saved["breaks_dj_placement"] == "auto"
+
+
+def test_a_saved_switch_that_differs_from_config_is_logged_once(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "requests_enabled": True,
+                "requests_approval": "manual",
+                "breaks_enabled": True,
+            }
+        },
+    )
+    player = _with_switches(_make_player())
+    bridge = PlayerBridge(player, player._sim)
+    bridge.paths = SimpleNamespace(slug="icecold", state_dir=tmp_path)
+    caplog.set_level("INFO", logger="autodj.runtime_state")
+    load_into_bridge(bridge, tmp_path)
+    lines = [r.getMessage() for r in caplog.records if "saved in Settings" in r.getMessage()]
+    assert lines == [
+        "Listener requests on for icecold (saved in Settings; config.toml says off)",
+        "Breaks on for icecold (saved in Settings; config.toml says off)",
+    ]

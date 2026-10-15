@@ -87,7 +87,7 @@ from autodj.breaks import (
 )
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.machine_tokens import SCOPE_ANNOUNCER, MachineToken
-from autodj.settings_bodies import BreakSettingsBody
+from autodj.settings_bodies import PAGE_SAVED_BREAKS, BreakSettingsBody
 from autodj.station_routes import StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
 from autodj.worker_api import RateLimiter
@@ -556,6 +556,8 @@ def install_breaks(router: StationRouter) -> None:
             # means "as far as a voice liner".
             if value is not None or field == "duck_db":
                 setattr(config, field, value)
+        # From now on these are the page's, not config.toml's, for this station.
+        station.bridge.page_saved.add(PAGE_SAVED_BREAKS)
         dropped = 0
         desk: BreakDesk | None = getattr(station, "breaks", None)
         if was_on and config.enabled is not True and desk is not None:

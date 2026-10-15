@@ -809,11 +809,15 @@ expires three hours after it was sent).
 **Approval** in the same card chooses **I approve each one** (`approval = "manual"`) or
 **Automatic** (`"auto"`): a request that keeps the rules joins the queue at once.
 
-The `[requests]` section in config.toml gives the starting values. Once you save the card,
-whether requests are on, the approval and the four smooth-transition settings are kept in the
-station's `web_state.json` and take the place of the config.toml values from then on, as the
-other settings saved on the page do. The other keys are read from config.toml when AutoDJ
-starts:
+Until you save **Take listener requests** and **Approval** with this card, `enabled` and
+`approval` under `[requests]` in config.toml are in charge for the station, and a change there
+takes effect at the next start; saving any other setting on the page (volume, EQ and the like)
+does not change that. Once you save the card, the station's `web_state.json` keeps both, and
+they take the place of the config.toml values at every start from then on. When a saved value
+differs from config.toml, the log says so once at start, for example "Listener requests on for
+icecold (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
+in `web_state.json` whenever the station's settings are saved, as before. The other keys are read
+from config.toml when AutoDJ starts:
 
 ```toml
 [requests]
@@ -2451,7 +2455,7 @@ and the ad schedule's spots stay. From then on the announcer's `GET context` ans
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
 Settings, Breaks", and an upload is refused with 409 and the same words.
 
-The `[breaks]` section in config.toml gives the starting values, for another station under
+The `[breaks]` section in config.toml holds them, for another station under
 `[stations.<slug>.breaks]`:
 
 ```toml
@@ -2460,10 +2464,15 @@ enabled = true
 dj_placement = "auto"
 ```
 
-Once you save Settings, Breaks, those four settings are kept in the station's `web_state.json`
-(`GET` and `POST /api/breaks/settings`, also under `/api/stations/<slug>/`) and take the place of
-the config.toml values from then on. With breaks off, AutoDJ picks songs exactly as before and
-the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
+Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
+`min_intro_seconds` and `duck_db` under `[breaks]` in config.toml are in charge, and a change
+there takes effect at the next start; saving any other setting on the page (volume, EQ and the
+like) does not change that. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
+under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
+and they take the place of the config.toml values at every start from then on. When the saved
+switch differs from config.toml, the log says so once at start, for example "Breaks on for
+icecold (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
+as before and the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
 `[breaks]` keys, with their defaults, are in `config.toml.example`:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the

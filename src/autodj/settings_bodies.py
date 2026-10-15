@@ -17,6 +17,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from autodj.config import MAX_FADE_SECONDS
 from autodj.repeat_settings import RepeatSettings
 
+#: The groups of settings :attr:`autodj._bridge.PlayerBridge.page_saved` can
+#: name: once a group's own route has saved it for a station, it is written to
+#: ``web_state.json`` and wins over config.toml; until then config.toml keeps it.
+PAGE_SAVED_REQUESTS = "requests"
+PAGE_SAVED_BREAKS = "breaks"
+
 
 def validate_playback_choices(values: Mapping[str, Any]) -> None:
     """Raise ``ValueError`` if any choice field in *values* is not allowed.
@@ -96,7 +102,7 @@ class RequestSettingsBody(BaseModel):
     """Partial listener request settings: on or off, approval, bridge songs and the give-up rule.
 
     The same limits as ``[requests]`` in config.toml (:class:`RequestsConfig`),
-    which gives only the starting values (#49).
+    which is in charge of on or off and approval until this route saves them (#49).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -115,7 +121,7 @@ class BreakSettingsBody(BaseModel):
     """Partial announcer break settings a station operator changes (#88).
 
     The same rules as ``[breaks]`` in config.toml (:class:`BreaksConfig`),
-    which gives only the starting values.  The upload limits, quotas and
+    which is in charge until this route saves them.  The upload limits, quotas and
     waiting times stay in config.toml.  ``duck_db`` sent as ``null`` means
     "use the voice liner duck depth"; left out, it is left unchanged.
     """

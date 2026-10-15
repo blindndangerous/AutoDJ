@@ -2,8 +2,9 @@
 
 The default station's page is ``/requests``; every station's is also
 ``/stations/<slug>/requests``.  It is off until it is turned on for the
-station (the operator's Listener requests card, or ``[requests] enabled``
-before that is first changed); while it is off it answers 404 with a page
+station: ``[requests] enabled``, until the operator's Listener requests card
+saves its own switch for the station, then that saved switch.  While it is off
+it answers 404 with a page
 that says requests are closed, so a listener whose page was open when
 requests were turned off is told so in words.
 

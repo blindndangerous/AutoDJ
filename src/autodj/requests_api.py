@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from autodj.listener_requests import RequestDesk, request_settings
-from autodj.settings_bodies import RequestSettingsBody
+from autodj.settings_bodies import PAGE_SAVED_REQUESTS, RequestSettingsBody
 from autodj.station_routes import StationDep, StationRouter, request_desk
 from autodj.stations import StationRuntime
 
@@ -87,23 +87,40 @@ def install_requests(router: StationRouter) -> None:
         """
         cfg = station.cfg.requests
         was_on = cfg.enabled is True
-        for field, value in body.model_dump(exclude_none=True).items():
+        changes = body.model_dump(exclude_none=True)
+        # Put back as they were if the request desk cannot be opened.
+        before = {field: getattr(cfg, field) for field in changes}
+
+        def put_back() -> None:
+            for field, value in before.items():
+                setattr(cfg, field, value)
+
+        for field, value in changes.items():
             setattr(cfg, field, float(value) if field == "bridge_cost_threshold" else value)
         if cfg.enabled is True and station.requests is None:
             try:
                 desk = await asyncio.to_thread(request_desk, station)
             except Exception:
-                cfg.enabled = was_on
+                put_back()
                 logger.exception("Could not open listener requests")
                 raise HTTPException(
                     status_code=500, detail="Could not open listener requests; see the log"
                 ) from None
+            if station.stopped:
+                # Stopped while the desk was being built: its stop has already
+                # closed what it had, so this desk would never be closed.
+                await asyncio.to_thread(desk.close)
+                put_back()
+                raise HTTPException(status_code=409, detail="That station is stopped")
             if station.requests is None:
                 station.requests = desk
                 # A show that starts ahead of queued requests updates their notes.
                 station.show_runner.on_started = desk.show_started
             else:  # another save built one first
                 await asyncio.to_thread(desk.close)
+        if body.model_fields_set & {"enabled", "approval"}:
+            # From now on these are the card's, not config.toml's, for this station.
+            station.bridge.page_saved.add(PAGE_SAVED_REQUESTS)
         if (cfg.enabled is True) is not was_on:
             logger.info("Listener requests turned %s in Settings", "on" if cfg.enabled else "off")
         await asyncio.to_thread(station.bridge.save_persistent_state)

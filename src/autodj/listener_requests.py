@@ -1,7 +1,8 @@
 """Listener requests (#49): listeners ask for songs; the station decides.
 
-A station that takes requests (turned on in the Listener requests card, or
-``[requests] enabled`` before it is first changed there) serves a public page where anyone
+A station that takes requests (``[requests] enabled``, until the Listener
+requests card saves its own switch for the station; from then on that saved
+switch) serves a public page where anyone
 who can reach the server searches the library and requests a song (see
 :mod:`autodj.request_page`).  A request is checked here, in this order:
 

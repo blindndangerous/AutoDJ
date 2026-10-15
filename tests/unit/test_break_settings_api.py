@@ -207,3 +207,20 @@ def test_saved_break_settings_win_over_config_after_a_restart(station):
     load_into_bridge(station.station.bridge, station.station.bridge._state_dir())
     restored = station.player._cfg.breaks
     assert (restored.enabled, restored.dj_placement, restored.duck_db) == (False, "talk_up", None)
+
+
+def test_an_unrelated_save_leaves_breaks_to_config(station):
+    station.station.bridge.set_volume(0.5)
+    station.station.bridge.save_persistent_state()
+    playback = stored(station)
+    assert playback["volume"] == 0.5
+    assert not [key for key in playback if key.startswith("breaks_")]
+    # Settings, Breaks' own save keeps all four from then on.
+    assert save(station, {"min_intro_seconds": 3}).status_code == 200
+    station.station.bridge.save_persistent_state()
+    assert {key for key in stored(station) if key.startswith("breaks_")} == {
+        "breaks_enabled",
+        "breaks_dj_placement",
+        "breaks_min_intro_seconds",
+        "breaks_duck_db",
+    }
