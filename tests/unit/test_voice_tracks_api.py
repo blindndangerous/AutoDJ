@@ -245,7 +245,7 @@ def test_the_tracker_needs_a_session_and_takes_no_machine_token(tmp_path):
     app = create_app(SimpleNamespace(player=player, library=None))
     client = TestClient(app, **LOCAL)
     start_station(player, entries)
-    _token, secret = app.state.machine_tokens().create("radiodj", [SCOPE_ANNOUNCER], "default")
+    _token, secret = app.state.machine_tokens().create("announcer", [SCOPE_ANNOUNCER], "default")
     bearer = {"Authorization": f"Bearer {secret}"}
     assert client.get("/api/voice-tracks").status_code == 401
     assert client.get("/api/voice-tracks", headers=bearer).status_code == 401

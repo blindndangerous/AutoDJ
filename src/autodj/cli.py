@@ -1402,7 +1402,7 @@ def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
     default=None,
     help=(
         "Program to run once before the model is loaded, such as "
-        "'podman stop qwen3-tts' to free the GPU.  Run without a shell."
+        "'podman stop tts-service' to free the GPU.  Run without a shell."
     ),
 )
 @click.option(
@@ -1410,7 +1410,7 @@ def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
     default=None,
     help=(
         "Program to run when the worker stops, after Ctrl+C or an error too, such as "
-        "'podman start qwen3-tts'.  Run without a shell."
+        "'podman start tts-service'.  Run without a shell."
     ),
 )
 @click.pass_context
@@ -1437,7 +1437,7 @@ def cmd_worker(
     Examples:
       autodj worker --server https://nas.local:8765 --token adj1.…
       autodj worker --server https://nas.local:8765 --idle-exit 10 \
-        --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
+        --before-command "podman stop tts-service" --after-command "podman start tts-service"
     """
     import signal
     import threading

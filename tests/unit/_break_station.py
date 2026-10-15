@@ -109,7 +109,7 @@ def make_break(
         size=path.stat().st_size,
         cues=speech_cues(data),
         label="",
-        token_name="radiodj",
+        token_name="announcer",
         created_at=created_at,
         expires_at=expires_at,
     )

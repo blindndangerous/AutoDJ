@@ -65,7 +65,7 @@ def test_heartbeat_renews_and_release_returns_songs(queue):
 
 def test_finishing_counts_and_holds_back_failed_songs(queue):
     q, clock = queue
-    q.seen("worker-a", "Alienware", "RTX (CUDA GPU)")
+    q.seen("worker-a", "Studio PC", "RTX (CUDA GPU)")
     done, stale, failed = q.claim("worker-a", SONGS, WORKER_LEASE_SECONDS)
     clock.now += 30
     q.finish(done, "done")
@@ -81,7 +81,7 @@ def test_finishing_counts_and_holds_back_failed_songs(queue):
     clock.now += FAILED_RETRY_SECONDS
     assert [lease.path for lease in q.claim("worker-b", [SONGS[2]], 60)] == [failed.path]
     (worker,) = q.workers()
-    assert worker["name"] == "Alienware"
+    assert worker["name"] == "Studio PC"
     assert worker["device"] == "RTX (CUDA GPU)"
     assert (worker["songs_done"], worker["songs_failed"], worker["songs_stale"]) == (1, 1, 1)
 
@@ -89,12 +89,12 @@ def test_finishing_counts_and_holds_back_failed_songs(queue):
 def test_presence_sessions_and_rate(queue):
     q, clock = queue
     assert not q.worker_active()
-    q.seen("worker-a", "Alienware")
+    q.seen("worker-a", "Studio PC")
     assert q.worker_active()
     for _ in range(6):
         lease = q.claim("worker-a", [SONGS[0]], WORKER_LEASE_SECONDS)[0]
         clock.now += 100
-        q.seen("worker-a", "Alienware")
+        q.seen("worker-a", "Studio PC")
         q.finish(lease, "done")
     (worker,) = q.workers()
     assert worker["connected"] is True
@@ -114,7 +114,7 @@ def test_presence_sessions_and_rate(queue):
 
 def test_forgetting_a_worker_returns_its_songs(queue):
     q, _clock = queue
-    q.seen("worker-a", "Alienware")
+    q.seen("worker-a", "Studio PC")
     q.claim("worker-a", SONGS, WORKER_LEASE_SECONDS)
     q.forget_worker("worker-a")
     assert q.workers() == []

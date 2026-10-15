@@ -34,8 +34,8 @@ def store(tmp_path):
 
 def test_created_token_is_shown_once_and_only_its_digest_is_stored(store, tmp_path):
     tokens, _clock = store
-    token, secret = tokens.create("  Alienware  ", [SCOPE_ANALYSIS_WORKER])
-    assert token.name == "Alienware"
+    token, secret = tokens.create("  Studio PC  ", [SCOPE_ANALYSIS_WORKER])
+    assert token.name == "Studio PC"
     assert token.scopes == (SCOPE_ANALYSIS_WORKER,)
     assert secret.startswith(f"adj1.{token.token_id}.")
     assert token_id_of(secret) == token.token_id
@@ -128,21 +128,21 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
     runner = CliRunner()
     base = ["--config", str(config), "tokens"]
     assert "No machine tokens." in runner.invoke(cli, [*base, "list"]).output
-    created = runner.invoke(cli, [*base, "create", "Alienware", "--scope", SCOPE_ANALYSIS_WORKER])
+    created = runner.invoke(cli, [*base, "create", "Studio PC", "--scope", SCOPE_ANALYSIS_WORKER])
     assert created.exit_code == 0, created.output
     secret = created.stdout.strip()
     assert secret.startswith("adj1.")
     assert "shown only now and cannot be shown again" in created.stderr
     token_id = token_id_of(secret)
     listed = runner.invoke(cli, [*base, "list"])
-    assert token_id in listed.output and "Alienware" in listed.output
+    assert token_id in listed.output and "Studio PC" in listed.output
     assert secret.split(".")[2] not in listed.output
     store = MachineTokenStore(tmp_path / "index" / ".machine-tokens.sqlite3")
     assert store.authenticate(secret, SCOPE_ANALYSIS_WORKER) is not None
     library_db = tmp_path / "index" / "default" / "library.db"
     library_db.parent.mkdir(parents=True)
     queue = AnalysisQueue(library_db)
-    queue.seen(token_id, "Alienware")
+    queue.seen(token_id, "Studio PC")
     queue.close()
     revoked = runner.invoke(cli, [*base, "revoke", token_id])
     assert revoked.exit_code == 0, revoked.output
@@ -163,7 +163,7 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
 
 def test_an_announcer_token_is_bound_to_one_station(store):
     tokens, _clock = store
-    token, secret = tokens.create("radiodj", [SCOPE_ANNOUNCER], "nightowl")
+    token, secret = tokens.create("news-bot", [SCOPE_ANNOUNCER], "nightowl")
     assert token.station == "nightowl"
     found = tokens.authenticate(secret, SCOPE_ANNOUNCER)
     assert found is not None and found.station == "nightowl"
@@ -189,7 +189,7 @@ def test_an_announcer_token_is_bound_to_one_station(store):
 def test_station_binding_is_validated(store, scopes, station):
     tokens, _clock = store
     with pytest.raises(ValueError):
-        tokens.create("radiodj", scopes, station)
+        tokens.create("news-bot", scopes, station)
     assert validate_station([SCOPE_ANALYSIS_WORKER], None) is None
 
 
@@ -208,7 +208,7 @@ def test_an_older_token_file_gains_the_station_column(tmp_path):
     db.close()
     tokens = MachineTokenStore(path)
     assert [(t.name, t.station) for t in tokens.list_tokens()] == [("old", None)]
-    made, _secret = tokens.create("radiodj", [SCOPE_ANNOUNCER], "default")
+    made, _secret = tokens.create("news-bot", [SCOPE_ANNOUNCER], "default")
     assert tokens.get(made.token_id).station == "default"
 
 
@@ -222,7 +222,7 @@ def test_tokens_command_binds_an_announcer_token(tmp_path):
     runner = CliRunner()
     base = ["--config", str(config), "tokens"]
     made = runner.invoke(
-        cli, [*base, "create", "radiodj", "--scope", SCOPE_ANNOUNCER, "--station", "default"]
+        cli, [*base, "create", "news-bot", "--scope", SCOPE_ANNOUNCER, "--station", "default"]
     )
     assert made.exit_code == 0, made.output
     secret = made.stdout.strip()

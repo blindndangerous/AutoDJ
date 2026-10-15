@@ -1,6 +1,6 @@
 // Settings > Analysis workers: the computers analysing songs for this
 // server (autodj worker), how many songs are waiting, and the machine
-// tokens those computers and an announcer program (radiodj, #88) use.
+// tokens those computers and an announcer program (#88) use.
 // An announcer token is bound to one station, chosen in #token-station,
 // which shows only while Token use is an announcer.
 //
@@ -37,7 +37,7 @@ function shownDate(seconds, locale = undefined) {
   });
 }
 
-// "Alienware, connected, on NVIDIA GeForce RTX 3070 (CUDA GPU).  Last seen
+// "Studio PC, connected, on NVIDIA GeForce RTX 4060 (CUDA GPU).  Last seen
 // just now.  120 songs analysed, about 340 an hour, 4 in progress."
 export function workerWords(worker, nowMs = Date.now()) {
   let text = `${worker.name}, ${worker.connected ? "connected" : "not connected"}`;
@@ -65,7 +65,7 @@ export function queueWords(view) {
   return `${waiting}${now}.  ${server}`;
 }
 
-// "radiodj.  Announcer, for Night Owl.
+// "news-bot.  Announcer, for Night Owl.
 // Created 3 May 2026, never used."
 export function tokenWords(token, scopeLabels, stationNames = new Map()) {
   const scopes = token.scopes.map((scope) => scopeLabels.get(scope) || scope).join(", ");

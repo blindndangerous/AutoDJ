@@ -67,7 +67,7 @@ class Server:
         self.app = create_app(bridge)
         self.client = TestClient(self.app, base_url=HTTPS)
 
-    def token(self, name="Alienware", scopes=(SCOPE_ANALYSIS_WORKER,)):
+    def token(self, name="Studio PC", scopes=(SCOPE_ANALYSIS_WORKER,)):
         return self.app.state.machine_tokens().create(name, list(scopes))
 
     def call(self, method, path, secret, **kwargs):
@@ -133,9 +133,9 @@ def test_worker_routes_need_a_valid_bearer_token(server):
 
 def test_a_token_without_the_worker_scope_is_refused(server, monkeypatch):
     monkeypatch.setitem(
-        __import__("autodj.machine_tokens").machine_tokens.KNOWN_SCOPES, "radiodj", "Radiodj"
+        __import__("autodj.machine_tokens").machine_tokens.KNOWN_SCOPES, "news-bot", "News bot"
     )
-    _token, secret = server.token(scopes=("radiodj",))
+    _token, secret = server.token(scopes=("news-bot",))
     assert server.call("POST", "/api/worker/claim", secret, json={}).status_code == 401
 
 
@@ -459,7 +459,7 @@ def test_a_server_without_a_library_says_so(tmp_path):
 def test_settings_create_list_and_revoke_tokens(server):
     created = server.client.post(
         "/api/machine-tokens",
-        json={"name": "Alienware", "scopes": [SCOPE_ANALYSIS_WORKER]},
+        json={"name": "Studio PC", "scopes": [SCOPE_ANALYSIS_WORKER]},
         headers={"Origin": "http://127.0.0.1:8080"},
     )
     assert created.status_code == 201
@@ -474,13 +474,13 @@ def test_settings_create_list_and_revoke_tokens(server):
     }
     assert {"id": SCOPE_ANNOUNCER, "station": True}.items() <= listing["scopes"][1].items()
     assert [s["slug"] for s in listing["stations"]] == ["default"]
-    assert [t["name"] for t in listing["tokens"]] == ["Alienware"]
+    assert [t["name"] for t in listing["tokens"]] == ["Studio PC"]
     assert listing["tokens"][0]["station"] is None
     assert secret not in str(listing)
     claim(server, secret, batch=2)
     origin = {"Origin": "http://127.0.0.1:8080"}
     revoked = server.client.delete(f"/api/machine-tokens/{token_id}", headers=origin)
-    assert revoked.json() == {"revoked": token_id, "name": "Alienware"}
+    assert revoked.json() == {"revoked": token_id, "name": "Studio PC"}
     assert server.manager.analysis_queue.held_paths() == set()
     assert server.manager.analysis_queue.workers() == []
     gone = server.client.delete(f"/api/machine-tokens/{token_id}", headers=origin)
@@ -500,7 +500,7 @@ def test_settings_create_an_announcer_token_bound_to_a_station(server):
 
     def create(**body):
         return server.client.post(
-            "/api/machine-tokens", json={"name": "radiodj", **body}, headers=origin
+            "/api/machine-tokens", json={"name": "news-bot", **body}, headers=origin
         )
 
     made = create(scopes=[SCOPE_ANNOUNCER], station="default")
@@ -525,7 +525,7 @@ def test_settings_show_workers_and_the_queue(server):
     assert view["analysing"] == 1
     assert view["server_paused"] is True
     (worker,) = view["workers"]
-    assert worker["name"] == "Alienware"
+    assert worker["name"] == "Studio PC"
     assert worker["device"] == "RTX 3080 (CUDA GPU)"
     assert worker["connected"] is True
     assert worker["leased"] == 1

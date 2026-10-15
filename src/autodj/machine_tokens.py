@@ -2,7 +2,7 @@
 
 A machine token lets a program use one narrow part of the API: an
 analysis worker (``autodj worker``) on another computer, or an announcer
-program (radiodj) that sends DJ breaks, news and weather to one station
+program that sends DJ breaks, news and weather to one station
 (#88).  Each token has a name the operator chose, a set of scopes naming
 what it may do, and is shown once, when it is created.  An announcer token
 is bound to one station and works for no other.  Only

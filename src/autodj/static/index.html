@@ -1847,7 +1847,7 @@
          waiting times stay in config.toml.  #brk-reason is plain text,
          not live: it says why breaks cannot be taken now, if they cannot. -->
     <p class="card-desc">
-      DJ breaks, news and weather from an announcer program such as radiodj, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Analysis workers.
+      DJ breaks, news and weather from an announcer program, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Analysis workers.
     </p>
     <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="brk-reason" hidden></p>
@@ -2600,7 +2600,7 @@
       A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
     </p>
     <p class="card-desc">
-      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Turn breaks on for the station in Settings, Breaks.
+      An announcer program on this computer sends a station DJ breaks, news and weather with an announcer token.  Turn breaks on for the station in Settings, Breaks.
     </p>
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="workers-heading">Workers</h4>
@@ -2617,7 +2617,7 @@
                aria-describedby="token-name-desc">
       </div>
       <span class="setting-desc" id="token-name-desc">
-        Name the computer or program that will use it, such as Alienware or radiodj.
+        Name the computer or program that will use it, such as Studio PC or news-bot.
       </span>
       <div class="settings-row">
         <label for="token-scope">Token use</label>

@@ -194,7 +194,7 @@ def test_loopback_host_and_port_stay_local(tmp_path: Path) -> None:
 
 def test_config_lan_with_extra_hosts_and_tls_matches_the_cli_flags(tmp_path: Path) -> None:
     tls = _tls_files(tmp_path)
-    domain = "autodj.devils-edge.net"
+    domain = "autodj.example.net"
     from_config = _stage(
         _cfg(
             tmp_path,
