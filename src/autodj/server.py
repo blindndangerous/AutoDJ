@@ -910,6 +910,11 @@ class _ListenerResponse(StreamingResponse):
 
         try:
             await super().__call__(scope, receive_or_timeout, send_with_timeout)
+        except Exception:
+            # A listener dropped for a stalled send has been released; end
+            # quietly so uvicorn does not log every slow client as an error.
+            if not timed_out.is_set():
+                raise
         finally:
             self._release()
 

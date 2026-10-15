@@ -1090,8 +1090,6 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
 def test_stalled_send_releases_the_listener(monkeypatch, spec_version: str) -> None:
     import asyncio
 
-    from starlette.requests import ClientDisconnect
-
     from autodj import server
 
     closed: list[bool] = []
@@ -1114,8 +1112,8 @@ def test_stalled_send_releases_the_listener(monkeypatch, spec_version: str) -> N
     scope = {"type": "http", "method": "GET", "asgi": {"spec_version": spec_version}}
 
     async def run() -> None:
-        with pytest.raises((ClientDisconnect, TimeoutError, ExceptionGroup)):
-            await response(scope, receive, stalled_send)
+        # Ends quietly: an exception here would be logged by uvicorn as an error.
+        await response(scope, receive, stalled_send)
 
     asyncio.run(asyncio.wait_for(run(), timeout=1.5))
     assert sent_body
