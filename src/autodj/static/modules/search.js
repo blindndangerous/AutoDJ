@@ -124,7 +124,6 @@ export function installSearch({
         button.dataset.path = track.path;
         for (const [key, value] of Object.entries(values)) button.dataset[key] = value;
         // Playing and queueing act on the station the page controls (#70).
-        if (!values.points) button.setAttribute("aria-describedby", "station-context");
         return button;
       };
       const row = tableRow(searchResults.ownerDocument, [

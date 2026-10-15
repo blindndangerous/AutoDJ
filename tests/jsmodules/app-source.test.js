@@ -3645,7 +3645,6 @@ describe("several stations (#70)", () => {
     await setupApp();
     expect(document.getElementById("station-switcher").hidden).toBe(true);
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
-    expect(document.getElementById("station-context").textContent).toBe("");
     expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
   });
@@ -3685,14 +3684,10 @@ describe("several stations (#70)", () => {
     expect(document.activeElement.id).toBe("station-button");
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
     expect(document.title).toBe("Owl - Hoot - Night Owl Radio - AutoDJ");
-    expect(document.getElementById("main-content").getAttribute("aria-label")).toBe("Night Owl Radio");
-    expect(document.getElementById("station-context").textContent).toBe("On Night Owl Radio");
     expect(document.getElementById("shared-context").textContent).toBe("Shared by all stations");
-    expect(document.getElementById("panel-queue").getAttribute("aria-labelledby"))
-      .toBe("tab-queue station-name-label");
-    expect(document.getElementById("panel-library").getAttribute("aria-labelledby")).toBe("tab-library");
-    expect(document.getElementById("station-stop").textContent).toBe("Stop Night Owl Radio");
-    expect(document.getElementById("station-stop-row").hidden).toBe(false);
+    // Only the heading names the station; panels and the main region do not repeat it.
+    expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
+    expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");
     expect(document.querySelector('[data-station="nightowl"]').getAttribute("aria-checked")).toBe("true");
     expect(location.search).toBe("?station=nightowl");
     // Its own public feed and status page, not the default station's.

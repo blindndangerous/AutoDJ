@@ -1898,10 +1898,9 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   switches to the station under focus; Escape closes the menu without switching. Both put focus
   back on the Station button. Tab closes the menu and moves on. Moving through the menu never
   switches; only Enter, Space or a click does.
-- **Shortcuts:** `c` moves focus to the Station button, and Shift+C says which station the page
-  controls, whether it is on air, its listeners and its song. While there are several stations,
-  the status keys that speak about the station (Shift+T, N, R, B, K, L, E and Q) start with its
-  name.
+- **Shortcuts:** `c` moves focus to the Station button, Shift+C says which station the page
+  controls, whether it is on air, its listeners and its song, and Shift+[ and Shift+] switch to the
+  previous and next station.
 - **What switches:** every control on the Now Playing, Queue & Search, Carts, Voice tracks, Track
   info, History and Settings tabs then acts on the chosen station, and they show its state: its
   song, queue, history, settings, carts, schedule, clockwheels, hour preview, liners, profiles,

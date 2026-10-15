@@ -237,7 +237,6 @@ async function _deleteLiner(els, name, button, label = name) {
   const epoch = captureAuthenticatedRequestEpoch();
   let result = null;
   const confirmed = await confirmAction(button.ownerDocument, {
-    station: true,
     title: `Delete liner ${label}?`,
     message: "The file is removed from the liners folder.",
     confirmLabel: "Delete liner",
