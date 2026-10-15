@@ -2,7 +2,7 @@
 
 The real app and a real saved-point station (``tests/unit/_break_station.py``)
 sit behind the routes, so turning breaks off is seen by the announcer's
-own routes, as radiodj would see it.  The settings routes are browser
+own routes, as an announcer program would see it.  The settings routes are browser
 routes: the page's ``Origin``, never a machine token.
 """
 
@@ -55,7 +55,7 @@ class SavingStation(Station):
         self.station = self.app.state.stations.default
         self.desk = self.station.breaks
         _token, self.secret = self.app.state.machine_tokens().create(
-            "radiodj", [SCOPE_ANNOUNCER], "default"
+            "announcer", [SCOPE_ANNOUNCER], "default"
         )
         self.renders = start_station(self.player, self.entries)
 

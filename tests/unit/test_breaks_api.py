@@ -3,7 +3,7 @@
 A real player in saved-point station mode (``tests/unit/_break_station.py``)
 sits behind the real app, so a break goes from the upload through the slot
 plan into a render and on the air.  Requests come from 127.0.0.1 over plain
-HTTP, as radiodj's do on the station host.
+HTTP, as an announcer program's do on the station host.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class Station:
         self.station = self.app.state.stations.default
         self.desk = self.station.breaks
         _token, self.secret = self.app.state.machine_tokens().create(
-            "radiodj", [SCOPE_ANNOUNCER], "default"
+            "announcer", [SCOPE_ANNOUNCER], "default"
         )
         self.renders = start_station(self.player, self.entries)
 

@@ -26,12 +26,12 @@ const said = () => vi.waitFor(() => {
 const NOW = Date.now() / 1000;
 
 const WORKER = {
-  token_id: "a".repeat(32), name: "Alienware", device: "NVIDIA RTX 3070 (CUDA GPU)",
+  token_id: "a".repeat(32), name: "Studio PC", device: "NVIDIA RTX 4060 (CUDA GPU)",
   last_seen: NOW, connected: true, songs_done: 120, songs_failed: 2, songs_stale: 0,
   rate_per_hour: 341.6, leased: 4,
 };
 const TOKEN = {
-  token_id: "a".repeat(32), name: "Alienware", scopes: ["analysis-worker"],
+  token_id: "a".repeat(32), name: "Studio PC", scopes: ["analysis-worker"],
   created_at: NOW - 86400, last_used_at: NOW,
 };
 
@@ -55,7 +55,7 @@ function server({ workers = [WORKER], tokens = [TOKEN] } = {}) {
           { id: "analysis-worker", label: "Analysis worker", station: false },
           { id: "announcer", label: "Announcer", station: true },
         ],
-        stations: [{ slug: "default", name: "Ice Cold" }, { slug: "nightowl", name: "Night Owl" }],
+        stations: [{ slug: "default", name: "Example FM" }, { slug: "nightowl", name: "Night Owl" }],
         tokens: state.tokens,
       };
     }
@@ -144,11 +144,11 @@ describe("Analysis workers panel", () => {
       "125 songs waiting for analysis, 4 being analysed now.  "
       + "This server's own analysis is paused while a worker is connected.",
     );
-    expect(byId("workers-list").textContent).toContain("Alienware, connected");
+    expect(byId("workers-list").textContent).toContain("Studio PC, connected");
     await vi.waitFor(() => expect(byId("token-list").children).toHaveLength(1));
     expect(byId("token-list-empty").hidden).toBe(true);
     expect(byId("token-list").querySelector("button").getAttribute("aria-label"))
-      .toBe("Revoke token Alienware");
+      .toBe("Revoke token Studio PC");
     expect(timers.set).toHaveBeenCalledWith(expect.any(Function), 10000);
     const panel = byId("spanel-workers");
     panel.open = false;
@@ -188,15 +188,15 @@ describe("Analysis workers panel", () => {
   it("shows a new token once, focused, with a spoken warning, then hides it on Done", async () => {
     const { request, clipboard } = install();
     open();
-    byId("token-name").value = "  Alienware  ";
+    byId("token-name").value = "  Studio PC  ";
     byId("token-create").click();
     await vi.waitFor(() => expect(byId("token-new").hidden).toBe(false));
     const post = request.mock.calls.find(([, options]) => options?.method === "POST");
-    expect(JSON.parse(post[1].body)).toEqual({ name: "Alienware", scopes: ["analysis-worker"] });
+    expect(JSON.parse(post[1].body)).toEqual({ name: "Studio PC", scopes: ["analysis-worker"] });
     expect(byId("token-secret").value).toBe("adj1.bbbb.secret-text");
-    expect(byId("token-new-name").textContent).toBe("Alienware");
+    expect(byId("token-new-name").textContent).toBe("Studio PC");
     await vi.waitFor(() => expect(document.activeElement).toBe(byId("token-secret")));
-    expect(await said()).toBe(`Token for Alienware created.  ${ONCE_WARNING}`);
+    expect(await said()).toBe(`Token for Studio PC created.  ${ONCE_WARNING}`);
     expect(byId("token-name").value).toBe("");
 
     byId("workers-status").textContent = "";
@@ -244,18 +244,18 @@ describe("Analysis workers panel", () => {
     expect(byId("token-station-row").hidden).toBe(false);
     expect(byId("token-station-desc").hidden).toBe(false);
     expect([...byId("token-station").options].map((o) => o.textContent))
-      .toEqual(["Choose a station", "Ice Cold (default)", "Night Owl (nightowl)"]);
+      .toEqual(["Choose a station", "Example FM (default)", "Night Owl (nightowl)"]);
     // Nothing is chosen for the user.
     expect(byId("token-station").value).toBe("");
     byId("token-station").value = "nightowl";
-    byId("token-name").value = "radiodj";
+    byId("token-name").value = "news-bot";
     byId("token-create").click();
     await vi.waitFor(() => expect(byId("token-new").hidden).toBe(false));
     const post = request.mock.calls.find(([, options]) => options?.method === "POST");
     expect(JSON.parse(post[1].body))
-      .toEqual({ name: "radiodj", scopes: ["announcer"], station: "nightowl" });
+      .toEqual({ name: "news-bot", scopes: ["announcer"], station: "nightowl" });
     await vi.waitFor(() => expect(byId("token-list").textContent)
-      .toContain("radiodj.  Announcer, for Night Owl."));
+      .toContain("news-bot.  Announcer, for Night Owl."));
     scope.value = "analysis-worker";
     scope.dispatchEvent(new Event("change"));
     expect(byId("token-station-row").hidden).toBe(true);
@@ -266,7 +266,7 @@ describe("Analysis workers panel", () => {
     open();
     await vi.waitFor(() => expect(byId("token-station").options).toHaveLength(3));
     byId("token-scope").value = "announcer";
-    byId("token-name").value = "radiodj";
+    byId("token-name").value = "news-bot";
     byId("token-create").click();
     expect(await said()).toMatch(/Choose the station/);
     expect(document.activeElement).toBe(byId("token-station"));
@@ -292,7 +292,7 @@ describe("Analysis workers panel", () => {
     open();
     await vi.waitFor(() => expect(byId("token-list").children).toHaveLength(1));
     byId("token-list").querySelector("button").click();
-    expect(await said()).toBe("Revoked token Alienware.");
+    expect(await said()).toBe("Revoked token Studio PC.");
     expect(request).toHaveBeenCalledWith(`/api/machine-tokens/${"a".repeat(32)}`,
       { method: "DELETE" });
     expect(byId("token-list").children).toHaveLength(0);
@@ -314,25 +314,25 @@ describe("Analysis workers panel", () => {
 describe("worker words", () => {
   it("names the worker, its device, counts and rate", () => {
     expect(workerWords(WORKER, NOW * 1000)).toBe(
-      "Alienware, connected, on NVIDIA RTX 3070 (CUDA GPU).  Last seen just now.  "
+      "Studio PC, connected, on NVIDIA RTX 4060 (CUDA GPU).  Last seen just now.  "
       + "120 songs analysed, 2 failed, about 342 an hour, 4 in progress.",
     );
     expect(workerWords({ ...WORKER, connected: false, device: "", songs_failed: 0,
       songs_stale: 1, songs_done: 1, last_seen: NOW - 7200 }, NOW * 1000)).toBe(
-      "Alienware, not connected.  Last seen 2 hours ago.  "
+      "Studio PC, not connected.  Last seen 2 hours ago.  "
       + "1 song analysed, 1 skipped because the file changed.",
     );
   });
 
   it("names a token's use and its station", () => {
     const labels = new Map([["announcer", "Announcer"]]);
-    const token = { ...TOKEN, name: "radiodj", scopes: ["announcer"], station: "nightowl",
+    const token = { ...TOKEN, name: "news-bot", scopes: ["announcer"], station: "nightowl",
       last_used_at: null };
     expect(tokenWords(token, labels, new Map([["nightowl", "Night Owl"]])))
-      .toMatch(/^radiodj\. {2}Announcer, for Night Owl\. {2}Created .*, never used\.$/);
+      .toMatch(/^news-bot\. {2}Announcer, for Night Owl\. {2}Created .*, never used\.$/);
     expect(tokenWords(token, labels)).toMatch(/Announcer, for nightowl\./);
     expect(tokenWords({ ...TOKEN, station: null }, new Map()))
-      .toMatch(/^Alienware\. {2}analysis-worker\. {2}Created/);
+      .toMatch(/^Studio PC\. {2}analysis-worker\. {2}Created/);
   });
 
   it("describes the queue and who analyses it", () => {

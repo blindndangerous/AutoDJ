@@ -16,8 +16,8 @@ from autodj.clockwheel import (
 )
 
 
-def test_parse_plague_blueprint_order_and_categories():
-    source = Path("plague2024.pal").read_text(encoding="utf-8")
+def test_parse_pal_blueprint_order_and_categories():
+    source = Path("tests/fixtures/example-clock.pal").read_text(encoding="utf-8")
     slots = parse_pal(source, [r"C:\STATION\DROPS"])
     assert len(slots) == 27
     assert slots[0] == ClockSlot(r"c:\station\throwback\top")
@@ -387,7 +387,13 @@ def test_clock_validation_rejects_missing_music_and_consecutive_liners_across_wr
             ]
         )
     assert (
-        len(validate_clock(parse_pal(Path("plague2024.pal").read_text(), [r"c:\station\drops"])))
+        len(
+            validate_clock(
+                parse_pal(
+                    Path("tests/fixtures/example-clock.pal").read_text(), [r"c:\station\drops"]
+                )
+            )
+        )
         == 27
     )
 

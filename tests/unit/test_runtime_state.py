@@ -1066,11 +1066,11 @@ def test_a_saved_switch_that_differs_from_config_is_logged_once(tmp_path, caplog
     )
     player = _with_switches(_make_player())
     bridge = PlayerBridge(player, player._sim)
-    bridge.paths = SimpleNamespace(slug="icecold", state_dir=tmp_path)
+    bridge.paths = SimpleNamespace(slug="nightowl", state_dir=tmp_path)
     caplog.set_level("INFO", logger="autodj.runtime_state")
     load_into_bridge(bridge, tmp_path)
     lines = [r.getMessage() for r in caplog.records if "saved in Settings" in r.getMessage()]
     assert lines == [
-        "Listener requests on for icecold (saved in Settings; config.toml says off)",
-        "Breaks on for icecold (saved in Settings; config.toml says off)",
+        "Listener requests on for nightowl (saved in Settings; config.toml says off)",
+        "Breaks on for nightowl (saved in Settings; config.toml says off)",
     ]

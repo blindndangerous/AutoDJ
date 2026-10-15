@@ -366,7 +366,7 @@ week old do not count.
   day, 10,080 for the quarter hour), or up to 50,000 when a Minutes limit or DMCA mode is on.
 
 Each pick works out the songs the two rules hold back once, from the play history, and then
-checks each candidate with a set lookup. Measured on the Alienware test machine with a made-up
+checks each candidate with a set lookup. Measured on a desktop test machine with a made-up
 77,000-track library and a 50,000-play history, medians of 41 runs: building the pick's rules
 took 10.3 ms with both rules off and 12.9 ms with both on, of which the new walk was 2.0 ms
 (3.9 ms with Count versions as one song on). Checking all 77,000 tracks against the rules took

@@ -1021,14 +1021,14 @@ describe("clockwheel editor", () => {
     const server = await open(fakeServer());
     byId("clock-import").click();
     await vi.waitFor(() => expect(status()).toBe("Choose a .PAL file first."));
-    Object.defineProperty(byId("clock-pal-file"), "files", { value: [{ name: "plague.pal", size: 10, text: async () => "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);" }] });
-    byId("clock-name").value = "Plague";
+    Object.defineProperty(byId("clock-pal-file"), "files", { value: [{ name: "throwback.pal", size: 10, text: async () => "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);" }] });
+    byId("clock-name").value = "Throwback";
     byId("clock-resync-minutes").value = "0, 30";
     byId("clock-import").click();
-    await vi.waitFor(() => expect(status()).toBe("Imported Plague from plague.pal, 1 step. Press Activate to use it."));
+    await vi.waitFor(() => expect(status()).toBe("Imported Throwback from throwback.pal, 1 step. Press Activate to use it."));
     const call = server.calls.find((item) => item.url === "/api/library/clock/import");
-    expect(call.body).toEqual({ text: "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);", name: "Plague", resync_minutes: [0, 30] });
-    expect(byId("clock-open-name").textContent).toBe("Plague");
+    expect(call.body).toEqual({ text: "Dir['D:\\Music\\Rock'].QueueBottom(smLRP, EnforceRules);", name: "Throwback", resync_minutes: [0, 30] });
+    expect(byId("clock-open-name").textContent).toBe("Throwback");
   });
 
   it("shows and says the notice about old single-clock data", async () => {

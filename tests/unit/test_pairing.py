@@ -58,13 +58,13 @@ def test_registry_persists_distinct_devices_and_revocation(tmp_path) -> None:
     registry = DeviceRegistry(path, now=lambda: 1_000)
 
     kitchen = registry.pair("Kitchen tablet")
-    phone = registry.pair("Mike's phone")
+    phone = registry.pair("Sam's phone")
     reopened = DeviceRegistry(path, now=lambda: 2_000)
 
     assert kitchen.device_id != phone.device_id
     assert [device.name for device in reopened.list_devices()] == [
         "Kitchen tablet",
-        "Mike's phone",
+        "Sam's phone",
     ]
     assert reopened.is_active(kitchen.device_id)
     assert reopened.revoke(kitchen.device_id)

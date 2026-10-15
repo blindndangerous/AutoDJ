@@ -1,6 +1,6 @@
 """DJ breaks, news and weather from an announcer program (#88).
 
-An announcer program (radiodj, on the same host) writes a spoken break for
+An announcer program on the same host writes a spoken break for
 one song change and hands it to AutoDJ through the breaks API
 (:mod:`autodj.breaks_api`).  AutoDJ renders each song change one song
 ahead, so a break cannot join the change that is already rendered: it

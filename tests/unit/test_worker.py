@@ -488,9 +488,9 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(tmp_path):
                 "adj1.x",
                 "--once",
                 "--before-command",
-                "podman stop qwen3-tts",
+                "podman stop tts-service",
                 "--after-command",
-                "podman start qwen3-tts",
+                "podman start tts-service",
             ],
         )
     assert result.exit_code == 0, result.output
@@ -547,9 +547,9 @@ def _run_idle_command(tmp_path, api, order, *args):
                 "adj1.x",
                 *args,
                 "--before-command",
-                "podman stop qwen3-tts",
+                "podman stop tts-service",
                 "--after-command",
-                "podman start qwen3-tts",
+                "podman start tts-service",
             ],
         )
     return result
@@ -620,7 +620,7 @@ def test_cpu_analysis_waits_while_a_worker_is_connected_and_resumes_after(tmp_pa
         with patch("autodj.jobs.get_manager", return_value=jobs):
             assert manager.schedule_analysis() is True
             assert jobs.start.call_count == 1
-            manager.analysis_queue.seen("token", "Alienware")
+            manager.analysis_queue.seen("token", "Studio PC")
             assert manager.schedule_analysis() is False
             assert jobs.start.call_count == 1
             clock[0] += 3600
@@ -654,7 +654,7 @@ def _gated_embed(decisions):
 
 def test_the_cpu_job_stops_taking_songs_when_a_worker_connects(tmp_path):
     cfg, manager, _songs = _pending_manager(tmp_path)
-    manager.analysis_queue.seen("token", "Alienware")
+    manager.analysis_queue.seen("token", "Studio PC")
     manager.close()
     decisions = []
     with patch("autodj.library._embed_new_tracks", side_effect=_gated_embed(decisions)):
