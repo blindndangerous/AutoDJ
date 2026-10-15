@@ -312,6 +312,34 @@ describe("editing a list", () => {
     expect(left).toEqual([]);
   });
 
+  it("keeps each copy of a song added twice as its own row (#328)", async () => {
+    const server = fakeServer();
+    server.songs[ID] = [song(1), song(2), song(1)];
+    await open(server);
+    await openList(server);
+    const [first, middle, copyRow] = songRows();
+    expect(songTitles()).toEqual(["Artist 1, Song 1", "Artist 2, Song 2", "Artist 1, Song 1"]);
+    expect(first.textContent).toContain("also number 3");
+    expect(copyRow.textContent).toContain("also number 1");
+    // Move the first copy down: the same rows, the warnings renumbered.
+    first.querySelector('[data-action="down"]').focus();
+    first.querySelector('[data-action="down"]').click();
+    expect(songRows()).toEqual([middle, first, copyRow]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="down"]'));
+    expect(first.textContent).toContain("also number 3");
+    expect(copyRow.textContent).toContain("also number 2");
+    await vi.waitFor(() => expect(status()).toContain("Moved Artist 1, Song 1 to number 2 of 3."));
+    // Remove the second copy: the first keeps its row and loses its warning.
+    copyRow.querySelector('[data-action="remove"]').focus();
+    copyRow.querySelector('[data-action="remove"]').click();
+    expect(songRows()).toEqual([middle, first]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    expect(first.textContent).not.toContain("also number");
+    await vi.waitFor(() => expect(server.calls.filter((call) => call.method === "PUT")).toHaveLength(2));
+    expect(server.calls.filter((call) => call.method === "PUT").at(-1).body.songs)
+      .toEqual(["/music/2.flac", "/music/1.flac"]);
+  });
+
   it("generates the list again, saying the result once", async () => {
     const server = await open();
     await openList(server);

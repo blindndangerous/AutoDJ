@@ -707,6 +707,42 @@ describe("queue focus while a change is saved", () => {
     vi.unstubAllGlobals();
   });
 
+  it("keeps each copy of a song queued twice as its own row (#328)", async () => {
+    const { els, reply } = setupQueue();
+    applyQueueState([
+      { path: "dup.mp3", display_name: "Dup" },
+      { path: "x.mp3", display_name: "Other" },
+      { path: "dup.mp3", display_name: "Dup" },
+    ], els);
+    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
+    const [first, other, second] = rowsOf();
+    expect(rowsOf().map((row) => row.querySelector(".queue-name").textContent))
+      .toEqual(["1. Dup", "2. Other", "3. Dup"]);
+    // Down on the first copy: it keeps its row and focus; Other moves round it.
+    pressFocused(els, "dup.mp3", "down");
+    expect(rowsOf()).toEqual([other, first, second]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="down"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // Remove the second copy: the first copy's Remove takes focus first.
+    const secondRemove = second.querySelector('[data-action="remove"]');
+    secondRemove.focus();
+    secondRemove.click();
+    expect(rowsOf()).toEqual([other, first]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // A push with a third copy in front keeps the two rows that stay.
+    applyQueueState([
+      { path: "dup.mp3", display_name: "Dup" },
+      { path: "x.mp3", display_name: "Other" },
+      { path: "dup.mp3", display_name: "Dup" },
+    ], els);
+    expect(rowsOf().slice(0, 2)).toEqual([first, other]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    vi.unstubAllGlobals();
+  });
+
   it("leaves focus where the user took it while the change was sent", async () => {
     const { els, reply } = setupQueue();
     const elsewhere = document.createElement("button");
