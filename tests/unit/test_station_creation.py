@@ -188,15 +188,34 @@ def test_serve_moves_a_config_station_into_its_own_file(tmp_path: Path) -> None:
     extra = (
         '\n[stations.owl]\nautostart = true\n[stations.owl.stream]\nstation_name = "Owl"\n'
         'listener_user = "dj"\nlistener_password = "secret"\n[stations.owl.recording]\nfolder = "recordings/owl"\n'
+        '[stations.owl.stream.relays.main]\ntype = "icecast"\nhost = "radio.example.net"\nmount = "/owl"\n'
+    )
+    (tmp_path / "config.local.toml").write_text(
+        '[stations.owl.stream.relays.main]\npassword = "source"\n'
+        '[[stations.owl.webhooks]]\nurl = "https://example.com/hook"\n',
+        encoding="utf-8",
     )
     cfg = _root(tmp_path, extra)
     assert cfg.stations[0].defined_in == "config"
     assert move_station_tables(cfg) is True
-    document = json.loads(StationPaths.for_station(cfg, "owl").definition.read_text("utf-8"))
+    paths = StationPaths.for_station(cfg, "owl")
+    document = json.loads(paths.definition.read_text("utf-8"))
     assert "listener_password" not in document["station"]["stream"]
+    assert "relays" not in document["station"]["stream"]
+    relays = json.loads(paths.relays.read_text("utf-8"))["relays"]
+    assert [(item["name"], item["password"]) for item in relays] == [("main", "source")]
+    secrets = json.loads(paths.secrets.read_text("utf-8"))
+    assert secrets["stream"] == {"listener_user": "dj", "listener_password": "secret"}
+    assert secrets["webhooks"] == [{"url": "https://example.com/hook"}]
     reloaded = load_config(cfg.config_path, environ={})
     owl = reloaded.stations[0]
     assert (owl.slug, owl.defined_in, owl.autostart) == ("owl", "web", True)
-    # Its secret still comes from config.toml.
     assert owl.cfg.stream.listener_password == "secret"
+    assert [hook.url for hook in owl.cfg.webhooks] == ["https://example.com/hook"]
     assert move_station_tables(reloaded) is False
+    # Once moved, a password changed in config.toml is not read.
+    cfg.config_path.write_text(
+        cfg.config_path.read_text("utf-8").replace('"secret"', '"other"'), encoding="utf-8"
+    )
+    again = load_config(cfg.config_path, environ={}).stations[0]
+    assert again.cfg.stream.listener_password == "secret"

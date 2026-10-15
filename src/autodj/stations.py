@@ -284,6 +284,11 @@ class StationPaths:
         return self.state_dir / "relays.json"
 
     @property
+    def secrets(self) -> Path:
+        """Private listener login and webhooks of a station besides the default."""
+        return self.state_dir / "secrets.json"
+
+    @property
     def live_djs(self) -> Path:
         """Hashed credentials for this station's live source clients."""
         return self.state_dir / "live_djs.json"
