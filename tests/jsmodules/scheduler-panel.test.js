@@ -358,12 +358,12 @@ describe("Schedule panel", () => {
     const end = byId("schedule-end-date");
     expect(document.activeElement).toBe(end);
     expect(end.getAttribute("aria-invalid")).toBe("true");
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-range-desc schedule-form-error");
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error");
     expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date");
     end.value = "2026-12-31";
     end.dispatchEvent(new Event("input", { bubbles: true }));
     expect(end.hasAttribute("aria-invalid")).toBe(false);
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-range-desc");
+    expect(end.hasAttribute("aria-describedby")).toBe(false);
 
     byId("schedule-repeat").value = "once";
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));

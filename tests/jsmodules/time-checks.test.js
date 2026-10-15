@@ -148,7 +148,6 @@ describe("voice packs", () => {
     expect(group.tagName).toBe("FIELDSET");
     expect(group.querySelector("legend").textContent).toBe("Voice pack play dates");
     expect(group.hasAttribute("aria-describedby")).toBe(false);
-    expect(byId("tc-dates-desc").textContent).toContain("both days included");
     for (const id of ["tc-dates-pack", "tc-not-before", "tc-not-after"]) {
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim(), id).toBeTruthy();
     }

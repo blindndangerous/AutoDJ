@@ -3629,6 +3629,23 @@ profile whose page has been renamed is refused.
 
 A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart-play-dates).
 
+## Liner cue points
+
+Track info shows a liner's cue points as Start, Segue, End and Overlap start.
+
+- **Segue** marks the end of the liner's main content. **End** keeps the rest of its tail.
+- **Allow start over outro**: unchecked, the liner starts at the outgoing song's Segue. Checked, it
+  may start earlier, over that song's Outro.
+- **Overlap start** is when the next song may come in, counted from the liner's saved Start. Left
+  blank, it uses Segue, or End when Segue is blank. It cannot be later than Segue.
+  - **0** lets the next song's intro run under the liner when the timing allows.
+  - **A positive value** is the earliest time the next song may come in.
+  - **A negative value** starts the liner after the next song begins, as far as that song's intro
+    allows.
+
+Every Overlap start respects the next song's intro. A song with no Intro point waits until the
+liner's Segue, though the liner's tail may still run over it.
+
 ## Liner and cart play dates
 
 A voice liner or a cart can have a **Not before** date, a **Do not play after** date, or both,

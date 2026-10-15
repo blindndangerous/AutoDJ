@@ -467,7 +467,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     }
     take.retarget = open;
     take.heard = false;
-    fail(bookButton, `The song change you recorded for, ${was}, has closed, and the open one, ${pairWords(open)}, has other songs, so the take was not booked. Record again for it, or if your take still fits, use Listen back, then press Book voice track again.`);
+    fail(bookButton, `The song change you recorded for, ${was}, has closed, and the open one, ${pairWords(open)}, has other songs, so the take was not booked.`);
   }
 
   // The song change the take may be booked for now, or null after saying why not.

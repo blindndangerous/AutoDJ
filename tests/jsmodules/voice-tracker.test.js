@@ -390,7 +390,7 @@ describe("voice tracker", () => {
     const posts = () => server.calls.filter((call) => call.method === "POST");
     expect(posts()).toHaveLength(0);
     expect(byId("vt-error").textContent).toBe(
-      "The song change you recorded for, Third Song into Fourth Song, has closed, and the open one, Fourth Song into Fifth Song, has other songs, so the take was not booked. Record again for it, or if your take still fits, use Listen back, then press Book voice track again.");
+      "The song change you recorded for, Third Song into Fourth Song, has closed, and the open one, Fourth Song into Fifth Song, has other songs, so the take was not booked.");
     expect(book.getAttribute("aria-describedby")).toBe("vt-error");
     // Book again without listening: still refused, saying why.
     await press("vt-book");

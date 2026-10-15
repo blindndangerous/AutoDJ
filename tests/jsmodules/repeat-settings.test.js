@@ -204,7 +204,7 @@ describe("Repeats markup", () => {
     expect(playsNote.hidden).toBe(false);
     expect(playsNote.closest("fieldset")).toBe(hourpart);
     expect(playsNote.textContent).toContain("quarter of the hour");
-    expect(playsNote.textContent).toContain("0 plays turns this off");
+    expect(playsNote.textContent).toContain("0 turns this off");
   });
 
   it("keeps Count versions as one song help visible without describing the checkbox", () => {
@@ -218,7 +218,6 @@ describe("Repeats markup", () => {
     expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
     expect(note.textContent).toContain("same lead artist");
-    expect(note.textContent).toContain("all of its versions");
   });
 });
 

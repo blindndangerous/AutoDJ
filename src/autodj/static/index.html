@@ -273,7 +273,7 @@
            text, linked by live-talk.js only while they have words. -->
       <div id="talk-desk" class="talk-desk" hidden>
         <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help station-context">Talk</button>
-        <p id="talk-help" class="stream-detail">Hold to talk over the music: hold this button, hold Space or Enter on it, or hold Alt+M anywhere on the page. A quick press of this button keeps talking on until you press it again, for 2 minutes at most; Alt+M talks only while held. The music ducks while you talk. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air, as they can use every other control here.</p>
+        <p id="talk-help" class="stream-detail">Press and hold to talk over the music, or press and hold Alt+M. 2 minutes max. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air.</p>
         <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
         <p id="talk-latched" class="talk-latched" hidden></p>
         <p id="talk-note" class="stream-detail" hidden></p>
@@ -434,7 +434,7 @@
       <summary><h3 id="tags-heading">Tags</h3></summary>
       <p id="tags-unavailable" hidden>AutoDJ cannot write tags into this kind of file, so Save tags changes them in AutoDJ only.</p>
       <form id="tags-form" novalidate>
-        <p class="setting-desc">Change any tag and choose Save tags. AutoDJ keeps them in its library without analysing the song again. The file changes only if you check Also save the tags to the file. Leave a field empty to remove that tag; Title is required.</p>
+        
         <div class="settings-row tag-field">
           <label for="tag-title">Title</label>
           <input type="text" id="tag-title" data-tag="title" autocomplete="off" required>
@@ -488,7 +488,6 @@
     <details class="card" id="points-editor" open hidden>
       <summary><h3 id="points-heading">Cue points</h3></summary>
       <p>Preview this file to check its cues. Use preview position copies the preview’s time; it does not use or change the station’s playback position.</p>
-      <p id="points-liner-help" hidden>Segue marks the end of the liner’s main content; End keeps the remaining tail. A blank Overlap start uses Segue, or End when Segue is blank. With Allow start over outro unchecked, the liner starts at the outgoing song’s Segue; checked, it may start over the Outro. Set Overlap start to 0 to let the next song’s intro overlap the liner when timing allows. A positive value is the earliest time after the liner’s saved Start at which the next song may enter. Every overlap value respects the next song’s intro: with no intro, the song waits until the liner’s Segue, while its remaining tail may overlap. It cannot be later than the liner’s Segue. A negative value starts the liner after the next song begins, limited by its intro.</p>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro"> Allow start over outro</label>
       <label for="points-path">Track path</label>
       <input id="points-path" type="text" autocomplete="off" readonly>
@@ -536,10 +535,6 @@
     <details class="card" id="intros-editor" open hidden>
       <summary><h3 id="intros-heading">Matched intros</h3></summary>
       <p class="setting-desc" id="intros-help">Short voice clips that introduce this song or its artist.</p>
-      <details class="setting-desc setting-help">
-        <summary>Intro timing and priority</summary>
-        <p>When the song’s intro, from Start to Intro, is long enough, the voice ends as the singing starts; otherwise it plays just before the song. A song intro takes priority over an artist intro. By default, a matched intro can replace an automatic liner. In Voice liners, choose Only when no liner is scheduled to prevent that.</p>
-      </details>
       <p class="setting-desc" id="intros-inactive" hidden></p>
       <!-- Intros the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
@@ -615,7 +610,7 @@
          keys say where they land through #sr-status instead. -->
     <details class="card" id="landmarks-section" open hidden>
       <summary><h3 id="landmarks-heading">Song structure</h3></summary>
-      <p class="setting-desc" id="landmarks-help">Where the intro, the singing, drops, breakdowns and the outro are, from AutoDJ’s analysis, the synced lyrics and the cue points. While Track info shows, the Right bracket key moves the cue point preview to the next landmark and the Left bracket key to the previous one, and says what is there.</p>
+      <p class="setting-desc" id="landmarks-help">The intro, singing, drops, breakdowns and outro, from analysis, synced lyrics and cue points. The bracket keys move the preview to the previous or next one.</p>
       <p id="landmarks-empty" hidden></p>
       <!-- role="list": list-style none drops the list role in Safari. -->
       <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
@@ -666,11 +661,7 @@
          above.  The outcome is announced through #sr-status. -->
     <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
       <h3 id="hist-export-heading">Export play log</h3>
-      <p id="hist-export-help">Saves the plays between two dates, both included, for
-        royalty reports.  The play log has one row per play: start and end time, seconds
-        played, artist, title, album, ISRC, label, kind, file and performances (how many
-        listeners heard it).  The SoundExchange
-        Report of Use lists songs only, one line per recording.</p>
+      <p id="hist-export-help">Saves the tracks played between two dates.</p>
       <label for="hist-export-from">From</label>
       <input type="date" id="hist-export-from" required aria-describedby="hist-export-help">
       <label for="hist-export-to">To</label>
@@ -743,7 +734,13 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-transition-mode-desc">
-        <em>Full intro and outro</em> overlaps the detected intro and outro, fading for the shorter of the two (1 to 12 seconds). <em>Outro fade</em> uses the ending song’s outro length. <em>Fixed (skip silence)</em> uses Crossfade seconds and skips leading silence. <em>Fixed</em> uses Crossfade seconds at the end of the file. <em>Use saved segue points</em> uses your saved cues and crossfade length for station handoffs, including liners; it requires stream or server audio playback.
+        <ul>
+          <li><em>Full intro and outro</em>: overlaps the detected intro and outro.</li>
+          <li><em>Outro fade</em>: fades for the length of the ending song's outro.</li>
+          <li><em>Fixed (skip silence)</em>: uses Crossfade seconds and skips silence at the start.</li>
+          <li><em>Fixed</em>: uses Crossfade seconds at the end of the file.</li>
+          <li><em>Use saved segue points</em>: uses your saved cue points, including liners. Needs stream or server audio playback.</li>
+        </ul>
       </span>
       <p id="pb-saved-points-note" hidden>Uses each track’s saved Segue point and the configured crossfade length. Other transition effects and alignment options are not used.</p>
       <div class="settings-row">
@@ -751,7 +748,7 @@
         <input type="number" id="pb-crossfade" min="0" max="20" step="0.5" value="3">
       </div>
       <span class="setting-desc" id="pb-crossfade-desc">
-        How long the gain ramp between tracks lasts.  2-3 s feels natural for most music; 5-8 s for ambient or testing transition effects.  0 cuts from one track to the next with no fade and no transition effect.  In Full intro and outro and Outro fade modes, tracks with detected markers fade for 1 to 12 seconds instead, even at 0.
+        How long the gain ramp between tracks lasts.
       </span>
 
       <div class="settings-row">
@@ -878,7 +875,7 @@
           <li><strong>ring modulator</strong> adds a metallic, bell-like tone</li>
           <li><strong>dub delay</strong> one-beat delay with lowpass on the feedback loop (each repeat darkens, classic Lee Perry sound)</li>
           <li><strong>halftime</strong> ramps tempo to 50 % keeping pitch intact (classic trap pre-drop, distinct from pitch fall)</li>
-          <li><strong>auto</strong> picks one per crossfade to suit the two songs: a spin or a siren into a discovery pick, an echo, tape stop, reverb or filter to hide a clash of tempo or key, a riser or stutter build into a louder song, a clean EQ blend between songs in the same key and tempo</li>
+          <li><strong>auto</strong> picks one per crossfade to suit the two songs</li>
           <li><strong>random</strong> picks one per crossfade</li>
           <li><strong>rotate</strong> cycles through every effect in order</li>
         </ul>
@@ -907,7 +904,7 @@
         <label for="pb-beatmatch-on-skip">Beatmatch on skip</label>
       </div>
       <span class="setting-desc" id="pb-beatmatch-on-skip-desc">
-        When you press Skip, match the new song’s tempo during the crossfade without changing its pitch, up to a 15 percent adjustment. Otherwise it starts at its own tempo. For browser playback; stream and server audio use Skip style below.
+        When you press Skip, match the new song's tempo during the crossfade, up to 15 percent, without changing its pitch. For browser playback.
       </span>
 
       <div class="settings-row">
@@ -920,7 +917,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-skip-style-desc">
-        How Skip ends the playing track when the server does the mixing, in stream mode or with server audio.  <em>Quick fade</em> (the default) fades it out in a fraction of a second.  <em>Echo out</em> cuts the music and lets its echoes ring out.  <em>Backspin</em> spins the record backwards to a stop.  <em>Loop roll</em> repeats a short loop that rolls faster as it fades.  Each effect lasts one to two beats, at most 2 seconds, and ends on a beat when the track's tempo is known; then the next track starts.  Browser playback keeps its own skip.
+        How Skip ends the song when the server mixes. Each effect lasts at most 2 seconds and ends on a beat when the tempo is known. Browser playback has its own skip.
       </span>
     </fieldset>
   </div>
@@ -951,14 +948,14 @@
                inputmode="numeric" data-help="dj-glide-bars-desc">
       </div>
       <span class="setting-desc" id="dj-glide-bars-desc" data-show-when="dj-beatmatch|dj-key-shift">
-        After a beatmatched or key-shifted crossfade, how many bars the new song takes to ease back to its own tempo and key, a whole number from 0 to 64.  0 returns it at once.  The default is 8.  For stream and server audio playback.
+        How many bars the new song takes to ease back to its own tempo and key after a beatmatched or key-shifted crossfade, from 0 to 64.
       </span>
       <div class="settings-check" data-show-when="dj-beatmatch">
         <input type="checkbox" id="dj-drop-mix" data-help="dj-drop-mix-desc">
         <label for="dj-drop-mix">Drop mixing</label>
       </div>
       <span class="setting-desc" id="dj-drop-mix-desc" data-show-when="dj-beatmatch">
-        With Beatmatch on, line up the new song’s drop with the end of a section in the playing song. Its build-up plays underneath; Auto adds a noise riser. Uses a marked Drop cue or a reliable detected drop. Falls back to a normal mix if the drop is more than 90 seconds in or would cut the playing song more than 32 seconds short. For stream and server audio playback.
+        With Beatmatch on, line up the new song's drop with the end of a section in the playing song.
       </span>
 
       <div class="settings-check">
@@ -966,7 +963,7 @@
         <label for="dj-key-shift">Key shift</label>
       </div>
       <span class="setting-desc" id="dj-key-shift-desc">
-        If shifting the new song by one or two semitones makes its key fit, use that key during the crossfade, then ease back to its original key. Tempo stays unchanged. Songs with unknown keys or larger clashes keep their original key. For stream and server audio playback.
+        If shifting the new song by one or two semitones makes its key fit, use that key during the crossfade, then ease back. For stream and server audio playback.
       </span>
     </fieldset>
 
@@ -999,7 +996,7 @@
         <label for="dj-vocal-guard">Keep vocals apart</label>
       </div>
       <span class="setting-desc" id="dj-vocal-guard-desc">
-        When both tracks have synced lyrics, shorten or move the crossfade so the outgoing singer finishes before the incoming one starts.  The fade is never made longer, or shorter than 1 second; when nothing works it stays as it was.  On by default.  For stream and server audio playback.
+        When both tracks have synced lyrics, shorten or move the crossfade so the outgoing singer finishes before the incoming one starts.
       </span>
     </fieldset>
 
@@ -1046,7 +1043,12 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-pick-mode-desc">
-        <em>Similarity</em> chooses a song that sounds like the last one. <em>Random walk</em> chooses at random. <em>Least recently played</em> prefers songs that have waited longest. <em>Clockwheel</em> follows the active clockwheel from Library tools, restarting it at a song handoff near its chosen minute marks.
+        <ul>
+          <li><em>Similarity</em>: a song that sounds like the last one.</li>
+          <li><em>Random walk</em>: a song at random.</li>
+          <li><em>Least recently played</em>: the song that has waited longest.</li>
+          <li><em>Clockwheel</em>: follows the active clockwheel from Library tools.</li>
+        </ul>
       </span>
       <div class="settings-row" data-show-when="pb-pick-mode=similarity">
         <label for="pb-pick-top-k">Choose among the closest songs</label>
@@ -1105,7 +1107,7 @@
         <label for="pb-hour-fit">Fit songs to the hour</label>
       </div>
       <span class="setting-desc" id="pb-hour-fit-desc">
-        Near the top of the hour, a clockwheel restart or a hard scheduled event, choose the song whose end lands closest to it, out of up to 20 songs the pick mode would allow anyway.  The repeat rules, DMCA limits and category days and hours still apply.  Off by default.
+        Near the top of the hour, a clockwheel restart or a hard scheduled event, choose the song whose end lands closest to it, out of up to 20 songs the pick mode would allow anyway.
       </span>
       <div class="settings-row" data-show-when="pb-hour-fit">
         <label for="pb-hour-fit-window">Minutes before to start fitting</label>
@@ -1185,7 +1187,7 @@
           <input type="checkbox" id="repeat-versions-as-one-song">
           <label for="repeat-versions-as-one-song">Count versions as one song</label>
         </div>
-        <p class="setting-desc" id="repeat-versions-desc">Treats the versions of a song by the same lead artist, such as a radio edit and a remix, as one song. The song comes up as often as a song with one version, and the limits above hold back all of its versions.</p>
+        <p class="setting-desc" id="repeat-versions-desc">Treats the versions of a song by the same lead artist, such as a radio edit and a remix, as one song.</p>
       </fieldset>
       <fieldset>
         <legend>Prevent the same title from repeating within</legend>
@@ -1206,7 +1208,7 @@
           <input type="checkbox" id="repeat-use-related-tracks" aria-describedby="repeat-related-tracks-status">
           <label for="repeat-use-related-tracks">Use related tracks</label>
         </div>
-        <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it, when one of them played within the limits below. Each group in related-tracks.toml in the index folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/&lt;name&gt;/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
+        <p class="setting-desc" id="repeat-related-tracks-desc">Holds back tracks that sound alike, such as a song and one that samples it. Each group in related-tracks.toml in the index folder lists tracks as Artist - Title: <code id="repeat-related-tracks-default">index/&lt;name&gt;/related-tracks.toml</code>. Edit that file, then save repeat settings to reload it.</p>
         <!-- A problem found in the file at startup or on save; empty and
              hidden while there is none. -->
         <p class="setting-desc" id="repeat-related-tracks-status" hidden></p>
@@ -1237,7 +1239,7 @@
       </fieldset>
       <fieldset>
         <legend>Prevent a song from playing in the same quarter of the hour</legend>
-        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 0 plays turns this off; at 3, a song moves round all four quarters.</p>
+        <p class="setting-desc" id="repeat-hourpart-desc">Holds back a song when one of its last plays in the past week started in the same quarter of the hour as the next song. 0 turns this off; at 3, a song moves round all four quarters.</p>
         <div class="settings-row">
           <label for="repeat-hourpart-plays">Plays</label>
           <input type="number" id="repeat-hourpart-plays" min="0" max="3" step="1" value="0" inputmode="numeric">
@@ -1289,7 +1291,7 @@
          plain text, and the results are headings and lists, not live. -->
     <fieldset id="rotation-test">
       <legend>Test rotation</legend>
-      <p class="setting-desc" id="rotation-test-desc">Simulate song picking with the current clockwheel, categories, schedule, repeat rules and DMCA limits, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent. Nothing on air changes.</p>
+      <p class="setting-desc" id="rotation-test-desc">Simulate song picking with current rules, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent.</p>
       <div class="settings-row">
         <label for="rotation-span">Simulate</label>
         <select id="rotation-span">
@@ -1347,6 +1349,14 @@
         <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; its executable must be configured on the server. For stream and server audio playback.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
+        <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
+        <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
+               inputmode="decimal">
+      </div>
+      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain=replaygain">
+        Raise a song's quiet opening by up to this much, from 0 to 6. For ReplayGain playback.
+      </span>
+      <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
         <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
                inputmode="decimal" data-help="pb-rg-target-desc">
@@ -1361,14 +1371,6 @@
       </div>
       <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
         ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
-      </span>
-      <div class="settings-row" data-show-when="pb-replaygain=replaygain">
-        <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
-        <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
-               inputmode="decimal">
-      </div>
-      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain=replaygain">
-        Raise a song's quiet opening by up to this much, from 0 to 6, so it does not sound too low after a loud song. The lift holds for one second, then falls back to the song's own level by eight seconds, and never raises the opening's peaks above 1.8 decibels below full scale. 4 is the default; 0 turns it off. A song is measured on its next library scan. For ReplayGain playback.
       </span>
     </fieldset>
 
@@ -1397,7 +1399,7 @@
                inputmode="decimal">
       </div>
       <span class="setting-desc" id="pb-stereo-trim-desc">
-        Lower or raise the mix before Stereo Tool, from minus 12 to plus 6.  Lower it when the preset sounds squashed; raise it when the preset barely acts.  The output limiter still holds the same ceiling.  0 is the default.  For stream and server audio playback.
+        Lower or raise the mix before Stereo Tool, from minus 12 to plus 6. Lower it when the preset sounds squashed; raise it when it barely acts.
       </span>
       <div class="settings-row">
         <label for="pb-stereo-agc-drive">AGC drive boost (dB)</label>
@@ -1424,7 +1426,7 @@
         <output id="pb-music-speed-value" for="pb-music-speed-slider" aria-live="off">0%</output>
       </div>
       <span class="setting-desc" id="pb-music-speed-desc">
-        Adjust music speed from 10% slower to 10% faster. Pitch changes with speed. BPM-matched skips combine both rates, so pitch shifts during the skip. Voice liners and previews keep their normal speed. Browser playback applies changes when safe; stream and server audio apply them at the next unrendered buffer boundary.
+        Adjust music speed from 10% slower to 10% faster.
       </span>
     </fieldset>
 
@@ -1441,19 +1443,16 @@
         </button>
       </div>
       <span class="setting-desc" id="audio-device-desc">
-        Choose the browser’s speakers or headphones, where your browser supports this. Show device names briefly requests microphone access to reveal their names; it does not record audio. The choice is saved in this browser. Server audio uses <code>[playback] audio_device</code> in config.toml.
+        Choose the browser’s speakers or headphones.
       </span>
       <div class="settings-row">
         <label for="preview-device">Preview output device</label>
         <select id="preview-device">
           <option value="">System default</option>
         </select>
-        <button type="button" id="preview-device-choose" aria-describedby="preview-device-choose-desc">Show preview device names</button>
+        <button type="button" id="preview-device-choose">Show preview device names</button>
       </div>
-      <span class="setting-desc" id="preview-device-desc">
-        Where the cue point preview in Track info and Listen back in Voice tracks play, for example headphones, so you can listen to a song or your recording before it airs. Previews never go through the station’s mix, so they are never on the stream or in a recording, and they reach the same speakers as the browser mix only when both use the same device. On a device of its own the preview has its own volume, in its player, and the page’s volume and Mute leave it alone. The choice is saved in this browser.
-        <span id="preview-device-choose-desc">Show preview device names asks for the microphone once, only to read the device names, and stops it straight away.</span>
-      </span>
+      <span class="setting-desc" id="preview-device-desc">Audio device for previews in Track info and Voice tracks.</span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
       <div class="settings-check">
         <input type="checkbox" id="pb-prefetch" checked>
@@ -1543,15 +1542,12 @@
         <input type="checkbox" id="hotkeys-enabled" checked>
         <label for="hotkeys-enabled">Enable keyboard shortcuts</label>
       </div>
-      <span class="setting-desc" id="hotkeys-enabled-desc">
-        Single-key shortcuts such as Space, N, M, the arrow keys and the question mark.  Turn this off if they clash with your screen reader or other keys you use; buttons and sliders keep working as usual.  Saved in this browser only.
-      </span>
       <div class="settings-check">
         <input type="checkbox" id="hotkeys-bracket-seek">
         <label for="hotkeys-bracket-seek">Bracket keys seek the song on air</label>
       </div>
       <span class="setting-desc" id="hotkeys-bracket-seek-desc">
-        Outside Track info, the Left and Right bracket keys say the previous and next landmark of the song on air, such as its drop or outro.  With this on they also move the song there, which listeners hear; not in stream mode.  In Track info they always move the cue point preview.  Off by default.  Saved in this browser only.
+        The bracket keys also move the song on air to its previous or next landmark, which listeners hear. Not in stream mode. Off by default.
       </span>
     </fieldset>
   </div>
@@ -1608,7 +1604,7 @@
               >
       </div>
       <span class="setting-desc" id="ln-rand-desc">
-        Play a liner at a random time between the minimum and the maximum number of minutes after the last one.  Both must be above 0 and the minimum must not be larger than the maximum; otherwise the random trigger is off.
+        Play a liner at a random time between the minimum and the maximum number of minutes after the last one.
       </span>
     </fieldset>
 
@@ -1637,7 +1633,7 @@
         <label for="ln-talk-up">Talk up to the vocal</label>
       </div>
       <span class="setting-desc" id="ln-talk-up-desc">
-        Time automatic liners to finish before the next song’s singing, using synced lyrics or a detected intro. A longer liner starts during the crossfade when it fits; otherwise it starts with the song. For stream and server audio playback. Saved segue playback uses the saved Intro, Outro and liner cues instead.
+        Time automatic liners to finish before the next song’s detected intro.
       </span>
       <button type="button" id="ln-test">Test now</button>
     </fieldset>
@@ -1667,7 +1663,6 @@
     <form id="ln-dates-form" novalidate hidden><fieldset><legend id="ln-dates-legend">Play dates</legend><p id="ln-dates-error" class="field-error" hidden></p>
       <div class="settings-row"><label for="ln-not-before">Not before</label><input type="date" id="ln-not-before"></div>
       <div class="settings-row"><label for="ln-not-after">Do not play after</label><input type="date" id="ln-not-after"></div>
-      <span class="setting-desc" id="ln-dates-desc">Optional. Both days are included, in the station time zone. Outside them, automatic liners, clockwheel liner steps, scheduled liner events and Test skip this liner; a cart that uses it still plays it. Leave both empty to play it on any day.</span>
       <button type="submit" id="ln-dates-save">Save dates</button><button type="button" id="ln-dates-cancel">Cancel</button>
     </fieldset></form>
   </div>
@@ -1680,7 +1675,7 @@
          paths.  Each result of a setting or the button is said once through
          #tc-status; pack coverage is plain text, not a live region. -->
     <p class="card-desc">
-      Say the station time over the music, from a voice pack, a recorded clip for each minute or text to speech, in that order: when one has no recording for the minute, the next one speaks. The voice pack folders, clip folder, intro and outro clips and the text-to-speech command are set in config.toml.
+      Say the station time over the music. Voice packs, clips and text to speech are set in config.toml.
     </p>
 
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1699,9 +1694,7 @@
         <option value="24">24-hour</option>
       </select>
     </div>
-    <span class="setting-desc" id="tc-hour-format-desc">
-      How text to speech says the time: “It’s 3:05” or “It’s 15:05”, and on the hour “It’s 3 o’clock” or “It’s 15 hundred”, with “It’s midnight” and “It’s noon” in both. Recorded clips play as they are. In 12-hour mode a voice pack without a file for hour 13 to 23 or 00 uses the file for 01 to 11 or 12, and adds its am or pm file when it has both.
-    </span>
+    <span class="setting-desc" id="tc-hour-format-desc">How text to speech says the time.</span>
     <div class="settings-row">
       <label for="tc-rule">When to play</label>
       <select id="tc-rule">
@@ -1710,7 +1703,7 @@
       </select>
     </div>
     <span class="setting-desc" id="tc-rule-desc">
-      After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner. It uses the voice liner duck depth and, when the server mixes the music, Talk up to the vocal. For set times, add a Time check event in Schedule.
+      After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner.
     </span>
 
     <fieldset id="tc-packs">
@@ -1737,9 +1730,6 @@
          linked to its field. -->
     <fieldset id="tc-dates" hidden>
       <legend>Voice pack play dates</legend>
-      <span class="setting-desc" id="tc-dates-desc">
-        Optional. A ticked pack speaks only from its Not before date to its Do not play after date, both days included, in the station time zone, such as a holiday voice in December. Outside them the other ticked packs speak instead. Choosing the pack in Voice to test still plays it.
-      </span>
       <div class="settings-row">
         <label for="tc-dates-pack">Voice pack</label>
         <select id="tc-dates-pack"></select>
@@ -1857,15 +1847,12 @@
           <legend>Date range</legend>
           <div class="settings-row">
             <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date" aria-describedby="schedule-range-desc">
+            <input type="date" id="schedule-start-date">
           </div>
           <div class="settings-row">
             <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date" aria-describedby="schedule-range-desc">
+            <input type="date" id="schedule-end-date">
           </div>
-          <span class="setting-desc" id="schedule-range-desc">
-            Optional.  The event runs only from the start date to the end date, both included, in the station time zone.  Leave either empty for no limit on that side.  A window that crosses midnight on the end date runs to its end.
-          </span>
         </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
@@ -1877,14 +1864,14 @@
         <span class="setting-desc" id="schedule-timing-desc">
           Soft waits for the current song to end. Hard runs on time and, except for stream events, fades the current song out, unless the song ends within Wait up to seconds.
         </span>
-        <p class="setting-desc">A show starts at once with Hard, and a Play next song you chose plays right after its first song. With Soft it is queued at its time to follow the current song; with server audio or a stream it can start one song later, because the song after the current one may already be mixed in.</p>
+        <p class="setting-desc">Hard starts the show at once. Soft waits for the next song change.</p>
         <div class="settings-row" data-show-when="schedule-timing=hard">
           <label for="schedule-wait">Wait up to seconds</label>
           <input type="number" id="schedule-wait" min="0" max="300" step="1" value="0"
                  inputmode="numeric" aria-describedby="schedule-wait-desc">
         </div>
         <span class="setting-desc" id="schedule-wait-desc" data-show-when="schedule-timing=hard">
-          When the current song will end no more than this many seconds after the event's time, the event waits and runs at the song change without fading it out. A whole number from 0 to 300; 0, the default, always runs on time. Stream and show events never wait.
+          How long the event waits for the current song to end, from 0 to 300 seconds. At 0 it always runs on time. Stream and show events never wait.
         </span>
         <div class="settings-check">
           <input type="checkbox" id="schedule-enabled">
@@ -1923,8 +1910,7 @@
       <!-- Relays to other servers ([stream.relays.<name>] in config.toml),
            filled by stream-mode.js.  Plain text, not live. -->
       <div id="stream-relays" hidden>
-        <p class="stream-detail" id="stream-relays-intro">Relays to other servers. While a relay is on, the station keeps playing even when nobody listens here. The config.toml relay list is used until you save here; after that, this station's saved list takes precedence. Environment-managed passwords override saved values. Relay source passwords are sent without TLS encryption.</p>
-        <ul class="stream-detail" id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
+        <ul class="stream-detail" id="stream-relays-list" aria-label="Relays to other servers"></ul>
       </div>
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
@@ -2009,7 +1995,7 @@
         </span>
         <div class="settings-row">
           <label for="stream-opus-bitrate">Opus quality</label>
-          <select id="stream-opus-bitrate" aria-describedby="stream-opus-warning station-context">
+          <select id="stream-opus-bitrate" aria-describedby="station-context">
             <option value="0">Off</option>
             <option value="48">48 kbps</option>
             <option value="64">64 kbps</option>
@@ -2019,7 +2005,7 @@
           </select>
         </div>
         <span class="setting-desc" id="stream-opus-desc">
-          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. <span id="stream-opus-warning">Changing it makes Opus listeners reconnect for a moment.</span>
+          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. 
         </span>
         <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
         <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
@@ -2038,7 +2024,7 @@
           <button type="button" id="np-copy">Copy now-playing link</button>
         </div>
         <span class="setting-desc" id="np-url-desc">
-          Public JSON for web pages, overlays and other services: the station name, the song playing, recent songs, the listener count, today's peak and the uptime. Anyone who can reach AutoDJ can read it without pairing. It never includes file paths.
+          Public JSON for web pages, overlays and other services. Anyone who can reach AutoDJ can read it without pairing.
         </span>
         <div class="settings-row">
           <label for="np-status-url">Status page link</label>
@@ -2334,7 +2320,7 @@
        refused save shows its words under the form, linked to its field. -->
   <div class="card" role="tabpanel" id="spanel-live" aria-labelledby="stab-live" hidden>
     <h3>Live DJ</h3>
-    <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. When the DJ's program connects and sends sound, the music fades out under the DJ; when it disconnects, the music fades back in with a new song. Listeners and History see the DJ's name. The Talk button on Now Playing lets you talk over the music from this browser. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings, as they can use every other control here.</p>
+    <p class="setting-desc" id="live-intro">A DJ can take over this station from BUTT, Mixxx or another Icecast source program. The music fades out when the DJ starts sending sound and comes back with a new song when they disconnect. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air and change these settings.</p>
     <p class="stream-detail" id="live-unavailable" hidden></p>
     <div id="live-settings" hidden>
       <h4 id="live-connect-heading">Connect a DJ program</h4>
@@ -2633,9 +2619,6 @@
         Press a cart to play it; an empty cart opens in the editor below.
         With focus on a cart, keys 1 to 9 and 0, minus and equals play carts 1 to 12 on this page,
         and Page Up and Page Down change the page.
-        With NVDA, switch to focus mode first (NVDA+Space).
-        These keys do nothing in text fields and dropdowns, and the Enable keyboard shortcuts
-        checkbox under Settings, Display and keys turns them off.
       </p>
       <div class="settings-row">
         <label for="cart-page">Cart page</label>
@@ -2741,7 +2724,7 @@
         Record a DJ break for the open song change, listen back, then book it.
         The song change after the next song is the one still open: the next one is already mixed.
         Your voice plays over the next song's intro (a talk-up) or between the songs.
-        Alt+R starts and stops recording from anywhere in this tab without moving focus.
+        Alt+R starts and stops recording.
       </p>
 
       <section class="card" aria-labelledby="vt-slot-heading">
@@ -3122,9 +3105,6 @@
 
       <!-- Run buttons -->
       <h3 id="library-run-heading">Library jobs</h3>
-      <p>Import and analyze refreshes the current library and runs advanced analysis where enabled.
-        Enrich refreshes metadata from beets. Analyse adds CPU DJ cues, Remove missing tracks previews
-        and confirms safe catalog cleanup, and Detailed stats prints the current library report.</p>
       <div role="group" aria-labelledby="library-run-heading">
         <div class="settings-row">
           <label for="lib-index-limit">Advanced analysis limit (optional)</label>
@@ -3138,23 +3118,15 @@
           Existing cues, play history and settings are kept.
         </p>
 
-        <div class="settings-row">
-          <button type="button" id="lib-run-enrich">Enrich</button>
-          <button type="button" id="lib-run-analyse">Analyse</button>
-          <button type="button" id="lib-run-prune">Remove missing tracks</button>
-          <button type="button" id="lib-run-stats">Detailed stats</button>
-          <button type="button" id="lib-run-stop">Stop running job</button>
-        </div>
-        <p class="setting-desc">
-          <strong>Enrich</strong> refreshes title/artist/genre/BPM/key from
-          beets without re-embedding.  <strong>Analyse</strong> finds the
-          intro, outro, beat grid and cue points of tracks not analysed yet;
-          already analysed tracks are skipped, so running it again is quick.
-          <strong>Remove missing tracks</strong> shows a preview after a successful scan,
-          asks for confirmation, protects disconnected folders, and keeps play history.
-          <strong>Detailed stats</strong> prints the current catalog report. <strong>Stop</strong>
-          terminates the running subprocess.
-        </p>
+        <div class="settings-row"><button type="button" id="lib-run-enrich" aria-describedby="lib-enrich-desc">Enrich</button></div>
+        <p class="setting-desc" id="lib-enrich-desc">Refreshes title, artist, genre, BPM and key from beets.</p>
+        <div class="settings-row"><button type="button" id="lib-run-analyse" aria-describedby="lib-analyse-desc">Analyse</button></div>
+        <p class="setting-desc" id="lib-analyse-desc">Finds the intro, outro, beat grid and cue points of songs not analysed yet.</p>
+        <div class="settings-row"><button type="button" id="lib-run-prune" aria-describedby="lib-prune-desc">Remove missing tracks</button></div>
+        <p class="setting-desc" id="lib-prune-desc">Lists songs whose files are gone and removes them after you confirm. Play history is kept.</p>
+        <div class="settings-row"><button type="button" id="lib-run-stats" aria-describedby="lib-stats-desc">Detailed stats</button></div>
+        <p class="setting-desc" id="lib-stats-desc">Shows the library report.</p>
+        <div class="settings-row"><button type="button" id="lib-run-stop">Stop running job</button></div>
       </div>
 
       <!-- Status badge + streamed log output -->
@@ -3188,7 +3160,7 @@
            count are plain text, not live regions: each result of a button
            (Check, Save and Delete included) is said once through
            #categories-status. -->
-      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file. AutoDJ works the songs out again when the library or a source changes.</p>
+      <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file.</p>
       <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="categories-list-heading">Saved categories</h3>
       <ul id="categories-list" aria-labelledby="categories-list-heading"><li>No categories loaded.</li></ul>
@@ -3225,7 +3197,7 @@
               <input id="categories-query" type="text" maxlength="500" autocomplete="off" spellcheck="false">
             </div>
             <p class="setting-desc" id="categories-query-help">
-              Any beets field, including ones plugins add, such as original_year:2000..2009 or genre:rock ^artist:"bon jovi". field:value matches part of the text, a..b is a range of numbers, ^ leaves out what follows it, and quotes keep words together; every part must match. original_year is the first release, and the release year stands in when beets has none. Regular expressions, alternatives with commas and plugin queries are not supported.
+              Any beets field, such as original_year:2000..2009 or genre:rock ^artist:"bon jovi". field:value matches part of the text, a..b is a range, ^ leaves out what follows it, and quotes keep words together.
             </p>
           </div>
           <div id="categories-playlist-field" hidden>
@@ -3234,7 +3206,7 @@
               <select id="categories-playlist"></select>
             </div>
             <p class="setting-desc" id="categories-playlist-help">
-              M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library, by its full path or by a path from the playlist's folder or the music folder; lines that match none are counted as missing.
+              M3U and M3U8 files in <span id="categories-folder">the playlists folder</span>. Each line is matched to a song in the library.
             </p>
           </div>
           <div id="categories-filters-field" hidden>
@@ -3247,9 +3219,7 @@
           </div>
           <fieldset id="categories-daypart">
             <legend>When the songs may play</legend>
-            <p class="setting-desc" id="categories-daypart-help">
-              Optional. Outside these days, hours and dates no pick mode plays the category's songs, and a clockwheel step for it is skipped. A song in several categories plays only when all of them allow it. Leave every day unchecked for every day, both times empty for all day, and both dates empty for every day of the year; both dates are included, such as 1 December until 26 December for seasonal songs. Times and dates are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts. A song you queue yourself plays at any time.
-            </p>
+            <p class="setting-desc" id="categories-daypart-help">Outside these days, hours and dates, the category's songs do not play.</p>
             <fieldset id="categories-days">
               <legend>Days</legend>
             <div class="settings-check"><input type="checkbox" id="categories-day-0" value="0"><label for="categories-day-0">Monday</label></div>
@@ -3291,7 +3261,7 @@
       <div class="flow-form">
       <!-- clockwheel-panel.js fills this section.  Each result of a button
            is said once through #clock-status; the lists are plain text. -->
-      <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, a specific track, or a preset change. Keep as many as you like. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
+      <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, and more. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
       <p id="clock-notice" class="field-error" hidden></p>
       <div id="clock-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <h3 id="clock-list-heading">Saved clockwheels</h3>
@@ -3322,12 +3292,11 @@
       <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. Leave empty to restart only when the wheel wraps.</p>
       <p>The clockwheel goes back to step 1 at the song change nearest each minute.</p>
       <label for="clock-apply-timing">Apply saved changes</label>
-      <select id="clock-apply-timing" aria-describedby="clock-apply-help">
+      <select id="clock-apply-timing">
         <option value="next_restart" selected>At the next clock restart</option>
         <option value="immediate">Immediately, start at step 1</option>
         <option value="continue">Immediately, continue at next step</option>
       </select>
-      <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
     </div>
     </details>
@@ -3338,7 +3307,7 @@
            the totals are plain text, not live regions: each result of a
            button is said once through #shows-status.  A refused field gets
            aria-invalid, the error linked to it and focus. -->
-      <p>A show is a list of songs you prepare ahead, such as Remembering the 2000s, and air at a set time. AutoDJ picks the list from a category or a clockwheel with the station's own repeat rules and DMCA limits; you can then reorder it, remove songs, add others or generate it again. To air a show, add an event with the action Play a show under Settings, Schedule. Hard timing starts it at its time, with a Play next song you chose right after its first song; Soft lets the current song finish, and with server audio or a stream the show can start one song later. While a show plays, its songs go ahead of songs already in the queue, listener requests included.</p>
+      <p>A show is a list of tracks that can be played at a set time. AutoDJ picks the list from a category or a clockwheel with the station's repeat rules. To air a show, add an event with the action Play a show under Settings, Schedule.</p>
       <p id="shows-problem" class="field-error" hidden></p>
       <div id="shows-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       <p id="shows-on-air">No show is on the air.</p>
@@ -3414,7 +3383,7 @@
            each result of a button is said once through #intro-rules-status.
            A refused field is marked aria-invalid, its error is linked to it
            and it takes focus, which reads the error. -->
-      <p>An intro rule plays a voice liner as the next song starts when that song matches its conditions: a name drop for an artist, a jingle before rock songs, or “here’s one from the eighties” before songs first released in the 1980s. It uses the same conditions as clockwheel steps and categories. A song’s own matched intros, set in Track info, come first, then its artist’s, then intro rules, unless a rule’s priority says otherwise. Rules play only with saved segue playback, and a DJ break booked for the song change wins.</p>
+      <p>An intro rule plays a voice liner as a matching song starts, such as a name drop for an artist or a jingle before rock songs. Rules play only with saved segue playback.</p>
       <!-- Rules the station's file holds that are not valid: skipped, kept
            in the file, and said here in words (never live). -->
       <p class="field-error" id="intro-rules-problem" hidden></p>
@@ -3425,7 +3394,7 @@
       <button type="button" id="intro-rules-add">Add intro rule</button>
       <form id="intro-rules-form" novalidate hidden>
         <fieldset>
-          <legend id="intro-rules-form-legend">Add intro rule</legend>
+          <legend><h4 id="intro-rules-form-legend">Add intro rule</h4></legend>
           <div class="settings-row tag-field">
             <label for="intro-rules-label">Label</label>
             <input type="text" id="intro-rules-label" maxlength="120" autocomplete="off" aria-describedby="intro-rules-label-help">
@@ -3439,21 +3408,19 @@
           <p id="intro-rules-conditions-label">Conditions the next song must meet</p>
           <div id="intro-rules-conditions" role="group" aria-labelledby="intro-rules-conditions-label"></div>
           <p id="intro-rules-conditions-error" class="field-error" hidden></p>
-          <button type="button" id="intro-rules-condition-add" aria-describedby="intro-rules-conditions-help">Add condition</button>
-          <span class="setting-desc" id="intro-rules-conditions-help">Up to 32. For a decade, use Year between 1980 and 1989, or the Beets field original_year for the first release; for a name drop, Artist contains. A song with no value for a field never matches a condition on it.</span>
-          <fieldset id="intro-rules-clips" aria-describedby="intro-rules-clips-help">
-            <legend>Voice liners to choose from</legend>
-            <span class="setting-desc" id="intro-rules-clips-help">Check registered voice liners, choose a liner folder, or both. One of them plays, picked at random; a file that is missing, outside its play dates or another station’s is passed over.</span>
+          <button type="button" id="intro-rules-condition-add">Add condition</button>
+          <fieldset id="intro-rules-clips">
+            <legend><h5>Voice liners to choose from</h5></legend>
             <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
             <div id="intro-rules-liners" class="intro-rule-liners"></div>
             <p id="intro-rules-clips-error" class="field-error" hidden></p>
             <div class="settings-row tag-field">
               <label for="intro-rules-folder">Liner folder</label>
-              <select id="intro-rules-folder" aria-describedby="intro-rules-folder-help"><option value="">None</option></select>
-              <span class="setting-desc" id="intro-rules-folder-help">Optional. Every registered liner in the folder and its subfolders.</span>
+              <select id="intro-rules-folder"><option value="">None</option></select>
               <p id="intro-rules-folder-error" class="field-error" hidden></p>
             </div>
           </fieldset>
+          <h5>When it plays</h5>
           <div class="settings-row tag-field">
             <label for="intro-rules-priority">Priority</label>
             <select id="intro-rules-priority" aria-describedby="intro-rules-priority-help">
@@ -3540,14 +3507,13 @@
   <!-- An ad break step: spots from the Ads tab, by its rules.  A refused
        field is linked to #clock-step-ad-error and focused. -->
   <div class="clock-step-field" id="clock-step-ad-field">
-    <p class="setting-desc" id="clock-step-ad-help">Plays spots from the Ads tab at the song change before the next song this clockwheel picks, by the rules of every ad break. Longest break is 10 to 900 seconds, or 0 for no limit. When no spot can play, the step is skipped and the ad report says why.</p>
     <p class="setting-desc" id="clock-step-ads-notice" hidden></p>
     <div class="settings-row">
       <label for="clock-step-ad-spots">Spots in the break</label>
       <input type="number" id="clock-step-ad-spots" min="1" max="10" step="1" value="3">
     </div>
     <div class="settings-row">
-      <label for="clock-step-ad-seconds">Longest break in seconds</label>
+      <label for="clock-step-ad-seconds">Longest break in seconds (10 to 900, or 0 for no limit)</label>
       <input type="number" id="clock-step-ad-seconds" min="0" max="900" step="1" value="0">
     </div>
     <div class="settings-row">
@@ -3580,9 +3546,6 @@
        linked to #clock-step-hours-error and focused; #clock-status says it. -->
   <fieldset id="clock-step-hours">
     <legend><h5>When this step plays</h5></legend>
-    <p class="setting-desc" id="clock-step-hours-help">
-      Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
-    </p>
     <fieldset id="clock-step-days">
       <legend>Days</legend>
       <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
@@ -3665,8 +3628,8 @@
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
   <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
-  <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab. Letter and punctuation shortcuts work on focused buttons and sliders, but not while typing in a text field or using a dropdown. Space activates a focused button; arrow keys operate the focused slider or tab.</p>
-  <p>If these single-key shortcuts get in your way, turn them all off with the <strong>Enable keyboard shortcuts</strong> checkbox under Settings, Keyboard. The choice is saved in this browser. This list stays available from the Keyboard shortcuts button at the bottom of the page.</p>
+  <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab.</p>
+  <p>You can toggle keyboard shortcuts under Settings.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
     <dt><kbd>Space</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>k</kbd></dt><dd>Play or pause. In stream mode, start or stop listening on this page.</dd>
     <dt><kbd>n</kbd></dt><dd>Skip to next track</dd>
