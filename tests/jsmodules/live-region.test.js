@@ -7,6 +7,8 @@ import {
   installVisibleStatusBehaviour,
   liveAgain,
   showVisibleStatus,
+  shownText,
+  writeLive,
   writeQuietly,
 } from "../../src/autodj/static/modules/live-region.js";
 
@@ -445,5 +447,33 @@ describe("writeQuietly", () => {
     expect(status.hasAttribute("aria-live")).toBe(false);
     vi.advanceTimersByTime(2000);
     expect(status.hasAttribute("aria-live")).toBe(false);
+  });
+
+  it("turns a quiet region on before words that must be said go in", () => {
+    const region = document.createElement("p");
+    region.setAttribute("aria-live", "polite");
+    writeLive(region, "Disconnected, retrying");
+    // Not quiet: written at once.
+    expect(region.textContent).toBe("Disconnected, retrying");
+    writeQuietly(region, "Live");
+    vi.advanceTimersByTime(300);
+    writeLive(region, "Disconnected, retrying");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("Live");
+    expect(shownText(region)).toBe("Disconnected, retrying");
+    vi.advanceTimersByTime(100);
+    expect(region.textContent).toBe("Disconnected, retrying");
+    // A later write replaces one still waiting; a quiet write cancels it.
+    writeQuietly(region, "Live");
+    writeLive(region, "One");
+    writeLive(region, "Two");
+    vi.advanceTimersByTime(100);
+    expect(region.textContent).toBe("Two");
+    writeQuietly(region, "Live");
+    writeLive(region, "Lost");
+    writeQuietly(region, "Live again");
+    vi.advanceTimersByTime(2000);
+    expect(region.textContent).toBe("Live again");
+    expect(region.getAttribute("aria-live")).toBe("polite");
   });
 });

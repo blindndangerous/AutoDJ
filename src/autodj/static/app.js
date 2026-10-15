@@ -1393,16 +1393,12 @@ let authenticatedActivityActive = false;
 // quiet: the new words are shown but not said.  A station switch says
 // "Now controlling ..." on its own, so its socket's "Live" must not follow
 // it (#327).  A transition that is said in between turns the region back
-// on first (writeQuietly).
+// on first and its words go in a moment later (writeLive).
 function setConnStatus(state, label, { quiet = false } = {}) {
   if (connStatus.className !== state) connStatus.className = state;
-  if (connStatus.textContent === label) return;
-  if (quiet) {
-    writeQuietly(connStatus, label);
-    return;
-  }
-  liveAgain(connStatus);
-  connStatus.textContent = label;
+  if (shownText(connStatus) === label) return;
+  if (quiet) writeQuietly(connStatus, label);
+  else writeLive(connStatus, label);
 }
 
 // Progress within an outage: seen, never spoken.
@@ -2370,8 +2366,9 @@ import {
   announceStatus,
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
-  liveAgain,
   showVisibleStatus,
+  shownText,
+  writeLive,
   writeQuietly,
 } from "./modules/live-region.js";
 

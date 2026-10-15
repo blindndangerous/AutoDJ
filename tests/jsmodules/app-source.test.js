@@ -3702,6 +3702,29 @@ describe("several stations (#70)", () => {
       "Now controlling Night Owl Radio. On air, 3 listeners. Playing Owl"));
   });
 
+  it("says a dropped link that comes inside the switch's quiet second (#327)", async () => {
+    const app = await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const pill = document.getElementById("conn-status");
+    pill.textContent = "Off air";
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].onopen();
+    expect(pill.textContent).toBe("Live");
+    expect(pill.getAttribute("aria-live")).toBe("off");
+    const written = [];
+    new window.MutationObserver(() => written.push([pill.textContent, pill.getAttribute("aria-live")]))
+      .observe(pill, { childList: true, characterData: true, subtree: true });
+    sockets[0].onclose({ code: 1006, wasClean: false });
+    // On at once; the words go in once the browser has seen it on.
+    expect(pill.getAttribute("aria-live")).toBe("polite");
+    await vi.waitFor(() => expect(written).toEqual([["Disconnected, retrying", "polite"]]));
+  });
+
   it("says a switch once: not the song line, and not Live when the socket opens (#327)", async () => {
     const app = await setupApp({
       initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },

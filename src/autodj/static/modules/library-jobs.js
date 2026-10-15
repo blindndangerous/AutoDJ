@@ -24,7 +24,7 @@ import {
   withDisabled,
 } from "./api-client.js";
 import { fmtTime, setNoValue } from "./dom-helpers.js";
-import { announceStatus, liveAgain, writeQuietly } from "./live-region.js";
+import { announceStatus, writeLive, writeQuietly } from "./live-region.js";
 
 // The page has one Library panel.  Its memory: the phase last spoken, the
 // log lines on screen, whether installLibraryJobs ran (only then does the
@@ -48,8 +48,7 @@ function setJobPhase(jobStatus, phase, text, { quiet = false } = {}) {
     writeQuietly(jobStatus, text);
     return;
   }
-  liveAgain(jobStatus);
-  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+  writeLive(jobStatus, text);
 }
 
 // Errors are user-visible failures of a specific action, not a job
@@ -59,8 +58,7 @@ function setJobPhase(jobStatus, phase, text, { quiet = false } = {}) {
 function reportJobError(jobStatus, text) {
   if (!jobStatus) return;
   spokenPhase = null;
-  liveAgain(jobStatus);
-  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+  writeLive(jobStatus, text);
 }
 
 // The runner's own lines: the command it started ("[autodj-jobs] $ ...")
