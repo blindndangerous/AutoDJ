@@ -1488,10 +1488,14 @@ class StoppedStation:
 
     stopped = True
 
-    def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
+    def __init__(
+        self, extra: ExtraStation, *, state: str = "stopped", name: str | None = None
+    ) -> None:
         self.slug = extra.slug
         self.defined_in = extra.defined_in
-        self.name = extra.name
+        # The name it last had: one changed in Settings is in its saved
+        # settings, not in its configuration.
+        self.name = name or extra.name
         self.requests_enabled = extra.requests_enabled
         self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
@@ -1561,6 +1565,29 @@ def _inside(path: str, root: str) -> bool:
     )
 
 
+def _saved_station_name(paths: StationPaths) -> str | None:
+    """The station name a stopped station's saved settings give it, if any and valid.
+
+    Settings, Stream saves a new name there, not in the station's configuration.
+    """
+    from pydantic import ValidationError
+
+    from autodj.settings_bodies import StreamSettingsBody
+
+    try:
+        data = json.loads(paths.web_state.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    playback = data.get("playback") if isinstance(data, dict) else None
+    name = playback.get("stream_station_name") if isinstance(playback, dict) else None
+    if not isinstance(name, str):
+        return None
+    try:
+        return StreamSettingsBody.model_validate({"station_name": name}, strict=True).station_name
+    except ValidationError:
+        return None
+
+
 def _saved_preset(paths: StationPaths) -> str | None:
     """The Stereo Tool preset a stopped station's saved settings name, if any."""
     try:
@@ -1585,6 +1612,10 @@ class StationRegistry:
     def __init__(self, default: StationRuntime, extras: Sequence[ExtraStation] = ()) -> None:
         self._default = default
         self._extras = {extra.slug: extra for extra in extras}
+        # The name each stopped station shows: its saved one, read the first
+        # time it is asked for, then the name it had when it last stopped (it
+        # changes only while the station runs).
+        self._stopped_names: dict[str, str] = {}
         self._running: dict[str, StationRuntime] = {default.slug: default}
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
@@ -1641,11 +1672,14 @@ class StationRegistry:
         if running is not None and slug not in self._stopping:
             return running
         extra = self._extras[slug]
+        name = self._stopped_names.get(slug)
+        if name is None:
+            name = self._stopped_names[slug] = _saved_station_name(extra.paths) or extra.name
         if slug in self._stopping:
-            return StoppedStation(extra, state="stopping")
+            return StoppedStation(extra, state="stopping", name=name)
         if slug in self._stuck:
-            return StoppedStation(extra, state="stuck stopping")
-        return StoppedStation(extra)
+            return StoppedStation(extra, state="stuck stopping", name=name)
+        return StoppedStation(extra, name=name)
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
@@ -1682,6 +1716,7 @@ class StationRegistry:
         if extra.slug in self.slugs():
             raise StationControlError(f"Station {extra.slug} already exists")
         self._extras[extra.slug] = extra
+        self._stopped_names.pop(extra.slug, None)
         self._locks[extra.slug] = asyncio.Lock()
 
     def paths(self) -> tuple[StationPaths, ...]:
@@ -1881,6 +1916,7 @@ class StationRegistry:
                     with self.stereo_tool_lock:
                         self._stopping_runtimes[slug] = runtime
                         del self._running[slug]
+                    self._stopped_names[slug] = runtime.name
                     warnings = await _run_as(slug, self._stop_extra(runtime, extra))
         finally:
             with self.stereo_tool_lock:

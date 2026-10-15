@@ -932,7 +932,9 @@ This is the only place AutoDJ holds a credential for another system:
 - Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
   shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
   An environment variable only sets the password of a relay a TOML file already names; it
-  cannot add a relay.
+  cannot add a relay. Two relay names that map to one variable (`a-b` and `a_b`, `Main` and
+  `main`) are refused at startup and in Settings, and saved relays that share a variable which
+  is set are not loaded, so one server's source password is never sent to another.
 - The password is never written to `web_state.json`, the relay status file, logs, `autodj
   doctor` output, any `/api` response or the WebSocket state. The browser sees only each relay's
   name, server type, host, port, mount or stream ID, state and last error. Error texts are built

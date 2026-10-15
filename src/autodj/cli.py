@@ -143,7 +143,7 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
     """Validate + apply ``--name``; return whether effective config changed."""
     if index_name is None:
         return False
-    from autodj.config import validate_index_name
+    from autodj.config import reload_web_stations, validate_index_name
 
     try:
         validate_index_name(index_name)
@@ -153,6 +153,8 @@ def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pra
     if cfg.index.name == index_name:
         return False
     cfg.index.name = index_name
+    # Web-created stations belong to an index: read the selected one's.
+    reload_web_stations(cfg)
     _append_cli_source(cfg)
     return True
 

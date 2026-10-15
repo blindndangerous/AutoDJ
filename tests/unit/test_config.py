@@ -336,6 +336,14 @@ class TestValidateIndexName:
         with pytest.raises(ValueError):
             validate_index_name("foo..bar")
 
+    @pytest.mark.parametrize("name", ["C:", "D:music", "a:b", "x.", "chill "])
+    def test_rejects_names_windows_reads_as_another_folder(self, name: str) -> None:
+        """A drive letter escapes <index_dir>; a trailing dot or space is dropped."""
+        from autodj.config import validate_index_name
+
+        with pytest.raises(ValueError, match="Index name cannot"):
+            validate_index_name(name)
+
 
 # ---------------------------------------------------------------------------
 # PlaybackConfig
@@ -376,6 +384,14 @@ class TestPlaybackConfig:
     def test_music_speed_percent_rejects_invalid_values(self, value: float) -> None:
         with pytest.raises((TypeError, ValueError)):
             PlaybackConfig.from_dict({"music_speed_percent": value})
+
+    @pytest.mark.parametrize("value", [0, -3])
+    def test_discovery_every_below_one_is_refused(self, value: int) -> None:
+        """0 made every pick raise ZeroDivisionError once Discovery was on."""
+        with pytest.raises(ValueError, match="discovery_every must be 1 or more"):
+            PlaybackConfig.from_dict({"discovery_every": value})
+        assert PlaybackConfig.from_dict({"discovery_every": 1}).discovery_every == 1
+        assert PlaybackConfig.from_dict({}).discovery_every is None
 
     def test_show_lyrics_false_round_trip(self) -> None:
         pb = PlaybackConfig.from_dict({"show_lyrics": False})

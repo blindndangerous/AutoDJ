@@ -179,6 +179,34 @@ def test_add_cannot_replace_existing_relay(tmp_path):
     assert error.value.status_code == 409
 
 
+@pytest.mark.parametrize(("existing", "new"), [("a-b", "a_b"), ("Main", "main")])
+def test_relay_name_sharing_a_password_variable_is_refused(tmp_path, existing, new):
+    """a-b and a_b read one variable, so one server's password would go to the other."""
+    from fastapi import HTTPException
+
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    station.cfg.stream.relays = {existing: relay(existing, host="8.8.8.8")}
+    with pytest.raises(HTTPException) as error:
+        _save_stream_relay(station, _body(new), registry)
+    assert error.value.status_code == 409
+    assert existing in error.value.detail
+    assert set(station.cfg.stream.relays) == {existing}
+
+
+def test_saved_relays_sharing_a_set_password_variable_are_refused(tmp_path, monkeypatch):
+    path = tmp_path / "relays.json"
+    relays = {
+        "a-b": relay("a-b", host="one.example"),
+        "a_b": relay("a_b", host="two.example"),
+    }
+    save_relays(path, relays, "default")
+    assert set(load_relays(path, {}, "default")) == {"a-b", "a_b"}  # no variable set
+    monkeypatch.setenv(relay_password_variable("a-b"), "secret-for-one")
+    assert load_relays(path, {}, "default") == {}
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows access lists")
 def test_relay_file_is_owner_only_on_windows(tmp_path):
     path = tmp_path / "relays.json"

@@ -5,11 +5,42 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Windows refuses to replace, or to open, a file another handle has open
+# without FILE_SHARE_DELETE (Python's open() never passes it), or one being
+# replaced at that moment.  These waits, about half a second in all, let a
+# reader in another thread or process finish first.
+_SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.1, 0.1, 0.1)
+
+
+def retry_sharing_violation[T](action: Callable[[], T]) -> T:
+    """Run *action*, retrying briefly on Windows while the file is held open.
+
+    On other systems a ``PermissionError`` is final and is raised at once.
+
+    Raises:
+        OSError: What *action* raised, after the last try on Windows.
+    """
+    if sys.platform != "win32":
+        return action()
+    for delay in _SHARING_RETRY_DELAYS:
+        try:
+            return action()
+        except PermissionError:
+            time.sleep(delay)
+    return action()
+
+
+def read_bytes_shared(path: Path) -> bytes:
+    """``path.read_bytes()``, retried briefly on Windows while a save replaces the file."""
+    return retry_sharing_violation(path.read_bytes)
 
 
 def is_absolute_storage(path: str) -> bool:
@@ -67,6 +98,9 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
         mode: Permission bits for a newly created file, e.g. ``0o600``;
             the umask still applies.  Windows only honours the read-only bit.
 
+    On Windows the rename is retried for about half a second while another
+    handle (a reader) has *path* open, which Windows refuses to replace.
+
     Raises:
         OSError: If writing, renaming or flushing fails.  The temporary file
             is removed.
@@ -79,7 +113,7 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        retry_sharing_violation(lambda: os.replace(temporary, path))
     except BaseException:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)

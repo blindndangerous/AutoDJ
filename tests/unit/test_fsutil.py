@@ -65,3 +65,101 @@ def test_atomic_write_applies_mode_and_flushes_directory_after_replace(
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert events == ["replace", "directory"]
+
+
+def _flaky_replace(monkeypatch: pytest.MonkeyPatch, failures: int) -> list[int]:
+    """Make os.replace raise PermissionError *failures* times, as Windows does."""
+    calls: list[int] = []
+    real_replace = os.replace
+
+    def replace(source: Path, destination: Path) -> None:
+        calls.append(1)
+        if len(calls) <= failures:
+            raise PermissionError(13, "Access is denied")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(fsutil.time, "sleep", lambda _seconds: None)
+    return calls
+
+
+def test_atomic_write_retries_while_windows_holds_the_file_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    calls = _flaky_replace(monkeypatch, failures=3)
+
+    atomic_write(path, "new")
+
+    assert len(calls) == 4
+    assert path.read_text(encoding="utf-8") == "new"
+    assert [item.name for item in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_atomic_write_retry_is_bounded_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    calls = _flaky_replace(monkeypatch, failures=1000)
+
+    with pytest.raises(PermissionError):
+        atomic_write(path, "new")
+
+    assert len(calls) == len(fsutil._SHARING_RETRY_DELAYS) + 1
+    assert path.read_text(encoding="utf-8") == "old"
+    assert [item.name for item in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_atomic_write_does_not_retry_permission_errors_off_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.json"
+    monkeypatch.setattr(fsutil.sys, "platform", "linux")
+    calls = _flaky_replace(monkeypatch, failures=1)
+
+    with pytest.raises(PermissionError):
+        atomic_write(path, "new")
+    assert len(calls) == 1
+
+
+def test_read_bytes_shared_retries_while_windows_replaces_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.json"
+    path.write_bytes(b"saved")
+    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    monkeypatch.setattr(fsutil.time, "sleep", lambda _seconds: None)
+    real_read = Path.read_bytes
+    calls: list[int] = []
+
+    def read_bytes(self: Path) -> bytes:
+        calls.append(1)
+        if len(calls) == 1:
+            raise PermissionError(13, "Permission denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert fsutil.read_bytes_shared(path) == b"saved"
+    assert len(calls) == 2
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows sharing rules")
+def test_atomic_write_waits_for_a_reader_that_has_the_file_open(tmp_path: Path) -> None:
+    """Python's open() has no FILE_SHARE_DELETE, so a reader blocks the rename."""
+    import threading
+
+    path = tmp_path / "state.json"
+    path.write_text("old", encoding="utf-8")
+    handle = path.open("rb")
+    timer = threading.Timer(0.05, handle.close)
+    timer.start()
+    try:
+        atomic_write(path, "new")
+    finally:
+        timer.join()
+        handle.close()
+    assert path.read_text(encoding="utf-8") == "new"

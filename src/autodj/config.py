@@ -186,8 +186,8 @@ def validate_index_name(name: str) -> None:
         name: Candidate index name.
 
     Raises:
-        ValueError: If *name* is empty, contains ``/`` or ``\\``, contains
-            ``..``, or starts with a dot.
+        ValueError: If *name* is empty, contains ``/``, ``\\`` or ``:``,
+            contains ``..``, starts with a dot, or ends with a dot or space.
     """
     if not name or not name.strip():
         raise ValueError("Index name must not be empty.")
@@ -201,6 +201,13 @@ def validate_index_name(name: str) -> None:
         raise ValueError(
             f"Index name cannot start with '.' or contain '..' (got {name!r}).",
         )
+    if ":" in name:
+        # On Windows "D:music" is a folder on drive D: and "C:" the index
+        # folder itself, outside <index_dir>/<name>.
+        raise ValueError(f"Index name cannot contain ':' (got {name!r}).")
+    if name.endswith((".", " ")):
+        # Windows drops them, so "chill." would be the folder of "chill".
+        raise ValueError(f"Index name cannot end with '.' or a space (got {name!r}).")
 
 
 TRANSITION_MODES: tuple[str, ...] = (
@@ -511,6 +518,12 @@ class PlaybackConfig(_Section):
             )
         self.server_max_track_minutes = float(max_minutes)
         self.discovery_every = _optional(int, self.discovery_every)
+        if self.discovery_every is not None and self.discovery_every < 1:
+            # Every pick divides the track number by it once Discovery is on.
+            raise ValueError(
+                f"playback.discovery_every must be 1 or more, got {self.discovery_every}; "
+                "leave it out to turn discovery off"
+            )
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
         self.pick_mode = _validate_pick_mode(str(self.pick_mode))
@@ -2012,16 +2025,30 @@ def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) 
     Returns:
         ``{"stream": {"relays": {name: {"password": ...}}}}`` for every
         relay whose variable is set, or an empty dict.
+
+    Raises:
+        ValueError: Two relays would read the same variable (``a-b`` and
+            ``a_b``, or ``Main`` and ``main``), which would send one
+            server's source password to the other.
     """
     stream = raw.get("stream")
     relays = stream.get("relays") if isinstance(stream, Mapping) else None
     if not isinstance(relays, Mapping):
         return {}
-    found = {
-        name: {"password": environ[variable]}
-        for name in relays
-        if isinstance(name, str) and (variable := relay_password_variable(name)) in environ
-    }
+    owners: dict[str, str] = {}
+    found: dict[str, Any] = {}
+    for name in relays:
+        if not isinstance(name, str):
+            continue
+        variable = relay_password_variable(name)
+        if variable in owners:
+            raise ValueError(
+                f"[stream.relays.{name}] and [stream.relays.{owners[variable]}] would both "
+                f"read {variable}; rename one of them"
+            )
+        owners[variable] = name
+        if variable in environ:
+            found[name] = {"password": environ[variable]}
     return {"stream": {"relays": found}} if found else {}
 
 
@@ -2328,6 +2355,19 @@ def _load_web_stations(cfg: AutoDJConfig) -> None:
             continue
         cfg.stations += (spec,)
     cfg.skipped_definitions = tuple(skipped)
+
+
+def reload_web_stations(cfg: AutoDJConfig) -> None:
+    """Load the web-created stations again, from the index ``cfg`` now names.
+
+    ``--name`` changes ``[index] name`` after loading, and web-created stations
+    live in their index's ``stations`` folder, so the ones read for the
+    configured index are dropped and the selected index's are read instead.
+    Stations from config.toml are kept.
+    """
+    cfg.stations = tuple(spec for spec in cfg.stations if spec.defined_in != "web")
+    cfg.skipped_definitions = ()
+    _load_web_stations(cfg)
 
 
 def _build_stations(raw: Any, root: AutoDJConfig) -> tuple[StationSpec, ...]:

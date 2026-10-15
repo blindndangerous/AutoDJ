@@ -446,6 +446,20 @@ def _save_stream_relay_locked(
     if body.is_edit and old is None:
         raise HTTPException(status_code=404, detail="Relay not found.")
     variable = password_variable(station.slug, body.name)
+    sharing = next(
+        (
+            name
+            for name in station.cfg.stream.relays
+            if name != body.name and password_variable(station.slug, name) == variable
+        ),
+        None,
+    )
+    if sharing is not None:
+        # a-b and a_b (or Main and main) read one password variable.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Relay {sharing} already uses this password variable; choose another name.",
+        )
     managed = variable in os.environ
     if managed and body.password:
         raise HTTPException(

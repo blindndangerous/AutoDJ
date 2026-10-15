@@ -473,9 +473,11 @@ the settings last saved from the web page (`web_state.json`), which override the
 environment variables. The playback and DJ-mix settings have no `serve` options; change them in
 the web page or in `config.toml`. Omitting `--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
-`config.toml.example` lists supported environment variables and settings. Every key and section
-in `config.toml` and `config.local.toml` must be one AutoDJ knows: a removed or misspelled setting
-stops AutoDJ with an error naming the section and key, so delete it rather than leave it in place.
+`config.toml.example` lists supported environment variables and settings. A key or section in
+`config.toml` or `config.local.toml` that AutoDJ does not know, such as a removed or misspelled
+setting, is ignored with a warning naming the section and key, and the setting keeps its default.
+Read the warnings after an edit, and correct or delete the line; `autodj doctor` offers to remove
+unknown keys.
 
 ### Secure server operation
 
