@@ -3710,6 +3710,81 @@ describe("several stations (#70)", () => {
     expect(stopAllDecks).toHaveBeenCalled();
   });
 
+  it("asks once before a switch drops unsaved clockwheel work, and switches only on yes", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    const clockwheel = {
+      refresh: vi.fn(async () => {}), clearProtectedData: vi.fn(), resume: vi.fn(), destroy: vi.fn(),
+      hasUnsavedWork: vi.fn(() => true),
+    };
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => clockwheel,
+    }));
+    try {
+      const stopAllDecks = vi.fn();
+      const app = await setupApp({
+        audio: { _lastBrowserPlayback: true, playbackEnabled: true, stopAllDecks },
+        stations: [AUTODJ, OWL],
+        onRequest: owlRequests,
+      });
+      const sockets = trackSockets(app.WebSocketImpl);
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      confirm.close = vi.fn((value) => {
+        confirm.open = false;
+        confirm.returnValue = value;
+        confirm.dispatchEvent(new Event("close"));
+      });
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      // One dialog names both losses: the decks that stop and the work dropped.
+      expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
+      expect(document.getElementById("confirm-message").textContent).toBe(
+        "This page is playing AutoDJ itself. Switching stops that music on this page; the station goes on for everyone else. "
+        + "It also discards the clockwheel changes not saved yet.");
+      expect(document.getElementById("confirm-accept").textContent).toBe("Switch and discard");
+      document.getElementById("confirm-cancel").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sockets).toHaveLength(0);
+      expect(clockwheel.clearProtectedData).not.toHaveBeenCalled();
+      expect(stopAllDecks).not.toHaveBeenCalled();
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      document.getElementById("confirm-accept").click();
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      expect(confirm.showModal).toHaveBeenCalledTimes(2);
+      expect(clockwheel.clearProtectedData).toHaveBeenCalled();
+      expect(stopAllDecks).toHaveBeenCalled();
+      expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
+  it("asks about unsaved work alone when no decks play", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    try {
+      await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      expect(document.getElementById("confirm-message").textContent)
+        .toBe("Switching discards the clockwheel changes not saved yet.");
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
   it("keeps Listen here on the station it started on, and says so", async () => {
     const app = await setupApp({
       initialState: { stream_mode: true, stream_state: "playing" },

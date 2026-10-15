@@ -579,6 +579,22 @@ describe("voice tracker", () => {
     expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a recording or a take not booked as unsaved work, for a station switch", async () => {
+    const { controls } = tracker();
+    await controls.refresh();
+    expect(controls.hasUnsavedWork()).toBe(false);
+    await press("vt-record");
+    expect(controls.hasUnsavedWork()).toBe(true);
+    await press("vt-record");
+    expect(controls.hasUnsavedWork()).toBe(true);
+    await press("vt-discard");
+    expect(controls.hasUnsavedWork()).toBe(false);
+    await press("vt-record");
+    await press("vt-record");
+    controls.clear();
+    expect(controls.hasUnsavedWork()).toBe(false);
+  });
+
   it("lets the microphone go when the page signs out mid-recording", async () => {
     const { controls, mic } = tracker();
     await controls.refresh();

@@ -1795,15 +1795,28 @@ async function loadStation({ announce = true } = {}) {
 
 // The page's browser decks play the station they started on; the server
 // would never tell them about another.  Leaving the station stops them,
-// so the page asks first.
-async function confirmLeavingDecks(name) {
-  if (!(_lastBrowserPlayback && playbackEnabled)) return true;
+// and drops clockwheel changes not saved and a voice track not booked,
+// so the page asks first: once, naming everything that would go.
+async function confirmLeavingStation(name) {
+  const decks = Boolean(_lastBrowserPlayback && playbackEnabled);
+  const unsaved = [
+    clockwheelPanelControls?.hasUnsavedWork() && "the clockwheel changes not saved yet",
+    voiceTrackerControls?.hasUnsavedWork() && "the voice track not booked yet",
+  ].filter(Boolean);
+  if (!decks && !unsaved.length) return true;
+  const lost = unsaved.length
+    ? `${decks ? "It also discards" : "Switching discards"} ${unsaved.join(" and ")}.`
+    : "";
   const ok = await confirmAction(document, {
     title: `Switch to ${name}?`,
-    message: `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
-    confirmLabel: "Switch and stop",
+    message: [
+      decks && `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
+      lost,
+    ].filter(Boolean).join(" "),
+    confirmLabel: unsaved.length ? "Switch and discard" : "Switch and stop",
   });
   if (!ok) return false;
+  if (!decks) return true;
   stopAllDecks();
   stopActiveLiners();
   resetTransitionCaches();
@@ -1815,7 +1828,7 @@ async function switchStation(slug) {
   if (slug === currentStation() || !authenticatedActivityActive) return;
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry) return;
-  if (!await confirmLeavingDecks(entry.name)) return;
+  if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   selectStation(slug);
   rememberStationInAddress(slug);
