@@ -44,11 +44,10 @@ def test_live_dj_title_reaches_extra_mounts() -> None:
     bridge.mounts.set_title.assert_called_once_with("DJ Kay", "Friday Mix")
 
 
-def _config(tmp_path: Path, *, liners: str | None = None, clips: str | None = None) -> AutoDJConfig:
+def _config(tmp_path: Path, *, clips: str | None = None) -> AutoDJConfig:
     cfg = load_config(environ={})
     cfg.index.index_dir = tmp_path / "index"
     cfg.index.name = "main"
-    cfg.playback.liners_folder = liners
     cfg.time_checks.clips_folder = clips
     return cfg
 
@@ -87,11 +86,9 @@ def test_default_paths_are_where_the_state_has_always_been(tmp_path: Path) -> No
     assert TimeChecks(cfg, "UTC").cache == paths.time_checks_cache
 
 
-def test_configured_liner_and_clip_folders_win(tmp_path: Path) -> None:
-    liners = tmp_path / "voice" / "liners"
+def test_a_configured_clip_folder_wins(tmp_path: Path) -> None:
     clips = tmp_path / "voice" / "clock"
-    paths = StationPaths.default(_config(tmp_path, liners=str(liners), clips=str(clips)))
-    assert paths.liners == liners
+    paths = StationPaths.default(_config(tmp_path, clips=str(clips)))
     assert paths.time_check_clips == clips
 
 

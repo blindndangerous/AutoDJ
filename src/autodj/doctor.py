@@ -859,24 +859,15 @@ def _recording_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Do
 
 
 def _liners_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
-    """Check the station's liner folder: a configured one must be there."""
+    """Check the station's own liner folder, where uploads go."""
     from autodj.stations import StationPaths
 
     folder = (paths or StationPaths.default(cfg)).liners
     if folder.is_dir():
         return DoctorCheck("liners", CheckStatus.PASS, str(folder))
-    table = _table(paths, "playback")
     if folder.exists():
         return DoctorCheck(
-            "liners", CheckStatus.WARN, str(folder), f"not a folder; fix {table} liners_folder"
-        )
-    if cfg.playback.liners_folder:
-        return DoctorCheck(
-            "liners",
-            CheckStatus.WARN,
-            str(folder),
-            f"{table} liners_folder does not exist; the station plays no liners. "
-            "Create the folder or fix the setting.",
+            "liners", CheckStatus.WARN, str(folder), "not a folder; move the file away"
         )
     return DoctorCheck(
         "liners", CheckStatus.PASS, "no liners yet", f"put the station's liner clips in {folder}"
