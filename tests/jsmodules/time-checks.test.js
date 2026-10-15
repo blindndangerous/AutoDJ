@@ -118,7 +118,7 @@ describe("voice packs", () => {
     expect(byId("tc-pack-order").value).toBe("rotate");
   });
 
-  it("says so when config.toml lists no packs", async () => {
+  it("says so when there are no packs", async () => {
     const controls = installTimeChecks({ request: server({ packs: [] }), interval: () => {} });
     await controls.refresh();
     expect(byId("tc-packs-empty").hidden).toBe(false);
