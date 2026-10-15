@@ -1259,7 +1259,9 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("aria-live")).toBe("polite");
 
     const statusWriter = functionBody(appSource, "setConnStatus");
-    expect(statusWriter).toMatch(/connStatus\.textContent\s*=\s*label\s*;/);
+    // Written through live-region.js, which turns a quietly written pill
+    // back on before words that must be said (#327).
+    expect(statusWriter).toMatch(/writeLive\(connStatus,\s*label\)/);
     expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"[,)]/);
   });
 
