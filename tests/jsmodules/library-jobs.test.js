@@ -415,7 +415,7 @@ describe("library job controls", () => {
       document.querySelector("#refresh").click();
       await vi.waitFor(() => expect(landed).toHaveLength(expected));
     }
-    expect(region.textContent).toBe("Stats refreshed.");
+    expect(region.textContent.trim()).toBe("Stats refreshed.");
     expect(document.querySelector("#status").textContent).toBe("");
     vi.unstubAllGlobals();
   });

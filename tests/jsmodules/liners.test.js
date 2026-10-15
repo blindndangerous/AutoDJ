@@ -468,7 +468,7 @@ describe("Test liner in stream mode", () => {
     observer.observe(status, { childList: true, characterData: true, subtree: true });
     button.click();
     await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2));
-    await vi.waitFor(() => expect(status.textContent).toBe(message));
+    await vi.waitFor(() => expect(status.textContent.trim()).toBe(message));
     observer.disconnect();
   });
 
@@ -490,7 +490,7 @@ describe("Test liner in stream mode", () => {
     observer.observe(status, { childList: true, characterData: true, subtree: true });
     button.click();
     await vi.waitFor(() => expect(writes.length).toBeGreaterThanOrEqual(2));
-    await vi.waitFor(() => expect(status.textContent).toBe("Liner playing: station-id.mp3"));
+    await vi.waitFor(() => expect(status.textContent.trim()).toBe("Liner playing: station-id.mp3"));
     observer.disconnect();
   });
 

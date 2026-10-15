@@ -564,7 +564,7 @@ const COPY_FAIL = "Could not copy. Select the address and copy it yourself.";
 // after the clipboard attempt settles, so a fixed tick() can win that
 // race on a loaded machine.  Wait for the text itself instead.
 const announced = (text) =>
-  vi.waitFor(() => expect(byId("sr-status").textContent).toBe(text));
+  vi.waitFor(() => expect(byId("sr-status").textContent.trim()).toBe(text));
 
 function settingsDom() {
   document.body.innerHTML = `

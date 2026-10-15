@@ -266,8 +266,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
       linkError(control, true);
     }
     if (errorText) { errorText.textContent = message; errorText.hidden = false; }
+    // Focus moving to the field reads the linked error, so say it only otherwise.
+    const before = target?.ownerDocument.activeElement;
     target?.focus();
-    say(message, true);
+    if (!target || before === target || target.ownerDocument.activeElement !== target) say(message, true);
   }
 
   function body(interactive = true) {
