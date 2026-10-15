@@ -3450,6 +3450,16 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(menu.hidden).toBe(true);
   });
 
+  it("describes the shared controls as shared by all stations", () => {
+    installDocument();
+    const shared = document.getElementById("shared-context");
+    expect(shared.hidden).toBe(true);
+    expect(shared.textContent).toBe("");
+    for (const id of ["tab-library", "points-save", "stab-stations"]) {
+      expect(ids(document.getElementById(id), "aria-describedby"), id).toContain("shared-context");
+    }
+  });
+
   it("gives New station labelled native fields, one polite status and an error to link (#233)", () => {
     installDocument();
     const panel = document.getElementById("spanel-stations");

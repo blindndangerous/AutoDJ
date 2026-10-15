@@ -3619,6 +3619,7 @@ describe("several stations (#70)", () => {
     expect(document.activeElement.id).toBe("station-button");
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
     expect(document.title).toBe("Owl - Hoot - Night Owl Radio - AutoDJ");
+    expect(document.getElementById("shared-context").textContent).toBe("Shared by all stations");
     // Only the heading names the station; panels and the main region do not repeat it.
     expect(document.getElementById("main-content").hasAttribute("aria-label")).toBe(false);
     expect(document.getElementById("panel-queue").getAttribute("aria-labelledby")).toBe("tab-queue");

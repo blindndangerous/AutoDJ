@@ -1573,6 +1573,7 @@ function connectWS({ quiet = false } = {}) {
 // ----------------------------------------------------------------
 
 const pageHeading = document.getElementById("page-heading");
+const sharedContext = document.getElementById("shared-context");
 const offAirBox = document.getElementById("station-off-air");
 const offAirText = document.getElementById("station-off-air-text");
 const btnStationStart = document.getElementById("station-start");
@@ -1620,6 +1621,7 @@ function renderStationContext() {
   const several = severalStations();
   const name = stationName();
   setTextIfChanged(pageHeading, several && name !== "AutoDJ" ? `AutoDJ: ${name}` : "AutoDJ");
+  setTextIfChanged(sharedContext, several ? "Shared by all stations" : "");
   setTextIfChanged(btnStationStart, `Start ${name}`);
   if (stationOffAir) setTextIfChanged(offAirText, `${name} is off air.`);
   if (_lastState) document.title = pageTitle(titleSegments(_lastState.current_track));

@@ -71,12 +71,10 @@
             aria-controls="station-menu"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
     <ul id="station-menu" role="menu" aria-labelledby="station-button" hidden></ul>
   </div>
-  <!-- Descriptions, never shown: "On Night Owl Radio" for each control
-       that changes what is on air, and "Shared by all stations" for the
-       library and pairing.  Empty while the server has one station, so
-       nothing extra is spoken then. -->
-  <!-- The station's name, added to the name of each tab panel that shows
-       one station ("Queue & Search Night Owl Radio"). -->
+  <!-- A description, never shown: "Shared by all stations" for the
+       library, cue points and Stations.  Empty while the server has one
+       station, so nothing extra is spoken then. -->
+  <span id="shared-context" hidden></span>
   <!-- Fix 4: no static aria-label — text content is the live announcement -->
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
@@ -105,7 +103,7 @@
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
 </nav>
@@ -524,7 +522,7 @@
         <p class="setting-desc" id="points-help-overlap-start">For liners: when the next song may come in, counted from Start.</p>
         <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
-      <button type="button" id="points-save">Save points</button>
+      <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </details>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -714,7 +712,7 @@
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
-    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
+    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
