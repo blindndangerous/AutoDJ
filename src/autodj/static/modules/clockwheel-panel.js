@@ -573,7 +573,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
         && (event.key === "Home" || event.key === "End")) {
       event.preventDefault();
-      focusRow(event.key === "Home" ? 0 : clock.steps.length - 1, "edit");
+      focusRow(event.key === "Home" ? 0 : clock.steps.length - 1, event.target.dataset?.action || "edit");
     } else if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
       event.preventDefault();
@@ -583,7 +583,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const next = Number(row.dataset.index) + (event.key === "ArrowUp" ? -1 : 1);
       event.preventDefault();
       if (next >= 0 && next < clock.steps.length) {
-        focusRow(next, "edit");
+        focusRow(next, event.target.dataset?.action || "edit");
       }
     } else if (!event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
         && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
