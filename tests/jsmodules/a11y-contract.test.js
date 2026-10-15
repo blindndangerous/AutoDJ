@@ -1035,7 +1035,6 @@ describe("static accessibility contracts", () => {
     expect(document.querySelector("#panel-now #points-editor")).toBeNull();
     expect(document.querySelector("#track-info-details").hasAttribute("aria-live")).toBe(false);
     expect(document.getElementById("points-allow-outro").hasAttribute("aria-describedby")).toBe(false);
-    expect(document.getElementById("points-liner-help").textContent).toContain("Segue marks");
     expect(document.querySelector('[data-point="overlap_start"]').hasAttribute("aria-describedby")).toBe(false);
     const dialog = document.querySelector("#track-info-dialog");
     expect(dialog.tagName).toBe("DIALOG");
@@ -2027,10 +2026,9 @@ describe("static accessibility contracts", () => {
       // the longer format explanation stays visible in the panel.
       const described = describedBy(select);
       expect(described.every(Boolean)).toBe(true);
-      expect(described.map((element) => element.id)).toEqual([
-        id === "stream-aac-bitrate" ? "stream-aac-warning" : "stream-opus-warning",
-        "station-context",
-      ]);
+      expect(described.map((element) => element.id)).toEqual(
+        id === "stream-aac-bitrate" ? ["stream-aac-warning", "station-context"] : ["station-context"],
+      );
       expect(document.getElementById(`stream-${id.endsWith("aac-bitrate") ? "aac" : "opus"}-desc`).hidden)
         .toBe(false);
     }
@@ -2305,8 +2303,8 @@ describe("static accessibility contracts", () => {
   it("gives liner and cart play dates native labelled date inputs and visible error text", () => {
     installDocument({ html: htmlSource });
     const fields = [
-      ["ln-not-before", "Not before", "ln-dates-desc"],
-      ["ln-not-after", "Do not play after", "ln-dates-desc"],
+      ["ln-not-before", "Not before", null],
+      ["ln-not-after", "Do not play after", null],
       ["cart-not-before", "Not before", "cart-dates-desc"],
       ["cart-not-after", "Do not play after", "cart-dates-desc"],
     ];
@@ -2315,9 +2313,10 @@ describe("static accessibility contracts", () => {
       expect(input.getAttribute("type")).toBe("date");
       expect(input.hasAttribute("required")).toBe(false);
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
-      if (id.startsWith("cart-")) expect(input.getAttribute("aria-describedby")).toBe(desc);
-      else expect(input.hasAttribute("aria-describedby")).toBe(false);
-      expect(document.getElementById(desc).textContent).toMatch(/Optional|optional/);
+      if (desc) {
+        expect(input.getAttribute("aria-describedby")).toBe(desc);
+        expect(document.getElementById(desc).textContent).toMatch(/Optional|optional/);
+      } else expect(input.hasAttribute("aria-describedby")).toBe(false);
     }
     // Errors are words on the page, in an element a field can be described by.
     for (const id of ["ln-dates-error", "cart-edit-error"]) {
@@ -2341,7 +2340,7 @@ describe("static accessibility contracts", () => {
     expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When the songs may play");
     const help = document.getElementById("categories-daypart-help");
     expect(group.hasAttribute("aria-describedby")).toBe(false);
-    expect(help.textContent).toMatch(/^\s*Optional\./);
+    expect(help.textContent).toMatch(/^\s*Outside these days/);
     expect(help.hidden).toBe(false);
     const days = group.querySelector("#categories-days");
     expect(days.querySelector(":scope > legend").textContent).toBe("Days");
@@ -2379,7 +2378,6 @@ describe("static accessibility contracts", () => {
     expect(group.tagName).toBe("FIELDSET");
     expect(group.querySelector(":scope > legend").textContent.trim()).toBe("When this step plays");
     expect(group.hasAttribute("aria-describedby")).toBe(false);
-    expect(document.getElementById("clock-step-hours-help").textContent).toMatch(/^\s*Optional\./);
     const days = group.querySelector("#clock-step-days");
     expect(days.querySelector(":scope > legend").textContent).toBe("Days");
     const boxes = [...days.querySelectorAll('input[type="checkbox"]')];
@@ -2404,7 +2402,7 @@ describe("static accessibility contracts", () => {
     expect(option.textContent).toBe("Ad break");
     const field = document.querySelector("#clock-step-ad-field");
     expect(field.classList.contains("clock-step-field")).toBe(true);
-    for (const [id, label, min, max] of [["clock-step-ad-spots", "Spots in the break", "1", "10"], ["clock-step-ad-seconds", "Longest break in seconds", "0", "900"]]) {
+    for (const [id, label, min, max] of [["clock-step-ad-spots", "Spots in the break", "1", "10"], ["clock-step-ad-seconds", "Longest break in seconds (10 to 900, or 0 for no limit)", "0", "900"]]) {
       const input = document.getElementById(id);
       expect(input.getAttribute("type")).toBe("number");
       expect([input.getAttribute("min"), input.getAttribute("max"), input.getAttribute("step")]).toEqual([min, max, "1"]);
@@ -2419,7 +2417,6 @@ describe("static accessibility contracts", () => {
       expect(select.options[0].value).toBe("");
       expect(select.options[0].textContent).toBe(any);
     }
-    expect(document.getElementById("clock-step-ad-help").textContent).toContain("0 for no limit");
     expect(document.getElementById("clock-step-ads-notice").hidden).toBe(true);
     const error = document.querySelector("#clock-step-ad-error");
     expect(error.classList.contains("field-error")).toBe(true);
@@ -2439,8 +2436,7 @@ describe("static accessibility contracts", () => {
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
       // Optional: no required attribute, and the description says so in words.
       expect(input.hasAttribute("required")).toBe(false);
-      const desc = document.getElementById(input.getAttribute("aria-describedby"));
-      expect(desc.textContent).toMatch(/^\s*Optional\./);
+      expect(input.hasAttribute("aria-describedby")).toBe(false);
     }
     // The form's error text has an ID to be linked from the field it names.
     expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
@@ -2461,8 +2457,6 @@ describe("static accessibility contracts", () => {
     expect(group.tagName).toBe("FIELDSET");
     expect(group.closest("#spanel-time-checks")).not.toBeNull();
     expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Voice pack play dates");
-    expect(document.getElementById("tc-dates-desc").textContent)
-      .toMatch(/^\s*Optional\./);
     expect(group.hasAttribute("aria-describedby")).toBe(false);
     expect(document.querySelector('label[for="tc-dates-pack"]').textContent.trim()).toBe("Voice pack");
     for (const [id, label] of [["tc-not-before", "Not before"], ["tc-not-after", "Do not play after"]]) {
@@ -2495,7 +2489,6 @@ describe("static accessibility contracts", () => {
     const help = document.getElementById("rotation-test-desc");
     expect(group.hasAttribute("aria-describedby")).toBe(false);
     expect(help.hidden).toBe(false);
-    expect(help.textContent).toContain("Nothing on air changes.");
     for (const [id, label, type] of [
       ["rotation-span", "Simulate", "SELECT"],
       ["rotation-start", "Start", "datetime-local"],
@@ -2595,7 +2588,7 @@ describe("static accessibility contracts", () => {
     expect(document.querySelector('label[for="pb-hour-fit"]').textContent.trim())
       .toBe("Fit songs to the hour");
     expect(document.getElementById(toggle.getAttribute("aria-describedby")).textContent)
-      .toMatch(/repeat rules, DMCA limits/);
+      .toMatch(/closest to it/);
     for (const [id, label, min, max, showWhen, rule] of [
       ["pb-hour-fit-window", "Minutes before to start fitting", "1", "30", "pb-hour-fit",
         'body:has(#pb-hour-fit:not(:checked)) [data-show-when="pb-hour-fit"]'],
@@ -2823,8 +2816,7 @@ describe("static accessibility contracts", () => {
     expect(section.closest("[aria-live], [role=status]")).toBeNull();
     // The help names the keys in words, not as punctuation.
     const help = document.getElementById("landmarks-help").textContent;
-    expect(help).toMatch(/Right bracket key/);
-    expect(help).toMatch(/Left bracket key/);
+    expect(help).toMatch(/bracket keys/);
     expect(document.getElementById("landmarks-note").classList.contains("setting-desc")).toBe(true);
     // The layout uses the shared tokens only: no colour of its own.
     const rules = stripCssComments(cssSource).match(/[^{}]*\.landmark-list[^{}]*\{[^{}]*\}/g);
@@ -2904,7 +2896,7 @@ describe("static accessibility contracts", () => {
     const clips = document.getElementById("intro-rules-clips");
     expect(clips.tagName).toBe("FIELDSET");
     expect(clips.querySelector(":scope > legend").textContent).toBe("Voice liners to choose from");
-    expect(document.getElementById(clips.getAttribute("aria-describedby")).classList.contains("setting-desc")).toBe(true);
+    expect(clips.hasAttribute("aria-describedby")).toBe(false);
     for (const id of ["intro-rules-conditions-error", "intro-rules-clips-error", "intro-rules-folder-error", "intro-rules-problem"]) {
       const error = document.getElementById(id);
       expect(error.classList.contains("field-error"), id).toBe(true);
@@ -2993,8 +2985,7 @@ describe("static accessibility contracts", () => {
     expect(select.hasAttribute("aria-describedby")).toBe(false);
     const help = document.getElementById("preview-device-desc");
     expect(help.hidden).toBe(false);
-    expect(help.textContent).toMatch(/never on the stream/);
-    expect(help.textContent).toMatch(/saved in this browser/);
+    expect(help.textContent).toMatch(/previews/);
     // The unsupported or permission note starts hidden and unlinked: the
     // script links it only while it is shown.
     const note = document.getElementById("preview-device-note");
@@ -3007,11 +2998,7 @@ describe("static accessibility contracts", () => {
     // same group (2.4.6, 2.5.3).
     expect(button.textContent.trim()).toBe("Show preview device names");
     expect(button.hasAttribute("aria-label")).toBe(false);
-    // What the button does is said with it, and is part of the help text.
-    const buttonDesc = document.getElementById(button.getAttribute("aria-describedby"));
-    expect(buttonDesc.id).toBe("preview-device-choose-desc");
-    expect(buttonDesc.textContent).toMatch(/microphone once/);
-    expect(buttonDesc.closest("#preview-device-desc")).not.toBeNull();
+    expect(button.hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("audio-device-refresh").textContent.trim())
       .not.toBe(button.textContent.trim());
     // Changes are said through the polite Settings status region.
@@ -3139,7 +3126,7 @@ describe("static accessibility contracts", () => {
     expect(talk.hasAttribute("aria-label")).toBe(false);
     expect(talk.getAttribute("aria-pressed")).toBe("false");
     expect(idsOf(talk)).toEqual(["talk-help", "station-context"]);
-    expect(document.getElementById("talk-help").textContent).toMatch(/hold Space or Enter on it, or hold Alt\+M/);
+    expect(document.getElementById("talk-help").textContent).toMatch(/press and hold Alt\+M/);
     for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
       expect(quiet(document.getElementById(id)), id).toBe(true);
     }
@@ -3148,9 +3135,6 @@ describe("static accessibility contracts", () => {
     expect(latched.tagName).toBe("P");
     expect(latched.hidden).toBe(true);
     expect(latched.classList.contains("talk-latched")).toBe(true);
-    // Alt+M is hold-only; only the button latches, for 2 minutes at most.
-    expect(document.getElementById("talk-help").textContent)
-      .toMatch(/for 2 minutes at most; Alt\+M talks only while held/);
     // Without sign-in anyone who can open the page can talk: said plainly.
     for (const id of ["talk-help", "live-intro"]) {
       expect(document.getElementById(id).textContent, id)

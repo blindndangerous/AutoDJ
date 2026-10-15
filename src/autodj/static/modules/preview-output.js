@@ -45,9 +45,7 @@ export const UNAVAILABLE_TEXT =
   "The browser would not use the saved preview device, so previews play on the system default "
   + "output.  Choose it again, or choose another device.";
 export const DENIED_TEXT =
-  "The browser did not give permission, so the devices are numbered instead of named.  They "
-  + "still work.  To see names, allow the microphone for this site in the browser's site "
-  + "settings, then press Show preview device names again.  AutoDJ never records sound.";
+  "The browser did not give permission, so the devices are numbered instead of named.";
 export const NO_MICROPHONE_TEXT =
   "This browser shows device names only after microphone permission, and it found no "
   + "microphone to ask about.  The devices are numbered instead; they still work.";
