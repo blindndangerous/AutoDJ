@@ -3848,7 +3848,99 @@ describe("several stations (#70)", () => {
     }
   });
 
-  it("is not off air when the new station's state fails to load; only a 409 says stopped", async () => {
+  it("names a voice track not booked, with the clockwheel changes, in the one question", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    const voicePath = "../../src/autodj/static/modules/voice-tracker.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    const voice = { refresh: async () => {}, toggle() {}, clear: vi.fn(), hasUnsavedWork: () => true };
+    vi.doMock(voicePath, async () => ({
+      ...(await vi.importActual(voicePath)),
+      installVoiceTracker: () => voice,
+    }));
+    try {
+      await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      expect(document.getElementById("confirm-message").textContent).toBe(
+        "Switching discards the clockwheel changes not saved yet and the voice track not booked yet.");
+      expect(voice.clear).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock(clockwheelPath);
+      vi.doUnmock(voicePath);
+    }
+  });
+
+  it("leaves focus on the Station button after the question, answered either way", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    try {
+      const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const sockets = trackSockets(app.WebSocketImpl);
+      // As a browser does: a modal dialog gives focus back to what had it.
+      const confirm = document.getElementById("confirm-dialog");
+      let opener = null;
+      confirm.showModal = vi.fn(() => {
+        opener = document.activeElement;
+        confirm.open = true;
+      });
+      confirm.close = vi.fn((value) => {
+        confirm.open = false;
+        confirm.returnValue = value;
+        opener?.focus();
+        confirm.dispatchEvent(new Event("close"));
+      });
+      const button = document.getElementById("station-button");
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      expect(opener).toBe(button);
+      expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
+      document.getElementById("confirm-cancel").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(document.activeElement).toBe(button);
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      document.getElementById("confirm-accept").click();
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      await vi.waitFor(() => expect(document.getElementById("page-heading").textContent)
+        .toBe("AutoDJ: Night Owl Radio"));
+      expect(document.activeElement).toBe(button);
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
+  it("says a station off air when its state answers 409 on a switch", async () => {
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => (url === "/api/stations/nightowl/status"
+        ? jsonResponse({ detail: "Night Owl Radio is not running." }, 409)
+        : owlRequests(url)),
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    chooseOwl();
+    await vi.waitFor(() => expect(document.getElementById("station-off-air").hidden).toBe(false));
+    expect(document.getElementById("station-off-air-text").textContent).toBe("Night Owl Radio is off air.");
+    expect(document.getElementById("conn-status").textContent).toBe("Off air");
+    expect(sockets).toHaveLength(0);
+  });
+
+  it("is not off air when the new station's state fails with anything but a 409", async () => {
     const app = await setupApp({
       stations: [AUTODJ, OWL],
       onRequest: (url) => (url === "/api/stations/nightowl/status"
