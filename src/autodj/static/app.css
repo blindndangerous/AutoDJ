@@ -842,7 +842,6 @@
     #track-info-details[hidden] { display: none; }
     #track-info-details dt { color: var(--text-dim); }
     #track-info-details dd { min-width: 0; }
-    #points-path { width: 100%; max-width: 48rem; }
     #points-fields { display: grid; gap: 0.5rem; margin: 0.75rem 0; }
     .cue-point-row {
       display: grid;

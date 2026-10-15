@@ -1996,6 +1996,17 @@ describe("static accessibility contracts", () => {
 
   });
 
+  it("puts a short visible line under each cue point, not linked to its field", () => {
+    installDocument({ html: htmlSource });
+    for (const name of ["start", "intro", "outro", "segue", "end", "overlap-start"]) {
+      const help = document.getElementById(`points-help-${name}`);
+      expect(help.classList.contains("setting-desc"), name).toBe(true);
+      expect(help.previousElementSibling.classList.contains("cue-point-row"), name).toBe(true);
+    }
+    expect(document.querySelector('[data-point="start"]').hasAttribute("aria-describedby")).toBe(false);
+    expect(document.getElementById("points-path").type).toBe("hidden");
+  });
+
   it("gives the other stream formats labelled selects, help and a plain address list", () => {
     installDocument();
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)

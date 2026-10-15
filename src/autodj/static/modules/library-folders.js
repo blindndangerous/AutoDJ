@@ -348,6 +348,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
       field.value = formatPointTime(points?.[name]);
       const applicable = currentKind === "liner" ? ["start", "segue", "end", "overlap_start"].includes(name) : name !== "overlap_start";
       field.closest("label").hidden = !applicable;
+      const help = doc.getElementById(`points-help-${name.replace("_", "-")}`);
+      if (help) help.hidden = !applicable;
       doc.querySelector(`[data-preview="${name}"]`).hidden = !applicable;
       const setCurrent = doc.querySelector(`[data-set-current="${name}"]`);
       if (setCurrent) setCurrent.hidden = !applicable;
