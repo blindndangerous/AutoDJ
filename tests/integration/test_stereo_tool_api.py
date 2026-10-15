@@ -182,7 +182,11 @@ def test_download_installs_into_the_index_folder_and_audits(
     assert response.status_code == 200
     assert response.json() == {"version": "11.05"}
     assert calls == [tmp_path]
-    actions = [json.loads(record.getMessage()) for record in caplog.records]
+    actions = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.name == "autodj.audit"
+    ]
     assert {"action": "stereo-tool-download", "outcome": "success", "status": 200}.items() <= next(
         entry for entry in actions if entry["action"] == "stereo-tool-download"
     ).items()

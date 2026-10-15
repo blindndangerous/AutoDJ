@@ -89,10 +89,6 @@ class NoBuildError(DownloadError):
     """Thimeo offers no command-line build for this computer."""
 
 
-class LicenseLocked(RuntimeError):
-    """The licence comes from the configuration or environment, not the page."""
-
-
 # ---------------------------------------------------------------------------
 # Changes the running masters must notice
 # ---------------------------------------------------------------------------
