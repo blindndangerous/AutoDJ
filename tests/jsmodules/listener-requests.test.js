@@ -234,6 +234,28 @@ describe("listener requests card", () => {
     expect(byId("requests-list").children).toHaveLength(2);
   });
 
+  it("never says unavailable on the pressed button while it sends (#331)", async () => {
+    install();
+    await flush();
+    let release;
+    request.mockImplementation((url, options) => (options?.method === "POST"
+      ? new Promise((resolve) => { release = () => resolve({ ...STATE, pending: [WAITING[1]] }); })
+      : Promise.resolve(STATE)));
+    const approve = row(A).querySelector('[data-action="approve"]');
+    approve.focus();
+    approve.click();
+    expect(approve.hasAttribute("aria-disabled")).toBe(false);
+    expect(approve.classList.contains("is-pending")).toBe(true);
+    // Busy, a state NVDA can report, in place of "unavailable".
+    expect(approve.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(approve);
+    // A second press while the first sends sends nothing.
+    approve.click();
+    expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(row(A)).toBeUndefined());
+  });
+
   it("does nothing without its markup", () => {
     document.body.innerHTML = "";
     expect(installListenerRequests({ doc: document, request }).refresh).toBeTypeOf("function");

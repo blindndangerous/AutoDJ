@@ -13,6 +13,7 @@
 // to the settings status region; a refused save shows its error in words
 // under the form, linked to the field it is about, and focus moves there.
 
+import { staleActionText } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
@@ -70,6 +71,10 @@ export function installLiveSettings({
   let editing = null;
   let returnFocus = null;
   let generation = 0;
+  // The Save buttons with a request on the go: another press waits.  No
+  // aria-disabled, or NVDA says "unavailable" on the pressed button (#331);
+  // aria-busy says it is busy instead.
+  const saving = new Set();
 
   function link(control, errorNode, on) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
@@ -216,17 +221,24 @@ export function installLiveSettings({
       return false;
     }
     try {
-      control?.setAttribute("aria-disabled", "true");
+      saving.add(control);
+      control?.classList.add("is-pending");
+      control?.setAttribute("aria-busy", "true");
       await request("/api/live/djs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
     } catch (err) {
-      fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
+      // Answered after a station switch: the form is the new station's (#70).
+      const left = staleActionText(err);
+      if (left) announce(left, !err.actionDone);
+      else fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
       return false;
     } finally {
-      control?.removeAttribute("aria-disabled");
+      saving.delete(control);
+      control?.classList.remove("is-pending");
+      control?.removeAttribute("aria-busy");
     }
     hideForm();
     await refresh();
@@ -245,7 +257,8 @@ export function installLiveSettings({
         try {
           await request(`/api/live/djs/${encodeURIComponent(dj.username)}`, { method: "DELETE" });
         } catch (err) {
-          announce(`Could not remove DJ ${dj.username}: ${err.message}`, true);
+          const left = staleActionText(err);
+          announce(left || `Could not remove DJ ${dj.username}: ${err.message}`, !err.actionDone);
           return null;
         }
         await refresh();
@@ -272,7 +285,9 @@ export function installLiveSettings({
       return;
     }
     try {
-      control.setAttribute("aria-disabled", "true");
+      saving.add(control);
+      control.classList.add("is-pending");
+      control.setAttribute("aria-busy", "true");
       const saved = await request("/api/live/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -280,11 +295,18 @@ export function installLiveSettings({
       });
       renderSettings(saved);
     } catch (err) {
+      const left = staleActionText(err);
+      if (left) {
+        announce(left, !err.actionDone);
+        return;
+      }
       const field = String(err.message).toLowerCase().includes("duck") ? duckField : returnField;
       fail(field, talkError, `Could not save the talk settings. ${err.message}`);
       return;
     } finally {
-      control.removeAttribute("aria-disabled");
+      saving.delete(control);
+      control.classList.remove("is-pending");
+      control.removeAttribute("aria-busy");
     }
     announce("Talk settings saved.");
   }
@@ -328,12 +350,12 @@ export function installLiveSettings({
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const control = id("dj-save");
-    if (control.getAttribute("aria-disabled") === "true") return;
+    if (saving.has(control)) return;
     void saveDj(control);
   });
   id("talkover-save").addEventListener("click", (event) => {
     const control = event.currentTarget;
-    if (control.getAttribute("aria-disabled") === "true") return;
+    if (saving.has(control)) return;
     void saveTalkover(control);
   });
   id("source-copy").addEventListener("click", async () => {

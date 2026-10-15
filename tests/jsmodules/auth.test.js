@@ -11,6 +11,7 @@ import {
 } from "../../src/autodj/static/modules/auth.js";
 import { AuthenticationRequiredError } from
   "../../src/autodj/static/modules/api-client.js";
+import { NBSP } from "../../src/autodj/static/modules/live-region.js";
 
 function installDialogMarkup() {
   document.body.innerHTML = `<dialog id="auth-dialog"
@@ -183,13 +184,21 @@ describe("initAuthDialog", () => {
 
     els.token.value = "bad-one";
     await auth.submit();
+    const first = els.error.textContent;
     els.token.value = "bad-two";
     await auth.submit();
     await Promise.resolve();
     observer.disconnect();
 
-    expect(els.error.textContent).toBe("That pairing code is invalid or expired.");
+    expect(first).toBe("That pairing code is invalid or expired.");
+    // Chrome merges the clear and the same text into no change, so NVDA
+    // stayed silent on the second wrong code: the repeat ends in a no-break
+    // space, and the third is plain again.
+    expect(els.error.textContent).toBe(`${first}${NBSP}`);
     expect(mutations).toContain("");
+    els.token.value = "bad-three";
+    await auth.submit();
+    expect(els.error.textContent).toBe(first);
     expect(els.token.getAttribute("aria-invalid")).toBe("true");
     // Spoken once, by the alert; the refocused field does not repeat it.
     expect(els.token.getAttribute("aria-describedby") ?? "").not.toContain("auth-error");

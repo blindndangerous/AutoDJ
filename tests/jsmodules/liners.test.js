@@ -99,6 +99,63 @@ describe("liner authentication races", () => {
     vi.unstubAllGlobals();
   });
 
+  it("says nothing for a failed liner load that was for the station just left (#70)", async () => {
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    const status = document.querySelector("#liner-status");
+    installLiners({
+      lnFileList: document.createElement("ul"),
+      lnFolderDisplay: document.createElement("span"),
+      lnStatus: status,
+      lnTestBtn: document.querySelector("#liner-test"),
+    }, { canPlay: () => false, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => false });
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+    selectStation("night");
+    answer(new globalThis.Response(JSON.stringify({ detail: "boom" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(status.textContent).toBe("");
+  });
+
+  it("clears the old station's liners on a switch, and says when the new one's fail to load (#70)", async () => {
+    const json = (body, status = 200) => new globalThis.Response(JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } });
+    const replies = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { replies.push(resolve); })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const status = document.querySelector("#liner-status");
+    const fileList = document.createElement("ul");
+    const folder = document.createElement("span");
+    const controls = installLiners({
+      lnFileList: fileList, lnFolderDisplay: folder, lnStatus: status,
+      lnTestBtn: document.querySelector("#liner-test"),
+    }, { canPlay: () => false, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => false });
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    replies[0](json({ folder: "N:/old", config: { enabled: true }, files: ["old.mp3"] }));
+    await vi.waitFor(() => expect(fileList.textContent).toContain("old.mp3"));
+
+    // A load still on its way when the switch comes writes nothing.
+    const late = controls.refresh();
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    controls.clear();
+    expect(fileList.children).toHaveLength(0);
+    expect(folder.textContent).toBe("");
+    replies[1](json({ folder: "N:/old", config: { enabled: true }, files: ["late.mp3"] }));
+    await late;
+    expect(fileList.children).toHaveLength(0);
+
+    // The new station's load fails: that is said.
+    const failed = controls.refresh();
+    await vi.waitFor(() => expect(replies).toHaveLength(3));
+    replies[2](json({ detail: "Liners folder not found." }, 404));
+    await failed;
+    await vi.waitFor(() => expect(status.textContent).toBe("Could not load liners: Liners folder not found."));
+    expect(fileList.children).toHaveLength(0);
+  });
+
   it("allows only one scheduled liner request until the prior one settles", async () => {
     vi.useFakeTimers();
     let rejectFirstAudio;
