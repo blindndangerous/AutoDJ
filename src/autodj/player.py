@@ -4832,6 +4832,7 @@ class Player:
             )
         is_liner = self._is_liner(current)
         clips, events, release = [], [], 0.0
+        liner_spans = []
         negative_constraints, zero_constraints = [], []
         has_negative_overlap = has_ordinary_overlap = False
         first_overlap_negative = False
@@ -4842,6 +4843,7 @@ class Player:
         if is_liner:
             clips.append(source[source_start:end])
             frames = end - source_start
+            liner_spans.append((0.0, frames / SAMPLE_RATE))
             segue = points.get("segue")
             main_frames = (
                 frames
@@ -4927,6 +4929,7 @@ class Player:
                 )
                 if added is not None:
                     events.append((added[0], liner_entry, queued))
+                    liner_spans.append((added[0] / SAMPLE_RATE, frames / SAMPLE_RATE))
             except (OSError, ValueError, RuntimeError):
                 logger.exception(
                     "Cannot prepare liner %s; leaving music playable", liner_entry.path
@@ -4983,6 +4986,8 @@ class Player:
             outro_lead_limit=outro_lead_limit,
             duck_spans=tuple((at / SAMPLE_RATE, end / SAMPLE_RATE) for at, _id, end in voiced),
             duck_db=duck_db,
+            liner_duck_spans=tuple(liner_spans),
+            liner_duck_db=self._cfg.playback.liners_duck_db,
         )
         overlap = len(handoff.next_overlay)
         # A view of handoff.full_audio: adding the head here completes the render.
@@ -5105,14 +5110,14 @@ class Player:
         return spoken
 
     def _load_break_audio(self, item: Break) -> np.ndarray:
-        """A break's audio, processed like a voice liner when the station processes them."""
+        """A break's audio, lightly compressed and leveled when processing is on."""
         limit = item.limit_s if item.limit_s is not None else self.break_desk.config.max_seconds
         return self._load_voice_audio(item.path, float(limit))
 
     def _load_voice_audio(self, path: Path, limit: float) -> np.ndarray:
         """A spoken clip's audio (a break or a matched intro), at most *limit* seconds.
 
-        Processed like a voice liner when the station processes them.  The
+        Lightly compressed and leveled when station processing is on.  The
         header is checked again before anything is decoded
         (:mod:`autodj.break_audio`), and FFmpeg is told the demuxer, so it
         probes nothing.
@@ -5124,7 +5129,7 @@ class Player:
 
             check_break_audio(path, limit)
             audio, _measurement = load_and_measure_audio(
-                path, "liner", limit + 1.0, input_format=demuxer_for(path)
+                path, "voice", limit + 1.0, input_format=demuxer_for(path)
             )
             return audio
         return decode_break(path, limit)

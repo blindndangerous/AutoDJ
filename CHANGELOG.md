@@ -54,6 +54,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Liners and voice tracks use the same preparation loudness as music in Smooth and Stereo Tool.
+  Produced IDs no longer receive an extra compressor; spoken breaks and matched intros use
+  lighter 2:1 compression. AGC drive and master processing stay unchanged. **Music duck (dB)**
+  in Settings, Liners defaults to 3 dB, uses smooth ramps, and also applies to scheduled IDs.
+  Existing saved duck depths, including zero, are kept; break-specific ducking still takes
+  precedence for spoken breaks. Old liner measurements refresh automatically (#402).
+
 - **Breaking:** `[playback] stereotool_path` now names Thimeo's Stereo Tool plugin library
   (`libStereoTool_*.so` or `.dll`), not the command-line program `stereo_tool_cmd`. A
   configuration that points it at `stereo_tool_cmd` stops processing with Stereo Tool after the

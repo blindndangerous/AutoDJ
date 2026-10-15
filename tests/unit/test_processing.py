@@ -35,11 +35,11 @@ def test_quiet_break_accepted_for_upload_can_be_processed_for_air(tmp_path: Path
     sf.write(source, np.column_stack((voice, voice)), SAMPLE_RATE)
     assert _decode_cues(source, 300.0)
     audio, measurement = processing.load_and_measure_audio(
-        source, "liner", 301.0, input_format="wav"
+        source, "voice", 301.0, input_format="wav"
     )
     assert len(audio) > 0
     assert measurement["gain_db"] == processing.MAX_GAIN_DB
-    assert processing.loudness_matches(measurement, source, "liner")
+    assert processing.loudness_matches(measurement, source, "voice")
 
 
 def _mono_48k_source(path: Path) -> Path:
@@ -73,11 +73,11 @@ def test_liner_filter_preserves_duration_and_relative_level(tmp_path: Path) -> N
 
     assert liner_audio.shape == music_audio.shape
     assert np.isfinite(liner_audio).all()
-    assert liner_measurement["lufs"] != pytest.approx(music["lufs"], abs=0.05)
-    # Targets preserve the requested 3 dB liner advantage.
+    assert liner_measurement["lufs"] == pytest.approx(music["lufs"], abs=0.2)
+    # IDs and music have the same loudness target.
     assert (
         liner_measurement["lufs"] + liner_measurement["gain_db"] - music["lufs"] - music["gain_db"]
-    ) == pytest.approx(3.0)
+    ) == pytest.approx(0.0)
 
 
 def test_loudness_validation_rejects_silence_stale_and_bad_gain(tmp_path: Path) -> None:
@@ -105,7 +105,7 @@ def test_processed_audio_obeys_max_seconds(tmp_path: Path) -> None:
         processing.load_processed_audio(source, liner_measurement, "liner", max_seconds=1.0)
 
 
-@pytest.mark.parametrize("kind", ["music", "liner"])
+@pytest.mark.parametrize("kind", ["music", "liner", "voice"])
 def test_mono_48k_processing_uses_only_memory_pipe(tmp_path: Path, monkeypatch, kind: str) -> None:
     source = _mono_48k_source(tmp_path / f"{kind}.wav")
     monkeypatch.setattr(
@@ -347,7 +347,7 @@ def test_source_replacement_during_processing_is_rejected(
             processing.load_processed_audio(source, measurement)
 
 
-@pytest.mark.parametrize("kind", ["music", "liner"])
+@pytest.mark.parametrize("kind", ["music", "liner", "voice"])
 @pytest.mark.parametrize("maker", [_source, _mono_48k_source])
 def test_one_pass_decode_and_measure_matches_the_two_passes(tmp_path: Path, kind, maker) -> None:
     """A loudness cache miss decodes once and gives the same samples and measurement."""
@@ -455,3 +455,33 @@ def test_unknown_raw_aac_duration_is_not_used_for_refusal(tmp_path, monkeypatch)
         lambda _source: SimpleNamespace(info=SimpleNamespace(length=1000.0)),
     )
     assert processing.probe_seconds(tmp_path / "song.aac") is None
+
+
+def test_produced_ids_keep_dynamics_and_spoken_voices_get_lighter_compression(tmp_path):
+    rate = processing.SAMPLE_RATE
+    t = np.arange(4 * rate, dtype=np.float32) / rate
+    tone = np.sin(2 * np.pi * 440 * t)
+    tone[: 2 * rate] *= 0.1
+    tone[2 * rate :] *= 0.8
+    source = tmp_path / "two-levels.wav"
+    sf.write(source, np.column_stack((tone, tone)), rate, subtype="FLOAT")
+    gaps = {}
+    for kind in ("liner", "voice"):
+        audio, measurement = processing.load_and_measure_audio(source, kind)
+        quiet = np.sqrt(np.mean(audio[rate : 2 * rate] ** 2))
+        loud = np.sqrt(np.mean(audio[3 * rate :] ** 2))
+        gaps[kind] = 20 * np.log10(loud / quiet)
+        assert measurement["lufs"] + measurement["gain_db"] == pytest.approx(-28)
+    assert gaps["liner"] == pytest.approx(18.06, abs=0.2)
+    assert 7 < gaps["voice"] < 12
+
+
+def test_new_liner_recipe_invalidates_old_measurements_but_keeps_music_cache(tmp_path):
+    source = _source(tmp_path / "source.wav")
+    music = processing.analyze_loudness(source, "music")
+    liner = processing.analyze_loudness(source, "liner")
+    assert music["version"] == "loudness-v1"
+    assert processing.loudness_matches(music, source, "music")
+    assert not processing.loudness_matches(dict(liner, version="loudness-v1"), source, "liner")
+    assert processing.loudness_matches(liner, source, "liner")
+    assert not processing.loudness_matches(liner, source, "voice")

@@ -1087,8 +1087,9 @@ describe("browser playback robustness", () => {
     engine.duckMusic(0.25, 3);
 
     const duck = context.createGain.mock.results[gainsBefore].value;
-    expect(duck.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 2.2);
-    expect(duck.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(1, 5.2);
+    expect(duck.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.25, 2.25);
+    expect(duck.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(1, 5.25);
+    expect(duck.gain.setValueAtTime).toHaveBeenCalledWith(0.25, 5);
     expect(duck.connect).toHaveBeenCalledWith(engine._master);
     for (const deck of engine.decks) {
       expect(deck.gain.gain.cancelScheduledValues).not.toHaveBeenCalled();
