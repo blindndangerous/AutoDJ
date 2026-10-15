@@ -15,7 +15,9 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -656,6 +658,40 @@ class TestLiners:
         assert replaced.status_code == 422
         assert (folder / "id.wav").read_bytes() == audio
         assert [path.name for path in folder.iterdir()] == ["id.wav"]
+
+    @pytest.mark.parametrize(
+        "failure",
+        [subprocess.TimeoutExpired(["ffprobe"], 30), PermissionError(13, "Access is denied")],
+    )
+    def test_a_liner_that_could_not_be_checked_is_refused_in_words(
+        self, bridge, tmp_path, monkeypatch, failure
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj import break_audio
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        monkeypatch.setattr(break_audio.shutil, "which", lambda _name: "ffprobe")
+
+        def hangs(*_args: object, **_kwargs: object) -> None:
+            raise failure
+
+        monkeypatch.setattr(break_audio.subprocess, "run", hangs)
+        monkeypatch.setattr(
+            break_audio,
+            "check_playable",
+            functools.partial(break_audio.check_playable, runner=hangs),
+        )
+        tc = TestClient(create_app(bridge))
+        mp4 = b"\0\0\0\x18ftypM4A " + b"rest of the file"
+        refused = tc.post("/api/liners/upload", files={"file": ("promo.m4a", mp4)})
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == (
+            "Could not check promo.m4a, so it was not saved. Try again in a moment."
+        )
+        assert list(folder.iterdir()) == []
 
     def test_a_new_liner_upload_does_not_inherit_left_behind_dates(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient

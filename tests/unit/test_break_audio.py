@@ -14,6 +14,7 @@ import soundfile as sf
 
 from autodj import break_audio
 from autodj.break_audio import (
+    AudioCheckError,
     BreakAudioError,
     check_break_audio,
     check_playable,
@@ -103,6 +104,73 @@ def test_a_liner_check_has_no_break_limits_but_refuses_what_is_not_audio(tmp_pat
     (tmp_path / "c.m4a").write_bytes(b"not an mp4 at all")
     with pytest.raises(BreakAudioError):
         check_playable(tmp_path / "c.m4a", runner=runner)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "fmt", "subtype"),
+    [(".mp3", "MP3", None), (".flac", "FLAC", None), (".ogg", "OGG", "VORBIS")],
+)
+def test_a_liner_check_takes_real_mp3_flac_and_ogg(tmp_path, suffix, fmt, subtype):
+    if fmt not in sf.available_formats():
+        pytest.skip(f"this libsndfile cannot write {fmt}")
+    path = tmp_path / f"liner{suffix}"
+    try:
+        write(path, seconds=0.5, format=fmt, subtype=subtype)
+    except (RuntimeError, sf.LibsndfileError) as exc:  # pragma: no cover -- old libsndfile
+        pytest.skip(f"this libsndfile cannot write {fmt}: {exc}")
+    check_playable(path)
+    # A staging file is checked as the type its upload names.
+    staged = tmp_path / f".liner{suffix}.0123.part"
+    staged.write_bytes(path.read_bytes())
+    check_playable(staged, suffix)
+
+
+def test_a_liner_soundfile_cannot_read_goes_to_ffprobe_before_it_is_refused(tmp_path):
+    path = tmp_path / "odd.mp3"
+    path.write_bytes(b"ID3 frames libsndfile does not read")
+    runner = MagicMock(return_value=_ffprobe_reply(44100, 2))
+    with (
+        patch.object(break_audio.sf, "info", side_effect=RuntimeError("unreadable")),
+        patch.object(break_audio.shutil, "which", return_value="ffprobe"),
+    ):
+        check_playable(path, runner=runner)
+    argv = runner.call_args.args[0]
+    assert argv[argv.index("-f") + 1] == "mp3"
+    runner.return_value = MagicMock(stdout=b"{}")
+    with (
+        patch.object(break_audio.sf, "info", side_effect=RuntimeError("unreadable")),
+        patch.object(break_audio.shutil, "which", return_value="ffprobe"),
+        pytest.raises(BreakAudioError),
+    ):
+        check_playable(path, runner=runner)
+    # Without ffprobe nothing else can read it: refused.
+    with (
+        patch.object(break_audio.sf, "info", side_effect=RuntimeError("unreadable")),
+        patch.object(break_audio.shutil, "which", return_value=None),
+        pytest.raises(BreakAudioError),
+    ):
+        check_playable(path, runner=runner)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [subprocess.TimeoutExpired(["ffprobe"], 30), PermissionError(13, "Access is denied")],
+)
+def test_an_ffprobe_that_hangs_or_cannot_start_means_not_checked(tmp_path, failure):
+    path = tmp_path / "b.m4a"
+    path.write_bytes(MP4_HEAD + b"not read by soundfile")
+    runner = MagicMock(side_effect=failure)
+    with (
+        patch.object(break_audio.shutil, "which", return_value="ffprobe"),
+        pytest.raises(AudioCheckError, match="could not check"),
+    ):
+        check_playable(path, runner=runner)
+    # Breaks are refused with the same reason, not a crash.
+    with (
+        patch.object(break_audio.shutil, "which", return_value="ffprobe"),
+        pytest.raises(AudioCheckError),
+    ):
+        check_break_audio(path, 5.0, runner=runner)
 
 
 def test_only_break_types_have_a_demuxer():
