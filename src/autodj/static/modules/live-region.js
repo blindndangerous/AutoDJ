@@ -38,7 +38,7 @@ const _quiet = new WeakMap();
 const _pending = new WeakMap();
 // How long a region turned back on waits before new words go in, so the
 // browser has seen it on and says them.
-export const LIVE_AGAIN_MS = 100;
+const LIVE_AGAIN_MS = 100;
 
 function cancelPending(region) {
   const pending = _pending.get(region);
@@ -100,7 +100,7 @@ export function writeLive(region, text) {
 // VoiceOver do not say aria-busy on the focused control (#384).  A result
 // that comes sooner is the only thing said.  Call the returned function
 // when the request ends.
-export const PENDING_SAY_MS = 300;
+const PENDING_SAY_MS = 300;
 export function sayIfStillPending(say, text, delayMs = PENDING_SAY_MS) {
   const timer = setTimeout(() => say(text), delayMs);
   return () => clearTimeout(timer);
