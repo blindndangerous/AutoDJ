@@ -148,7 +148,9 @@ jobs:
 
   browser:
     name: Browser assertions (Chromium, Firefox)
-    needs: [test, frontend]
+    # Waits only for the quick lint and JS tests, not the Python suites,
+    # so it starts about 10 minutes sooner.
+    needs: [frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
