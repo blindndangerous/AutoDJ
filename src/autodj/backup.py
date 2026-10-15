@@ -12,8 +12,8 @@ that wrote it and the list of files) and these members:
   ``index/matched_intros.json``, ``index/intro_rules.json``, ``index/ads.json``,
   ``index/shows.json`` and ``index/live_djs.json`` from the active index folder.
   The live DJ accounts are kept without password hashes, so each DJ's password
-  must be set again after a restore.  ``relays.json``, which holds relay source
-  passwords, is never backed up (:data:`SECRET_STATE_FILES`).
+  must be set again after a restore.  ``relays.json`` and ``secrets.json``, which
+  hold a station's passwords, are never backed up (:data:`SECRET_STATE_FILES`).
 - ``liners/...``, ``carts/...``, ``time_checks/...``, ``profiles/...``, ``clockwheels/...``,
   ``intros/...`` (the matched intros' audio), ``ads/...`` (the ad spots' audio) and
   ``ad_plays/...`` (the ad play log, #51): every file in those folders and their
@@ -95,7 +95,7 @@ INDEX_FILES = (
 # Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
 _LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
 #: Relay source passwords stay on the machine, including when restoring older archives.
-SECRET_STATE_FILES = frozenset({"relays.json"})
+SECRET_STATE_FILES = frozenset({"relays.json", "secrets.json"})
 _FOLDERS = (
     "liners",
     "carts",

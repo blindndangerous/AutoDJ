@@ -1604,7 +1604,8 @@ loudness_processing = "smooth"
 folder = "recordings/nightowl"
 ```
 
-In `config.local.toml`, beside the default station's secrets:
+In `config.local.toml`, beside the default station's secrets. `autodj serve` moves them into
+the station's own files:
 
 ```toml
 [stations.nightowl.stream]
@@ -1687,10 +1688,11 @@ Stereo Tool preset files remain shared.
 
 AutoDJ stores the definition at `<index_dir>/<name>/stations/<slug>/station.json` alongside
 that station's state. A station's secrets (its stream relays, listener user and password, and
-webhooks) never go in `station.json`: put them under `[stations.<slug>]` in `config.toml` or
-`config.local.toml`. When `autodj serve` moves a `[stations.<slug>]` table into `station.json`,
-it leaves `config.toml` as it is, which may be read-only; after that only the secrets in that
-table are read, and a warning lists anything else left there to remove. Moved stations come
+webhooks) never go in `station.json`. They go beside it in `relays.json` and `secrets.json`,
+which only your account can read and backups leave out. When `autodj serve` finds a
+`[stations.<slug>]` table in `config.toml` or `config.local.toml`, it moves the station into
+those files unless it already has them. It leaves both config files as they are, which may be
+read-only, and warns that the table is no longer read and should be removed. Moved stations come
 before stations made in the page, in `config.toml`'s order. To remove a web-created station, stop AutoDJ and move its station folder
 away. There is no delete button yet.
 
@@ -1727,8 +1729,8 @@ other sites:
   The page still shows the station's name and says it is off air right now; an open page notices
   when the station is back on air and shows the song again. The feed answers
   `{"detail": "That station is off air"}`.
-- Each station sends its own track-change webhooks, set in `config.local.toml` under
-  `[[stations.<slug>.webhooks]]`, with only that station's feed.
+- Each station sends its own track-change webhooks, kept in its `secrets.json`, with only
+  that station's feed.
 
 Every control route of a station answers under `/api/stations/<slug>/`, for example
 `/api/stations/nightowl/status`, `/api/stations/nightowl/skip` or
