@@ -16,6 +16,7 @@ from autodj import break_audio
 from autodj.break_audio import (
     BreakAudioError,
     check_break_audio,
+    check_playable,
     decode_break,
     demuxer_for,
 )
@@ -74,6 +75,34 @@ def test_contents_must_match_the_extension(tmp_path):
     path.write_bytes((write(tmp_path / "real.wav")).read_bytes())
     with pytest.raises(BreakAudioError, match=r"not \.mp3 audio"):
         check_break_audio(path, 5.0)
+
+
+def test_a_liner_check_has_no_break_limits_but_refuses_what_is_not_audio(tmp_path):
+    # A long six-channel WAV is a liner AutoDJ can play, though not a break.
+    check_playable(write(tmp_path / "wide.wav", seconds=3.0, channels=6))
+    # A staging file is checked as the type its upload names.
+    staged = write(tmp_path / ".id.wav.0123.part", format="WAV")
+    check_playable(staged, ".wav")
+    text = tmp_path / "broken.mp3"
+    text.write_bytes(b"not audio")
+    for path, suffix in ((text, None), (staged, ".mp3"), (staged, ".txt")):
+        with pytest.raises(BreakAudioError):
+            check_playable(path, suffix)
+    # An MP4 must start as one; without ffprobe its stream is not read.
+    m4a = tmp_path / "b.m4a"
+    m4a.write_bytes(MP4_HEAD + b"not read by soundfile")
+    runner = MagicMock(return_value=MagicMock(stdout=b"{}"))
+    with patch.object(break_audio.shutil, "which", return_value=None):
+        check_playable(m4a, runner=runner)
+    runner.assert_not_called()
+    with (
+        patch.object(break_audio.shutil, "which", return_value="ffprobe"),
+        pytest.raises(BreakAudioError),
+    ):
+        check_playable(m4a, runner=runner)
+    (tmp_path / "c.m4a").write_bytes(b"not an mp4 at all")
+    with pytest.raises(BreakAudioError):
+        check_playable(tmp_path / "c.m4a", runner=runner)
 
 
 def test_only_break_types_have_a_demuxer():

@@ -160,6 +160,43 @@ def check_break_audio(
     return "ffmpeg"
 
 
+def check_playable(
+    path: Path,
+    suffix: str | None = None,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Refuse a file that is not audio AutoDJ can play (a voice liner, #323).
+
+    The header check of :func:`check_break_audio` without a break's rate,
+    channel and length limits.  *suffix* names the type when *path* is a
+    staging file whose own name ends otherwise.  An MP4 or AAC file must
+    start as one; its stream is read only where FFmpeg's ffprobe is
+    installed, since the browser plays it without FFmpeg.
+
+    Raises:
+        BreakAudioError: The type is not a liner type, or the contents are
+            not audio of that type.
+    """
+    path = Path(path)
+    suffix = (suffix or path.suffix).lower()
+    demuxer = DEMUXERS.get(suffix)
+    if demuxer is None:
+        raise BreakAudioError("it is not audio AutoDJ can play")
+    try:
+        info = sf.info(str(path))
+    except (RuntimeError, OSError):
+        info = None
+    if info is not None:
+        if info.format not in _SOUNDFILE_FORMATS.get(suffix, frozenset()):
+            raise BreakAudioError(f"its contents are not {suffix} audio")
+        return
+    if suffix in _SOUNDFILE_FORMATS or not _looks_like(path, suffix):
+        raise BreakAudioError("it is not audio AutoDJ can play")
+    if shutil.which("ffprobe") is not None:
+        _ffprobe(path, demuxer, runner)
+
+
 def _looks_like(path: Path, suffix: str) -> bool:
     """Whether *path* starts as an MP4 (``.m4a``) or an AAC (``.aac``) file does."""
     try:
@@ -297,6 +334,7 @@ __all__ = [
     "MAX_RATE",
     "BreakAudioError",
     "check_break_audio",
+    "check_playable",
     "decode_break",
     "demuxer_for",
 ]

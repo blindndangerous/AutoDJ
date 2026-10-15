@@ -1703,6 +1703,7 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, file: UploadFile = File(...), replace: bool = False
     ) -> dict[str, str | int]:
         """Validate, bound, and atomically store a liner clip."""
+        from autodj.break_audio import BreakAudioError, check_playable
         from autodj.liner_files import (
             InvalidLinerName,
             LinerConflictError,
@@ -1740,6 +1741,9 @@ def install_station_routes(router: StationRouter) -> None:
                 file,
                 max_bytes=station.cfg.server.liner_upload_max_bytes,
                 replace=replace,
+                # A file that is not audio is refused now, not when it plays
+                # (#323), with the header check the breaks use.
+                check=lambda part: check_playable(part, os.path.splitext(name)[1]),
             )
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1747,6 +1751,10 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except BreakAudioError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"{name} is not an audio file AutoDJ can play."
+            ) from exc
         return {"filename": target.name, "size": size}
 
     @router.delete("/liners/file/{name}")
