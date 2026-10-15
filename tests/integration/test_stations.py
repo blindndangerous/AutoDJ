@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,6 +20,28 @@ from autodj.server import create_app
 from autodj.stations import SharedLibrary, StationPaths, StationRegistry, StationRuntime
 
 from ._helpers import _make_player_mock, _make_sim_mock
+
+
+def test_live_dj_title_reaches_extra_mounts() -> None:
+    bridge = SimpleNamespace(
+        _history_lock=threading.Lock(),
+        _open_play=None,
+        _play_history=[],
+        stream=MagicMock(),
+        relays=MagicMock(),
+        mounts=MagicMock(),
+    )
+    live = SimpleNamespace(status=lambda: {"dj": "DJ Kay", "since": 0.0}, title="Friday Mix")
+    runtime = SimpleNamespace(
+        bridge=bridge,
+        live=live,
+        ledger=None,
+        _live_row=None,
+        player=SimpleNamespace(break_desk=None),
+        public_state_changed=lambda: None,
+    )
+    StationRuntime._live_started(runtime)
+    bridge.mounts.set_title.assert_called_once_with("DJ Kay", "Friday Mix")
 
 
 def _config(tmp_path: Path, *, liners: str | None = None, clips: str | None = None) -> AutoDJConfig:

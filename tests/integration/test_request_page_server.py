@@ -149,6 +149,8 @@ def test_a_form_needs_its_token_and_this_sites_origin(bridge, tmp_path: Path) ->
     assert client.post("/requests", data={"token": token, "track": track}).status_code == 403
     forged = _send(client, track, "1." + "0" * 32)
     assert forged.status_code == 403
+    # A non-ASCII token is refused the same way, not a 500.
+    assert _send(client, track, token.partition(".")[0] + "." + "é" * 32).status_code == 403
     assert "This form has expired" in forged.text
     # Nothing else is accepted: unknown fields, repeats, other encodings, big bodies.
     assert (

@@ -504,8 +504,14 @@ describe("uploaded clips", () => {
   it("uploads a clip and chooses it for the cart being edited", async () => {
     const { server } = await install();
     const input = byId("cart-upload-file");
+    // The Uploaded clips card is closed by default; Upload with no file
+    // opens it before focus moves to the file field.
+    const card = input.closest("details");
+    expect(card.open).toBe(false);
     byId("cart-upload").click();
     expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(card.open).toBe(true);
+    expect(document.activeElement).toBe(input);
     Object.defineProperty(input, "files", { value: [new globalThis.File(["RIFF"], "bed.wav")], configurable: true });
     byId("cart-upload").click();
     await vi.waitFor(() => expect(byId("cart-status").textContent).toMatch(/^Uploaded bed.wav/));

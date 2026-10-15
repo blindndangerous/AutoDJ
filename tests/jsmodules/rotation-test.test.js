@@ -111,7 +111,7 @@ describe("rotation test helpers", () => {
   it("renders sections as headings and lists, with nested lists for items", () => {
     const box = document.createElement("div");
     renderSections(document, box, SECTIONS);
-    expect([...box.querySelectorAll("h5")].map((node) => node.textContent)).toEqual(["Summary", "Categories"]);
+    expect([...box.querySelectorAll("h6")].map((node) => node.textContent)).toEqual(["Summary", "Categories"]);
     expect(box.querySelectorAll(":scope > ul").length).toBe(2);
     const nested = box.querySelector("ul ul li");
     expect(nested.textContent).toBe("Plays per song: fewest 8, most ten, average 9.");
@@ -151,7 +151,7 @@ describe("the Test rotation control", () => {
     await tick();
     expect(byId("rotation-progress-row").hidden).toBe(true);
     expect(byId("rotation-results").hidden).toBe(false);
-    expect([...byId("rotation-results-body").querySelectorAll("h5")].map((node) => node.textContent))
+    expect([...byId("rotation-results-body").querySelectorAll("h6")].map((node) => node.textContent))
       .toEqual(["Summary", "Categories"]);
     expect(status()).toBe(
       "Rotation test finished: 1,200 songs picked. The results are under Rotation test results.",
@@ -162,8 +162,12 @@ describe("the Test rotation control", () => {
   it("refuses a bad seed in words, on the field, without asking the server", async () => {
     const { calls } = harness({ POST: [], GET: [] });
     const seed = byId("rotation-seed");
+    // The Test rotation card is closed by default; the refused seed opens it.
+    const card = seed.closest("details");
+    expect(card.open).toBe(false);
     seed.value = "lucky";
     await press("rotation-run");
+    expect(card.open).toBe(true);
     expect(calls).toEqual([]);
     expect(seed.getAttribute("aria-invalid")).toBe("true");
     expect(seed.getAttribute("aria-describedby")).toBe("rotation-seed-desc rotation-error");

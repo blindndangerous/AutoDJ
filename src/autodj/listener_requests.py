@@ -223,6 +223,9 @@ class FormTokens:
 
     def valid(self, token: str, scope: str, track_id: str) -> bool:
         """Whether *token* was issued for *track_id* on *scope* within the last two hours."""
+        if not token.isascii():
+            # compare_digest raises TypeError on non-ASCII text: refuse it as a bad token.
+            return False
         issued_text, dot, mac = token.partition(".")
         if not dot or not issued_text.isdecimal() or len(issued_text) > 12 or len(mac) != 32:
             return False
@@ -1148,8 +1151,18 @@ class RequestDesk:
                 "plays of a song, an artist and an album. Please try another song, or this one "
                 "later.",
             )
+        queue_now = auto and placement.slot is not None
+        if not queue_now and len(self.book.pending()) >= cfg.max_pending:
+            # Checked before the listener's quota is used: only accepted
+            # requests count toward per_listener.
+            return Outcome(
+                429,
+                "Too many requests waiting",
+                "The station has many requests waiting already. Please try again later.",
+                retry_after=600,
+            )
         self.accepted.hit(address)
-        if auto and placement.slot is not None:
+        if queue_now and placement.slot is not None:
             slot = placement.slot
             self._on_queued()
             request = self.book.add(entry, name, QUEUED, placement.note, placement.bridges)
@@ -1161,13 +1174,6 @@ class RequestDesk:
                 200,
                 "Request accepted",
                 f"Thanks{_for(request.name)}. {_song(entry)} should play {when}.",
-            )
-        if len(self.book.pending()) >= cfg.max_pending:
-            return Outcome(
-                429,
-                "Too many requests waiting",
-                "The station has many requests waiting already. Please try again later.",
-                retry_after=600,
             )
         request = self.book.add(entry, name, PENDING, placement.note)
         logger.info("Listener request waiting: %s", entry.display_name)

@@ -1920,7 +1920,19 @@ describe("static accessibility contracts", () => {
     expect(fieldset.previousElementSibling.textContent).toBe("Stream");
     expect(document.querySelector("#stab-stream").hidden).toBe(true);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
-      .toEqual(["Relays", "Listeners", "Bans", "Listener statistics"]);
+      .toEqual(["Relays", "More formats", "Now-playing feed", "Listeners", "Bans",
+        "Listener statistics"]);
+    // Relays, More formats, the now-playing feed and Listener statistics
+    // are cards closed by default, each named by the heading in its summary.
+    const cards = [...fieldset.querySelectorAll("details")];
+    expect(cards.map((card) => card.querySelector(":scope > summary > h4").textContent.trim()))
+      .toEqual(["Relays", "More formats", "Now-playing feed", "Listener statistics"]);
+    for (const card of cards) {
+      expect(card.classList.contains("card")).toBe(true);
+      expect(card.open).toBe(false);
+      expect(card.parentElement).toBe(fieldset);
+      expect(card.querySelector("details")).toBeNull();
+    }
 
     const name = document.querySelector("#stream-station-name");
     expect(name.getAttribute("type")).toBe("text");
@@ -1970,19 +1982,20 @@ describe("static accessibility contracts", () => {
       expect(labelText(id)).toBeTruthy();
     }
 
-    // The general settings, the other formats, the now-playing group and
-    // broadcast recording come first; the Listeners, Bans and Listener
-    // statistics sections close the fieldset, so heading navigation never
-    // puts a general setting under one of them.
+    // The general settings and broadcast recording come first; the Relays,
+    // More formats and now-playing cards, then the Listeners and Bans
+    // sections and the Listener statistics card close the fieldset, so
+    // heading navigation never puts a general setting under one of them.
     const order = ["#stream-relays", "#stream-station-name", "#stream-bitrate",
-      "#stream-continuous", "#stream-formats", "#np-settings", "#recording-controls",
+      "#stream-continuous", "#recording-controls", "#stream-relay-settings",
+      "#stream-formats", "#np-settings",
       "#listener-control-title", "#listener-bans-title", "#listener-stats-title"]
       .map((selector) => document.querySelector(selector));
     for (let at = 1; at < order.length; at += 1) {
       expect(order[at - 1].compareDocumentPosition(order[at])
         & document.defaultView.Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    const stats = document.querySelector("#listener-stats-title").closest("section");
+    const stats = document.querySelector("#listener-stats-title").closest("details");
     expect(stats.nextElementSibling).toBeNull();
     expect(stats.parentElement).toBe(fieldset);
 
@@ -2007,6 +2020,53 @@ describe("static accessibility contracts", () => {
     expect(document.getElementById("points-path").type).toBe("hidden");
   });
 
+  it("folds long secondary groups into cards closed by default, one level deep", () => {
+    installDocument({ html: htmlSource });
+    // Each is a native <details class="card"> whose summary holds only the
+    // heading: the summary's name is the heading text, and the browser
+    // says expanded or collapsed, so no ARIA state is added.
+    const folded = [
+      ["#repeat-save", "#spanel-picking", "H4", "Repeats"],
+      ["#rotation-test", "#spanel-picking", "H4", "Test rotation"],
+      ["#stream-relay-add", "#spanel-stream", "H4", "Relays"],
+      ["#stream-formats", "#spanel-stream", "H4", "More formats"],
+      ["#np-settings", "#spanel-stream", "H4", "Now-playing feed"],
+      ["#listener-stats-summary", "#spanel-stream", "H4", "Listener statistics"],
+      ["#ads-rules-form", "#panel-ads", "H3", "Rules for every break"],
+      ["#ads-report-form", "#panel-ads", "H3", "Ad report"],
+      ["#cart-upload-file", "#panel-carts", "H3", "Uploaded clips"],
+    ];
+    for (const [inside, panel, level, title] of folded) {
+      const card = document.querySelector(inside).closest("details");
+      expect(card.classList.contains("card"), title).toBe(true);
+      expect(card.open, title).toBe(false);
+      expect(card.closest(panel), title).not.toBeNull();
+      expect(card.parentElement.closest("details"), title).toBeNull();
+      const summary = card.querySelector(":scope > summary");
+      expect(summary.children, title).toHaveLength(1);
+      expect(summary.firstElementChild.tagName, title).toBe(level);
+      expect(summary.textContent.trim(), title).toBe(title);
+      for (const attribute of ["aria-expanded", "aria-label", "aria-labelledby", "role", "tabindex"]) {
+        expect(summary.hasAttribute(attribute), `${title} ${attribute}`).toBe(false);
+      }
+      // A closed card's content is not rendered, so a live region in it
+      // could drop what it says; every status region stays outside.
+      expect(card.querySelector("[aria-live], [role='status'], [role='alert'], [role='log']"), title)
+        .toBeNull();
+    }
+    // The groups people use often stay as they were: plain sections and
+    // fieldsets, always shown.
+    for (const id of ["ads-spot-add", "ads-break-add", "cart-save", "cart-rename",
+      "recording-toggle", "listener-ban-new", "stream-bitrate"]) {
+      expect(document.getElementById(id).closest("details"), id).toBeNull();
+    }
+    // A Settings card's h4 title and a fieldset that fills a card take the
+    // card's look: no second frame inside the card's own.
+    const css = stripCssComments(cssSource);
+    expect(css).toMatch(/details\.card > summary > :is\(h2, h3, h4\)/);
+    expect(css).toMatch(/details\.card > fieldset\s*\{[^}]*border:\s*0/);
+  });
+
   it("gives the other stream formats labelled selects, help and a plain address list", () => {
     installDocument();
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
@@ -2014,12 +2074,18 @@ describe("static accessibility contracts", () => {
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
       .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
-    // Nested in the Stream fieldset, so it hides and hands focus away with
-    // it; its legend names the group and no heading splits it.
+    // In a card closed by default in the Stream fieldset, so it hides and
+    // hands focus away with it; the card's heading names the group and no
+    // heading splits it.
     const group = document.querySelector("#stream-formats");
     expect(group.tagName).toBe("FIELDSET");
-    expect(group.parentElement.id).toBe("stream-settings");
-    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("More formats");
+    const card = group.parentElement;
+    expect(card.matches("details.card:not([open])")).toBe(true);
+    expect(card.parentElement.id).toBe("stream-settings");
+    expect(card.querySelector(":scope > summary > h4").id).toBe(group.getAttribute("aria-labelledby"));
+    expect(document.getElementById(group.getAttribute("aria-labelledby")).textContent.trim())
+      .toBe("More formats");
+    expect(group.querySelector(":scope > legend")).toBeNull();
     expect(group.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
     for (const [id, label, values] of [
       ["stream-aac-bitrate", "AAC quality", ["0", "64", "96", "128", "192", "256"]],
@@ -2057,15 +2123,17 @@ describe("static accessibility contracts", () => {
     installDocument();
     const labelText = (id) => document.querySelector(`label[for="${id}"]`)
       ?.textContent.replace(/\s+/g, " ").trim();
+    // A card closed by default, named by the heading in its summary.
     const section = document.querySelector("#listener-stats");
-    expect(section.tagName).toBe("SECTION");
-    expect(section.getAttribute("aria-labelledby")).toBe("listener-stats-title");
+    expect(section.matches("details.card:not([open])")).toBe(true);
     const heading = document.getElementById("listener-stats-title");
     expect(heading.tagName).toBe("H4");
+    expect(heading.parentElement).toBe(section.querySelector(":scope > summary"));
+    expect(heading.hasAttribute("tabindex")).toBe(false);
     expect(heading.textContent.trim()).toBe("Listener statistics");
     // Says what is kept, and what is not, before anything else.
-    expect(heading.nextElementSibling.id).toBe("listener-stats-privacy");
-    expect(heading.nextElementSibling.textContent).toContain("no address, player name");
+    expect(heading.parentElement.nextElementSibling.id).toBe("listener-stats-privacy");
+    expect(heading.parentElement.nextElementSibling.textContent).toContain("no address, player name");
     // Tables with a caption and a header for each column: never a chart.
     expect(section.querySelector("canvas, svg, img")).toBeNull();
     for (const [id, caption, columns] of [
@@ -2120,12 +2188,17 @@ describe("static accessibility contracts", () => {
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
       .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
-    // Nested in the Stream fieldset, so it hides and hands focus away
-    // with it; its own legend names the group.
+    // In a card closed by default in the Stream fieldset, so it hides and
+    // hands focus away with it; the card's heading names the group.
     const group = document.querySelector("#np-settings");
     expect(group.tagName).toBe("FIELDSET");
-    expect(group.parentElement.id).toBe("stream-settings");
-    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Now-playing feed");
+    const card = group.parentElement;
+    expect(card.matches("details.card:not([open])")).toBe(true);
+    expect(card.parentElement.id).toBe("stream-settings");
+    expect(card.querySelector(":scope > summary > h4").id).toBe(group.getAttribute("aria-labelledby"));
+    expect(document.getElementById(group.getAttribute("aria-labelledby")).textContent.trim())
+      .toBe("Now-playing feed");
+    expect(group.querySelector(":scope > legend")).toBeNull();
     expect(group.querySelector("h1, h2, h3, h4, h5, h6")).toBeNull();
 
     const link = document.querySelector("#np-url");
@@ -2178,8 +2251,9 @@ describe("static accessibility contracts", () => {
     const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
       .split(/\s+/).filter(Boolean).map((id) => document.getElementById(id));
 
-    // Nested in the Stream fieldset after the now-playing group, so it hides
-    // with it and heading navigation never files it under Listeners or Bans.
+    // Nested in the Stream fieldset before the cards that close it, so it
+    // hides with it and heading navigation never files it under Relays,
+    // the now-playing feed, Listeners or Bans.
     const group = document.querySelector("#recording-controls");
     expect(group.tagName).toBe("FIELDSET");
     expect(group.parentElement.id).toBe("stream-settings");
@@ -2496,7 +2570,14 @@ describe("static accessibility contracts", () => {
     const group = document.querySelector("#rotation-test");
     expect(group.tagName).toBe("FIELDSET");
     expect(group.closest("#spanel-picking")).not.toBeNull();
-    expect(group.querySelector(":scope > legend").textContent.trim()).toBe("Test rotation");
+    // A tool, not a setting: a card closed by default, its heading naming
+    // the group, with the results inside it.
+    const card = group.parentElement;
+    expect(card.matches("details.card:not([open])")).toBe(true);
+    expect(card.querySelector(":scope > summary > h4").id).toBe(group.getAttribute("aria-labelledby"));
+    expect(document.getElementById(group.getAttribute("aria-labelledby")).textContent.trim())
+      .toBe("Test rotation");
+    expect(card.contains(document.getElementById("rotation-results"))).toBe(true);
     const help = document.getElementById("rotation-test-desc");
     expect(group.hasAttribute("aria-describedby")).toBe(false);
     expect(help.hidden).toBe(false);
@@ -2524,10 +2605,17 @@ describe("static accessibility contracts", () => {
       expect(button.disabled).toBe(false);
     }
     // One polite status for the start and the end; progress is a labelled
-    // native bar and plain text, never live.
-    const live = [...group.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
-    expect(live.map((node) => node.id)).toEqual(["rotation-status"]);
-    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    // native bar and plain text, never live.  Both sit just before the
+    // card, outside it, so a run is said and shown while it is closed.
+    expect(group.querySelector("[aria-live], [role='status'], [role='alert']")).toBeNull();
+    const status = document.getElementById("rotation-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.closest("details")).toBeNull();
+    expect(status.parentElement.id).toBe("spanel-picking");
+    const progressRow = document.getElementById("rotation-progress-row");
+    expect(progressRow.closest("details")).toBeNull();
+    expect(progressRow.nextElementSibling).toBe(card);
     const bar = document.getElementById("rotation-progress");
     expect(bar.tagName).toBe("PROGRESS");
     expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
@@ -2535,7 +2623,8 @@ describe("static accessibility contracts", () => {
     const results = document.getElementById("rotation-results");
     expect(results.tagName).toBe("SECTION");
     expect(results.hidden).toBe(true);
-    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    // Under the card's h4 title, so h5, its sections h6.
+    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H5");
     expect(results.querySelector("table")).toBeNull();
     // Colours come from the theme tokens only, so the light theme follows.
     const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
@@ -3488,9 +3577,12 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(panel.getAttribute("role")).toBe("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
     expect(document.getElementById("spanel-live").parentElement).toBe(panel.parentElement);
-    const list = document.getElementById("stations-list");
-    expect(list.tagName).toBe("UL");
-    expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    const table = document.getElementById("stations-table");
+    expect(document.getElementById("stations-list").parentElement).toBe(table);
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(document.getElementById(table.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
+      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
     const form = document.getElementById("station-create-form");
     expect(form.querySelector("legend").textContent.trim()).toBe("New station");
     // Short visible labels of their own, no aria-label in their place.

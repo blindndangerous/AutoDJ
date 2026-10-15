@@ -21,8 +21,9 @@
 # defaults < config.toml < config.local.toml < environment
 #   < settings saved from the web page (web_state.json, serve only) < CLI
 #
-# Configuration keys are validated when loaded. An unknown section or key stops
-# AutoDJ with an error that names it; delete the unsupported line.
+# Configuration keys are validated when loaded. An unknown section or key is
+# ignored with a warning that names it, and the setting keeps its default, so a
+# misspelled key changes nothing: correct or delete the line.
 #
 # Supported environment overrides:
 # BEGIN ENVIRONMENT OVERRIDES
@@ -256,7 +257,7 @@ prefetch_next_track = true
 silence_trigger_crossfade = true
 
 # Optional — how often discovery plays a sonically distant track: every N
-# tracks.  Discovery starts off; the Discovery button on the page turns it on
+# tracks, 1 or more.  Discovery starts off; the Discovery button on the page turns it on
 # and off, and setting the interval under Settings turns it on.
 # discovery_every = 20
 

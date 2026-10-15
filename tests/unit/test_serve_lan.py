@@ -426,6 +426,40 @@ def test_serve_without_lan_keeps_the_old_pairing_line(
     assert "Open AutoDJ from another device" not in text
 
 
+def _log_file_text(caplog: pytest.LogCaptureFixture) -> str:
+    """What the serve log file would hold for the captured records."""
+    from autodj.cli import _file_log_record
+
+    return "\n".join(_file_log_record(record).getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("lan", [True, False])
+def test_serve_keeps_the_pairing_code_out_of_the_log_file(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path, lan: bool
+) -> None:
+    server = (
+        _lan_server()
+        if lan
+        else ServerConfig(
+            host="0.0.0.0",
+            access_token=_TOKEN,
+            allowed_hosts=["nas"],
+            allowed_origins=["http://nas:8080"],
+        )
+    )
+    console = _run_serve(server, caplog, tmp_path)
+    code = re.search(r"(?:Pairing code: |using code: )(\d{8})", console)
+    assert code is not None
+
+    in_file = _log_file_text(caplog)
+    assert code.group(1) not in in_file
+    if lan:
+        assert "http://nas:8080" in in_file
+        assert "autodj devices pairing-code" in in_file
+    else:
+        assert "A pairing code was shown on the console." in in_file
+
+
 # ---------------------------------------------------------------------------
 # devices pairing-code
 # ---------------------------------------------------------------------------

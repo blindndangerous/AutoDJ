@@ -473,9 +473,11 @@ the settings last saved from the web page (`web_state.json`), which override the
 environment variables. The playback and DJ-mix settings have no `serve` options; change them in
 the web page or in `config.toml`. Omitting `--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
-`config.toml.example` lists supported environment variables and settings. Every key and section
-in `config.toml` and `config.local.toml` must be one AutoDJ knows: a removed or misspelled setting
-stops AutoDJ with an error naming the section and key, so delete it rather than leave it in place.
+`config.toml.example` lists supported environment variables and settings. A key or section in
+`config.toml` or `config.local.toml` that AutoDJ does not know, such as a removed or misspelled
+setting, is ignored with a warning naming the section and key, and the setting keeps its default.
+Read the warnings after an edit, and correct or delete the line; `autodj doctor` offers to remove
+unknown keys.
 
 ### Secure server operation
 
@@ -589,7 +591,7 @@ variables and CLI flags still take precedence.
 ## Troubleshooting
 
 `autodj serve` writes its log to `index/<name>/logs/autodj.log` as well as the console, a new
-file each day, with the last 7 kept.
+file each day, with the last 7 kept. The pairing code shown at start-up goes to the console only.
 
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 

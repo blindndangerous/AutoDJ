@@ -179,6 +179,53 @@ def test_add_cannot_replace_existing_relay(tmp_path):
     assert error.value.status_code == 409
 
 
+@pytest.mark.parametrize(("existing", "new"), [("a-b", "a_b"), ("Main", "main")])
+def test_relay_name_sharing_a_set_password_variable_is_refused(
+    tmp_path, monkeypatch, existing, new
+):
+    """a-b and a_b read one variable; once set, one server's password would go to the other."""
+    from fastapi import HTTPException
+
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    station.cfg.stream.relays = {existing: relay(existing, host="8.8.8.8")}
+    monkeypatch.setenv(relay_password_variable(existing), "secret-for-one")
+    with pytest.raises(HTTPException) as error:
+        _save_stream_relay(station, _body(new), registry)
+    assert error.value.status_code == 409
+    assert existing in error.value.detail
+    assert "secret-for-one" not in error.value.detail
+    assert set(station.cfg.stream.relays) == {existing}
+
+
+def test_relay_name_sharing_an_unset_password_variable_is_saved(tmp_path):
+    """Unset, the variable sends nothing: each relay keeps the password it was given."""
+    from autodj.station_routes import _save_stream_relay
+
+    station, registry = _station(tmp_path)
+    station.cfg.stream.relays = {"a-b": relay("a-b", host="8.8.8.8")}
+    _save_stream_relay(station, _body("a_b"), registry)
+    assert set(station.cfg.stream.relays) == {"a-b", "a_b"}
+    assert station.cfg.stream.relays["a_b"].password == "private"
+
+
+def test_saved_relays_sharing_a_set_password_variable_are_refused(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "relays.json"
+    relays = {
+        "a-b": relay("a-b", host="one.example"),
+        "a_b": relay("a_b", host="two.example"),
+    }
+    save_relays(path, relays, "default")
+    assert set(load_relays(path, {}, "default")) == {"a-b", "a_b"}  # no variable set
+    monkeypatch.setenv(relay_password_variable("a-b"), "secret-for-one")
+    with caplog.at_level("ERROR"):
+        assert load_relays(path, {}, "default") == {}
+    # The reason is logged, not only its type; never the password.
+    assert "AUTODJ_STREAM_RELAY_A_B_PASSWORD, which is set" in caplog.text
+    assert "secret-for-one" not in caplog.text
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows access lists")
 def test_relay_file_is_owner_only_on_windows(tmp_path):
     path = tmp_path / "relays.json"

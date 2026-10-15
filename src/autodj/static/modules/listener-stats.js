@@ -11,7 +11,7 @@
 //   - Download keeps focus on its button.
 
 import { requestFile, requestJson } from "./api-client.js";
-import { fmtTime } from "./dom-helpers.js";
+import { fmtTime, focusRevealed } from "./dom-helpers.js";
 import { saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
 
@@ -212,7 +212,7 @@ export function installListenerStats({
     const value = Number(keep.value);
     if (!Number.isInteger(value) || value < 0 || value > 3650 || keep.value.trim() === "") {
       say("Days to keep statistics must be a whole number from 0 to 3650.", "error");
-      keep.focus();
+      focusRevealed(keep);
       return;
     }
     if (!await saveKeepDays(value, keep)) return;

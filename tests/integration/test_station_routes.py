@@ -76,6 +76,7 @@ SHARED = frozenset(
         # The station list, and starting and stopping a station by name.
         "/api/stations",
         "/api/stations/{slug}/start",
+        "/api/stations/{slug}/autostart",
         "/api/stations/{slug}/stop",
     }
 )

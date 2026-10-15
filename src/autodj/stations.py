@@ -36,7 +36,7 @@ import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1099,7 +1099,7 @@ class StationRuntime:
                     logger.info("%d planned break(s) missed: live DJ on air", missed)
             except Exception:
                 logger.exception("Could not mark the planned breaks missed")
-        for out in (bridge.stream, bridge.relays):
+        for out in (bridge.stream, bridge.relays, bridge.mounts):
             if out is not None:
                 try:
                     out.set_title(status["dj"], self.live.title)
@@ -1468,10 +1468,14 @@ class StoppedStation:
 
     stopped = True
 
-    def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
+    def __init__(
+        self, extra: ExtraStation, *, state: str = "stopped", name: str | None = None
+    ) -> None:
         self.slug = extra.slug
         self.defined_in = extra.defined_in
-        self.name = extra.name
+        # The name it last had: one changed in Settings is in its saved
+        # settings, not in its configuration.
+        self.name = name or extra.name
         self.requests_enabled = extra.requests_enabled
         self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
@@ -1511,6 +1515,29 @@ async def _shielded[T](coro: Coroutine[Any, Any, T]) -> T:
     return await asyncio.shield(task)
 
 
+def _saved_station_name(paths: StationPaths) -> str | None:
+    """The station name a stopped station's saved settings give it, if any and valid.
+
+    Settings, Stream saves a new name there, not in the station's configuration.
+    """
+    from pydantic import ValidationError
+
+    from autodj.settings_bodies import StreamSettingsBody
+
+    try:
+        data = json.loads(paths.web_state.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    playback = data.get("playback") if isinstance(data, dict) else None
+    name = playback.get("stream_station_name") if isinstance(playback, dict) else None
+    if not isinstance(name, str):
+        return None
+    try:
+        return StreamSettingsBody.model_validate({"station_name": name}, strict=True).station_name
+    except ValidationError:
+        return None
+
+
 def _saved_preset(paths: StationPaths) -> str | None:
     """The Stereo Tool preset a stopped station's saved settings name, if any."""
     try:
@@ -1535,6 +1562,10 @@ class StationRegistry:
     def __init__(self, default: StationRuntime, extras: Sequence[ExtraStation] = ()) -> None:
         self._default = default
         self._extras = {extra.slug: extra for extra in extras}
+        # The name each stopped station shows: its saved one, read the first
+        # time it is asked for, then the name it had when it last stopped (it
+        # changes only while the station runs).
+        self._stopped_names: dict[str, str] = {}
         self._running: dict[str, StationRuntime] = {default.slug: default}
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
@@ -1591,11 +1622,14 @@ class StationRegistry:
         if running is not None and slug not in self._stopping:
             return running
         extra = self._extras[slug]
+        name = self._stopped_names.get(slug)
+        if name is None:
+            name = self._stopped_names[slug] = _saved_station_name(extra.paths) or extra.name
         if slug in self._stopping:
-            return StoppedStation(extra, state="stopping")
+            return StoppedStation(extra, state="stopping", name=name)
         if slug in self._stuck:
-            return StoppedStation(extra, state="stuck stopping")
-        return StoppedStation(extra)
+            return StoppedStation(extra, state="stuck stopping", name=name)
+        return StoppedStation(extra, name=name)
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
@@ -1632,6 +1666,7 @@ class StationRegistry:
         if extra.slug in self.slugs():
             raise StationControlError(f"Station {extra.slug} already exists")
         self._extras[extra.slug] = extra
+        self._stopped_names.pop(extra.slug, None)
         self._locks[extra.slug] = asyncio.Lock()
 
     def paths(self) -> tuple[StationPaths, ...]:
@@ -1639,8 +1674,44 @@ class StationRegistry:
         return (self._default.paths, *(extra.paths for extra in self._extras.values()))
 
     def summaries(self) -> list[dict[str, Any]]:
-        """Every configured station's name, state, listeners, song and stream address."""
-        return [self.get(slug).summary() for slug in (self._default.slug, *self._extras)]
+        """Every configured station's name, state, listeners, song and stream address.
+
+        Each also says whether it starts with the server, and whether the
+        page can change that: only for a station made in the page.
+        """
+        out = []
+        for slug in (self._default.slug, *self._extras):
+            extra = self._extras.get(slug)
+            out.append(
+                {
+                    **self.get(slug).summary(),
+                    "autostart": True if extra is None else extra.autostart,
+                    "autostart_locked": extra is None or extra.defined_in != "web",
+                }
+            )
+        return out
+
+    def set_autostart(self, slug: str, enabled: bool) -> None:
+        """Save whether station *slug* starts with the server.
+
+        Raises:
+            KeyError: No station has that name.
+            StationControlError: The page cannot change it for this station.
+        """
+        if slug == self._default.slug:
+            raise StationControlError("The default station always starts with the server.")
+        extra = self._extras[slug]
+        if extra.defined_in != "web":
+            raise StationControlError(
+                f"{extra.name} is set in config.toml; change autostart there."
+            )
+        from autodj.fsutil import atomic_write
+
+        path = extra.paths.definition
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["station"]["autostart"] = enabled
+        atomic_write(path, json.dumps(document, indent=2) + "\n")
+        self._extras[slug] = replace(extra, autostart=enabled)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
         """The station other than *exclude* that uses Stereo Tool, in words, or ``None``.
@@ -1809,6 +1880,7 @@ class StationRegistry:
                     with self.stereo_tool_lock:
                         self._stopping_runtimes[slug] = runtime
                         del self._running[slug]
+                    self._stopped_names[slug] = runtime.name
                     warnings = await _run_as(slug, self._stop_extra(runtime, extra))
         finally:
             with self.stereo_tool_lock:

@@ -16,6 +16,7 @@ from typing import Any
 from autodj.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
+_CLOSED_LISTENER_GRACE = 30.0
 
 
 class AddressLimitError(Exception):
@@ -131,28 +132,82 @@ def player_name(user_agent: str) -> str:
     return clean or "Unknown player"
 
 
-class ListenerAuthLimiter:
-    """Bound Basic-auth guesses per address in one-minute windows."""
+# Failed logins in one minute that lock an address out for the rest of it.
+_AUTH_FAILURES = 5
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+
+class ListenerAuthLimiter:
+    """Bound Basic-auth guesses per address in one-minute windows.
+
+    An IPv6 address counts with its whole /64, which one home can use any
+    address of, so rotating addresses inside it does not reset the count.
+    Only the current minute is kept, and at most ``max_keys`` addresses of
+    it, so a flood from many addresses costs bounded memory and constant
+    time.  Past that, the address with fewer than five failures that failed
+    least recently is forgotten.  A locked address (five failures) is never
+    forgotten before the minute ends; when every place holds one, a new
+    address counts as locked too, rather than being let in uncounted.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, max_keys: int = 4096) -> None:
         self._clock = clock
+        self._max_keys = max_keys
         self._lock = threading.Lock()
-        self._failures: dict[str, tuple[int, int]] = {}
+        self._window = -1
+        # key -> failures this window (below the limit), least recently failed first
+        self._counting: dict[str, int] = {}
+        # keys locked out for the rest of this window
+        self._locked: set[str] = set()
+
+    @staticmethod
+    def _key(address: str) -> str:
+        """*address* itself, or its /64 for IPv6; a key already a network is kept."""
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return address
+        if isinstance(parsed, ipaddress.IPv6Address):
+            if parsed.ipv4_mapped is not None:
+                return str(parsed.ipv4_mapped)
+            return str(ipaddress.IPv6Network((parsed, 64), strict=False))
+        return address
+
+    def _roll(self) -> None:
+        """Start a new window, forgetting the last one's failures.  Holds the lock."""
+        window = int(self._clock() // 60)
+        if window != self._window:
+            self._window = window
+            self._counting.clear()
+            self._locked.clear()
+
+    def _full_of_locked(self) -> bool:
+        """Every place holds a locked address.  Holds the lock."""
+        return len(self._locked) >= self._max_keys
 
     def blocked(self, address: str) -> bool:
+        key = self._key(address)
         with self._lock:
-            window, count = self._failures.get(address, (-1, 0))
-            return window == int(self._clock() // 60) and count >= 5
+            self._roll()
+            if key in self._locked:
+                return True
+            # Fail closed: an address that cannot be counted is refused.
+            return key not in self._counting and self._full_of_locked()
 
     def failed(self, address: str) -> None:
+        key = self._key(address)
         with self._lock:
-            window = int(self._clock() // 60)
-            if len(self._failures) > 4096:
-                self._failures = {
-                    key: value for key, value in self._failures.items() if value[0] == window
-                }
-            old_window, count = self._failures.get(address, (-1, 0))
-            self._failures[address] = (window, count + 1 if old_window == window else 1)
+            self._roll()
+            if key in self._locked:
+                return
+            count = self._counting.pop(key, 0) + 1
+            if count >= _AUTH_FAILURES:
+                self._locked.add(key)
+                return
+            if count == 1 and len(self._counting) + len(self._locked) >= self._max_keys:
+                if not self._counting:
+                    return  # every place is locked: blocked() refuses this address
+                del self._counting[next(iter(self._counting))]
+            self._counting[key] = count
 
 
 class ListenerAccess:
@@ -182,6 +237,7 @@ class ListenerAccess:
         self._lock = threading.RLock()
         # id -> (address, player, connected at, listener, stream, format)
         self._listeners: dict[str, tuple[str, str, float, Any, Any, str]] = {}
+        self._closed_since: dict[str, float] = {}
         self._pending: dict[str, int] = {}
         self._bans: dict[str, dict[str, Any]] = {}
         self.revision = 0
@@ -269,16 +325,16 @@ class ListenerAccess:
                 its formats together.
         """
         address = normalize_address(address)
+        self._reclaim_closed()
         with self._lock:
             if self._banned_locked(address):
                 raise BannedAddressError(address)
-            open_entries = [entry for entry in self._listeners.values() if not entry[3].closed]
             count = self._pending.get(address, 0) + sum(
-                entry[0] == address for entry in open_entries
+                entry[0] == address for entry in self._listeners.values()
             )
             if self.max_per_address and count >= self.max_per_address:
                 raise AddressLimitError(address)
-            total = sum(self._pending.values()) + len(open_entries)
+            total = sum(self._pending.values()) + len(self._listeners)
             if self.max_total and total >= self.max_total:
                 raise StationFullError(address)
             self._pending[address] = self._pending.get(address, 0) + 1
@@ -312,6 +368,7 @@ class ListenerAccess:
     def remove(self, ident: str, *, immediate: bool = False) -> None:
         with self._lock:
             entry = self._listeners.pop(ident, None)
+            self._closed_since.pop(ident, None)
             if entry is not None:
                 self.revision += 1
         if entry is not None:
@@ -319,13 +376,29 @@ class ListenerAccess:
                 entry[3].abort()
             entry[4].remove_listener(entry[3])
 
-    def listeners(self) -> list[dict[str, Any]]:
+    def _reclaim_closed(self) -> None:
+        """Release closed listeners whose response did not finish within the grace period."""
+        stale = []
         with self._lock:
-            stale = [key for key, entry in self._listeners.items() if entry[3].closed]
-            for key in stale:
-                del self._listeners[key]
-            if stale:
-                self.revision += 1
+            now = self._clock()
+            for ident, entry in list(self._listeners.items()):
+                if not entry[3].closed:
+                    self._closed_since.pop(ident, None)
+                    continue
+                closed_at = getattr(entry[3], "closed_at", None)
+                if not isinstance(closed_at, int | float):
+                    closed_at = self._closed_since.setdefault(ident, now)
+                if now - closed_at >= _CLOSED_LISTENER_GRACE:
+                    stale.append(entry)
+                    del self._listeners[ident]
+                    self._closed_since.pop(ident, None)
+                    self.revision += 1
+        for entry in stale:
+            entry[4].remove_listener(entry[3])
+
+    def listeners(self) -> list[dict[str, Any]]:
+        self._reclaim_closed()
+        with self._lock:
             return [
                 {
                     "id": key,
