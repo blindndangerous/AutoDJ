@@ -756,6 +756,11 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
     expect(byId("clock-add-step").textContent).toBe("Update step 2");
     expect(byId("clock-cancel-edit").hidden).toBe(false);
+    // Escape cancels the edit and returns to the step.
+    byId("clock-step-type").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(byId("clock-step-legend").textContent).toBe("Add a step");
+    expect(document.activeElement).toBe(rowCell(1, "edit"));
+    rowButton(1, "edit").click();
     const legacyCondition = byId("clock-step-conditions").firstElementChild;
     expect(legacyCondition.querySelectorAll("select")[1].value).toBe("ids");
     expect(legacyCondition.querySelectorAll("input[type=text]")[0].value).toBe("Top");
