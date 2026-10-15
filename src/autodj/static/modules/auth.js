@@ -2,6 +2,7 @@ import {
   AuthenticationRequiredError,
   requestJson,
 } from "./api-client.js";
+import { NBSP } from "./live-region.js";
 
 const MAX_SERVER_DETAIL_LENGTH = 200;
 // Shown when a session this browser had is revoked or expires.
@@ -60,6 +61,7 @@ export function initAuthDialog({
   }
 
   let pendingSubmit = null;
+  let lastError = "";
 
   function clearError() {
     error.textContent = "";
@@ -68,10 +70,16 @@ export function initAuthDialog({
 
   // The role=alert region speaks the message; the field is focused
   // afterwards but does not also reference it, or NVDA reads it twice.
+  // Chrome can merge the clear and the new text into one change, so the
+  // same message again (a second wrong code) is not spoken.  A trailing
+  // no-break space on every other repeat makes the text itself change,
+  // as announceStatus does (#316).
   async function announceError(message) {
+    const text = message === lastError ? message + NBSP : message;
+    lastError = text;
     error.textContent = "";
     await Promise.resolve();
-    error.textContent = message;
+    error.textContent = text;
     token.setAttribute("aria-invalid", "true");
     token.focus();
   }
