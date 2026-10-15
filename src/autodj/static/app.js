@@ -1836,7 +1836,18 @@ async function confirmLeavingStation(name) {
 }
 
 async function switchStation(slug) {
-  if (slug === currentStation() || !authenticatedActivityActive) return;
+  if (slug === currentStation()) return;
+  if (!authenticatedActivityActive) {
+    // While the link is down the page cannot load another station; it
+    // says so, or choosing one would seem to do nothing.  A session that
+    // ended has the pairing dialog open instead.
+    if (transportDown && !authExpiryHandled) {
+      announceStatus(document.getElementById("sr-status"),
+        "AutoDJ is reconnecting. Choose the station again once it is back.",
+        { dwellMs: 6000, force: true, tone: "error" });
+    }
+    return;
+  }
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry) return;
   if (!await confirmLeavingStation(entry.name)) return;

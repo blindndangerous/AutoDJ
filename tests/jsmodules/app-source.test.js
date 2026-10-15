@@ -3804,6 +3804,18 @@ describe("several stations (#70)", () => {
       "Now controlling Night Owl Radio. Its state could not be loaded: The AutoDJ server hit an error."));
   });
 
+  it("says why a station cannot be chosen while the link is down", async () => {
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    const sockets = trackSockets(app.WebSocketImpl);
+    app.webSocket.onclose({ code: 1006, wasClean: false });
+    chooseOwl();
+    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
+      .toBe("AutoDJ is reconnecting. Choose the station again once it is back."));
+    expect(sockets).toHaveLength(0);
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
+    expect(document.activeElement.id).toBe("station-button");
+  });
+
   it("keeps Listen here on the station it started on, and says so", async () => {
     const app = await setupApp({
       initialState: { stream_mode: true, stream_state: "playing" },
