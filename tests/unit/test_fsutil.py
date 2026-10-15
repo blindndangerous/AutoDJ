@@ -88,7 +88,7 @@ def test_atomic_write_retries_while_windows_holds_the_file_open(
 ) -> None:
     path = tmp_path / "state.json"
     path.write_text("old", encoding="utf-8")
-    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    monkeypatch.setattr(fsutil, "_IS_WINDOWS", True)
     calls = _flaky_replace(monkeypatch, failures=3)
 
     atomic_write(path, "new")
@@ -103,7 +103,7 @@ def test_atomic_write_retry_is_bounded_and_cleans_up(
 ) -> None:
     path = tmp_path / "state.json"
     path.write_text("old", encoding="utf-8")
-    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    monkeypatch.setattr(fsutil, "_IS_WINDOWS", True)
     calls = _flaky_replace(monkeypatch, failures=1000)
 
     with pytest.raises(PermissionError):
@@ -118,7 +118,7 @@ def test_atomic_write_does_not_retry_permission_errors_off_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "state.json"
-    monkeypatch.setattr(fsutil.sys, "platform", "linux")
+    monkeypatch.setattr(fsutil, "_IS_WINDOWS", False)
     calls = _flaky_replace(monkeypatch, failures=1)
 
     with pytest.raises(PermissionError):
@@ -131,7 +131,7 @@ def test_read_bytes_shared_retries_while_windows_replaces_the_file(
 ) -> None:
     path = tmp_path / "state.json"
     path.write_bytes(b"saved")
-    monkeypatch.setattr(fsutil.sys, "platform", "win32")
+    monkeypatch.setattr(fsutil, "_IS_WINDOWS", True)
     monkeypatch.setattr(fsutil.time, "sleep", lambda _seconds: None)
     real_read = Path.read_bytes
     calls: list[int] = []

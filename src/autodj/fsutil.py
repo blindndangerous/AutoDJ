@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 # replaced at that moment.  These waits, about half a second in all, let a
 # reader in another thread or process finish first.
 _SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.1, 0.1, 0.1)
+# Whether those retries apply; tests change this, never sys.platform.
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def retry_sharing_violation[T](action: Callable[[], T]) -> T:
@@ -28,7 +30,7 @@ def retry_sharing_violation[T](action: Callable[[], T]) -> T:
     Raises:
         OSError: What *action* raised, after the last try on Windows.
     """
-    if sys.platform != "win32":
+    if not _IS_WINDOWS:
         return action()
     for delay in _SHARING_RETRY_DELAYS:
         try:

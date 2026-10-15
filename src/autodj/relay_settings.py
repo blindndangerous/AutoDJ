@@ -60,7 +60,10 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
             if variable in variables and variable in os.environ:
                 # Two names (a-b and a_b) read one variable: one server's
                 # source password would go to the other.
-                raise ValueError("two relays read the same password variable")
+                raise ValueError(
+                    f"relay {name} reads {variable}, which is set and is another relay's "
+                    "password variable too; rename one of them"
+                )
             variables.add(variable)
             if variable in os.environ:
                 password = os.environ[variable]
@@ -76,8 +79,9 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
             loaded[name] = RelayConfig.from_table(name, {**values, "password": password})
     except (KeyError, TypeError, ValueError) as exc:
         logger.error(
-            "Invalid saved relay settings (%s); refusing to reactivate TOML relays",
+            "Invalid saved relay settings (%s: %s); refusing to reactivate TOML relays",
             type(exc).__name__,
+            exc,
         )
         return {}
     return loaded

@@ -131,14 +131,21 @@ def player_name(user_agent: str) -> str:
     return clean or "Unknown player"
 
 
+# Failed logins in one minute that lock an address out for the rest of it.
+_AUTH_FAILURES = 5
+
+
 class ListenerAuthLimiter:
     """Bound Basic-auth guesses per address in one-minute windows.
 
     An IPv6 address counts with its whole /64, which one home can use any
     address of, so rotating addresses inside it does not reset the count.
     Only the current minute is kept, and at most ``max_keys`` addresses of
-    it: past that the one that failed least recently is forgotten, so a
-    flood from many addresses costs bounded memory and constant time.
+    it, so a flood from many addresses costs bounded memory and constant
+    time.  Past that, the address with fewer than five failures that failed
+    least recently is forgotten.  A locked address (five failures) is never
+    forgotten before the minute ends; when every place holds one, a new
+    address counts as locked too, rather than being let in uncounted.
     """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic, max_keys: int = 4096) -> None:
@@ -146,8 +153,10 @@ class ListenerAuthLimiter:
         self._max_keys = max_keys
         self._lock = threading.Lock()
         self._window = -1
-        # key -> failures this window, least recently failed first
-        self._failures: dict[str, int] = {}
+        # key -> failures this window (below the limit), least recently failed first
+        self._counting: dict[str, int] = {}
+        # keys locked out for the rest of this window
+        self._locked: set[str] = set()
 
     @staticmethod
     def _key(address: str) -> str:
@@ -167,21 +176,37 @@ class ListenerAuthLimiter:
         window = int(self._clock() // 60)
         if window != self._window:
             self._window = window
-            self._failures.clear()
+            self._counting.clear()
+            self._locked.clear()
+
+    def _full_of_locked(self) -> bool:
+        """Every place holds a locked address.  Holds the lock."""
+        return len(self._locked) >= self._max_keys
 
     def blocked(self, address: str) -> bool:
+        key = self._key(address)
         with self._lock:
             self._roll()
-            return self._failures.get(self._key(address), 0) >= 5
+            if key in self._locked:
+                return True
+            # Fail closed: an address that cannot be counted is refused.
+            return key not in self._counting and self._full_of_locked()
 
     def failed(self, address: str) -> None:
         key = self._key(address)
         with self._lock:
             self._roll()
-            count = self._failures.pop(key, 0)
-            if not count and len(self._failures) >= self._max_keys:
-                del self._failures[next(iter(self._failures))]
-            self._failures[key] = count + 1
+            if key in self._locked:
+                return
+            count = self._counting.pop(key, 0) + 1
+            if count >= _AUTH_FAILURES:
+                self._locked.add(key)
+                return
+            if count == 1 and len(self._counting) + len(self._locked) >= self._max_keys:
+                if not self._counting:
+                    return  # every place is locked: blocked() refuses this address
+                del self._counting[next(iter(self._counting))]
+            self._counting[key] = count
 
 
 class ListenerAccess:

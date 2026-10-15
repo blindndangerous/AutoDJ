@@ -454,13 +454,17 @@ def _save_stream_relay_locked(
         ),
         None,
     )
-    if sharing is not None:
-        # a-b and a_b (or Main and main) read one password variable.
+    managed = variable in os.environ
+    if sharing is not None and managed:
+        # a-b and a_b (or Main and main) read one password variable; once it
+        # is set, both would send its password.
         raise HTTPException(
             status_code=409,
-            detail=f"Relay {sharing} already uses this password variable; choose another name.",
+            detail=(
+                f"Relay {sharing} takes its password from the same environment variable, "
+                "which is set; choose another name."
+            ),
         )
-    managed = variable in os.environ
     if managed and body.password:
         raise HTTPException(
             status_code=409, detail="This relay password is managed by the environment."

@@ -676,12 +676,37 @@ def test_a_failing_publish_or_save_does_not_stop_a_run(
     async def broken_publish(_message: dict[str, Any]) -> None:
         raise ConnectionError("socket gone")
 
-    def broken_save() -> None:
+    def broken_write(_text: str) -> None:
         raise OSError("disk full")
 
     monkeypatch.setattr(rig.schedule, "_publisher", broken_publish)
-    monkeypatch.setattr(rig.schedule, "save", broken_save)
+    monkeypatch.setattr(rig.schedule, "_write", broken_write)
     assert asyncio.run(rig.schedule.run(item)).result == "ok"
+
+
+def test_saves_from_the_event_loop_write_in_a_worker_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On Windows a write can wait for a reader; the loop must not wait with it."""
+    import threading
+
+    rig = Rig(tmp_path / "schedule.json")
+    rig.schedule.start()
+    writers: list[threading.Thread] = []
+    real_write = rig.schedule._write
+
+    def recording_write(text: str) -> None:
+        writers.append(threading.current_thread())
+        real_write(text)
+
+    monkeypatch.setattr(rig.schedule, "_write", recording_write)
+    item = rig.add()  # an edit: _changed
+    asyncio.run(rig.schedule.run(item))  # a run record
+    assert len(writers) == 2
+    assert all(thread is not threading.main_thread() for thread in writers)
+    saved = json.loads((tmp_path / "schedule.json").read_text(encoding="utf-8"))
+    assert [event["id"] for event in saved["events"]] == [item.id]
+    assert saved["runs"][-1]["result"] == "ok"
 
 
 def test_editing_rules(tmp_path: Path) -> None:

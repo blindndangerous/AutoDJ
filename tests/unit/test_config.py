@@ -4,6 +4,7 @@ Tests cover config loading, validation, default values, and error handling.
 All tests are pure — no filesystem I/O beyond temp files provided by fixtures.
 """
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -294,6 +295,20 @@ class TestIndexConfig:
     def test_blank_name_falls_back_to_default(self) -> None:
         idx = IndexConfig.from_dict({"name": "  "})
         assert idx.name == "default"
+
+    @pytest.mark.parametrize("name", ["chill.", "a:b"] if sys.platform != "win32" else ["chill."])
+    def test_an_existing_name_windows_reads_differently_still_loads(self, name, caplog) -> None:
+        """An install already using such a name keeps starting; it is warned about."""
+        idx = IndexConfig.from_dict({"index_dir": "srv/index", "name": name})
+        assert idx.active_dir == Path("srv/index") / name
+        assert f"[index] name {name!r}" in caplog.text
+        assert "new index names may not use it" in caplog.text
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters")
+    @pytest.mark.parametrize("name", ["C:", "D:music"])
+    def test_an_existing_name_leading_outside_index_dir_stops_loading(self, name) -> None:
+        with pytest.raises(ValueError, match="would put the index outside index_dir"):
+            IndexConfig.from_dict({"index_dir": "C:/srv/index", "name": name})
 
 
 class TestValidateIndexName:

@@ -173,19 +173,55 @@ def test_auth_limiter_counts_an_ipv6_64_as_one_address() -> None:
     assert limiter.blocked("192.0.2.4")
 
 
+def _kept(limiter: ListenerAuthLimiter) -> int:
+    return len(limiter._counting) + len(limiter._locked)
+
+
 def test_auth_limiter_keeps_a_bounded_number_of_addresses() -> None:
     """A flood from many addresses in one minute neither grows nor slows it."""
     limiter = ListenerAuthLimiter(clock=lambda: 0.0, max_keys=100)
-    for _ in range(5):
-        limiter.failed("192.0.2.4")
+    for _ in range(4):
+        limiter.failed("192.0.2.5")  # one failure short of locked
     for i in range(1000):
         limiter.failed(f"2001:db8:{i:x}::1")
-        assert len(limiter._failures) <= 100
-    # The least recently failed address is the one forgotten.
-    assert not limiter.blocked("192.0.2.4")
+        assert _kept(limiter) <= 100
+    # An address below the limit that failed least recently is the one forgotten.
+    limiter.failed("192.0.2.5")
+    assert not limiter.blocked("192.0.2.5")
     for _ in range(4):
         limiter.failed(f"2001:db8:{999:x}::2")
     assert limiter.blocked(f"2001:db8:{999:x}::3")
+
+
+def test_a_flood_of_one_off_failures_never_unlocks_an_address() -> None:
+    """Locked addresses stay locked for the minute, however many others fail once."""
+    now = [0.0]
+    limiter = ListenerAuthLimiter(clock=lambda: now[0], max_keys=100)
+    for _ in range(5):
+        limiter.failed("192.0.2.4")
+    for i in range(5000):
+        limiter.failed(f"2001:db8:{i:x}::1")
+    assert _kept(limiter) <= 100
+    assert limiter.blocked("192.0.2.4")
+    now[0] = 60.0
+    assert not limiter.blocked("192.0.2.4")
+
+
+def test_auth_limiter_fails_closed_when_every_place_is_locked() -> None:
+    now = [0.0]
+    limiter = ListenerAuthLimiter(clock=lambda: now[0], max_keys=3)
+    for n in range(3):
+        for _ in range(5):
+            limiter.failed(f"192.0.2.{n}")
+    assert all(limiter.blocked(f"192.0.2.{n}") for n in range(3))
+    # A new address cannot be counted, so it is refused rather than let in uncounted.
+    assert limiter.blocked("198.51.100.7")
+    for _ in range(10):
+        limiter.failed("198.51.100.7")
+    assert _kept(limiter) == 3
+    assert limiter.blocked("198.51.100.7")
+    now[0] = 60.0
+    assert not limiter.blocked("198.51.100.7")
 
 
 def test_mapped_ipv6_shares_ipv4_limit_and_ban(tmp_path: Path) -> None:

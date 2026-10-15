@@ -1286,8 +1286,9 @@ password = "the source password from your host"
 Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
 upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
 without a password stops AutoDJ at startup with an error naming the table. Two relay names that
-would read the same variable, such as `a-b` and `a_b` or `Main` and `main`, also stop AutoDJ at
-startup, so one server's password is never sent to another; Settings refuses such a name too.
+read the same variable, such as `a-b` and `a_b` or `Main` and `main`, stop AutoDJ at startup
+when that variable is set, so one server's password is never sent to another; Settings refuses
+such a name then too. While the variable is unset, each relay uses its own table's password.
 
 The keys:
 

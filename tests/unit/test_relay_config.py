@@ -117,7 +117,7 @@ def test_environment_password_alone_does_not_create_a_relay(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(("first", "second"), [("a-b", "a_b"), ("Main", "main")])
-def test_relays_reading_one_password_variable_are_refused(
+def test_relays_reading_one_set_password_variable_are_refused(
     tmp_path: Path, first: str, second: str
 ) -> None:
     """One server's source password must never be sent to another."""
@@ -138,10 +138,12 @@ password = "placeholder-two"
         encoding="utf-8",
     )
     variable = relay_password_variable(first)
-    with pytest.raises(ValueError, match=f"would both read {variable}"):
+    with pytest.raises(ValueError, match=f"would both read {variable}, which is set"):
         load_config(tmp_path / "config.toml", environ={variable: "secret-for-one"})
-    with pytest.raises(ValueError, match="rename one of them"):
-        load_config(tmp_path / "config.toml", environ={})
+    # Unset, the variable sends nothing: each relay keeps its own TOML password.
+    relays = load_config(tmp_path / "config.toml", environ={}).stream.relays
+    assert relays[first].password == "placeholder-one"
+    assert relays[second].password == "placeholder-two"
 
 
 def test_password_variable_name() -> None:
