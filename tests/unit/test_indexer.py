@@ -792,7 +792,7 @@ class TestBackfillDjMeta:
         cache.flush(force=True)
         entries = self._entries(cfg, "a.flac", "b.flac")
 
-        def analyse(path: str) -> DjMeta:
+        def analyse(path: str, points: dict | None = None) -> DjMeta:
             if path.endswith("b.flac"):
                 raise RuntimeError("bad file")
             return DjMeta(analysed=True, intro_end_s=1.0)

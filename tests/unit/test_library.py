@@ -109,9 +109,7 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(
-    path: Path, kind: str = "music", max_seconds: float | None = None, audio=None
-):
+def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
     del kind, max_seconds, audio
     return make_entry(path), {
         "start": 0.0,
@@ -246,7 +244,8 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
         manager.scan()
         assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
-        read_tags.assert_not_called()
+        # New music is listed from its tags first.
+        read_tags.assert_called_once_with(song)
 
 
 @pytest.mark.parametrize(
@@ -323,7 +322,7 @@ def test_queued_tag_override_runs_before_loudness_scan_finishes(manager_factory,
         assert not manager._thread.is_alive()
 
     assert manager.entry_for_path(song).title == "Tagged"
-    read_tags.assert_called_once_with(song)
+    read_tags.assert_called_with(song)
 
 
 def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
@@ -653,9 +652,7 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(
-        path: Path, kind: str = "music", max_seconds: float | None = None, audio=None
-    ):
+    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
         del kind, max_seconds, audio
         fresh = make_entry(path)
         fresh.length = 100.0
@@ -1798,3 +1795,41 @@ def test_scan_finds_beats_from_the_same_decode_and_catches_up_older_songs(
         manager.scan()
         assert basic.call_args.kwargs["audio"] is None
         assert load.call_count == 2
+
+
+def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_factory, tmp_path):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    good, bad = music / "good.flac", music / "bad.flac"
+    good.write_bytes(b"good")
+    bad.write_bytes(b"bad")
+    manager = manager_factory(music=music)
+    listed = {}
+
+    def basic(path, kind="music", max_seconds=None, audio=None):
+        # Both songs are already listed, silent, when the first is decoded.
+        for song in (good, bad):
+            entry = manager.entry_for_path(song)
+            listed[song.name] = entry is not None and entry.is_silent
+        if path.name == "bad.flac":
+            raise ValueError("not audio")
+        return fake_basic(path, kind, max_seconds)
+
+    with (
+        patch(
+            "autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged", length=200.0)
+        ),
+        patch("autodj.library.analyze_basic", side_effect=basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+    assert listed == {"good.flac": True, "bad.flac": True}
+    assert not manager.entry_for_path(good).is_silent
+    # A song that cannot be decoded leaves the library, as before.
+    assert manager.catalog.record_for_path(bad) is None
+    errors = manager.snapshot()["import"]["errors"]
+    assert [error for error in errors if "Music" in error or "music" in error] == [
+        next(error for error in errors if "bad.flac" in error)
+    ]
