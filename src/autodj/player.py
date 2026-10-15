@@ -4208,10 +4208,12 @@ class Player:
             try:
                 if playback.transition_mode == "saved_points":
                     start, segue = self._clock_music_span(entry)
-                    return segue - start
-                return float(entry.length) - playback.crossfade_seconds
+                    span = segue - start
+                else:
+                    span = float(entry.length) - playback.crossfade_seconds
             except Exception:
-                return float(entry.length)
+                span = float(entry.length)
+            return span / self.music_playback_rate(entry)
 
         return fit_chooser(target.at - at, seconds, hard=target.hard)
 

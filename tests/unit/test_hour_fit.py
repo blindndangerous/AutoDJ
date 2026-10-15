@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -97,6 +98,22 @@ def test_fit_chooses_closest_eligible_song(tmp_path: Path, mode: str) -> None:
     blocked = replace(context, protected=context.protected | {exact.path})
     # Short would hand off 30 seconds before the hour and leave a gap.
     assert choose(blocked).path == long.path
+
+
+def test_fit_scores_output_duration_at_music_speed(tmp_path: Path) -> None:
+    short = song(1, "Short", length=100)
+    exact = song(2, "Exact", length=110)
+    source = make_station(
+        tmp_path,
+        [short, exact],
+        playback={"pick_mode": "random", "hour_fit": True, "music_speed_percent": 10},
+    )
+    at = datetime(2026, 10, 12, 12, 58, 20, tzinfo=UTC).timestamp()
+    fit = source.player._hour_fit_choice(SimpleNamespace(at=at))
+
+    assert fit is not None
+    assert source.player.music_playback_rate(exact) == 1.1
+    assert fit([short, exact]) is exact
 
 
 def test_discovery_fits_only_within_its_distant_pool(tmp_path: Path) -> None:

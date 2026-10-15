@@ -3792,10 +3792,11 @@ version does not have (one a newer AutoDJ added) never runs and is not listed, b
 and written back exactly as it was with every save, so going back and forth between versions
 loses no event; it counts toward the 100 events. An event for an action this version has, but
 with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
-before. Events are not replayed after downtime: a one-time event whose
-time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
-two minutes late (the computer slept) is recorded as missed instead of running. The schedule
-holds at most 100 events.
+before. Events due before startup are not replayed: a one-time event whose time passed while
+AutoDJ was stopped is disabled and recorded as missed, including one due exactly at startup.
+After a stall, each event gets one missed record that counts occurrences more than two minutes
+late. The latest occurrence still within that window runs once. The schedule holds at most 100
+events.
 
 ## Clockwheels
 
