@@ -399,7 +399,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       title: `Delete intro rule ${name}?`,
       message: "Its voice liners stay in the library.",
       confirmLabel: "Delete intro rule",
-      station: true,
       onConfirm: async () => {
         try {
           await request(`/api/intros/rules/${encodeURIComponent(id)}`, { method: "DELETE" });

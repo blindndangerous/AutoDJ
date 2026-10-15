@@ -31,7 +31,6 @@ export async function sendWithDmcaConfirm(doc, send, { now = false, opener = nul
   let value;
   let failure = null;
   const accepted = await confirmAction(doc, {
-    station: true,
     title: "Over the DMCA limit",
     message: `${warning} ${now ? "Play it now anyway?" : "Queue it anyway?"}`,
     confirmLabel: now ? "Play anyway" : "Queue anyway",

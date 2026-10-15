@@ -85,7 +85,8 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     old.time_checks.write_text(
-        '{"version": 1, "settings": {"enabled": true}, "pack_dates": {"old": {}}}',
+        '{"version": 1, "settings": {"enabled": true, "intro": "hi.wav", "outro": "",'
+        ' "recorded_folder": "Clips"}, "pack_dates": {"old": {}}}',
         encoding="utf-8",
     )
     old.schedule.write_text(
@@ -113,7 +114,7 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
     assert json.loads((folder / "schedule.json").read_text())["runs"] == []
     assert json.loads((folder / "time_checks.json").read_text()) == {
         "version": 1,
-        "settings": {"enabled": True},
+        "settings": {"enabled": True, "outro": ""},
     }
     assert not (folder / "relays.json").exists()
     (folder / "carts" / "id.wav").write_bytes(b"changed")
@@ -155,18 +156,22 @@ def test_duplicate_without_flags_skips_assets(tmp_path: Path) -> None:
     assert {item.name for item in folder.iterdir()} == {"station.json"}
 
 
-def test_config_table_wins_and_bad_definitions_are_reported(tmp_path: Path) -> None:
+def test_station_json_wins_and_bad_definitions_are_reported(tmp_path: Path) -> None:
     cfg = _root(
         tmp_path,
         '\n[stations.owl]\n[stations.owl.stream]\nstation_name = "Owl"\n[stations.owl.recording]\nfolder = "recordings/owl"\n',
     )
-    _definition(cfg, "owl", {"stream": {"station_name": "Ignored"}})
+    _definition(
+        cfg, "owl", {"stream": {"station_name": "Ignored"}, "recording": {"folder": "recordings/o"}}
+    )
     bad = _definition(
         cfg, "bad", {"stream": {"station_name": "Bad", "listener_password": "secret"}}
     )
     reloaded = load_config(cfg.config_path, environ={})
     assert [item.slug for item in reloaded.stations] == ["owl"]
-    assert reloaded.stations[0].defined_in == "config"
+    # A station with its own station.json is read from it, not config.toml.
+    assert reloaded.stations[0].defined_in == "web"
+    assert reloaded.stations[0].name == "Ignored"
     assert any(
         path == str(bad) and "secrets" in reason for path, reason in reloaded.skipped_definitions
     )
@@ -176,3 +181,23 @@ def test_config_table_wins_and_bad_definitions_are_reported(tmp_path: Path) -> N
         and str(bad) in check.summary
         for check in run_doctor(reloaded, python_version=(3, 14)).checks
     )
+
+
+def test_serve_moves_a_config_station_into_its_own_file(tmp_path: Path) -> None:
+    from autodj.config import move_station_tables
+
+    extra = (
+        '\n[stations.owl]\nautostart = true\n[stations.owl.stream]\nstation_name = "Owl"\n'
+        'listener_user = "dj"\nlistener_password = "secret"\n[stations.owl.recording]\nfolder = "recordings/owl"\n'
+    )
+    cfg = _root(tmp_path, extra)
+    assert cfg.stations[0].defined_in == "config"
+    assert move_station_tables(cfg) is True
+    document = json.loads(StationPaths.for_station(cfg, "owl").definition.read_text("utf-8"))
+    assert "listener_password" not in document["station"]["stream"]
+    reloaded = load_config(cfg.config_path, environ={})
+    owl = reloaded.stations[0]
+    assert (owl.slug, owl.defined_in, owl.autostart) == ("owl", "web", True)
+    # Its secret still comes from config.toml.
+    assert owl.cfg.stream.listener_password == "secret"
+    assert move_station_tables(reloaded) is False

@@ -1064,18 +1064,18 @@ def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
 def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Report recorded minute coverage, the clips and TTS program found, and the switches."""
     from autodj.time_checks import (
+        clip_sources,
         clips_folder,
+        found_packs,
         load_settings,
         missing_minutes,
-        pack_folders,
         state_path,
     )
     from autodj.voice_packs import pieces_for, scan_pack
 
     tc = cfg.time_checks
     folder = clips_folder(cfg, paths)
-    missing = missing_minutes(folder)
-    detail = {"folder": str(folder), "missing_examples": missing[:10]}
+    detail = {"folder": str(folder), "missing_examples": missing_minutes(folder)[:10]}
     try:
         settings = load_settings(cfg, paths)
         enabled = settings.enabled
@@ -1087,25 +1087,32 @@ def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> 
             detail,
             f"Fix or remove {state_path(cfg, paths)}, then set the switches again.",
         )
+    recorded, intro, outro = clip_sources(cfg, settings, paths)
+    missing = missing_minutes(recorded)
+    detail = {"folder": str(recorded), "missing_examples": missing[:10]}
     coverage = f"{len(missing)} of 1440 minute clips missing"
     if not enabled:
         return DoctorCheck("time-checks", CheckStatus.PASS, f"disabled; {coverage}", detail)
     problems = []
     if tc.clips_folder and not folder.is_dir():
         problems.append("clips_folder is not a folder")
-    problems.extend(
-        f"{name} not found"
-        for name in ("intro_clip", "outro_clip")
-        if getattr(tc, name) and not Path(getattr(tc, name)).is_file()
-    )
+    if settings.recorded_folder and not recorded.is_dir():
+        problems.append(f"recorded clips folder {settings.recorded_folder} not found")
+    for label, clip, chosen in (("intro", intro, settings.intro), ("outro", outro, settings.outro)):
+        if clip is not None and not clip.is_file():
+            problems.append(
+                f"{label} clip {chosen} not found" if chosen else f"{label}_clip not found"
+            )
     if tc.tts_command and shutil.which(tc.tts_command[0]) is None:
         problems.append(f"TTS program {tc.tts_command[0]} not found")
-    folders = pack_folders(cfg)
+    found = found_packs(cfg, paths, skip=settings.recorded_folder)
+    folders = {name: pack.path for name, pack in found.packs.items()}
     problems.extend(
-        f"saved voice pack {name} is not in voice_packs"
+        f"saved voice pack {name} is not found"
         for name in settings.enabled_packs
         if name not in folders
     )
+    problems.extend(found.clashes)
     packs = [scan_pack(folders[name]) for name in settings.enabled_packs if name in folders]
     unvoiced = [
         name
@@ -1126,16 +1133,19 @@ def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> 
 def _voice_pack_checks(
     cfg: AutoDJConfig, paths: StationPaths | None = None
 ) -> tuple[DoctorCheck, ...]:
-    """One check per configured voice pack: its coverage and the files it does not use."""
-    from autodj.time_checks import load_settings, pack_folders
+    """One check per voice pack, listed or found: its coverage and the files it does not use."""
+    from autodj.time_checks import found_packs, load_settings
     from autodj.voice_packs import coverage, scan_pack
 
-    folders = pack_folders(cfg)
     try:
         settings = load_settings(cfg, paths)
         hour_format, enabled = settings.hour_format, set(settings.enabled_packs)
+        skip = settings.recorded_folder
     except (OSError, ValueError, KeyError, AttributeError):
-        hour_format, enabled = cfg.time_checks.hour_format, set(folders)
+        hour_format, enabled, skip = cfg.time_checks.hour_format, None, ""
+    folders = {name: pack.path for name, pack in found_packs(cfg, paths, skip=skip).packs.items()}
+    if enabled is None:
+        enabled = set(folders)
     checks = []
     for name, folder in folders.items():
         pack = scan_pack(folder)

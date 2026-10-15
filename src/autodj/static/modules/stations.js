@@ -108,6 +108,9 @@ export const STATION_ROUTES = Object.freeze([
   "/time-checks/test",
   "/time-checks/preview",
   "/time-checks/packs/{name}/dates",
+  "/time-checks/packs",
+  "/time-checks/packs/{name}",
+  "/time-checks/clips",
   "/voice-tracks",
   "/voice-tracks/{break_id}",
   "/ads",
@@ -268,12 +271,6 @@ export function controllingText(entry, nowPlaying = null) {
     parts.push(title ? `Playing ${title}.` : "Nothing playing.");
   }
   return parts.join(" ");
-}
-
-// "On Night Owl Radio" while several stations exist, otherwise empty: the
-// description of every control that changes what is on air.
-export function stationContextText() {
-  return severalStations() ? `On ${stationName()}` : "";
 }
 
 // The ?station= in the page address, when it names a configured station.

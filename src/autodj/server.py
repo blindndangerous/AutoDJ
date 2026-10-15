@@ -166,6 +166,9 @@ from autodj.stereotool_presets import MAX_PRESET_BYTES
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from autodj.stream_formats import FORMATS
 from autodj.tags_api import TAG_BODY_MAX_BYTES, install_tag_editor, tag_form
+from autodj.time_check_files import MAX_PACK_UPLOAD_BYTES
+from autodj.time_checks import CLIP_UPLOAD_PATH as TIME_CHECK_CLIP_PATH
+from autodj.time_checks import PACK_UPLOAD_PATH as TIME_CHECK_PACK_PATH
 from autodj.tls import CertificateReloader
 from autodj.version import current_version
 from autodj.worker_api import (
@@ -1177,6 +1180,9 @@ def create_app(
         "/api/carts/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         # Matched intros (#127) have the liner upload's cap.
         INTRO_UPLOAD_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
+        # Time checks (#388): a voice pack zip, and one intro, outro or minute clip.
+        TIME_CHECK_PACK_PATH: lambda: MAX_PACK_UPLOAD_BYTES + _MULTIPART_OVERHEAD_BYTES,
+        TIME_CHECK_CLIP_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         INTRO_RULES_PATH: lambda: RULE_BODY_MAX_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool/license": lambda: SMALL_BODY_MAX_BYTES,

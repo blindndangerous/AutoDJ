@@ -65,7 +65,6 @@ import {
   setKnownStations,
   pinnedStationApi,
   severalStations,
-  stationContextText,
   stationEntry,
   stationFromAddress,
   stationName,
@@ -1587,16 +1586,11 @@ function connectWS({ quiet = false, switching = false } = {}) {
 // ----------------------------------------------------------------
 
 const pageHeading = document.getElementById("page-heading");
-const mainLandmark = document.getElementById("main-content");
-const stationContext = document.getElementById("station-context");
 const sharedContext = document.getElementById("shared-context");
 const offAirBox = document.getElementById("station-off-air");
 const offAirText = document.getElementById("station-off-air-text");
 const btnStationStart = document.getElementById("station-start");
-const btnStationStop = document.getElementById("station-stop");
-const stationStopRow = document.getElementById("station-stop-row");
 // The panels that show one station; their names add the station's.
-const STATION_PANELS = ["now", "queue", "carts", "voice", "ads", "track-info", "history", "settings"];
 let offAirTimer = null;
 let stationOffAir = false;
 
@@ -1641,20 +1635,7 @@ function renderStationContext() {
   const several = severalStations();
   const name = stationName();
   setTextIfChanged(pageHeading, several && name !== "AutoDJ" ? `AutoDJ: ${name}` : "AutoDJ");
-  setTextIfChanged(stationContext, stationContextText());
   setTextIfChanged(sharedContext, several ? "Shared by all stations" : "");
-  if (several) mainLandmark?.setAttribute("aria-label", name);
-  else mainLandmark?.removeAttribute("aria-label");
-  for (const view of STATION_PANELS) {
-    const panel = document.querySelector(`section[data-view="${view}"][role="tabpanel"]`);
-    if (!panel) continue;
-    const label = several ? `tab-${view} station-name-label` : `tab-${view}`;
-    if (panel.getAttribute("aria-labelledby") !== label) panel.setAttribute("aria-labelledby", label);
-  }
-  setTextIfChanged(document.getElementById("station-name-label"), several ? name : "");
-  const other = currentStation() !== DEFAULT_STATION;
-  if (stationStopRow && stationStopRow.hidden === other) stationStopRow.hidden = !other;
-  setTextIfChanged(btnStationStop, `Stop ${name}`);
   setTextIfChanged(btnStationStart, `Start ${name}`);
   if (stationOffAir) setTextIfChanged(offAirText, `${name} is off air.`);
   if (_lastState) document.title = pageTitle(titleSegments(_lastState.current_track));
@@ -1903,30 +1884,6 @@ btnStationStart?.addEventListener("click", () => void withDisabled(btnStationSta
       `Could not start ${name}. ${errorValue.message}`, { dwellMs: 6000, force: true, tone: "error" });
   }
 }));
-
-btnStationStop?.addEventListener("click", async () => {
-  const station = currentStation();
-  if (station === DEFAULT_STATION) return;
-  const name = stationName();
-  const ok = await confirmAction(document, {
-    title: `Stop ${name}?`,
-    message: `${name} goes off air: its listeners and relays are disconnected and its recording ends. Other stations keep playing.`,
-    confirmLabel: "Stop station",
-  });
-  if (!ok || station !== currentStation()) return;
-  await withDisabled(btnStationStop, async () => {
-    try {
-      const reply = await requestJson(`/api/stations/${encodeURIComponent(station)}/stop`,
-        { method: "POST" });
-      const warnings = Array.isArray(reply.warnings) ? reply.warnings.join(" ") : "";
-      announceStatus(document.getElementById("sr-status"),
-        `${name} stopped.${warnings ? ` ${warnings}` : ""}`, { dwellMs: 6000, force: true });
-    } catch (errorValue) {
-      announceStatus(document.getElementById("sr-status"),
-        `Could not stop ${name}. ${errorValue.message}`, { dwellMs: 6000, force: true, tone: "error" });
-    }
-  });
-});
 
 // Behind Cloudflare Access, a sign-in that has expired turns every
 // request into a redirect to the sign-in page, which a page script
@@ -2604,7 +2561,13 @@ installHotkeys({
     ? controllingText(stationEntry(), _lastState?.current_track ? fmtTrack(_lastState.current_track) : null)
       .replace(/^Now controlling/, "Controlling")
     : `This server has one station, ${stationName()}.`),
-  getStationPrefix: () => (severalStations() ? `${stationName()}: ` : ""),
+  stepStation: (by) => {
+    const all = knownStations();
+    if (all.length < 2) return false;
+    const at = all.findIndex((item) => item.slug === currentStation());
+    void switchStation(all[(at + by + all.length) % all.length].slug);
+    return true;
+  },
   // In stream mode Play / Pause stops the station for every listener, so
   // Space and k toggle Listen here (this page only) instead.
   togglePlay:  () => {

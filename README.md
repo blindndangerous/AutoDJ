@@ -193,8 +193,8 @@ over the music from the browser's microphone. See
 ### Several stations
 
 One server can run more than one station from the same library. The root sections of
-`config.toml` stay the default station; each other station is a `[stations.<slug>]` table with
-its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
+`config.toml` stay the default station; each other station is made in Settings, Stations and
+kept in its own `station.json`, with its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
 settings, streaming at `/stations/<slug>.mp3`. The Station button in the web page's banner
 chooses which station the page controls, and `autodj backup` and `autodj doctor` cover every
 station. See [Several stations](docs/operations.md#several-stations), including
