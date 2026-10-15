@@ -591,7 +591,9 @@ function setAttributeIfChanged(element, name, value) {
   if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
-function applyState(s) {
+// announceTrack false: a station switch, whose "Now controlling ..." line
+// already names the song (#327).
+function applyState(s, { announceTrack = true } = {}) {
   // A push that left the server before it took this page's advance still
   // names the track the page has just faded out of.  Applied, it brought
   // that track back on the decks and said its name a second time; the
@@ -650,7 +652,8 @@ function applyState(s) {
     // the hidden Now Playing panel never spoke on another tab.  Other
     // tabs hear it only when Settings > Announcements asks for it.
     const announce = announceTrackChanges.value;
-    if (trackKey && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
+    if (announceTrack && trackKey
+      && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
       announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
         { mirror: false, dwellMs: 10000 });
     }
@@ -1386,9 +1389,27 @@ let authenticatedActivityActive = false;
 // link is lost and one when it comes back.  The retry cycle in between
 // -- "Connecting...", "Error", "Disconnected", once per attempt, forever
 // -- was three announcements every three seconds for the whole outage.
-function setConnStatus(state, label) {
+//
+// quiet: the new words are shown but not said.  A station switch says
+// "Now controlling ..." on its own, so its socket's "Live" must not follow
+// it (#327).  The region is off while the words change and polite again a
+// second later, once the browser has passed the change on; a transition
+// that is said in between turns it back on first.
+let connQuietTimer = null;
+function setConnStatus(state, label, { quiet = false } = {}) {
   if (connStatus.className !== state) connStatus.className = state;
   if (connStatus.textContent === label) return;
+  clearTimeout(connQuietTimer);
+  connQuietTimer = null;
+  if (quiet) {
+    connStatus.setAttribute("aria-live", "off");
+    connQuietTimer = setTimeout(() => {
+      connQuietTimer = null;
+      connStatus.setAttribute("aria-live", "polite");
+    }, 1000);
+  } else if (connStatus.getAttribute("aria-live") !== "polite") {
+    connStatus.setAttribute("aria-live", "polite");
+  }
   connStatus.textContent = label;
 }
 
@@ -1427,8 +1448,9 @@ function authenticatedInteractionEnabled() {
 }
 
 // quiet: a station switch, which is announced on its own; the pill only
-// changes colour until the new station's socket is live.
-function connectWS({ quiet = false } = {}) {
+// changes colour until the new station's socket is live.  switching: the
+// "Live" it then shows is not said either.
+function connectWS({ quiet = false, switching = false } = {}) {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}${stationWsPath()}`);
@@ -1449,7 +1471,7 @@ function connectWS({ quiet = false } = {}) {
       const recovered = transportDown;
       transportDown = false;
       reconnectDelayMs = RECONNECT_BASE_MS;
-      setConnStatus("connected", "Live");
+      setConnStatus("connected", "Live", { quiet: switching && !recovered });
       setOffAir(false);
       if (recovered) showVisibleStatus("Reconnected.");
       _unreachableProbes = 0;
@@ -1778,14 +1800,15 @@ async function loadStation({ announce = true } = {}) {
   if (station !== currentStation()) return null;
   if (state) {
     setOffAir(false);
-    applyState(state);
-    if (!_ws) connectWS({ quiet: true });
+    // The switch's own line below names the song: it is not said twice.
+    applyState(state, { announceTrack: !announce });
+    if (!_ws) connectWS({ quiet: true, switching: announce });
   } else if (failure) {
     // Only a 409 says the station is stopped.  Any other failure is
     // not "Off air": the socket brings the state when it opens, and its
     // retries cover a server that cannot be reached.
     setOffAir(false);
-    if (!_ws) connectWS({ quiet: true });
+    if (!_ws) connectWS({ quiet: true, switching: announce });
   } else {
     stationWentOffAir();
   }

@@ -3700,6 +3700,43 @@ describe("several stations (#70)", () => {
       "Now controlling Night Owl Radio. On air, 3 listeners. Playing Owl"));
   });
 
+  it("says a switch once: not the song line, and not Live when the socket opens (#327)", async () => {
+    const app = await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    const pill = document.getElementById("conn-status");
+    const song = document.getElementById("track-announce");
+    document.getElementById("announce-track-changes").value = "all";
+    document.getElementById("announce-track-changes").dispatchEvent(new Event("change"));
+    // The pill said something else before: the words "Live" would be news.
+    pill.textContent = "Off air";
+    const written = [];
+    new window.MutationObserver(() => written.push([pill.textContent, pill.getAttribute("aria-live")]))
+      .observe(pill, { childList: true, characterData: true, subtree: true });
+    const songs = [];
+    new window.MutationObserver(() => { if (song.textContent) songs.push(song.textContent); })
+      .observe(song, { childList: true, characterData: true, subtree: true });
+
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await vi.waitFor(() => expect(said.join(" | ")).toContain("Now controlling Night Owl Radio."));
+    expect(document.getElementById("now-playing-title").textContent).toContain("Owl — Hoot");
+    sockets[0].onopen();
+    await vi.waitFor(() => expect(written).toEqual([["Live", "off"]]));
+    expect(songs).toEqual([]);
+    // Polite again afterwards: the next real transition is said.
+    await vi.waitFor(() => expect(pill.getAttribute("aria-live")).toBe("polite"), { timeout: 2000 });
+    // A song change on the new station is said as before.
+    sockets[0].onmessage({ data: JSON.stringify({
+      current_track: { path: "owl2.mp3", artist: "Owl", title: "Night" }, queue: [], eq: {}, volume: 1,
+    }) });
+    await vi.waitFor(() => expect(songs.join(" | ")).toContain("Owl — Night"));
+  });
+
   it("opens the station named in the address", async () => {
     window.history.replaceState(null, "", "/?station=nightowl");
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
