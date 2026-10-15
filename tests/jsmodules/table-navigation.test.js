@@ -51,13 +51,13 @@ describe("native table grid navigation", () => {
     song1.focus();
     song1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band1);
-    expect(band1.getAttribute("aria-label")).toBe("Artist, Band 1");
+    expect(band1.getAttribute("aria-label")).toBe("Band 1, Artist");
     band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement).toBe(band2);
     expect(band1.hasAttribute("aria-label")).toBe(false);
     expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
     band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    expect(song2.getAttribute("aria-label")).toBe("Title, Song 2");
+    expect(song2.getAttribute("aria-label")).toBe("Song 2, Title");
     band2.innerHTML = '<button aria-label="Track info for Song 2">Track info</button>';
     song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band2);

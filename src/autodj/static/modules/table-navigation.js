@@ -3,10 +3,10 @@
 // on to the button made NVDA read the cell and then the button.  Enter or
 // Space on the cell presses the button, which is for the mouse and browse
 // mode.  A checkbox takes focus itself, so its state is read.
-// NVDA says no table headings in focus mode, so a move puts the column
-// heading (in another column) before the cell's text and the row's name
-// cell, such as its song (on another row), after it until focus leaves.  A button or checkbox already names
-// itself, so its cell gets nothing.
+// NVDA says no table headings in focus mode, so until focus leaves, a
+// moved-to cell's name is its text, then the column heading (in another
+// column) and the row's name cell, such as its song (on another row).
+// A button or checkbox already names itself, so its cell gets nothing.
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
@@ -82,7 +82,7 @@ export function installTableNavigation(body) {
       && text(target.parentElement.querySelector("[data-name]"));
     const header = place(target) !== place(cell) && heading(target);
     if ((song || header) && !controls(target).length) {
-      target.setAttribute("aria-label", [header, text(target), song].filter(Boolean).join(", "));
+      target.setAttribute("aria-label", [text(target), header, song].filter(Boolean).join(", "));
       target.dataset.headingLabel = "";
     }
     stop(target).focus();
