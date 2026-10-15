@@ -599,6 +599,32 @@ describe("clock folder and points controls", () => {
     expect(title.value).toBe("");
   });
 
+  it("says the save result once, after the other track has opened (#332)", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<div id="sr-status" role="status" aria-live="polite"></div>');
+    const region = document.getElementById("sr-status");
+    const said = [];
+    new window.MutationObserver(() => { if (region.textContent) said.push(region.textContent); })
+      .observe(region, { childList: true, characterData: true, subtree: true });
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    await switching;
+    expect(document.activeElement).toBe(document.getElementById("track-info-heading"));
+    await vi.waitFor(() => expect(said).toEqual(["Saved changes to Artist — One."]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(said).toHaveLength(1);
+    // Discard says nothing about a save.
+    document.querySelector('[data-point="intro"]').value = "0:20";
+    const discarding = controls.openEditor("M:/one.flac");
+    document.getElementById("track-info-discard").click();
+    await discarding;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(said).toHaveLength(1);
+  });
+
   it("keeps editing like Escape: no save, the draft kept and focus back on the opener", async () => {
     const request = trackRequest();
     const controls = installLibraryFolders({ document, request });
@@ -630,14 +656,20 @@ describe("clock folder and points controls", () => {
     await controls.openEditor("M:/one.flac");
     document.querySelector('[data-point="intro"]').value = "0:10";
     const switching = controls.openEditor("M:/two.flac");
-    document.getElementById("track-info-save").click();
+    const save = document.getElementById("track-info-save");
+    save.focus();
+    save.click();
     const keep = document.getElementById("track-info-keep");
-    expect(keep.disabled).toBe(true);
+    // Nothing turned off under focus: NVDA said Save "unavailable" (#332).
+    expect(keep.disabled).toBe(false);
+    expect(save.disabled).toBe(false);
+    expect(save.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(save);
     keep.click();
     expect(document.getElementById("track-info-dialog").open).toBe(true);
     finish({ points: { intro: 10, end: 180 } });
     await switching;
-    expect(keep.disabled).toBe(false);
+    expect(save.hasAttribute("aria-busy")).toBe(false);
     expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
   });
 
@@ -708,8 +740,9 @@ describe("clock folder and points controls", () => {
     request.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
     const switching = controls.openEditor("M:/two.flac");
     document.getElementById("track-info-save").click();
-    expect(document.getElementById("track-info-save").disabled).toBe(true);
-    expect(document.getElementById("track-info-discard").disabled).toBe(true);
+    document.getElementById("track-info-save").click();
+    document.getElementById("track-info-discard").click();
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
     const escape = new Event("cancel", { cancelable: true });
     document.getElementById("track-info-dialog").dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(true);

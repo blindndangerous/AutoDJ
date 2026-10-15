@@ -445,7 +445,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
     doc.getElementById("track-info-heading").textContent = `Track info: ${currentName}`;
     doc.getElementById("track-info-empty").hidden = true;
   }
-  async function savePoints(errorTarget = null) {
+  // said, from the Save or Discard dialog, collects the result to be said
+  // once the other track has opened.
+  async function savePoints(errorTarget = null, said = null) {
     if (saving || !currentPath) return false;
     doc.getElementById("points-preview")?.pause();
     saving = true;
@@ -476,6 +478,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       // New cue points can move the intro, outro and segue landmarks.
       landmarks.refresh();
       pointSay(`Saved changes to ${currentName}.`);
+      said?.push(`Saved changes to ${currentName}.`);
       return true;
     } catch (error) {
       if (!requestCurrent(epoch, generation)) return false;
@@ -489,6 +492,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
         editor.inert = wasInert;
       }
     }
+  }
+  // The Save or Discard dialog's save result, said after the switch (#332).
+  let savedBeforeSwitch = "";
+  function takeSavedBeforeSwitch() {
+    const text = savedBeforeSwitch;
+    savedBeforeSwitch = "";
+    return text;
   }
   function confirmTrackChange() {
     const dialog = doc.getElementById("track-info-dialog");
@@ -507,24 +517,37 @@ export function installLibraryFolders({ document: doc = document, request = requ
     doc.getElementById("track-info-dialog-title").textContent = `Save changes to ${currentName}?`;
     error.textContent = "";
     dialog.returnValue = "";
+    savedBeforeSwitch = "";
     return new Promise((resolve) => {
+      // While Save runs, no button is turned off: NVDA said the focused Save
+      // "unavailable" (#332).  pending refuses a second press, and aria-busy
+      // marks Save.
+      let pending = false;
       async function accept() {
-        if (saving) return;
-        save.disabled = discard.disabled = true;
-        if (keep) keep.disabled = true;
-        const saved = (savedFields === fieldSnapshot() || await savePoints(error))
-          && (!tags.dirty() || await tags.save(error));
-        save.disabled = discard.disabled = false;
-        if (keep) keep.disabled = false;
-        if (saved) dialog.close("save");
+        if (saving || pending) return;
+        pending = true;
+        save.setAttribute("aria-busy", "true");
+        const said = [];
+        try {
+          const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
+            && (!tags.dirty() || await tags.save(error, said));
+          if (!saved) return;
+          // The page behind the dialog is inert, so the result said there
+          // was never heard; it is said once the other track has opened.
+          savedBeforeSwitch = said.join(" ");
+          dialog.close("save");
+        } finally {
+          pending = false;
+          save.removeAttribute("aria-busy");
+        }
       }
       function reject() {
-        if (saving) return;
+        if (saving || pending) return;
         doc.getElementById("points-preview")?.pause();
         dialog.close("discard");
       }
-      function stay() { if (!saving) dialog.close("keep"); }
-      function cancel(event) { if (saving) event.preventDefault(); }
+      function stay() { if (!saving && !pending) dialog.close("keep"); }
+      function cancel(event) { if (saving || pending) event.preventDefault(); }
       function closed() {
         save.removeEventListener("click", accept);
         discard.removeEventListener("click", reject);
@@ -578,11 +601,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
       rememberReturn(opener);
       showTrackInfo();
       pointSay("");
+      // Said once, after focus has reached the other track: said before,
+      // the focus change would cut it off.
+      const saved = takeSavedBeforeSwitch();
+      if (saved) announceStatus(doc.getElementById("sr-status"), saved, { dwellMs: 6000, force: true });
     } catch (error) {
       if (requestCurrent(epoch, generation)) {
-        const message = error.status === 404
+        const saved = takeSavedBeforeSwitch();
+        const message = (saved ? `${saved} ` : "") + (error.status === 404
           ? "This recording is no longer in the library. Its current details and cue points are unavailable."
-          : `Could not load track info: ${error.message}`;
+          : `Could not load track info: ${error.message}`);
         if (error.status === 404 && opener) {
           if (opener.isConnected && !opener.disabled) opener.focus();
           else {
