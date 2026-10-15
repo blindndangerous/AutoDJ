@@ -108,22 +108,31 @@ async def test_connect_disconnect_churn_does_not_leak(output: StreamOutput) -> N
 
 async def test_encoder_failures_back_off_then_503() -> None:
     now = [0.0]
+    starts = [0]
 
     class Dying(FakeEncoder):
         def __init__(self, bitrate: int) -> None:
             super().__init__(bitrate)
-            self.alive = False  # reports dead; read() still blocks until close()
+            starts[0] += 1
+            self.alive = starts[0] > 5  # five dead encoders, then a working one
 
     out = StreamOutput(
         320, 8, encoder_factory=Dying, clock=lambda: now[0], loop=asyncio.get_running_loop()
     )
-    for _ in range(5):
-        out._restart_encoder()
-    with pytest.raises(EncoderUnavailableError):
-        out.add_listener(icy=False)
-    now[0] = 61.0
-    out.add_listener(icy=False)
-    out.close()
+    try:
+        for _ in range(5):
+            out._restart_encoder()
+        assert starts[0] == 5
+        assert out._cooldown_until == 60.0
+        with pytest.raises(EncoderUnavailableError):
+            out.add_listener(icy=False)
+        now[0] = 61.0
+        listener = out.add_listener(icy=False)
+        assert starts[0] == 6
+        out.write(_block())
+        assert len(await _collect(listener, 64)) >= 64
+    finally:
+        out.close()
 
 
 async def test_set_bitrate_restarts_and_disconnects(output: StreamOutput) -> None:
@@ -397,7 +406,9 @@ async def test_pending_titles_flushed_on_restart(output: StreamOutput) -> None:
     assert list(output._pending_titles) == []
 
 
-async def test_title_set_during_restart_is_not_stuck(output: StreamOutput, monkeypatch) -> None:
+async def test_title_request_delayed_until_after_restart_does_not_block_later_title(
+    output: StreamOutput, monkeypatch
+) -> None:
     output._pcm_in = 50_000_000
     entered = threading.Event()
     resume = threading.Event()
@@ -459,14 +470,15 @@ async def test_writer_skips_dead_encoder_and_logs_once_per_episode(
 
 
 class _OnceThenRaiseFactory:
-    """Returns a working encoder once, then raises on every later call."""
+    """Returns a working encoder once, then raises until an optional recovery."""
 
-    def __init__(self) -> None:
+    def __init__(self, recover_at: int | None = None) -> None:
         self.calls = 0
+        self.recover_at = recover_at
 
     def __call__(self, bitrate: int) -> FakeEncoder:
         self.calls += 1
-        if self.calls == 1:
+        if self.calls == 1 or (self.recover_at is not None and self.calls >= self.recover_at):
             return FakeEncoder(bitrate)
         raise RuntimeError("ffmpeg missing")
 
@@ -477,9 +489,76 @@ async def test_restart_encoder_records_failure_when_factory_raises() -> None:
     dead = out._encoder
     out._restart_encoder(dead)
     assert factory.calls == 2
-    assert len(out._failures) == 2  # the dead encoder, then the failed factory call
+    assert len(out._failures) == 1  # the failed replacement belongs to the same incident
     assert out._encoder is dead  # replacement failed; nothing to swap in
     out.close()
+
+
+async def test_retry_factory_does_not_hold_output_lock() -> None:
+    entered = threading.Event()
+    resume = threading.Event()
+    calls = 0
+
+    def factory(bitrate: int) -> FakeEncoder:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            entered.set()
+            assert resume.wait(5)
+        return FakeEncoder(bitrate)
+
+    out = StreamOutput(320, 8, encoder_factory=factory, loop=asyncio.get_running_loop())
+    worker = threading.Thread(target=out._restart_encoder)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        start = time.monotonic()
+        with pytest.raises(EncoderUnavailableError):
+            out.add_listener(icy=False)
+        assert time.monotonic() - start < 0.5
+        assert out._lock.acquire(timeout=0.2)
+        out._lock.release()
+    finally:
+        resume.set()
+        worker.join(2)
+        out.close()
+    assert not worker.is_alive()
+
+
+async def test_failed_factory_retries_back_off_and_log_one_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    now = [0.0]
+    factory = _OnceThenRaiseFactory(recover_at=7)
+    out = StreamOutput(
+        320, 8, encoder_factory=factory, clock=lambda: now[0], loop=asyncio.get_running_loop()
+    )
+    try:
+        with out._pcm_cond, caplog.at_level("WARNING", logger="autodj.stream"):
+            out._restart_encoder()
+            assert factory.calls == 2
+            assert out._retry_at == 1.0
+            out._retry_encoder()
+            assert factory.calls == 2
+            for when, next_retry in [(1.0, 3.0), (3.0, 7.0), (7.0, 15.0)]:
+                now[0] = when
+                out._retry_encoder()
+                assert out._retry_at == next_retry
+            now[0] = 15.0
+            out._retry_encoder()
+            assert out._cooldown_until == 75.0
+            failures = [r for r in caplog.records if "factory" in r.message.lower()]
+            assert len(failures) == 5
+            assert [bool(r.exc_info) for r in failures] == [True, False, False, False, False]
+            now[0] = 61.0
+            with pytest.raises(EncoderUnavailableError):
+                out.add_listener(icy=False)
+            assert factory.calls == 6
+            now[0] = 75.0
+            out.add_listener(icy=False)
+            assert factory.calls == 7
+    finally:
+        out.close()
 
 
 async def test_add_listener_raises_and_records_failure_when_factory_raises() -> None:

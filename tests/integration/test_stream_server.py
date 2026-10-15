@@ -1008,6 +1008,59 @@ def test_failure_building_the_response_frees_the_listener_slot() -> None:
         assert bridge.stream.listener_count == 0
 
 
+def test_cancelled_admission_frees_listener_after_worker_finishes(stream_app, monkeypatch) -> None:
+    import asyncio
+
+    client, stream = stream_app
+    access = client.app.state.listener_access
+    original = access.add
+    entered = threading.Event()
+    resume = threading.Event()
+
+    def slow_add(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entered.set()
+        assert resume.wait(5)
+        return result
+
+    monkeypatch.setattr(access, "add", slow_add)
+    path = "/stream.mp3"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("192.0.2.4", 50000),
+        "server": ("testserver", 80),
+    }
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(_message):
+        pass
+
+    async def run() -> None:
+        task = asyncio.create_task(client.app(scope, receive, send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+        finally:
+            resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert access.listeners() == []
+    stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)
+
+
 def test_failure_while_sending_frees_the_listener_slot() -> None:
     import asyncio
 
@@ -1033,7 +1086,8 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
     assert closed == [True]
 
 
-def test_stalled_send_releases_the_listener(monkeypatch) -> None:
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+def test_stalled_send_releases_the_listener(monkeypatch, spec_version: str) -> None:
     import asyncio
 
     from starlette.requests import ClientDisconnect
@@ -1057,9 +1111,13 @@ def test_stalled_send_releases_the_listener(monkeypatch) -> None:
 
     monkeypatch.setattr(server, "_LISTENER_SEND_TIMEOUT", 0.01)
     response = server._ListenerResponse(body(), on_close=lambda: closed.append(True))
-    scope = {"type": "http", "method": "GET", "asgi": {"spec_version": "2.4"}}
-    with pytest.raises(ClientDisconnect):  # Starlette wraps TimeoutError (an OSError).
-        asyncio.run(response(scope, receive, stalled_send))
+    scope = {"type": "http", "method": "GET", "asgi": {"spec_version": spec_version}}
+
+    async def run() -> None:
+        with pytest.raises((ClientDisconnect, TimeoutError, ExceptionGroup)):
+            await response(scope, receive, stalled_send)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=1.5))
     assert sent_body
     assert closed == [True]
 

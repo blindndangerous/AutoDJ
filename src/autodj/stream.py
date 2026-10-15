@@ -241,6 +241,7 @@ class Listener:
         self._size = 0
         self._event = asyncio.Event()
         self.closed = False
+        self.closed_at: float | None = None
         self._aborted = False
 
     def push(self, data: bytes, title: str) -> bool:
@@ -285,12 +286,16 @@ class Listener:
 
     def close(self) -> None:
         """Stop the listener after it drains what it has."""
+        if not self.closed:
+            self.closed_at = time.time()
         self.closed = True
         self._loop.call_soon_threadsafe(self._event.set)
 
     def abort(self) -> None:
         """Stop now and discard queued audio after an operator disconnect."""
         with self._lock:
+            if not self.closed:
+                self.closed_at = time.time()
             self.closed = True
             self._aborted = True
             self._queue.clear()
@@ -348,6 +353,10 @@ class StreamOutput:
         self._cooldown_until = 0.0
         self._retry_at = 0.0
         self._needs_retry = False
+        self._retry_in_progress = False
+        self._retry_delay = 1.0
+        self._factory_failure_logged = False
+        self._failure_recorded_for_retry = False
         self._pcm_in = 0
         self._mp3_out = 0
         self._encoder_generation = 0
@@ -423,6 +432,9 @@ class StreamOutput:
         self._encoder = encoder
         self._needs_retry = False
         self._retry_at = 0.0
+        self._retry_delay = 1.0
+        self._factory_failure_logged = False
+        self._failure_recorded_for_retry = False
         self._flush_pending_titles()
         self._pcm_in = self._mp3_out = 0
         self._encoder_generation += 1
@@ -438,19 +450,49 @@ class StreamOutput:
         for sink in self._sinks:
             sink.encoder_changed()
 
-    def _start_encoder_locked(self) -> None:
-        """Retry a failed encoder after its cooldown (lock held)."""
-        now = self._clock()
-        if self._closed or now < max(self._cooldown_until, self._retry_at):
-            return
+    def _retry_encoder(self) -> None:
+        """Build a replacement outside the lock and install it if still needed."""
+        with self._lock:
+            now = self._clock()
+            if (
+                self._closed
+                or not self._needs_retry
+                or self._retry_in_progress
+                or now < max(self._cooldown_until, self._retry_at)
+            ):
+                return
+            self._retry_in_progress = True
+            bitrate = self._bitrate
         try:
-            new_encoder = self._factory(self._bitrate)
-        except Exception:
-            logger.error("Stream encoder factory failed; will retry", exc_info=True)
-            self._record_failure()
-            self._retry_at = now + 1.0
+            new_encoder = self._factory(bitrate)
+        except Exception as exc:
+            with self._lock:
+                active = self._needs_retry and not self._closed and self._bitrate == bitrate
+                if active:
+                    if not self._failure_recorded_for_retry:
+                        self._record_failure()
+                    self._failure_recorded_for_retry = False
+                    delay = self._retry_delay
+                    self._retry_at = self._clock() + delay
+                    self._retry_delay = min(delay * 2, 30.0)
+                    first = not self._factory_failure_logged
+                    self._factory_failure_logged = True
+                self._retry_in_progress = False
+            if active:
+                if first:
+                    logger.error("Stream encoder factory failed; will retry", exc_info=True)
+                else:
+                    logger.warning(
+                        "Stream encoder factory still failing; retry in %.0f s: %s", delay, exc
+                    )
             return
-        self._install_encoder(new_encoder)
+        with self._lock:
+            stale = self._closed or not self._needs_retry or self._bitrate != bitrate
+            if not stale:
+                self._install_encoder(new_encoder)
+            self._retry_in_progress = False
+        if stale:
+            new_encoder.close()
 
     def _restart_encoder(self, dead: FfmpegEncoder | None = None) -> None:
         """Replace *dead* with a fresh encoder, counting the failure.
@@ -468,14 +510,17 @@ class StreamOutput:
                 dead = current
             if dead is not current:
                 return
+            if self._needs_retry:
+                return
             self._record_failure()
             self._disconnect_all_locked()
             self._needs_retry = True
-            try:
-                self._encoder.close()
-            except Exception:
-                logger.debug("Closing the failed encoder raised", exc_info=True)
-            self._start_encoder_locked()
+            self._failure_recorded_for_retry = True
+        try:
+            dead.close()
+        except Exception:
+            logger.debug("Closing the failed encoder raised", exc_info=True)
+        self._retry_encoder()
 
     def _read_loop(self, encoder: FfmpegEncoder) -> None:
         """Drain *encoder*'s MP3 output and restart it if it exits.
@@ -523,9 +568,8 @@ class StreamOutput:
                 if self._closed and not self._pcm_queue:
                     return
                 pcm = self._pcm_queue.popleft() if self._pcm_queue else None
+            self._retry_encoder()
             with self._lock:
-                if self._needs_retry:
-                    self._start_encoder_locked()
                 encoder = self._encoder
             if pcm is None:
                 continue
@@ -745,22 +789,15 @@ class StreamOutput:
         with self._lock:
             if self._closed:
                 raise EncoderUnavailableError("stream output is closed")
-            if self._clock() < self._cooldown_until:
+            dead = self._encoder if not self._encoder.alive else None
+        if dead is not None:
+            self._restart_encoder(dead)
+        self._retry_encoder()
+        with self._lock:
+            if self._closed:
+                raise EncoderUnavailableError("stream output is closed")
+            if self._clock() < self._cooldown_until or self._needs_retry or not self._encoder.alive:
                 raise EncoderUnavailableError("stream encoder failed")
-            if not self._encoder.alive:
-                dead = self._encoder
-                try:
-                    new_encoder = self._factory(self._bitrate)
-                except Exception as exc:
-                    self._record_failure()
-                    self._needs_retry = True
-                    self._retry_at = self._clock() + 1.0
-                    raise EncoderUnavailableError("stream encoder failed") from exc
-                self._install_encoder(new_encoder)
-                try:
-                    dead.close()
-                except Exception:
-                    logger.debug("Closing the dead encoder raised", exc_info=True)
             if len(self._listeners) + len(self._waiting) >= self._max_listeners:
                 raise ListenerLimitError("listener limit reached")
             max_bytes = int(self._bitrate * 1000 / 8 * _QUEUE_SECONDS)
