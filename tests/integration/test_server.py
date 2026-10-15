@@ -635,7 +635,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         folder.mkdir()
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(folder.parent)
         tc = TestClient(create_app(bridge))
 
         # Nine bytes of text named .mp3 (#323): refused with the reason in words.
@@ -668,7 +668,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         folder.mkdir()
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(folder.parent)
         monkeypatch.setattr(break_audio.shutil, "which", lambda _name: "ffprobe")
 
         def hangs(*_args: object, **_kwargs: object) -> None:
