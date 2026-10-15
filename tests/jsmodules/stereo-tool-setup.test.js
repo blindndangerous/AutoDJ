@@ -30,7 +30,6 @@ function status(overrides = {}) {
   return {
     installed: false,
     version: null,
-    location: "index",
     download: { available: true, platform: "Windows", busy: false },
     license: { in_use: null, install: null, station: null, problem: null },
     several_stations: false,
@@ -145,8 +144,6 @@ describe("Stereo Tool setup words", () => {
     expect(installText(status({ download: { available: false,
       note: "Thimeo's ARM build of Stereo Tool processes 16-bit audio only." } })))
       .toBe("Stereo Tool is not installed. Thimeo's ARM build of Stereo Tool processes 16-bit audio only.");
-    expect(installText(status({ location: "configured", installed: true, version: "10.9" })))
-      .toContain("Stereo Tool 10.9 library set in the server configuration");
   });
 
   it("says Licence set or No licence and never needs the key", () => {
@@ -373,14 +370,6 @@ describe("Stereo Tool setup controls", () => {
     await vi.waitFor(() => expect(statusText()).toMatch(/^Licence cleared\. No licence\./));
     expect(state.calls.some(([url, method]) => url === "/api/stereo-tool/license?scope=all" && method === "DELETE")).toBe(true);
     expect(document.activeElement).toBe($("stereo-license-clear"));
-  });
-
-  it("clears the saved key for every station even while the configuration's key is used", async () => {
-    const state = server(status({ license: { in_use: "station-config", install: "saved", station: "config", problem: null } }));
-    await install(state);
-    $("stereo-license-clear").click();
-    await vi.waitFor(() => expect(statusText()).toMatch(/^Licence cleared\./));
-    expect(state.calls.some(([url, method]) => url === "/api/stereo-tool/license?scope=all" && method === "DELETE")).toBe(true);
   });
 
   it("says a licence from the server cannot be cleared here", async () => {

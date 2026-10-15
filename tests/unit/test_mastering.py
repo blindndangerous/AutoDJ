@@ -12,7 +12,14 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from autodj.mastering import _QUEUE_BLOCKS, BLOCK_FRAMES, BLOCK_SECONDS, ContinuousMaster, _command
+from autodj.mastering import (
+    _QUEUE_BLOCKS,
+    BLOCK_FRAMES,
+    BLOCK_SECONDS,
+    STEREOTOOL_MISSING,
+    ContinuousMaster,
+    _command,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg is unavailable")
 
@@ -199,15 +206,6 @@ def test_stereotool_runs_our_host_with_the_library_and_the_packaged_preset() -> 
     assert command[command.index("--library") + 1] == "C:/Audio Tools/libStereoTool_64.dll"
     assert command[command.index("--home") + 1] == "/tmp/st"
     assert Path(command[command.index("--preset") + 1]).is_file()
-
-
-def test_stereotool_command_defaults_to_the_library_path() -> None:
-    from autodj.config import stereotool_library_name
-
-    command = _command("stereotool")
-    assert command[command.index("--library") + 1] == (
-        f"./tools/stereo-tool/{stereotool_library_name()}"
-    )
 
 
 @pytest.mark.parametrize("partial_write", [False, True])
@@ -631,11 +629,10 @@ def test_a_host_that_exits_after_saying_why_shows_that_reason() -> None:
     master = ContinuousMaster(
         popen_factory=factory,
         mode=lambda: "stereotool",
-        stereotool_missing=lambda: "The Stereo Tool library is missing.",
     )
     try:
-        _wait_for(lambda: master.error is not None and "missing" in master.error)
-        assert master.error == "Stereo Tool master unavailable: The Stereo Tool library is missing."
+        _wait_for(lambda: master.error is not None and "not installed" in master.error)
+        assert master.error == f"Stereo Tool master unavailable: {STEREOTOOL_MISSING}"
     finally:
         master.close()
 
@@ -682,34 +679,6 @@ def test_a_stuck_process_is_logged_without_its_command_line(caplog) -> None:
     )
 
 
-def test_a_missing_configured_stereotool_names_the_setting() -> None:
-    from autodj import stereotool_setup
-
-    started = []
-
-    def factory(command, **_kwargs):
-        started.append(command)
-        raise AssertionError("no host starts without its library")
-
-    master = ContinuousMaster(
-        popen_factory=factory,
-        mode=lambda: "stereotool",
-        stereotool_path=lambda: "C:/Radio/Gone.dll",
-        stereotool_missing=lambda: stereotool_setup.missing_message("C:/Radio/Gone.dll"),
-        library_present=stereotool_setup.library_present,
-    )
-    try:
-        deadline = time.monotonic() + 2
-        while master.error is None and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert master.error is not None
-        assert "named by stereotool_path in the configuration is missing" in master.error
-        assert "Download it" not in master.error
-        assert started == []
-    finally:
-        master.close()
-
-
 def test_a_report_is_tagged_with_the_generation_it_started_with() -> None:
     generation = [7]
 
@@ -752,11 +721,10 @@ def test_a_helper_that_stops_reading_its_header_says_its_own_reason() -> None:
     master = ContinuousMaster(
         popen_factory=factory,
         mode=lambda: "stereotool",
-        stereotool_missing=lambda: "Stereo Tool is not installed.",
     )
     try:
         _wait_for(lambda: master.error is not None)
-        assert master.error == "Stereo Tool master unavailable: Stereo Tool is not installed."
+        assert master.error == f"Stereo Tool master unavailable: {STEREOTOOL_MISSING}"
         assert "Broken pipe" not in master.error
     finally:
         master.close()

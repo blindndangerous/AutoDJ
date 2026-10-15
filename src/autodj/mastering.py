@@ -21,7 +21,6 @@ from typing import Final
 import numpy as np
 
 from autodj.child_jobs import bind_to_autodj
-from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.kernels import nan_to_num_in_place
 from autodj.processing import MASTER_FILTER
 from autodj.station_log import station_thread
@@ -117,7 +116,7 @@ def _creation_flags() -> int:
 
 def _command(
     mode: str = "smooth",
-    stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
+    stereotool_path: str = "",
     preset: Path | None = None,
     home: str | None = None,
 ) -> list[str]:
@@ -194,15 +193,14 @@ def _unavailable(
     exc: Exception,
     *,
     missing: bool = False,
-    missing_text: str = STEREOTOOL_MISSING,
 ) -> str:
     """Why the processor did not start, in words for the page.
 
     *missing* says the error came from starting the processor itself, so a
-    missing file there is Stereo Tool's library, and *missing_text* says so.
+    missing file there is Stereo Tool's library.
     """
     if mode == "stereotool" and missing and isinstance(exc, FileNotFoundError):
-        return missing_text
+        return STEREOTOOL_MISSING
     if mode == "stereotool" and isinstance(exc, OSError) and exc.filename:
         # Never a path on the page: the file's name and the reason.
         return f"{Path(str(exc.filename)).name}: {exc.strerror or type(exc).__name__}"
@@ -221,13 +219,12 @@ class ContinuousMaster:
         *,
         popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         mode: Callable[[], str] = lambda: "smooth",
-        stereotool_path: str | Callable[[], str] = DEFAULT_STEREOTOOL_PATH,
+        stereotool_path: str | Callable[[], str] = "",
         preset: Callable[[], Path] | None = None,
         input_trim_db: Callable[[], float] = lambda: 0.0,
         agc_drive_db: Callable[[], float] = lambda: 7.0,
         stereotool_license: Callable[[], str | None] = lambda: None,
         setup_generation: Callable[[], int] = lambda: 0,
-        stereotool_missing: Callable[[], str] = lambda: STEREOTOOL_MISSING,
         library_present: Callable[[str], bool] | None = None,
     ) -> None:
         self._popen = popen_factory
@@ -252,7 +249,6 @@ class ContinuousMaster:
         self._setup_generation = setup_generation
         # What to say when the library is not there: download it, or the
         # configured path is wrong.
-        self._stereotool_missing = stereotool_missing
         # Checked before each start, so a missing library is said at once
         # instead of starting a host process twice a second to find out.
         self._library_present = library_present
@@ -468,16 +464,6 @@ class ContinuousMaster:
         target.write_bytes(data)
         return target
 
-    def _missing_text(self) -> str:
-        try:
-            return self._stereotool_missing()
-        except Exception:
-            return STEREOTOOL_MISSING
-
-    def _unavailable_text(self, mode: str, exc: Exception, missing: bool) -> str:
-        text = self._missing_text() if missing and mode == "stereotool" else STEREOTOOL_MISSING
-        return _unavailable(mode, exc, missing=missing, missing_text=text)
-
     def _read_reports(self, stream: object) -> None:
         """Keep the Stereo Tool host's report lines; ignore everything else it prints."""
         readline = getattr(stream, "readline", None)
@@ -594,7 +580,7 @@ class ContinuousMaster:
                 starting_program = False
                 try:
                     command_preset = None
-                    library = DEFAULT_STEREOTOOL_PATH
+                    library = ""
                     license_key = None
                     if mode == "stereotool":
                         library = self._stereotool_path()
@@ -662,7 +648,7 @@ class ContinuousMaster:
                         self._recovery_outputs = 0
                         self._input.clear()
                         self._output.clear()
-                        self._error = f"{name} master unavailable: {self._unavailable_text(mode, exc, starting_program)}"
+                        self._error = f"{name} master unavailable: {_unavailable(mode, exc, missing=starting_program)}"
                         self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()
@@ -723,7 +709,7 @@ class ContinuousMaster:
                     )
                     if isinstance(reported, str) and exited is proc:
                         text = (
-                            self._missing_text()
+                            STEREOTOOL_MISSING
                             if self._stereotool_report.get("missing")
                             else reported
                         )
@@ -762,7 +748,7 @@ class ContinuousMaster:
             missing = self._stereotool_report.get("missing")
         if not isinstance(said, str):
             return None
-        return self._missing_text() if missing else said
+        return STEREOTOOL_MISSING if missing else said
 
     @staticmethod
     def _send_header(proc: subprocess.Popen[bytes], license_key: str | None) -> None:

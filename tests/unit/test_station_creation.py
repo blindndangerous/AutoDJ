@@ -76,7 +76,7 @@ def test_new_station_uses_defaults_and_loads_after_restart(tmp_path: Path) -> No
 
 
 def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
-    extra = '\n[stations.owl]\nautostart = true\n[stations.owl.stream]\nstation_name = "Owl"\nlistener_user = "secret"\nlistener_password = "secret"\n[stations.owl.playback]\nstereotool_path = "shared-tool"\nstereotool_license_file = "owl.key"\n[stations.owl.recording]\nfolder = "recordings/owl"\n'
+    extra = '\n[stations.owl]\nautostart = true\n[stations.owl.stream]\nstation_name = "Owl"\nlistener_user = "secret"\nlistener_password = "secret"\n[stations.owl.recording]\nfolder = "recordings/owl"\n'
     cfg = _root(tmp_path, extra)
     old = StationPaths.for_station(cfg, "owl")
     old.state_dir.mkdir(parents=True)
@@ -99,9 +99,6 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
     (old.clockwheels / "mix.json").write_text("{}", encoding="utf-8")
     old.relays.write_text('{"password": "secret"}', encoding="utf-8")
     table = duplicate_table(cfg, "owl", "new", "New", False)
-    assert table["playback"]["stereotool_path"] == "shared-tool"
-    # One Stereo Tool licence per instance: the copy never shares the key file.
-    assert "stereotool_license_file" not in table["playback"]
     assert "listener_user" not in table["stream"]
     assert Path(table["recording"]["folder"]) == Path("recordings/new")
     _, folder, copied = stage_station(

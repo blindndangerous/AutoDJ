@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from autodj import stereotool_setup as setup
-from autodj.config import DEFAULT_STEREOTOOL_PATH, stereotool_library_name
+from autodj.config import stereotool_library_name
 
 KEY = "<ABCD-1234-SECRET-KEY-5678>"
 TOP = "libStereoTool_1105"
@@ -134,44 +134,19 @@ def test_each_platform_names_its_library(system: str, machine: str, name: str) -
     assert stereotool_library_name(system, machine) == name
 
 
-def test_the_default_path_names_the_library() -> None:
-    assert f"./tools/stereo-tool/{stereotool_library_name()}" == DEFAULT_STEREOTOOL_PATH
-
-
-def test_default_path_looks_in_the_index_folder_first(tmp_path: Path) -> None:
-    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == DEFAULT_STEREOTOOL_PATH
-    assert setup.location(DEFAULT_STEREOTOOL_PATH, tmp_path) == "default"
+def test_every_station_uses_the_library_in_the_index_folder(tmp_path: Path) -> None:
     managed = setup.managed_path(tmp_path)
-    managed.parent.mkdir(parents=True)
-    managed.write_bytes(b"x")
     assert managed == tmp_path / "tools" / "stereo-tool" / stereotool_library_name()
-    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == str(managed)
-    assert setup.location(DEFAULT_STEREOTOOL_PATH, tmp_path) == "index"
-    assert setup.library_present(str(managed))
-    assert not setup.library_present(str(tmp_path / "gone.so"))
-
-
-def test_a_configured_path_is_always_kept(tmp_path: Path) -> None:
-    managed = setup.managed_path(tmp_path)
+    assert setup.library_path(tmp_path) == str(managed)
+    assert not setup.library_present(str(managed))
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"x")
-    assert setup.resolve_path("C:/Radio/libStereoTool_64.dll", tmp_path) == (
-        "C:/Radio/libStereoTool_64.dll"
-    )
-    assert setup.location("C:/Radio/libStereoTool_64.dll", tmp_path) == "configured"
+    assert setup.library_present(str(managed))
 
 
 def test_a_folder_named_like_the_library_is_not_used(tmp_path: Path) -> None:
     setup.managed_path(tmp_path).mkdir(parents=True)
-    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == DEFAULT_STEREOTOOL_PATH
     assert not setup.library_present(str(setup.managed_path(tmp_path)))
-
-
-def test_a_missing_library_says_what_to_do() -> None:
-    assert "Download Stereo Tool button" in setup.missing_message(DEFAULT_STEREOTOOL_PATH)
-    configured = setup.missing_message("/opt/stereo/libStereoTool_intel64.so")
-    assert "named by stereotool_path in the configuration is missing" in configured
-    assert "Download it" not in configured
 
 
 @pytest.mark.parametrize(
@@ -196,10 +171,10 @@ def test_a_computer_without_a_library_is_told_why(monkeypatch) -> None:
     note = setup.unsupported_note("darwin", "arm64")
     assert "64-bit Linux (PC or ARM) and 64-bit Windows" in note
     assert "darwin, arm64" in note
-    assert "stereotool_path" in note
+    assert "tools/stereo-tool" in note
     monkeypatch.setattr(setup, "platform_build", lambda: None)
     monkeypatch.setattr(setup, "unsupported_note", lambda: note)
-    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, Path("nowhere"))
+    status = setup.program_status(Path("nowhere"))
     assert status["download"] == {"available": False, "platform": None, "note": note, "busy": False}
     with pytest.raises(setup.NoBuildError, match="64-bit Windows"):
         setup.install(Path("nowhere"))
@@ -208,10 +183,9 @@ def test_a_computer_without_a_library_is_told_why(monkeypatch) -> None:
 def test_status_reports_the_recorded_version_and_never_a_path(tmp_path: Path) -> None:
     build, library = _build()
     setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
-    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)
+    result = setup.program_status(tmp_path)
     assert result["installed"] is True
     assert result["version"] == "11.05"
-    assert result["location"] == "index"
     assert str(tmp_path) not in repr(result)
 
 
@@ -219,9 +193,9 @@ def test_a_hand_placed_library_takes_the_version_stereo_tool_reports(tmp_path: P
     managed = setup.managed_path(tmp_path)
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"x")
-    assert setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)["version"] is None
+    assert setup.program_status(tmp_path)["version"] is None
     running = {"version": "11.10"}
-    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, running=running)
+    status = setup.program_status(tmp_path, running=running)
     assert status["version"] == "11.10"
     # A version recorded for another file is not this one's.
     (managed.parent / setup.VERSION_FILE).write_text("libStereoTool_other.so 11.05\n")
@@ -229,7 +203,7 @@ def test_a_hand_placed_library_takes_the_version_stereo_tool_reports(tmp_path: P
 
 
 def test_status_of_a_missing_library(tmp_path: Path) -> None:
-    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)
+    result = setup.program_status(tmp_path)
     assert result["installed"] is False
     assert result["version"] is None
 
@@ -400,7 +374,7 @@ def test_install_takes_only_this_computers_library_from_the_zip(tmp_path: Path) 
     assert sorted(path.name for path in target.parent.iterdir()) == sorted(
         [target.name, setup.VERSION_FILE]
     )
-    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == str(target)
+    assert setup.library_path(tmp_path) == str(target)
     assert setup.installed_version(target) == "11.05"
 
 
@@ -729,10 +703,8 @@ def test_a_saved_key_is_private_on_windows(tmp_path: Path) -> None:
     assert [line.lower() for line in entries] == [f"{user.lower()}:(f)"]
 
 
-def _state(index: Path, station: Path, configured: str = "", **environ: str) -> setup.LicenseState:
-    return setup.license_state(
-        index_dir=index, state_dir=station, configured_file=configured, environ=environ
-    )
+def _state(index: Path, station: Path, **environ: str) -> setup.LicenseState:
+    return setup.license_state(index_dir=index, state_dir=station, environ=environ)
 
 
 def test_a_station_key_restarts_only_that_station_and_an_unchanged_key_nothing(
@@ -802,29 +774,9 @@ def test_the_environment_overrides_the_saved_install_key(tmp_path: Path) -> None
         "ENV-KEY-1234",
         "environment",
     )
-    key_file = tmp_path / "secret-file"
-    key_file.write_text("FILE-KEY-1234\n")
-    state = _state(index, station, AUTODJ_STEREOTOOL_LICENSE_FILE=str(key_file))
-    assert (state.source, state.key) == ("environment", "FILE-KEY-1234")
     state = _state(index, station, AUTODJ_STEREOTOOL_LICENSE_KEY="bad key")
     assert (state.source, state.key) == ("environment", None)
     assert state.problem == "AUTODJ_STEREOTOOL_LICENSE_KEY does not hold a licence key."
-
-
-def test_a_station_key_file_in_the_configuration_comes_first(tmp_path: Path) -> None:
-    index, station = tmp_path, tmp_path / "night"
-    setup.save_license(setup.station_license_path(station), KEY)
-    key_file = tmp_path / "night.key"
-    key_file.write_text("CONFIG-KEY-99\n")
-    state = _state(index, station, str(key_file), AUTODJ_STEREOTOOL_LICENSE_KEY="ENV-KEY-1234")
-    assert (state.source, state.key, state.station) == ("station-config", "CONFIG-KEY-99", "config")
-    missing = _state(index, station, str(tmp_path / "gone.key"))
-    assert (missing.source, missing.key) == ("station-config", None)
-    assert "is missing" in (missing.problem or "")
-    key_file.write_text("not a key at all\n")
-    bad = _state(index, station, str(key_file))
-    assert bad.key is None
-    assert "does not hold a Stereo Tool licence key" in (bad.problem or "")
 
 
 def test_the_key_never_appears_in_the_state_text_or_public_view(tmp_path: Path) -> None:
@@ -842,16 +794,12 @@ def test_the_key_never_appears_in_the_state_text_or_public_view(tmp_path: Path) 
 
 
 def test_a_licence_problem_is_logged_once_without_any_key(tmp_path: Path, caplog) -> None:
-    key_file = tmp_path / "night.key"
-    key_file.write_text("bad key with spaces " + KEY)
+    night = tmp_path / "night"
+    night.mkdir()
+    setup.station_license_path(night).write_text("bad key with spaces " + KEY)
     with caplog.at_level(logging.WARNING, logger="autodj.stereotool_setup"):
         for _ in range(3):
-            assert (
-                setup.license_key(
-                    index_dir=tmp_path, state_dir=tmp_path / "night", configured_file=str(key_file)
-                )
-                is None
-            )
+            assert setup.license_key(index_dir=tmp_path, state_dir=night) is None
     messages = [record.getMessage() for record in caplog.records]
     assert len(messages) == 1
     assert KEY not in messages[0]
@@ -885,7 +833,7 @@ def test_the_version_record_is_ignored_once_the_library_changes(tmp_path: Path) 
     # Replaced by hand: the record no longer describes it, so the running report counts.
     target.write_bytes(library + b"another build")
     assert setup.installed_version(target) is None
-    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, running={"version": "11.10"})
+    status = setup.program_status(tmp_path, running={"version": "11.10"})
     assert status["version"] == "11.10"
 
 
