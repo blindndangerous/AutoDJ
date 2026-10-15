@@ -1268,12 +1268,23 @@ class Player:
                 return upcoming
             context = dmca or self._pick_context()
             try:
-                chosen = self._pick_pure_shuffle(None, context)
+                chosen = (
+                    self._clock_fallback_pick(None, context)
+                    if self._cfg.playback.pick_mode == "clock" and self._clock is None
+                    else self._pick_pure_shuffle(None, context)
+                )
             except Exception as exc:
                 chosen = self._fallback_pick(None, context, exc)
         else:
-            extra = {"rng": self._random} if self._random is not None else {}
-            chosen = self._sim.random_entry(**extra)
+            if self._cfg.playback.pick_mode == "clock" and self._clock is None:
+                context = dmca or self._pick_context()
+                try:
+                    chosen = self._clock_fallback_pick(None, context)
+                except Exception as exc:
+                    chosen = self._fallback_pick(None, context, exc)
+            else:
+                extra = {"rng": self._random} if self._random is not None else {}
+                chosen = self._sim.random_entry(**extra)
         if dmca is None or chosen is None:
             return chosen
         return self._dmca_checked(chosen, dmca)
@@ -1395,20 +1406,44 @@ class Player:
     def _clock_off(self, status: str) -> None:
         """Turn the clockwheel off, with *status* saying why."""
         with self._clock_selection_lock, self._clock_lock, settings_lock(self):
+            if getattr(self, "_clock_fallback_reason", None) != status or self._clock is not None:
+                self._clock_fallback_warned = False
+            self._clock_fallback_reason: str | None = status
             self._pending_clock_update = None
             self._clock = None
             self._clock_has_ad_steps = False
             self._clock_has_pending_ad_steps = False
             self._seed_clock_following = None
             self._clock_next_boundary = None
-            self._clock_status = status
+            self._clock_status = (
+                Player._clock_fallback_status(self)
+                if getattr(getattr(self._cfg, "playback", None), "pick_mode", None) == "clock"
+                else status
+            )
+
+    def _clock_fallback_status(self) -> str:
+        reason = getattr(self, "_clock_fallback_reason", None) or "no wheel selected"
+        if reason == "No clockwheel is active":
+            reason = "no wheel selected"
+        return f"Clockwheel off ({reason}); playing ordinary picks"
+
+    def _clock_fallback_pick(self, current: IndexEntry | None, context: _PickContext) -> IndexEntry:
+        with self._clock_lock:
+            warn = not getattr(self, "_clock_fallback_warned", False) and not getattr(
+                self, "_dry_run", False
+            )
+            self._clock_fallback_warned = True
+            self._clock_status = self._clock_fallback_status()
+        if warn:
+            logger.warning("%s", self._clock_fallback_status())
+        return self._pick_pure_shuffle(current, context)
 
     def activate_clock(self, name: str, cursor: Any = 0) -> None:
         """Play clockwheel *name* from step *cursor*; one that cannot load leaves the clock off."""
         try:
             clock, slots = self._load_clockwheel(name)
         except (ValueError, OSError) as exc:
-            status = f"Clockwheel {name} is off: {exc}"
+            status = f"Clockwheel {name} is off: failed to load: {exc}"
             logger.error("%s", status)
             self._clock_off(status)
             return
@@ -1447,6 +1482,8 @@ class Player:
             )
             self._clock_has_pending_ad_steps = False
             self._clock_status = "Ready"
+            self._clock_fallback_reason = None
+            self._clock_fallback_warned = False
             self._seed_clock_following = None
             self._clock_next_boundary = boundary.timestamp() if boundary else None
 
@@ -1514,6 +1551,8 @@ class Player:
         self._clock_step_hours = tuple(parse_step_hours(step) for step in clock["steps"])
         self._clock = {"name": name, "cursor": cursor, "resync_minutes": clock["resync_minutes"]}
         self._clock_status = "Ready"
+        self._clock_fallback_reason = None
+        self._clock_fallback_warned = False
         from datetime import datetime
 
         from autodj.clockwheel import next_boundary
@@ -2307,7 +2346,11 @@ class Player:
         if queued is not None:
             upcoming, mode = self._dmca_checked(queued, context, queued=True), "queue"
             marked_cursor = attached(self, "_request_clock_steps").get(queued)
-            if marked_cursor is not None and self._cfg.playback.pick_mode == "clock":
+            if (
+                marked_cursor is not None
+                and self._cfg.playback.pick_mode == "clock"
+                and self._clock is not None
+            ):
                 starting_cursor = (self._clock or {}).get("cursor", 0) if cursor is None else cursor
                 picked = self._clock_pick(context, starting_cursor)
                 expected_step = (marked_cursor - 1) % len(self._clock_slots)
@@ -2433,7 +2476,10 @@ class Player:
                     return upcoming, mode, ((picked.liner, False),), cursor, ""
         else:
             try:
-                upcoming, mode = self._choose_by_mode(current, context)
+                if self._cfg.playback.pick_mode == "clock" and self._clock is None:
+                    upcoming, mode = self._clock_fallback_pick(current, context), "fallback"
+                else:
+                    upcoming, mode = self._choose_by_mode(current, context)
             except Exception as exc:
                 upcoming, mode = self._fallback_pick(current, context, exc), "fallback"
             upcoming = self._dmca_checked(upcoming, context)
@@ -2496,7 +2542,9 @@ class Player:
     ) -> tuple[tuple[tuple[IndexEntry, bool], ...], str]:
         """An automatic liner for the handoff, outside the clock, and its plan key."""
         scheduler = self.liner_scheduler
-        if scheduler is None or self._cfg.playback.pick_mode == "clock":
+        if scheduler is None or (
+            self._cfg.playback.pick_mode == "clock" and self._clock is not None
+        ):
             return (), ""
         plan = getattr(scheduler, "plan_for_handoff", None)
         if plan is None:
@@ -4391,7 +4439,10 @@ class Player:
                     clock["cursor"] = marked_cursor
             return self._dmca_checked(queued, context, queued=True), "queue"
         try:
-            entry, mode = self._choose_by_mode(current, context)
+            if self._cfg.playback.pick_mode == "clock" and self._clock is None:
+                entry, mode = self._clock_fallback_pick(current, context), "fallback"
+            else:
+                entry, mode = self._choose_by_mode(current, context)
         except Exception as exc:
             return self._dmca_checked(self._fallback_pick(current, context, exc), context), (
                 "fallback"
@@ -6236,12 +6287,13 @@ class Player:
         "halftime": 3.0,  # tempo halve, pitch preserved
     }
 
-    def _pick_effect(self, mode: Any, rng: Any = None) -> Any:
+    def _pick_effect(self, mode: Any, rng: Any = None, *, advance: bool = False) -> Any:
         from autodj.transitions import TransitionFx, pick_effect
 
         if mode == TransitionFx.ROTATE:
             cursor = self.__dict__.get("_rotate_cursor", 0)
-            self._rotate_cursor = cursor + 1
+            if advance:
+                self._rotate_cursor = cursor + 1
             return pick_effect(mode, rng, rotate_index=cursor)
         return pick_effect(mode, rng)
 
@@ -6330,18 +6382,32 @@ class Player:
         incoming key is the one heard, *semitones* away from its own.
         """
         from autodj.beat_sync import extract_downbeats, key_to_hz
-        from autodj.transitions import BeatSync, trusted_bpm
+        from autodj.transitions import BeatSync, TransitionFx, trusted_bpm
 
         name = self.planned_transition(current, next_entry)
+        if _effect_mode(self._cfg.transitions.effect) == TransitionFx.ROTATE:
+            with self._fx_plan_lock:
+                name = self._pick_effect(TransitionFx.ROTATE, advance=True).value
+                key = (str(current.path), str(next_entry.path))
+                setting = (
+                    str(self._cfg.transitions.effect).lower(),
+                    self._key_shift(current, next_entry),
+                )
+                self.__dict__.setdefault("_fx_plans", {})[key] = (setting, name)
         playback = self._cfg.playback
         bpm = 0.0
         if bool(playback.beat_sync_fx):
             bpm = trusted_bpm(current.bpm, getattr(current, "tempo_confidence", 0.0))
         roots: list[float | None] = [None, None]
         if bool(playback.key_sync_fx):
-            for i, (entry, shift) in enumerate(((current, 0), (next_entry, semitones))):
-                key = getattr(entry, "key", -1)
-                heard = (key + shift) % 12 if isinstance(key, int) and key >= 0 else key
+            pairs: tuple[tuple[Any, int], ...] = ((current, 0), (next_entry, semitones))
+            for i, (track, shift) in enumerate(pairs):
+                track_key = getattr(track, "key", -1)
+                heard = (
+                    (track_key + shift) % 12
+                    if isinstance(track_key, int) and track_key >= 0
+                    else track_key
+                )
                 roots[i] = key_to_hz(heard) if isinstance(heard, int) else None
         if not bpm and roots == [None, None]:
             return _FxPlan(name)
@@ -6380,7 +6446,12 @@ class Player:
         extra_shape = (0,) if audio_a_trimmed.ndim == 1 else (0, 2)
         extra_layer = np.zeros(extra_shape, dtype=np.float32)
         if plan is None:
-            plan = _FxPlan(self._pick_effect(_effect_mode(self._cfg.transitions.effect)).value)
+            with self._fx_plan_lock:
+                plan = _FxPlan(
+                    self._pick_effect(
+                        _effect_mode(self._cfg.transitions.effect), advance=True
+                    ).value
+                )
         chosen_fx = _effect_mode(plan.name)
         if chosen_fx == TransitionFx.NONE:
             return audio_a_trimmed, b_head, extra_layer, chosen_fx.value

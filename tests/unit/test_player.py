@@ -1295,6 +1295,16 @@ class TestRenderTrackFeatures:
         rendered = self._render(self._make_player_with_audio(transition_effect="echo_out"))
         assert rendered.transition_fx == "echo_out"
 
+    def test_rotate_cursor_advances_only_when_pair_renders(self) -> None:
+        player = self._make_player_with_audio(transition_effect="rotate")
+        current, upcoming = player._sim.entries[:2]
+        first = player.planned_transition(current, upcoming)
+        assert player.planned_transition(current, upcoming) == first
+        assert player.__dict__.get("_rotate_cursor", 0) == 0
+        rendered = self._render(player)
+        assert rendered.transition_fx == first
+        assert player._rotate_cursor == 1
+
     def test_transition_fx_long_tail_extends(self) -> None:
         """Long-tail effects (tape_stop) extend tail length to >= 4s."""
         player = self._make_player_with_audio(transition_effect="tape_stop")

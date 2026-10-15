@@ -1368,9 +1368,8 @@ class PlayerBridge:
         tail when it mixed *upcoming* in (``"none"`` when there was no room
         for an overlap); before a render exists, and in browser mode, it is
         the player's plan for the pair (:meth:`Player.planned_transition`),
-        which a later render of the pair uses too.  Always a concrete
-        effect name, never ``random``, ``rotate`` or ``auto``; ``None``
-        when there is no next track.
+        which a later render of the pair uses too.  Browser rotate returns
+        ``None`` so the browser chooses when the fade actually starts.
         """
         if current is None or upcoming is None:
             return None
@@ -1378,6 +1377,8 @@ class PlayerBridge:
         playing = getattr(player, "_playing_render", None) if self._bus_mode() else None
         if playing is not None and playing.entry is current and playing.next_entry is upcoming:
             return str(playing.transition_fx or "none")
+        if not self._bus_mode() and str(player._cfg.transitions.effect).lower() == "rotate":
+            return None
         picked = getattr(player, "_next_pick", None)
         pick_mode = picked[1] if picked and picked[0] == upcoming.path else ""
         try:
@@ -2474,11 +2475,10 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
-        if "pick_mode" in values:
-            player.refresh_render_ahead()
-        if "music_speed_percent" in values and self._bus_mode():
-            # The playing render is immutable. Refresh only the unrendered
-            # lookahead so the new speed starts at the next buffer boundary.
+        if any(hasattr(cfg.playback, key) for key in values) or (
+            {"pure_shuffle", "anchor_to_seed"} & values.keys()
+        ):
+            # The playing render is immutable; refresh its unrendered successor.
             player.refresh_render_ahead()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)

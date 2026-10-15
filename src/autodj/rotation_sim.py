@@ -197,6 +197,7 @@ _COPIED = (
     "_anchor_to_seed",
     "_seed_path",
     "_discovery_every",
+    "_clock_fallback_reason",
 )
 
 
@@ -918,6 +919,9 @@ def _simulate(
     schedule = _Schedule(source.events, source.timezone, start)
     initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
+    initial_clock_status = (
+        player._clock_fallback_status() if initial_mode == "clock" and not initial_clock else None
+    )
     categories = player._category_members() or {}
 
     def station_mode() -> bool:
@@ -1086,6 +1090,7 @@ def _simulate(
         zone=schedule.zone,
         initial_mode=initial_mode,
         initial_clock=initial_clock,
+        initial_clock_status=initial_clock_status,
         hours=hours,
         stopped=stopped,
         elapsed=time.perf_counter() - began,
@@ -1187,6 +1192,7 @@ def _report(
     zone: ZoneInfo,
     initial_mode: str,
     initial_clock: str | None,
+    initial_clock_status: str | None,
     hours: float | None,
     stopped: str | None,
     elapsed: float,
@@ -1256,6 +1262,7 @@ def _report(
         "song_picking": {
             "mode": initial_mode,
             "clockwheel": initial_clock,
+            "clock_status": initial_clock_status,
             "final_mode": "random" if player._pure_shuffle else player._cfg.playback.pick_mode,
             "final_clockwheel": clock.get("name"),
             "dmca": bool(player._state.dmca_enabled),
@@ -1371,6 +1378,8 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
     mode = _MODE_WORDS.get(picking["mode"], picking["mode"])
     if picking.get("clockwheel"):
         mode = f"clockwheel {picking['clockwheel']}"
+    elif picking["mode"] == "clock" and picking.get("clock_status"):
+        mode = picking["clock_status"]
     requested = report["requested"]
     span = (
         f"{_average(requested['hours'])} hours"

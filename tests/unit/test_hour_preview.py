@@ -414,6 +414,42 @@ def test_hard_ad_break_preview_does_not_claim_to_cut_a_song() -> None:
     assert "cuts" not in short + sentence
 
 
+def test_hard_show_preview_cuts_song_even_with_interrupt_none() -> None:
+    show = _event("Show", action="show", time=clock_time(12, 30), timing="hard")
+    ads = _event("Ads", action="ad_break", time=clock_time(12, 30), timing="hard")
+    actions = {
+        "show": SimpleNamespace(hard=lambda _: None, interrupt="none"),
+        "ad_break": SimpleNamespace(hard=None, interrupt="none"),
+    }
+    source = hour_preview._source(
+        SimpleNamespace(
+            bridge=SimpleNamespace(library=object()),
+            schedule=SimpleNamespace(events={"show": show, "ads": ads}, actions=actions),
+            player=object(),
+            slug="test",
+            ledger=None,
+            timezone="UTC",
+            paths=SimpleNamespace(liner_dates=None),
+        )
+    )
+    current = SimpleNamespace(artist="A", title="Long song", display_name="A - Long song")
+    following = SimpleNamespace(artist="B", title="Next", display_name="B - Next")
+    timeline = [
+        Item("song", NOW + 18 * 60, 300.0, "on_air", current),
+        Item("song", NOW + 23 * 60, 200.0, "predicted", following),
+    ]
+    points = fixed_points(
+        NOW,
+        NOW + 3600,
+        UTC_ZONE,
+        events=[show, ads],
+        action_interrupts=source.action_interrupts,
+    )
+    cuts = {point.label: land(point, song_changes(timeline), NOW + 3600).cut for point in points}
+    assert cuts["Show"] > 0
+    assert cuts["Ads"] == 0
+
+
 # -- what is fixed, browser playback ---------------------------------------------
 
 

@@ -1780,5 +1780,5 @@ def test_rotating_transition_effects_are_independent_per_station(station):
     first, _entries, _points = station
     second = Player(first._cfg, make_sim_index(2), dry_run=True)
     for expected in _REAL_EFFECTS[:4]:
-        assert first._pick_effect(TransitionFx.ROTATE) is expected
-        assert second._pick_effect(TransitionFx.ROTATE) is expected
+        assert first._pick_effect(TransitionFx.ROTATE, advance=True) is expected
+        assert second._pick_effect(TransitionFx.ROTATE, advance=True) is expected

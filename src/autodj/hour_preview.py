@@ -2144,7 +2144,10 @@ def _source(station: Any) -> SimulationSource:
         ledger=station.ledger,
         events=events,
         action_interrupts=(
-            {name: action.interrupt for name, action in schedule.actions.items()}
+            {
+                name: "before" if action.hard is not None else action.interrupt
+                for name, action in schedule.actions.items()
+            }
             if schedule is not None
             else None
         ),

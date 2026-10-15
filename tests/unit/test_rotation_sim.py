@@ -5,10 +5,13 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
+from autodj.identity_map import IdentityMap
 from autodj.player import Player
 from autodj.rotation_sim import (
     MAX_HOURS,
@@ -506,6 +509,83 @@ def test_no_clockwheel_falls_back_without_dead_air(tmp_path: Path) -> None:
     assert dead["silent_minutes"] == 0
     assert dead["silences"] == []
     assert "No moment had nothing to play." in report_text(report)
+    assert "Clockwheel off (no wheel selected); playing ordinary picks" in report_text(report)
+    assert report["song_picking"]["clock_status"] == source.player._clock_status
+
+
+def test_failed_clockwheel_reason_appears_in_fallback_report(tmp_path: Path, caplog) -> None:
+    source = make_station(
+        tmp_path, _songs(0, 4), active_clock="Missing", playback={"pick_mode": "clock"}
+    )
+    report = simulate(source, SimulationRequest(picks=3, start=NOON, seed=1))
+    assert "Clockwheel Missing is off: failed to load" in report_text(report)
+    assert report["song_picking"]["clock_status"] == source.player._clock_status
+    source.player._dry_run = False
+    with caplog.at_level("WARNING", logger="autodj.player"):
+        source.player._random_start_entry()
+    assert any(
+        record.levelname == "WARNING" and "failed to load" in record.message
+        for record in caplog.records
+    )
+
+
+def test_clock_fallback_warns_once_until_wheel_loads(tmp_path: Path, caplog) -> None:
+    music = _songs(0, 4)
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[{"id": "all", "name": "All", "members": music}],
+        clockwheels=[{"name": "Main", "steps": [category_step("all")]}],
+        playback={"pick_mode": "clock"},
+    )
+    player = source.player
+    player._dry_run = False
+    with caplog.at_level("WARNING", logger="autodj.player"):
+        player._random_start_entry()
+        player._random_start_entry()
+        assert len([r for r in caplog.records if "Clockwheel off" in r.message]) == 1
+        player.activate_clock("Main")
+        assert player._clock_status == "Ready"
+        player._clock_off("no wheel selected")
+        player._random_start_entry()
+    assert len([r for r in caplog.records if "Clockwheel off" in r.message]) == 2
+
+
+def test_clock_fallback_uses_same_picker_for_seed_and_following_song(
+    tmp_path: Path, monkeypatch
+) -> None:
+    music = _songs(0, 4)
+    player = make_station(tmp_path, music, playback={"pick_mode": "clock"}).player
+    seen: list[Any] = []
+
+    def ordinary(current: Any, _context: Any) -> Any:
+        seen.append(current)
+        return music[len(seen) - 1]
+
+    monkeypatch.setattr(player, "_pick_pure_shuffle", ordinary)
+    first = player._random_start_entry()
+    following = player._choose_station_next(first, player._pick_context(), auto_liner=False)
+    assert following[:2] == (music[1], "fallback")
+    assert seen == [None, first]
+
+
+def test_clock_fallback_allows_scheduler_liner_and_request_mark_without_slots(
+    tmp_path: Path,
+) -> None:
+    music = _songs(0, 4)
+    player = make_station(tmp_path, music, playback={"pick_mode": "clock"}).player
+    scheduler = SimpleNamespace(plan_for_handoff=MagicMock(return_value=None))
+    player.liner_scheduler = scheduler
+    selected, key = player._auto_liner(music[0], music[1])
+    assert selected == () and key
+    scheduler.plan_for_handoff.assert_called_once()
+
+    player._request_clock_steps = IdentityMap()
+    player._request_clock_steps[music[1]] = 2
+    player._state.queue.append(music[1])
+    assert not hasattr(player, "_clock_slots")
+    picked = player._choose_station_next(music[0], player._pick_context(), auto_liner=False)
+    assert picked[:2] == (music[1], "queue")
 
 
 def test_schedule_brings_clockwheel_back_without_dead_air(tmp_path: Path) -> None:
@@ -1148,7 +1228,10 @@ def test_a_refused_clockwheel_switch_changes_nothing(tmp_path: Path) -> None:
         _rotation(tmp_path, events=events), SimulationRequest(hours=2, start=NOON, seed=1)
     )
     [reason] = report["schedule"]["refused"]
-    assert reason.startswith("Missing clock: the clockwheel cannot play: Clockwheel Gone is off")
+    assert reason.startswith(
+        "Missing clock: the clockwheel cannot play: Clockwheel off "
+        "(Clockwheel Gone is off: failed to load"
+    )
     # The clock it would have replaced kept playing.
     assert report["song_picking"]["final_clockwheel"] == "Main"
     assert report["modes"].get("clock", 0) == report["picks"] - report["modes"].get("start", 0)
