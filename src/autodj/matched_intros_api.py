@@ -175,11 +175,8 @@ def rule_choices(station: StationRuntime, library: Any) -> dict[str, Any]:
     clockwheel's), and the station's registered voice liners and liner folders."""
     from autodj.station_routes import _category_names, _clock_beets, _clock_genres
 
-    owns = station.owns_liner
     found: list[tuple[str, str, str]] = []
     for entry in library.entries_snapshot("liner"):
-        if not owns(entry.path):
-            continue  # another station's liner
         record = library.catalog.record_for_path(entry.path)
         if record and record.get("kind") == "liner":
             path = Path(record["path"])
@@ -193,9 +190,7 @@ def rule_choices(station: StationRuntime, library: Any) -> dict[str, Any]:
         for key, name, folder in found
     ]
     liners.sort(key=lambda item: (item["label"].casefold(), item["id"]))
-    folders = [
-        str(source["path"]) for source in library.catalog.sources("liner") if owns(source["path"])
-    ]
+    folders = [str(source["path"]) for source in library.catalog.sources("liner")]
     known, _items, beets_error = _clock_beets(station, library).snapshot()
     return {
         "liners": liners,
@@ -216,17 +211,15 @@ def validate_rule_clips(rule: Any, station: StationRuntime, library: Any) -> Non
     from autodj.clockwheel import _under
     from autodj.clockwheel_store import resolve_conditions
 
-    owns = station.owns_liner
     for clip_id in rule.clip_ids:
         record = library.record_for_id(clip_id)
-        if record is None or record.get("kind") != "liner" or not owns(record["path"]):
+        if record is None or record.get("kind") != "liner":
             raise RuleRefused(
                 "clip_ids", "A chosen liner is not one of this station's registered voice liners"
             )
     folder = rule.liner_folder
     if folder is not None and not any(
-        _under(folder, source["path"]) and owns(source["path"])
-        for source in library.catalog.sources("liner")
+        _under(folder, source["path"]) for source in library.catalog.sources("liner")
     ):
         raise RuleRefused(
             "liner_folder", "Choose one of this station's registered voice liner folders"

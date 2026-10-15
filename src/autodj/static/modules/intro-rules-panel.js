@@ -14,7 +14,7 @@
 // next rule's Delete button (or Add intro rule).
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { describeConditions } from "./clockwheel-step.js";
-import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { nextRowControl, rowButton } from "./dom-helpers.js";
 import { parsePointTime } from "./library-folders.js";
@@ -222,13 +222,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   }
 
   // ---- The form --------------------------------------------------------
-  function renumber() {
-    [...conditionHost.children].forEach((row, index) => {
-      row.querySelector("legend").textContent = `Condition ${index + 1}`;
-      row.querySelector("button[data-remove-condition]").textContent = `Remove condition ${index + 1}`;
-    });
-  }
-
   function conditionRow(value = {}) {
     return createConditionRow({
       document: doc,
@@ -244,7 +237,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
         clearError("conditions");
         const index = [...conditionHost.children].indexOf(row);
         row.remove();
-        renumber();
+        renumberConditionRows(conditionHost);
         const left = [...conditionHost.children];
         // The condition that took its place, or the one before it, or Add condition.
         (left[Math.min(index, left.length - 1)]?.querySelector("select") || conditionAdd).focus();

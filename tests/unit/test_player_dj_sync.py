@@ -71,6 +71,8 @@ class TestPlannedTransition:
         a, b, c = player._sim.entries[:3]
         first = TransitionFx(player.planned_transition(a, b))
         player.planned_transition(a, b)  # the state asking again
+        assert player.__dict__.get("_rotate_cursor", 0) == 0
+        assert player._fx_plan(a, b, None, 0).name == first.value
         second = TransitionFx(player.planned_transition(b, c))
         step = (_REAL_EFFECTS.index(second) - _REAL_EFFECTS.index(first)) % len(_REAL_EFFECTS)
         assert step == 1

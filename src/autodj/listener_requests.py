@@ -1,6 +1,8 @@
 """Listener requests (#49): listeners ask for songs; the station decides.
 
-A station with ``[requests] enabled`` serves a public page where anyone
+A station that takes requests (``[requests] enabled``, until the Listener
+requests card saves its own switch for the station; from then on that saved
+switch) serves a public page where anyone
 who can reach the server searches the library and requests a song (see
 :mod:`autodj.request_page`).  A request is checked here, in this order:
 
@@ -686,6 +688,27 @@ class Outcome:
     retry_after: int | None = None
 
 
+#: What a listener is told while the station is not taking requests.
+CLOSED = Outcome(
+    404,
+    "Requests are closed",
+    "The station is not taking requests right now. Please try again later.",
+)
+
+
+def request_settings(cfg: RequestsConfig) -> dict[str, Any]:
+    """The settings the operator's Listener requests card shows and saves."""
+    return {
+        "enabled": cfg.enabled is True,
+        "approval": cfg.approval,
+        "bridges_enabled": cfg.bridges_enabled,
+        "max_bridges": cfg.max_bridges,
+        "bridge_cost_threshold": cfg.bridge_cost_threshold,
+        "no_smooth_spot": cfg.no_smooth_spot,
+        "daily_limit": cfg.daily_limit,
+    }
+
+
 def clean_name(value: str) -> str | None:
     """A listener's name, trimmed, or ``None`` when it is too long or has control characters."""
     name = " ".join(value.split())
@@ -1095,6 +1118,9 @@ class RequestDesk:
 
     def _submit(self, track_id: str, name: str, address: str) -> Outcome:
         cfg = self.cfg
+        if cfg.enabled is not True:
+            # Turned off in Settings while this listener had the page open.
+            return CLOSED
         if (wait := self.accepted.retry_after(address)) is not None:
             return Outcome(
                 429,
@@ -1212,14 +1238,8 @@ class RequestDesk:
                 row["can_approve"] = placement.slot is not None
             pending.append(row)
         return {
-            "enabled": self.cfg.enabled,
-            "approval": self.cfg.approval,
-            "bridges_enabled": self.cfg.bridges_enabled,
-            "max_bridges": self.cfg.max_bridges,
-            "bridge_cost_threshold": self.cfg.bridge_cost_threshold,
-            "no_smooth_spot": self.cfg.no_smooth_spot,
+            **request_settings(self.cfg),
             "today": self.book.count_today(),
-            "daily_limit": self.cfg.daily_limit,
             "pending": pending,
             "recent": [request.public() for request in self.book.recent()[:20]],
         }

@@ -13,6 +13,7 @@ import { parseSettingValue, refusalText } from "./mix-settings.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
+  isStaleStationReply,
   requestBinary,
   requestJson,
   withDisabled,
@@ -26,6 +27,8 @@ const state = {
   seqCursor: 0,
   lastSeenPath: null,
 };
+// Bumped by a station switch: a load started before it writes nothing.
+let libraryGeneration = 0;
 
 function _intOrNull(el) {
   if (!el || el.value === "" || el.value == null) return null;
@@ -165,8 +168,9 @@ async function _followStationDay(els, now = new Date()) {
 // Loads the liner folder and config into the page.  False when the
 // sign-in changed meanwhile; a failed request throws.
 async function _loadLibrary(els, epoch) {
+  const mine = libraryGeneration;
   const body = await requestJson("/api/liners");
-  if (!isAuthenticatedRequestCurrent(epoch)) return false;
+  if (!isAuthenticatedRequestCurrent(epoch) || mine !== libraryGeneration) return false;
   state.lib = body;
   if (els.lnFolderDisplay) {
     els.lnFolderDisplay.textContent = "Folder: " + (body.folder || "—");
@@ -194,12 +198,28 @@ async function _loadLibrary(els, epoch) {
   return true;
 }
 
+// A station switch (#70): the liners, their settings and the cadence were
+// the old station's, so none of them shows or fires under the new one.
+function _clearLibrary(els) {
+  libraryGeneration += 1;
+  state.lib = { folder: "", files: [], config: {} };
+  state.trackCount = 0;
+  state.randomTarget = null;
+  state.seqCursor = 0;
+  state.lastSeenPath = null;
+  els.lnFileList?.replaceChildren();
+  for (const region of [els.lnFolderDisplay, els.lnStatus, els.lnBrowseStatus]) {
+    if (region) region.textContent = "";
+  }
+}
+
 async function _refreshLibrary(els) {
   const epoch = captureAuthenticatedRequestEpoch();
   try {
     await _loadLibrary(els, epoch);
   } catch (err) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    // A reply for the station the page has just left says nothing (#70).
+    if (!isAuthenticatedRequestCurrent(epoch) || isStaleStationReply(err)) return;
     dbg("liner refresh failed:", err);
     _setStatus(els, `Could not load liners: ${err.message}`);
   }
@@ -500,6 +520,13 @@ export function installLiners(els, deps) {
         await _refreshLibrary(els);
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
+        // A file that is not audio is refused with the server's own sentence
+        // ("broken.mp3 is not an audio file AutoDJ can play."), said again
+        // when the same file is tried again.
+        if (err.status === 422) {
+          _setStatus(els, err.message, { force: true, tone: "error" });
+          return;
+        }
         _setStatus(els, err.status === 409 && !replace
           ? `Upload failed: a liner named ${f.name} already exists.  Tick Replace existing file to overwrite it.`
           : `Upload failed: ${err.message}`);
@@ -575,7 +602,7 @@ export function installLiners(els, deps) {
   // Initial fetch + reapply hidden state on load.
   void _refreshLibrary(els);
   // After a station switch (#70): each station has its own liners.
-  return { refresh: () => _refreshLibrary(els) };
+  return { refresh: () => _refreshLibrary(els), clear: () => _clearLibrary(els) };
 }
 
 // Bumps the every_n_songs counter when the WS state surfaces a new

@@ -1,3 +1,7 @@
+import {
+  dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
+} from "./dom-helpers.js";
+import { sayIfStillPending } from "./live-region.js";
 
 // Shared "are you sure" step for actions that cannot be undone: Clear
 // queue, Replace profile, Delete profile, Delete liner, Sign out and Revoke
@@ -5,8 +9,10 @@
 //
 // A native modal <dialog>: NVDA hears the title and the message when it
 // opens, focus starts on Cancel so a stray Enter changes nothing, and
-// Escape cancels.  Cancel leaves focus on the control that opened the
-// dialog; the browser puts it back there as the dialog closes.
+// Escape cancels.  Cancel and Escape put focus back on the control that
+// opened the dialog once it has closed: put back by the browser as it
+// closed, focus was not reported, and NVDA read the Station menu at the top
+// of the page instead (#385).
 //
 // onConfirm, when given, does the action while the dialog is still open
 // and returns the element that should have focus afterwards.  The page
@@ -15,12 +21,15 @@
 // focus moves to the target in the same task.  Focus never rests on the
 // page or on the opener in between, which made NVDA read a line from the
 // top of the page and the opener before the new focus (D14).  While it
-// runs, Cancel and Escape are held so the dialog cannot close under it.
+// runs, Cancel and Escape are held so the dialog cannot close under it,
+// the confirm button is aria-busy, and an action still running after a
+// moment says *pendingText* ("Removing…") in the dialog's own status line:
+// the page's status regions are inert behind the dialog (#384).
 
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
 export function confirmAction(doc, {
-  title, message, confirmLabel, onConfirm = null,
+  title, message, confirmLabel, onConfirm = null, pendingText = "Working…",
 }) {
   const dialog = doc.getElementById("confirm-dialog");
   const heading = doc.getElementById("confirm-title");
@@ -34,6 +43,9 @@ export function confirmAction(doc, {
   text.textContent = message;
   confirmButton.textContent = confirmLabel;
   dialog.returnValue = "";
+  const opener = doc.activeElement === doc.body ? null : doc.activeElement;
+  // Where focus goes if the opener is gone when the dialog closes.
+  const place = dialogReturnPlace(opener);
   return new Promise((resolve) => {
     let pending = false;
     const listeners = [
@@ -42,6 +54,10 @@ export function confirmAction(doc, {
       [dialog, "cancel", holdWhilePending],
       [dialog, "close", closed],
     ];
+    // Back on the opener, or somewhere steady near it; never the page body.
+    function returnFocus() {
+      if (!focusAfterDialog(opener)) focusSteadyPlace(doc, place);
+    }
     function settle(value) {
       for (const [target, type, listener] of listeners) {
         target?.removeEventListener(type, listener);
@@ -54,26 +70,41 @@ export function confirmAction(doc, {
       pending = true;
       let target = null;
       if (onConfirm) {
+        const status = dialogStatusLine(dialog, "confirm-status");
+        confirmButton.setAttribute("aria-busy", "true");
+        const stopPending = sayIfStillPending((text) => { status.textContent = text; }, pendingText);
         try {
           target = await onConfirm();
         } catch (_) {
           target = null;
+        } finally {
+          stopPending();
+          status.textContent = "";
+          confirmButton.removeAttribute("aria-busy");
         }
       }
+      releaseDialogFocus(dialog);
       dialog.close("confirm");
-      if (target?.isConnected) target.focus();
+      if (!(target?.isConnected && focusAfterDialog(target))) returnFocus();
       settle(true);
     }
     function cancel(event) {
       event.preventDefault();
-      if (!pending) dialog.close("cancel");
+      if (pending) return;
+      releaseDialogFocus(dialog);
+      dialog.close("cancel");
     }
+    // Escape: held while the action runs; otherwise the browser closes the
+    // dialog once Cancel has let go of focus.
     function holdWhilePending(event) {
       if (pending) event.preventDefault();
+      else releaseDialogFocus(dialog);
     }
     // Cancel, Escape, or a browser that closed the dialog anyway.
     function closed() {
-      if (!pending) settle(false);
+      if (pending) return;
+      settle(false);
+      returnFocus();
     }
     for (const [target, type, listener] of listeners) {
       target?.addEventListener(type, listener);

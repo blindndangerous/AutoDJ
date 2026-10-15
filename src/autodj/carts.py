@@ -282,21 +282,17 @@ class StationCarts:
         liner_folder: Callable[[], Path],
         state_dir: Path,
         api_root: str = "/api",
-        owns_liner: Callable[[str], bool] | None = None,
     ) -> None:
         """Load the wall from *state_dir*; *publish* tells the station's pages of changes.
 
         *api_root* is where the station's routes answer (``/api`` for the
         default station, ``/api/stations/<slug>`` for another), so a clip
-        URL fetches from this station's carts and liners.  *owns_liner*
-        says whether a registered liner is this station's; every one is
-        when omitted.
+        URL fetches from this station's carts and liners.
         """
         self.bridge = bridge
         self.publish = publish
         self.liner_folder = liner_folder
         self.api_root = api_root
-        self.owns_liner = owns_liner
         self.store = CartStore(state_dir)
         # The cart that is playing, as (page, slot, spoken label), and its end timer.
         self._cart: tuple[int, int, str] | None = None
@@ -461,10 +457,7 @@ class StationCarts:
         liners: list[dict[str, str]] = []
         library = self.bridge.library
         if library is not None:
-            owns = self.owns_liner
             for entry in library.entries_snapshot("liner"):
-                if owns is not None and not owns(entry.path):
-                    continue  # another station's liner folder
                 record = library.catalog.record_for_path(entry.path)
                 if record and record.get("kind") == "liner":
                     liners.append({"id": record["id"], "name": Path(record["path"]).name})

@@ -148,6 +148,7 @@ class RenderedTrack:
     source_start_offset: int = 0
     playback_rate: float = 1.0
     next_playback_rate: float = 1.0
+    next_pick_signature: tuple[str, str, bool, int | None, int | None, bool | None] | None = None
 
 
 @dataclass(frozen=True)

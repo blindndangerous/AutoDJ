@@ -187,6 +187,8 @@ STATION = frozenset(
         # The voice tracker (#128): browser routes, by station.
         "/voice-tracks",
         "/voice-tracks/{break_id}",
+        # Settings, Breaks (#88): whether the station takes breaks, and how.
+        "/breaks/settings",
         # Ad breaks and their report (#51).
         "/ads",
         "/ads/spots",
@@ -568,7 +570,6 @@ def test_each_push_lists_the_stations_when_there_are_several() -> None:
             summaries=lambda: entries,
             stereo_tool_user=lambda exclude: None,
             stereo_tool_lock=None,
-            owns_liner=lambda slug, path: True,
         )
         runtime = station()
         _share_station(registry, runtime)  # type: ignore[arg-type]

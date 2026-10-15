@@ -431,14 +431,15 @@
       content: "\2713" / "";
       font-weight: 700;
     }
-    /* .is-pending: a focused button busy with a request keeps focus and
-       stays enabled (see withDisabled in modules/api-client.js) but must
-       look busy.  aria-disabled is the history pager's Prev / Next, and
-       the show-next box in DMCA mode. */
+    /* .is-pending: a focused button or checkbox busy with a request
+       keeps focus and stays enabled (see withDisabled in
+       modules/api-client.js) but must look busy.  aria-disabled is the
+       history pager's Prev / Next, and the show-next box in DMCA mode. */
     button:disabled,
     button[aria-disabled="true"],
     input[type="checkbox"][aria-disabled="true"],
-    button.is-pending {
+    button.is-pending,
+    input[type="checkbox"].is-pending {
       opacity: 0.45;
       cursor: not-allowed;
     }

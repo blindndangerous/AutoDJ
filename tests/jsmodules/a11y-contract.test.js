@@ -1021,7 +1021,8 @@ function functionBody(source, name) {
   const signature = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`, "g");
   const match = signature.exec(source);
   if (!match) throw new Error(`Missing function ${name}`);
-  const open = source.indexOf("{", match.index);
+  // The brace that ends the signature, not one in a destructured parameter.
+  const open = match.index + match[0].length - 1;
   const close = findClosingBrace(source, open);
   return source.slice(open + 1, close);
 }
@@ -1258,8 +1259,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("aria-live")).toBe("polite");
 
     const statusWriter = functionBody(appSource, "setConnStatus");
-    expect(statusWriter).toMatch(/connStatus\.textContent\s*=\s*label\s*;/);
-    expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"\)/);
+    // Written through live-region.js, which turns a quietly written pill
+    // back on before words that must be said (#327).
+    expect(statusWriter).toMatch(/writeLive\(connStatus,\s*label\)/);
+    expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"[,)]/);
   });
 
   it("gives controls real high-contrast boundaries and retains focus", () => {
@@ -3464,7 +3467,7 @@ describe("listener request contracts", () => {
     }
     const queueScript = readFileSync(staticPath("modules", "queue.js"), "utf8");
     expect(queueScript).toMatch(/`Bridge to \$\{target\}`/);
-    expect(queueScript).toMatch(/<span class="queue-bridge">/);
+    expect(queueScript).toMatch(/className = "queue-bridge"/);
   });
 });
 

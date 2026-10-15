@@ -1175,6 +1175,7 @@ def test_clock_start_checks_pair_and_keeps_the_song_it_checked(
 
     player, (_, b, _, jingle), _points = station
     player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
     player._clock_slots = [None] * 4
     player._clock_next_boundary = boundary
     monkeypatch.setattr("autodj.player.time.time", lambda: 0)
@@ -1224,6 +1225,7 @@ def test_clock_start_keeps_a_preceding_liner_and_obeys_empty_pool(station, monke
 
     player, (a, _b, voice, _jingle), _points = station
     player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": []}
     player._clock_slots = [None] * 4
     monkeypatch.setattr(player, "_clock_pick", lambda *_: ClockPick(a, voice, 3, []))
     assert player._random_start_entry() is voice
@@ -1674,3 +1676,109 @@ def test_a_pick_without_a_restart_carries_the_restart_time_on(station, monkeypat
     entry, mode, _liners, cursor, _key = player._choose_station_next(a, context)
     assert (entry, mode, cursor) == (b, "clock", 5)
     assert player._pending_clock_boundary == now + 3600
+
+
+def test_clock_mode_without_a_loaded_wheel_keeps_playing(station):
+    player, (a, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock_off("Clockwheel is off: preset was deleted")
+
+    assert player._random_start_entry() is not None
+    player._set_render_cursor(a, 0, "seed")
+    assert player._next_rendered().next_entry is not None
+
+
+def test_waiting_render_is_stale_after_song_picking_changes(station):
+    player, (a, *_), _points = station
+    player._set_render_cursor(a, 0, "seed")
+    ready = player._next_rendered()
+    assert not player._queue_pick_is_stale(ready)
+
+    player._cfg.playback.pick_mode = "least_recent"
+    assert player._queue_pick_is_stale(ready)
+    player._cfg.playback.pick_mode = "random"
+    player._preset = SimpleNamespace(name="new preset")
+    assert player._queue_pick_is_stale(ready)
+    player._preset = None
+    player._state.discovery_enabled = True
+    assert player._queue_pick_is_stale(ready)
+
+    player._state.discovery_enabled = False
+    player._cfg.playback.pick_mode = "clock"
+    player._clock_off("No clockwheel is active")
+    player._set_render_cursor(a, 0, "seed")
+    waiting_for_clock = player._next_rendered()
+    assert not player._queue_pick_is_stale(waiting_for_clock)
+    player._clock = {"name": "Morning", "cursor": 0}
+    player._clock_revision += 1
+    assert player._queue_pick_is_stale(waiting_for_clock)
+
+
+def test_idle_set_uses_next_restart_to_fit_seed_liner(station, monkeypatch):
+    from autodj.clockwheel import ClockPick
+
+    player, (_, b, _, jingle), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"name": "Morning", "cursor": 0, "resync_minutes": [0]}
+    player._clock_slots = [object(), object(), object()]
+    now = 1_000_000.0
+    player._clock_next_boundary = now - 600
+    monkeypatch.setattr(player, "_now", lambda: now)
+    monkeypatch.setattr(
+        player,
+        "_clock_pick",
+        lambda *_a: ClockPick(b, jingle, 2, [], liner_requires_following=True),
+    )
+
+    assert player._random_start_entry() is jingle
+    assert player._clock_next_boundary > now
+
+
+def test_clock_restart_uses_music_playback_speed(monkeypatch):
+    """The nearer song change to a restart counts the song at its Music speed."""
+    from types import SimpleNamespace
+
+    from autodj.clockwheel import ClockPick
+    from autodj.config import PlaybackConfig
+    from autodj.player import Player
+    from tests.unit._fakes import make_cfg_mock, make_entry, make_sim_index
+
+    a, b = make_entry(0), make_entry(1)
+    a.length, b.length = 300.0, 300.0
+    cfg = make_cfg_mock()
+    cfg.playback = PlaybackConfig(
+        transition_mode="saved_points",
+        loudness_processing="off",
+        pick_mode="clock",
+        music_speed_percent=10.0,
+    )
+    player = Player(cfg, make_sim_index(2), dry_run=True)
+    player._library = SimpleNamespace(
+        catalog=SimpleNamespace(points=lambda path: {}, record_for_path=lambda path: {}),
+        entries_snapshot=lambda kind="music": () if kind == "liner" else (a, b),
+        ledger=SimpleNamespace(
+            remember_play=MagicMock(), remember_setting=MagicMock(), last_played=lambda: {}
+        ),
+    )
+    player._clock = {"name": "W", "cursor": 3, "resync_minutes": [0]}
+    player._clock_slots = (object(),) * 6
+    when = 1_000_000.0
+    # The song after `a` starts 140 s before the restart; at +10 % it plays
+    # 272.7 s, so the change after it (132.7 s late) is nearer.
+    player._clock_next_boundary = when + 140.0
+    monkeypatch.setattr(player, "_handoff_time", lambda *_a, **_k: when)
+    monkeypatch.setattr(
+        player, "_clock_pick", lambda *_a, **_k: ClockPick(b, None, 4, [], step_index=3)
+    )
+    player._choose_station_next(a, player._pick_context(pending=a, peek_queue=True))
+    assert not (getattr(player, "_clock_status", "") or "").startswith("Restarting")
+
+
+def test_rotating_transition_effects_are_independent_per_station(station):
+    from autodj.transitions import _REAL_EFFECTS, TransitionFx
+
+    first, _entries, _points = station
+    second = Player(first._cfg, make_sim_index(2), dry_run=True)
+    for expected in _REAL_EFFECTS[:4]:
+        assert first._pick_effect(TransitionFx.ROTATE, advance=True) is expected
+        assert second._pick_effect(TransitionFx.ROTATE, advance=True) is expected

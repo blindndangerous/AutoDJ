@@ -319,6 +319,7 @@ let cartWallControls = null;
 let voiceTrackerControls = null;
 let adsControls = null;
 let listenerRequestControls = null;
+let breakSettingsControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -413,15 +414,14 @@ function clearStationViews() {
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
   cartWallControls?.clear();
+  timeCheckControls?.clear();
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
-  _linerEls.lnFileList.replaceChildren();
-  _linerEls.lnFolderDisplay.textContent = "";
-  _linerEls.lnStatus.textContent = "";
-  _linerEls.lnBrowseStatus.textContent = "";
+  breakSettingsControls?.clear();
+  linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
   _lastWhyKey = "";
@@ -592,7 +592,9 @@ function setAttributeIfChanged(element, name, value) {
   if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
-function applyState(s) {
+// announceTrack false: a station switch, whose "Now controlling ..." line
+// already names the song (#327).
+function applyState(s, { announceTrack = true } = {}) {
   // A push that left the server before it took this page's advance still
   // names the track the page has just faded out of.  Applied, it brought
   // that track back on the decks and said its name a second time; the
@@ -651,7 +653,8 @@ function applyState(s) {
     // the hidden Now Playing panel never spoke on another tab.  Other
     // tabs hear it only when Settings > Announcements asks for it.
     const announce = announceTrackChanges.value;
-    if (trackKey && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
+    if (announceTrack && trackKey
+      && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
       announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
         { mirror: false, dwellMs: 10000 });
     }
@@ -1387,10 +1390,16 @@ let authenticatedActivityActive = false;
 // link is lost and one when it comes back.  The retry cycle in between
 // -- "Connecting...", "Error", "Disconnected", once per attempt, forever
 // -- was three announcements every three seconds for the whole outage.
-function setConnStatus(state, label) {
+//
+// quiet: the new words are shown but not said.  A station switch says
+// "Now controlling ..." on its own, so its socket's "Live" must not follow
+// it (#327).  A transition that is said in between turns the region back
+// on first and its words go in a moment later (writeLive).
+function setConnStatus(state, label, { quiet = false } = {}) {
   if (connStatus.className !== state) connStatus.className = state;
-  if (connStatus.textContent === label) return;
-  connStatus.textContent = label;
+  if (shownText(connStatus) === label) return;
+  if (quiet) writeQuietly(connStatus, label);
+  else writeLive(connStatus, label);
 }
 
 // Progress within an outage: seen, never spoken.
@@ -1428,8 +1437,9 @@ function authenticatedInteractionEnabled() {
 }
 
 // quiet: a station switch, which is announced on its own; the pill only
-// changes colour until the new station's socket is live.
-function connectWS({ quiet = false } = {}) {
+// changes colour until the new station's socket is live.  switching: the
+// "Live" it then shows is not said either.
+function connectWS({ quiet = false, switching = false } = {}) {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}${stationWsPath()}`);
@@ -1450,7 +1460,7 @@ function connectWS({ quiet = false } = {}) {
       const recovered = transportDown;
       transportDown = false;
       reconnectDelayMs = RECONNECT_BASE_MS;
-      setConnStatus("connected", "Live");
+      setConnStatus("connected", "Live", { quiet: switching && !recovered });
       setOffAir(false);
       if (recovered) showVisibleStatus("Reconnected.");
       _unreachableProbes = 0;
@@ -1734,6 +1744,7 @@ function refreshStationPanels() {
   void hourPreviewControls?.refresh();
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
+  void breakSettingsControls?.refresh();
   void voiceTrackerControls?.refresh();
   void liveSettings?.refresh();
   void adsControls?.refresh();
@@ -1749,17 +1760,27 @@ function refreshStationPanels() {
 async function loadStation({ announce = true } = {}) {
   const station = currentStation();
   let state = null;
+  let failure = null;
   try {
     state = await requestStationState();
   } catch (errorValue) {
     if (station !== currentStation()) return null;
-    reportBackgroundRequestError(errorValue);
+    failure = errorValue;
+    // Said below with the station's name when the switch is announced.
+    if (!announce) reportBackgroundRequestError(errorValue);
   }
   if (station !== currentStation()) return null;
   if (state) {
     setOffAir(false);
-    applyState(state);
-    if (!_ws) connectWS({ quiet: true });
+    // The switch's own line below names the song: it is not said twice.
+    applyState(state, { announceTrack: !announce });
+    if (!_ws) connectWS({ quiet: true, switching: announce });
+  } else if (failure) {
+    // Only a 409 says the station is stopped.  Any other failure is
+    // not "Off air": the socket brings the state when it opens, and its
+    // retries cover a server that cannot be reached.
+    setOffAir(false);
+    if (!_ws) connectWS({ quiet: true, switching: announce });
   } else {
     stationWentOffAir();
   }
@@ -1768,23 +1789,38 @@ async function loadStation({ announce = true } = {}) {
     // Off air is said by the connection pill; this names the station.
     announceStatus(document.getElementById("sr-status"), state
       ? controllingText(stationEntry(), state.current_track ? fmtTrack(state.current_track) : null)
-      : `Now controlling ${stationName()}.`,
-    { dwellMs: 6000, force: true });
+      : failure
+        ? `Now controlling ${stationName()}. Its state could not be loaded: ${failure.message}`
+        : `Now controlling ${stationName()}.`,
+    { dwellMs: 6000, force: true, tone: failure ? "error" : "info" });
   }
   return state;
 }
 
 // The page's browser decks play the station they started on; the server
 // would never tell them about another.  Leaving the station stops them,
-// so the page asks first.
-async function confirmLeavingDecks(name) {
-  if (!(_lastBrowserPlayback && playbackEnabled)) return true;
+// and drops clockwheel changes not saved and a voice track not booked,
+// so the page asks first: once, naming everything that would go.
+async function confirmLeavingStation(name) {
+  const decks = Boolean(_lastBrowserPlayback && playbackEnabled);
+  const unsaved = [
+    clockwheelPanelControls?.hasUnsavedWork() && "the clockwheel changes not saved yet",
+    voiceTrackerControls?.hasUnsavedWork() && "the voice track not booked yet",
+  ].filter(Boolean);
+  if (!decks && !unsaved.length) return true;
+  const lost = unsaved.length
+    ? `${decks ? "It also discards" : "Switching discards"} ${unsaved.join(" and ")}.`
+    : "";
   const ok = await confirmAction(document, {
     title: `Switch to ${name}?`,
-    message: `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
-    confirmLabel: "Switch and stop",
+    message: [
+      decks && `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
+      lost,
+    ].filter(Boolean).join(" "),
+    confirmLabel: unsaved.length ? "Switch and discard" : "Switch and stop",
   });
   if (!ok) return false;
+  if (!decks) return true;
   stopAllDecks();
   stopActiveLiners();
   resetTransitionCaches();
@@ -1793,10 +1829,21 @@ async function confirmLeavingDecks(name) {
 }
 
 async function switchStation(slug) {
-  if (slug === currentStation() || !authenticatedActivityActive) return;
+  if (slug === currentStation()) return;
+  if (!authenticatedActivityActive) {
+    // While the link is down the page cannot load another station; it
+    // says so, or choosing one would seem to do nothing.  A session that
+    // ended has the pairing dialog open instead.
+    if (transportDown && !authExpiryHandled) {
+      announceStatus(document.getElementById("sr-status"),
+        "AutoDJ is reconnecting. Choose the station again once it is back.",
+        { dwellMs: 6000, force: true, tone: "error" });
+    }
+    return;
+  }
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry) return;
-  if (!await confirmLeavingDecks(entry.name)) return;
+  if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   selectStation(slug);
   rememberStationInAddress(slug);
@@ -2280,6 +2327,9 @@ import {
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
   showVisibleStatus,
+  shownText,
+  writeLive,
+  writeQuietly,
 } from "./modules/live-region.js";
 
 installVisibleStatusBehaviour();
@@ -2750,6 +2800,9 @@ async function fetchHistory(page, { announce = false } = {}) {
       signal: request.signal,
     });
     if (request.signal.aborted) return;
+    // The server keeps a page past the last to the last page; Previous
+    // and Next step from the page it sent.
+    if (Number.isInteger(data.page) && data.page > 0) _histPage = data.page;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
@@ -2826,10 +2879,15 @@ async function fetchHistory(page, { announce = false } = {}) {
         { dwellMs: 6000, force: true, tone: "error" });
       return;
     }
+    // Focus on a row or a pager button about to be hidden would fall to
+    // the page body (WCAG 2.4.3); it goes to Refresh history, which tries
+    // the same page again.
+    const focusHidden = [tbody, pag].some((element) => element?.contains(document.activeElement));
     if (tbody) tbody.replaceChildren();
     historyNavigation.refresh();
     if (table) table.setAttribute("hidden", "");
     if (pag) pag.setAttribute("hidden", "");
+    if (focusHidden) document.getElementById("hist-refresh")?.focus();
     if (empty) {
       empty.textContent = `Could not load history: ${err.message}`;
       empty.removeAttribute("hidden");
@@ -2976,6 +3034,7 @@ hourPreviewControls = installHourPreview();
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
 import { installListenerRequests } from "./modules/listener-requests.js";
+import { installBreakSettings } from "./modules/breaks-settings.js";
 
 let timeCheckControls = null;
 let linerControls = null;
@@ -3108,6 +3167,7 @@ function startAuthenticatedApp(initialState) {
   };
   timeCheckControls = installTimeChecks(linerAudio);
   listenerRequestControls = installListenerRequests();
+  breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.
