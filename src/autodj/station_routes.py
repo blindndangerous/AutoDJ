@@ -1223,6 +1223,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.rotation_api import install_rotation_test
     from autodj.scheduler_api import install_scheduler
     from autodj.shows_api import install_shows
+    from autodj.stereotool_api import install_stereo_tool
     from autodj.time_checks import install_time_checks
 
     @router.get("/status")
@@ -2292,6 +2293,7 @@ def install_station_routes(router: StationRouter) -> None:
     install_hour_preview(router)
     install_landmarks(router)
     install_live_api(router)
+    install_stereo_tool(router)
 
 
 __all__ = [

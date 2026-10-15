@@ -35,9 +35,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that. Once saved there, the page's values are kept with the station's other settings and win at
   every start, and the log says so once when they differ from `config.toml`. The break upload
   limits and quotas, and the request limits, stay in `config.toml`.
+- Stereo Tool can be set up from Settings, Sound, with no configuration file. After you choose
+  Stereo Tool and tick that you accept Thimeo's terms, **Download Stereo Tool** fetches Thimeo's
+  Stereo Tool plugin (about 320 MB) straight from thimeo.com and keeps only the library the server
+  needs (64-bit Linux PC or ARM, or 64-bit Windows) in the index folder; it then reads **Update
+  Stereo Tool** and the page shows the installed version. AutoDJ still does not include Stereo
+  Tool, and the container image has none: use the button, or copy the library into
+  `tools/stereo-tool/` in the index folder. A station that keeps the default `stereotool_path`
+  finds it there with no configuration change.
+- **Stereo Tool licence key** in Settings, Sound saves your key where only AutoDJ can read it,
+  outside backups, and never shows it again; the page says "Licence set" or "No licence", then
+  whether Stereo Tool itself says the key covers the preset, and **Clear licence** removes it. One
+  key serves every station, or tick **For this station only** to give one station its own.
+  Installs without a browser can set `AUTODJ_STEREOTOOL_LICENSE_KEY` or
+  `AUTODJ_STEREOTOOL_LICENSE_FILE`, or a station's `[playback] stereotool_license_file`. Stereo
+  Tool restarts with a new key or a new library; a key for one station restarts only that station,
+  and saving the same key again restarts nothing.
 
 ### Changed
 
+- **Breaking:** `[playback] stereotool_path` now names Thimeo's Stereo Tool plugin library
+  (`libStereoTool_*.so` or `.dll`), not the command-line program `stereo_tool_cmd`. A
+  configuration that points it at `stereo_tool_cmd` stops processing with Stereo Tool after the
+  upgrade: the station plays on with its limited bypass and says the file "is not Thimeo's Stereo
+  Tool plugin library". To fix it, delete the `stereotool_path` line and press Download Stereo
+  Tool in Settings, Sound, or point the line at the library from Thimeo's plugin zip.
+- Stereo Tool now runs Thimeo's plugin library (`libStereoTool`, as AzuraCast and Liquidsoap do)
+  in a helper process of AutoDJ's own, instead of the command-line program. The licence key
+  reaches it over that process's input, never a command line, and a crash in Stereo Tool ends only
+  the helper. Linux on 64-bit PCs has been tested with Thimeo's real plugin; Windows and 64-bit
+  ARM have not been tested with it yet.
+- A station set to Stereo Tool without the library now says "Stereo Tool is not installed.
+  Download it in Settings, Sound, with the Download Stereo Tool button." A station whose own
+  `stereotool_path` names a missing library says that path is missing instead.
 - A new index name, given with `--name`, may not contain `:` or end with a dot or a space,
   because Windows reads such a name as another folder: `D:music` is a folder on drive D:, and
   `chill.` is the folder of `chill`. An `[index] name` already in `config.toml` that does this

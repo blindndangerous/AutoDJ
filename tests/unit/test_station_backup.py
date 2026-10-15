@@ -1295,3 +1295,26 @@ def test_a_restore_forgets_every_stations_show_on_the_air(tmp_path: Path) -> Non
         assert not any(name.endswith("show_on_air.json") for name in opened.namelist())
     restore_backup(cfg, archive, force=True)
     assert not any(mark.exists() for mark in marks)
+
+
+def test_stereo_tool_keys_and_program_stay_out_of_backups(tmp_path: Path) -> None:
+    from autodj import stereotool_setup as setup
+
+    cfg = _config(tmp_path)
+    _fill(cfg)
+    key = "<STEREO-TOOL-BACKUP-SECRET-1234>"
+    setup.save_license(setup.install_license_path(cfg.index.index_dir), key)
+    setup.save_license(setup.station_license_path(cfg.index.active_dir), key)
+    setup.save_license(setup.station_license_path(_station_dir(cfg, "nightowl")), key)
+    program = setup.managed_path(cfg.index.index_dir)
+    program.parent.mkdir(parents=True)
+    program.write_bytes(b"\x7fELF stereo tool program bytes")
+
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+
+    with zipfile.ZipFile(archive) as opened:
+        names = opened.namelist()
+        contents = b"".join(opened.read(name) for name in names)
+    assert not [name for name in names if ".stereo-tool-license" in name or "tools/" in name]
+    assert key.encode() not in contents
+    assert b"stereo tool program bytes" not in contents

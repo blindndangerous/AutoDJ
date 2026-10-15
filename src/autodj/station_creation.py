@@ -60,6 +60,8 @@ def duplicate_table(
     for section, keys in {
         "stream": ("relays", "listener_user", "listener_password", "enabled", "trusted_proxies"),
         "recording": ("folder",),
+        # A station's own Stereo Tool key file: one licence per instance.
+        "playback": ("stereotool_license_file",),
         "time_checks": ("clips_folder",),
     }.items():
         value = table.get(section)

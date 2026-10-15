@@ -1185,6 +1185,8 @@ def create_app(
         TIME_CHECK_CLIP_PATH: lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
         INTRO_RULES_PATH: lambda: RULE_BODY_MAX_BYTES,
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
+        "/api/stereo-tool/license": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stereo-tool/download": lambda: SMALL_BODY_MAX_BYTES,
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
@@ -1999,6 +2001,11 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"name": path.name}
 
+    from autodj.stereotool_api import install_download as install_stereo_tool_download
+
+    # Settings, Sound, Download Stereo Tool: shared, into the index folder.
+    install_stereo_tool_download(app, lambda: bridge.player._cfg.index.index_dir)
+
     @app.delete("/api/stereo-tool-presets/{name}")
     async def api_stereo_tool_preset_delete(name: str) -> dict:
         """Delete an uploaded preset other than the one currently selected."""
@@ -2581,20 +2588,36 @@ def _equip_station(station: StationRuntime) -> None:
 
 def _attach_master(player: Any, cfg: AutoDJConfig) -> None:
     """Put the mastering process (Smooth or Stereo Tool) on *player*'s mix bus."""
+    from autodj import stereotool_setup
     from autodj.mastering import ContinuousMaster
+    from autodj.stations import StationPaths
     from autodj.stereotool_presets import preset_path
 
     def processing_mode() -> str:
         return getattr(player, "_active_processing_mode", cfg.playback.loudness_processing) or "off"
 
+    paths = getattr(player, "station_paths", None)
+    if not isinstance(paths, StationPaths):
+        paths = StationPaths.default(cfg)
+
     player._continuous_master = ContinuousMaster(
         mode=processing_mode,
-        stereotool_path=cfg.playback.stereotool_path,
+        stereotool_path=lambda: stereotool_setup.resolve_path(
+            cfg.playback.stereotool_path, cfg.index.index_dir
+        ),
         preset=lambda: preset_path(
             cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
         ),
         input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
         agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,
+        stereotool_license=lambda: stereotool_setup.license_key(
+            index_dir=cfg.index.index_dir,
+            state_dir=paths.state_dir,
+            configured_file=cfg.playback.stereotool_license_file,
+        ),
+        setup_generation=lambda: stereotool_setup.generation(paths.state_dir),
+        stereotool_missing=lambda: stereotool_setup.missing_message(cfg.playback.stereotool_path),
+        library_present=stereotool_setup.library_present,
     )
     player.bus.set_master(
         player._continuous_master,

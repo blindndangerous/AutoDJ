@@ -961,7 +961,8 @@ give accounts only to trusted DJs. Their sets are logged in History as kind `liv
 ## Relay credentials (outbound)
 
 Relays (`[stream.relays.<name>]`) push the stream to external Icecast or Shoutcast servers.
-This is the only place AutoDJ holds a credential for another system:
+Besides the Stereo Tool licence key (see "Stereo Tool library and licence key"), this is the
+only place AutoDJ holds a credential for another system:
 
 - Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
   shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
@@ -991,6 +992,98 @@ This is the only place AutoDJ holds a credential for another system:
 - While any relay is enabled the station keeps playing with no local listeners, so the operator's
   library is being sent to the external server whenever AutoDJ runs in stream mode. Set
   `enabled = false` to stop a relay without deleting it.
+
+## Stereo Tool library and licence key
+
+AutoDJ may not redistribute Thimeo's Stereo Tool, and the container image has none. Each install
+downloads Thimeo's Stereo Tool plugin library (`libStereoTool`) itself, and may give it a licence
+key. Both are set from Settings, Sound, under the same session, Host and Origin policy as every
+other settings route: when pairing is on, only a paired browser reaches them. There are no user
+roles (see "Scope and trust boundaries"), so every paired browser may do this. Machine tokens
+(analysis workers, the announcer) work only under their own route prefixes and never reach these
+routes, nor do live DJ source credentials. Tests check that a request without a session, or with
+only a bearer token, is refused.
+
+**Download.** `POST /api/stereo-tool/download` takes one field, `accept_terms`, which must be
+`true`; the page sends it only when the operator ticks that they accept Thimeo's terms. The body is
+capped at 8 KiB. The request carries no address and no file: the server always fetches
+`https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip`. It follows at most five redirects,
+each checked before it is requested: HTTPS only, port 443, no user information, no whitespace,
+control characters or non-ASCII anywhere in the address, no `%` or backslash in its host part, and
+a host that is `thimeo.com` or ends in `.thimeo.com`. Certificates are verified with the system's
+trust store. A declared or streamed size over 768 MB is refused, and so is a download still running
+after 30 minutes. The zip is written under a hidden `.download-<random>.zip` name in
+`<index_dir>/tools/stereo-tool/`. Every member name is checked first, with backslashes read as
+folder separators (Thimeo's zip uses them): a name that is absolute, has a drive, a NUL or a `..`
+part refuses the whole zip. Only the one member for this
+platform is read (`libStereoTool_<version>/lib/Linux/IntelAMD/64/libStereoTool_intel64.so`,
+`.../Linux/ARM/64/libStereoTool_noX11_arm64.so` or `.../Windows/64/libStereoTool_64.dll`); it must
+be the only match, not a link, and at most 256 MB as it is read, and the zip's CRC check must pass.
+It is written to another hidden name, and its header must be a 64-bit little-endian ELF shared
+object for the right machine (x86-64 or AArch64) on Linux, or a PE DLL for x64 on Windows. Only
+then is it renamed over the library. On Windows a loaded copy is renamed aside first and put back
+if the new file cannot take its place, and a new file a virus scanner holds open is retried a few
+times; an interrupted update's set-aside copy is restored, never deleted, when it is the only one
+left. The zip and part files are always deleted, so a failed download never replaces a working
+library. The version comes from the zip's folder name and is written beside the library. Nothing
+downloaded is executed or loaded during the download. One download runs at a time; a second
+answers 409. Each attempt is audited as `stereo-tool-download` with its outcome and status,
+besides the request's own audit line, and the log names the version and source URL only.
+
+The download trusts thimeo.com and its TLS certificate: whoever controls Thimeo's download host
+controls the code AutoDJ's helper loads. Thimeo publishes no checksum or signature to check
+against. The page never uploads a file: an upload route would let anyone who can change settings
+run any code on the server; the fixed download cannot. The library lives on the writable index
+volume (`/index` in the container), so anyone who can write the index folder can replace the code
+the helper loads. That is the same trust AutoDJ already gives the index folder and the
+configuration (which names `stereotool_path`). No other route writes there: preset uploads go to
+`stereo-tool-presets`, restore writes only its listed folders, and backups leave `tools/` out.
+
+**Helper process.** The server never loads Thimeo's library itself. Each station that uses Stereo
+Tool starts `python -m autodj.stereotool_host` (AutoDJ's own code) with the library path, the
+preset path and a private folder as Stereo Tool's home, all fixed by AutoDJ, with no shell. It
+loads the library with `ctypes`, binds Stereo Tool's web and UECP servers to `127.0.0.1` before
+creating the instance (`stereoTool_global_setBindIp`), creates it with no GUI and no `.ini` read
+(`stereoTool_Create3`), and loads the preset with `ID_SAVE_ALLSETTINGS` (20386 for version 11
+and later, 10386 before, chosen from the library's reported version), which leaves out Stereo
+Tool's configuration settings. Path arguments are passed as the bytes the library expects (the
+ANSI code page on Windows); a path that cannot be spelled that way is refused with a message,
+never passed on mangled. Errors shown on the page name the library file, never its folder. Audio goes in on stdin and out on stdout; anything the library
+prints is moved to stderr, where only AutoDJ's own report lines (version, latency, licence
+verdict, an error) are read, each length-capped, and the rest is discarded. A crash or hang in
+Thimeo's code ends or stalls only the helper: the master bypasses at its fixed delay, kills the
+helper and starts a new one, and on Windows the helper is in AutoDJ's job object like every
+mastering process. The helper runs as AutoDJ's user with AutoDJ's rights, so it is isolation from
+crashes, not a sandbox.
+
+**Licence key.** The key is write-only. `PUT /api/stereo-tool/license` (8 KiB body) saves one for
+every station or, with `"scope": "station"`, for the station the URL names; `DELETE` clears it.
+Answers say only where a key comes from ("install", "station", "environment", "station-config"),
+that none is set, that a saved or configured key cannot be used (a problem naming the setting),
+and what the running Stereo Tool said of it (licensed or not, and the features it lists), never
+the key. Saving the key already saved restarts nothing; a key for one station restarts only that
+station's Stereo Tool. A refused key is never repeated: the validation message is fixed text, and
+the 422 handler drops the rejected input. Keys are 4 to 2048 printable ASCII characters with no
+spaces. They are stored with `write_private_file`, the same as relay passwords: atomically, mode
+0600 on POSIX and a protected access list for the current user only on Windows, in
+`<index_dir>/.stereo-tool-license` and `<station folder>/.stereo-tool-license`. Backups name their
+files explicitly and include neither, and restore never writes them. The environment
+(`AUTODJ_STEREOTOOL_LICENSE_KEY`, or a file named by `AUTODJ_STEREOTOOL_LICENSE_FILE`) and a
+station's `[playback] stereotool_license_file` override the saved key and are read-only in the
+page. A problem with a configured key is logged once, naming the setting, never the key or the
+file's contents.
+
+The key reaches the library over the helper's stdin, in a small header before the audio, and the
+buffers that held it are zeroed once it is written (in the server) and once `stereoTool_Create3`
+returns (in the helper). It is never on a command line, so the process list does not show it to
+other users, and never in the helper's environment: the helper gets AutoDJ's environment without
+any `AUTODJ_*` variable or Hugging Face token. Who can still read it: the user AutoDJ runs as
+(from the key file, or from either process's memory, where Python and the library may keep copies
+while Stereo Tool runs), root and administrators, and anyone who can read the environment of the
+server process when the key is given in `AUTODJ_STEREOTOOL_LICENSE_KEY` (on Linux, the same user
+and root). In Docker the same holds on the host: the host's root can read the container's process
+memory and files. AutoDJ never logs a mastering command line or the key: a stuck process is logged
+without its exception text, and the helper's report lines carry no key.
 
 ## Backup and restore boundary
 

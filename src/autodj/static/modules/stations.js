@@ -135,6 +135,8 @@ export const STATION_ROUTES = Object.freeze([
   "/live/djs",
   "/live/djs/{username}",
   "/live/mic",
+  "/stereo-tool",
+  "/stereo-tool/license",
 ]);
 
 // The routes are plain letters, hyphens and slashes, so only the {name}

@@ -321,6 +321,12 @@ as seen inside the container; copying a populated catalog from a host with diffe
 not relocate those records. Older manifest-based indexes can still be imported before a catalog
 exists.
 
+The image does not include Thimeo's Stereo Tool, which AutoDJ may not redistribute. To use it,
+choose Stereo Tool in Settings, Sound, accept Thimeo's terms and press Download Stereo Tool, or
+copy Thimeo's plugin library into the index volume; see "Getting Stereo Tool and its licence" in
+[Operations](docs/operations.md). Linux on 64-bit PCs has been tested with Thimeo's real plugin;
+Windows and 64-bit ARM have not been tested with it yet.
+
 ## How to use the web UI
 
 After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
@@ -334,7 +340,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
   - **DJ mixing**: beatmatching with its stretch limit and glide back, drop mixing, key shift, phrase and outro alignment, keeping vocals apart, and the filter sweep with its floor.
   - **Song picking**: preset, pick mode, how widely similarity picks spread, harmonic mixing, repeat windows, BPM range and discovery.
-  - **Sound**: output processing, upload and select Stereo Tool presets, Stereo Tool input trim and AGC drive boost, a peak-safe quiet intro lift for ReplayGain playback, the ReplayGain target and peak limit, the browser's audio output device, a separate preview output device, early loading of the next song and the crossfade on silence.
+  - **Sound**: output processing, download Stereo Tool from thimeo.com and set its licence key, upload and select Stereo Tool presets, Stereo Tool input trim and AGC drive boost, a peak-safe quiet intro lift for ReplayGain playback, the ReplayGain target and peak limit, the browser's audio output device, a separate preview output device, early loading of the next song and the crossfade on silence.
   - **Display and keys**: theme, lyrics, key notation, announcements and keyboard shortcuts.
   - **Voice liners**.
   - **Schedule**: timed events, the next few runs, and recent results.
@@ -725,6 +731,8 @@ with `uv pip uninstall autodj`.
   image, includes `mutagen` under GPL-2.0-or-later and `librosa` with its LGPL-licensed `soxr`
   dependency. Omitting extras does not make every dependency permissively licensed. CI logs a dependency license inventory, and
   container images include their installed dependencies.
+- [Stereo Tool](https://www.thimeo.com/stereo-tool/) is Thimeo's software under Thimeo's own terms.
+  AutoDJ does not include or redistribute it; each install downloads it from thimeo.com.
 - Audio analysis uses [librosa](https://librosa.org/) (ISC).
 - Vector search uses [FAISS](https://github.com/facebookresearch/faiss) (MIT).
 - The web UI uses [FastAPI](https://fastapi.tiangolo.com/) and a hand-written ES module front end (no React, no Vue, no framework).

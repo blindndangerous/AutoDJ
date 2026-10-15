@@ -121,13 +121,13 @@ def test_master_starts_with_the_selected_preset_and_falls_back_when_it_is_missin
         deadline = time.monotonic() + 2
         while not commands and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert commands[0][commands[0].index("-s") + 1] == str(chosen)
+        assert commands[0][commands[0].index("--preset") + 1] == str(chosen)
         selected[0] = tmp_path / "Gone.sts"
         master.process(np.zeros((BLOCK_FRAMES, 2), dtype=np.float32))
         deadline = time.monotonic() + 2
         while len(commands) < 2 and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert commands[-1][commands[-1].index("-s") + 1] == str(INCLUDED_PATH)
+        assert commands[-1][commands[-1].index("--preset") + 1] == str(INCLUDED_PATH)
     finally:
         master.close()
 
@@ -212,7 +212,7 @@ def test_status_reports_a_preset_that_cannot_take_the_agc_drive(tmp_path: Path) 
         deadline = time.monotonic() + 2
         while not commands and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert commands[0][commands[0].index("-s") + 1] == str(source)
+        assert commands[0][commands[0].index("--preset") + 1] == str(source)
         assert master.preset_warning == (
             "Preset Bad.sts has no pre-compressor Drive setting; AGC drive not applied"
         )

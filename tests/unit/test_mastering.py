@@ -191,29 +191,23 @@ def test_invalid_block_shape_is_rejected() -> None:
         master.close()
 
 
-def test_stereotool_command_uses_packaged_preset_and_float_audio() -> None:
-    command = _command("stereotool", "C:/Audio Tools/stereo_tool_cmd.exe")
-    assert command[:7] == [
-        "C:/Audio Tools/stereo_tool_cmd.exe",
-        "-",
-        "-",
-        "-b",
-        "32f",
-        "-r",
-        "44100",
-    ]
-    preset = Path(command[command.index("-s") + 1])
-    assert preset.is_file()
-    assert command[command.index("-l") + 1] == "1024"
+def test_stereotool_runs_our_host_with_the_library_and_the_packaged_preset() -> None:
+    import sys
+
+    command = _command("stereotool", "C:/Audio Tools/libStereoTool_64.dll", None, "/tmp/st")
+    assert command[:3] == [sys.executable, "-m", "autodj.stereotool_host"]
+    assert command[command.index("--library") + 1] == "C:/Audio Tools/libStereoTool_64.dll"
+    assert command[command.index("--home") + 1] == "/tmp/st"
+    assert Path(command[command.index("--preset") + 1]).is_file()
 
 
-def test_stereotool_command_defaults_to_packaged_executable_path() -> None:
-    expected = (
-        "./tools/stereo-tool/stereo_tool_cmd.exe"
-        if os.name == "nt"
-        else "./tools/stereo-tool/stereo_tool_cmd"
+def test_stereotool_command_defaults_to_the_library_path() -> None:
+    from autodj.config import stereotool_library_name
+
+    command = _command("stereotool")
+    assert command[command.index("--library") + 1] == (
+        f"./tools/stereo-tool/{stereotool_library_name()}"
     )
-    assert _command("stereotool")[0] == expected
 
 
 @pytest.mark.parametrize("partial_write", [False, True])
@@ -322,10 +316,10 @@ def test_a_processor_faster_than_measured_still_waits_out_the_advertised_delay()
 
 
 def test_installed_stereotool_preserves_tone_without_periodic_gaps() -> None:
-    executable = os.environ.get("AUTODJ_TEST_STEREOTOOL") or shutil.which("stereo_tool_cmd")
-    if not executable:
-        pytest.skip("Set AUTODJ_TEST_STEREOTOOL to test a separately installed Stereo Tool")
-    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=executable)
+    library = os.environ.get("AUTODJ_TEST_STEREOTOOL_LIBRARY")
+    if not library:
+        pytest.skip("Set AUTODJ_TEST_STEREOTOOL_LIBRARY to test Thimeo's Stereo Tool library")
+    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=library)
     outputs = []
     try:
         started = time.monotonic()
@@ -439,10 +433,10 @@ def test_output_limiter_start_failure_cleans_up_stereotool() -> None:
 
 
 def test_installed_stereotool_recovers_when_output_limiter_exits() -> None:
-    executable = os.environ.get("AUTODJ_TEST_STEREOTOOL") or shutil.which("stereo_tool_cmd")
-    if not executable:
-        pytest.skip("Set AUTODJ_TEST_STEREOTOOL to test a separately installed Stereo Tool")
-    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=executable)
+    library = os.environ.get("AUTODJ_TEST_STEREOTOOL_LIBRARY")
+    if not library:
+        pytest.skip("Set AUTODJ_TEST_STEREOTOOL_LIBRARY to test Thimeo's Stereo Tool library")
+    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=library)
     outputs = []
     try:
         started = time.monotonic()
@@ -471,3 +465,305 @@ def test_a_second_close_returns_at_once() -> None:
     master.close()  # a failed start's clean-up, then a stop
     assert time.monotonic() - start < 0.1
     assert not master._worker.is_alive()
+
+
+class _Host:
+    """A stand-in Stereo Tool host process: records stdin, says *reports* on stderr."""
+
+    def __init__(self, reports: list[bytes], code: int | None = None) -> None:
+        import io
+
+        self.stdin = io.BytesIO()
+        self.stdin.close = lambda: None  # keep what was written readable
+        self.stdout = MagicMock()
+        self.stdout.read.return_value = b""
+        self.stderr = io.BytesIO(b"".join(reports))
+        self.returncode = code
+        self.kwargs: dict = {}
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = self.returncode if self.returncode is not None else -15
+
+    def kill(self):
+        self.terminate()
+
+
+def _report(**values) -> bytes:
+    import json
+
+    from autodj.stereotool_host import REPORT_PREFIX
+
+    return (REPORT_PREFIX + json.dumps(values) + "\n").encode()
+
+
+def _wait_for(condition, seconds: float = 3.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_the_licence_key_goes_over_stdin_never_argv_or_the_environment(monkeypatch) -> None:
+    from autodj.stereotool_host import read_header
+
+    monkeypatch.setenv("AUTODJ_STEREOTOOL_LICENSE_KEY", "<KEY-FROM-ENV-1234>")
+    monkeypatch.setenv("AUTODJ_ACCESS_TOKEN", "server-secret-token-for-tests-only")
+    hosts: list[_Host] = []
+
+    def factory(command, **kwargs):
+        if "autodj.stereotool_host" not in command:
+            raise OSError("no output limiter in this test")
+        host = _Host([_report(version="11.05", latency_ms=10.0)])
+        host.kwargs = kwargs
+        host.command = command
+        hosts.append(host)
+        return host
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_path=lambda: "/index/tools/stereo-tool/libStereoTool_intel64.so",
+        stereotool_license=lambda: "<KEY-SECRET-1234>",
+    )
+    try:
+        _wait_for(lambda: bool(hosts) and len(hosts[0].stdin.getvalue()) > 10)
+        host = hosts[0]
+        assert not any("KEY-SECRET" in part for part in host.command)
+        env = host.kwargs["env"]
+        assert not [name for name in env if name.upper().startswith("AUTODJ_")]
+        assert "<KEY-SECRET-1234>" not in "".join(env.values())
+        assert host.kwargs["stderr"] is subprocess.PIPE
+        import io
+
+        assert read_header(io.BytesIO(host.stdin.getvalue())).decode() == "<KEY-SECRET-1234>"
+    finally:
+        master.close()
+
+
+def test_stereotool_restarts_with_the_current_library_and_licence() -> None:
+    commands: list[list[str]] = []
+    library = ["./first/libStereoTool_intel64.so"]
+    generation = [0]
+
+    def factory(command, **_kwargs):
+        commands.append(command)
+        raise OSError("stop here")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_path=lambda: library[0],
+        setup_generation=lambda: generation[0],
+    )
+    try:
+        _wait_for(lambda: bool(commands))
+        assert commands[0][commands[0].index("--library") + 1] == "./first/libStereoTool_intel64.so"
+        # A saved key or a new library bumps the generation: Stereo Tool restarts.
+        library[0] = "/index/tools/stereo-tool/libStereoTool_intel64.so"
+        generation[0] = 1
+        master.process(_block())
+        _wait_for(lambda: commands[-1][commands[-1].index("--library") + 1] == library[0])
+        assert commands[-1][commands[-1].index("--library") + 1] == library[0]
+    finally:
+        master.close()
+
+
+def test_a_missing_library_points_to_the_download_button_without_starting_a_host() -> None:
+    started = []
+
+    def factory(command, **_kwargs):
+        started.append(command)
+        raise AssertionError("no host starts without its library")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        library_present=lambda _path: False,
+    )
+    try:
+        _wait_for(lambda: master.error is not None)
+        assert master.error == (
+            "Stereo Tool master unavailable: Stereo Tool is not installed. Download it in "
+            "Settings, Sound, with the Download Stereo Tool button."
+        )
+        assert started == []
+    finally:
+        master.close()
+
+
+def test_the_hosts_reports_are_kept_and_its_last_error_is_said() -> None:
+    def factory(command, **_kwargs):
+        if "autodj.stereotool_host" not in command:
+            raise OSError("no output limiter in this test")
+        return _Host(
+            [
+                b"Stereo Tool library chatter that is not ours\n",
+                b"partial chatter " + _report(error="Stereo Tool could not load the preset A.sts"),
+            ],
+            code=4,
+        )
+
+    master = ContinuousMaster(popen_factory=factory, mode=lambda: "stereotool")
+    try:
+        _wait_for(lambda: bool(master.stereotool_report.get("error")))
+        assert master.stereotool_report["error"] == "Stereo Tool could not load the preset A.sts"
+    finally:
+        master.close()
+
+
+def test_a_host_that_exits_after_saying_why_shows_that_reason() -> None:
+    class Exiting(_Host):
+        pass
+
+    def factory(command, **_kwargs):
+        if "autodj.stereotool_host" not in command:
+            output = MagicMock()
+            output.poll.return_value = None
+            output.stdout.read.return_value = b""
+            return output
+        return Exiting([_report(error="libX.so is not there", missing=True)], code=3)
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_missing=lambda: "The Stereo Tool library is missing.",
+    )
+    try:
+        _wait_for(lambda: master.error is not None and "missing" in master.error)
+        assert master.error == "Stereo Tool master unavailable: The Stereo Tool library is missing."
+    finally:
+        master.close()
+
+
+def test_licence_reports_are_logged_without_any_key(caplog) -> None:
+    import logging
+
+    master = ContinuousMaster(mode=lambda: "smooth")
+    try:
+        with caplog.at_level(logging.INFO, logger="autodj.mastering"):
+            master._note_report(
+                {"version": "11.05", "latency_ms": 12.5, "preset_load_type": 20386, "ignored": "x"}
+            )
+            master._note_report({"licensed": False, "unlicensed": "Declipper"})
+        assert master.stereotool_report == {
+            "version": "11.05",
+            "latency_ms": 12.5,
+            "preset_load_type": 20386,
+            "licensed": False,
+            "unlicensed": "Declipper",
+        }
+        text = " ".join(record.getMessage() for record in caplog.records)
+        assert "Stereo Tool 11.05 started" in text
+        assert "preset load type 20386" in text
+        assert "not licensed for this preset: Declipper" in text
+    finally:
+        master.close()
+
+
+def test_a_stuck_process_is_logged_without_its_command_line(caplog) -> None:
+    import logging
+
+    from autodj.mastering import _end_process
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.wait.side_effect = subprocess.TimeoutExpired(["python", "-m", "secret-ish argv"], 2)
+    with caplog.at_level(logging.WARNING, logger="autodj.mastering"):
+        assert _end_process(proc) is False
+    assert caplog.records
+    assert all(
+        "secret-ish" not in record.getMessage() and record.exc_info is None
+        for record in caplog.records
+    )
+
+
+def test_a_missing_configured_stereotool_names_the_setting() -> None:
+    from autodj import stereotool_setup
+
+    started = []
+
+    def factory(command, **_kwargs):
+        started.append(command)
+        raise AssertionError("no host starts without its library")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_path=lambda: "C:/Radio/Gone.dll",
+        stereotool_missing=lambda: stereotool_setup.missing_message("C:/Radio/Gone.dll"),
+        library_present=stereotool_setup.library_present,
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error is not None
+        assert "named by stereotool_path in the configuration is missing" in master.error
+        assert "Download it" not in master.error
+        assert started == []
+    finally:
+        master.close()
+
+
+def test_a_report_is_tagged_with_the_generation_it_started_with() -> None:
+    generation = [7]
+
+    def factory(command, **_kwargs):
+        if "autodj.stereotool_host" not in command:
+            raise OSError("no output limiter in this test")
+        return _Host([_report(version="11.05")])
+
+    master = ContinuousMaster(
+        popen_factory=factory, mode=lambda: "stereotool", setup_generation=lambda: generation[0]
+    )
+    try:
+        _wait_for(lambda: master.stereotool_report.get("version") == "11.05")
+        assert master.stereotool_report["generation"] == 7
+    finally:
+        master.close()
+
+
+def test_a_helper_that_stops_reading_its_header_says_its_own_reason() -> None:
+    import io
+
+    class Closed(_Host):
+        def __init__(self) -> None:
+            super().__init__(
+                [_report(error="libStereoTool_intel64.so is not there", missing=True)], 3
+            )
+
+            class Pipe(io.RawIOBase):
+                def writable(self) -> bool:
+                    return True
+
+                def write(self, _data) -> int:
+                    raise BrokenPipeError(32, "Broken pipe")
+
+            self.stdin = Pipe()
+
+    def factory(command, **_kwargs):
+        return Closed()
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_missing=lambda: "Stereo Tool is not installed.",
+    )
+    try:
+        _wait_for(lambda: master.error is not None)
+        assert master.error == "Stereo Tool master unavailable: Stereo Tool is not installed."
+        assert "Broken pipe" not in master.error
+    finally:
+        master.close()
+
+
+def test_an_os_error_with_a_file_names_only_the_file() -> None:
+    from autodj.mastering import _unavailable
+
+    error = PermissionError(13, "Permission denied", "/srv/autodj/index/tools/stereo-tool/x.so")
+    assert _unavailable("stereotool", error) == "x.so: Permission denied"
