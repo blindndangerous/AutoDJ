@@ -116,6 +116,22 @@ export function selectOnFocus(input) {
   });
 }
 
+// Focus *control*, first opening every closed <details> card around it.
+// Focus cannot reach a field inside a closed card, so a refused value's
+// error would be said with nothing in view and focus left where it was.
+// A card's own summary is reachable while the card is closed, so focusing
+// a summary leaves its card as it is.
+export function focusRevealed(control, options) {
+  if (!control) return;
+  let card = (control.tagName === "SUMMARY" ? control.parentElement : control)
+    ?.parentElement?.closest("details");
+  while (card) {
+    if (!card.open) card.open = true;
+    card = card.parentElement?.closest("details");
+  }
+  control.focus(options);
+}
+
 // ----------------------------------------------------------------
 // Settings lists: saved profiles, paired devices, voice liners.
 // ----------------------------------------------------------------

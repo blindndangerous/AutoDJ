@@ -13,8 +13,8 @@ import {
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
 const section = html.slice(
-  html.indexOf('<section id="listener-stats"'),
-  html.indexOf("</section>", html.indexOf('<section id="listener-stats"')) + "</section>".length,
+  html.indexOf('<details class="card" id="listener-stats"'),
+  html.indexOf("</details>", html.indexOf('<details class="card" id="listener-stats"')) + "</details>".length,
 );
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 

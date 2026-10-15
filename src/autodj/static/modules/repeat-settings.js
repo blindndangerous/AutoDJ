@@ -1,4 +1,5 @@
 import { announceStatus } from "./live-region.js";
+import { focusRevealed } from "./dom-helpers.js";
 import {
   captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent,
 } from "./api-client.js";
@@ -197,7 +198,7 @@ function showFieldError(els, control, message) {
 
 function reportInvalid(control, message, settingsStatus) {
   control.setAttribute("aria-invalid", "true");
-  control.focus();
+  focusRevealed(control);
   announceStatus(settingsStatus, message, { dwellMs: 6000, force: true, tone: "error" });
 }
 

@@ -12,6 +12,7 @@
 // second.  The results are headings and lists (no tables), filled in
 // without moving focus.
 import { requestJson } from "./api-client.js";
+import { focusRevealed } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -194,7 +195,7 @@ export function installRotationTest({
     const problem = seedProblem(seed.value);
     markSeed(problem);
     if (problem) {
-      seed.focus();
+      focusRevealed(seed);
       say(problem, "error");
       return;
     }

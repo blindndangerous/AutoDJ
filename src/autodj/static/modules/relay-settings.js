@@ -1,6 +1,7 @@
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { focusRevealed } from "./dom-helpers.js";
 
 const root = (slug) => slug === "default" ? "/api" : `/api/stations/${encodeURIComponent(slug)}`;
 
@@ -28,7 +29,7 @@ export function installRelaySettings({ doc, request, post, remove, announce, slu
       : error.message.toLowerCase().includes("type") ? "type" : "name";
     const field = id(`relay-${key}`);
     field.setAttribute("aria-invalid", "true");
-    field.focus();
+    focusRevealed(field);
     announce(error.message, true);
   }
 
