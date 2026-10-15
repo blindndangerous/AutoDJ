@@ -804,8 +804,6 @@ function applyState(s) {
     let message = "";
     if (playout.error && s.current_track && s.next_track) {
       message = "The next handoff could not be prepared. The player will use its regular transition.";
-    } else if (!s.browser_playback && s.current_track && s.next_track && playout.queue_locked) {
-      message = "The next handoff is prepared. Queue edits apply after this track; Play now interrupts.";
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
   }

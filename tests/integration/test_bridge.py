@@ -393,7 +393,6 @@ def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) 
         "error": "Processor restarting",
         "preset_warning": "No drive" if mode == "stereotool" else None,
         "latency_seconds": 0.28,
-        "queue_locked": True,
     }
     bridge.player._active_processing_mode = "off"
     assert bridge.get_state()["playout"]["error"] is None
