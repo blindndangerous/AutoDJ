@@ -195,7 +195,6 @@ export function installLiveDesk({
     if (!latchedNote.hidden && latchedNote.textContent) ids.push(latchedNote.id);
     if (!note.hidden && note.textContent) ids.push(note.id);
     if (!error.hidden && error.textContent) ids.push(error.id);
-    if (doc.getElementById("station-context")) ids.push("station-context");
     button.setAttribute("aria-describedby", ids.join(" "));
   }
 

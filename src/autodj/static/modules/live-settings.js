@@ -240,7 +240,6 @@ export function installLiveSettings({
       title: "Remove DJ?",
       message: `Remove ${dj.display_name} (${dj.username})? If this DJ is on the air, they are disconnected and the music comes back.`,
       confirmLabel: "Remove DJ",
-      station: true,
       onConfirm: async () => {
         try {
           await request(`/api/live/djs/${encodeURIComponent(dj.username)}`, { method: "DELETE" });

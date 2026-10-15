@@ -186,7 +186,7 @@ describe("the Ads tab", () => {
     ]);
     const breakButtons = [...byId("ads-breaks").querySelectorAll("button")];
     expect(breakButtons.map((button) => button.textContent)).toEqual(["Edit", "Run now", "Delete"]);
-    expect(breakButtons[1].getAttribute("aria-describedby")).toBe("station-context");
+    expect(breakButtons[1].hasAttribute("aria-describedby")).toBe(false);
     expect(byId("ads-rules-separation").value).toBe("15");
     expect(byId("ads-pending").textContent).toBe("Nothing is waiting.");
   });

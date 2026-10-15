@@ -75,11 +75,8 @@
        that changes what is on air, and "Shared by all stations" for the
        library and pairing.  Empty while the server has one station, so
        nothing extra is spoken then. -->
-  <span id="station-context" hidden></span>
-  <span id="shared-context" hidden></span>
   <!-- The station's name, added to the name of each tab panel that shows
        one station ("Queue & Search Night Owl Radio"). -->
-  <span id="station-name-label" hidden></span>
   <!-- Fix 4: no static aria-label — text content is the live announcement -->
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
@@ -108,7 +105,7 @@
     <button type="button" role="tab" id="tab-carts"    data-view="carts"    aria-selected="false" tabindex="-1">Carts</button>
     <button type="button" role="tab" id="tab-voice"    data-view="voice"    aria-selected="false" tabindex="-1">Voice tracks</button>
     <button type="button" role="tab" id="tab-ads"      data-view="ads"      aria-selected="false" tabindex="-1">Ads</button>
-    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1" aria-describedby="shared-context">Library tools</button>
+    <button type="button" role="tab" id="tab-library"  data-view="library"  aria-selected="false" tabindex="-1">Library tools</button>
     <button type="button" role="tab" id="tab-settings" data-view="settings" aria-selected="false" tabindex="-1">Settings</button>
   </div>
 </nav>
@@ -137,7 +134,7 @@
          says "Off air" once. -->
     <div id="station-off-air" class="station-off-air" hidden>
       <p id="station-off-air-text"></p>
-      <button type="button" id="station-start" aria-describedby="station-context">Start station</button>
+      <button type="button" id="station-start">Start station</button>
     </div>
 
     <div class="now-playing-row">
@@ -243,12 +240,12 @@
              name plus aria-pressed. -->
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
-        <button id="btn-pause" aria-label="Play or Pause" aria-describedby="station-context" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
+        <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
         <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
-        <button id="btn-skip" aria-describedby="station-context">
+        <button id="btn-skip">
           <span aria-hidden="true">⏭</span> Skip
         </button>
         <button id="btn-shuffle"
@@ -272,7 +269,7 @@
            The help, the note (busy, unavailable) and the error are plain
            text, linked by live-talk.js only while they have words. -->
       <div id="talk-desk" class="talk-desk" hidden>
-        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help station-context">Talk</button>
+        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help">Talk</button>
         <p id="talk-help" class="stream-detail">Press and hold to talk over the music, or press and hold Alt+M. 2 minutes max. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air.</p>
         <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
         <p id="talk-latched" class="talk-latched" hidden></p>
@@ -527,7 +524,7 @@
         <p class="setting-desc" id="points-help-overlap-start">For liners: when the next song may come in, counted from Start.</p>
         <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
-      <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
+      <button type="button" id="points-save">Save points</button>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </details>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -717,7 +714,7 @@
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
-    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
+    <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
   </div>
@@ -1918,7 +1915,7 @@
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-               aria-describedby="station-context">
+              >
       </div>
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
@@ -1956,7 +1953,7 @@
       </div>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc station-context">
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
           <option value="128">128 kbps</option>
           <option value="192">192 kbps</option>
           <option value="256">256 kbps</option>
@@ -1967,7 +1964,7 @@
         Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="station-context">
+        <input type="checkbox" id="stream-continuous">
         <label for="stream-continuous">Keep playing without listeners</label>
       </div>
       <span class="setting-desc" id="stream-continuous-desc">
@@ -1984,7 +1981,7 @@
         </p>
         <div class="settings-row">
           <label for="stream-aac-bitrate">AAC quality</label>
-          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning station-context">
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning">
             <option value="0">Off</option>
             <option value="64">64 kbps</option>
             <option value="96">96 kbps</option>
@@ -1998,7 +1995,7 @@
         </span>
         <div class="settings-row">
           <label for="stream-opus-bitrate">Opus quality</label>
-          <select id="stream-opus-bitrate" aria-describedby="station-context">
+          <select id="stream-opus-bitrate">
             <option value="0">Off</option>
             <option value="48">48 kbps</option>
             <option value="64">64 kbps</option>
@@ -2071,7 +2068,7 @@
         </p>
         <div class="settings-row">
           <button type="button" id="recording-toggle" aria-pressed="false"
-                  aria-describedby="recording-status recording-error station-context">Record broadcast</button>
+                  aria-describedby="recording-status recording-error">Record broadcast</button>
           <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
         </div>
         <p class="stream-detail" id="recording-status"></p>
@@ -2152,13 +2149,13 @@
         </p>
         <div class="settings-row">
           <label for="listener-stats-span">Show</label>
-          <select id="listener-stats-span" aria-describedby="station-context">
+          <select id="listener-stats-span">
             <option value="7">Last 7 days</option>
             <option value="30" selected>Last 30 days</option>
             <option value="90">Last 90 days</option>
             <option value="3650">Every day kept</option>
           </select>
-          <button type="button" id="listener-stats-refresh" aria-describedby="station-context">Refresh statistics</button>
+          <button type="button" id="listener-stats-refresh">Refresh statistics</button>
         </div>
         <p class="stream-detail" id="listener-stats-summary">Statistics not loaded yet.</p>
         <table id="listener-stats-formats" hidden>
@@ -2193,30 +2190,19 @@
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
           <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
-                 aria-describedby="listener-stats-keep-desc station-context">
+                 aria-describedby="listener-stats-keep-desc">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
           From 0 to 3650; 90 unless changed. Older days are deleted. 0 keeps no statistics and deletes those kept.
         </span>
         <div class="settings-row">
-          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc station-context">Download statistics (CSV)</button>
+          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc">Download statistics (CSV)</button>
         </div>
         <span class="setting-desc" id="listener-stats-export-desc">
           A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
         </span>
       </section>
     </fieldset>
-    <!-- A station other than the default one can be stopped (#70); it asks
-         first in #confirm-dialog.  Hidden for the default station. -->
-    <div id="station-stop-row" hidden>
-      <div class="settings-row">
-        <button type="button" id="station-stop"
-                aria-describedby="station-stop-desc station-context">Stop station</button>
-      </div>
-      <span class="setting-desc" id="station-stop-desc">
-        Disconnects its listeners and relays and ends its recording until it is started again.
-      </span>
-    </div>
   </div>
 
   <!-- Stations on this server, and creating one (#233).  Shared by every
@@ -2344,7 +2330,7 @@
       <p class="stream-detail" id="live-transport-note"></p>
       <h4 id="live-djs-heading">DJ accounts</h4>
       <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
-      <button type="button" id="live-dj-add" aria-describedby="station-context">Add DJ</button>
+      <button type="button" id="live-dj-add">Add DJ</button>
       <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
         <thead><tr><th scope="col">DJ</th><th scope="col">Password</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
         <tbody id="live-dj-rows"></tbody>
@@ -2385,7 +2371,7 @@
         </div>
         <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
         <p class="field-error" id="live-talkover-error" hidden></p>
-        <button type="button" id="live-talkover-save" aria-describedby="station-context">Save talk settings</button>
+        <button type="button" id="live-talkover-save">Save talk settings</button>
       </fieldset>
     </div>
   </div>
@@ -2538,7 +2524,7 @@
     </ol>
     <!-- Outside the list, so it stays put while rows come and go.  It asks
          before clearing, in #confirm-dialog. -->
-    <button type="button" id="queue-clear" aria-describedby="station-context">Clear queue</button>
+    <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
   <!-- Listener requests from the public request page; shown only when
@@ -3661,6 +3647,7 @@
     <dt><kbd>Shift+U</kbd></dt><dd>Speak what is coming next in the song on air, such as “On air: Drop in 0:12, 6 bars”</dd>
     <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
     <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>
+    <dt><kbd>Shift+[</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Shift+]</kbd></dt><dd>Switch to the previous or next station</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.
