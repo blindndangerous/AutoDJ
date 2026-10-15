@@ -1794,7 +1794,7 @@ def build_preview(
         else None
     )
     view["counts_text"] = _counts_text(view, zone, end)
-    view["summary"] = _summary(view, landings, zone, end)
+    view["summary"] = _summary(landings, zone)
     return view
 
 
@@ -1869,11 +1869,11 @@ def _counts_text(view: dict[str, Any], zone: ZoneInfo, end: float) -> str:
     )
 
 
-def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, end: float) -> str:
-    listed = view["counts_text"]
+def _summary(landings: Sequence[Landing], zone: ZoneInfo) -> str:
+    """The next landing; the card shows the counts (:func:`_counts_text`)."""
     if not landings:
-        return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
-    return f"{_next_words(landings[0], zone)} {listed}"
+        return "No top of the hour, clockwheel restart or scheduled event."
+    return _next_words(landings[0], zone)
 
 
 def _next_words(landing: Landing, zone: ZoneInfo) -> str:

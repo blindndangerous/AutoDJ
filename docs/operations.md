@@ -3372,8 +3372,8 @@ Backtiming goes to each fixed point in the span:
 
 The card shows how many rows are fixed and predicted, such as "3 fixed items, 20 predicted,
 through 13:40.", with the backtiming lines under it. **Refresh preview** and **Shift+H** (from
-any tab) say the next of these points and how it lands, then the counts, such as "Next clockwheel
-restart, 13:30: expected 0:35 early. 3 fixed items, 20 predicted, through 13:40." While the card is open and Now Playing is showing, the
+any tab) say the next of these points and how it lands, such as "Next clockwheel restart, 13:30:
+expected 0:35 early." While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
 said once, and not again until one succeeds. Choosing another span under **Show** says its
