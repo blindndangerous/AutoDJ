@@ -296,7 +296,8 @@ def _audio_out() -> BinaryIO:
     sys.stdout.flush()
     audio = os.dup(1)
     os.dup2(2, 1)
-    return os.fdopen(audio, "wb", buffering=0)
+    # Buffered, so each write is whole; pump flushes after every block.
+    return os.fdopen(audio, "wb")
 
 
 def main(argv: list[str] | None = None) -> int:
