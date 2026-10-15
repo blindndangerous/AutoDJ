@@ -102,6 +102,10 @@ def test_time_checks_settings_and_recordings_survive_restore(tmp_path: Path) -> 
     # A voice pack kept in the time_checks folder is backed up; one elsewhere is not.
     (clips / "Studio").mkdir()
     (clips / "Studio" / "hr_03.wav").write_bytes(b"hour")
+    # Unfinished uploads and set-aside packs stay out (#388).
+    (clips / ".pack-upload-0123456789abcdef").mkdir()
+    (clips / ".pack-upload-0123456789abcdef" / "hr_04.wav").write_bytes(b"partial")
+    (clips / ".clip-upload-0123456789abcdef.wav").write_bytes(b"partial")
     elsewhere = tmp_path / "voices" / "Night"
     elsewhere.mkdir(parents=True)
     (elsewhere / "hr_03.wav").write_bytes(b"hour")
@@ -115,6 +119,7 @@ def test_time_checks_settings_and_recordings_survive_restore(tmp_path: Path) -> 
             "time_checks/Studio/hr_03.wav",
         } <= names
         assert not any("Night" in name for name in names)
+        assert not any("-upload-" in name for name in names)
     state.unlink()
     (clips / "03_05.wav").unlink()
     restore_backup(cfg, archive, force=True)

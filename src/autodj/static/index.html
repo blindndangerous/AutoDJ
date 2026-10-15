@@ -1684,13 +1684,14 @@
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
     <h3>Time checks</h3>
-    <!-- time-checks.js fills this panel when it is seen.  The voice pack
-         folders, clip folder, intro and outro clips and the text-to-speech
-         command are set only in config.toml; the page sends pack names, never
-         paths.  Each result of a setting or the button is said once through
-         #tc-status; pack coverage is plain text, not a live region. -->
+    <!-- time-checks.js fills this panel when it is seen.  Voice packs,
+         the recorded clips folder and the intro and outro clips are added and
+         chosen here, by name, never by path; only the text-to-speech command
+         is set in config.toml, because it runs a program on the server.  Each
+         result of a setting or a button is said once through #tc-status;
+         pack coverage is plain text, not a live region. -->
     <p class="card-desc">
-      Say the station time over the music. Voice packs, clips and text to speech are set in config.toml.
+      Say the station time over the music. Add voice packs and choose clips here. Only the text-to-speech command is set in config.toml.
     </p>
 
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1721,13 +1722,42 @@
       After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner.
     </span>
 
-    <fieldset id="tc-packs">
+    <!-- tabindex="-1": focus comes here after the last pack is removed. -->
+    <fieldset id="tc-packs" tabindex="-1">
       <legend>Voice packs</legend>
       <span class="setting-desc" id="tc-packs-desc">
-        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
+        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Every folder in the station's time checks folder is a pack. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
       </span>
-      <p id="tc-packs-empty">No voice packs are listed in config.toml.</p>
+      <p id="tc-packs-empty">No voice packs yet. Add one below.</p>
       <div id="tc-pack-list"></div>
+    </fieldset>
+    <button type="button" id="tc-rescan" aria-describedby="tc-rescan-desc">Look for new voice packs</button>
+    <span class="setting-desc" id="tc-rescan-desc">
+      Finds folders copied into the time checks folder on the server since this page loaded. No restart is needed.
+    </span>
+
+    <!-- Adding a pack: "Uploading" and the result are said through
+         #tc-status and focus moves to the new pack's checkbox; a taken name
+         asks before it is replaced.  A refused upload is shown in
+         #tc-pack-error, linked to the file input, which takes focus. -->
+    <fieldset id="tc-add-pack">
+      <legend>Add a voice pack</legend>
+      <span class="setting-desc" id="tc-add-pack-desc">
+        Upload a zip file of the pack's WAV, MP3, FLAC or OGG files, up to 256 MB. It becomes a folder in this station's time checks folder. A zip of recorded minute clips works the same way; then choose its folder under Recorded minute clips folder.
+      </span>
+      <div class="settings-row">
+        <label for="tc-pack-file">Voice pack zip file</label>
+        <input type="file" id="tc-pack-file" accept=".zip,application/zip" aria-describedby="tc-add-pack-desc">
+      </div>
+      <p id="tc-pack-error" class="field-error" hidden></p>
+      <div class="settings-row">
+        <label for="tc-pack-name">Pack name</label>
+        <input type="text" id="tc-pack-name" maxlength="100" autocomplete="off" spellcheck="false" aria-describedby="tc-pack-name-desc">
+      </div>
+      <span class="setting-desc" id="tc-pack-name-desc">
+        Optional. Left blank, the pack is named after the folder in the zip, or the zip file.
+      </span>
+      <button type="button" id="tc-pack-add">Add voice pack</button>
     </fieldset>
     <div class="settings-row">
       <label for="tc-pack-order">When several packs are ticked</label>
@@ -1763,6 +1793,42 @@
 
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
+    <div class="settings-row">
+      <label for="tc-recorded-folder">Recorded minute clips folder</label>
+      <select id="tc-recorded-folder" aria-describedby="tc-recorded-folder-desc">
+        <option value="">The time checks folder itself</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-recorded-folder-desc">
+      Where the clips named 00_00 to 23_59 are, such as 15_05.wav for 3:05 in the afternoon. A folder chosen here is not a voice pack.
+    </span>
+    <div class="settings-row">
+      <label for="tc-intro">Intro clip</label>
+      <select id="tc-intro" aria-describedby="tc-clip-choice-desc">
+        <option value="">None</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label for="tc-outro">Outro clip</label>
+      <select id="tc-outro" aria-describedby="tc-clip-choice-desc">
+        <option value="">None</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-clip-choice-desc">
+      Played before and after every time check. Choose from the audio files in the time checks folder, or upload one below.
+    </span>
+    <fieldset id="tc-add-clip">
+      <legend>Upload a clip</legend>
+      <div class="settings-row">
+        <label for="tc-clip-file">Clip file</label>
+        <input type="file" id="tc-clip-file" accept=".wav,.mp3,.flac,.ogg,audio/*" aria-describedby="tc-clip-file-desc">
+      </div>
+      <p id="tc-clip-error" class="field-error" hidden></p>
+      <span class="setting-desc" id="tc-clip-file-desc">
+        An intro or outro, which goes in the time checks folder, or one recorded minute clip such as 15_05.wav, which goes in the recorded minute clips folder. When a clip with that name is already there, you are asked before it is replaced.
+      </span>
+      <button type="button" id="tc-clip-add">Upload clip</button>
+    </fieldset>
     <div class="settings-row">
       <label for="tc-test-voice">Voice to test</label>
       <select id="tc-test-voice">
