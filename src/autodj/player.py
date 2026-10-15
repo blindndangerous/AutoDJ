@@ -2392,6 +2392,9 @@ class Player:
                     self._pending_clock_boundary = boundary
                 upcoming = self._dmca_checked(picked.entry, context)
                 mode, cursor = "clock", picked.next_cursor
+                self._log_clock_pick(
+                    picked, upcoming, boundary, when if boundary else None, restart
+                )
                 if (
                     picked.liner is not None
                     and not liners
@@ -2418,6 +2421,36 @@ class Player:
         if not selected and auto_liner:
             selected, key = self._auto_liner(current, upcoming)
         return upcoming, mode, selected, cursor, key
+
+    def _log_clock_pick(
+        self,
+        picked: Any,
+        upcoming: IndexEntry,
+        boundary: float | None,
+        when: float | None,
+        restart: bool,
+    ) -> None:
+        """Log a clockwheel pick and the restart decision behind it, in one line."""
+        from datetime import datetime
+
+        def clock(stamp: float) -> str:
+            return datetime.fromtimestamp(stamp).strftime("%H:%M:%S")
+
+        step = "" if picked.step_index is None else f"step {picked.step_index + 1}: "
+        liner = f" after {picked.liner.display_name}" if picked.liner is not None else ""
+        if boundary is None or when is None:
+            timing = "no restart time"
+        elif restart:
+            timing = f"restarted the wheel for the restart due {clock(boundary)}"
+        else:
+            timing = f"starts {clock(when)}, restart due {clock(boundary)} not yet"
+        logger.info(
+            "Clockwheel %s%s%s (%s)",
+            step,
+            upcoming.display_name,
+            liner,
+            timing,
+        )
 
     def _miss_unbooked_ad_steps(self, steps: tuple[dict, ...], slot_id: str = "") -> None:
         desk = getattr(self, "ad_desk", None)

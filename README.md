@@ -588,6 +588,9 @@ variables and CLI flags still take precedence.
 
 ## Troubleshooting
 
+`autodj serve` writes its log to `index/<name>/logs/autodj.log` as well as the console, a new
+file each day, with the last 7 kept.
+
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.
 
 **The first index run on Windows warns about symlinks.**  The Hugging Face download library

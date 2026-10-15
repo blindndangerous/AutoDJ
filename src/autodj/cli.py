@@ -466,6 +466,20 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
 
 
+def _add_log_file(path: Path) -> None:
+    """Also write the log to *path*: a new file each day, the last 7 kept."""
+    from logging.handlers import TimedRotatingFileHandler
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = TimedRotatingFileHandler(path, when="midnight", backupCount=7, encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Could not open the log file %s: %s", path, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+
+
 # ---------------------------------------------------------------------------
 # doctor subcommand
 # ---------------------------------------------------------------------------
@@ -1894,6 +1908,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     from autodj.library import LibraryManager
 
     _apply_index_name(cfg, index_name)
+    if isinstance(cfg.index.active_dir, Path):
+        _add_log_file(cfg.index.active_dir / "logs" / "autodj.log")
     library = LibraryManager(cfg, sim)
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
