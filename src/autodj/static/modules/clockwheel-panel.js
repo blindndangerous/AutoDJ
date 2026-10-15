@@ -21,7 +21,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
-import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { describeStep } from "./clockwheel-step.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
@@ -272,11 +272,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const host = row.parentElement;
       const index = [...host.children].indexOf(row);
       row.remove();
+      renumberConditionRows(host);
       const left = [...host.children];
-      left.forEach((item, at) => {
-        item.querySelector("legend").textContent = `Condition ${at + 1}`;
-        item.querySelector("button[data-remove-condition]").textContent = `Remove condition ${at + 1}`;
-      });
       updateBeetsNotice();
       // The condition that took its place, or the one before it when it was last.
       (left[Math.min(index, left.length - 1)]?.querySelector("select") || el("clock-add-condition")).focus();
