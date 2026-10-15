@@ -477,6 +477,11 @@ describe("clockwheel editor", () => {
     expect(document.activeElement).toBe(rowCell(2, "edit"));
     expect(document.activeElement.getAttribute("role")).toBe("gridcell");
     expect(document.activeElement.textContent).toBe("track Album/Song.flac");
+    // Up and Down stay in the column, here Move down.
+    rowCell(1, "move-down").focus();
+    rowCell(1, "move-down").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(rowCell(0, "move-down"));
+    rowCell(2, "edit").focus();
     const statusKey = new KeyboardEvent("keydown", { key: "T", bubbles: true, cancelable: true });
     rowCell(2, "edit").dispatchEvent(statusKey);
     expect(statusKey.defaultPrevented).toBe(false);
