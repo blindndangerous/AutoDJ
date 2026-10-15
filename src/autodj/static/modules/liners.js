@@ -13,6 +13,7 @@ import { parseSettingValue, refusalText } from "./mix-settings.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
+  isStaleStationReply,
   requestBinary,
   requestJson,
   withDisabled,
@@ -199,7 +200,8 @@ async function _refreshLibrary(els) {
   try {
     await _loadLibrary(els, epoch);
   } catch (err) {
-    if (!isAuthenticatedRequestCurrent(epoch)) return;
+    // A reply for the station the page has just left says nothing (#70).
+    if (!isAuthenticatedRequestCurrent(epoch) || isStaleStationReply(err)) return;
     dbg("liner refresh failed:", err);
     _setStatus(els, `Could not load liners: ${err.message}`);
   }

@@ -414,6 +414,7 @@ function clearStationViews() {
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
   cartWallControls?.clear();
+  timeCheckControls?.clear();
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();

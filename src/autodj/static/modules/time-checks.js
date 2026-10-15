@@ -9,7 +9,7 @@
 // Each button or setting result is said once through #tc-status; the
 // automatic check after the hour says nothing.
 
-import { requestBinary, requestJson, withDisabled } from "./api-client.js";
+import { isStaleStationReply, requestBinary, requestJson, withDisabled } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 
 const MINUTES = 1440;
@@ -37,13 +37,16 @@ export function installTimeChecks({ doc = document, request = requestJson,
   const hasDates = Object.values(dates).every(Boolean);
   if (!enabled || !format || !rule || !clips || !status || !test || !order || !packList
       || !packsEmpty || !testVoice) {
-    return { refresh: async () => {}, noteTrack: () => {} };
+    return { refresh: async () => {}, clear: () => {}, noteTrack: () => {} };
   }
   let settings = null;
   let previousTrack = null;
   let previousHour = null;
   let playing = false;
   let pending = false;
+  // Counts loads, so a reply that lands after a newer load, or after
+  // clear(), is dropped.
+  let generation = 0;
 
   function say(message, tone = "info") {
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
@@ -197,13 +200,31 @@ export function installTimeChecks({ doc = document, request = requestJson,
 
   // Background loads write into the panel; they are not announced.
   async function refresh() {
+    const mine = ++generation;
     try {
-      settings = await request("/api/time-checks");
+      const loaded = await request("/api/time-checks");
+      if (mine !== generation) return;
+      settings = loaded;
       if (previousTrack && previousHour === null) previousHour = hourKey(now());
       showSettings();
     } catch (error) {
+      // A reply for the station the page has just left says nothing (#70).
+      if (mine !== generation || isStaleStationReply(error)) return;
       clips.textContent = `Could not load time checks: ${error.message}`;
     }
+  }
+
+  // A station switch: what this panel showed was the old station's.
+  function clear() {
+    generation += 1;
+    settings = null;
+    previousTrack = null;
+    previousHour = null;
+    pending = false;
+    clips.textContent = "";
+    status.textContent = "";
+    showPacks([]);
+    packsEmpty.hidden = true;
   }
 
   async function save() {
@@ -286,6 +307,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
 
   return {
     refresh,
+    clear,
     noteTrack(state) {
       const path = state?.current_track?.path;
       if (!path || path === previousTrack) return;

@@ -99,6 +99,27 @@ describe("liner authentication races", () => {
     vi.unstubAllGlobals();
   });
 
+  it("says nothing for a failed liner load that was for the station just left (#70)", async () => {
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    const status = document.querySelector("#liner-status");
+    installLiners({
+      lnFileList: document.createElement("ul"),
+      lnFolderDisplay: document.createElement("span"),
+      lnStatus: status,
+      lnTestBtn: document.querySelector("#liner-test"),
+    }, { canPlay: () => false, playLiner: vi.fn(), postSettings: vi.fn(), testOnServer: () => false });
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+    selectStation("night");
+    answer(new globalThis.Response(JSON.stringify({ detail: "boom" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(status.textContent).toBe("");
+  });
+
   it("allows only one scheduled liner request until the prior one settles", async () => {
     vi.useFakeTimers();
     let rejectFirstAudio;
