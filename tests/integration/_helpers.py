@@ -145,7 +145,6 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.skip_style = "fade"
     cfg.playback.liners_talk_up = False
     cfg.playback.liners_enabled = False
-    cfg.playback.liners_folder = None
     cfg.playback.liners_every_n_songs = None
     cfg.playback.liners_every_minutes = None
     cfg.playback.liners_random_min_minutes = None

@@ -222,7 +222,7 @@ def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
 ) -> None:
     """A body with no Content-Length is counted as it streams into the multipart parser."""
     player = _make_player_mock()
-    player._cfg.playback.liners_folder = str(tmp_path / "liners")
+    player._cfg.index.active_dir = str(Path(tmp_path / "liners").parent)
     player._cfg.server.liner_upload_max_bytes = 1024
     app = create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
     boundary = b"cap"
@@ -1095,9 +1095,8 @@ class TestProfileApplyBranches:
 
 class TestLinerUploadDelete:
     def test_upload_succeeds_and_delete_works(self, client, tmp_path, monkeypatch) -> None:
-        # Point liners folder at tmp_path so writes are isolated.
-        # Closure captures bridge.player._cfg.playback.liners_folder;
-        # set that to redirect the liner folder.
+        # The station's index folder is tmp_path, so its liners folder is
+        # tmp_path / "liners" and writes are isolated.
         from fastapi.testclient import TestClient
 
         from autodj.server import PlayerBridge, create_app
@@ -1105,7 +1104,7 @@ class TestLinerUploadDelete:
         from ._helpers import _make_player_mock, _make_sim_mock
 
         player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
+        player._cfg.index.active_dir = str(tmp_path)
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         resp = client.post(
@@ -1118,8 +1117,6 @@ class TestLinerUploadDelete:
         assert resp.status_code == 200
 
     def test_upload_path_with_slash_is_rejected(self, client, tmp_path, monkeypatch) -> None:
-        # Closure captures bridge.player._cfg.playback.liners_folder;
-        # set that to redirect the liner folder.
         from fastapi.testclient import TestClient
 
         from autodj.server import PlayerBridge, create_app
@@ -1127,7 +1124,7 @@ class TestLinerUploadDelete:
         from ._helpers import _make_player_mock, _make_sim_mock
 
         player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
+        player._cfg.index.active_dir = str(tmp_path)
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         resp = client.post(
@@ -1140,14 +1137,12 @@ class TestLinerUploadDelete:
     def test_delete_unlink_raises_oserror_returns_500(self, client, tmp_path, monkeypatch) -> None:
         from fastapi.testclient import TestClient
 
-        # Closure captures bridge.player._cfg.playback.liners_folder;
-        # set that to redirect the liner folder.
         from autodj.server import PlayerBridge, create_app
 
         from ._helpers import _make_player_mock, _make_sim_mock
 
         player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
+        player._cfg.index.active_dir = str(tmp_path)
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         from autodj import liner_files
@@ -1163,9 +1158,10 @@ class TestLinerUploadDelete:
 
     def test_open_rejects_malformed_range_and_closes_file(self, tmp_path: Path) -> None:
         player = _make_player_mock()
-        player._cfg.playback.liners_folder = str(tmp_path)
+        player._cfg.index.active_dir = str(tmp_path)
         client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        (tmp_path / "clip.wav").write_bytes(b"audio")
+        (tmp_path / "liners").mkdir()
+        (tmp_path / "liners" / "clip.wav").write_bytes(b"audio")
 
         response = client.get(
             "/api/liners/file/clip.wav",

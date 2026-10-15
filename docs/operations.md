@@ -1622,7 +1622,7 @@ The rules:
 A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
 the default station: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
-`liners/` (unless `playback.liners_folder` is set) and `profiles/`. Its plays are kept in the
+`liners/` and `profiles/`. Its plays are kept in the
 shared `library.db`. The default station's files stay where they always were.
 
 ### Creating a station from the web page
@@ -1998,10 +1998,9 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    If a relay under the root `[stream.relays.*]` really belongs to the new station, move its
    tables in both files under `stations.nightowl.stream.relays`. The full list of keys and rules
    is in [Configuration](#configuration).
-4. **Liners and time checks.** Night Owl's liners go in
-   `<index_dir>/<name>/stations/nightowl/liners/` unless you set
-   `[stations.nightowl.playback] liners_folder`. Set `[stations.nightowl.time_checks]
-   clips_folder` or `voice_packs` if it should speak the time.
+4. **Liners and time checks.** Night Owl plays the liners in every registered liner folder,
+   and liners uploaded for it go in `<index_dir>/<name>/stations/nightowl/liners/`. Set
+   `[stations.nightowl.time_checks] clips_folder` or `voice_packs` if it should speak the time.
 5. **Containers only:** make sure the new recording folder, and any liner folder outside the
    index, is mounted and writable. The station's own folder is inside the `/index` volume.
 6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
@@ -3423,7 +3422,7 @@ window and prefers a song whose estimated handoff lands closest to it. See
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history, and matching vectors.
-- Every file in the liners folder (`[playback] liners_folder`, or `index/<name>/liners`) and in
+- Every file in the station's liners folder (`index/<name>/liners`) and in
   `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.

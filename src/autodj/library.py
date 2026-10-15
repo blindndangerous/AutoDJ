@@ -190,7 +190,7 @@ class LibraryManager:
         # which waited for it, runs again once it has gone.
         self._yielded_to_worker = False
         # The configured folder is kept as written: it names a catalog source.
-        liner_root = cfg.playback.liners_folder or str(StationPaths.default(cfg).liners)
+        liner_root = str(StationPaths.default(cfg).liners)
         try:
             self.analysis_queue = AnalysisQueue(catalog_path)
         except BaseException:

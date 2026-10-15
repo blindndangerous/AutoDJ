@@ -17,11 +17,11 @@ from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.library import LibraryManager, analyse_library
 
 
-def _config(root: Path, music: Path, liners: Path | None = None) -> AutoDJConfig:
+def _config(root: Path, music: Path) -> AutoDJConfig:
     return AutoDJConfig(
         library=LibraryConfig(music_dir=music, supported_formats=["flac"]),
         index=IndexConfig(index_dir=root / "index", model_dir=root / "models"),
-        playback=PlaybackConfig(liners_folder=str(liners) if liners else None),
+        playback=PlaybackConfig(),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(),
         config_path=root / "config.toml",
@@ -51,7 +51,7 @@ def _catalog(tmp_path: Path, *, count: int = 3, liners: bool = False):
         song.write_bytes(f"audio {i}".encode())
         songs.append(song)
     liner_root = tmp_path / "Liners" if liners else None
-    cfg = _config(tmp_path, music, liner_root)
+    cfg = _config(tmp_path, music)
     manager = LibraryManager(cfg, _sim())
     manager.catalog.add_source(music)
     for song in songs:

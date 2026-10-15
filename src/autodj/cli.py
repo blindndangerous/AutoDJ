@@ -1611,7 +1611,7 @@ def cmd_migrate_index(
     from autodj.index_migration import migrate_catalog
     from autodj.stations import StationPaths
 
-    liner_dir = cfg.playback.liners_folder or str(StationPaths.default(cfg).liners)
+    liner_dir = str(StationPaths.default(cfg).liners)
     station_web_states = [
         StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
         for spec in cfg.stations

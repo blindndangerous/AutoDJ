@@ -45,7 +45,6 @@ folder = "{root}/recordings/nightowl"
 folder = "{root}/recordings/daybreak"
 
 [stations.daybreak.playback]
-liners_folder = "{root}/voice/daybreak"
 stereotool_preset = "Day.sts"
 """
 
@@ -92,9 +91,8 @@ def test_another_stations_state_is_under_its_own_folder(cfg: Any, tmp_path: Path
     assert default.state_dir == index / "main"
     assert default.relay_status == index / "relay-status.json"
     assert default.profiles == index / "profiles"
-    # A configured liner folder wins, as for the default station.
     daybreak = StationPaths.for_station(_spec(cfg, "daybreak").cfg, "daybreak")
-    assert daybreak.liners == tmp_path / "voice" / "daybreak"
+    assert daybreak.liners == daybreak.state_dir / "liners"
 
 
 @pytest.mark.parametrize("slug", ["default", "../x", "Owl", "", "a/b"])

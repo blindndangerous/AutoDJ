@@ -9,6 +9,7 @@ as long as the walk took.
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -40,7 +41,7 @@ class TestLinerListingRunsOffTheEventLoop:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / "station-id.mp3").write_bytes(b"0" * 16)
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         recorded: list[str] = []
         original = liners.LinerLibrary.from_folder

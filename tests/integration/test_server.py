@@ -339,7 +339,7 @@ class TestLiners:
                 return ()
 
         bridge.library = Library()
-        bridge.player._cfg.playback.liners_folder = str(tmp_path / "empty-flat")
+        bridge.player._cfg.index.active_dir = str(Path(tmp_path / "empty-flat").parent)
         tc = TestClient(create_app(bridge))
         listing = tc.get("/api/liners").json()
         assert listing["items"] == [
@@ -434,7 +434,7 @@ class TestLiners:
         folder.mkdir()
         (folder / "intro.mp3").write_bytes(b"\x00")
         (folder / "outro.wav").write_bytes(b"\x00")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         body = tc.get("/api/liners").json()
@@ -444,11 +444,10 @@ class TestLiners:
     def test_liner_play_dates_are_listed_set_refused_and_forgotten(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "active" / "liners"
+        folder.mkdir(parents=True)
         (folder / "promo.mp3").write_bytes(b"\x00")
         (folder / "id.wav").write_bytes(b"\x00")
-        bridge.player._cfg.playback.liners_folder = str(folder)
         bridge.player._cfg.index.active_dir = str(tmp_path / "active")
         bridge.player._cfg.server.station_timezone = "UTC"
 
@@ -487,7 +486,7 @@ class TestLiners:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / "test.mp3").write_bytes(b"raw-mp3-bytes")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/test.mp3")
@@ -501,7 +500,7 @@ class TestLiners:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / "test.mp3").write_bytes(b"0123456789")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=2-5"})
@@ -516,7 +515,7 @@ class TestLiners:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / "test.mp3").write_bytes(b"0123456789")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         suffix = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=-3"})
@@ -534,7 +533,7 @@ class TestLiners:
         folder = tmp_path / "liners"
         folder.mkdir()
         (tmp_path / "secret.txt").write_bytes(b"do-not-read")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
@@ -548,7 +547,7 @@ class TestLiners:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / name).write_bytes(b"secret")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         assert tc.get(f"/api/liners/file/{name}").status_code == 400
@@ -593,15 +592,12 @@ class TestLiners:
         """The liner root is config-only; a request cannot move it or half-apply."""
         from fastapi.testclient import TestClient
 
-        folder = str(tmp_path / "liners")
-        bridge.player._cfg.playback.liners_folder = folder
         bridge.player._cfg.playback.liners_enabled = False
         bridge.save_persistent_state = MagicMock()
 
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/playback-settings", json=payload)
         assert resp.status_code == 422
-        assert bridge.player._cfg.playback.liners_folder == folder
         assert bridge.player._cfg.playback.liners_enabled is False
         bridge.save_persistent_state.assert_not_called()
 
@@ -618,7 +614,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         folder.mkdir()
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         files = {"file": ("hello.mp3", b"audio-bytes", "audio/mpeg")}
@@ -636,9 +632,8 @@ class TestLiners:
 
         from autodj.clip_dates import ClipDates, LinerDates
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        folder = tmp_path / "active" / "liners"
+        folder.mkdir(parents=True)
         bridge.player._cfg.index.active_dir = str(tmp_path / "active")
         tc = TestClient(create_app(bridge))
         store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
@@ -666,10 +661,9 @@ class TestLiners:
 
         from autodj.clip_dates import ClipDates, LinerDates
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "active" / "liners"
+        folder.mkdir(parents=True)
         (folder / "id.wav").write_bytes(b"\x00")
-        bridge.player._cfg.playback.liners_folder = str(folder)
         bridge.player._cfg.index.active_dir = str(tmp_path / "active")
         tc = TestClient(create_app(bridge))
         store = tc.app.state.stations.default.liner_gate.store
@@ -695,7 +689,7 @@ class TestLiners:
         from fastapi.testclient import TestClient
 
         folder = tmp_path / "liners"
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
         bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
@@ -710,7 +704,7 @@ class TestLiners:
         from fastapi.testclient import TestClient
 
         folder = tmp_path / "liners"
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
         bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
@@ -728,7 +722,7 @@ class TestLiners:
         folder.mkdir()
         target = folder / "clip.mp3"
         target.write_bytes(b"old")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         files = {"file": ("clip.mp3", b"new", "audio/mpeg")}
@@ -745,7 +739,7 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         folder.mkdir()
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
@@ -761,7 +755,7 @@ class TestLiners:
         folder.mkdir()
         target = folder / "remove_me.wav"
         target.write_bytes(b"x")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/remove_me.wav")
@@ -775,7 +769,7 @@ class TestLiners:
         folder.mkdir()
         outside = tmp_path / "secret.txt"
         outside.write_bytes(b"safe")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
@@ -1204,7 +1198,7 @@ class TestProfiles:
         folder = tmp_path / "liners"
         folder.mkdir()
         (folder / "a.mp3").write_bytes(b"x")
-        bridge.player._cfg.playback.liners_folder = str(folder)
+        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
         bridge.save_persistent_state = MagicMock()
         monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
         tc = TestClient(create_app(bridge))
@@ -2046,7 +2040,7 @@ class TestServeFunction:
             defined_in="config",
             cfg=SimpleNamespace(
                 index=SimpleNamespace(active_dir=tmp_path / "main"),
-                playback=SimpleNamespace(stereotool_preset="included", liners_folder=None),
+                playback=SimpleNamespace(stereotool_preset="included"),
                 requests=RequestsConfig(enabled=True),
                 player_page=PlayerPageConfig(enabled=True),
             ),

@@ -834,7 +834,8 @@ def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> 
     player.bus = MagicMock()
     player.bus.playing = True
     playback = player._cfg.playback
-    playback.liners_folder = str(tmp_path)
+    player._cfg.index.active_dir = str(tmp_path)
+    (tmp_path / "liners").mkdir()
     playback.liners_enabled = True
     playback.liners_every_n_songs = 1
     playback.liners_every_minutes = None
@@ -842,7 +843,7 @@ def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> 
     playback.liners_random_max_minutes = None
     playback.liners_pick_mode = "sequential"
     playback.liners_duck_db = -9.0
-    sf.write(tmp_path / "station-id.wav", np.full(441, 0.25, np.float32), 44100)
+    sf.write(tmp_path / "liners" / "station-id.wav", np.full(441, 0.25, np.float32), 44100)
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     with TestClient(create_app(bridge, server_audio=True)):
         assert not bridge.stream_mode

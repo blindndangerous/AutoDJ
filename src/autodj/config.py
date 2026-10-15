@@ -446,14 +446,13 @@ class PlaybackConfig(_Section):
     # How a skip ends the playing track when the server mixes; see the
     # class docstring.  Browser playback keeps its own skip.
     skip_style: str = "fade"
-    # Voice liners — DJ-style spoken drops layered over the live mix.
-    # ``liners_folder`` is the source directory (``~`` is expanded; default
-    # ``<index_dir>/<name>/liners``).  The browser evaluates the triggers
+    # Voice liners — DJ-style spoken drops layered over the live mix,
+    # from the registered liner folders and the station's own ``liners``
+    # folder, where uploads go.  The browser evaluates the triggers
     # when it plays the audio, fetching the list from ``GET /api/liners``
     # and each file from ``GET /api/liners/file/<name>``; in the
     # server-mixed modes (--server-audio, --stream) LinerScheduler does.
     liners_enabled: bool = False
-    liners_folder: str | None = None
     liners_every_n_songs: int | None = None
     liners_every_minutes: float | None = None
     liners_random_min_minutes: float | None = None
@@ -566,9 +565,6 @@ class PlaybackConfig(_Section):
             "matched_intro_only_without_liner",
         ):
             setattr(self, name, bool(getattr(self, name)))
-        self.liners_folder = (
-            str(Path(self.liners_folder).expanduser()) if self.liners_folder else None
-        )
         self.liners_every_n_songs = _optional(int, self.liners_every_n_songs)
         self.liners_every_minutes = _optional(float, self.liners_every_minutes)
         self.liners_random_min_minutes = _optional(float, self.liners_random_min_minutes)
@@ -2501,10 +2497,7 @@ def _check_own_folder(slug: str, cfg: AutoDJConfig) -> None:
         ValueError: Naming the setting and the folders.
     """
     state = os.path.normcase(os.path.abspath(Path(cfg.index.active_dir) / "stations" / slug))
-    for setting, value in (
-        ("playback.liners_folder", cfg.playback.liners_folder),
-        ("time_checks.clips_folder", cfg.time_checks.clips_folder),
-    ):
+    for setting, value in (("time_checks.clips_folder", cfg.time_checks.clips_folder),):
         if not value:
             continue
         folder = os.path.normcase(os.path.abspath(value))
