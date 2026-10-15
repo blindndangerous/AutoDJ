@@ -1280,13 +1280,15 @@ def _apply_transition_stereo(
     return stacked[0], stacked[1], stacked[2]
 
 
-# Process-local rotation cursor for ROTATE mode
+# Default cursor for direct calls; stations pass their own index.
 _rotate_cursor = 0
 
 
 def pick_effect(
     mode: TransitionFx,
     rng: np.random.Generator | None = None,
+    *,
+    rotate_index: int | None = None,
 ) -> TransitionFx:
     """Resolve a meta-mode (RANDOM / ROTATE) to a concrete effect.
 
@@ -1297,6 +1299,7 @@ def pick_effect(
     Args:
         mode: A :class:`TransitionFx`.
         rng: Optional numpy RNG for RANDOM (defaults to a fresh instance).
+        rotate_index: Station-owned position for ROTATE, when provided.
 
     Returns:
         A concrete (non-meta) :class:`TransitionFx`.
@@ -1307,8 +1310,10 @@ def pick_effect(
             rng = np.random.default_rng()
         return _REAL_EFFECTS[int(rng.integers(0, len(_REAL_EFFECTS)))]
     if mode == TransitionFx.ROTATE:
-        chosen = _REAL_EFFECTS[_rotate_cursor % len(_REAL_EFFECTS)]
-        _rotate_cursor += 1
+        position = _rotate_cursor if rotate_index is None else rotate_index
+        chosen = _REAL_EFFECTS[position % len(_REAL_EFFECTS)]
+        if rotate_index is None:
+            _rotate_cursor += 1
         return chosen
     if mode == TransitionFx.AUTO:
         return _pick_from(AUTO_CATEGORIES["smooth"], rng)

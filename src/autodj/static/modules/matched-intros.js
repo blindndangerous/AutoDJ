@@ -291,8 +291,11 @@ export function installMatchedIntros({ document: doc = document, request = reque
     body.append("file", file, file.name);
     const mine = generation;
     const epoch = captureAuthenticatedRequestEpoch();
+    // busy holds off another press; no aria-disabled, or NVDA says
+    // "unavailable" on the pressed button (#331).  aria-busy says it is busy.
     busy = true;
-    upload.setAttribute("aria-disabled", "true");
+    upload.classList.add("is-pending");
+    upload.setAttribute("aria-busy", "true");
     say("Uploading the intro.");
     try {
       const made = await request("/api/intros", { method: "POST", body });
@@ -308,7 +311,8 @@ export function installMatchedIntros({ document: doc = document, request = reque
       else say(`Could not add the intro: ${error.message}`, "error");
     } finally {
       busy = false;
-      upload.removeAttribute("aria-disabled");
+      upload.classList.remove("is-pending");
+      upload.removeAttribute("aria-busy");
     }
   }
 

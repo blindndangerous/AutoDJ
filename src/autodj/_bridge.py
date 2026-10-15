@@ -954,6 +954,8 @@ class PlayerBridge:
         """
         state = self.player._state
         state.discovery_enabled = not state.discovery_enabled
+        if refresh := getattr(self.player, "refresh_render_ahead", None):
+            refresh()
         return state.discovery_enabled
 
     # ------------------------------------------------------------------
@@ -1367,9 +1369,8 @@ class PlayerBridge:
         tail when it mixed *upcoming* in (``"none"`` when there was no room
         for an overlap); before a render exists, and in browser mode, it is
         the player's plan for the pair (:meth:`Player.planned_transition`),
-        which a later render of the pair uses too.  Always a concrete
-        effect name, never ``random``, ``rotate`` or ``auto``; ``None``
-        when there is no next track.
+        which a later render of the pair uses too.  Browser rotate returns
+        ``None`` so the browser chooses when the fade actually starts.
         """
         if current is None or upcoming is None:
             return None
@@ -1377,6 +1378,8 @@ class PlayerBridge:
         playing = getattr(player, "_playing_render", None) if self._bus_mode() else None
         if playing is not None and playing.entry is current and playing.next_entry is upcoming:
             return str(playing.transition_fx or "none")
+        if not self._bus_mode() and str(player._cfg.transitions.effect).lower() == "rotate":
+            return None
         picked = getattr(player, "_next_pick", None)
         pick_mode = picked[1] if picked and picked[0] == upcoming.path else ""
         try:
@@ -2390,6 +2393,8 @@ class PlayerBridge:
         p = self.player
         if not name:
             p._preset = None
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
             return
         from autodj.presets import get_preset
 
@@ -2401,6 +2406,9 @@ class PlayerBridge:
                 p._discovery_every = p._preset.discovery_every
         except ValueError:
             pass
+        else:
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
 
     def set_transition(self, effect: str) -> None:
         """Set the transition effect by name.
@@ -2470,10 +2478,16 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
-        if "music_speed_percent" in values and self._bus_mode():
-            # The playing render is immutable. Refresh only the unrendered
-            # lookahead so the new speed starts at the next buffer boundary.
-            player.refresh_render_ahead()
+        picking_changed = any(hasattr(cfg.playback, key) for key in values) or bool(
+            {"pure_shuffle", "anchor_to_seed"} & values.keys()
+        )
+        if (
+            picking_changed
+            and not restoring
+            and (refresh := getattr(player, "refresh_render_ahead", None))
+        ):
+            # The playing render is immutable; refresh its unrendered successor.
+            refresh()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 
@@ -2618,7 +2632,7 @@ class PlayerBridge:
         else:
             self.player._bpm_range = (lo, hi)
 
-    def set_discovery_every(self, every: int | None) -> None:
+    def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
         """Set the discovery rate; null disables.
 
         Configuring a rate also arms the runtime toggle.  Without that,
@@ -2631,3 +2645,5 @@ class PlayerBridge:
         else:
             self.player._discovery_every = int(every)
             self.player._state.discovery_enabled = True
+        if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
+            refresh()

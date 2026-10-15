@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installSearch } from "../../src/autodj/static/modules/search.js";
+import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
 
 function jsonResponse(body, status = 200) {
   return new globalThis.Response(JSON.stringify(body), {
@@ -185,6 +186,28 @@ describe("search feedback is visible", () => {
       "Could not play Gone Track next. That track is no longer in the library.",
     ));
     vi.unstubAllGlobals();
+  });
+});
+
+describe("an add answered after a station switch (#70)", () => {
+  it("says it was done on the station left, not that it could not be done", async () => {
+    const els = setup();
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    els.searchResults.innerHTML = `<tr><td><span class="result-name">Some Track</span></td>
+      <td><button class="result-btn" data-path="/m/some.mp3" data-now="false">Add to queue</button></td></tr>`;
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    try {
+      els.searchResults.querySelector(".result-btn").click();
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      selectStation("night");
+      answer(jsonResponse({ ok: true }));
+      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+        .toBe("Done on Main, the station this page has just left."));
+    } finally {
+      selectStation("default");
+      vi.unstubAllGlobals();
+    }
   });
 });
 

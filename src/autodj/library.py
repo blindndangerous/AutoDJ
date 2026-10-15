@@ -983,8 +983,11 @@ class LibraryManager:
         """Read *path*'s tags, cue points and analysis as needed; ``False`` on failure."""
         try:
             old = self.catalog.record_for_path(path)
-            unchanged = old is not None and self._same_identity(old, path)
-            if override_tags and unchanged and old is not None:
+            unchanged = old is not None and old["kind"] == kind and self._same_identity(old, path)
+            mtime_changed = bool(
+                unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
+            )
+            if (override_tags or mtime_changed) and unchanged:
                 from autodj.audio_meta import read_file_tags
 
                 tags = read_file_tags(path)
@@ -1002,8 +1005,7 @@ class LibraryManager:
                     embedded["year"] = tags.year
                 if np.isfinite(tags.bpm) and tags.bpm > 0:
                     embedded["bpm"] = tags.bpm
-                if embedded:
-                    self.catalog.retag(path, embedded, remember_manual=False)
+                self.catalog.retag(path, embedded, remember_manual=False)
             needs_liner_segue = bool(
                 kind == "liner"
                 and old is not None
@@ -1024,7 +1026,12 @@ class LibraryManager:
                 and np.isfinite(old_end)
                 and 0 <= old_start < old_end <= old["length"]
             )
-            if valid_existing_points and needs_liner_segue and old is not None:
+            if (
+                valid_existing_points
+                and needs_liner_segue
+                and old is not None
+                and not mtime_changed
+            ):
                 _, liner_points = analyze_basic(
                     path, kind="liner", max_seconds=self._max_analysis_seconds()
                 )
@@ -1032,7 +1039,7 @@ class LibraryManager:
                 if segue is not None:
                     segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
                 self.catalog.set_points(path, {"segue": segue}, source="analysis")
-            elif not valid_existing_points:
+            elif not valid_existing_points and not mtime_changed:
                 # One decode serves the cue points and the beats and cues.
                 dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
                 audio = load_for_analysis(path, self._max_analysis_seconds()) if dj else None
@@ -1374,10 +1381,21 @@ def analyse_library(
                 for source in manager.catalog.sources_for_path(entry.path, "music")
             ) or manager.catalog.sources_for_path(entry.path, "liner"):
                 return
-            manager.catalog.put_entry(entry)
-            manager.catalog.set_vector(entry.path, vectors[-1])
+            stored = manager.catalog.store_analysis(
+                entry.path,
+                entry.size,
+                entry.fingerprint,
+                {
+                    "energy": entry.energy,
+                    "key": entry.key,
+                    "mode": entry.mode,
+                    "bpm": entry.bpm,
+                    "tempo_confidence": entry.tempo_confidence,
+                },
+                vectors[-1],
+            )
             queue.release_path(SERVER_HOLDER, _path(entry.path))
-            completed += 1
+            completed += int(stored)
 
         if tracks:
             with report:

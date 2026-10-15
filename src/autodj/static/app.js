@@ -414,15 +414,13 @@ function clearStationViews() {
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
   cartWallControls?.clear();
+  timeCheckControls?.clear();
   // Signing out or switching stations stops a recording and lets the
   // microphone go.
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
-  _linerEls.lnFileList.replaceChildren();
-  _linerEls.lnFolderDisplay.textContent = "";
-  _linerEls.lnStatus.textContent = "";
-  _linerEls.lnBrowseStatus.textContent = "";
+  linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
   _lastWhyKey = "";
@@ -1768,16 +1766,25 @@ function refreshStationPanels() {
 async function loadStation({ announce = true } = {}) {
   const station = currentStation();
   let state = null;
+  let failure = null;
   try {
     state = await requestStationState();
   } catch (errorValue) {
     if (station !== currentStation()) return null;
-    reportBackgroundRequestError(errorValue);
+    failure = errorValue;
+    // Said below with the station's name when the switch is announced.
+    if (!announce) reportBackgroundRequestError(errorValue);
   }
   if (station !== currentStation()) return null;
   if (state) {
     setOffAir(false);
     applyState(state);
+    if (!_ws) connectWS({ quiet: true });
+  } else if (failure) {
+    // Only a 409 says the station is stopped.  Any other failure is
+    // not "Off air": the socket brings the state when it opens, and its
+    // retries cover a server that cannot be reached.
+    setOffAir(false);
     if (!_ws) connectWS({ quiet: true });
   } else {
     stationWentOffAir();
@@ -1787,23 +1794,38 @@ async function loadStation({ announce = true } = {}) {
     // Off air is said by the connection pill; this names the station.
     announceStatus(document.getElementById("sr-status"), state
       ? controllingText(stationEntry(), state.current_track ? fmtTrack(state.current_track) : null)
-      : `Now controlling ${stationName()}.`,
-    { dwellMs: 6000, force: true });
+      : failure
+        ? `Now controlling ${stationName()}. Its state could not be loaded: ${failure.message}`
+        : `Now controlling ${stationName()}.`,
+    { dwellMs: 6000, force: true, tone: failure ? "error" : "info" });
   }
   return state;
 }
 
 // The page's browser decks play the station they started on; the server
 // would never tell them about another.  Leaving the station stops them,
-// so the page asks first.
-async function confirmLeavingDecks(name) {
-  if (!(_lastBrowserPlayback && playbackEnabled)) return true;
+// and drops clockwheel changes not saved and a voice track not booked,
+// so the page asks first: once, naming everything that would go.
+async function confirmLeavingStation(name) {
+  const decks = Boolean(_lastBrowserPlayback && playbackEnabled);
+  const unsaved = [
+    clockwheelPanelControls?.hasUnsavedWork() && "the clockwheel changes not saved yet",
+    voiceTrackerControls?.hasUnsavedWork() && "the voice track not booked yet",
+  ].filter(Boolean);
+  if (!decks && !unsaved.length) return true;
+  const lost = unsaved.length
+    ? `${decks ? "It also discards" : "Switching discards"} ${unsaved.join(" and ")}.`
+    : "";
   const ok = await confirmAction(document, {
     title: `Switch to ${name}?`,
-    message: `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
-    confirmLabel: "Switch and stop",
+    message: [
+      decks && `This page is playing ${stationName()} itself. Switching stops that music on this page; the station goes on for everyone else.`,
+      lost,
+    ].filter(Boolean).join(" "),
+    confirmLabel: unsaved.length ? "Switch and discard" : "Switch and stop",
   });
   if (!ok) return false;
+  if (!decks) return true;
   stopAllDecks();
   stopActiveLiners();
   resetTransitionCaches();
@@ -1812,10 +1834,21 @@ async function confirmLeavingDecks(name) {
 }
 
 async function switchStation(slug) {
-  if (slug === currentStation() || !authenticatedActivityActive) return;
+  if (slug === currentStation()) return;
+  if (!authenticatedActivityActive) {
+    // While the link is down the page cannot load another station; it
+    // says so, or choosing one would seem to do nothing.  A session that
+    // ended has the pairing dialog open instead.
+    if (transportDown && !authExpiryHandled) {
+      announceStatus(document.getElementById("sr-status"),
+        "AutoDJ is reconnecting. Choose the station again once it is back.",
+        { dwellMs: 6000, force: true, tone: "error" });
+    }
+    return;
+  }
   const entry = knownStations().find((item) => item.slug === slug);
   if (!entry) return;
-  if (!await confirmLeavingDecks(entry.name)) return;
+  if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   selectStation(slug);
   rememberStationInAddress(slug);
@@ -2787,6 +2820,9 @@ async function fetchHistory(page, { announce = false } = {}) {
       signal: request.signal,
     });
     if (request.signal.aborted) return;
+    // The server keeps a page past the last to the last page; Previous
+    // and Next step from the page it sent.
+    if (Number.isInteger(data.page) && data.page > 0) _histPage = data.page;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
@@ -2863,10 +2899,15 @@ async function fetchHistory(page, { announce = false } = {}) {
         { dwellMs: 6000, force: true, tone: "error" });
       return;
     }
+    // Focus on a row or a pager button about to be hidden would fall to
+    // the page body (WCAG 2.4.3); it goes to Refresh history, which tries
+    // the same page again.
+    const focusHidden = [tbody, pag].some((element) => element?.contains(document.activeElement));
     if (tbody) tbody.replaceChildren();
     historyNavigation.refresh();
     if (table) table.setAttribute("hidden", "");
     if (pag) pag.setAttribute("hidden", "");
+    if (focusHidden) document.getElementById("hist-refresh")?.focus();
     if (empty) {
       empty.textContent = `Could not load history: ${err.message}`;
       empty.removeAttribute("hidden");

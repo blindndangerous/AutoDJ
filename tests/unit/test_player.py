@@ -1295,6 +1295,16 @@ class TestRenderTrackFeatures:
         rendered = self._render(self._make_player_with_audio(transition_effect="echo_out"))
         assert rendered.transition_fx == "echo_out"
 
+    def test_rotate_cursor_advances_only_when_pair_renders(self) -> None:
+        player = self._make_player_with_audio(transition_effect="rotate")
+        current, upcoming = player._sim.entries[:2]
+        first = player.planned_transition(current, upcoming)
+        assert player.planned_transition(current, upcoming) == first
+        assert player.__dict__.get("_rotate_cursor", 0) == 0
+        rendered = self._render(player)
+        assert rendered.transition_fx == first
+        assert player._rotate_cursor == 1
+
     def test_transition_fx_long_tail_extends(self) -> None:
         """Long-tail effects (tape_stop) extend tail length to >= 4s."""
         player = self._make_player_with_audio(transition_effect="tape_stop")
@@ -2138,6 +2148,8 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2171,6 +2183,8 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2205,6 +2219,8 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     p._choose_next = lambda _current, _context: (MagicMock(), "similarity")
     p._last_pick_mode = "similarity"
     attempts = []

@@ -282,6 +282,114 @@ describe("time checks panel", () => {
     expect(await liveText()).toBe("Time check settings saved.");
   });
 
+  it("keeps the newest load when an older reply lands late", async () => {
+    const base = server();
+    const replies = [];
+    const request = vi.fn((url, options = {}) => (options.method
+      ? base(url, options)
+      : new Promise((resolve) => { replies.push(resolve); })));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    const newer = controls.refresh();
+    replies[1]({ ...(await base("/api/time-checks")), timezone: "Europe/London" });
+    await newer;
+    const shown = byId("tc-clips-status").textContent;
+    expect(shown).toContain("Europe/London");
+    replies[0]({ ...(await base("/api/time-checks")), timezone: "America/New_York" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(byId("tc-clips-status").textContent).toBe(shown);
+  });
+
+  it("empties on a station switch, and a reply for the old station writes nothing", async () => {
+    const base = server();
+    let late;
+    const request = vi.fn((url, options = {}) => (options.method || !late
+      ? base(url, options)
+      : new Promise((resolve) => { late(resolve); })));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    expect(byId("tc-pack-list").querySelectorAll("input")).toHaveLength(2);
+    let answer;
+    late = (resolve) => { answer = resolve; };
+    const old = controls.refresh();
+    controls.clear();
+    expect(byId("tc-clips-status").textContent).toBe("");
+    expect(byId("tc-status").textContent).toBe("");
+    expect(byId("tc-pack-list").children).toHaveLength(0);
+    expect(byId("tc-packs-empty").hidden).toBe(true);
+    answer(await base("/api/time-checks"));
+    await old;
+    expect(byId("tc-clips-status").textContent).toBe("");
+  });
+
+  it("says nothing for a failed load that was for the station just left (#70)", async () => {
+    const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    let reply;
+    const fetchImpl = vi.fn(() => new Promise((resolve) => { reply = resolve; }));
+    vi.stubGlobal("fetch", fetchImpl);
+    try {
+      installTimeChecks({ interval: () => {} });
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      selectStation("night");
+      reply(new globalThis.Response("{}", { status: 500, headers: { "Content-Type": "application/json" } }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(byId("tc-clips-status").textContent).toBe("");
+      expect(byId("tc-status").textContent).toBe("");
+    } finally {
+      selectStation("default");
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("says what a save, a test or new dates answered after a switch did, leaving the form alone (#70)", async () => {
+    const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    const json = (body, status = 200) => new globalThis.Response(JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } });
+    const loaded = await server()("/api/time-checks");
+    let reply = null;
+    const fetchImpl = vi.fn((url, options = {}) => (options.method
+      ? new Promise((resolve) => { reply = resolve; })
+      : Promise.resolve(json(loaded))));
+    vi.stubGlobal("fetch", fetchImpl);
+    // Each action is sent for Main, the page switches to Night, and the
+    // reply lands; the next one goes the other way.
+    const answeredAfterSwitch = async (press, body, status, to) => {
+      reply = null;
+      press();
+      await vi.waitFor(() => expect(reply).toBeTypeOf("function"));
+      selectStation(to);
+      reply(json(body, status));
+      return liveText();
+    };
+    try {
+      const controls = installTimeChecks({ interval: () => {}, testOnServer: () => true });
+      await controls.refresh();
+      const enabled = byId("tc-enabled");
+      enabled.checked = false;
+      expect(await answeredAfterSwitch(() => enabled.dispatchEvent(new Event("change")),
+        { ...loaded, enabled: false }, 200, "night"))
+        .toBe("Done on Main, the station this page has just left.");
+      // Not put back to the old station's saved value.
+      expect(enabled.checked).toBe(false);
+      byId("tc-status").textContent = "";
+
+      expect(await answeredAfterSwitch(() => byId("tc-test").click(), { detail: "No" }, 409, "default"))
+        .toBe("Night did not do that; it is the station this page has just left.");
+      byId("tc-status").textContent = "";
+
+      byId("tc-dates-pack").value = "Studio";
+      byId("tc-not-before").value = "2026-12-01";
+      expect(await answeredAfterSwitch(() => byId("tc-dates-save").click(),
+        { detail: "boom", field: "not_before" }, 500, "night"))
+        .toBe("Main may not have done that; it is the station this page has just left.");
+      expect(byId("tc-not-before").hasAttribute("aria-invalid")).toBe(false);
+    } finally {
+      selectStation("default");
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("says when minutes without a clip are skipped", async () => {
     const controls = installTimeChecks({
       request: server({ tts_available: false, missing_minutes: 1440 }), interval: () => {} });

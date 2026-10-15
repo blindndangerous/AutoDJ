@@ -2127,7 +2127,7 @@ for any tag you changed (an ISRC, in most beets libraries), beets is left exactl
 
 If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
-analysed again.
+analysed again. Rescans also detect external tag edits that fit inside existing file padding.
 
 In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
 that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
@@ -2138,9 +2138,11 @@ that AutoDJ is not allowed to change the file. Remove `:ro` from the music volum
 When a file moves between registered folders in the same catalog, a scan can recognize it by its
 size and a fingerprint of 64 KiB from the middle of the file. The existing vector, metadata,
 analysis and cues stay with that track. A track is re-pathed only when exactly one missing file and
-exactly one new file match. A copy, two identical files, or a file whose bytes changed (retagged)
+exactly one new file match. A copy, two identical files, or a file whose size or fingerprint changed
 is handled as a changed or new song. Register the destination folder before rescanning. This does
-not make a copied catalog portable to paths on another machine.
+not make a copied catalog portable to paths on another machine. A rescan also checks modification
+time, so an in-place tag edit is read even if size and fingerprint stay the same.
+The first rescan after upgrading re-reads existing files once to record their modification times.
 
 Use `autodj migrate-index` to move a published index and supported old state into the current
 `library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
@@ -3376,7 +3378,8 @@ Backtiming goes to each fixed point in the span:
   it, whether that song is fixed or predicted, and how far it runs past the restart. Liners and
   breaks that run straight into a song start its song change.
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
-  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+  late it runs. A hard event runs on time; the preview reports a cut only when its action skips
+  the playing song. Ad breaks and stream changes leave the song playing.
 
 The card shows how many rows are fixed and predicted, such as "3 fixed items, 20 predicted,
 through 13:40.", with the backtiming lines under it. **Refresh preview** and **Shift+H** (from
@@ -3789,10 +3792,11 @@ version does not have (one a newer AutoDJ added) never runs and is not listed, b
 and written back exactly as it was with every save, so going back and forth between versions
 loses no event; it counts toward the 100 events. An event for an action this version has, but
 with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
-before. Events are not replayed after downtime: a one-time event whose
-time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
-two minutes late (the computer slept) is recorded as missed instead of running. The schedule
-holds at most 100 events.
+before. Events due before startup are not replayed: a one-time event whose time passed while
+AutoDJ was stopped is disabled and recorded as missed, including one due exactly at startup.
+After a stall, each event gets one missed record that counts occurrences more than two minutes
+late. The latest occurrence still within that window runs once. The schedule holds at most 100
+events.
 
 ## Clockwheels
 

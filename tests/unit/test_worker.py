@@ -15,7 +15,7 @@ from click.testing import CliRunner
 
 from autodj.analysis_queue import SERVER_HOLDER, WORKER_LEASE_SECONDS, AnalysisQueue
 from autodj.cli import cli
-from autodj.indexer import EMBEDDING_DIM, FEATURE_DIM, analyse_file
+from autodj.indexer import EMBEDDING_DIM, FEATURE_DIM, analyse_file, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
 from autodj.worker import (
     ApiError,
@@ -642,6 +642,7 @@ def _gated_embed(decisions):
             if not decision:
                 continue
             entries.append(make_entry(track.path))
+            entries[-1].size, entries[-1].fingerprint = file_fingerprint(track.path)
             vector = np.zeros(FEATURE_DIM, dtype=np.float32)
             vector[0] = 1
             vectors.append(vector)

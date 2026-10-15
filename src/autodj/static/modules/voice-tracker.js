@@ -819,6 +819,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   return {
     refresh,
     toggle,
+    // A recording on the go or a take not booked yet: a station switch
+    // drops either, so the page asks first.
+    hasUnsavedWork: () => Boolean(session || take),
     clear() {
       requestEpoch += 1;
       generation += 1;

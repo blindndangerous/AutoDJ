@@ -461,11 +461,14 @@ def test_actions_register_before_start_only(tmp_path: Path) -> None:
         rig.schedule.register(Action("cart", "Play a cart", rig.handle))
 
 
-def test_missed_once_event_is_logged_and_disabled_not_replayed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("restart_at", ["09:00", "10:00"])
+def test_missed_once_event_is_logged_and_disabled_not_replayed(
+    tmp_path: Path, restart_at: str
+) -> None:
     rig = Rig(tmp_path / "schedule.json", now="2026-10-11 08:00")
     rig.schedule.start()
     item = rig.add(repeat="once", date="2026-10-11", time="09:00")
-    later = Rig(tmp_path / "schedule.json", now="2026-10-11 10:00")
+    later = Rig(tmp_path / "schedule.json", now=f"2026-10-11 {restart_at}")
     later.schedule.start()
     assert later.schedule.events[item.id].enabled is False
     assert [(run.result, run.message) for run in later.schedule.runs] == [
@@ -477,13 +480,110 @@ def test_missed_once_event_is_logged_and_disabled_not_replayed(tmp_path: Path) -
     assert saved["events"][0]["enabled"] is False
 
 
-def test_a_late_tick_records_a_miss_instead_of_running(tmp_path: Path) -> None:
+@pytest.mark.parametrize("repeat", ["daily", "once"])
+def test_a_late_tick_records_a_miss_instead_of_running(tmp_path: Path, repeat: str) -> None:
     rig = Rig(tmp_path / "schedule.json")
     rig.schedule.start()
-    rig.add(time="12:01")
+    fields: dict[str, Any] = {"repeat": repeat, "time": "12:01"}
+    if repeat == "once":
+        fields["date"] = "2026-10-11"
+    event = rig.add(**fields)
     rig.tick_at("2026-10-11 12:30")  # the computer slept
     assert rig.calls == []
     assert rig.schedule.runs[-1].result == "missed"
+    assert event.enabled is (repeat != "once")
+
+
+@pytest.mark.parametrize(("at", "missed"), [("12:04", 1), ("12:05", 2)])
+def test_interval_stall_summarizes_old_runs_and_runs_latest_once(
+    tmp_path: Path, at: str, missed: int
+) -> None:
+    rig = Rig(tmp_path / "schedule.json")
+    rig.schedule.start()
+    rig.add(repeat="interval", interval_minutes=1, timing="hard")
+
+    rig.tick_at(f"2026-10-11 {at}")
+    rig.tick_at(f"2026-10-11 {at}:01")
+
+    # A hard event runs its action and skips the playing song, once.
+    assert rig.calls == ["action", "skip"]
+    assert [run.result for run in rig.schedule.runs] == ["missed", "ok"]
+    assert rig.schedule.runs[0].message == (
+        f"Skipped {missed} occurrence{'s' if missed != 1 else ''} "
+        "while the computer slept or stalled"
+    )
+
+
+def test_day_long_interval_stall_keeps_history_and_saves_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "schedule.json"
+    rig = Rig(path)
+    rig.schedule.start()
+    event = rig.add(repeat="interval", interval_minutes=1, timing="hard")
+    rig.schedule._append_run(event, "ok", "Earlier run")
+    rig.schedule.save()
+    writes: list[str] = []
+    real_write = rig.schedule._write
+
+    def recording_write(text: str) -> None:
+        writes.append(text)
+        real_write(text)
+
+    monkeypatch.setattr(rig.schedule, "_write", recording_write)
+    rig.tick_at("2026-10-12 12:00")
+
+    assert rig.calls == ["action", "skip"]
+    assert [run.result for run in rig.schedule.runs] == ["ok", "missed", "ok"]
+    assert rig.schedule.runs[0].message == "Earlier run"
+    assert rig.schedule.runs[1].message == (
+        "Skipped 1437 occurrences while the computer slept or stalled"
+    )
+    assert len(writes) == 1
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert [run["result"] for run in saved["runs"]] == ["ok", "missed", "ok"]
+
+
+@pytest.mark.parametrize(
+    ("start", "now", "timezone", "rule", "skipped"),
+    [
+        (
+            "2026-10-10 21:00",
+            "2026-10-11 02:00",
+            "UTC",
+            {"interval_minutes": 60, "window_start": "22:00", "window_end": "02:00"},
+            4,
+        ),
+        (
+            "2026-03-08 08:30",
+            "2026-03-08 10:00",
+            "America/Denver",
+            {"interval_minutes": 30},
+            2,
+        ),
+        (
+            "2011-12-29 09:59",
+            "2011-12-30 10:04",
+            "Pacific/Apia",
+            {"interval_minutes": 1},
+            1442,
+        ),
+    ],
+)
+def test_interval_stall_counts_overnight_and_clock_change_occurrences(
+    tmp_path: Path, start: str, now: str, timezone: str, rule: dict[str, Any], skipped: int
+) -> None:
+    rig = Rig(tmp_path / "schedule.json", now=start, timezone=timezone)
+    rig.schedule.start()
+    rig.add(repeat="interval", timing="hard", **rule)
+
+    rig.tick_at(now)
+
+    assert rig.calls == ["action", "skip"]
+    assert [run.result for run in rig.schedule.runs] == ["missed", "ok"]
+    assert rig.schedule.runs[0].message == (
+        f"Skipped {skipped} occurrences while the computer slept or stalled"
+    )
 
 
 def test_a_clock_moving_back_does_not_repeat_events(tmp_path: Path) -> None:
@@ -513,6 +613,34 @@ def test_soft_event_waits_for_the_song_and_runs_once(tmp_path: Path) -> None:
     assert rig.schedule.pending == []
     asyncio.run(song_ends())
     assert rig.calls == ["action"]
+
+
+def test_waiting_one_time_soft_event_is_recorded_missed_after_restart(tmp_path: Path) -> None:
+    path = tmp_path / "schedule.json"
+    first = Rig(path, now="2026-10-11 11:59", playing=True)
+    first.schedule.start()
+    event = first.add(repeat="once", date="2026-10-11", time="12:00")
+    first.tick_at("2026-10-11 12:00")
+    assert first.schedule.pending == [event.id]
+    assert first.schedule.events[event.id].enabled
+
+    restarted = Rig(path, now="2026-10-11 12:01", playing=True)
+    restarted.schedule.start()
+    assert not restarted.schedule.events[event.id].enabled
+    assert [(run.event_id, run.result) for run in restarted.schedule.runs] == [(event.id, "missed")]
+
+
+def test_waiting_one_time_soft_event_disables_when_it_runs(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", now="2026-10-11 11:59", playing=True)
+    rig.schedule.start()
+    event = rig.add(repeat="once", date="2026-10-11", time="12:00")
+    rig.tick_at("2026-10-11 12:00")
+    rig.playing = False
+    rig.tick_at("2026-10-11 12:01")
+
+    assert rig.calls == ["action"]
+    assert not rig.schedule.events[event.id].enabled
+    assert [run.result for run in rig.schedule.runs] == ["ok"]
 
 
 def test_soft_event_runs_when_nothing_is_playing(tmp_path: Path) -> None:

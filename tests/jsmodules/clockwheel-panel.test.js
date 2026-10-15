@@ -1054,6 +1054,22 @@ describe("clockwheel editor", () => {
   });
 });
 
+describe("unsaved work, for a station switch", () => {
+  it("reports changes not saved, until they are saved or the station's data is cleared", async () => {
+    const server = await open(fakeServer());
+    expect(controls.hasUnsavedWork()).toBe(false);
+    rowButton(0, "move-down").click();
+    expect(controls.hasUnsavedWork()).toBe(true);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "PUT")).toBe(true));
+    await vi.waitFor(() => expect(controls.hasUnsavedWork()).toBe(false));
+    rowButton(0, "move-down").click();
+    expect(controls.hasUnsavedWork()).toBe(true);
+    controls.clearProtectedData();
+    expect(controls.hasUnsavedWork()).toBe(false);
+  });
+});
+
 describe("clockwheel step conditions, for screen readers", () => {
   const conditions = () => [...byId("clock-step-conditions").children];
   const startMusicStep = () => {

@@ -74,7 +74,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
   const legend = el("clock-step-legend");
   if (!panel || !list || !steps || !nameInput || !resync || !status || !typeSelect || !addButton) {
-    return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
+    return { refresh: async () => {}, clearProtectedData() {}, hasUnsavedWork: () => false, resume() {}, destroy() {} };
   }
 
   const empty = () => ({
@@ -1138,6 +1138,8 @@ export function installClockwheelPanel({ document: doc = document, request = req
   return {
     refresh,
     clearProtectedData,
+    // A station switch drops the open clockwheel, so the page asks first.
+    hasUnsavedWork: () => Boolean(clock && dirty),
     resume() { suspended = false; updatePolling(); },
     destroy() {
       clearProtectedData();

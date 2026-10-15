@@ -280,6 +280,17 @@ def test_playlist_lines_match_library_tracks_and_report_the_missing(tmp_path):
     assert summary(gone) == gone.error
 
 
+def test_file_url_decodes_percent_escapes_once(tmp_path):
+    folder = tmp_path / "playlists"
+    folder.mkdir()
+    track = song(tmp_path / "music" / "50%20off.flac")
+    (folder / "A.m3u8").write_text(Path(track.path).as_uri(), encoding="utf-8")
+    [result] = resolve_all(
+        [playlist("A", "A.m3u8")], [track], beets=None, music_dir=None, folder=folder
+    )
+    assert result.paths == {track.path}
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows paths fold case")
 def test_playlist_paths_match_in_any_letter_case_on_windows(tmp_path):
     folder = tmp_path / "playlists"
