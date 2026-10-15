@@ -16,7 +16,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj import stereotool_setup as setup
-from autodj.config import DEFAULT_STEREOTOOL_PATH
 from autodj.server import PlayerBridge, create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -31,8 +30,6 @@ def _client(tmp_path: Path, *, token: str | None = None) -> TestClient:
     cfg.index.index_dir = tmp_path
     cfg.index.active_dir = tmp_path / "main"
     cfg.index.active_dir.mkdir()
-    cfg.playback.stereotool_path = DEFAULT_STEREOTOOL_PATH
-    cfg.playback.stereotool_license_file = ""
     if token is not None:
         cfg.server.access_token = token
     return TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
@@ -41,7 +38,6 @@ def _client(tmp_path: Path, *, token: str | None = None) -> TestClient:
 @pytest.fixture(autouse=True)
 def _no_environment_licence(monkeypatch) -> None:
     monkeypatch.delenv(setup.LICENSE_ENV, raising=False)
-    monkeypatch.delenv(setup.LICENSE_FILE_ENV, raising=False)
 
 
 def _everything_said(response, caplog) -> str:
@@ -53,7 +49,6 @@ def test_status_says_not_installed_and_no_licence(tmp_path: Path) -> None:
     body = _client(tmp_path).get("/api/stereo-tool").json()
     assert body["installed"] is False
     assert body["version"] is None
-    assert body["location"] == "default"
     assert body["license"] == {"in_use": None, "install": None, "station": None, "problem": None}
     assert body["several_stations"] is False
     assert body["terms_url"] == "https://www.thimeo.com/terms-and-conditions/"
@@ -137,21 +132,6 @@ def test_a_licence_from_the_environment_cannot_be_changed_here(tmp_path: Path, m
     # A station may still have its own.
     own = client.put("/api/stereo-tool/license", json={"key": "OTHER-KEY-1", "scope": "station"})
     assert own.json()["license"]["in_use"] == "station"
-
-
-def test_a_station_key_file_in_the_configuration_cannot_be_changed_here(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    key_file = tmp_path / "night.key"
-    key_file.write_text(KEY)
-    client.app.state.stations.default.bridge.player._cfg.playback.stereotool_license_file = str(
-        key_file
-    )
-    assert client.get("/api/stereo-tool").json()["license"]["in_use"] == "station-config"
-    refused = client.put(
-        "/api/stereo-tool/license", json={"key": "OTHER-KEY-1", "scope": "station"}
-    )
-    assert refused.status_code == 409
-    assert "stereotool_license_file" in refused.json()["detail"]
 
 
 def test_download_needs_the_terms_accepted(tmp_path: Path, monkeypatch) -> None:

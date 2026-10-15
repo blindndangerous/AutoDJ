@@ -1036,7 +1036,7 @@ against. The page never uploads a file: an upload route would let anyone who can
 run any code on the server; the fixed download cannot. The library lives on the writable index
 volume (`/index` in the container), so anyone who can write the index folder can replace the code
 the helper loads. That is the same trust AutoDJ already gives the index folder and the
-configuration (which names `stereotool_path`). No other route writes there: preset uploads go to
+configuration. No other route writes there: preset uploads go to
 `stereo-tool-presets`, restore writes only its listed folders, and backups leave `tools/` out.
 
 **Helper process.** The server never loads Thimeo's library itself. Each station that uses Stereo
@@ -1068,10 +1068,8 @@ spaces. They are stored with `write_private_file`, the same as relay passwords: 
 0600 on POSIX and a protected access list for the current user only on Windows, in
 `<index_dir>/.stereo-tool-license` and `<station folder>/.stereo-tool-license`. Backups name their
 files explicitly and include neither, and restore never writes them. The environment
-(`AUTODJ_STEREOTOOL_LICENSE_KEY`, or a file named by `AUTODJ_STEREOTOOL_LICENSE_FILE`) and a
-station's `[playback] stereotool_license_file` override the saved key and are read-only in the
-page. A problem with a configured key is logged once, naming the setting, never the key or the
-file's contents.
+(`AUTODJ_STEREOTOOL_LICENSE_KEY`) overrides the key saved for every station and is read-only in
+the page. A problem with a key is logged once, never the key or the file's contents.
 
 The key reaches the library over the helper's stdin, in a small header before the audio, and the
 buffers that held it are zeroed once it is written (in the server) and once `stereoTool_Create3`

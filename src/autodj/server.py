@@ -2602,9 +2602,7 @@ def _attach_master(player: Any, cfg: AutoDJConfig) -> None:
 
     player._continuous_master = ContinuousMaster(
         mode=processing_mode,
-        stereotool_path=lambda: stereotool_setup.resolve_path(
-            cfg.playback.stereotool_path, cfg.index.index_dir
-        ),
+        stereotool_path=lambda: stereotool_setup.library_path(cfg.index.index_dir),
         preset=lambda: preset_path(
             cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
         ),
@@ -2613,10 +2611,8 @@ def _attach_master(player: Any, cfg: AutoDJConfig) -> None:
         stereotool_license=lambda: stereotool_setup.license_key(
             index_dir=cfg.index.index_dir,
             state_dir=paths.state_dir,
-            configured_file=cfg.playback.stereotool_license_file,
         ),
         setup_generation=lambda: stereotool_setup.generation(paths.state_dir),
-        stereotool_missing=lambda: stereotool_setup.missing_message(cfg.playback.stereotool_path),
         library_present=stereotool_setup.library_present,
     )
     player.bus.set_master(

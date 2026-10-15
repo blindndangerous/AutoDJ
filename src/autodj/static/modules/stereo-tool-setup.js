@@ -30,13 +30,7 @@ import { onStationChange } from "./stations.js";
 
 export function installText(data) {
   if (!data) return "Checking whether Stereo Tool is installed.";
-  const version = data.version ? ` ${data.version}` : "";
   const busy = data.download?.busy ? " A download is running." : "";
-  if (data.location === "configured") {
-    return data.installed
-      ? `This station uses the Stereo Tool${version} library set in the server configuration. Download Stereo Tool installs a copy for the stations without that setting.${busy}`
-      : `This station is set to use a Stereo Tool library named in the server configuration, and it is not there. Check stereotool_path in the configuration.${busy}`;
-  }
   if (data.installed) {
     return data.version
       ? `Stereo Tool ${data.version} is installed.${busy}`
@@ -65,8 +59,6 @@ function sourceText(data) {
   const unlicensed = "Stereo Tool runs unlicensed, with the limits of its free version.";
   if (license.problem) return `No licence. ${license.problem} ${unlicensed}`;
   switch (license.in_use) {
-    case "station-config":
-      return "Licence set for this station, from a key file named in the server configuration.";
     case "station":
       return "Licence set for this station only.";
     case "environment":
@@ -138,7 +130,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
   function render(data) {
     current = data;
     installStatus.textContent = installText(data);
-    download.textContent = data.installed && data.location !== "configured"
+    download.textContent = data.installed
       ? "Update Stereo Tool" : "Download Stereo Tool";
     licenseStatus.textContent = licenseText(data);
     const several = Boolean(data.several_stations);
@@ -268,13 +260,13 @@ export function installStereoToolSetup({ document: doc = document, request = req
     const license = current?.license || {};
     const inUse = license.in_use;
     // The key in use if it is a saved one; otherwise a saved key for
-    // every station, even while the configuration's key is used instead.
+    // every station.
     let scope = null;
     if (inUse === "station") scope = "station";
     else if (license.install === "saved") scope = "all";
     if (!scope) {
-      if (inUse === "station-config" || inUse === "environment") {
-        speak("This licence is set on the server, in its configuration or environment, so it cannot be cleared here.", true);
+      if (inUse === "environment") {
+        speak("This licence is set in the server's environment, so it cannot be cleared here.", true);
       } else {
         speak("There is no saved licence to clear.");
       }

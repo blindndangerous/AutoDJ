@@ -86,13 +86,12 @@ def status(station: StationRuntime, several: bool) -> dict[str, Any]:
     licence = setup.license_state(
         index_dir=cfg.index.index_dir,
         state_dir=station.paths.state_dir,
-        configured_file=cfg.playback.stereotool_license_file,
     )
     running = _running(station)
     licensed = (running or {}).get("licensed")
     unlicensed = (running or {}).get("unlicensed")
     return {
-        **setup.program_status(cfg.playback.stereotool_path, cfg.index.index_dir, running=running),
+        **setup.program_status(cfg.index.index_dir, running=running),
         "license": licence.public(),
         # Stereo Tool's own verdict on the current key once audio has passed;
         # null until the Stereo Tool started with this key has said.
@@ -112,23 +111,17 @@ def _license_path(station: StationRuntime, scope: Scope) -> Path:
     """The file the page may change for *scope*.
 
     Raises:
-        HTTPException: 409 when the configuration or environment sets that licence.
+        HTTPException: 409 when the environment sets the licence for every station.
     """
     cfg = station.bridge.player._cfg
     if scope == "station":
-        if cfg.playback.stereotool_license_file:
-            raise HTTPException(
-                status_code=409,
-                detail="This station's licence comes from the licence file named in the server "
-                "configuration (stereotool_license_file); change it there.",
-            )
         return setup.station_license_path(station.paths.state_dir)
     state = setup.license_state(index_dir=cfg.index.index_dir, state_dir=station.paths.state_dir)
     if state.install == "environment":
         raise HTTPException(
             status_code=409,
-            detail=f"The licence for every station comes from {setup.LICENSE_ENV} or "
-            f"{setup.LICENSE_FILE_ENV} on the server; change it there.",
+            detail=f"The licence for every station comes from {setup.LICENSE_ENV} on the "
+            "server; change it there.",
         )
     return setup.install_license_path(cfg.index.index_dir)
 

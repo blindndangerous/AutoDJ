@@ -56,10 +56,6 @@ def stereotool_library_name(system: str | None = None, machine: str | None = Non
     return "libStereoTool_intel64.so"
 
 
-# The Stereo Tool plugin library; the default also looks in
-# <index_dir>/tools/stereo-tool/ first (autodj.stereotool_setup).
-DEFAULT_STEREOTOOL_PATH = f"./tools/stereo-tool/{stereotool_library_name()}"
-
 if TYPE_CHECKING:
     from autodj.presets import Preset
 
@@ -423,16 +419,6 @@ class PlaybackConfig(_Section):
     stereotool_input_trim_db: float = 0.0
     stereotool_agc_drive_db: float = 7.0
     stereotool_preset: str = "included"
-    # Path of Thimeo's Stereo Tool plugin library (libStereoTool_*.so or
-    # .dll); installation setting.  The name is kept from when it named the
-    # command-line program.  The default finds the library Settings, Sound,
-    # Download Stereo Tool puts in <index_dir>/tools/stereo-tool/.
-    stereotool_path: str = DEFAULT_STEREOTOOL_PATH
-    # A file holding this station's Stereo Tool licence key; installation
-    # setting.  Empty uses the key saved in Settings, Sound, or the
-    # environment's (autodj.stereotool_setup).  The key itself is never
-    # a configuration value.
-    stereotool_license_file: str = ""
     # Where the similarity engine seeds from after a user-built queue
     # empties.  "last_queued" (default) continues from the final queued
     # track -- the user steered the set, the auto-DJ follows.
@@ -609,11 +595,6 @@ class PlaybackConfig(_Section):
         from autodj.stereotool_presets import validate_preset_name
 
         validate_preset_name(self.stereotool_preset)
-        if not isinstance(self.stereotool_path, str) or not self.stereotool_path.strip():
-            raise ValueError("playback.stereotool_path must be a non-empty string")
-        if not isinstance(self.stereotool_license_file, str):
-            raise ValueError("playback.stereotool_license_file must be a string")
-        self.stereotool_license_file = self.stereotool_license_file.strip()
         self.skip_style = _validate_skip_style(str(self.skip_style))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
         self.pick_top_k = int(self.pick_top_k)

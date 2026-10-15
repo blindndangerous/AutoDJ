@@ -14,10 +14,8 @@ Liquidsoap do, run in a child process of its own
   the writable data folder (``/index`` in the container), with its version
   from the zip's folder name.  The page never uploads a file: an upload
   route would let anyone who can change settings run any code on the server.
-- :func:`resolve_path` makes the default ``[playback] stereotool_path``
-  (which now names the library) look in that folder first, so a library
-  downloaded there, or put there by hand, is used with no configuration
-  change.
+- Every station uses the library in that folder (:func:`library_path`),
+  downloaded there or put there by hand.  There is no setting for it.
 
 The licence key is a secret.  It is handed to the library's
 ``stereoTool_Create3`` inside the host process, over that process's stdin,
@@ -26,12 +24,9 @@ file only its own user can read (:func:`autodj.secret_files.write_private_file`)
 outside backups, and never returns it to the page or writes it to a log.
 Where it comes from, first match wins, for one station:
 
-1. ``[playback] stereotool_license_file`` of that station: a key file named in
-   the configuration;
-2. the station's own key saved from Settings, Sound (``<state_dir>/.stereo-tool-license``);
-3. ``AUTODJ_STEREOTOOL_LICENSE_KEY`` or ``AUTODJ_STEREOTOOL_LICENSE_FILE``,
-   for the whole install;
-4. the install's key saved from Settings, Sound (``<index_dir>/.stereo-tool-license``).
+1. the station's own key saved from Settings, Sound (``<state_dir>/.stereo-tool-license``);
+2. ``AUTODJ_STEREOTOOL_LICENSE_KEY``, for the whole install;
+3. the install's key saved from Settings, Sound (``<index_dir>/.stereo-tool-license``).
 """
 
 from __future__ import annotations
@@ -55,7 +50,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Literal
 from urllib.parse import urljoin, urlsplit
 
-from autodj.config import DEFAULT_STEREOTOOL_PATH, stereotool_library_name
+from autodj.config import stereotool_library_name
 from autodj.secret_files import write_private_file
 
 logger = logging.getLogger(__name__)
@@ -65,7 +60,6 @@ LICENSING_URL = "https://www.thimeo.com/stereo-tool/licenses/"
 #: Thimeo's "Plugin SDK with binaries for all OS's" (https://www.thimeo.com/stereo-tool/download/).
 PLUGIN_URL = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
 LICENSE_ENV = "AUTODJ_STEREOTOOL_LICENSE_KEY"
-LICENSE_FILE_ENV = "AUTODJ_STEREOTOOL_LICENSE_FILE"
 LICENSE_FILE_NAME = ".stereo-tool-license"
 #: The 11.05 zip is 318 MB (October 2026); anything far bigger is not it.
 MAX_DOWNLOAD_BYTES = 768 * 1024 * 1024
@@ -85,7 +79,7 @@ _MAX_KEY_FILE_BYTES = 8192
 # The zip's top folder: libStereoTool_1105, or with BETA and a number.
 _TOP = re.compile(r"libStereoTool_(\d{3,4})(?:BETA\w{0,8})?")
 
-LicenseSource = Literal["station-config", "station", "environment", "install"]
+LicenseSource = Literal["station", "environment", "install"]
 
 
 class DownloadError(RuntimeError):
@@ -146,22 +140,9 @@ def managed_path(index_dir: Path | str) -> Path:
     return tools_dir(index_dir) / stereotool_library_name()
 
 
-def resolve_path(configured: str, index_dir: Path | str) -> str:
-    """The library a station uses: its own setting, else the index folder's copy.
-
-    A station that keeps the default ``stereotool_path`` uses
-    ``<index_dir>/tools/stereo-tool/`` when the library is there, and the
-    old ``./tools/stereo-tool/`` beside the working folder otherwise.
-    """
-    if configured != DEFAULT_STEREOTOOL_PATH:
-        return configured
-    managed = managed_path(index_dir)
-    try:
-        if managed.is_file():
-            return str(managed)
-    except OSError:
-        pass
-    return configured
+def library_path(index_dir: Path | str) -> str:
+    """The library every station uses."""
+    return str(managed_path(index_dir))
 
 
 def library_present(path: str) -> bool:
@@ -170,27 +151,6 @@ def library_present(path: str) -> bool:
         return os.path.isfile(path)
     except OSError:
         return False
-
-
-def missing_message(configured: str) -> str:
-    """What a station says when its Stereo Tool library is not there."""
-    if configured != DEFAULT_STEREOTOOL_PATH:
-        return (
-            "The Stereo Tool plugin library named by stereotool_path in the configuration "
-            "is missing. Correct that path, or remove it to use the one Settings, Sound, "
-            "Download Stereo Tool installs."
-        )
-    return (
-        "Stereo Tool is not installed. Download it in Settings, Sound, "
-        "with the Download Stereo Tool button."
-    )
-
-
-def location(configured: str, index_dir: Path | str) -> Literal["index", "default", "configured"]:
-    """Which library a station uses, in words the page can choose from."""
-    if configured != DEFAULT_STEREOTOOL_PATH:
-        return "configured"
-    return "index" if resolve_path(configured, index_dir) != configured else "default"
 
 
 def installed_version(library: Path) -> str | None:
@@ -215,15 +175,14 @@ def installed_version(library: Path) -> str | None:
 
 
 def program_status(
-    configured: str, index_dir: Path | str, *, running: Mapping[str, object] | None = None
+    index_dir: Path | str, *, running: Mapping[str, object] | None = None
 ) -> dict[str, Any]:
-    """Whether a station's library is there, its version and where it is.
+    """Whether the library is there and its version; never a path.
 
-    Never a path: the page only needs to know which of the three it is.
     *running* is what the station's running Stereo Tool reported, whose
     version counts for a library put there by hand.
     """
-    resolved = Path(resolve_path(configured, index_dir))
+    resolved = managed_path(index_dir)
     installed = library_present(str(resolved))
     version = installed_version(resolved) if installed else None
     reported = (running or {}).get("version")
@@ -233,7 +192,6 @@ def program_status(
     return {
         "installed": installed,
         "version": version,
-        "location": location(configured, index_dir),
         "download": {
             "available": build is not None,
             "platform": build.label if build is not None else None,
@@ -303,8 +261,7 @@ def unsupported_note(system: str | None = None, machine: str | None = None) -> s
         f"AutoDJ downloads Thimeo's Stereo Tool plugin library for 64-bit Linux (PC or ARM) "
         f"and 64-bit Windows, and this computer is {system}, {machine or 'unknown processor'}. "
         "To use another build of the library, put it in tools/stereo-tool in AutoDJ's index "
-        "folder, or name it with stereotool_path in the station's playback settings in the "
-        "configuration."
+        "folder."
     )
 
 
@@ -820,7 +777,7 @@ class LicenseState:
     key: str | None = field(default=None, repr=False)
     problem: str | None = None
     install: Literal["environment", "saved"] | None = None
-    station: Literal["config", "saved"] | None = None
+    station: Literal["saved"] | None = None
 
     def public(self) -> dict[str, Any]:
         """Everything but the key, for the page."""
@@ -836,36 +793,23 @@ def license_state(
     *,
     index_dir: Path | str,
     state_dir: Path | str,
-    configured_file: str = "",
     environ: Mapping[str, str] | None = None,
 ) -> LicenseState:
     """Find the licence key one station uses, in the order the module describes."""
     env = os.environ if environ is None else environ
     env_key = (env.get(LICENSE_ENV) or "").strip()
-    env_file = (env.get(LICENSE_FILE_ENV) or "").strip()
     install: Literal["environment", "saved"] | None
-    if env_key or env_file:
+    if env_key:
         install = "environment"
     else:
         install = "saved" if _saved(install_license_path(index_dir)) else None
-    station: Literal["config", "saved"] | None
-    if configured_file:
-        station = "config"
-    else:
-        station = "saved" if _saved(station_license_path(state_dir)) else None
+    station: Literal["saved"] | None = "saved" if _saved(station_license_path(state_dir)) else None
 
     def found(
         source: LicenseSource | None, key: str | None, problem: str | None = None
     ) -> LicenseState:
         return LicenseState(source, key, problem, install, station)
 
-    if configured_file:
-        what = "The licence file named by [playback] stereotool_license_file"
-        try:
-            key = _read_key(Path(configured_file), what)
-        except _Unreadable as exc:
-            return found("station-config", None, str(exc))
-        return found("station-config", key, None if key else f"{what} is missing.")
     try:
         key = _read_key(station_license_path(state_dir), "This station's saved licence")
     except _Unreadable as exc:
@@ -877,13 +821,6 @@ def license_state(
             return found("environment", validate_key(env_key))
         except ValueError:
             return found("environment", None, f"{LICENSE_ENV} does not hold a licence key.")
-    if env_file:
-        what = f"The licence file named by {LICENSE_FILE_ENV}"
-        try:
-            key = _read_key(Path(env_file), what)
-        except _Unreadable as exc:
-            return found("environment", None, str(exc))
-        return found("environment", key, None if key else f"{what} is missing.")
     try:
         key = _read_key(install_license_path(index_dir), "The licence saved for every station")
     except _Unreadable as exc:
@@ -893,11 +830,9 @@ def license_state(
     return found(None, None)
 
 
-def license_key(
-    *, index_dir: Path | str, state_dir: Path | str, configured_file: str = ""
-) -> str | None:
+def license_key(*, index_dir: Path | str, state_dir: Path | str) -> str | None:
     """The key to give Stereo Tool when it starts, or ``None`` to run unlicensed."""
-    state = license_state(index_dir=index_dir, state_dir=state_dir, configured_file=configured_file)
+    state = license_state(index_dir=index_dir, state_dir=state_dir)
     # Said once per problem: Stereo Tool may be retried every half second.
     with _warned_lock:
         repeat = _warned.get(str(state_dir)) == state.problem
