@@ -1990,9 +1990,11 @@ set by the server's environment and cannot change:
 - `AUTODJ_STEREOTOOL_LICENSE_KEY` holds the key itself.
 - `AUTODJ_STEREOTOOL_LICENSE_FILE` names a file holding it, such as a Docker or systemd secret.
 
-A station's `[playback] stereotool_license_file` names a key file for that station alone (in
-`[stations.<slug>.playback]` for another station); it comes before everything else, and the page
-cannot change it. The order, first match wins, is: that file, the station's own saved key, the
+A station's `stereotool_license_file` playback setting names a key file for that station alone:
+`[playback] stereotool_license_file` in `config.toml` for the default station, and the `playback`
+table of the station's `station.json` for another (a `[stations.<slug>.playback]` table in
+`config.toml` is moved there on the next start). It comes before everything else, and the page
+cannot change it. Duplicating a station does not copy it, so the copy never shares that key. The order, first match wins, is: that file, the station's own saved key, the
 environment, the key saved for every station.
 
 AutoDJ hands the key to the library inside the helper process, over the helper's standard input,
@@ -2007,12 +2009,15 @@ from the key file or from the processes' memory. AutoDJ never writes the key to 
 Each station that uses Stereo Tool runs its own helper process with its own Stereo Tool instance,
 so stations may run Stereo Tool at the same time with the same library. Each instance needs its
 own licence (above). A station can also use another copy or build of the library with its own
-`stereotool_path`:
+`stereotool_path`: `[playback] stereotool_path` in `config.toml` for the default station, or in
+the `playback` table of another station's `station.json`
+(`<index_dir>/<name>/stations/nightowl/station.json`), for example:
 
-```toml
-[stations.nightowl.playback]
-loudness_processing = "stereotool"
-stereotool_path = "C:/Radio/libStereoTool_64.dll"
+```json
+"playback": {
+  "loudness_processing": "stereotool",
+  "stereotool_path": "C:/Radio/libStereoTool_64.dll"
+}
 ```
 
 A station with its own `stereotool_path` keeps it; the downloaded copy serves the stations without
