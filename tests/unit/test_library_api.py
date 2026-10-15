@@ -19,6 +19,7 @@ from autodj.library import LibraryManager
 from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
 from autodj.server import (
     LibraryAutoRescanBody,
+    LibraryDjAnalysisBody,
     LibraryFolderBody,
     LibraryFolderUpdateBody,
     LibraryRescanBody,
@@ -115,6 +116,17 @@ def test_auto_rescan_routes_store_shared_interval(library_api):
         "minutes": 0,
     }
     assert manager.auto_rescan_minutes() == 0
+
+
+@pytest.mark.dj_analysis
+def test_dj_analysis_route_saves_the_library_setting(library_api):
+    manager, call, _app = library_api
+    assert call("GET", "/api/library/dj-analysis") == {"enabled": True}
+    assert call("PUT", "/api/library/dj-analysis", LibraryDjAnalysisBody(enabled=False)) == {
+        "enabled": False
+    }
+    assert manager.dj_analysis_enabled() is False
+    assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
 
 
 def test_time_settings_are_saved_and_the_zone_applies_at_the_next_start(library_api, monkeypatch):

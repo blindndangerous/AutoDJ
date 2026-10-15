@@ -1037,3 +1037,21 @@ class TestClosedDjMetaCache:
         assert cache.prune_to_paths(set()) == 0
         with DjMetaCache(path) as reopened:
             assert reopened.get("late.flac").analysed is False
+
+
+def test_a_song_loud_from_the_start_has_no_drop_at_zero() -> None:
+    from autodj.dj_meta import _block_rms, _detect_drop
+
+    sr = 1000
+    audio = np.full(sr * 20, 0.5, dtype=np.float32)
+    rms, rolling = _block_rms(audio, sr)
+    assert _detect_drop(rms, rolling, [], 0.0, 0.0) is None
+
+
+def test_analyse_audio_places_cues_from_the_saved_intro_and_outro() -> None:
+    from autodj.dj_meta import analyse_audio
+
+    sr = 22050
+    audio = np.random.default_rng(1).normal(0, 0.1, sr * 10).astype(np.float32)
+    meta = analyse_audio(audio, sr, intro_end_s=2.0, outro_start_s=8.0)
+    assert (meta.intro_end_s, meta.outro_start_s) == (2.0, 8.0)

@@ -337,7 +337,8 @@ def test_index_backfills_relative_music_root_without_pruning_disabled_folder(
             record = catalog.record_for_path(song)
             assert record["points"]["intro"] == 12.0
             assert record["point_sources"]["intro"] == "user"
-            assert record["points"]["outro"] == 160.0
+            # The beat analysis no longer writes cue points.
+            assert record["points"].get("outro") != 160.0
     finally:
         close_cache()
 

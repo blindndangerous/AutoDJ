@@ -39,6 +39,7 @@ from autodj.indexer import (
 from autodj.processing import (
     analyze_basic,
     analyze_loudness,
+    load_for_analysis,
     loudness_matches,
 )
 from autodj.station_ledger import StationLedger
@@ -120,6 +121,8 @@ class LibraryManager:
         self._thread: threading.Thread | None = None
         self._pending_sources: set[str] | None = set()
         self._pending_override_tags = False
+        # Cues read from DJ software, once per scan that analyses a song.
+        self._dj_library_cues: dict[str, list[Any]] | None = None
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
@@ -451,6 +454,13 @@ class LibraryManager:
     def set_auto_rescan_minutes(self, minutes: int) -> None:
         self.catalog.set_setting("auto_rescan_minutes", minutes)
         self._auto_rescan_minutes = minutes
+
+    def dj_analysis_enabled(self) -> bool:
+        """Whether scans find each song's beats and song structure (on by default)."""
+        return self.catalog.get_setting("dj_analysis", True) is not False
+
+    def set_dj_analysis_enabled(self, enabled: bool) -> None:
+        self.catalog.set_setting("dj_analysis", enabled)
 
     def tick(self) -> None:
         self._flush_ledgers()
@@ -961,8 +971,15 @@ class LibraryManager:
                         segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
                     self.catalog.set_points(path, {"segue": segue}, source="analysis")
                 elif not valid_existing_points:
+                    # One decode serves the cue points and the beats and cues.
+                    dj = (
+                        kind == "music"
+                        and self.dj_analysis_enabled()
+                        and self._dj_cache() is not None
+                    )
+                    audio = load_for_analysis(path, self._max_analysis_seconds()) if dj else None
                     fresh, points = analyze_basic(
-                        path, kind=kind, max_seconds=self._max_analysis_seconds()
+                        path, kind=kind, max_seconds=self._max_analysis_seconds(), audio=audio
                     )
                     fresh = self._basic_entry(fresh, old, path)
                     suggestions = self._legacy_point_suggestions(path)
@@ -975,6 +992,9 @@ class LibraryManager:
                     # New bytes are a new chance for a song held back after a
                     # failed or stale analysis.
                     self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
+                    if audio is not None:
+                        self._dj_analyse(path, audio.mean(axis=1), force=True)
+                        del audio
                 if kind == "music":
                     record = self.catalog.record_for_path(path)
                     if record is not None and record["intro_lift_db"] is None:
@@ -1060,6 +1080,7 @@ class LibraryManager:
                     with self._lock:
                         self._state["done"] = done
                         self._state["total"] = done + len(loudness)
+            self._dj_backlog()
             self._set_state(phase="complete")
             completed = True
         finally:
@@ -1078,6 +1099,84 @@ class LibraryManager:
                     done_hook()
                 except Exception:
                     logger.exception("Library: the after-scan tidy-up failed")
+
+    def _dj_cache(self) -> Any:
+        """The DJ-meta cache (beat grid and cues), or ``None`` when it cannot open."""
+        from autodj.dj_meta import get_cache
+
+        try:
+            return get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
+        except (OSError, ValueError) as exc:
+            logger.warning("DJ analysis unavailable: %s", exc)
+            return None
+
+    def _dj_analyse(self, path: Path, mono: np.ndarray | None = None, force: bool = False) -> None:
+        """Store *path*'s beat grid and cues, placed from its saved Intro and Outro.
+
+        *mono* is the song already decoded at ``SAMPLE_RATE``; it is decoded
+        here when ``None``.  Without *force* a song already analysed is left
+        alone.  A failure is logged and the scan goes on.
+        """
+        if not self.dj_analysis_enabled():
+            return
+        cache = self._dj_cache()
+        if cache is None:
+            return
+        try:
+            if not force and cache.get(str(path)).analysed:
+                return
+            if mono is None:
+                mono = load_for_analysis(path, self._max_analysis_seconds()).mean(axis=1)
+            from autodj.dj_meta import analyse_audio
+
+            points = self.catalog.points(path)
+            length = len(mono) / SAMPLE_RATE
+            meta = analyse_audio(
+                mono,
+                SAMPLE_RATE,
+                intro_end_s=points.get("intro") or 0.0,
+                outro_start_s=points.get("outro") or length,
+            )
+            if self.cfg.playback.import_external_cues:
+                from autodj.dj_cues_import import auto_import_cues, merge_imported_cues
+
+                if self._dj_library_cues is None:
+                    self._dj_library_cues = auto_import_cues(
+                        library_root=self.cfg.library.music_dir
+                    )
+                merge_imported_cues(meta, str(path), self._dj_library_cues)
+            cache.set(str(path), meta)
+            cache.flush()
+        except Exception as exc:
+            logger.warning("DJ analysis failed for %s: %s", path, exc)
+
+    def _dj_backlog(self) -> None:
+        """Analyse the beat grid and cues of music songs that still lack them.
+
+        Stops early for a scan waiting its turn; the rest is picked up by the
+        next scan.
+        """
+        if not self.dj_analysis_enabled():
+            return
+        cache = self._dj_cache()
+        if cache is None:
+            return
+        backlog = [
+            Path(record["path"])
+            for record in self.catalog.all_entries("music")
+            if not cache.get(record["path"]).analysed and Path(record["path"]).is_file()
+        ]
+        self._set_state(phase="analysing beats", done=0, total=len(backlog), current="")
+        for done, path in enumerate(backlog, start=1):
+            with self._lock:
+                waiting = self._pending_sources is None or bool(self._pending_sources)
+            if self._stop.is_set() or waiting:
+                break
+            self._set_state(current=str(path))
+            self._dj_analyse(path)
+            self._set_state(done=done)
+        cache.flush(force=True)
+        self._dj_library_cues = None
 
     def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
         if not force:

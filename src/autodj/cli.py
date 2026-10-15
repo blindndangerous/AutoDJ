@@ -111,38 +111,10 @@ def _resolve_seed(
 def _analyse_catalog_dj_meta(
     cfg: AutoDJConfig, catalog: Any, entries: list[IndexEntry], *, limit: int | None = None
 ) -> None:
-    """Backfill CPU DJ metadata and publish its automatic intro/outro cues."""
-    from autodj.dj_meta import get_cache
+    """Backfill CPU DJ metadata, placed from each song's saved Intro and Outro."""
     from autodj.indexer import backfill_dj_meta
 
-    backfill_dj_meta(cfg, entries, limit=limit, prune=False)
-    cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-    if cache is None:
-        return
-    invalid_points = 0
-    for entry in entries:
-        meta = cache.get(entry.path)
-        if meta is None or not meta.analysed:
-            continue
-        points = {
-            name: value
-            for name, value in (
-                ("intro", meta.intro_end_s or None),
-                ("outro", meta.outro_start_s or None),
-            )
-            if value is not None
-        }
-        try:
-            catalog.set_points(entry.path, points, source="analysis")
-        except ValueError as exc:
-            invalid_points += 1
-            logging.getLogger(__name__).warning(
-                "Could not publish DJ cues for %s, skipped: %s", entry.path, exc
-            )
-    if invalid_points:
-        console.print(
-            f"[yellow]Skipped automatic cue updates for {invalid_points} tracks with invalid points.[/]"
-        )
+    backfill_dj_meta(cfg, entries, limit=limit, prune=False, points_for=catalog.points)
 
 
 def _load_cfg_or_exit(

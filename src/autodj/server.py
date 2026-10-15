@@ -629,6 +629,13 @@ class LibraryAutoRescanBody(BaseModel):
     minutes: StrictInt = Field(ge=0, le=59)
 
 
+class LibraryDjAnalysisBody(BaseModel):
+    """Whether library scans find beats and song structure."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+
+
 class LibraryRemoveMissingBody(BaseModel):
     """Explicit confirmation for removing catalog records after a clean scan."""
 
@@ -2055,6 +2062,15 @@ def create_app(
             )
         await asyncio.to_thread(library.set_auto_rescan_minutes, total)
         return {"hours": body.hours, "minutes": body.minutes}
+
+    @app.get("/api/library/dj-analysis")
+    async def api_library_dj_analysis() -> dict[str, bool]:
+        return {"enabled": await asyncio.to_thread(_catalog_library().dj_analysis_enabled)}
+
+    @app.put("/api/library/dj-analysis")
+    async def api_library_set_dj_analysis(body: LibraryDjAnalysisBody) -> dict[str, bool]:
+        await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
+        return {"enabled": body.enabled}
 
     @app.get("/api/library/missing")
     async def api_library_missing_preview() -> dict:

@@ -1082,6 +1082,8 @@ atexit.register(close_cache)
 
 
 _CUE_BLOCK_S = 0.5
+#: Blocks in the rolling baseline a drop is measured against: 2 seconds.
+_ROLLING_BLOCKS = int(2.0 / _CUE_BLOCK_S)
 
 
 def _block_rms(audio: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1090,8 +1092,7 @@ def _block_rms(audio: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
     n_blocks = max(1, len(audio) // win)
     blocks = audio[: n_blocks * win].reshape(n_blocks, win)
     rms = np.sqrt(np.mean(blocks**2, axis=1) + 1e-12)
-    window_blocks = max(1, int(2.0 / _CUE_BLOCK_S))
-    kernel = np.ones(window_blocks) / window_blocks
+    kernel = np.ones(_ROLLING_BLOCKS) / _ROLLING_BLOCKS
     return rms, np.convolve(rms, kernel, mode="same")
 
 
@@ -1113,8 +1114,11 @@ def _detect_drop(
     """Return the loudest RMS spike (>=1.6× baseline) inside the body window."""
     intro_idx = int(intro_end_s / _CUE_BLOCK_S)
     outro_idx = int(outro_start_s / _CUE_BLOCK_S) if outro_start_s > 0 else len(rms)
-    search_lo = max(intro_idx, 0)
-    search_hi = min(outro_idx, len(rms))
+    # The rolling baseline is cut short at the ends of the song, which made
+    # the first loud block of a song with no quiet intro look like a drop.
+    edge = _ROLLING_BLOCKS // 2
+    search_lo = max(intro_idx, edge)
+    search_hi = min(outro_idx, len(rms) - edge)
     if search_hi - search_lo < 4:
         return None
     window = rms[search_lo:search_hi]
@@ -1435,19 +1439,29 @@ def mix_anchors(cues: list[Cue], audio: np.ndarray, sr: int, beats: list[float])
     return sorted([*mix_drops(cues, audio, sr, beats), *breakdowns])
 
 
-def analyse_audio(audio: np.ndarray, sr: int) -> DjMeta:
+def analyse_audio(
+    audio: np.ndarray,
+    sr: int,
+    intro_end_s: float | None = None,
+    outro_start_s: float | None = None,
+) -> DjMeta:
     """Run all DJ-meta detectors on *audio* and return a :class:`DjMeta`.
-
-    Convenience wrapper used by the player on first encounter of a track.
 
     Args:
         audio: Mono float32 audio array.
         sr: Sample rate in Hz.
+        intro_end_s: The song's saved Intro, when it has one: the cues are
+            placed after it instead of after a detected intro.
+        outro_start_s: The song's saved Outro, likewise.
 
     Returns:
         A populated :class:`DjMeta` (always ``analysed=True``).
     """
-    intro_end, outro_start = detect_intro_outro(audio, sr)
+    intro_end, outro_start = (
+        (intro_end_s, outro_start_s)
+        if intro_end_s is not None and outro_start_s is not None
+        else detect_intro_outro(audio, sr)
+    )
     beats = detect_beat_grid(audio, sr)
     cues = detect_cues(audio, sr, intro_end, outro_start, beats)
     return DjMeta(

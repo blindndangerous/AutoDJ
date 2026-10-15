@@ -964,14 +964,22 @@ def load_index(
 # ---------------------------------------------------------------------------
 
 
-def _analyse_one_track(path: str) -> Any | None:
-    """Decode *path* and return its :class:`autodj.dj_meta.DjMeta`, or ``None`` when silent."""
+def _analyse_one_track(path: str, points: dict | None = None) -> Any | None:
+    """Decode *path* and return its :class:`autodj.dj_meta.DjMeta`, or ``None`` when silent.
+
+    *points* are the song's saved cue points; its Intro and Outro place the
+    cues when it has them.
+    """
     from autodj.dj_meta import analyse_audio
 
     audio, sr = _load_audio(Path(path))
     if len(audio) == 0:
         return None
-    return analyse_audio(audio, sr)
+    if points is None:
+        return analyse_audio(audio, sr)
+    return analyse_audio(
+        audio, sr, points.get("intro") or 0.0, points.get("outro") or len(audio) / sr
+    )
 
 
 def backfill_dj_meta(
@@ -980,6 +988,7 @@ def backfill_dj_meta(
     *,
     limit: int | None = None,
     prune: bool = False,
+    points_for: Callable[[str], dict] | None = None,
 ) -> None:
     """Analyse DJ metadata (intro/outro, beats, cues) for tracks that lack it.
 
@@ -996,6 +1005,8 @@ def backfill_dj_meta(
         entries: Every track in the index, with absolute paths.
         limit: Analyse at most this many of the tracks that need it.
         prune: Remove rows outside entries. Enable only with a complete library snapshot.
+        points_for: Each song's saved cue points, so its cues are placed
+            from its own Intro and Outro.
     """
     from autodj.dj_meta import get_cache
 
@@ -1031,7 +1042,7 @@ def backfill_dj_meta(
                 if throttle_s:
                     time.sleep(throttle_s)
                 try:
-                    meta = _analyse_one_track(path)
+                    meta = _analyse_one_track(path, points_for(path) if points_for else None)
                 except Exception as exc:
                     logger.warning("Could not analyse %s, skipped: %s", path, exc)
                     report.skip(path, exc)
