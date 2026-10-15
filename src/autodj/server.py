@@ -667,6 +667,13 @@ class DeviceRenameBody(BaseModel):
     name: str
 
 
+class StationAutostartBody(BaseModel):
+    """Whether a station starts with the server."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+
+
 class CreateStationBody(BaseModel):
     """A browser's request for a new stopped station."""
 
@@ -1810,6 +1817,17 @@ def create_app(
         except StationControlError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return station.summary()
+
+    @app.put("/api/stations/{slug}/autostart")
+    async def api_station_autostart(slug: str, body: StationAutostartBody) -> dict[str, Any]:
+        """Save whether a station made in the page starts with the server."""
+        try:
+            await asyncio.to_thread(stations.set_autostart, slug, body.enabled)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="No station has that name") from None
+        except StationControlError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return next(item for item in stations.summaries() if item["slug"] == slug)
 
     @app.post("/api/stations/{slug}/stop")
     async def api_station_stop(slug: str) -> dict[str, Any]:

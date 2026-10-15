@@ -3488,9 +3488,12 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(panel.getAttribute("role")).toBe("tabpanel");
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-stations");
     expect(document.getElementById("spanel-live").parentElement).toBe(panel.parentElement);
-    const list = document.getElementById("stations-list");
-    expect(list.tagName).toBe("UL");
-    expect(document.getElementById(list.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    const table = document.getElementById("stations-table");
+    expect(document.getElementById("stations-list").parentElement).toBe(table);
+    expect(table.getAttribute("role")).toBe("grid");
+    expect(document.getElementById(table.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    expect([...table.querySelectorAll("th[scope=col]")].map((th) => th.textContent))
+      .toEqual(["Station", "Now playing", "Listeners", "Start with the server", "Start or stop"]);
     const form = document.getElementById("station-create-form");
     expect(form.querySelector("legend").textContent.trim()).toBe("New station");
     // Short visible labels of their own, no aria-label in their place.

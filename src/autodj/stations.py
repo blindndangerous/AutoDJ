@@ -36,7 +36,7 @@ import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1689,8 +1689,44 @@ class StationRegistry:
         return (self._default.paths, *(extra.paths for extra in self._extras.values()))
 
     def summaries(self) -> list[dict[str, Any]]:
-        """Every configured station's name, state, listeners, song and stream address."""
-        return [self.get(slug).summary() for slug in (self._default.slug, *self._extras)]
+        """Every configured station's name, state, listeners, song and stream address.
+
+        Each also says whether it starts with the server, and whether the
+        page can change that: only for a station made in the page.
+        """
+        out = []
+        for slug in (self._default.slug, *self._extras):
+            extra = self._extras.get(slug)
+            out.append(
+                {
+                    **self.get(slug).summary(),
+                    "autostart": True if extra is None else extra.autostart,
+                    "autostart_locked": extra is None or extra.defined_in != "web",
+                }
+            )
+        return out
+
+    def set_autostart(self, slug: str, enabled: bool) -> None:
+        """Save whether station *slug* starts with the server.
+
+        Raises:
+            KeyError: No station has that name.
+            StationControlError: The page cannot change it for this station.
+        """
+        if slug == self._default.slug:
+            raise StationControlError("The default station always starts with the server.")
+        extra = self._extras[slug]
+        if extra.defined_in != "web":
+            raise StationControlError(
+                f"{extra.name} is set in config.toml; change autostart there."
+            )
+        from autodj.fsutil import atomic_write
+
+        path = extra.paths.definition
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["station"]["autostart"] = enabled
+        atomic_write(path, json.dumps(document, indent=2) + "\n")
+        self._extras[slug] = replace(extra, autostart=enabled)
 
     def owns_liner(self, slug: str, path: str) -> bool:
         """Whether the registered liner at *path* is station *slug*'s.
