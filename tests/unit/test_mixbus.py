@@ -228,6 +228,29 @@ def test_stop_liner_leaves_a_cued_liner_waiting() -> None:
     assert max(block[-1, 0] for block in blocks) == pytest.approx(0.8, abs=1e-6)
 
 
+def test_replacing_liner_fades_between_clips() -> None:
+    bus, _, _ = _bus([_track(0.0, 200_000)])
+    bus.start_set()
+    bus.play_liner(np.full((882 * 50, 2), 0.5, np.float32), duck_db=-12.0)
+    blocks = [bus.render_block() for _ in range(4)]
+    bus.play_liner(np.zeros((882 * 50, 2), np.float32), duck_db=-12.0)
+    blocks.extend(bus.render_block() for _ in range(2))
+    audio = np.concatenate(blocks)[:, 0]
+    assert float(np.max(np.abs(np.diff(audio)))) < 0.05
+
+
+def test_replacing_liner_again_during_fade_stays_smooth() -> None:
+    bus, _, _ = _bus([_track(0.0, 200_000)])
+    bus.start_set()
+    bus.play_liner(np.full((882 * 50, 2), 0.5, np.float32), duck_db=-12.0)
+    blocks = [bus.render_block() for _ in range(4)]
+    bus.play_liner(np.full((882 * 50, 2), 0.3, np.float32), duck_db=-12.0)
+    blocks.append(bus.render_block())
+    bus.play_liner(np.zeros((882 * 50, 2), np.float32), duck_db=-12.0)
+    blocks.extend(bus.render_block() for _ in range(2))
+    assert float(np.max(np.abs(np.diff(np.concatenate(blocks)[:, 0])))) < 0.05
+
+
 def test_stop_set_drops_tracks_and_goes_silent() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000), _track(0.5, 50_000)])
     bus.start_set()

@@ -96,7 +96,13 @@ from autodj.categories_api import install_categories
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
-from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
+from autodj.lan import (
+    LOG_FILE_TEXT,
+    PAIRING_ON_REQUEST_HINT,
+    format_lan_banner,
+    lan_urls,
+    running_in_container,
+)
 from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
@@ -863,6 +869,9 @@ async def _alac_response(audio_path: Path, method: str) -> Response | None:
 # ---------------------------------------------------------------------------
 
 
+_LISTENER_SEND_TIMEOUT = 10.0
+
+
 class _ListenerResponse(StreamingResponse):
     """A streaming response that frees its stream listener however it ends.
 
@@ -875,13 +884,52 @@ class _ListenerResponse(StreamingResponse):
         """Wrap *content* like :class:`StreamingResponse`; call *on_close* at the end."""
         super().__init__(content, **kwargs)
         self._on_close = on_close
+        self._released = False
+
+    def _release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._on_close()
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         """Send the response, then always release the listener."""
+
+        timed_out = asyncio.Event()
+
+        async def send_with_timeout(message: Any) -> None:
+            try:
+                await asyncio.wait_for(send(message), timeout=_LISTENER_SEND_TIMEOUT)
+            except TimeoutError:
+                timed_out.set()
+                self._release()
+                raise
+
+        async def receive_or_timeout() -> Any:
+            if timed_out.is_set():
+                return {"type": "http.disconnect"}
+            incoming = asyncio.create_task(receive())
+            timeout = asyncio.create_task(timed_out.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    (incoming, timeout), return_when=asyncio.FIRST_COMPLETED
+                )
+                if incoming in done:
+                    return incoming.result()
+                return {"type": "http.disconnect"}
+            finally:
+                for task in (incoming, timeout):
+                    if not task.done():
+                        task.cancel()
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive_or_timeout, send_with_timeout)
+        except Exception:
+            # A listener dropped for a stalled send has been released; end
+            # quietly so uvicorn does not log every slow client as an error.
+            if not timed_out.is_set():
+                raise
         finally:
-            self._on_close()
+            self._release()
 
 
 def _header_text(value: str) -> str:
@@ -1608,9 +1656,8 @@ def create_app(
             raise HTTPException(status_code=503, detail="stream encoder failed") from exc
         if stream is None:
             raise HTTPException(status_code=404, detail="Not Found")
-        try:
-            # Off the loop: a dead encoder is replaced here (spawns ffmpeg).
-            ident, listener = await asyncio.to_thread(
+        add_task = asyncio.create_task(
+            asyncio.to_thread(
                 functools.partial(
                     access.add,
                     stream,
@@ -1620,6 +1667,18 @@ def create_app(
                     fmt=ext,
                 )
             )
+        )
+        try:
+            # Keep the result available if the request is cancelled after admission.
+            ident, listener = await asyncio.shield(add_task)
+        except asyncio.CancelledError:
+            try:
+                ident, _ = await add_task
+            except Exception:
+                pass
+            else:
+                access.remove(ident)
+            raise
         except (ListenerLimitError, AddressLimitError, StationFullError) as exc:
             raise HTTPException(status_code=503, detail="Stream listener limit reached") from exc
         except BannedAddressError as exc:
@@ -1634,8 +1693,13 @@ def create_app(
         feed = station.nowplaying
         stats = station.listener_stats
         started = stats.connected(ext) if stats is not None else (0.0, 0.0)
+        released = False
 
         def release() -> None:
+            nonlocal released
+            if released:
+                return
+            released = True
             access.remove(ident)
             if stats is not None:
                 stats.disconnected(ext, started)
@@ -2859,6 +2923,7 @@ def serve(
             in_container=in_container,
             configured_hosts=lan_configured_hosts or (),
         )
+        # The log file gets the banner without the code: see LOG_FILE_TEXT.
         logger.info(
             "%s",
             format_lan_banner(
@@ -2867,9 +2932,21 @@ def serve(
                 in_container=in_container,
                 code_on_request=startup_policy.authentication_required,
             ),
+            extra={
+                LOG_FILE_TEXT: format_lan_banner(
+                    urls,
+                    None,
+                    in_container=in_container,
+                    code_on_request=startup_policy.authentication_required,
+                )
+            },
         )
     elif pairing is not None:
-        logger.info("Pair this browser within five minutes using code: %s", pairing[0])
+        logger.info(
+            "Pair this browser within five minutes using code: %s",
+            pairing[0],
+            extra={LOG_FILE_TEXT: "A pairing code was shown on the console."},
+        )
     elif startup_policy.authentication_required:
         logger.info("%s", PAIRING_ON_REQUEST_HINT)
 

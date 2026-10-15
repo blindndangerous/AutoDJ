@@ -4,6 +4,7 @@ Tests cover config loading, validation, default values, and error handling.
 All tests are pure — no filesystem I/O beyond temp files provided by fixtures.
 """
 
+import sys
 import tomllib
 from pathlib import Path
 
@@ -295,6 +296,20 @@ class TestIndexConfig:
         idx = IndexConfig.from_dict({"name": "  "})
         assert idx.name == "default"
 
+    @pytest.mark.parametrize("name", ["chill.", "a:b"] if sys.platform != "win32" else ["chill."])
+    def test_an_existing_name_windows_reads_differently_still_loads(self, name, caplog) -> None:
+        """An install already using such a name keeps starting; it is warned about."""
+        idx = IndexConfig.from_dict({"index_dir": "srv/index", "name": name})
+        assert idx.active_dir == Path("srv/index") / name
+        assert f"[index] name {name!r}" in caplog.text
+        assert "new index names may not use it" in caplog.text
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters")
+    @pytest.mark.parametrize("name", ["C:", "D:music"])
+    def test_an_existing_name_leading_outside_index_dir_stops_loading(self, name) -> None:
+        with pytest.raises(ValueError, match="would put the index outside index_dir"):
+            IndexConfig.from_dict({"index_dir": "C:/srv/index", "name": name})
+
 
 class TestValidateIndexName:
     def test_accepts_simple(self) -> None:
@@ -336,6 +351,14 @@ class TestValidateIndexName:
         with pytest.raises(ValueError):
             validate_index_name("foo..bar")
 
+    @pytest.mark.parametrize("name", ["C:", "D:music", "a:b", "x.", "chill "])
+    def test_rejects_names_windows_reads_as_another_folder(self, name: str) -> None:
+        """A drive letter escapes <index_dir>; a trailing dot or space is dropped."""
+        from autodj.config import validate_index_name
+
+        with pytest.raises(ValueError, match="Index name cannot"):
+            validate_index_name(name)
+
 
 # ---------------------------------------------------------------------------
 # PlaybackConfig
@@ -376,6 +399,14 @@ class TestPlaybackConfig:
     def test_music_speed_percent_rejects_invalid_values(self, value: float) -> None:
         with pytest.raises((TypeError, ValueError)):
             PlaybackConfig.from_dict({"music_speed_percent": value})
+
+    @pytest.mark.parametrize("value", [0, -3])
+    def test_discovery_every_below_one_is_refused(self, value: int) -> None:
+        """0 made every pick raise ZeroDivisionError once Discovery was on."""
+        with pytest.raises(ValueError, match="discovery_every must be 1 or more"):
+            PlaybackConfig.from_dict({"discovery_every": value})
+        assert PlaybackConfig.from_dict({"discovery_every": 1}).discovery_every == 1
+        assert PlaybackConfig.from_dict({}).discovery_every is None
 
     def test_show_lyrics_false_round_trip(self) -> None:
         pb = PlaybackConfig.from_dict({"show_lyrics": False})

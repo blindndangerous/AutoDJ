@@ -247,6 +247,8 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
     discovery_every: int | None = (
         int(discovery_every_raw) if discovery_every_raw is not None else None
     )
+    if discovery_every is not None and discovery_every < 1:
+        raise ValueError(f"Preset '{name}': discovery_every must be 1 or more.")
 
     curve_name: str | None = section.get("curve")
     bpm_target = section.get("bpm_target")
@@ -277,6 +279,8 @@ def preset_from_config(name: str, section: dict[str, Any]) -> Preset:
         )
 
     weight = float(section.get("bpm_weight", default_weight))
+    if not math.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError(f"Preset '{name}': bpm_weight must be between 0 and 1.")
     return Preset(
         name=name,
         bpm_weight=weight,

@@ -275,6 +275,23 @@ def test_failed_listener_auth_is_throttled_before_ban_status(bridge, tmp_path: P
     assert client.get("/stream.m3u", auth=("radio", "secret")).status_code == 429
 
 
+def test_failed_listener_auth_counts_an_ipv6_64_together(bridge) -> None:
+    """New addresses inside one /64 do not get five fresh guesses each."""
+    bridge.player._cfg.stream.listener_user = "radio"
+    bridge.player._cfg.stream.listener_password = "secret"
+    bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
+    app = create_app(bridge)
+    statuses = [
+        TestClient(app, client=(f"2001:db8:1:2::{i + 1:x}", 50000))
+        .get("/stream.m3u", auth=("radio", f"guess {i}"))
+        .status_code
+        for i in range(6)
+    ]
+    assert statuses == [401] * 5 + [429]
+    other = TestClient(app, client=("2001:db8:1:3::1", 50000))
+    assert other.get("/stream.m3u", auth=("radio", "secret")).status_code == 200
+
+
 def test_per_address_limit_kick_and_ban_routes(stream_app) -> None:
     client, stream = stream_app
     registry = client.app.state.listener_access
@@ -1009,6 +1026,59 @@ def test_failure_building_the_response_frees_the_listener_slot() -> None:
         assert bridge.stream.listener_count == 0
 
 
+def test_cancelled_admission_frees_listener_after_worker_finishes(stream_app, monkeypatch) -> None:
+    import asyncio
+
+    client, stream = stream_app
+    access = client.app.state.listener_access
+    original = access.add
+    entered = threading.Event()
+    resume = threading.Event()
+
+    def slow_add(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entered.set()
+        assert resume.wait(5)
+        return result
+
+    monkeypatch.setattr(access, "add", slow_add)
+    path = "/stream.mp3"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("192.0.2.4", 50000),
+        "server": ("testserver", 80),
+    }
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(_message):
+        pass
+
+    async def run() -> None:
+        task = asyncio.create_task(client.app(scope, receive, send))
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            task.cancel()
+        finally:
+            resume.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert access.listeners() == []
+    stream.remove_listener.assert_called_once_with(stream.add_listener.return_value)
+
+
 def test_failure_while_sending_frees_the_listener_slot() -> None:
     import asyncio
 
@@ -1031,6 +1101,40 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
     scope = {"type": "http", "method": "GET", "asgi": {"spec_version": "2.4"}}
     with pytest.raises((ClientDisconnect, OSError)):  # Starlette wraps the OSError
         asyncio.run(response(scope, receive, failing_send))
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+def test_stalled_send_releases_the_listener(monkeypatch, spec_version: str) -> None:
+    import asyncio
+
+    from autodj import server
+
+    closed: list[bool] = []
+    sent_body = False
+
+    async def body():
+        yield b"audio"
+
+    async def stalled_send(message):
+        nonlocal sent_body
+        if message["type"] == "http.response.body":
+            sent_body = True
+            await asyncio.Event().wait()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(server, "_LISTENER_SEND_TIMEOUT", 0.01)
+    response = server._ListenerResponse(body(), on_close=lambda: closed.append(True))
+    scope = {"type": "http", "method": "GET", "asgi": {"spec_version": spec_version}}
+
+    async def run() -> None:
+        # Ends quietly: an exception here would be logged by uvicorn as an error.
+        await response(scope, receive, stalled_send)
+
+    asyncio.run(asyncio.wait_for(run(), timeout=1.5))
+    assert sent_body
     assert closed == [True]
 
 

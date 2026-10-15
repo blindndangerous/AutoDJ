@@ -739,6 +739,28 @@ def test_manager_with_only_disabled_relays_is_inactive() -> None:
     manager.close()
 
 
+def test_new_fixed_bitrate_output_gets_current_title() -> None:
+    made: list[FakeOutput] = []
+
+    def make_output(bitrate: int) -> FakeOutput:
+        output = FakeOutput(bitrate)
+        made.append(output)
+        return output
+
+    manager = RelayManager(
+        [],
+        FakeOutput(320),
+        make_output=make_output,
+        station_name=lambda: "Radio",
+        relay_factory=FakeRelay,
+    )
+    manager.start()
+    manager.set_title("Artist", "Song now playing")
+    manager.reconfigure([RelayConfig.from_table("low", {**_table(), "bitrate": 128})])
+    assert made[0].titles == [("Artist", "Song now playing")]
+    manager.close()
+
+
 def test_manager_reconfigures_only_changed_relays_and_releases_unused_outputs() -> None:
     main = FakeOutput(320)
     bus: list[FakeOutput] = []

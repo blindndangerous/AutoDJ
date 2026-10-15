@@ -3358,6 +3358,33 @@ class TestMisc:
         assert resp.status_code == 200
         assert bridge.player._state.next_track is None
 
+    def test_repick_next_blacklist_must_be_a_path(self, bridge) -> None:
+        """A blacklist that is not a string never reaches the no-repeat window.
+
+        An object or list there made every later pick raise TypeError, because
+        the picker builds a set from recently_played.
+        """
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._pick_next.return_value = _make_entry(9)
+
+        tc = TestClient(create_app(bridge))
+        for bad in ({"bad": 1}, ["a", "b"], 5, True):
+            resp = tc.post("/api/repick-next", json={"blacklist": bad})
+            assert resp.status_code == 200
+        assert list(bridge.player._state.recently_played) == []
+        resp = tc.post("/api/repick-next", json={"blacklist": "/library/bad.flac"})
+        assert resp.status_code == 200
+        assert list(bridge.player._state.recently_played) == ["/library/bad.flac"]
+        set(bridge.player._state.recently_played)  # what each pick builds
+
+    def test_bridge_repick_next_ignores_non_string_blacklist(self, bridge) -> None:
+        """The bridge refuses a non-string blacklist too, whoever calls it."""
+        bridge.player._pick_next.return_value = _make_entry(9)
+        bridge.repick_next(blacklist_path={"bad": 1})  # type: ignore[arg-type]
+        assert list(bridge.player._state.recently_played) == []
+
     def test_advance_now_uses_queued_next(self, bridge) -> None:
         """queued_next (search -> Now / reseed_random) wins over next_track."""
         bridge.player._dry_run = True

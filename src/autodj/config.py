@@ -154,14 +154,32 @@ class IndexConfig(_Section):
 
         Raises:
             ValueError: If ``name`` contains path separators / traversal /
-                leading dot — names are bare identifiers, not paths — or
-                ``throttle_ms`` is negative.
+                leading dot — names are bare identifiers, not paths —, leads
+                outside ``index_dir`` (a Windows drive letter), or
+                ``throttle_ms`` is negative.  A name Windows reads as another
+                folder inside ``index_dir`` is only warned about.
             TypeError: If ``throttle_ms`` is not a number.
         """
         self.index_dir = Path(self.index_dir).expanduser()
         self.model_dir = Path(self.model_dir).expanduser()
         self.name = str(self.name).strip() or "default"
-        validate_index_name(self.name)
+        _check_index_name_shape(self.name)
+        problem = _index_name_portability_problem(self.name)
+        if problem is not None:
+            # An existing index keeps working: only a name that leads
+            # outside index_dir (a drive letter on Windows) stops loading.
+            if (self.index_dir / self.name).parent != self.index_dir:
+                raise ValueError(
+                    f"[index] name {self.name!r} would put the index outside index_dir "
+                    f"({self.index_dir}): on Windows a drive letter such as 'D:' names "
+                    "another place. Rename the index folder and [index] name."
+                )
+            logger.warning(
+                "[index] name %r: %s It still loads, but new index names may not use it; "
+                "rename the index folder and [index] name when you can.",
+                self.name,
+                problem,
+            )
         if isinstance(self.throttle_ms, bool) or not isinstance(self.throttle_ms, int | float):
             raise TypeError("index.throttle_ms must be a number")
         self.throttle_ms = float(self.throttle_ms)
@@ -177,8 +195,10 @@ class IndexConfig(_Section):
 def validate_index_name(name: str) -> None:
     """Reject names that aren't safe single-segment directory names.
 
-    Use this on every CLI ``--name`` flag and on the ``[index] name``
-    config value before storing.  A *bad* name like ``index/tracks.db``
+    Use this on every new name, such as a CLI ``--name`` flag.  An
+    ``[index] name`` already in config.toml is checked by :class:`IndexConfig`,
+    which only warns about a name Windows reads as another folder unless it
+    leads outside ``index_dir``.  A *bad* name like ``index/tracks.db``
     would silently produce the wrong on-disk path; failing fast with a
     clear error is better.
 
@@ -186,9 +206,17 @@ def validate_index_name(name: str) -> None:
         name: Candidate index name.
 
     Raises:
-        ValueError: If *name* is empty, contains ``/`` or ``\\``, contains
-            ``..``, or starts with a dot.
+        ValueError: If *name* is empty, contains ``/``, ``\\`` or ``:``,
+            contains ``..``, starts with a dot, or ends with a dot or space.
     """
+    _check_index_name_shape(name)
+    problem = _index_name_portability_problem(name)
+    if problem is not None:
+        raise ValueError(problem)
+
+
+def _check_index_name_shape(name: str) -> None:
+    """Refuse an empty name, a path, or one that starts with a dot or contains ``..``."""
     if not name or not name.strip():
         raise ValueError("Index name must not be empty.")
     if "/" in name or "\\" in name:
@@ -201,6 +229,20 @@ def validate_index_name(name: str) -> None:
         raise ValueError(
             f"Index name cannot start with '.' or contain '..' (got {name!r}).",
         )
+
+
+def _index_name_portability_problem(name: str) -> str | None:
+    """Why Windows would read *name* as another folder, or ``None``.
+
+    On Windows ``"D:music"`` is a folder on drive D: and ``"C:"`` the index
+    folder itself, outside ``<index_dir>/<name>``; a trailing dot or space
+    is dropped, so ``"chill."`` is the folder of ``"chill"``.
+    """
+    if ":" in name:
+        return f"Index name cannot contain ':' (got {name!r})."
+    if name.endswith((".", " ")):
+        return f"Index name cannot end with '.' or a space (got {name!r})."
+    return None
 
 
 TRANSITION_MODES: tuple[str, ...] = (
@@ -510,6 +552,12 @@ class PlaybackConfig(_Section):
             )
         self.server_max_track_minutes = float(max_minutes)
         self.discovery_every = _optional(int, self.discovery_every)
+        if self.discovery_every is not None and self.discovery_every < 1:
+            # Every pick divides the track number by it once Discovery is on.
+            raise ValueError(
+                f"playback.discovery_every must be 1 or more, got {self.discovery_every}; "
+                "leave it out to turn discovery off"
+            )
         self.crossfade_bass_cutoff_hz = float(self.crossfade_bass_cutoff_hz)
         self.transition_mode = _validate_transition_mode(str(self.transition_mode))
         self.pick_mode = _validate_pick_mode(str(self.pick_mode))
@@ -2008,16 +2056,31 @@ def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) 
     Returns:
         ``{"stream": {"relays": {name: {"password": ...}}}}`` for every
         relay whose variable is set, or an empty dict.
+
+    Raises:
+        ValueError: Two relays read the same variable (``a-b`` and ``a_b``,
+            or ``Main`` and ``main``) and it is set, which would send one
+            server's source password to the other.  Unset, each keeps the
+            password from its own TOML table.
     """
     stream = raw.get("stream")
     relays = stream.get("relays") if isinstance(stream, Mapping) else None
     if not isinstance(relays, Mapping):
         return {}
-    found = {
-        name: {"password": environ[variable]}
-        for name in relays
-        if isinstance(name, str) and (variable := relay_password_variable(name)) in environ
-    }
+    owners: dict[str, str] = {}
+    found: dict[str, Any] = {}
+    for name in relays:
+        if not isinstance(name, str):
+            continue
+        variable = relay_password_variable(name)
+        if variable in owners and variable in environ:
+            raise ValueError(
+                f"[stream.relays.{name}] and [stream.relays.{owners[variable]}] would both "
+                f"read {variable}, which is set; rename one of them"
+            )
+        owners[variable] = name
+        if variable in environ:
+            found[name] = {"password": environ[variable]}
     return {"stream": {"relays": found}} if found else {}
 
 
@@ -2047,7 +2110,7 @@ def _station_relay_password_overlay(
     default station's relays.
 
     Raises:
-        ValueError: Two station relays would read the same variable.
+        ValueError: Two station relays read the same variable and it is set.
     """
     stations = raw.get("stations")
     if not isinstance(stations, Mapping):
@@ -2064,10 +2127,10 @@ def _station_relay_password_overlay(
                 continue
             variable = station_relay_password_variable(slug, name)
             where = f"stations.{slug}.stream.relays.{name}"
-            if variable in owners:
+            if variable in owners and variable in environ:
                 raise ValueError(
-                    f"[{where}] and [{owners[variable]}] would both read {variable}; "
-                    "rename one of them"
+                    f"[{where}] and [{owners[variable]}] would both read {variable}, "
+                    "which is set; rename one of them"
                 )
             owners[variable] = where
             if variable in environ:
@@ -2324,6 +2387,19 @@ def _load_web_stations(cfg: AutoDJConfig) -> None:
             continue
         cfg.stations += (spec,)
     cfg.skipped_definitions = tuple(skipped)
+
+
+def reload_web_stations(cfg: AutoDJConfig) -> None:
+    """Load the web-created stations again, from the index ``cfg`` now names.
+
+    ``--name`` changes ``[index] name`` after loading, and web-created stations
+    live in their index's ``stations`` folder, so the ones read for the
+    configured index are dropped and the selected index's are read instead.
+    Stations from config.toml are kept.
+    """
+    cfg.stations = tuple(spec for spec in cfg.stations if spec.defined_in != "web")
+    cfg.skipped_definitions = ()
+    _load_web_stations(cfg)
 
 
 def _build_stations(raw: Any, root: AutoDJConfig) -> tuple[StationSpec, ...]:

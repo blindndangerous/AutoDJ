@@ -288,7 +288,9 @@ the token. A configured `access_token` or `AUTODJ_ACCESS_TOKEN` always wins. Any
 the index directory can derive pairing codes, the same as for a token in `config.local.toml`;
 deleting the file rotates the token and ends every paired session on the next start. Startup
 prints the addresses, and a pairing code only while no browser is paired; it never prints the
-token. `--lan --insecure-lan` keeps the
+token. The code goes to the console only: the server log file (`<index>/logs/autodj.log`, kept
+seven days with default file permissions) gets the start-up block without it.
+`--lan --insecure-lan` keeps the
 automatic allowlists without any token.
 
 Name lookups for detection (the fully qualified name and the resolver addresses) run in a
@@ -660,7 +662,12 @@ What the operator should know:
   untrusted audience should relay the stream to a dedicated Icecast or
   Shoutcast server (roadmap issue #37) rather than expose AutoDJ itself.
 - Listener password checks run before ban checks, so unauthenticated requests do not reveal ban
-  status. Five failed Basic-auth attempts per address per minute trigger a temporary throttle.
+  status. Five failed Basic-auth attempts per address (one /64 for IPv6) per minute trigger a
+  temporary throttle. The throttle remembers at most 4096 addresses per minute, so a flood of
+  failures from many addresses costs bounded memory and time on the event loop. When it is full
+  it forgets the address below five failures that failed least recently; a locked address is
+  never forgotten before its minute ends, and if every place holds a locked address, a new
+  address is refused as locked too. The live DJ source login uses the same throttle.
   Paired browsers can see listener addresses and User-Agent names. `listener_bans.json` contains
   banned IP addresses and is included in backups.
 
@@ -927,7 +934,10 @@ This is the only place AutoDJ holds a credential for another system:
 - Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
   shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
   An environment variable only sets the password of a relay a TOML file already names; it
-  cannot add a relay.
+  cannot add a relay. Two relay names that map to one variable (`a-b` and `a_b`, `Main` and
+  `main`) are refused when that variable is set: startup stops, Settings refuses the name, and
+  saved relays are not loaded, so one server's source password is never sent to another. While
+  it is unset, each relay keeps the password from its own table.
 - The password is never written to `web_state.json`, the relay status file, logs, `autodj
   doctor` output, any `/api` response or the WebSocket state. The browser sees only each relay's
   name, server type, host, port, mount or stream ID, state and last error. Error texts are built

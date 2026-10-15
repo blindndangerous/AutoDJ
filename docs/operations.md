@@ -442,7 +442,9 @@ when the AutoDJ account can read it.
 AutoDJ checks the two files every five minutes and loads a renewed certificate without a
 restart. New connections get it; open ones keep the old certificate until they reconnect. If
 AutoDJ finds the files half copied, or a certificate that does not match the key, it logs a
-warning, keeps serving the previous certificate, and tries again when the files change.
+warning, keeps serving the previous certificate, and tries again when the files change. If it
+cannot read the files at all (the renewal tool still has them open, or a share is away), it
+tries again at the next check.
 
 ### 3. Configure AutoDJ
 
@@ -1096,8 +1098,10 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
   not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
-  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
-  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  catalog and applies the measured gain when it decodes a track. Voice clips of kind `liner`
+  (liners and voice breaks) use an 18 dB cap when they need more boost. Liners also pass through
+  voice compression, and server-mixed playback holds decoded track audio in memory while
+  it is mixed.
   Earlier versions wrote processed copies to a `prepared` folder inside the active index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After
@@ -1283,7 +1287,10 @@ password = "the source password from your host"
 
 Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
 upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
-without a password stops AutoDJ at startup with an error naming the table.
+without a password stops AutoDJ at startup with an error naming the table. Two relay names that
+read the same variable, such as `a-b` and `a_b` or `Main` and `main`, stop AutoDJ at startup
+when that variable is set, so one server's password is never sent to another; Settings refuses
+such a name then too. While the variable is unset, each relay uses its own table's password.
 
 The keys:
 

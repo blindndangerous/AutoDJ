@@ -205,6 +205,9 @@ def test_form_tokens_are_signed_per_station_and_song_and_expire() -> None:
     assert not tokens.valid(f"{int(issued) + 1}.{mac}", "default", song)
     for bad in ("", "x", "1.2", f"{issued}.{'0' * 32}", f"-1.{mac}", f"{issued}{mac}"):
         assert not tokens.valid(bad, "default", song), bad
+    # Non-ASCII text made compare_digest raise TypeError (a 500 on the public form).
+    for bad in (f"{issued}.{'é' * 32}", f"{issued}.{mac[:-1]}é", f"١{issued[1:]}.{mac}"):
+        assert not tokens.valid(bad, "default", song), bad
     clock.now += 2 * 3600 + 1
     assert not tokens.valid(token, "default", song)
 
@@ -687,6 +690,23 @@ def test_waiting_requests_are_capped(tmp_path: Path) -> None:
     assert desk.submit(ids.shown(bridge.entries[1].path), "", "192.0.2.1").status == 200
     full = desk.submit(ids.shown(bridge.entries[2].path), "", "192.0.2.2")
     assert full.headline == "Too many requests waiting"
+
+
+def test_auto_request_refused_as_waiting_full_keeps_the_listener_quota(tmp_path: Path) -> None:
+    """Only accepted requests count toward per_listener, in auto approval too."""
+    desk, bridge, ids, _ = _desk(
+        tmp_path, approval="auto", per_listener=1, max_pending=1, daily_limit=50
+    )
+    clockwheel = "the song does not match the clockwheel category"
+    bridge.slots = [_slot(0, bridge.playing, None, clockwheel)]
+    assert desk.submit(ids.shown(bridge.entries[3].path), "", "192.0.2.1").headline == (
+        "Request received"
+    )
+    refused = desk.submit(ids.shown(bridge.entries[4].path), "", "192.0.2.9")
+    assert refused.headline == "Too many requests waiting"
+    bridge.slots = None
+    retry = desk.submit(ids.shown(bridge.entries[5].path), "", "192.0.2.9")
+    assert (retry.status, retry.headline) == (200, "Request accepted")
 
 
 def test_the_operator_can_play_next_or_turn_down(tmp_path: Path) -> None:

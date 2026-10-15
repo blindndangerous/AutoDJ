@@ -575,6 +575,8 @@ class Scheduler:
         self.lock = threading.Lock()
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
+        # One write of the file at a time, in the order the changes were made.
+        self._save_lock = asyncio.Lock()
         self._pending_hard_deadline: dict[str, datetime] = {}
         self.started = False
         self.cursor = clock()
@@ -651,6 +653,10 @@ class Scheduler:
 
     def save(self) -> None:
         """Write the schedule atomically."""
+        self._write(self._document_text())
+
+    def _document_text(self) -> str:
+        """The schedule file's text for the events and runs as they are now."""
         document = ScheduleFile(
             schema_version=SCHEMA_VERSION,
             events=[*self.events.values(), *self.kept],
@@ -665,8 +671,11 @@ class Scheduler:
                     del event[key]
             if not event["wait_seconds"]:
                 del event["wait_seconds"]
+        return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+
+    def _write(self, text: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+        atomic_write(self.path, text)
 
     def _save_quietly(self) -> None:
         """Save from the timer: a failed write is logged, never raised."""
@@ -675,6 +684,25 @@ class Scheduler:
         except OSError:
             logger.exception("Could not save the schedule to %s", self.path)
 
+    async def _save_off_loop(self, *, quietly: bool = False) -> None:
+        """Save without holding up the event loop.
+
+        The text is built here, from the state as it is now, and written in
+        a worker thread: on Windows the write can wait about half a second
+        for a reader to let go of the file (see :func:`atomic_write`).
+
+        Raises:
+            OSError: The write failed, unless *quietly*, when it is logged.
+        """
+        text = self._document_text()
+        async with self._save_lock:
+            try:
+                await asyncio.to_thread(self._write, text)
+            except OSError:
+                if not quietly:
+                    raise
+                logger.exception("Could not save the schedule to %s", self.path)
+
     async def _publish(self, message: dict[str, Any]) -> None:
         try:
             await self._publisher(message)
@@ -682,7 +710,7 @@ class Scheduler:
             logger.exception("Could not tell the web pages about a schedule change")
 
     async def _changed(self) -> None:
-        self.save()
+        await self._save_off_loop()
         await self._publish({"type": "schedule_changed"})
 
     # -- editing --------------------------------------------------------
@@ -786,7 +814,7 @@ class Scheduler:
 
     async def _record(self, event: ScheduledEvent, result: RunResult, message: str) -> RunRecord:
         record = self._append_run(event, result, message)
-        self._save_quietly()
+        await self._save_off_loop(quietly=True)
         await self._publish({"type": "schedule_run", "run": record.model_dump(mode="json")})
         return record
 
@@ -860,7 +888,7 @@ class Scheduler:
             else:
                 await self.run(event)
         if disabled:
-            self._save_quietly()
+            await self._save_off_loop(quietly=True)
             await self._publish({"type": "schedule_changed"})
         if self._song_playing():
             for event_id, deadline in list(self._pending_hard_deadline.items()):
