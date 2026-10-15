@@ -1021,7 +1021,8 @@ function functionBody(source, name) {
   const signature = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`, "g");
   const match = signature.exec(source);
   if (!match) throw new Error(`Missing function ${name}`);
-  const open = source.indexOf("{", match.index);
+  // The brace that ends the signature, not one in a destructured parameter.
+  const open = match.index + match[0].length - 1;
   const close = findClosingBrace(source, open);
   return source.slice(open + 1, close);
 }
@@ -1259,7 +1260,7 @@ describe("static accessibility contracts", () => {
 
     const statusWriter = functionBody(appSource, "setConnStatus");
     expect(statusWriter).toMatch(/connStatus\.textContent\s*=\s*label\s*;/);
-    expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"\)/);
+    expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"[,)]/);
   });
 
   it("gives controls real high-contrast boundaries and retains focus", () => {
