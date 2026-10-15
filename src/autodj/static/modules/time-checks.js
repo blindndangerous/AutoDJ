@@ -434,8 +434,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
   // folder is the library's shared one; the server says so per pack.
   const sharedNote = (pack) => (pack?.shared_with_stations ? " Other stations use this pack too." : "");
 
-  async function askReplacePack(message, file) {
-    const shared = (settings?.packs || []).find((pack) => pack.shared_with_stations);
+  // *target* names the pack being replaced when the page knows it; the
+  // server's own refusal names it only in its words.
+  async function askReplacePack(message, file, target = null) {
+    const packs = settings?.packs || [];
+    const shared = target
+      ? packs.find((pack) => nameKey(pack.name) === nameKey(target))
+      : packs.find((pack) => pack.shared_with_stations);
     return confirm(doc, {
       station: true,
       title: "Replace the voice pack?",
@@ -444,9 +449,10 @@ export function installTimeChecks({ doc = document, request = requestJson,
     });
   }
 
-  // Sends the chosen zip.  A name a pack added here already has asks
-  // before anything is sent; one the server finds taken (the folder in the
-  // zip names it) asks then, and sends again with replace.
+  // Sends the chosen zip.  A typed name a pack added here already has asks
+  // before anything is sent.  With no typed name the folder in the zip names
+  // the pack, which the page cannot see, so the server's refusal asks then,
+  // and the zip is sent again with replace.
   async function addPack(replace = false) {
     const file = files.packFile.files?.[0];
     if (!file) {
@@ -455,12 +461,11 @@ export function installTimeChecks({ doc = document, request = requestJson,
     }
     clearUploadError("pack");
     const name = files.packName.value.trim();
-    if (!replace) {
-      const guess = nameKey(name || file.name.replace(/\.zip$/i, ""));
+    if (!replace && name) {
       const taken = (settings?.packs || []).find(
-        (pack) => pack.removable && nameKey(pack.name) === guess);
+        (pack) => pack.removable && nameKey(pack.name) === nameKey(name));
       if (taken) {
-        if (!(await askReplacePack(`A voice pack named ${taken.name} already exists`, file))) {
+        if (!(await askReplacePack(`A voice pack named ${taken.name} already exists`, file, taken.name))) {
           say("The voice pack was not added.");
           return;
         }
@@ -491,6 +496,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
     files.packFile.value = "";
     files.packName.value = "";
     const added = reply.packs?.find((pack) => pack.name === reply.added);
+    if (!added) {
+      // A folder of minute clips is not a voice pack; it is chosen as the
+      // recorded clips folder instead.
+      doc.getElementById("tc-recorded-folder")?.focus();
+      say(`Added folder ${reply.added} of minute clips. Choose it under Recorded minute clips folder.`);
+      return;
+    }
     packBoxes().find((box) => box.value === reply.added)?.focus();
     const ticked = added?.enabled ? "It is ticked." : "Tick it to use it.";
     say(`${replace ? "Replaced" : "Added"} voice pack ${reply.added}. ${ticked}`);

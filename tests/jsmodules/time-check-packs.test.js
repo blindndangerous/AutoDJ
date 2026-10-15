@@ -141,12 +141,13 @@ describe("adding and removing voice packs", () => {
     await vi.waitFor(() => expect(add.hasAttribute("aria-busy")).toBe(false));
   });
 
-  it("asks before sending when the name is a pack added here, and sends once", async () => {
+  it("asks before sending when the typed name is a pack added here, and sends once", async () => {
     const request = vi.fn(async () => state({ packs: [pack("Studio")], added: "Studio" }));
     const confirm = vi.fn(async () => true);
     const controls = installTimeChecks({ request, confirm, interval: () => {} });
     await controls.refresh();
-    choose(byId("tc-pack-file"), "studio.ZIP");
+    choose(byId("tc-pack-file"), "voices.zip");
+    byId("tc-pack-name").value = "studio";
     byId("tc-pack-add").click();
     await vi.waitFor(() => expect(said()).toBe("Replaced voice pack Studio. It is ticked."));
     expect(confirm).toHaveBeenCalledWith(document, expect.objectContaining({
@@ -154,7 +155,37 @@ describe("adding and removing voice packs", () => {
     expect(confirm.mock.calls[0][1].message).toContain("A voice pack named Studio already exists.");
     expect(confirm.mock.calls[0][1].message).not.toContain("Other stations");
     const posts = request.mock.calls.filter(([, options]) => options?.method === "POST");
-    expect(posts.map(([url]) => url)).toEqual(["/api/time-checks/packs?replace=true"]);
+    expect(posts.map(([url]) => url)).toEqual(["/api/time-checks/packs?name=studio&replace=true"]);
+  });
+
+  it("does not guess a blank name from the zip's file name, and leaves the asking to the server", async () => {
+    // Studio.zip may hold a folder named Studio Voice: the server names the
+    // pack after that folder, so asking to replace Studio would be wrong.
+    const request = vi.fn(async (url, options = {}) => (options.method === "POST"
+      ? state({ packs: [pack("Studio"), pack("Studio Voice", { enabled: false })], added: "Studio Voice" })
+      : state({ packs: [pack("Studio")] })));
+    const confirm = vi.fn(async () => true);
+    const controls = installTimeChecks({ request, confirm, interval: () => {} });
+    await controls.refresh();
+    choose(byId("tc-pack-file"), "Studio.zip");
+    byId("tc-pack-add").click();
+    await vi.waitFor(() => expect(said()).toBe("Added voice pack Studio Voice. Tick it to use it."));
+    expect(confirm).not.toHaveBeenCalled();
+    const posts = request.mock.calls.filter(([, options]) => options?.method === "POST");
+    expect(posts.map(([url]) => url)).toEqual(["/api/time-checks/packs"]);
+  });
+
+  it("says where a folder of minute clips went, and focuses the folder choice", async () => {
+    const request = vi.fn(async (url, options = {}) => (options.method === "POST"
+      ? state({ packs: [pack("Night")], folders: ["Minutes"], added: "Minutes" })
+      : state({ packs: [pack("Night")] })));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    choose(byId("tc-pack-file"), "Minutes.zip");
+    byId("tc-pack-add").click();
+    await vi.waitFor(() => expect(said()).toBe(
+      "Added folder Minutes of minute clips. Choose it under Recorded minute clips folder."));
+    expect(document.activeElement).toBe(byId("tc-recorded-folder"));
   });
 
   it("asks when the server finds the name taken, then sends it again with replace", async () => {
