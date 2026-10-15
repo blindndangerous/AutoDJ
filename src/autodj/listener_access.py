@@ -16,6 +16,7 @@ from typing import Any
 from autodj.fsutil import atomic_write
 
 logger = logging.getLogger(__name__)
+_CLOSED_LISTENER_GRACE = 30.0
 
 
 class AddressLimitError(Exception):
@@ -182,6 +183,7 @@ class ListenerAccess:
         self._lock = threading.RLock()
         # id -> (address, player, connected at, listener, stream, format)
         self._listeners: dict[str, tuple[str, str, float, Any, Any, str]] = {}
+        self._closed_since: dict[str, float] = {}
         self._pending: dict[str, int] = {}
         self._bans: dict[str, dict[str, Any]] = {}
         self.revision = 0
@@ -269,16 +271,16 @@ class ListenerAccess:
                 its formats together.
         """
         address = normalize_address(address)
+        self._reclaim_closed()
         with self._lock:
             if self._banned_locked(address):
                 raise BannedAddressError(address)
-            open_entries = [entry for entry in self._listeners.values() if not entry[3].closed]
             count = self._pending.get(address, 0) + sum(
-                entry[0] == address for entry in open_entries
+                entry[0] == address for entry in self._listeners.values()
             )
             if self.max_per_address and count >= self.max_per_address:
                 raise AddressLimitError(address)
-            total = sum(self._pending.values()) + len(open_entries)
+            total = sum(self._pending.values()) + len(self._listeners)
             if self.max_total and total >= self.max_total:
                 raise StationFullError(address)
             self._pending[address] = self._pending.get(address, 0) + 1
@@ -312,6 +314,7 @@ class ListenerAccess:
     def remove(self, ident: str, *, immediate: bool = False) -> None:
         with self._lock:
             entry = self._listeners.pop(ident, None)
+            self._closed_since.pop(ident, None)
             if entry is not None:
                 self.revision += 1
         if entry is not None:
@@ -319,13 +322,29 @@ class ListenerAccess:
                 entry[3].abort()
             entry[4].remove_listener(entry[3])
 
-    def listeners(self) -> list[dict[str, Any]]:
+    def _reclaim_closed(self) -> None:
+        """Release closed listeners whose response did not finish within the grace period."""
+        stale = []
         with self._lock:
-            stale = [key for key, entry in self._listeners.items() if entry[3].closed]
-            for key in stale:
-                del self._listeners[key]
-            if stale:
-                self.revision += 1
+            now = self._clock()
+            for ident, entry in list(self._listeners.items()):
+                if not entry[3].closed:
+                    self._closed_since.pop(ident, None)
+                    continue
+                closed_at = getattr(entry[3], "closed_at", None)
+                if not isinstance(closed_at, int | float):
+                    closed_at = self._closed_since.setdefault(ident, now)
+                if now - closed_at >= _CLOSED_LISTENER_GRACE:
+                    stale.append(entry)
+                    del self._listeners[ident]
+                    self._closed_since.pop(ident, None)
+                    self.revision += 1
+        for entry in stale:
+            entry[4].remove_listener(entry[3])
+
+    def listeners(self) -> list[dict[str, Any]]:
+        self._reclaim_closed()
+        with self._lock:
             return [
                 {
                     "id": key,

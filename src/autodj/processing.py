@@ -166,7 +166,11 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
             and lufs > -65
             and math.isfinite(gain)
             and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
-            and math.isclose(gain, target - lufs, abs_tol=0.01)
+            and math.isclose(
+                gain,
+                min(target - lufs, MAX_GAIN_DB) if kind == "liner" else target - lufs,
+                abs_tol=0.01,
+            )
         )
     except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return False
@@ -236,6 +240,8 @@ def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -
     if not math.isfinite(lufs) or lufs <= -65:
         raise ValueError(f"silent or invalid audio: {source}")
     gain_db = _kind(kind) - lufs
+    if kind == "liner":
+        gain_db = min(gain_db, MAX_GAIN_DB)
     if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
         raise ValueError(f"required gain outside safe range: {source}")
     return {

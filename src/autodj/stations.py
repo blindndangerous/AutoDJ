@@ -1116,7 +1116,7 @@ class StationRuntime:
                     logger.info("%d planned break(s) missed: live DJ on air", missed)
             except Exception:
                 logger.exception("Could not mark the planned breaks missed")
-        for out in (bridge.stream, bridge.relays):
+        for out in (bridge.stream, bridge.relays, bridge.mounts):
             if out is not None:
                 try:
                     out.set_title(status["dj"], self.live.title)
