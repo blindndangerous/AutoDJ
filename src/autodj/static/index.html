@@ -3317,7 +3317,7 @@
       <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
       <p id="clock-next"></p>
       <fieldset id="clock-step-form" class="flow-form">
-        <legend id="clock-step-legend">Add a step</legend>
+        <legend><h4 id="clock-step-legend">Add a step</h4></legend>
         <label for="clock-step-type">Step type</label>
         <select id="clock-step-type">
           <option value="music">Music matching conditions</option>
@@ -3372,6 +3372,7 @@
           </div>
           <p id="clock-step-ad-error" class="field-error" hidden></p>
         </div>
+        <h5>How the step chooses</h5>
         <div class="clock-step-field">
           <label for="clock-step-selection">Choose</label>
           <select id="clock-step-selection">
@@ -3390,7 +3391,7 @@
         <!-- step-hours.js: the step's days and hours.  A refused field is
              linked to #clock-step-hours-error and focused; #clock-status says it. -->
         <fieldset id="clock-step-hours">
-          <legend>When this step plays</legend>
+          <legend><h5>When this step plays</h5></legend>
           <p class="setting-desc" id="clock-step-hours-help">
             Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
           </p>
@@ -3417,6 +3418,7 @@
         <button type="button" id="clock-add-step">Add step</button>
         <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
       </fieldset>
+      <h4>Restarts and saving</h4>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
       <p id="clock-resync-help">Comma separated, 0 to 59, such as 0, 30. Leave empty to restart only when the wheel wraps.</p>

@@ -1215,6 +1215,7 @@
       padding: 0 0.4rem;
       font-weight: 600;
     }
+    fieldset legend > :is(h3, h4, h5) { font-size: inherit; margin: 0; }
     /* `hidden` attribute must win over author display rules
        (settings-row uses flex, setting-desc uses block; both beat the
        UA [hidden] {display:none} on specificity). */

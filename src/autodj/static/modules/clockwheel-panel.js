@@ -836,6 +836,12 @@ export function installClockwheelPanel({ document: doc = document, request = req
       say(`Added ${position(clock.steps.length - 1)}. Not saved yet.`);
     }
   });
+  // Escape in the step form cancels an edit, like Cancel edit.
+  el("clock-step-form")?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !cancelEdit || cancelEdit.hidden) return;
+    event.preventDefault();
+    cancelEdit.click();
+  });
   cancelEdit?.addEventListener("click", () => {
     const index = editing;
     resetForm();
