@@ -1,7 +1,7 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
 import { describe, it, expect } from "vitest";
-import { fmtTime, fmtTrack, escHtml, focusRevealed, isTypingTarget, placeRows } from
+import { fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
@@ -146,5 +146,19 @@ describe("placeRows (#328)", () => {
     fresh.dataset.name = "z";
     placeRows(ul, [fresh, ul.querySelector("li")]);
     expect(names(ul)).toEqual(["z", "a"]);
+  });
+});
+
+describe("focusAfterDialog", () => {
+  it("does not count the page body as a place focus returned to", () => {
+    expect(focusAfterDialog(document.body)).toBe(false);
+  });
+
+  it("focuses a connected control and reports it", () => {
+    const button = document.createElement("button");
+    document.body.append(button);
+    expect(focusAfterDialog(button)).toBe(true);
+    expect(document.activeElement).toBe(button);
+    button.remove();
   });
 });
