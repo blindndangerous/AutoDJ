@@ -462,10 +462,6 @@ class TestPlaybackConfig:
         with pytest.raises(ValueError, match=key):
             PlaybackConfig.from_dict({key: value})
 
-    def test_liners_folder_expands_the_home_directory(self) -> None:
-        pb = PlaybackConfig.from_dict({"liners_folder": "~/liners"})
-        assert pb.liners_folder == str(Path.home() / "liners")
-
     def test_matched_intro_without_liner_setting_defaults_off(self) -> None:
         assert PlaybackConfig.from_dict({}).matched_intro_only_without_liner is False
         assert (

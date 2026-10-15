@@ -61,7 +61,6 @@ def make_config(
     root: Path,
     *,
     music: Path | None = None,
-    liners: Path | None = None,
     processing: str | None = None,
 ):
     music = root / "Music" if music is None else music
@@ -70,9 +69,7 @@ def make_config(
     return AutoDJConfig(
         library=LibraryConfig(music_dir=music, supported_formats=["flac"]),
         index=IndexConfig(index_dir=index.parent, model_dir=root / "models"),
-        playback=PlaybackConfig(
-            liners_folder=str(liners) if liners else None, loudness_processing=processing
-        ),
+        playback=PlaybackConfig(loudness_processing=processing),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(),
         config_path=root / "config.toml",
@@ -100,10 +97,14 @@ def make_entry(path: Path, *, title: str | None = None, energy: float = 0.25) ->
 def manager_factory(tmp_path):
     managers = []
 
-    def create(**kwargs):
+    def create(liners=None, **kwargs):
         cfg = make_config(tmp_path, **kwargs)
+        # The station's own liners folder, registered on a new library.
+        (cfg.index.active_dir / "liners").mkdir(parents=True, exist_ok=True)
         manager = LibraryManager(cfg, Similarity())
         manager.catalog.add_source(cfg.library.music_dir)
+        if liners is not None:
+            manager.catalog.add_source(liners, "liner")
         managers.append(manager)
         return manager
 
@@ -139,14 +140,13 @@ def fake_loudness(path: Path, kind: str = "music") -> dict:
 
 
 def test_new_library_does_not_register_legacy_music_root(tmp_path: Path) -> None:
-    cfg = make_config(
-        tmp_path, music=tmp_path / "missing-music", liners=tmp_path / "missing-liners"
-    )
+    cfg = make_config(tmp_path, music=tmp_path / "missing-music")
     sim = Similarity()
     manager = LibraryManager(cfg, sim)
     try:
+        # Only the station's own liners folder is registered.
         assert {row["path"] for row in manager.catalog.sources()} == {
-            os.path.normcase(str(tmp_path / "missing-liners")),
+            os.path.normcase(str(cfg.index.active_dir / "liners")),
         }
         assert sim.replaced[1].shape == (0, FEATURE_DIM)
         assert not (cfg.index.active_dir / "index-manifest.json").exists()

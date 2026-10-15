@@ -1683,7 +1683,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {
             # Echo the operator's configured string verbatim; only the derived
             # default is rendered from a Path.
-            "folder": cfg.playback.liners_folder or str(folder),
+            "folder": str(folder),
             "today": today.isoformat(),
             # So a page left open past midnight still knows the station's day.
             "timezone": station_zone(cfg),

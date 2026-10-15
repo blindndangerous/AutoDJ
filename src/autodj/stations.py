@@ -300,8 +300,8 @@ class StationPaths:
 
     @property
     def liners(self) -> Path:
-        """Liner clips: ``[playback] liners_folder`` or the default."""
-        return Path(self._cfg.playback.liners_folder or self.state_dir / "liners")
+        """The station's own liner clips: uploads go here."""
+        return self.state_dir / "liners"
 
     @property
     def profiles(self) -> Path:

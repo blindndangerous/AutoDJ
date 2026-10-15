@@ -183,21 +183,6 @@ def test_dmca_conflict_names_the_station_table(tmp_path: Path) -> None:
     assert "[stations.nightowl.nowplaying] show_next" in str(check.detail)
 
 
-def test_missing_configured_liner_folder_warns(tmp_path: Path) -> None:
-    missing = tmp_path / "owl-liners"
-    cfg = _config(
-        tmp_path, f'\n[stations.nightowl.playback]\nliners_folder = "{missing.as_posix()}"\n'
-    )
-
-    owl = _checks(run_doctor(cfg, python_version=(3, 14)), "nightowl")
-
-    assert owl["liners"].status is CheckStatus.WARN
-    assert "[stations.nightowl.playback] liners_folder" in str(owl["liners"].detail)
-    missing.mkdir()
-    owl = _checks(run_doctor(cfg, python_version=(3, 14)), "nightowl")
-    assert owl["liners"].status is CheckStatus.PASS
-
-
 def test_recording_folder_that_is_a_file_warns(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     (tmp_path / "recordings").mkdir()
