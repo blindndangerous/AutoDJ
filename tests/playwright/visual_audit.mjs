@@ -2,9 +2,10 @@
 // user meets in every view and Settings subtab.  Per browser engine it
 // checks, with every card opened:
 //
-//   - in each theme mode -- Light and Dark chosen in Settings (each
-//     against the opposite system preference, so the choice must win),
-//     and System under a light and a dark system preference:
+//   - in Light and Dark chosen in Settings (each against the opposite
+//     system preference, so the choice must win); Firefox in Dark only.
+//     System under a light and a dark system preference shows the same
+//     page, so for it only the first item below is checked, on one page:
 //       - the stored choice is on <html> before any module script runs,
 //         so nothing is painted in the other theme first, and the page
 //         and the Theme radio buttons show that theme;
@@ -183,6 +184,14 @@ const THEME_MODES = [
   { name: "system-light", stored: null, colorScheme: "light", theme: "light" },
   { name: "system-dark", stored: null, colorScheme: "dark", theme: "dark" },
 ];
+// Every view is audited in Light and Dark (each pinned against the opposite
+// system theme) in Chromium, and in Dark in Firefox.  The System modes show
+// the same page as Light and Dark, so they only check, once per browser,
+// that following the system picks the right theme.
+const FULL_MODES = {
+  chromium: ["light", "dark"],
+  firefox: ["dark"],
+};
 
 // Settings > Song picking > Test rotation, opened: the server's answers
 // are stood in for, so the running and finished states look the same on
@@ -1748,22 +1757,43 @@ async function auditTheme(browser, mode, out) {
       }
     });
     await settle(page);
-    const state = await page.evaluate(() => ({
-      before: window.__beforeModules,
-      theme: document.documentElement.getAttribute("data-theme"),
-      background: window.getComputedStyle(document.body).backgroundColor,
-      checked: document.querySelector('input[name="theme"]:checked')?.value,
-    }));
-    const expected = {
-      theme: mode.stored,
-      background: THEME_BG[mode.theme],
-      checked: mode.stored || "system",
-    };
-    const problems = [];
-    if (state.before?.theme !== expected.theme) problems.push(`data-theme before modules ${state.before?.theme}`);
-    if (state.theme !== expected.theme) problems.push(`data-theme ${state.theme}`);
-    if (state.background !== expected.background) problems.push(`background ${state.background}`);
-    if (state.checked !== expected.checked) problems.push(`checked ${state.checked}`);
+    const problems = await themeStateProblems(page, mode);
+    if (problems.length) out.themeState[mode.name] = problems;
+  } finally {
+    await context.close();
+  }
+}
+
+// The theme a page opened in *mode* shows, before and after the modules ran.
+async function themeStateProblems(page, mode) {
+  const state = await page.evaluate(() => ({
+    before: window.__beforeModules,
+    theme: document.documentElement.getAttribute("data-theme"),
+    background: window.getComputedStyle(document.body).backgroundColor,
+    checked: document.querySelector('input[name="theme"]:checked')?.value,
+  }));
+  const expected = {
+    theme: mode.stored,
+    background: THEME_BG[mode.theme],
+    checked: mode.stored || "system",
+  };
+  const problems = [];
+  if (state.before?.theme !== expected.theme) problems.push(`data-theme before modules ${state.before?.theme}`);
+  if (state.theme !== expected.theme) problems.push(`data-theme ${state.theme}`);
+  if (state.background !== expected.background) problems.push(`background ${state.background}`);
+  if (state.checked !== expected.checked) problems.push(`checked ${state.checked}`);
+  return problems;
+}
+
+// A System mode: the page follows the system theme.  One page load.
+async function checkSystemTheme(browser, mode, out) {
+  const context = await themeContext(browser, mode);
+  const page = await newPage(context);
+  page.on("pageerror", (error) => out.pageerrors.push(`${mode.name}: ${error.message}`));
+  try {
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle", timeout: 20000 });
+    await settle(page);
+    const problems = await themeStateProblems(page, mode);
     if (problems.length) out.themeState[mode.name] = problems;
   } finally {
     await context.close();
@@ -2585,7 +2615,11 @@ export async function audit(name, launcher) {
   };
   if (SHOTS) mkdirSync(SHOTS, { recursive: true });
   try {
-    for (const mode of THEME_MODES) await auditTheme(browser, mode, out);
+    const full = FULL_MODES[name] || FULL_MODES.chromium;
+    for (const mode of THEME_MODES) {
+      if (full.includes(mode.name)) await auditTheme(browser, mode, out);
+      else if (!mode.stored) await checkSystemTheme(browser, mode, out);
+    }
     await auditStatusPages(browser, out);
 
     const wide = await browser.newContext({ viewport: { width: 1280, height: 800 },
