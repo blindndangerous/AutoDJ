@@ -2250,7 +2250,20 @@
       <button type="button" id="time-settings-save">Save time settings</button>
     </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
-    <ul id="stations-list" aria-labelledby="stations-list-heading"></ul>
+    <div class="data-table-scroll">
+      <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
+        <thead>
+          <tr>
+            <th scope="col">Station</th>
+            <th scope="col">Now playing</th>
+            <th scope="col">Listeners</th>
+            <th scope="col">Start with the server</th>
+            <th scope="col">Start or stop</th>
+          </tr>
+        </thead>
+        <tbody id="stations-list"></tbody>
+      </table>
+    </div>
     <form id="station-create-form" novalidate>
       <fieldset>
         <legend>New station</legend>

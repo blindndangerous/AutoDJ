@@ -234,6 +234,8 @@ def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
         "m3u_path": "/stations/nightowl.m3u",
         "player_path": None,
         "embed_path": None,
+        "autostart": True,
+        "autostart_locked": True,
     }
     with pytest.raises(KeyError):
         registry.get("daybreak")

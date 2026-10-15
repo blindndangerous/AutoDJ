@@ -1598,6 +1598,7 @@ const stationSwitcher = installStationSwitcher({
 // joins the list at once; Switch to it puts focus on the Station button.
 const stationCreator = installStationCreator({
   onCreated: () => refreshStationList(),
+  onChanged: () => refreshStationList(),
   onSwitch: async (slug) => {
     await switchStation(slug);
     if (currentStation() !== slug) return false;
