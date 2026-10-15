@@ -1,6 +1,6 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { fmtTrack } from "./dom-helpers.js";
+import { fmtTrack, placeRows } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
@@ -188,6 +188,26 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pointStatus.textContent = message;
     pointStatus.dataset.tone = error ? "error" : "info";
   }
+  function folderRow(folder) {
+    const recursive = doc.createElement("input");
+    recursive.type = "checkbox"; recursive.dataset.field = "recursive";
+    const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
+    let advanced = null;
+    let advancedLabel = "";
+    if (folder.kind === "music") {
+      advanced = doc.createElement("input");
+      advanced.type = "checkbox"; advanced.dataset.field = "advanced";
+      advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
+    }
+    const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
+    const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
+    row.dataset.id = folder.id;
+    return { key: JSON.stringify([folder.id, folder.kind, folder.path]), row, recursive, advanced };
+  }
+  // A folder's row is kept and its checkboxes set in place, as the relay
+  // table does.  The table drawn again after a save destroyed the focused
+  // checkbox, and NVDA went to browse mode (#330).
+  let folderRows = new Map();
   function renderFolders(data) {
     const folders = data.folders || [];
     const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
@@ -196,25 +216,20 @@ export function installLibraryFolders({ document: doc = document, request = requ
         id: doc.activeElement.closest("tr")?.dataset.id,
         column: doc.activeElement.closest("td")?.cellIndex,
       } : null;
-      list.replaceChildren(...(folders.length ? folders.map((folder) => {
-        const recursive = doc.createElement("input");
-        recursive.type = "checkbox"; recursive.dataset.field = "recursive"; recursive.checked = !!folder.recursive;
-        const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
-        let advancedLabel = "";
-        if (folder.kind === "music") {
-          const advanced = doc.createElement("input");
-          advanced.type = "checkbox"; advanced.dataset.field = "advanced"; advanced.checked = !!folder.advanced;
-          advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
-        }
-        const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
-        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
-        row.dataset.id = folder.id;
-        return row;
-      }) : [tableRow(doc, ["No folders added yet."], { colspan: [5] })]));
+      const records = folders.map((folder) => {
+        const kept = folderRows.get(folder.id);
+        const record = kept?.key === JSON.stringify([folder.id, folder.kind, folder.path]) ? kept : folderRow(folder);
+        if (record.recursive.checked !== !!folder.recursive) record.recursive.checked = !!folder.recursive;
+        if (record.advanced && record.advanced.checked !== !!folder.advanced) record.advanced.checked = !!folder.advanced;
+        return record;
+      });
+      folderRows = new Map(records.map((record, index) => [folders[index].id, record]));
+      if (records.length) placeRows(list, records.map((record) => record.row));
+      else list.replaceChildren(tableRow(doc, ["No folders added yet."], { colspan: [5] }));
       folderSignature = signature;
       tableNavigation.refresh();
       onFolders?.(folders);
-      if (focused) {
+      if (focused && !list.contains(doc.activeElement)) {
         const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
         const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled)") || cell;
         (replacement || doc.getElementById("source-folder-add")).focus();

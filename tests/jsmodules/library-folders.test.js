@@ -209,7 +209,7 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/folders/abc", { method: "DELETE" });
   });
 
-  it("keeps checkbox focus and blocks another toggle while saving, then survives a redraw", async () => {
+  it("keeps checkbox focus and blocks another toggle while saving, then keeps the checkbox (#330)", async () => {
     document.getElementById("panel-library").hidden = false;
     let folders = [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }];
     let finish;
@@ -233,13 +233,27 @@ describe("clock folder and points controls", () => {
     folders = [{ ...folders[0], recursive: true }];
     await controls.refresh();
     expect(document.activeElement).toBe(checkbox);
+    const left = [];
+    document.addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) left.push(event.target);
+    });
     finish({});
-    await vi.waitFor(() => expect(document.querySelector('[data-field="recursive"]')).not.toBe(checkbox));
-    const replacement = document.querySelector('[data-field="recursive"]');
-    expect(replacement.checked).toBe(true);
-    expect(replacement.classList.contains("is-pending")).toBe(false);
-    expect(replacement.hasAttribute("aria-busy")).toBe(false);
-    expect(document.activeElement).toBe(replacement);
+    await vi.waitFor(() => expect(checkbox.hasAttribute("aria-busy")).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The redraw after the save keeps the same checkbox, so focus never
+    // leaves it and NVDA stays in focus mode.
+    expect(document.querySelector('[data-field="recursive"]')).toBe(checkbox);
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.classList.contains("is-pending")).toBe(false);
+    expect(document.activeElement).toBe(checkbox);
+    // Another page's change is set on it in place.
+    folders = [{ ...folders[0], recursive: false, advanced: true }];
+    await controls.refresh();
+    expect(document.querySelector('[data-field="recursive"]')).toBe(checkbox);
+    expect(checkbox.checked).toBe(false);
+    expect(document.querySelector('[data-field="advanced"]').checked).toBe(true);
+    expect(document.activeElement).toBe(checkbox);
+    expect(left).toEqual([]);
   });
 
   it("never says unavailable on Remove while it removes, and takes no second press (#331)", async () => {
