@@ -2127,7 +2127,7 @@ for any tag you changed (an ISRC, in most beets libraries), beets is left exactl
 
 If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
-analysed again.
+analysed again. Rescans also detect external tag edits that fit inside existing file padding.
 
 In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
 that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
@@ -2138,9 +2138,11 @@ that AutoDJ is not allowed to change the file. Remove `:ro` from the music volum
 When a file moves between registered folders in the same catalog, a scan can recognize it by its
 size and a fingerprint of 64 KiB from the middle of the file. The existing vector, metadata,
 analysis and cues stay with that track. A track is re-pathed only when exactly one missing file and
-exactly one new file match. A copy, two identical files, or a file whose bytes changed (retagged)
+exactly one new file match. A copy, two identical files, or a file whose size or fingerprint changed
 is handled as a changed or new song. Register the destination folder before rescanning. This does
-not make a copied catalog portable to paths on another machine.
+not make a copied catalog portable to paths on another machine. A rescan also checks modification
+time, so an in-place tag edit is read even if size and fingerprint stay the same.
+The first rescan after upgrading re-reads existing files once to record their modification times.
 
 Use `autodj migrate-index` to move a published index and supported old state into the current
 `library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
