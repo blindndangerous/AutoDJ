@@ -85,6 +85,10 @@ describe("Breaks panel markup", () => {
     }
     expect(byId("brk-placement").tagName).toBe("FIELDSET");
     expect(byId("brk-placement").querySelector("legend").textContent).toBe("Where a DJ break goes");
+    // The group's help is read as part of the group, not through aria-describedby,
+    // which NVDA does not read reliably on a fieldset.
+    expect(byId("brk-placement").hasAttribute("aria-describedby")).toBe(false);
+    expect(byId("brk-placement").querySelector("legend + #brk-placement-help")).not.toBeNull();
     expect(byId("brk-form").getAttribute("aria-labelledby")).toBe("brk-form-heading");
     expect(panel.querySelectorAll("[aria-live]")).toHaveLength(1);
     expect(byId("brk-status").getAttribute("role")).toBe("status");
@@ -229,6 +233,10 @@ describe("Break settings panel", () => {
     field.value = "2";
     field.dispatchEvent(new Event("input", { bubbles: true }));
     expect(field.hasAttribute("aria-invalid")).toBe(false);
+    // Typing clears the error text with the mark.
+    expect(byId("brk-min-intro-error").hidden).toBe(true);
+    expect(byId("brk-min-intro-error").textContent).toBe("");
+    expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-help");
     const duck = byId("brk-duck");
     duck.value = "6";
     submit();

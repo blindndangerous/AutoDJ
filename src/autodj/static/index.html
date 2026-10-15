@@ -1799,8 +1799,11 @@
       <span class="setting-desc" id="brk-enabled-help">
         Off, the announcer program is told breaks are off, and new breaks and voice tracks are refused.  Turning breaks off drops the breaks still waiting for their song change; one already mixed into the next song change still plays.  Off by default.
       </span>
-      <fieldset id="brk-placement" aria-describedby="brk-placement-help">
+      <fieldset id="brk-placement">
         <legend>Where a DJ break goes</legend>
+        <p class="setting-desc" id="brk-placement-help">
+          For a DJ break that leaves its placement to the station.  News, weather and music news always play between the songs.
+        </p>
         <div class="settings-check">
           <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help">
           <label for="brk-placement-auto">Automatic</label>
@@ -1823,9 +1826,6 @@
           Always plays the break between the songs.
         </span>
       </fieldset>
-      <span class="setting-desc" id="brk-placement-help">
-        For a DJ break that leaves its placement to the station.  News, weather and music news always play between the songs.
-      </span>
       <div class="settings-row tag-field">
         <label for="brk-min-intro">Shortest intro to talk up (seconds)</label>
         <input type="text" id="brk-min-intro" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-min-intro-help">

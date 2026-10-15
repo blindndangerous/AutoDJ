@@ -210,7 +210,11 @@ export function installBreakSettings({ doc = document, request = requestJson } =
     if (event.target.getAttribute?.("aria-invalid") === "true") {
       event.target.removeAttribute("aria-invalid");
       const node = errors.get(event.target);
-      if (node) link(event.target, node, false);
+      if (node) {
+        link(event.target, node, false);
+        node.textContent = "";
+        node.hidden = true;
+      }
     }
   });
   form.addEventListener("change", () => { dirty = true; });
