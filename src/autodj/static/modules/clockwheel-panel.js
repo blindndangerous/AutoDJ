@@ -65,8 +65,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const resync = el("clock-resync-minutes");
   const status = el("clock-status");
   const typeSelect = el("clock-step-type");
+  const newStep = el("clock-new-step");
   const addButton = el("clock-add-step");
   const cancelEdit = el("clock-cancel-edit");
+  const stepDialog = el("clock-step-dialog");
+  function openStepDialog() {
+    if (stepDialog && !stepDialog.open) stepDialog.showModal();
+  }
   const legend = el("clock-step-legend");
   if (!panel || !list || !steps || !nameInput || !resync || !status || !typeSelect || !addButton) {
     return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
@@ -408,7 +413,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       none.setAttribute("role", "row");
       const cell = doc.createElement("div");
       cell.setAttribute("role", "gridcell");
-      cell.textContent = clock ? "No steps yet. Add one with the form below." : "Open or create a clockwheel to see its steps.";
+      cell.textContent = clock ? "No steps yet. Press New step to add one." : "Open or create a clockwheel to see its steps.";
       none.append(cell);
       steps.replaceChildren(none);
     } else {
@@ -508,7 +513,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     renderSteps();
     const left = clock.steps.length;
     const message = `Deleted step ${index + 1}, ${gone}.`;
-    if (!left) return { message: `${message} No steps are left. Not saved yet.`, target: typeSelect };
+    if (!left) return { message: `${message} No steps are left. Not saved yet.`, target: newStep };
     return {
       message: `${message} ${left === 1 ? "1 step remains" : `${left} steps remain`}. Not saved yet.`,
       target: rowTarget(Math.min(index, left - 1), "edit"),
@@ -532,7 +537,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     resetForm();
     const index = clock.steps.length ? Math.min(previous.index, clock.steps.length - 1) : null;
     changed("Undid the last step change.", index, "edit");
-    if (index === null) typeSelect.focus();
+    if (index === null) newStep?.focus();
   }
 
   function undoKey(event) {
@@ -635,7 +640,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     fillStepHours(doc);
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
-    if (cancelEdit) cancelEdit.hidden = true;
+    if (stepDialog?.open) stepDialog.close();
   }
 
   function fillAdFields(step = {}) {
@@ -672,9 +677,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
     check("clock-step-require-following", Boolean(step.require_following));
     if (legend) legend.textContent = `Edit step ${index + 1}`;
     addButton.textContent = `Update step ${index + 1}`;
-    if (cancelEdit) cancelEdit.hidden = false;
     fillStepHours(doc, step);
     scheduleStepCount();
+    openStepDialog();
     typeSelect.focus();
     say(`Editing ${position(index)}.`);
   }
@@ -831,23 +836,30 @@ export function installClockwheelPanel({ document: doc = document, request = req
     } else {
       clock.steps.push(step);
       resetForm();
-      dirty = true;
-      renderSteps();
-      say(`Added ${position(clock.steps.length - 1)}. Not saved yet.`);
+      changed(`Added ${position(clock.steps.length - 1)}.`, clock.steps.length - 1, "edit");
     }
   });
-  // Escape in the step form cancels an edit, like Cancel edit.
-  el("clock-step-form")?.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || !cancelEdit || cancelEdit.hidden) return;
+  newStep?.addEventListener("click", () => {
+    if (!clock) { say("Open or create a clockwheel first.", true); return; }
+    resetForm();
+    showFields();
+    scheduleStepCount();
+    openStepDialog();
+    typeSelect.focus();
+  });
+  // Escape closes the dialog as Cancel does.
+  stepDialog?.addEventListener("cancel", (event) => {
     event.preventDefault();
-    cancelEdit.click();
+    cancelEdit?.click();
   });
   cancelEdit?.addEventListener("click", () => {
     const index = editing;
     resetForm();
     renderSteps();
-    if (index !== null) focusRow(index, "edit");
-    say("Edit cancelled.");
+    if (index !== null) {
+      focusRow(index, "edit");
+      say("Edit cancelled.");
+    } else newStep?.focus();
   });
   resync.addEventListener("input", () => { if (clock) { dirty = true; renderNext(); } });
   el("clock-step-match")?.addEventListener("change", scheduleStepCount);
@@ -963,7 +975,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     }
     if (!(await discardChanges())) return;
     load({ version: 1, name, steps: [], resync_minutes: [0] }, { fresh: true });
-    typeSelect.focus();
+    newStep?.focus();
     say(`New clockwheel ${name}. Add its steps, then press Save clockwheel.`);
   });
 
