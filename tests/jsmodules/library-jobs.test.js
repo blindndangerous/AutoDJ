@@ -212,6 +212,46 @@ describe("library job live region", () => {
     seen.stop();
     vi.unstubAllGlobals();
   });
+
+  it("shows the last job's result after a reload without saying it again (#329)", async () => {
+    vi.useFakeTimers();
+    try {
+      const els = makeEls();
+      els.jobStatus.setAttribute("aria-live", "polite");
+      const written = [];
+      new window.MutationObserver(() => written.push(
+        [els.jobStatus.textContent, els.jobStatus.getAttribute("aria-live")],
+      )).observe(els.jobStatus, { childList: true, characterData: true, subtree: true });
+      const finished = (startedAt) => ({ library_job: {
+        name: "analyse", running: false, elapsed_seconds: 92, exit_code: 0,
+        started_at: startedAt, lines: [],
+      } });
+
+      // The page's first state: shown with the region off.
+      applyLibraryJobState(finished(1), els);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(els.jobStatus.textContent).toBe("analyse finished cleanly in 1:32.");
+      expect(written).toEqual([["analyse finished cleanly in 1:32.", "off"]]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(els.jobStatus.getAttribute("aria-live")).toBe("polite");
+
+      // The next job's start and end are said, once each.
+      applyLibraryJobState({ library_job: {
+        name: "index", running: true, elapsed_seconds: 1, started_at: 2, lines: [],
+      } }, els);
+      await vi.advanceTimersByTimeAsync(0);
+      applyLibraryJobState({ library_job: {
+        name: "index", running: false, elapsed_seconds: 2, exit_code: 0, started_at: 2, lines: [],
+      } }, els);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(written.slice(1)).toEqual([
+        ["index running.", "polite"],
+        ["index finished cleanly in 0:02.", "polite"],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("library job log", () => {

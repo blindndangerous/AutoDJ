@@ -5,7 +5,9 @@ import {
   announceStatus,
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
+  liveAgain,
   showVisibleStatus,
+  writeQuietly,
 } from "../../src/autodj/static/modules/live-region.js";
 
 describe("clearLiveRegionLater", () => {
@@ -415,5 +417,33 @@ describe("dismissible, hoverable status message", () => {
     expect($("status-toast-box").classList.contains("is-error")).toBe(true);
     showVisibleStatus("", document);
     expect($("status-toast-box").classList.contains("is-error")).toBe(false);
+  });
+});
+
+describe("writeQuietly", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("writes with the region off, then turns it back on as it was", () => {
+    const polite = document.createElement("p");
+    polite.setAttribute("aria-live", "polite");
+    writeQuietly(polite, "Live");
+    expect(polite.textContent).toBe("Live");
+    expect(polite.getAttribute("aria-live")).toBe("off");
+    // A second quiet write keeps the region's own setting to go back to.
+    writeQuietly(polite, "Live again");
+    vi.advanceTimersByTime(999);
+    expect(polite.getAttribute("aria-live")).toBe("off");
+    vi.advanceTimersByTime(1);
+    expect(polite.getAttribute("aria-live")).toBe("polite");
+
+    const status = document.createElement("div");
+    status.setAttribute("role", "status");
+    writeQuietly(status, "Idle.");
+    expect(status.getAttribute("aria-live")).toBe("off");
+    liveAgain(status);
+    expect(status.hasAttribute("aria-live")).toBe(false);
+    vi.advanceTimersByTime(2000);
+    expect(status.hasAttribute("aria-live")).toBe(false);
   });
 });

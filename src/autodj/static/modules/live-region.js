@@ -28,6 +28,34 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
   _timers.set(el, t);
 }
 
+// Shown, not said: *text* goes into a live region with the region off, and
+// the region is on again a second later, once the browser has passed the
+// change on.  For words a reader has heard already, or that another line
+// says: the connection pill's "Live" after a station switch (#327), the
+// last library job's result after a reload (#329).  Words that must be
+// said next call liveAgain first.
+const _quiet = new WeakMap();
+export function writeQuietly(region, text, { restoreMs = 1000 } = {}) {
+  if (!region || region.textContent === text) return;
+  const before = _quiet.get(region);
+  if (before) clearTimeout(before.timer);
+  const live = before ? before.live : region.getAttribute("aria-live");
+  region.setAttribute("aria-live", "off");
+  region.textContent = text;
+  const timer = setTimeout(() => liveAgain(region), restoreMs);
+  _quiet.set(region, { timer, live });
+}
+
+// Turns a region writeQuietly turned off back on at once.
+export function liveAgain(region) {
+  const quiet = region && _quiet.get(region);
+  if (!quiet) return;
+  clearTimeout(quiet.timer);
+  _quiet.delete(region);
+  if (quiet.live === null) region.removeAttribute("aria-live");
+  else region.setAttribute("aria-live", quiet.live);
+}
+
 // ----------------------------------------------------------------
 // Visible mirror of the announcement channel.
 //

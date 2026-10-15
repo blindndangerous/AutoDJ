@@ -1392,24 +1392,16 @@ let authenticatedActivityActive = false;
 //
 // quiet: the new words are shown but not said.  A station switch says
 // "Now controlling ..." on its own, so its socket's "Live" must not follow
-// it (#327).  The region is off while the words change and polite again a
-// second later, once the browser has passed the change on; a transition
-// that is said in between turns it back on first.
-let connQuietTimer = null;
+// it (#327).  A transition that is said in between turns the region back
+// on first (writeQuietly).
 function setConnStatus(state, label, { quiet = false } = {}) {
   if (connStatus.className !== state) connStatus.className = state;
   if (connStatus.textContent === label) return;
-  clearTimeout(connQuietTimer);
-  connQuietTimer = null;
   if (quiet) {
-    connStatus.setAttribute("aria-live", "off");
-    connQuietTimer = setTimeout(() => {
-      connQuietTimer = null;
-      connStatus.setAttribute("aria-live", "polite");
-    }, 1000);
-  } else if (connStatus.getAttribute("aria-live") !== "polite") {
-    connStatus.setAttribute("aria-live", "polite");
+    writeQuietly(connStatus, label);
+    return;
   }
+  liveAgain(connStatus);
   connStatus.textContent = label;
 }
 
@@ -2378,7 +2370,9 @@ import {
   announceStatus,
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
+  liveAgain,
   showVisibleStatus,
+  writeQuietly,
 } from "./modules/live-region.js";
 
 installVisibleStatusBehaviour();
