@@ -28,6 +28,7 @@ nothing behind and a pack is never seen half written.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -36,7 +37,10 @@ import secrets
 import shutil
 import stat
 import struct
+import time
+import unicodedata
 import zipfile
+import zlib
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import IO
@@ -60,11 +64,23 @@ MAX_PIECE_SECONDS = 120.0
 MAX_PACK_NAME = 100
 #: Files an operating system leaves in a zip, skipped rather than refused.
 _OS_LEFTOVERS = frozenset({".ds_store", "thumbs.db", "desktop.ini"})
-#: The largest zip central directory read, in bytes: 2000 entries with long
-#: names and extra fields fit in well under this.
-MAX_DIRECTORY_BYTES = 8 * 1024 * 1024
+#: The largest zip central directory read, in bytes.  2000 entries with
+#: long names and extra fields fit in well under this, and ``zipfile``
+#: reads entries until the directory's bytes run out, so this caps the
+#: entries it makes objects for (at worst about 45 000 tiny ones).
+MAX_DIRECTORY_BYTES = 2 * 1024 * 1024
 #: A recorded minute clip's name without its extension, such as ``03_05``.
 MINUTE_CLIP = re.compile(r"\d{2}_\d{2}")
+#: The hidden names :func:`hidden_name` makes for unfinished work.
+LEFTOVER_LABELS = ("pack-upload", "pack-replaced", "pack-removed", "clip-upload")
+#: Leftovers older than this are deleted when a station's time checks start.
+LEFTOVER_SECONDS = 3600
+#: ``.pack-replaced-`` folders are only reported, never swept: one is the
+#: old pack when putting it back after a failed replace also failed.
+_SWEPT = ("pack-upload", "pack-removed", "clip-upload")
+_LEFTOVER = re.compile(r"\.(" + "|".join(LEFTOVER_LABELS) + r")-[0-9a-f]{16}(\.[A-Za-z0-9]+)?")
+_EOCD = b"PK\x05\x06"
+_EOCD_SIZE = 22
 _CHUNK_BYTES = 1024 * 1024
 _S_IFLNK = 0o120000
 
@@ -149,6 +165,19 @@ def subfolders(root: Path) -> list[Path]:
     return [root / name for name in _by_name(_entries(root, folders=True))]
 
 
+def only_minute_clips(folder: Path) -> bool:
+    """Whether *folder* holds audio files and every one is a minute clip (``15_05.wav``).
+
+    Such a folder is a set of recorded clips, not a voice pack.
+    """
+    audio = [
+        Path(name)
+        for name in _entries(folder, folders=False)
+        if Path(name).suffix.lower() in AUDIO_EXTENSIONS
+    ]
+    return bool(audio) and all(MINUTE_CLIP.fullmatch(path.stem) for path in audio)
+
+
 def clip_files(root: Path) -> list[str]:
     """Audio files directly in *root* that can be an intro or outro, by name.
 
@@ -181,7 +210,8 @@ async def receive_upload(reader: AsyncReader, target: Path, max_bytes: int) -> i
                 total += len(chunk)
                 if total > max_bytes:
                     raise PackTooLarge(f"The upload is over {max_bytes // (1024 * 1024)} MB")
-                out.write(chunk)
+                # A slow share must not hold up the event loop.
+                await asyncio.to_thread(out.write, chunk)
     except BaseException:
         with contextlib.suppress(OSError):
             target.unlink()
@@ -192,6 +222,44 @@ async def receive_upload(reader: AsyncReader, target: Path, max_bytes: int) -> i
 def hidden_name(root: Path, label: str, suffix: str = "") -> Path:
     """A new hidden path in *root*, never listed: ``.<label>-<hex><suffix>``."""
     return root / f".{label}-{secrets.token_hex(8)}{suffix}"
+
+
+def is_leftover(name: str) -> bool:
+    """Whether *name* is one of :func:`hidden_name`'s names (kept out of backups)."""
+    return _LEFTOVER.fullmatch(name) is not None
+
+
+def sweep_leftovers(root: Path, now: float | None = None) -> None:
+    """Delete uploads, staging and removed folders left in *root* by a crash.
+
+    Only :func:`hidden_name` names older than :data:`LEFTOVER_SECONDS` go,
+    so an upload running in another process is never touched.  A
+    ``.pack-replaced-`` folder is logged instead: it may be the only copy
+    of a pack whose replacement could not be undone.
+    """
+    now = time.time() if now is None else now
+    try:
+        with os.scandir(root) as listing:
+            entries = [entry for entry in listing if is_leftover(entry.name)]
+    except OSError:
+        return
+    for entry in entries:
+        path = Path(entry.path)
+        try:
+            if now - entry.stat(follow_symlinks=False).st_mtime < LEFTOVER_SECONDS:
+                continue
+            if not entry.name.startswith(tuple(f".{label}-" for label in _SWEPT)):
+                logger.warning(
+                    "Time checks: %s is an old voice pack set aside during a replace; "
+                    "delete it, or rename it to put the pack back",
+                    path,
+                )
+            elif entry.is_dir(follow_symlinks=False):
+                _remove_tree(path)
+            else:
+                path.unlink()
+        except OSError as exc:
+            logger.warning("Time checks: could not delete the leftover %s: %s", path, exc)
 
 
 def _is_link(info: zipfile.ZipInfo) -> bool:
@@ -261,9 +329,12 @@ def plan_pack(infos: Iterable[zipfile.ZipInfo]) -> tuple[list[tuple[zipfile.ZipI
             check_clip_name(name)
         except PackError as exc:
             raise PackError(f"{name}: {exc}") from None
-        if name.casefold() in seen:
+        # One file to the file system: Windows and macOS fold case, and
+        # macOS composes accents, so "É" written two ways is one name.
+        key = unicodedata.normalize("NFC", name).casefold()
+        if key in seen:
             raise PackError(f"{name} is in the zip twice")
-        seen.add(name.casefold())
+        seen.add(key)
         planned.append((info, name))
     return planned, top
 
@@ -313,17 +384,61 @@ def check_directory(zip_path: Path) -> None:
     with open(zip_path, "rb") as file:
         file.seek(0, os.SEEK_END)
         size = file.tell()
-        file.seek(max(0, size - (65535 + 22)))
+        if size < _EOCD_SIZE:
+            raise PackError("The upload is not a zip file")
+        # The record ``zipfile`` reads, found the way it finds it: at the
+        # very end when there is no comment, else the last signature in
+        # the last 64 KiB.  That one must be whole and its comment must run
+        # exactly to the end, or the zip is refused, so the record checked
+        # here is always the one ``zipfile`` would use.
+        file.seek(size - _EOCD_SIZE)
         tail = file.read()
-    at = tail.rfind(b"PK\x05\x06")
-    if at < 0 or len(tail) - at < 22:
-        return
-    entries, directory_bytes = struct.unpack("<HI", tail[at + 10 : at + 16])
-    zip64 = at >= 20 and tail[at - 20 : at - 16] == b"PK\x06\x07"
-    if zip64 or entries == 0xFFFF or directory_bytes == 0xFFFFFFFF:
+        start = size - _EOCD_SIZE
+        if not (tail.startswith(_EOCD) and tail.endswith(b"\x00\x00")):
+            start = max(0, size - (1 << 16) - _EOCD_SIZE)
+            file.seek(start)
+            tail = file.read()
+            at = tail.rfind(_EOCD)
+            if at < 0 or len(tail) - at < _EOCD_SIZE:
+                raise PackError("The upload is not a zip file")
+            (comment,) = struct.unpack("<H", tail[at + 20 : at + 22])
+            if at + _EOCD_SIZE + comment != len(tail):
+                raise PackError("The upload is not a zip file")
+            start += at
+            tail = tail[at:]
+        file.seek(max(0, start - 20))
+        locator = file.read(min(20, start))
+    entries_here, entries, directory_bytes = struct.unpack("<HHI", tail[8:16])
+    zip64 = locator.startswith(b"PK\x06\x07")
+    if zip64 or 0xFFFF in (entries_here, entries) or directory_bytes == 0xFFFFFFFF:
         raise PackTooLarge("The zip is too big for a voice pack (zip64)")
-    if entries > MAX_PACK_FILES + 1000 or directory_bytes > MAX_DIRECTORY_BYTES:
+    if max(entries_here, entries) > MAX_PACK_FILES + 1000 or directory_bytes > (
+        MAX_DIRECTORY_BYTES
+    ):
         raise PackTooLarge(f"A pack may hold at most {MAX_PACK_FILES} files")
+
+
+def open_zip(zip_path: Path) -> zipfile.ZipFile:
+    """Open an uploaded zip after :func:`check_directory`; anything unreadable is not a zip.
+
+    Raises:
+        PackTooLarge: See :func:`check_directory`.
+        PackError: It is not a zip ``zipfile`` can read, or an entry name is
+            not valid in the encoding its flags give.
+    """
+    check_directory(zip_path)
+    try:
+        return zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError, EOFError, ValueError) as exc:
+        # ValueError covers UnicodeDecodeError from a name flagged UTF-8.
+        raise PackError("The upload is not a zip file") from exc
+
+
+def pack_name_from(zip_path: Path, filename: str) -> str:
+    """The name for a pack uploaded without one: its zip's one folder, or the zip's name."""
+    with open_zip(zip_path) as archive:
+        _planned, top = plan_pack(archive.infolist())
+    return top or Path(filename).stem
 
 
 def unpack(zip_path: Path, stage: Path) -> str:
@@ -336,19 +451,26 @@ def unpack(zip_path: Path, stage: Path) -> str:
         PackError: The zip is not a zip, or :func:`plan_pack` or
             :func:`check_audio` refuses it.
     """
-    check_directory(zip_path)
-    try:
-        archive = zipfile.ZipFile(zip_path)
-    except (zipfile.BadZipFile, OSError) as exc:
-        raise PackError("The upload is not a zip file") from exc
-    with archive:
+    with open_zip(zip_path) as archive:
         planned, top = plan_pack(archive.infolist())
         budget = [MAX_PACK_BYTES]
         for info, name in planned:
             try:
                 with archive.open(info) as source, open(stage / name, "xb") as out:
                     _copy_bounded(source, out, info.file_size, budget)
-            except (zipfile.BadZipFile, NotImplementedError, EOFError, RuntimeError) as exc:
+            except PackError:
+                raise
+            except FileExistsError:
+                # Two names the file system takes as one.
+                raise PackError(f"{name} is in the zip twice") from None
+            except (
+                zipfile.BadZipFile,
+                NotImplementedError,
+                EOFError,
+                RuntimeError,
+                ValueError,
+                zlib.error,
+            ) as exc:
                 # A bad CRC, an unknown compression method or a damaged entry.
                 raise PackError(f"{name} could not be unpacked: {exc}") from exc
     for _info, name in planned:
@@ -402,7 +524,16 @@ def install_pack(root: Path, name: str, zip_path: Path, *, replace: bool) -> Pat
         try:
             os.rename(stage, target)
         except OSError:
-            os.rename(retired, target)
+            try:
+                os.rename(retired, target)
+            except OSError as again:
+                logger.error(
+                    "Time checks: could not put voice pack %s back after a failed replace (%s); "
+                    "its old files are in %s",
+                    name,
+                    again,
+                    retired,
+                )
             raise
         _remove_tree(retired)
         return target
@@ -497,9 +628,14 @@ __all__ = [
     "hidden_name",
     "install_clip",
     "install_pack",
+    "is_leftover",
+    "only_minute_clips",
+    "open_zip",
+    "pack_name_from",
     "plan_pack",
     "receive_upload",
     "remove_pack",
     "subfolders",
+    "sweep_leftovers",
     "unpack",
 ]

@@ -301,8 +301,14 @@ _SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
 
 
 def _is_scratch(name: str) -> bool:
-    """Whether *name* is one of AutoDJ's own temporary or set-aside names."""
-    return _SCRATCH_NAME.match(name) is not None
+    """Whether *name* is one of AutoDJ's own temporary or set-aside names.
+
+    That includes the time checks folder's unfinished uploads and set-aside
+    packs (:func:`autodj.time_check_files.is_leftover`).
+    """
+    from autodj.time_check_files import is_leftover
+
+    return _SCRATCH_NAME.match(name) is not None or is_leftover(name)
 
 
 def _folder_files(root: Path, pattern: str = "**/*") -> list[Path]:

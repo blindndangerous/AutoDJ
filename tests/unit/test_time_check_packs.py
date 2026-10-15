@@ -179,7 +179,8 @@ def test_recorded_clips_intro_and_outro_are_chosen_by_name_and_kept(tmp_path: Pa
     ):
         sf.write(folder / filename, np.zeros((441, 2)), 44100)
     assert checks.status()["folders"] == ["Clips"]
-    assert [pack["name"] for pack in checks.status()["packs"]] == ["Clips"]
+    # A folder of minute clips only is never a voice pack.
+    assert checks.status()["packs"] == []
     assert _source(checks, AT) is None
     chosen = _settings(recorded_folder="Clips", intro="hello.wav", outro="bye.wav")
     assert checks.check_choices(chosen) is None

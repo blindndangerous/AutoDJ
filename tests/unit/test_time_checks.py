@@ -421,6 +421,7 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
             "Exact-hour files missing: none. Minute files missing: none.",
             "source": "config",
             "removable": False,
+            "shared_with_stations": False,
             **no_dates,
         },
         {
@@ -430,6 +431,7 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
             "summary": "Folder not found.",
             "source": "config",
             "removable": False,
+            "shared_with_stations": False,
             **no_dates,
         },
     ]

@@ -30,7 +30,6 @@ import secrets
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
-import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -60,16 +59,17 @@ from autodj.time_check_files import (
     PackNotFound,
     PackTooLarge,
     check_clip_name,
-    check_directory,
     check_pack_name,
     clip_files,
     hidden_name,
     install_clip,
     install_pack,
-    plan_pack,
+    only_minute_clips,
+    pack_name_from,
     receive_upload,
     remove_pack,
     subfolders,
+    sweep_leftovers,
 )
 from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
 
@@ -159,7 +159,22 @@ class FoundPacks:
 
 
 def _folder_key(path: Path) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    """One spelling per folder: links and ``..`` resolved, case folded where the system does."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _default_recorded_folder(cfg: AutoDJConfig) -> str:
+    """The recorded clips folder the default station chose, by name, or ``""``.
+
+    Read from the default station's ``time_checks.json`` so another station
+    does not list that folder of minute clips as a shared voice pack.
+    """
+    try:
+        state = json.loads(StationPaths.default(cfg).time_checks.read_text(encoding="utf-8"))
+        chosen = state["settings"]["recorded_folder"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    return chosen if isinstance(chosen, str) else ""
 
 
 def found_packs(
@@ -175,8 +190,10 @@ def found_packs(
     keeps its name over a found folder, and the station's own folder over
     the shared one; the folder left out is named in ``clashes``.  *skip* is
     the station folder chosen for recorded minute clips, which is not a
-    pack.  Hidden folders (``.name``) are AutoDJ's unfinished uploads and
-    are never packs.
+    pack, and neither is the default station's choice in the shared folder,
+    nor a found folder whose audio files are all minute clips
+    (``15_05.wav``).  Hidden folders (``.name``) are AutoDJ's unfinished
+    uploads and are never packs.
     """
     paths = paths or StationPaths.default(cfg)
     packs: dict[str, PackFolder] = {}
@@ -203,12 +220,14 @@ def found_packs(
         add(Path(listed), "config")
     own = clips_folder(cfg, paths)
     for folder in subfolders(own):
-        if not skip or folder.name != skip:
+        if folder.name != skip and not only_minute_clips(folder):
             add(folder, "station")
     shared = shared_folder(cfg)
     if _folder_key(shared) != _folder_key(own):
+        theirs = _default_recorded_folder(cfg)
         for folder in subfolders(shared):
-            add(folder, "shared")
+            if folder.name != theirs and not only_minute_clips(folder):
+                add(folder, "shared")
     return FoundPacks(packs, tuple(clashes))
 
 
@@ -555,6 +574,8 @@ class TimeChecks:
         self._files_lock = threading.Lock()
         self._clashes_logged: set[str] = set()
         self.packs: dict[str, PackFolder] = {}
+        # Uploads and removals a crash left half done, older than an hour.
+        sweep_leftovers(self.root)
         self.rescan()
         self._hour = _hour_key(datetime.now(self.zone))
         self._aired_hour: HourKey | None = None
@@ -664,10 +685,12 @@ class TimeChecks:
                 "Time checks: could not untick voice pack %s or drop its play dates: %s", name, exc
             )
 
-    def add_pack(self, name: str, upload: Path, *, replace: bool) -> str:
+    def add_pack(self, name: str, upload: Path, *, replace: bool, filename: str = "") -> str:
         """Unpack the zip *upload* as voice pack *name* in the time checks folder.
 
-        A new pack starts unticked once a choice of packs has been saved
+        A blank *name* is the zip's one folder, or *filename* without its
+        extension; it is read under the same lock as the unpacking, so two
+        uploads never read zips at once.  A new pack starts unticked once a choice of packs has been saved
         (ticked while none has, like every pack), with no play dates; a
         replaced one keeps its tick and dates.
 
@@ -681,8 +704,8 @@ class TimeChecks:
             TimeChecksUnreadable: The settings file could not be read.
             OSError: The folder could not be written.
         """
-        name = check_pack_name(name)
         with self._files_lock:
+            name = check_pack_name(name.strip() or pack_name_from(upload, filename))
             packs = self.rescan()
             taken = next((key for key in packs if key.casefold() == name.casefold()), None)
             if taken is not None:
@@ -871,8 +894,16 @@ class TimeChecks:
         return found.refusal(today) if found is not None else None
 
     def pack_status(self) -> list[dict[str, Any]]:
-        """Each pack's name, switch, coverage, play dates and source, without its path."""
+        """Each pack's name, switch, coverage, play dates and source, without its path.
+
+        ``shared_with_stations`` marks a pack the page may remove that other
+        stations use too: the default station's time checks folder is the
+        library's shared one when ``clips_folder`` is not set.
+        """
         today = datetime.now(self.zone).date()
+        shared = bool(getattr(self.cfg, "stations", ())) and _folder_key(self.root) == _folder_key(
+            shared_folder(self.cfg)
+        )
         result = []
         for name, found in self.packs.items():
             pack = scan_pack(found.path)
@@ -885,6 +916,7 @@ class TimeChecks:
                     "summary": covered.describe(pack),
                     "source": found.source,
                     "removable": found.removable,
+                    "shared_with_stations": found.removable and shared,
                     **self.pack_dates.get(name, ClipDates()).view(today),
                 }
             )
@@ -1188,17 +1220,6 @@ def _file_error(exc: PackError | OSError) -> JSONResponse:
     return JSONResponse(status_code=status, content=content)
 
 
-def _pack_name_from(zip_path: Path, filename: str) -> str:
-    """The name for a pack uploaded without one: its zip's one folder, or the zip's name."""
-    check_directory(zip_path)
-    try:
-        with zipfile.ZipFile(zip_path) as archive:
-            _planned, top = plan_pack(archive.infolist())
-    except (zipfile.BadZipFile, OSError) as exc:
-        raise PackError("The upload is not a zip file") from exc
-    return top or Path(filename).stem
-
-
 def install_time_checks(router: StationRouter) -> None:
     """Register the paired time check routes; each acts on the station its URL names."""
 
@@ -1236,10 +1257,9 @@ def install_time_checks(router: StationRouter) -> None:
         upload = hidden_name(checks.root, "pack-upload", ".zip")
         try:
             await receive_upload(file, upload, MAX_PACK_UPLOAD_BYTES)
-            chosen = name.strip() or await asyncio.to_thread(
-                _pack_name_from, upload, file.filename or ""
+            added = await asyncio.to_thread(
+                checks.add_pack, name, upload, replace=replace, filename=file.filename or ""
             )
-            added = await asyncio.to_thread(checks.add_pack, chosen, upload, replace=replace)
         except (PackError, OSError) as exc:
             return _file_error(exc)
         finally:

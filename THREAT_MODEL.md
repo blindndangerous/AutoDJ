@@ -220,16 +220,26 @@ test or preview; an unknown name is refused.
 It can add a voice pack as a zip (`POST /api/time-checks/packs`, body capped at 256 MB plus
 64 KiB before any route reads it) and remove one (`DELETE /api/time-checks/packs/{name}`) only
 in the station's own time checks folder; packs listed in `voice_packs` and shared packs are
-refused. The zip is streamed to a hidden file in that folder, then every entry is checked before
-anything is unpacked: absolute paths, drive letters, `..`, links and encrypted entries are
+refused. The default station without a `clips_folder` keeps its packs in the library's shared
+folder, so a paired browser on that station can remove or replace a pack every station uses; the
+confirmation says so while there are other stations. The zip is streamed to a hidden file in that
+folder, and the zip work runs one upload at a time per station. Before `zipfile` opens it, the
+end-of-directory record is found exactly where `zipfile` finds it (at the very end with no
+comment, else the last signature, which must be whole and end the file, or the upload is
+refused) and must list at most 3000 entries in a directory of at most 2 MB, with no zip64, so a
+small zip listing millions of entries cannot use up memory. An entry name invalid in its flagged
+encoding is refused as not a zip. Then every entry is checked before anything is unpacked: absolute paths, drive letters, `..`, links and encrypted entries are
 refused, and so are subfolders and anything but `.wav`, `.mp3`, `.flac` and `.ogg` plain file
-names (operating system leftovers such as `__MACOSX` are skipped). At most 2000 files and
+names, compared after Unicode NFC and case folding (operating system leftovers such as
+`__MACOSX` are skipped). At most 2000 files and
 512 MB unpacked are allowed, counted from the headers and again while writing, so a header that
 understates a size cannot unpack more. Each file must then pass the break header check
 (libsndfile reads it as the type its extension says, at most 192 kHz, two channels and two
 minutes) before the hidden staging folder is renamed into place; a refused zip leaves nothing.
-Replacing renames the old folder aside first and puts it back if the rename fails; replace and
-remove refuse links and junctions. One clip (`POST /api/time-checks/clips`, capped like a liner
+Replacing renames the old folder aside first and puts it back if the rename fails (when that
+fails too, the old folder's hidden path is logged as an error and kept); replace and remove
+refuse links and junctions. Hidden upload, staging and removed leftovers older than an hour are
+deleted when the station starts and are never backed up; a set-aside pack is only logged. One clip (`POST /api/time-checks/clips`, capped like a liner
 upload) goes to the same folder under the same name and audio checks, written to a hidden file
 and hard-linked into place unless the request asks to replace. A paired browser can therefore
 fill that folder up to these caps per request, like the liner folder. The text-to-speech command

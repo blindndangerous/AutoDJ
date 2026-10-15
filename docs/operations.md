@@ -4349,9 +4349,11 @@ in Settings.
 
 AutoDJ finds packs by itself: every folder in the station's time checks folder is a pack, and so
 is every folder in the library's own `<index_dir>/<name>/time_checks` folder, which every station
-shares (for the default station without a `clips_folder`, the two are the same folder). Folders
-whose names start with a dot are not packs; AutoDJ uses such names while it unpacks an upload.
-Packs are looked for again each time the panel loads and before each check, so a folder copied
+shares (for the default station without a `clips_folder`, the two are the same folder). Some
+folders are not packs: those whose names start with a dot, which AutoDJ uses while it unpacks
+an upload; a folder whose audio files are all minute clips (`15_05.wav`); the station's chosen
+recorded clips folder; and, for another station, the default station's chosen one in the shared
+folder. Packs are looked for again each time the panel loads and before each check, so a folder copied
 in on the server needs no restart; **Look for new voice packs** looks straight away and names
 the new ones. Folders elsewhere can still be listed in `config.toml`, and those keep working:
 
@@ -4371,9 +4373,11 @@ both.
 
 To add a pack from the page, open **Add a voice pack**, choose a zip file of the pack's audio
 files, give it a **Pack name** or leave that blank to use the folder in the zip (or the zip
-file's name), and press **Add voice pack**. The new pack's checkbox takes focus. When a pack
-added from the page has that name, AutoDJ asks before replacing it; a replaced pack keeps its
-tick and play dates. A name taken by a pack listed in `config.toml`, a shared pack, or the
+file's name), and press **Add voice pack**. The page says "Uploading the voice pack. This can
+take a few minutes." as it starts, and the new pack's checkbox takes focus when it is done. When
+a pack added from the page has that name, AutoDJ asks before replacing it, before anything is
+sent when the name is already in the list; a replaced pack keeps its tick and play dates. A
+refused upload is shown under the file input, which takes focus, until another file is chosen. A name taken by a pack listed in `config.toml`, a shared pack, or the
 recorded clips folder is refused. AutoDJ checks the whole zip before it keeps anything:
 
 - Only `.wav`, `.mp3`, `.flac` and `.ogg` files, each of which must play as the audio its
@@ -4384,15 +4388,32 @@ recorded clips folder is refused. AutoDJ checks the whole zip before it keeps an
 - No entry may have an absolute path, a drive letter or `..`, no entry may be a link, and none
   may be encrypted.
 - At most 2000 files and 512 MB unpacked, counted from the zip's headers and again as each file
-  is written; the zip itself may be up to 256 MB.
+  is written; the zip itself may be up to 256 MB. Before the zip is opened, its end record
+  (found exactly where Python's `zipfile` finds it, and refused when it is cut short or does not
+  end the file) must list at most 3000 entries in a directory of at most 2 MB, and zip64 is
+  refused, so a small zip that lists millions of entries cannot use up the memory.
+- An entry name that is not valid in the encoding its flags give makes the upload "not a zip
+  file". Two names that differ only in letter case or in how an accent is written are the same
+  file, so they are refused as in the zip twice.
 
 The zip is unpacked into a hidden folder beside the packs and renamed into place only when all
 of that has passed, so a refused upload leaves nothing behind and a pack is never seen half
 written. A pack in the station's time checks folder has a **Remove** button. It asks first, then
 deletes the folder with the pack's tick and play dates, and focus moves to the next pack, or to
 the **Voice packs** group when none follows. Packs listed in `config.toml` and shared packs have
-no **Remove** button and say where they come from. Like every setting, adding and removing
-packs and clips needs a paired browser; a machine token cannot do it.
+no **Remove** button and say where they come from. The default station without a `clips_folder`
+keeps its packs in the shared folder, so while there are other stations, removing or replacing
+one there takes it from every station, and the confirmation says "Other stations use this pack
+too." Like every setting, adding and removing packs and clips needs a paired browser; a machine
+token cannot do it.
+
+An upload or removal stopped half way (the server was stopped, say) leaves a hidden
+`.pack-upload-…`, `.pack-removed-…` or `.clip-upload-…` file or folder. Those older than an hour
+are deleted when the station starts, and backups never include them. A `.pack-replaced-…`
+folder is the old pack set aside during a replace; it is normally deleted at once, and is only
+left when the replace failed and putting the old pack back failed too, which is logged as an
+error. It is never deleted for you: AutoDJ logs it at each start, so you can rename it to put the
+pack back or delete it.
 
 **Settings**, **Time checks** shows each pack as a checkbox under **Voice packs**. Its
 description says how many of the 1440 minutes it can say, which hour, exact-hour and minute

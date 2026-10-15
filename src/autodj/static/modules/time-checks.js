@@ -53,8 +53,14 @@ export function installTimeChecks({ doc = document, request = requestJson,
     rescan: get("rescan"), packFile: get("pack-file"), packName: get("pack-name"),
     packAdd: get("pack-add"), clipFile: get("clip-file"), clipAdd: get("clip-add"),
     folder: get("recorded-folder"), intro: get("intro"), outro: get("outro"),
+    packError: get("pack-error"), clipError: get("clip-error"),
   };
   const hasFiles = Object.values(files).every(Boolean);
+  // Each file input, the error shown under it and its own help.
+  const uploads = {
+    pack: { input: files.packFile, error: files.packError, help: "tc-add-pack-desc" },
+    clip: { input: files.clipFile, error: files.clipError, help: "tc-clip-file-desc" },
+  };
   if (!enabled || !format || !rule || !clips || !status || !test || !order || !packList
       || !packsEmpty || !testVoice) {
     return { refresh: async () => {}, clear: () => {}, noteTrack: () => {} };
@@ -394,37 +400,90 @@ export function installTimeChecks({ doc = document, request = requestJson,
     else say(`${prefix} ${error.message}`, "error");
   }
 
-  // Sends the chosen zip; a taken name asks before it is replaced.
+  // A refused upload is shown under its file input, linked to it and
+  // focused (WCAG 3.3.1), like a refused play date, and said.  Choosing
+  // another file clears it.
+  function uploadError(which, message) {
+    const { input, error, help } = uploads[which];
+    error.textContent = message;
+    error.hidden = false;
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", `${error.id} ${help}`);
+    input.focus();
+    say(message, "error");
+  }
+
+  function clearUploadError(which) {
+    const { input, error, help } = uploads[which];
+    error.textContent = "";
+    error.hidden = true;
+    input.removeAttribute("aria-invalid");
+    input.setAttribute("aria-describedby", help);
+  }
+
+  // A failure answered after a station switch is only said; any other is
+  // shown at the file input.
+  function uploadFailure(which, error, prefix) {
+    const left = staleActionText(error);
+    if (left) say(left, error.actionDone ? "info" : "error");
+    else uploadError(which, `${prefix} ${error.message}`);
+  }
+
+  const nameKey = (name) => name.normalize("NFC").toLowerCase();
+  // The default station's packs are every station's when its time checks
+  // folder is the library's shared one; the server says so per pack.
+  const sharedNote = (pack) => (pack?.shared_with_stations ? " Other stations use this pack too." : "");
+
+  async function askReplacePack(message, file) {
+    const shared = (settings?.packs || []).find((pack) => pack.shared_with_stations);
+    return confirm(doc, {
+      station: true,
+      title: "Replace the voice pack?",
+      message: `${message}. Its files are deleted and replaced by the files in ${file.name}. Its tick and play dates stay.${sharedNote(shared)}`,
+      confirmLabel: "Replace voice pack",
+    });
+  }
+
+  // Sends the chosen zip.  A name a pack added here already has asks
+  // before anything is sent; one the server finds taken (the folder in the
+  // zip names it) asks then, and sends again with replace.
   async function addPack(replace = false) {
     const file = files.packFile.files?.[0];
     if (!file) {
-      say("Choose a zip file first.", "error");
-      files.packFile.focus();
+      uploadError("pack", "Choose a zip file first.");
       return;
     }
-    const query = new URLSearchParams();
+    clearUploadError("pack");
     const name = files.packName.value.trim();
+    if (!replace) {
+      const guess = nameKey(name || file.name.replace(/\.zip$/i, ""));
+      const taken = (settings?.packs || []).find(
+        (pack) => pack.removable && nameKey(pack.name) === guess);
+      if (taken) {
+        if (!(await askReplacePack(`A voice pack named ${taken.name} already exists`, file))) {
+          say("The voice pack was not added.");
+          return;
+        }
+        replace = true;
+      }
+    }
+    const query = new URLSearchParams();
     if (name) query.set("name", name);
     if (replace) query.set("replace", "true");
     const form = new FormData();
     form.append("file", file, file.name);
     const suffix = query.toString() ? `?${query}` : "";
+    say("Uploading the voice pack. This can take a few minutes.");
     let reply;
     try {
       reply = await request(`/api/time-checks/packs${suffix}`, { method: "POST", body: form });
     } catch (error) {
       if (error.status === 409 && error.field === "replace" && !replace) {
-        const confirmed = await confirm(doc, {
-          station: true,
-          title: "Replace the voice pack?",
-          message: `${error.message}. Its files are deleted and replaced by the files in ${file.name}. Its tick and play dates stay.`,
-          confirmLabel: "Replace voice pack",
-        });
-        if (confirmed) await addPack(true);
+        if (await askReplacePack(error.message, file)) await addPack(true);
         else say("The voice pack was not added.");
         return;
       }
-      sayFailure(error, "Could not add the voice pack.");
+      uploadFailure("pack", error, "Could not add the voice pack.");
       return;
     }
     settings = reply;
@@ -442,12 +501,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
   // none follows (see confirmAction).
   async function removePack(name, button) {
     const index = packBoxes().findIndex((box) => box.value === name);
+    const pack = (settings?.packs || []).find((item) => item.name === name);
     let result = null;
     let tone = "info";
     const confirmed = await confirm(doc, {
       station: true,
       title: `Remove voice pack ${name}?`,
-      message: "Its folder and audio files are deleted from the time checks folder, with its tick and play dates.",
+      message: `Its folder and audio files are deleted from the time checks folder, with its tick and play dates.${sharedNote(pack)}`,
       confirmLabel: "Remove voice pack",
       onConfirm: async () => {
         try {
@@ -474,12 +534,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
   async function addClip(replace = false) {
     const file = files.clipFile.files?.[0];
     if (!file) {
-      say("Choose a clip file first.", "error");
-      files.clipFile.focus();
+      uploadError("clip", "Choose a clip file first.");
       return;
     }
+    clearUploadError("clip");
     const form = new FormData();
     form.append("file", file, file.name);
+    say("Uploading the clip.");
     let reply;
     try {
       reply = await request(`/api/time-checks/clips${replace ? "?replace=true" : ""}`, {
@@ -497,7 +558,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
         else say("The clip was not uploaded.");
         return;
       }
-      sayFailure(error, "Could not upload the clip.");
+      uploadFailure("clip", error, "Could not upload the clip.");
       return;
     }
     settings = reply;
@@ -574,6 +635,9 @@ export function installTimeChecks({ doc = document, request = requestJson,
     files.packAdd.addEventListener("click", () => busyWhile(files.packAdd, () => addPack()));
     files.clipAdd.addEventListener("click", () => busyWhile(files.clipAdd, () => addClip()));
     files.rescan.addEventListener("click", () => busyWhile(files.rescan, rescan));
+    for (const which of ["pack", "clip"]) {
+      uploads[which].input.addEventListener("change", () => clearUploadError(which));
+    }
   }
   if (hasDates) {
     dates.pack.addEventListener("change", fillDates);

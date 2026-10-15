@@ -71,7 +71,20 @@ describe("Time checks panel text and controls", () => {
     expect(byId("tc-pack-file").type).toBe("file");
     expect(byId("tc-pack-file").accept).toContain(".zip");
     expect(byId("tc-clip-file").accept).toContain(".wav");
-    expect(byId("tc-pack-name").getAttribute("aria-describedby")).toBe("tc-pack-name-desc");
+    // Each new control says its help when it takes focus.
+    for (const [id, help] of [
+      ["tc-pack-name", "tc-pack-name-desc"], ["tc-pack-file", "tc-add-pack-desc"],
+      ["tc-clip-file", "tc-clip-file-desc"], ["tc-recorded-folder", "tc-recorded-folder-desc"],
+      ["tc-intro", "tc-clip-choice-desc"], ["tc-outro", "tc-clip-choice-desc"],
+      ["tc-rescan", "tc-rescan-desc"],
+    ]) {
+      expect(byId(id).getAttribute("aria-describedby"), id).toBe(help);
+      expect(byId(help)?.textContent.trim(), id).toBeTruthy();
+    }
+    for (const id of ["tc-pack-error", "tc-clip-error"]) {
+      expect(byId(id).classList.contains("field-error"), id).toBe(true);
+      expect(byId(id).hidden, id).toBe(true);
+    }
     for (const id of ["tc-pack-add", "tc-clip-add", "tc-rescan"]) {
       expect(byId(id).tagName, id).toBe("BUTTON");
       expect(byId(id).type, id).toBe("button");
@@ -128,25 +141,82 @@ describe("adding and removing voice packs", () => {
     await vi.waitFor(() => expect(add.hasAttribute("aria-busy")).toBe(false));
   });
 
-  it("asks before replacing a taken name, then sends it again with replace", async () => {
+  it("asks before sending when the name is a pack added here, and sends once", async () => {
+    const request = vi.fn(async () => state({ packs: [pack("Studio")], added: "Studio" }));
+    const confirm = vi.fn(async () => true);
+    const controls = installTimeChecks({ request, confirm, interval: () => {} });
+    await controls.refresh();
+    choose(byId("tc-pack-file"), "studio.ZIP");
+    byId("tc-pack-add").click();
+    await vi.waitFor(() => expect(said()).toBe("Replaced voice pack Studio. It is ticked."));
+    expect(confirm).toHaveBeenCalledWith(document, expect.objectContaining({
+      title: "Replace the voice pack?", confirmLabel: "Replace voice pack", station: true }));
+    expect(confirm.mock.calls[0][1].message).toContain("A voice pack named Studio already exists.");
+    expect(confirm.mock.calls[0][1].message).not.toContain("Other stations");
+    const posts = request.mock.calls.filter(([, options]) => options?.method === "POST");
+    expect(posts.map(([url]) => url)).toEqual(["/api/time-checks/packs?replace=true"]);
+  });
+
+  it("asks when the server finds the name taken, then sends it again with replace", async () => {
     const request = vi.fn(async (url, options = {}) => {
       if (options.method === "POST" && !url.includes("replace=true")) {
         throw apiError("A voice pack named Studio already exists", 409, "replace");
       }
-      return state({ packs: [pack("Studio")], added: "Studio" });
+      return state({ packs: [pack("Studio", { shared_with_stations: true })], added: "Studio" });
     });
     const confirm = vi.fn(async () => true);
     const controls = installTimeChecks({ request, confirm, interval: () => {} });
     await controls.refresh();
-    choose(byId("tc-pack-file"), "Studio.zip");
+    // The zip's own folder names the pack, so the page could not tell.
+    choose(byId("tc-pack-file"), "voices.zip");
     byId("tc-pack-add").click();
-    expect(await liveText()).toBe("Replaced voice pack Studio. It is ticked.");
-    expect(confirm).toHaveBeenCalledWith(document, expect.objectContaining({
-      title: "Replace the voice pack?", confirmLabel: "Replace voice pack", station: true }));
+    await vi.waitFor(() => expect(said()).toBe("Replaced voice pack Studio. It is ticked."));
     expect(confirm.mock.calls[0][1].message).toContain("A voice pack named Studio already exists.");
+    expect(confirm.mock.calls[0][1].message).toContain("Other stations use this pack too.");
     const posts = request.mock.calls.filter(([, options]) => options?.method === "POST");
     expect(posts.map(([url]) => url)).toEqual([
       "/api/time-checks/packs", "/api/time-checks/packs?replace=true"]);
+  });
+
+  it("says the upload has started before it is sent", async () => {
+    let release;
+    const request = vi.fn((url, options = {}) => (options.method === "POST"
+      ? new Promise((resolve) => {
+        release = () => resolve(state({ packs: [pack("Night")], added: "Night" }));
+      })
+      : Promise.resolve(state())));
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    choose(byId("tc-pack-file"), "Night.zip");
+    byId("tc-pack-add").click();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await vi.waitFor(() => expect(said()).toBe(
+      "Uploading the voice pack. This can take a few minutes."));
+    release();
+    await vi.waitFor(() => expect(said()).toBe("Added voice pack Night. It is ticked."));
+  });
+
+  it("shows a refused upload at the file input, focused and linked, until another file is chosen", async () => {
+    const request = vi.fn(async (url, options = {}) => {
+      if (options.method === "POST") throw apiError("The upload is not a zip file", 400);
+      return state();
+    });
+    const controls = installTimeChecks({ request, interval: () => {} });
+    await controls.refresh();
+    const input = byId("tc-pack-file");
+    choose(input, "notes.zip");
+    byId("tc-pack-add").click();
+    const message = "Could not add the voice pack. The upload is not a zip file";
+    await vi.waitFor(() => expect(said()).toBe(message));
+    expect(document.activeElement).toBe(input);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")).toBe("tc-pack-error tc-add-pack-desc");
+    expect(byId("tc-pack-error").textContent).toBe(message);
+    expect(byId("tc-pack-error").hidden).toBe(false);
+    input.dispatchEvent(new Event("change"));
+    expect(input.hasAttribute("aria-invalid")).toBe(false);
+    expect(input.getAttribute("aria-describedby")).toBe("tc-add-pack-desc");
+    expect(byId("tc-pack-error").hidden).toBe(true);
   });
 
   it("adds nothing when the replace is cancelled, and says a refusal", async () => {
@@ -186,7 +256,7 @@ describe("adding and removing voice packs", () => {
   });
 
   it("removes a pack after the confirm dialog and focuses the next pack", async () => {
-    let packs = [pack("A"), pack("B"), pack("C")];
+    let packs = [pack("A"), pack("B"), pack("C", { shared_with_stations: true })];
     const request = vi.fn(async (url, options = {}) => {
       if (options.method === "DELETE") {
         const name = decodeURIComponent(url.split("/").pop());
@@ -213,6 +283,9 @@ describe("adding and removing voice packs", () => {
     byId("tc-status").textContent = "";
     byId("tc-pack-list").querySelector('button[data-pack="C"]').click();
     expect(await liveText()).toBe("Removed voice pack C.");
+    // The default station's shared folder: other stations lose the pack too.
+    expect(confirm.mock.calls[0][1].message).not.toContain("Other stations");
+    expect(confirm.mock.calls[1][1].message).toContain("Other stations use this pack too.");
     expect(document.activeElement).toBe(byId("tc-packs"));
   });
 
