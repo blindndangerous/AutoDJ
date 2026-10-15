@@ -610,13 +610,13 @@ describe("clockwheel editor", () => {
     expect(rowText(3)).toContain("liner from Top");
   });
 
-  it("restores the last deleted step with Ctrl+Z from Step type", async () => {
+  it("restores the last deleted step with Ctrl+Z from New step", async () => {
     const server = fakeServer();
     server.clocks.Morning.steps = [MUSIC];
     await open(server);
     rowCell(0, "edit").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, cancelable: true }));
     expect(rows()).toHaveLength(0);
-    expect(document.activeElement).toBe(byId("clock-step-type"));
+    expect(document.activeElement).toBe(byId("clock-new-step"));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
     expect(rows()).toHaveLength(1);
     expect(document.activeElement).toBe(rowCell(0, "edit"));
@@ -745,8 +745,19 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toBe("Deleted step 4, track Album/Song.flac. 3 steps remain. Not saved yet."));
     for (let left = 3; left > 0; left -= 1) rowButton(0, "delete").click();
     expect(rows()).toHaveLength(0);
-    expect(byId("clock-slots").textContent).toBe("No steps yet. Add one with the form below.");
+    expect(byId("clock-slots").textContent).toBe("No steps yet. Press New step to add one.");
+    expect(document.activeElement).toBe(byId("clock-new-step"));
+  });
+
+  it("opens New step in a dialog and Cancel returns to New step", async () => {
+    await open(fakeServer());
+    byId("clock-new-step").click();
+    expect(byId("clock-step-dialog").open).toBe(true);
     expect(document.activeElement).toBe(byId("clock-step-type"));
+    expect(byId("clock-step-legend").textContent).toBe("Add a step");
+    byId("clock-cancel-edit").click();
+    expect(byId("clock-step-dialog").open).toBe(false);
+    expect(document.activeElement).toBe(byId("clock-new-step"));
   });
 
   it("edits a step in the form and returns focus to it", async () => {
@@ -757,7 +768,7 @@ describe("clockwheel editor", () => {
     expect(byId("clock-add-step").textContent).toBe("Update step 2");
     expect(byId("clock-cancel-edit").hidden).toBe(false);
     // Escape cancels the edit and returns to the step.
-    byId("clock-step-type").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    byId("clock-step-dialog").dispatchEvent(new Event("cancel", { cancelable: true }));
     expect(byId("clock-step-legend").textContent).toBe("Add a step");
     expect(document.activeElement).toBe(rowCell(1, "edit"));
     rowButton(1, "edit").click();
@@ -895,7 +906,7 @@ describe("clockwheel editor", () => {
     byId("clock-name").value = "Night";
     byId("clock-create").click();
     await vi.waitFor(() => expect(status()).toBe("New clockwheel Night. Add its steps, then press Save clockwheel."));
-    expect(document.activeElement).toBe(byId("clock-step-type"));
+    expect(document.activeElement).toBe(byId("clock-new-step"));
     expect(byId("clock-open-name").textContent).toBe("Night, not saved yet");
     const condition = byId("clock-step-conditions").firstElementChild;
     condition.querySelectorAll("select")[1].value = "jazz";

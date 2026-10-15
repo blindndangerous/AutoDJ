@@ -3314,110 +3314,9 @@
       <h3 id="clock-steps-heading">Steps of <span id="clock-open-name">no clockwheel open</span></h3>
       <p id="clock-steps-help">Up and Down move between step names; Left and Right move between row buttons; Home and End move to the first and last row buttons. Ctrl+Home and Ctrl+End move to the first and last step. Enter or Space presses the focused button, so Enter on a step name edits it; Delete removes the step, just like its Delete button. Delete and Undo step change are unavailable while editing a step. Ctrl+Z or Undo step change restores the last step change until you save or open another clockwheel. Alt+Up and Alt+Down move the focused step. Changes are kept only when you press Save clockwheel.</p>
       <ol id="clock-slots" role="grid" aria-labelledby="clock-steps-heading"><li role="row"><div role="gridcell">Open or create a clockwheel to see its steps.</div></li></ol>
+      <button type="button" id="clock-new-step">New step</button>
       <button type="button" id="clock-undo" aria-keyshortcuts="Control+Z" disabled>Undo step change</button>
       <p id="clock-next"></p>
-      <fieldset id="clock-step-form" class="flow-form">
-        <legend><h4 id="clock-step-legend">Add a step</h4></legend>
-        <label for="clock-step-type">Step type</label>
-        <select id="clock-step-type">
-          <option value="music">Music matching conditions</option>
-          <option value="liner">Voice liner matching conditions</option>
-          <option value="track">A specific track</option>
-          <option value="settings">Switch preset</option>
-          <option value="ad_break">Ad break</option>
-        </select>
-        <div class="clock-step-field" id="clock-step-conditions-field">
-          <label for="clock-step-match">Match conditions</label>
-          <select id="clock-step-match"><option value="all">Match all</option><option value="any">Match any</option></select>
-          <p id="clock-step-conditions-label">Conditions</p>
-          <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
-          <button type="button" id="clock-add-condition">Add condition</button>
-          <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. To use a category condition, first add a music category under Library tools, Categories.</p>
-          <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
-          <p id="clock-step-match-count" aria-live="off">Matching track count appears while editing.</p>
-        </div>
-        <div class="clock-step-field" id="clock-step-source-field">
-          <label for="clock-step-source">Library folder</label>
-          <select id="clock-step-source"></select>
-        </div>
-        <div class="clock-step-field">
-          <label for="clock-step-path">Track</label>
-          <input id="clock-step-path" type="text" autocomplete="off" spellcheck="false" aria-describedby="clock-step-path-help">
-          <span class="setting-desc" id="clock-step-path-help">The file inside the library folder, such as Album/Song.flac.</span>
-        </div>
-        <div class="clock-step-field">
-          <label for="clock-step-preset">Preset</label>
-          <select id="clock-step-preset"></select>
-        </div>
-        <!-- An ad break step: spots from the Ads tab, by its rules.  A refused
-             field is linked to #clock-step-ad-error and focused. -->
-        <div class="clock-step-field" id="clock-step-ad-field">
-          <p class="setting-desc" id="clock-step-ad-help">Plays spots from the Ads tab at the song change before the next song this clockwheel picks, by the rules of every ad break. Longest break is 10 to 900 seconds, or 0 for no limit. When no spot can play, the step is skipped and the ad report says why.</p>
-          <p class="setting-desc" id="clock-step-ads-notice" hidden></p>
-          <div class="settings-row">
-            <label for="clock-step-ad-spots">Spots in the break</label>
-            <input type="number" id="clock-step-ad-spots" min="1" max="10" step="1" value="3">
-          </div>
-          <div class="settings-row">
-            <label for="clock-step-ad-seconds">Longest break in seconds</label>
-            <input type="number" id="clock-step-ad-seconds" min="0" max="900" step="1" value="0">
-          </div>
-          <div class="settings-row">
-            <label for="clock-step-ad-advertiser">Advertiser</label>
-            <select id="clock-step-ad-advertiser"><option value="">Any advertiser</option></select>
-          </div>
-          <div class="settings-row">
-            <label for="clock-step-ad-category">Competing category</label>
-            <select id="clock-step-ad-category"><option value="">Any category</option></select>
-          </div>
-          <p id="clock-step-ad-error" class="field-error" hidden></p>
-        </div>
-        <h5>How the step chooses</h5>
-        <div class="clock-step-field">
-          <label for="clock-step-selection">Choose</label>
-          <select id="clock-step-selection">
-            <option value="least_recent">Least recently played</option>
-            <option value="random">At random</option>
-          </select>
-        </div>
-        <div class="clock-step-field">
-          <input id="clock-step-enforce-rules" type="checkbox" checked>
-          <label for="clock-step-enforce-rules">Follow the repeat rules</label>
-        </div>
-        <div class="clock-step-field">
-          <input id="clock-step-require-following" type="checkbox">
-          <label for="clock-step-require-following">Only play if the following track fits before the next reset</label>
-        </div>
-        <!-- step-hours.js: the step's days and hours.  A refused field is
-             linked to #clock-step-hours-error and focused; #clock-status says it. -->
-        <fieldset id="clock-step-hours">
-          <legend><h5>When this step plays</h5></legend>
-          <p class="setting-desc" id="clock-step-hours-help">
-            Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
-          </p>
-          <fieldset id="clock-step-days">
-            <legend>Days</legend>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-1" value="1"><label for="clock-step-day-1">Tuesday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-2" value="2"><label for="clock-step-day-2">Wednesday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-3" value="3"><label for="clock-step-day-3">Thursday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-4" value="4"><label for="clock-step-day-4">Friday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-5" value="5"><label for="clock-step-day-5">Saturday</label></div>
-            <div class="settings-check"><input type="checkbox" id="clock-step-day-6" value="6"><label for="clock-step-day-6">Sunday</label></div>
-          </fieldset>
-          <div class="settings-row">
-            <label for="clock-step-hours-from">Allowed from</label>
-            <input type="time" id="clock-step-hours-from">
-          </div>
-          <div class="settings-row">
-            <label for="clock-step-hours-until">Allowed until</label>
-            <input type="time" id="clock-step-hours-until">
-          </div>
-          <p id="clock-step-hours-error" class="field-error" hidden></p>
-        </fieldset>
-        <button type="button" id="clock-add-step">Add step</button>
-        <button type="button" id="clock-cancel-edit" hidden>Cancel edit</button>
-      </fieldset>
       <h4>Restarts and saving</h4>
       <label for="clock-resync-minutes">Restart at these minutes past each hour</label>
       <input id="clock-resync-minutes" type="text" inputmode="numeric" value="0" autocomplete="off" aria-describedby="clock-resync-help">
@@ -3603,6 +3502,112 @@
 <!-- Save, Discard or Keep editing (library-folders.js).  Keep editing does
      what Escape does: it closes the dialog, keeps the edits and puts focus
      back on the control that opened it. -->
+<!-- New step and Edit open the step form as a modal dialog; Escape
+     or Cancel closes it and returns focus. -->
+<dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
+<fieldset id="clock-step-form" class="flow-form">
+  <legend><h4 id="clock-step-legend">Add a step</h4></legend>
+  <label for="clock-step-type">Step type</label>
+  <select id="clock-step-type">
+    <option value="music">Music matching conditions</option>
+    <option value="liner">Voice liner matching conditions</option>
+    <option value="track">A specific track</option>
+    <option value="settings">Switch preset</option>
+    <option value="ad_break">Ad break</option>
+  </select>
+  <div class="clock-step-field" id="clock-step-conditions-field">
+    <label for="clock-step-match">Match conditions</label>
+    <select id="clock-step-match"><option value="all">Match all</option><option value="any">Match any</option></select>
+    <p id="clock-step-conditions-label">Conditions</p>
+    <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
+    <button type="button" id="clock-add-condition">Add condition</button>
+    <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. To use a category condition, first add a music category under Library tools, Categories.</p>
+    <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
+    <p id="clock-step-match-count" aria-live="off">Matching track count appears while editing.</p>
+  </div>
+  <div class="clock-step-field" id="clock-step-source-field">
+    <label for="clock-step-source">Library folder</label>
+    <select id="clock-step-source"></select>
+  </div>
+  <div class="clock-step-field">
+    <label for="clock-step-path">Track</label>
+    <input id="clock-step-path" type="text" autocomplete="off" spellcheck="false" aria-describedby="clock-step-path-help">
+    <span class="setting-desc" id="clock-step-path-help">The file inside the library folder, such as Album/Song.flac.</span>
+  </div>
+  <div class="clock-step-field">
+    <label for="clock-step-preset">Preset</label>
+    <select id="clock-step-preset"></select>
+  </div>
+  <!-- An ad break step: spots from the Ads tab, by its rules.  A refused
+       field is linked to #clock-step-ad-error and focused. -->
+  <div class="clock-step-field" id="clock-step-ad-field">
+    <p class="setting-desc" id="clock-step-ad-help">Plays spots from the Ads tab at the song change before the next song this clockwheel picks, by the rules of every ad break. Longest break is 10 to 900 seconds, or 0 for no limit. When no spot can play, the step is skipped and the ad report says why.</p>
+    <p class="setting-desc" id="clock-step-ads-notice" hidden></p>
+    <div class="settings-row">
+      <label for="clock-step-ad-spots">Spots in the break</label>
+      <input type="number" id="clock-step-ad-spots" min="1" max="10" step="1" value="3">
+    </div>
+    <div class="settings-row">
+      <label for="clock-step-ad-seconds">Longest break in seconds</label>
+      <input type="number" id="clock-step-ad-seconds" min="0" max="900" step="1" value="0">
+    </div>
+    <div class="settings-row">
+      <label for="clock-step-ad-advertiser">Advertiser</label>
+      <select id="clock-step-ad-advertiser"><option value="">Any advertiser</option></select>
+    </div>
+    <div class="settings-row">
+      <label for="clock-step-ad-category">Competing category</label>
+      <select id="clock-step-ad-category"><option value="">Any category</option></select>
+    </div>
+    <p id="clock-step-ad-error" class="field-error" hidden></p>
+  </div>
+  <h5>How the step chooses</h5>
+  <div class="clock-step-field">
+    <label for="clock-step-selection">Choose</label>
+    <select id="clock-step-selection">
+      <option value="least_recent">Least recently played</option>
+      <option value="random">At random</option>
+    </select>
+  </div>
+  <div class="clock-step-field">
+    <input id="clock-step-enforce-rules" type="checkbox" checked>
+    <label for="clock-step-enforce-rules">Follow the repeat rules</label>
+  </div>
+  <div class="clock-step-field">
+    <input id="clock-step-require-following" type="checkbox">
+    <label for="clock-step-require-following">Only play if the following track fits before the next reset</label>
+  </div>
+  <!-- step-hours.js: the step's days and hours.  A refused field is
+       linked to #clock-step-hours-error and focused; #clock-status says it. -->
+  <fieldset id="clock-step-hours">
+    <legend><h5>When this step plays</h5></legend>
+    <p class="setting-desc" id="clock-step-hours-help">
+      Optional. Outside these days and hours the step is skipped, as an empty step is, and the clockwheel moves on to its next step. Leave every day unchecked for every day, and both times empty for all day. Times are in the station time zone, and a window that crosses midnight, such as 22:00 until 02:00, belongs to the day it starts.
+    </p>
+    <fieldset id="clock-step-days">
+      <legend>Days</legend>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-0" value="0"><label for="clock-step-day-0">Monday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-1" value="1"><label for="clock-step-day-1">Tuesday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-2" value="2"><label for="clock-step-day-2">Wednesday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-3" value="3"><label for="clock-step-day-3">Thursday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-4" value="4"><label for="clock-step-day-4">Friday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-5" value="5"><label for="clock-step-day-5">Saturday</label></div>
+      <div class="settings-check"><input type="checkbox" id="clock-step-day-6" value="6"><label for="clock-step-day-6">Sunday</label></div>
+    </fieldset>
+    <div class="settings-row">
+      <label for="clock-step-hours-from">Allowed from</label>
+      <input type="time" id="clock-step-hours-from">
+    </div>
+    <div class="settings-row">
+      <label for="clock-step-hours-until">Allowed until</label>
+      <input type="time" id="clock-step-hours-until">
+    </div>
+    <p id="clock-step-hours-error" class="field-error" hidden></p>
+  </fieldset>
+  <button type="button" id="clock-add-step">Add step</button>
+  <button type="button" id="clock-cancel-edit">Cancel</button>
+</fieldset>
+</dialog>
 <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title" aria-describedby="track-info-dialog-desc">
   <form method="dialog">
     <h2 id="track-info-dialog-title"></h2>
