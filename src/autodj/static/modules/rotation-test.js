@@ -12,6 +12,7 @@
 // second.  The results are headings and lists (no tables), filled in
 // without moving focus.
 import { requestJson } from "./api-client.js";
+import { focusRevealed } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -69,12 +70,12 @@ export function progressText(view) {
   return `${number(view?.progress?.picks)} songs picked, ${percent} percent done.`;
 }
 
-// The report's sections (rotation_sim.report_sections) as an <h5> and a
-// list each; a line with items gets a nested list.
+// The report's sections (rotation_sim.report_sections) as an <h6> and a
+// list each (under the results' h5, inside the Test rotation card's h4); a line with items gets a nested list.
 export function renderSections(doc, container, sections) {
   container.replaceChildren();
   for (const section of sections || []) {
-    const heading = doc.createElement("h5");
+    const heading = doc.createElement("h6");
     heading.textContent = section.title;
     const list = doc.createElement("ul");
     for (const line of section.lines || []) {
@@ -194,7 +195,7 @@ export function installRotationTest({
     const problem = seedProblem(seed.value);
     markSeed(problem);
     if (problem) {
-      seed.focus();
+      focusRevealed(seed);
       say(problem, "error");
       return;
     }

@@ -773,7 +773,7 @@ off air, and notice when it is back.
 
 ### Settings
 
-In stream mode, **Settings, Stream** has a **Now-playing feed** group:
+In stream mode, **Settings, Stream** has a **Now-playing feed** card, closed until you open it:
 
 - **Now-playing link** shows this page's address for the feed, with **Copy now-playing link**.
   Opened as `localhost`, the page notes that the link only works on that computer.
@@ -1139,7 +1139,7 @@ The listening address stays the same across restarts. There is no key to copy or
 ### More formats: AAC and Opus
 
 Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
-own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+own address and bitrate. Turn them on in Settings, Stream, **More formats** (a card closed until you open it), with **AAC
 quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
 
 ```toml
@@ -1202,7 +1202,8 @@ encoders, so multiply by the stations whose format is being heard.
 
 ### Listener statistics
 
-Settings, Stream, **Listener statistics** shows, for the station the page controls:
+Settings, Stream, **Listener statistics**, a card closed until you open it, shows, for the station
+the page controls:
 
 - a summary in words: how many are listening now on each format, today's peak and when it was,
   today's sessions and listening hours, and the same for the chosen period with its peak day
@@ -1243,8 +1244,8 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-In **Settings > Stream**, add or edit relays, enable or disable them, and check their
-connection status. Set the station name, genre, description and website there too; relays
+In **Settings > Stream**, open the **Relays** card to add or edit relays, enable or disable them,
+and check their connection status. Set the station name, genre, description and website there too; relays
 inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
 listeners connected. Changing one relay reconnects that relay only.
 
@@ -3048,7 +3049,7 @@ Nothing is ever dropped without a word in the report:
 
 ### The ad report
 
-Under **Ad report**, choose **From** and **To** (both days included, in the station time zone)
+Open the **Ad report** card, closed until you open it, and choose **From** and **To** (both days included, in the station time zone)
 and **Show report**. The summary is said once; below it are two tables with column headers:
 **Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
 seconds aired) and
