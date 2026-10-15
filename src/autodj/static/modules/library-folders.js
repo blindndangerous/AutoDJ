@@ -5,7 +5,7 @@ import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
-import { NBSP, announceStatus } from "./live-region.js";
+import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
@@ -308,16 +308,18 @@ export function installLibraryFolders({ document: doc = document, request = requ
     // pendingFolderEdits holds off another toggle (see the click guard).
     // No aria-disabled: NVDA speaks the state change on the focused
     // control, so the press was heard as "unavailable" (#331).  aria-busy
-    // says it is busy instead.
+    // says it is busy instead, and a slow reply says "Saving…" (#384).
     pendingFolderEdits.add(input);
     input.classList.add("is-pending");
     input.setAttribute("aria-busy", "true");
+    const stopPending = sayIfStillPending(announceAction, "Saving folder settings…");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
       if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
+      stopPending();
       pendingFolderEdits.delete(input);
       input.classList.remove("is-pending");
       input.removeAttribute("aria-busy");
@@ -336,12 +338,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pendingFolderEdits.add(button);
     button.classList.add("is-pending");
     button.setAttribute("aria-busy", "true");
+    const stopPending = sayIfStillPending(announceAction, "Removing the folder…");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
       announceAction("Folder removed from the library.");
     } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
     finally {
+      stopPending();
       pendingFolderEdits.delete(button);
       button.classList.remove("is-pending");
       button.removeAttribute("aria-busy");
@@ -527,6 +531,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (saving || pending) return;
         pending = true;
         save.setAttribute("aria-busy", "true");
+        const stopPending = sayIfStillPending((text) => { error.textContent = text; }, "Saving…");
         const said = [];
         try {
           const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
@@ -537,6 +542,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
           savedBeforeSwitch = said.join(" ");
           dialog.close("save");
         } finally {
+          stopPending();
+          if (error.textContent === "Saving…") error.textContent = "";
           pending = false;
           save.removeAttribute("aria-busy");
         }

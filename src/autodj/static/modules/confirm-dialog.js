@@ -1,3 +1,4 @@
+import { sayIfStillPending } from "./live-region.js";
 import { severalStations, stationName } from "./stations.js";
 
 // Shared "are you sure" step for actions that cannot be undone: Clear
@@ -16,12 +17,30 @@ import { severalStations, stationName } from "./stations.js";
 // focus moves to the target in the same task.  Focus never rests on the
 // page or on the opener in between, which made NVDA read a line from the
 // top of the page and the opener before the new focus (D14).  While it
-// runs, Cancel and Escape are held so the dialog cannot close under it.
+// runs, Cancel and Escape are held so the dialog cannot close under it,
+// the confirm button is aria-busy, and an action still running after a
+// moment says *pendingText* ("Removing…") in the dialog's own status line:
+// the page's status regions are inert behind the dialog (#384).
+
+// The dialog's own status line, made on first use.
+function dialogStatus(doc, dialog) {
+  let status = doc.getElementById("confirm-status");
+  if (!status) {
+    status = doc.createElement("p");
+    status.id = "confirm-status";
+    status.className = "visually-hidden";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.setAttribute("aria-atomic", "true");
+    (dialog.querySelector("form") || dialog).append(status);
+  }
+  return status;
+}
 
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
 export function confirmAction(doc, {
-  title, message, confirmLabel, onConfirm = null, station = false,
+  title, message, confirmLabel, onConfirm = null, station = false, pendingText = "Working…",
 }) {
   const dialog = doc.getElementById("confirm-dialog");
   const heading = doc.getElementById("confirm-title");
@@ -57,10 +76,17 @@ export function confirmAction(doc, {
       pending = true;
       let target = null;
       if (onConfirm) {
+        const status = dialogStatus(doc, dialog);
+        confirmButton.setAttribute("aria-busy", "true");
+        const stopPending = sayIfStillPending((text) => { status.textContent = text; }, pendingText);
         try {
           target = await onConfirm();
         } catch (_) {
           target = null;
+        } finally {
+          stopPending();
+          status.textContent = "";
+          confirmButton.removeAttribute("aria-busy");
         }
       }
       dialog.close("confirm");

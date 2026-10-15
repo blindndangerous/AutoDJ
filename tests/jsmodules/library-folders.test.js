@@ -256,6 +256,30 @@ describe("clock folder and points controls", () => {
     expect(left).toEqual([]);
   });
 
+  it("says a short line while a slow folder save runs (#384)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "PATCH"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] }));
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const status = document.getElementById("source-folders-status");
+    vi.useFakeTimers();
+    try {
+      document.querySelector('[data-field="recursive"]').click();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(status.textContent).toBe("");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(status.textContent).toBe("Saving folder settings…");
+      finish({});
+      await vi.advanceTimersByTimeAsync(10);
+      expect(status.textContent).toBe("Folder settings saved.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never says unavailable on Remove while it removes, and takes no second press (#331)", async () => {
     document.getElementById("panel-library").hidden = false;
     let finish;

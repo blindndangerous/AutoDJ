@@ -56,6 +56,17 @@ export function liveAgain(region) {
   else region.setAttribute("aria-live", quiet.live);
 }
 
+// A press whose request is still out after PENDING_SAY_MS says *text*
+// ("Saving…") through *say*, once, so the press is heard: NVDA, JAWS and
+// VoiceOver do not say aria-busy on the focused control (#384).  A result
+// that comes sooner is the only thing said.  Call the returned function
+// when the request ends.
+export const PENDING_SAY_MS = 300;
+export function sayIfStillPending(say, text, delayMs = PENDING_SAY_MS) {
+  const timer = setTimeout(() => say(text), delayMs);
+  return () => clearTimeout(timer);
+}
+
 // ----------------------------------------------------------------
 // Visible mirror of the announcement channel.
 //

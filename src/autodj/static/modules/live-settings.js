@@ -15,6 +15,7 @@
 
 import { staleActionText } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { sayIfStillPending } from "./live-region.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 
@@ -73,7 +74,8 @@ export function installLiveSettings({
   let generation = 0;
   // The Save buttons with a request on the go: another press waits.  No
   // aria-disabled, or NVDA says "unavailable" on the pressed button (#331);
-  // aria-busy says it is busy instead.
+  // aria-busy says it is busy instead, and a slow reply says "Saving…"
+  // (#384).
   const saving = new Set();
 
   function link(control, errorNode, on) {
@@ -220,6 +222,7 @@ export function installLiveSettings({
       fail(id(problem[0]), formError, problem[1]);
       return false;
     }
+    const stopPending = sayIfStillPending(announce, `Saving DJ ${payload.username}…`);
     try {
       saving.add(control);
       control?.classList.add("is-pending");
@@ -236,6 +239,7 @@ export function installLiveSettings({
       else fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
       return false;
     } finally {
+      stopPending();
       saving.delete(control);
       control?.classList.remove("is-pending");
       control?.removeAttribute("aria-busy");
@@ -252,6 +256,7 @@ export function installLiveSettings({
       title: "Remove DJ?",
       message: `Remove ${dj.display_name} (${dj.username})? If this DJ is on the air, they are disconnected and the music comes back.`,
       confirmLabel: "Remove DJ",
+      pendingText: `Removing DJ ${dj.username}…`,
       station: true,
       onConfirm: async () => {
         try {
@@ -284,6 +289,7 @@ export function installLiveSettings({
       fail(duckField, talkError, "Duck amount: enter a number of decibels from 0 to 30.");
       return;
     }
+    const stopPending = sayIfStillPending(announce, "Saving the talk settings…");
     try {
       saving.add(control);
       control.classList.add("is-pending");
@@ -304,6 +310,7 @@ export function installLiveSettings({
       fail(field, talkError, `Could not save the talk settings. ${err.message}`);
       return;
     } finally {
+      stopPending();
       saving.delete(control);
       control.classList.remove("is-pending");
       control.removeAttribute("aria-busy");
