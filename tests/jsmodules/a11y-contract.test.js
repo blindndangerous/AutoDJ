@@ -3467,7 +3467,7 @@ describe("listener request contracts", () => {
     }
     const queueScript = readFileSync(staticPath("modules", "queue.js"), "utf8");
     expect(queueScript).toMatch(/`Bridge to \$\{target\}`/);
-    expect(queueScript).toMatch(/<span class="queue-bridge">/);
+    expect(queueScript).toMatch(/className = "queue-bridge"/);
   });
 });
 
@@ -3647,9 +3647,9 @@ describe("station switcher and station context contracts (#70)", () => {
       profiles: readFileSync(staticPath("modules", "profiles.js"), "utf8"),
       schedule: readFileSync(staticPath("modules", "scheduler-panel.js"), "utf8"),
     };
-    expect(sources.queue.match(/aria-describedby="station-context"/g)).toHaveLength(4);
+    // Every queue action but Track info.
+    expect(sources.queue).toMatch(/if \(action !== "info"\) button\.setAttribute\("aria-describedby", "station-context"\)/);
     for (const [name, source] of Object.entries(sources)) {
-      if (name === "queue") continue;
       expect(source, name).toMatch(/setAttribute\("aria-describedby", "station-context"\)/);
     }
   });

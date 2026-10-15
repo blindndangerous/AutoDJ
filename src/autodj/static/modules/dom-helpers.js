@@ -165,6 +165,38 @@ export function nextRowControl(list, selector, index, fallback) {
   return controls[Math.min(index, controls.length - 1)] || fallback;
 }
 
+// Puts *rows* in *list* in this order, in place, and removes everything
+// else in it.  A row already there is moved, not drawn again, and the row
+// that holds focus is never moved: the rows around it are.  A list drawn
+// again from scratch destroyed the focused button, and NVDA then read a
+// cut-off line of the list before the status message (#328).  The caller
+// moves focus off a row that goes before calling this.
+export function placeRows(list, rows) {
+  const wanted = new Set(rows);
+  for (const node of [...list.childNodes]) if (!wanted.has(node)) node.remove();
+  const active = list.ownerDocument.activeElement;
+  const pivot = rows.findIndex((row) => row.contains(active));
+  if (pivot < 0) {
+    let next = list.firstChild;
+    for (const row of rows) {
+      if (row !== next) list.insertBefore(row, next);
+      next = row.nextSibling;
+    }
+    return;
+  }
+  // Back to front before the focused row, front to back after it.
+  let anchor = rows[pivot];
+  for (let i = pivot - 1; i >= 0; i -= 1) {
+    if (rows[i].nextSibling !== anchor) list.insertBefore(rows[i], anchor);
+    anchor = rows[i];
+  }
+  let previous = rows[pivot];
+  for (let i = pivot + 1; i < rows.length; i += 1) {
+    if (previous.nextSibling !== rows[i]) list.insertBefore(rows[i], previous.nextSibling);
+    previous = rows[i];
+  }
+}
+
 // The station's calendar day at *now*, as YYYY-MM-DD, or "" when the page
 // does not know the station time zone.  Pages left open past midnight use it
 // to see that the station's day has changed (liners, carts).

@@ -284,6 +284,34 @@ describe("editing a list", () => {
     expect(document.activeElement).toBe(byId("shows-search"));
   });
 
+  // #328: the list drawn again from scratch destroyed the focused button, and
+  // NVDA read a cut-off line of the list after the status message.
+  it("changes the song list in place, never leaving focus on the page", async () => {
+    const server = await open();
+    await openList(server);
+    const [first, second, third] = songRows();
+    const left = [];
+    document.addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) left.push(event.target);
+    });
+    songButton(1, "down").focus();
+    songButton(1, "down").click();
+    // The same rows, moved around the focused one, renumbered in place.
+    expect(songRows()).toEqual([first, third, second]);
+    expect(document.activeElement).toBe(second.querySelector('[data-action="down"]'));
+    expect(second.querySelector('[data-action="down"]').getAttribute("aria-disabled")).toBe("true");
+    expect(third.querySelector('[data-action="down"]').hasAttribute("aria-disabled")).toBe(false);
+    await vi.waitFor(() => expect(status()).toContain("Moved Artist 2, Song 2 to number 3 of 3."));
+    // Remove: the next row's Remove has focus before the row goes.
+    third.querySelector('[data-action="remove"]').focus();
+    third.querySelector('[data-action="remove"]').click();
+    expect(songRows()).toEqual([first, second]);
+    expect(document.activeElement).toBe(second.querySelector('[data-action="remove"]'));
+    expect(second.querySelector('[data-action="up"]').getAttribute("aria-label")).toBe("Move up Artist 2, Song 2");
+    await vi.waitFor(() => expect(status()).toContain("Removed Artist 3, Song 3."));
+    expect(left).toEqual([]);
+  });
+
   it("generates the list again, saying the result once", async () => {
     const server = await open();
     await openList(server);

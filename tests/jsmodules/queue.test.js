@@ -667,6 +667,45 @@ describe("queue focus while a change is saved", () => {
     vi.unstubAllGlobals();
   });
 
+  // #328: a list drawn again from scratch destroyed the focused button, and
+  // NVDA read a cut-off line of the list while the change was sent.
+  it("moves rows in place and never leaves focus on the page while a change is sent", async () => {
+    const { els, reply } = setupQueue();
+    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
+    const [alpha, bravo, charlie] = rowsOf();
+    const left = [];
+    document.addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) left.push(event.target);
+    });
+    pressFocused(els, "b.mp3", "down");
+    // At once, before the reply: the same nodes, Bravo's own Down kept.
+    expect(rowsOf()).toEqual([alpha, charlie, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
+    expect(bravo.querySelector(".queue-name").textContent).toBe("3. Bravo");
+    expect(bravo.querySelector('[data-action="down"]').disabled).toBe(true);
+    expect(charlie.querySelector('[data-action="down"]').disabled).toBe(false);
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
+
+    // Remove: focus goes to the next row's Remove before the row goes.
+    pressFocused(els, "c.mp3", "remove");
+    expect(rowsOf()).toEqual([alpha, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // A push with a new track keeps the rows that stay.
+    applyQueueState([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "d.mp3", display_name: "Delta" },
+    ], els);
+    expect(rowsOf().slice(0, 2)).toEqual([alpha, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
+    expect(left).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
   it("does not redraw the old order from a push sent before the change", async () => {
     const { els, queue, reply } = setupQueue();
     pressFocused(els, "c.mp3", "top");
