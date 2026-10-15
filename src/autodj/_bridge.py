@@ -1301,7 +1301,6 @@ class PlayerBridge:
             getattr(self.player, "_active_processing_mode", None)
             or self.player._cfg.playback.loudness_processing
         )
-        playing = getattr(self.player, "_playing_render", None)
         return {
             "current_track": current_dict,
             "next_track": next_dict,
@@ -1358,11 +1357,6 @@ class PlayerBridge:
                 "latency_seconds": master.latency_seconds
                 if master is not None and processing in {"smooth", "stereotool"}
                 else 0.0,
-                "queue_locked": bool(
-                    playing is not None
-                    and playing.full_audio is not None
-                    and playing.next_entry is not None
-                ),
             },
         }
 
