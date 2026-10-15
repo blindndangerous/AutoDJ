@@ -73,15 +73,24 @@ class _Function:
         return result(*args) if callable(result) else result
 
 
-def _library(*, create3: bool = True, presets: tuple[bool, ...] = (True,), licensed: bool = True):
+def _library(
+    *,
+    create3: bool = True,
+    presets: tuple[bool, ...] = (True,),
+    licensed: bool = True,
+    features: bytes = b"",
+    features_flag: bool | None = None,
+    version: int = 11050,
+):
     calls: list = []
     answers = iter(presets)
+    if not licensed and not features:
+        features = b"Declipper, 5-band AGC"
 
     def unlicensed(_handle, text, _size):
-        if licensed:
-            return True
-        ctypes.memmove(text, b"Declipper, 5-band AGC\0", 22)
-        return False
+        if features:
+            ctypes.memmove(text, features + b"\0", len(features) + 1)
+        return (not features) if features_flag is None else features_flag
 
     functions = {
         "stereoTool_Create": 1234,
@@ -90,7 +99,7 @@ def _library(*, create3: bool = True, presets: tuple[bool, ...] = (True,), licen
         "stereoTool_LoadPreset": lambda *_args: next(answers),
         "stereoTool_CheckLicenseValid": licensed,
         "stereoTool_GetUnlicensedUsedFeatures": unlicensed,
-        "stereoTool_GetSoftwareVersion": 11050,  # what 11.05 really returns
+        "stereoTool_GetSoftwareVersion": version,  # 11.05 really returns 11050
         "stereoTool_GetLatency2": 441,
         "stereoTool_global_setBindIp": None,
     }
@@ -110,9 +119,10 @@ def test_stereo_tool_starts_with_the_key_on_this_computer_only_and_zeroes_it() -
     )
     names = [name for name, _args in calls]
     # The web and UECP servers are bound to this computer before Stereo Tool starts.
-    assert names[:3] == [
+    assert names[:4] == [
         "stereoTool_global_setBindIp",
         "stereoTool_Create3",
+        "stereoTool_GetSoftwareVersion",
         "stereoTool_LoadPreset",
     ]
     assert calls[0][1] == [b"127.0.0.1", b"127.0.0.1"]
@@ -121,7 +131,7 @@ def test_stereo_tool_starts_with_the_key_on_this_computer_only_and_zeroes_it() -
     assert secret == KEY.encode() + b"\0"
     # The buffer handed to Create3 held the key and is zeroed afterwards.
     assert set(key) == {0}
-    assert calls[2][1][1:] == [b"/presets/Night.sts", host.LOAD_ALL_SETTINGS]
+    assert calls[3][1][1:] == [b"/presets/Night.sts", host.LOAD_ALL_SETTINGS]
     assert engine.version() == "11.05"
     assert engine.load_type == host.LOAD_ALL_SETTINGS
     assert engine.latency_frames() == 441
@@ -139,16 +149,20 @@ def test_an_old_library_without_create3_uses_create() -> None:
     assert "stereoTool_Create" in [name for name, _args in calls]
 
 
-def test_the_older_load_type_is_tried_when_the_new_one_is_refused() -> None:
-    lib, calls = _library(presets=(False, True))
+@pytest.mark.parametrize(
+    ("version", "load_type"),
+    [(11050, 20386), (11100, 20386), (10920, 10386), (912, 10386), (0, 20386)],
+)
+def test_the_load_type_is_chosen_once_from_the_version(version: int, load_type: int) -> None:
+    lib, calls = _library(version=version)
     engine = host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
     loads = [args[2] for name, args in calls if name == "stereoTool_LoadPreset"]
-    assert loads == [host.LOAD_ALL_SETTINGS, 10386]
-    assert engine.load_type == 10386
+    assert loads == [load_type]
+    assert engine.load_type == load_type
 
 
 def test_a_preset_that_will_not_load_stops_stereo_tool() -> None:
-    lib, calls = _library(presets=(False, False))
+    lib, calls = _library(presets=(False,))
     with pytest.raises(ValueError, match=r"could not load the preset Night.sts"):
         host.StereoTool("lib.so", bytearray(), "/x/Night.sts", "h", loader=lambda _p: lib)
     assert "stereoTool_Delete" in [name for name, _args in calls]
@@ -170,6 +184,34 @@ def test_an_unlicensed_preset_says_what_is_not_covered() -> None:
     lib, _calls = _library(licensed=False)
     engine = host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
     assert engine.licence() == (False, "Declipper, 5-band AGC")
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_licensing_is_decided_from_the_text_not_the_bool(flag: bool) -> None:
+    """Liquidsoap reads the bool the other way round from Thimeo's header: trust the text."""
+    lib, _calls = _library(features=b"RuleBreaker Clipper used without license", features_flag=flag)
+    engine = host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
+    assert engine.licence() == (False, "RuleBreaker Clipper used without license")
+    lib, _calls = _library(features=b"", features_flag=flag)
+    engine = host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
+    assert engine.licence() == (True, None)
+
+
+def test_a_path_the_library_cannot_be_given_is_refused_in_words() -> None:
+    lib, calls = _library()
+    with pytest.raises(host.LibraryError, match="Move AutoDJ's index folder"):
+        host.StereoTool("lib.so", bytearray(b"<k>"), "/x/\ud800.sts", "h", loader=lambda _p: lib)
+    assert "stereoTool_Create3" not in [name for name, _args in calls]
+
+
+def test_a_library_that_will_not_load_is_named_without_its_folder(tmp_path) -> None:
+    broken = tmp_path / "deep" / "folder" / "libStereoTool_intel64.so"
+    broken.parent.mkdir(parents=True)
+    broken.write_bytes(b"not a shared library")
+    with pytest.raises(host.LibraryError) as caught:
+        host._load(str(broken))
+    assert "libStereoTool_intel64.so could not be loaded" in str(caught.value)
+    assert str(broken.parent) not in str(caught.value)
 
 
 class _Halver:

@@ -80,9 +80,10 @@ function answer(accept) {
   });
 }
 
-async function install(state, { confirm = answer(true), stationChanges = () => () => {} } = {}) {
+async function install(state, { confirm = answer(true), stationChanges = () => () => {},
+  recheckMs = 60_000 } = {}) {
   const panel = installStereoToolSetup({ document, request: state.request, confirm,
-    status: $("settings-status"), stationChanges });
+    status: $("settings-status"), stationChanges, recheckMs });
   await panel.refresh();
   return panel;
 }
@@ -275,7 +276,7 @@ describe("Stereo Tool setup controls", () => {
     await install(state);
     $("stereo-license-key").value = `  ${KEY}  `;
     $("stereo-license-save").click();
-    await vi.waitFor(() => expect(statusText()).toBe("Licence key saved. Stereo Tool restarts with it."));
+    await vi.waitFor(() => expect(statusText()).toBe("Licence key saved. Stereo Tool checks the key in a moment."));
     const put = state.calls.find(([url, method]) => url === "/api/stereo-tool/license" && method === "PUT");
     expect(JSON.parse(put[2])).toEqual({ key: KEY, scope: "all" });
     expect($("stereo-license-key").value).toBe("");
@@ -291,7 +292,7 @@ describe("Stereo Tool setup controls", () => {
     $("stereo-license-key").value = KEY;
     $("stereo-license-save").click();
     await vi.waitFor(() => expect(statusText())
-      .toBe("Licence key saved for this station. Stereo Tool restarts with it."));
+      .toBe("Licence key saved for this station. Stereo Tool checks the key in a moment."));
     const put = state.calls.find(([, method]) => method === "PUT");
     expect(JSON.parse(put[2]).scope).toBe("station");
   });
@@ -389,5 +390,40 @@ describe("Stereo Tool setup controls", () => {
     $("stereo-license-clear").click();
     await vi.waitFor(() => expect(statusText()).toContain("cannot be cleared here"));
     expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("looks again a few seconds after a save and speaks Stereo Tool's verdict once", async () => {
+    const state = server();
+    const original = state.request;
+    let saved = false;
+    state.request = vi.fn(async (url, options = {}) => {
+      const reply = await original(url, options);
+      if (options.method === "PUT") saved = true;
+      // The PUT's own reply has no verdict yet; the later look does.
+      if (url === "/api/stereo-tool" && saved) {
+        return { ...reply, running: { licensed: true, unlicensed: null } };
+      }
+      return reply;
+    });
+    await install(state, { recheckMs: 20 });
+    $("stereo-license-key").value = KEY;
+    $("stereo-license-save").click();
+    await vi.waitFor(() => expect(statusText())
+      .toBe("Licence set. Stereo Tool says the licence key is valid."));
+    expect($("stereo-license-status").textContent)
+      .toBe("Licence set. Stereo Tool says the licence key is valid.");
+  });
+
+  it("says nothing more when the recheck finds the same verdict", async () => {
+    const state = server();
+    await install(state, { recheckMs: 20 });
+    $("stereo-license-key").value = KEY;
+    $("stereo-license-save").click();
+    await vi.waitFor(() => expect(statusText())
+      .toBe("Licence key saved. Stereo Tool checks the key in a moment."));
+    await new Promise((resolve) => { setTimeout(resolve, 80); });
+    expect(state.calls.filter(([url, method]) => url === "/api/stereo-tool" && method === "GET"))
+      .toHaveLength(2);
+    expect(statusText()).toBe("Licence key saved. Stereo Tool checks the key in a moment.");
   });
 });

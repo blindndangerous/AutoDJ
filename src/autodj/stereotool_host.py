@@ -53,10 +53,11 @@ BLOCK_FRAMES = 1024
 _BLOCK_BYTES = BLOCK_FRAMES * CHANNELS * 4
 #: ID_SAVE_ALLSETTINGS in ParameterEnum.h of the 11.05 SDK (ID_BAND1 = 20000,
 #: then 386 entries): every processing setting, but not configuration such
-#: as the web interface.  Older SDKs numbered it 10386 (Liquidsoap still
-#: does); that is tried when this one is refused.
+#: as the web interface.  Older SDKs numbered it 10386, as Liquidsoap still
+#: does.  Thimeo does not say when the numbering moved; AutoDJ assumes with
+#: version 11 (:func:`load_type_for`).
 LOAD_ALL_SETTINGS = 20386
-_OLD_LOAD_ALL_SETTINGS = 10386
+OLD_LOAD_ALL_SETTINGS = 10386
 #: About one second of audio before the licence can be checked.
 _LICENCE_CHECK_BLOCKS = 44
 
@@ -142,11 +143,13 @@ class StereoTool:
         lib = (loader or _load)(library)
         try:
             self._bind(lib)
-        except AttributeError as exc:
+        except AttributeError:
             raise LibraryError(
-                f"{Path(library).name} is not Thimeo's Stereo Tool plugin library ({exc})"
+                f"{Path(library).name} is not Thimeo's Stereo Tool plugin library"
             ) from None
         self._lib = lib
+        # Before anything starts: a path the library cannot be given fails here.
+        home_path, preset_path = _c_path(home), _c_path(preset)
         if hasattr(lib, "stereoTool_global_setBindIp"):
             # A preset can turn on Stereo Tool's web and UECP servers; keep
             # them off the network, on this computer only.
@@ -155,7 +158,7 @@ class StereoTool:
         try:
             if hasattr(lib, "stereoTool_Create3"):
                 # No GUI, its own settings name and home, and no .ini read.
-                handle = lib.stereoTool_Create3(False, secret, b"autodj", _c_path(home), False)
+                handle = lib.stereoTool_Create3(False, secret, b"autodj", home_path, False)
             else:
                 handle = lib.stereoTool_Create(secret)
         finally:
@@ -165,22 +168,27 @@ class StereoTool:
         if not handle:
             raise LibraryError("Stereo Tool did not start")
         self._handle = handle
-        path = _c_path(preset)
-        #: The load type the preset loaded with (20386 or the older 10386).
-        self.load_type = next(
-            (
-                load_type
-                for load_type in (LOAD_ALL_SETTINGS, _OLD_LOAD_ALL_SETTINGS)
-                if lib.stereoTool_LoadPreset(handle, path, load_type)
-            ),
-            None,
-        )
-        if self.load_type is None:
+        #: The load type the preset was loaded with, chosen by version.
+        self.load_type = load_type_for(int(lib.stereoTool_GetSoftwareVersion()))
+        if not lib.stereoTool_LoadPreset(handle, preset_path, self.load_type):
             self.close()
             raise ValueError(f"Stereo Tool could not load the preset {Path(preset).name}")
 
     @staticmethod
     def _bind(lib: ctypes.CDLL) -> None:
+        # From libStereoTool.h in Thimeo's 11.05 Generic plugin SDK:
+        #   extern "C" __EXPORT void stereoTool_global_setBindIp(const char* web, const char* uecp);
+        #   extern "C" __EXPORT gStereoTool* stereoTool_Create3(const bool has_gui,
+        #       const char* key, const char* st_name, const char* home_path, bool load_ini);
+        #   extern "C" __EXPORT gStereoTool* stereoTool_Create(const char* key=NULL);
+        #   extern "C" __EXPORT void stereoTool_Process(gStereoTool* st_instance,
+        #       float* samples, int32_t numsamples, int32_t channels, int32_t samplerate);
+        #   extern "C" __EXPORT bool stereoTool_LoadPreset(gStereoTool* st_instance,
+        #       const char* filename, int loadsave_type);
+        #   extern "C" __EXPORT bool stereoTool_GetUnlicensedUsedFeatures(
+        #       gStereoTool* st_instance, char* text, int text_maxlen);
+        #   extern "C" __EXPORT int stereoTool_GetLatency2(gStereoTool* st_instance,
+        #       int32_t samplerate, bool feed_silence);
         c_bool, c_int, c_int32 = ctypes.c_bool, ctypes.c_int, ctypes.c_int32
         handle, text = ctypes.c_void_p, ctypes.c_char_p
         signatures: dict[str, tuple[list[object], object]] = {
@@ -222,12 +230,17 @@ class StereoTool:
         self._lib.stereoTool_Process(self._handle, samples, frames, CHANNELS, SAMPLE_RATE)
 
     def licence(self) -> tuple[bool, str | None]:
-        """Whether the licence covers the preset, and what it does not cover."""
+        """Whether the licence covers the preset, and what it does not cover.
+
+        Decided from the text, not the function's bool: the header says it
+        returns true with an empty text when all is covered, and Liquidsoap
+        reads the bool the other way round, so the text is the safe signal.
+        """
         valid = bool(self._lib.stereoTool_CheckLicenseValid(self._handle))
         text = ctypes.create_string_buffer(1024)
-        covered = self._lib.stereoTool_GetUnlicensedUsedFeatures(self._handle, text, len(text))
-        missing = None if covered else text.value.decode("utf-8", "replace").strip() or None
-        return valid and covered, missing
+        self._lib.stereoTool_GetUnlicensedUsedFeatures(self._handle, text, len(text))
+        missing = text.value.decode("utf-8", "replace").strip() or None
+        return valid and not missing, missing
 
     def close(self) -> None:
         handle, self._handle = getattr(self, "_handle", None), None
@@ -251,20 +264,47 @@ def software_version(number: int) -> str | None:
     return f"{major}.{minor:02d}" + (f".{patch}" if patch else "")
 
 
+def load_type_for(number: int) -> int:
+    """The preset load type for a library that reports *number* as its version.
+
+    ``ID_SAVE_ALLSETTINGS`` is 20386 in the 11.05 SDK and was 10386 in
+    older ones (Liquidsoap's binding); version 11 and anything unreadable
+    get the new number.
+    """
+    version = software_version(number)
+    if version is None:
+        return LOAD_ALL_SETTINGS
+    return LOAD_ALL_SETTINGS if int(version.split(".")[0]) >= 11 else OLD_LOAD_ALL_SETTINGS
+
+
 def _load(library: str) -> ctypes.CDLL:
+    name = Path(library).name
     if not os.path.isfile(library):
-        raise LibraryError(f"{Path(library).name} is not there")
+        raise LibraryError(f"{name} is not there")
     try:
         if os.name == "nt":
             return ctypes.CDLL(library)
         return ctypes.CDLL(library, mode=getattr(os, "RTLD_NOW", 2))
     except OSError as exc:
-        raise LibraryError(f"{Path(library).name} could not be loaded: {exc}") from None
+        # The loader's message names the full path; the page gets the name only.
+        reason = str(exc).replace(library, name).replace(str(Path(library).parent), "")
+        raise LibraryError(f"{name} could not be loaded ({reason[:200]})") from None
 
 
 def _c_path(path: str) -> bytes:
-    """A path as the library's char* wants it: the ANSI code page on Windows."""
-    return path.encode("mbcs") if os.name == "nt" else os.fsencode(path)
+    """A path as the library's char* wants it: the ANSI code page on Windows.
+
+    Raises:
+        LibraryError: Windows' ANSI code page cannot spell the path.
+    """
+    try:
+        return path.encode("mbcs") if os.name == "nt" else os.fsencode(path)
+    except UnicodeEncodeError:
+        raise LibraryError(
+            f"Stereo Tool cannot open {Path(path).name}: its folder's name has letters "
+            "Windows cannot pass to Stereo Tool. Move AutoDJ's index folder to a path "
+            "with plain letters."
+        ) from None
 
 
 def report(stream: TextIO, **values: object) -> None:
@@ -284,9 +324,9 @@ def pump(
     """Process whole blocks from *source* to *sink* until *source* ends.
 
     The first *skip_frames* output frames (the preset's own delay, silence)
-    are dropped, so the output is in time with the input like the
-    command-line program's was.  The licence is checked once, after about
-    a second of audio.
+    are dropped, so the output is in time with the input and the master's
+    advertised delay holds.  The licence is checked once, after about a
+    second of audio.
     """
     samples = (ctypes.c_float * (BLOCK_FRAMES * CHANNELS))()
     view = memoryview(samples).cast("B")

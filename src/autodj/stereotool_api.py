@@ -66,11 +66,18 @@ def _several_stations(request: Request) -> bool:
         return False
 
 
-def _running(station: StationRuntime) -> dict[str, object]:
-    """What this station's running Stereo Tool reported, if it runs one."""
+def _running(station: StationRuntime) -> dict[str, object] | None:
+    """What this station's running Stereo Tool reported, or ``None``.
+
+    ``None`` too when the report is from a Stereo Tool started before the
+    last key or library change: it says nothing about the new key yet.
+    """
     master = getattr(station.bridge.player, "_continuous_master", None)
     report = getattr(master, "stereotool_report", None)
-    return dict(report) if isinstance(report, dict) else {}
+    if not isinstance(report, dict) or not report:
+        return None
+    current = setup.generation(station.paths.state_dir)
+    return dict(report) if report.get("generation") == current else None
 
 
 def status(station: StationRuntime, several: bool) -> dict[str, Any]:
@@ -82,18 +89,19 @@ def status(station: StationRuntime, several: bool) -> dict[str, Any]:
         configured_file=cfg.playback.stereotool_license_file,
     )
     running = _running(station)
+    licensed = (running or {}).get("licensed")
+    unlicensed = (running or {}).get("unlicensed")
     return {
         **setup.program_status(cfg.playback.stereotool_path, cfg.index.index_dir, running=running),
         "license": licence.public(),
-        # Stereo Tool's own verdict once audio has passed: covered or not, and what not.
+        # Stereo Tool's own verdict on the current key once audio has passed;
+        # null until the Stereo Tool started with this key has said.
         "running": {
-            "licensed": running.get("licensed")
-            if isinstance(running.get("licensed"), bool)
-            else None,
-            "unlicensed": running.get("unlicensed")
-            if isinstance(running.get("unlicensed"), str)
-            else None,
-        },
+            "licensed": licensed,
+            "unlicensed": unlicensed if isinstance(unlicensed, str) else None,
+        }
+        if isinstance(licensed, bool)
+        else None,
         "several_stations": several,
         "terms_url": setup.TERMS_URL,
         "licensing_url": setup.LICENSING_URL,
@@ -187,7 +195,7 @@ def install_download(app: FastAPI, index_dir: Callable[[], Path | str]) -> None:
 
     @app.post("/api/stereo-tool/download")
     async def api_stereo_tool_download(body: DownloadBody, request: Request) -> dict[str, Any]:
-        """Download Thimeo's command-line Stereo Tool for this computer and install it."""
+        """Download Thimeo's Stereo Tool plugin and install this computer's library."""
         request_id = getattr(request.state, "request_id", None) or new_request_id()
         route = "/api/stereo-tool/download"
 

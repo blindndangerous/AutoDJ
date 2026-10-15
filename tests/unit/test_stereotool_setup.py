@@ -873,3 +873,50 @@ def test_a_backslash_in_a_member_name_is_a_separator(name: str, safe: bool) -> N
     assert setup._safe_name(name) is safe
     if safe:
         assert "\\" not in setup._member_name(name)
+
+
+def test_the_version_record_is_ignored_once_the_library_changes(tmp_path: Path) -> None:
+    build, library = _build()
+    setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
+    target = setup.managed_path(tmp_path)
+    name, version, size, mtime = (target.parent / setup.VERSION_FILE).read_text().split()
+    assert (name, version, size) == (target.name, "11.05", str(len(library)))
+    assert mtime == str(target.stat().st_mtime_ns)
+    # Replaced by hand: the record no longer describes it, so the running report counts.
+    target.write_bytes(library + b"another build")
+    assert setup.installed_version(target) is None
+    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, running={"version": "11.10"})
+    assert status["version"] == "11.10"
+
+
+def test_a_failed_version_record_still_installs_and_restarts(tmp_path: Path, monkeypatch) -> None:
+    build, library = _build()
+
+    def broken(*_args):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(setup, "_write_version", broken)
+    before = setup.generation()
+    installed = setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
+    assert installed.path.read_bytes() == library
+    assert setup.generation() > before
+    assert not (installed.path.parent / setup.VERSION_FILE).exists()
+
+
+def test_a_failed_replace_leaves_no_old_version_record(tmp_path: Path, monkeypatch) -> None:
+    build, library = _build()
+    target = setup.managed_path(tmp_path)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"old library")
+    (target.parent / setup.VERSION_FILE).write_text(f"{target.name} 10.92 11 0\n")
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(setup, "_replace", refuse)
+    before = setup.generation()
+    with pytest.raises(setup.DownloadError, match="Could not put Stereo Tool in place"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
+    assert target.read_bytes() == b"old library"
+    assert not (target.parent / setup.VERSION_FILE).exists()
+    assert setup.generation() == before

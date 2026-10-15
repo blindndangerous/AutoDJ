@@ -194,13 +194,24 @@ def location(configured: str, index_dir: Path | str) -> Literal["index", "defaul
 
 
 def installed_version(library: Path) -> str | None:
-    """The version recorded beside a downloaded library, if it is that library's."""
+    """The version recorded beside a downloaded library, if it is still that file.
+
+    The record names the library, its size and its modification time; a
+    library replaced by hand since does not match, and its version then
+    comes from what the running Stereo Tool reports.
+    """
     try:
         text = (library.parent / VERSION_FILE).read_text(encoding="ascii").strip()
+        info = library.stat()
     except (OSError, UnicodeDecodeError):
         return None
-    name, _, version = text.partition(" ")
-    return version if name == library.name and re.fullmatch(r"\d{1,2}\.\d{2,3}", version) else None
+    parts = text.split(" ")
+    if len(parts) != 4 or not re.fullmatch(r"\d{1,2}\.\d{2,3}", parts[1]):
+        return None
+    name, version, size, mtime = parts
+    if name != library.name or size != str(info.st_size) or mtime != str(info.st_mtime_ns):
+        return None
+    return version
 
 
 def program_status(
@@ -603,18 +614,31 @@ def install(
                     "about 400 MB free in AutoDJ's index folder while it downloads."
                 ) from None
             check_library(part, build)
+            record = folder / VERSION_FILE
             try:
+                # Gone first, so a cut-short update leaves no record that
+                # names the old version beside the new library.
+                record.unlink(missing_ok=True)
                 _replace(part, target)
-                _write_version(folder, target, version)
             except OSError as exc:
                 raise DownloadError(
                     f"Could not put Stereo Tool in place: {exc.strerror or exc}."
                 ) from None
+            # In place: running Stereo Tools restart with it, whatever follows.
+            _bump()
+            try:
+                _write_version(folder, target, version)
+            except OSError as exc:
+                # The library works; only the page's version line is missing
+                # until Stereo Tool reports its own.
+                logger.warning(
+                    "Stereo Tool was installed, but its version could not be recorded: %s",
+                    exc.strerror or exc,
+                )
         finally:
             for leftover in (archive, part):
                 with contextlib.suppress(OSError):
                     leftover.unlink(missing_ok=True)
-        _bump()
         logger.info(
             "Stereo Tool %s plugin library installed from %s",
             version or "(version unknown)",
@@ -631,8 +655,11 @@ def _write_version(folder: Path, target: Path, version: str | None) -> None:
     if version is None:
         record.unlink(missing_ok=True)
         return
+    info = target.stat()
     temporary = folder / f".{VERSION_FILE}.{secrets.token_hex(6)}"
-    temporary.write_text(f"{target.name} {version}\n", encoding="ascii")
+    temporary.write_text(
+        f"{target.name} {version} {info.st_size} {info.st_mtime_ns}\n", encoding="ascii"
+    )
     os.replace(temporary, record)
 
 

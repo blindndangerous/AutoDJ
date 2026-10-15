@@ -708,3 +708,62 @@ def test_a_missing_configured_stereotool_names_the_setting() -> None:
         assert started == []
     finally:
         master.close()
+
+
+def test_a_report_is_tagged_with_the_generation_it_started_with() -> None:
+    generation = [7]
+
+    def factory(command, **_kwargs):
+        if "autodj.stereotool_host" not in command:
+            raise OSError("no output limiter in this test")
+        return _Host([_report(version="11.05")])
+
+    master = ContinuousMaster(
+        popen_factory=factory, mode=lambda: "stereotool", setup_generation=lambda: generation[0]
+    )
+    try:
+        _wait_for(lambda: master.stereotool_report.get("version") == "11.05")
+        assert master.stereotool_report["generation"] == 7
+    finally:
+        master.close()
+
+
+def test_a_helper_that_stops_reading_its_header_says_its_own_reason() -> None:
+    import io
+
+    class Closed(_Host):
+        def __init__(self) -> None:
+            super().__init__(
+                [_report(error="libStereoTool_intel64.so is not there", missing=True)], 3
+            )
+
+            class Pipe(io.RawIOBase):
+                def writable(self) -> bool:
+                    return True
+
+                def write(self, _data) -> int:
+                    raise BrokenPipeError(32, "Broken pipe")
+
+            self.stdin = Pipe()
+
+    def factory(command, **_kwargs):
+        return Closed()
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_missing=lambda: "Stereo Tool is not installed.",
+    )
+    try:
+        _wait_for(lambda: master.error is not None)
+        assert master.error == "Stereo Tool master unavailable: Stereo Tool is not installed."
+        assert "Broken pipe" not in master.error
+    finally:
+        master.close()
+
+
+def test_an_os_error_with_a_file_names_only_the_file() -> None:
+    from autodj.mastering import _unavailable
+
+    error = PermissionError(13, "Permission denied", "/srv/autodj/index/tools/stereo-tool/x.so")
+    assert _unavailable("stereotool", error) == "x.so: Permission denied"

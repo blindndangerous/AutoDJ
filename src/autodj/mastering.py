@@ -203,6 +203,9 @@ def _unavailable(
     """
     if mode == "stereotool" and missing and isinstance(exc, FileNotFoundError):
         return missing_text
+    if mode == "stereotool" and isinstance(exc, OSError) and exc.filename:
+        # Never a path on the page: the file's name and the reason.
+        return f"{Path(str(exc.filename)).name}: {exc.strerror or type(exc).__name__}"
     return str(exc)
 
 
@@ -597,7 +600,9 @@ class ContinuousMaster:
                         library = self._stereotool_path()
                         license_key = self._stereotool_license()
                         with self._lock:
-                            self._stereotool_report = {}
+                            # Tagged with what it starts with, so a report from
+                            # before a key change is not taken for the new key's.
+                            self._stereotool_report = {"generation": self._setup_generation()}
                     if mode == "stereotool" and preset is not None:
                         # Build after stopping the old child so one temp file can be reused safely.
                         command_preset = self._runtime_stereotool_preset(preset)
@@ -623,7 +628,14 @@ class ContinuousMaster:
                         raise OSError(f"{name} master pipes unavailable")
                     if stereotool:
                         self._start_reports(proc)
-                        self._send_header(proc, license_key)
+                        try:
+                            self._send_header(proc, license_key)
+                        except OSError:
+                            # The helper may have said why it stopped reading.
+                            said = self._helper_error(proc)
+                            if said is None:
+                                raise
+                            raise OSError(said) from None
                         license_key = None
                     post_proc = None
                     if mode == "stereotool":
@@ -706,10 +718,14 @@ class ContinuousMaster:
                     self._recovery_outputs = 0
                     self._input.clear()
                     self._output.clear()
-                    said = self._stereotool_report.get("error") if mode == "stereotool" else None
-                    if isinstance(said, str) and exited is proc:
+                    reported = (
+                        self._stereotool_report.get("error") if mode == "stereotool" else None
+                    )
+                    if isinstance(reported, str) and exited is proc:
                         text = (
-                            self._missing_text() if self._stereotool_report.get("missing") else said
+                            self._missing_text()
+                            if self._stereotool_report.get("missing")
+                            else reported
                         )
                         self._error = f"{name} master unavailable: {text}"
                     else:
@@ -735,6 +751,18 @@ class ContinuousMaster:
         )
         self._report_threads[proc] = thread
         thread.start()
+
+    def _helper_error(self, proc: subprocess.Popen[bytes]) -> str | None:
+        """The error the Stereo Tool helper reported before it stopped, if any."""
+        thread = getattr(self, "_report_threads", {}).get(proc)
+        if thread is not None and thread.ident is not None:
+            thread.join(timeout=1.0)
+        with self._lock:
+            said = self._stereotool_report.get("error")
+            missing = self._stereotool_report.get("missing")
+        if not isinstance(said, str):
+            return None
+        return self._missing_text() if missing else said
 
     @staticmethod
     def _send_header(proc: subprocess.Popen[bytes], license_key: str | None) -> None:

@@ -84,7 +84,7 @@ export function licenseText(data) {
 }
 
 export function installStereoToolSetup({ document: doc = document, request = requestJson,
-  confirm = confirmAction, status, stationChanges = onStationChange }) {
+  confirm = confirmAction, status, stationChanges = onStationChange, recheckMs = 4000 }) {
   const panel = doc.getElementById("spanel-sound");
   const installStatus = doc.getElementById("stereo-install-status");
   const accept = doc.getElementById("stereo-accept-terms");
@@ -104,6 +104,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
   let current = null;
   let downloading = false;
   let saving = false;
+  let recheck = null;
 
   function busy(button, on) {
     button.classList.toggle("is-pending", on);
@@ -155,12 +156,31 @@ export function installStereoToolSetup({ document: doc = document, request = req
     }
   }
 
+  // Stereo Tool restarts with a new key and says what it thinks of it
+  // about a second later; look once more after a few seconds and speak
+  // the licence line only if it changed.
+  function recheckSoon() {
+    clearTimeout(recheck);
+    const before = licenseStatus.textContent;
+    recheck = setTimeout(async () => {
+      recheck = null;
+      try {
+        render(await request("/api/stereo-tool"));
+      } catch (_) {
+        return;
+      }
+      if (licenseStatus.textContent !== before) speak(licenseStatus.textContent);
+    }, recheckMs);
+  }
+
   panel.addEventListener("toggle", () => {
     if (panel.open) void refresh();
   });
   if (panel.open) void refresh();
   // Another station's licence and library setting differ.
   stationChanges(() => {
+    clearTimeout(recheck);
+    recheck = null;
     current = null;
     if (panel.open) void refresh();
   });
@@ -224,9 +244,12 @@ export function installStereoToolSetup({ document: doc = document, request = req
       render(data);
       const where = scope === "station" ? " for this station"
         : data.several_stations ? " for every station" : "";
-      speak(data.changed === false
-        ? `That licence key is already saved${where}.`
-        : `Licence key saved${where}. Stereo Tool restarts with it.`);
+      if (data.changed === false) {
+        speak(`That licence key is already saved${where}.`);
+      } else {
+        speak(`Licence key saved${where}. Stereo Tool checks the key in a moment.`);
+        recheckSoon();
+      }
     } catch (error) {
       if (isStaleStationReply(error)) return;
       const message = `Could not save the licence key: ${error.message}`;
@@ -271,6 +294,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
           const data = await request(`/api/stereo-tool/license?scope=${scope}`, { method: "DELETE" });
           render(data);
           result = [`Licence cleared. ${licenseText(data)}`, false];
+          if (data.cleared !== false) recheckSoon();
         } catch (error) {
           result = [`Could not clear the licence: ${error.message}`, true];
         } finally {

@@ -981,8 +981,9 @@ control characters or non-ASCII anywhere in the address, no `%` or backslash in 
 a host that is `thimeo.com` or ends in `.thimeo.com`. Certificates are verified with the system's
 trust store. A declared or streamed size over 768 MB is refused, and so is a download still running
 after 30 minutes. The zip is written under a hidden `.download-<random>.zip` name in
-`<index_dir>/tools/stereo-tool/`. Every member name is checked first: one that is absolute, has a
-drive, a backslash, a NUL or a `..` part refuses the whole zip. Only the one member for this
+`<index_dir>/tools/stereo-tool/`. Every member name is checked first, with backslashes read as
+folder separators (Thimeo's zip uses them): a name that is absolute, has a drive, a NUL or a `..`
+part refuses the whole zip. Only the one member for this
 platform is read (`libStereoTool_<version>/lib/Linux/IntelAMD/64/libStereoTool_intel64.so`,
 `.../Linux/ARM/64/libStereoTool_noX11_arm64.so` or `.../Windows/64/libStereoTool_64.dll`); it must
 be the only match, not a link, and at most 256 MB as it is read, and the zip's CRC check must pass.
@@ -1011,8 +1012,11 @@ Tool starts `python -m autodj.stereotool_host` (AutoDJ's own code) with the libr
 preset path and a private folder as Stereo Tool's home, all fixed by AutoDJ, with no shell. It
 loads the library with `ctypes`, binds Stereo Tool's web and UECP servers to `127.0.0.1` before
 creating the instance (`stereoTool_global_setBindIp`), creates it with no GUI and no `.ini` read
-(`stereoTool_Create3`), and loads the preset with `ID_SAVE_ALLSETTINGS`, which leaves out Stereo
-Tool's configuration settings. Audio goes in on stdin and out on stdout; anything the library
+(`stereoTool_Create3`), and loads the preset with `ID_SAVE_ALLSETTINGS` (20386 for version 11
+and later, 10386 before, chosen from the library's reported version), which leaves out Stereo
+Tool's configuration settings. Path arguments are passed as the bytes the library expects (the
+ANSI code page on Windows); a path that cannot be spelled that way is refused with a message,
+never passed on mangled. Errors shown on the page name the library file, never its folder. Audio goes in on stdin and out on stdout; anything the library
 prints is moved to stderr, where only AutoDJ's own report lines (version, latency, licence
 verdict, an error) are read, each length-capped, and the rest is discarded. A crash or hang in
 Thimeo's code ends or stalls only the helper: the master bypasses at its fixed delay, kills the

@@ -1883,10 +1883,11 @@ use) itself, from Settings, Sound, with no configuration file:
    library, and the sound bypasses it for a moment.
 4. Paste the key Thimeo sent you (it starts with `<` and ends with `>`) in **Stereo Tool licence
    key** and press **Save licence key**. The status line says "Licence set" or "No licence"; the
-   key is never shown again. About a second after Stereo Tool starts with it, the line adds what
-   Stereo Tool itself says: "Stereo Tool says the licence key is valid", or "Not licensed: Stereo
-   Tool says the licence does not cover this preset", followed by the features it lists, while the
-   station plays Thimeo's unlicensed reminder. **Clear licence** deletes the saved key after
+   key is never shown again. Right after a save the page says "Stereo Tool checks the key in a
+   moment"; a few seconds later, once Stereo Tool has restarted with the key, the line adds what
+   Stereo Tool itself says, and speaks it if it changed: "Stereo Tool says the licence key is
+   valid", or "Not licensed: Stereo Tool says the licence does not cover this preset", followed
+   by the features it lists, while the station plays Thimeo's unlicensed reminder. **Clear licence** deletes the saved key after
    asking. Stereo Tool restarts when the key changes: a key for every station restarts every
    station that runs Stereo Tool, a key for one station restarts only that one, and saving the
    same key again restarts nothing.
@@ -1937,6 +1938,12 @@ a library that is a link or over 256 MB), and checks that it is a 64-bit shared 
 processor before it replaces anything. Nothing downloaded is run during the download. The page
 never accepts an uploaded file: that would let anyone who can change settings run any code on
 the server.
+
+**Tested so far.** Linux on 64-bit PCs (x86_64) has been tested with Thimeo's real plugin: it
+loads, processes the mix and reports its licence. Windows (`libStereoTool_64.dll`) and 64-bit ARM
+Linux (`libStereoTool_noX11_arm64.so`) use the same code but have not been tested with Thimeo's
+real library yet; on Windows, AutoDJ's index folder must be on a path made of letters Windows'
+ANSI code page can spell, or Stereo Tool says it cannot open its preset.
 
 AutoDJ downloads no library for 32-bit systems, 32-bit ARM, Windows on ARM or macOS. Thimeo's zip
 has builds for some of them; to try one, put it in `tools/stereo-tool/` in the index folder under

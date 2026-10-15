@@ -316,13 +316,25 @@ def test_saving_the_same_key_again_changes_nothing(tmp_path: Path) -> None:
 def test_status_says_what_the_running_stereo_tool_said_of_its_licence(tmp_path: Path) -> None:
     client = _client(tmp_path)
     player = client.app.state.stations.default.bridge.player
-    player._continuous_master = type(
-        "Master",
-        (),
-        {"stereotool_report": {"version": "11.05", "licensed": False, "unlicensed": "Declipper"}},
-    )()
+    state_dir = tmp_path / "main"
+    report = {
+        "generation": setup.generation(state_dir),
+        "version": "11.05",
+        "licensed": False,
+        "unlicensed": "Declipper",
+    }
+    player._continuous_master = type("Master", (), {"stereotool_report": report})()
     body = client.get("/api/stereo-tool").json()
     assert body["running"] == {"licensed": False, "unlicensed": "Declipper"}
+    # Saving a key makes that verdict old news until the restarted Stereo Tool says again.
+    saved = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+    assert saved.json()["running"] is None
+    assert client.get("/api/stereo-tool").json()["running"] is None
+    report["generation"] = setup.generation(state_dir)
+    assert client.get("/api/stereo-tool").json()["running"] == {
+        "licensed": False,
+        "unlicensed": "Declipper",
+    }
     # A library put there by hand takes the version the running Stereo Tool reports.
     managed = setup.managed_path(tmp_path)
     managed.parent.mkdir(parents=True)
