@@ -222,7 +222,9 @@ describe("clock folder and points controls", () => {
     checkbox.focus();
     checkbox.click();
     expect(checkbox.disabled).toBe(false);
-    expect(checkbox.getAttribute("aria-disabled")).toBe("true");
+    // Busy to the eye only: aria-disabled made NVDA say "unavailable" (#331).
+    expect(checkbox.classList.contains("is-pending")).toBe(true);
+    expect(checkbox.hasAttribute("aria-disabled")).toBe(false);
     expect(document.activeElement).toBe(checkbox);
     checkbox.click();
     expect(checkbox.checked).toBe(true);
@@ -234,8 +236,27 @@ describe("clock folder and points controls", () => {
     await vi.waitFor(() => expect(document.querySelector('[data-field="recursive"]')).not.toBe(checkbox));
     const replacement = document.querySelector('[data-field="recursive"]');
     expect(replacement.checked).toBe(true);
-    expect(replacement.hasAttribute("aria-disabled")).toBe(false);
+    expect(replacement.classList.contains("is-pending")).toBe(false);
     expect(document.activeElement).toBe(replacement);
+  });
+
+  it("never says unavailable on Remove while it removes, and takes no second press (#331)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "DELETE"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] }));
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const remove = document.querySelector('#source-folders button[data-action="remove"]');
+    remove.focus();
+    remove.click();
+    expect(remove.hasAttribute("aria-disabled")).toBe(false);
+    expect(remove.classList.contains("is-pending")).toBe(true);
+    remove.click();
+    expect(request.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(1);
+    finish({});
+    await vi.waitFor(() => expect(remove.classList.contains("is-pending")).toBe(false));
   });
 
   it("restores the checkbox after a failed save without losing focus", async () => {
@@ -249,7 +270,7 @@ describe("clock folder and points controls", () => {
     const checkbox = document.querySelector('[data-field="recursive"]');
     checkbox.focus();
     checkbox.click();
-    await vi.waitFor(() => expect(checkbox.hasAttribute("aria-disabled")).toBe(false));
+    await vi.waitFor(() => expect(checkbox.classList.contains("is-pending")).toBe(false));
     expect(checkbox.checked).toBe(false);
     expect(document.activeElement).toBe(checkbox);
     expect(document.getElementById("source-folders-status").textContent).toContain("save failed");

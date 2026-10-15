@@ -349,8 +349,11 @@ export function installListenerRequests({
     const { id, action } = button.dataset;
     const song = button.dataset.song || "the song";
     const next = neighbours(id);
+    // busy holds off another press.  No aria-disabled: NVDA speaks the
+    // state change on the focused button, so the press was heard as
+    // "unavailable" (#331).  .is-pending gives the busy look.
     busy = true;
-    button.setAttribute("aria-disabled", "true");
+    button.classList.add("is-pending");
     try {
       const reply = await request(`/api/requests/${encodeURIComponent(id)}/${action}`, {
         method: "POST",
@@ -364,10 +367,10 @@ export function installListenerRequests({
       const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
       later(() => say(done), ANNOUNCE_DELAY_MS);
     } catch (error) {
-      button.removeAttribute("aria-disabled");
       say(error?.message || "That did not work.", "error");
     } finally {
       busy = false;
+      button.classList.remove("is-pending");
     }
   });
 

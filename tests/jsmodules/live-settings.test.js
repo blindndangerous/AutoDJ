@@ -188,6 +188,27 @@ describe("Live DJ settings", () => {
     expect(byId("live-return-seconds").hasAttribute("aria-invalid")).toBe(false);
   });
 
+  it("never says unavailable on Save while it saves, and takes no second press (#331)", async () => {
+    let release;
+    const { ui, calls, announce } = install({
+      "PUT /api/live/settings": (options) => new Promise((resolve) => {
+        release = () => resolve(JSON.parse(options.body));
+      }),
+    });
+    await ui.refresh();
+    const save = byId("live-talkover-save");
+    save.focus();
+    save.click();
+    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    expect(save.classList.contains("is-pending")).toBe(true);
+    save.click();
+    expect(calls.filter(([url]) => url === "/api/live/settings")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
+    expect(save.classList.contains("is-pending")).toBe(false);
+    expect(document.activeElement).toBe(save);
+  });
+
   it("ignores an answer that arrives after a station switch", async () => {
     let finish;
     const { ui, onInfo } = install({ "GET /api/live": () => new Promise((resolve) => { finish = resolve; }) });

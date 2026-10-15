@@ -70,6 +70,9 @@ export function installLiveSettings({
   let editing = null;
   let returnFocus = null;
   let generation = 0;
+  // The Save buttons with a request on the go: another press waits.  No
+  // aria-disabled, or NVDA says "unavailable" on the pressed button (#331).
+  const saving = new Set();
 
   function link(control, errorNode, on) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
@@ -216,7 +219,8 @@ export function installLiveSettings({
       return false;
     }
     try {
-      control?.setAttribute("aria-disabled", "true");
+      saving.add(control);
+      control?.classList.add("is-pending");
       await request("/api/live/djs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -226,7 +230,8 @@ export function installLiveSettings({
       fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
       return false;
     } finally {
-      control?.removeAttribute("aria-disabled");
+      saving.delete(control);
+      control?.classList.remove("is-pending");
     }
     hideForm();
     await refresh();
@@ -272,7 +277,8 @@ export function installLiveSettings({
       return;
     }
     try {
-      control.setAttribute("aria-disabled", "true");
+      saving.add(control);
+      control.classList.add("is-pending");
       const saved = await request("/api/live/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -284,7 +290,8 @@ export function installLiveSettings({
       fail(field, talkError, `Could not save the talk settings. ${err.message}`);
       return;
     } finally {
-      control.removeAttribute("aria-disabled");
+      saving.delete(control);
+      control.classList.remove("is-pending");
     }
     announce("Talk settings saved.");
   }
@@ -328,12 +335,12 @@ export function installLiveSettings({
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const control = id("dj-save");
-    if (control.getAttribute("aria-disabled") === "true") return;
+    if (saving.has(control)) return;
     void saveDj(control);
   });
   id("talkover-save").addEventListener("click", (event) => {
     const control = event.currentTarget;
-    if (control.getAttribute("aria-disabled") === "true") return;
+    if (saving.has(control)) return;
     void saveTalkover(control);
   });
   id("source-copy").addEventListener("click", async () => {

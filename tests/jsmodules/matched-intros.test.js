@@ -205,6 +205,28 @@ describe("Track info matched intros", () => {
     expect(el("intro-chance").value).toBe("100");
   });
 
+  it("never says unavailable on Upload while it sends, and takes no second press (#331)", async () => {
+    let release;
+    const request = vi.fn((url, options) => (options?.method === "POST"
+      ? new Promise((resolve) => { release = () => resolve(ITEM); })
+      : Promise.resolve(LISTING)));
+    const editor = install(request);
+    editor.load(RECORD);
+    await settle();
+    chooseFile();
+    const upload = el("intro-upload");
+    upload.focus();
+    el("intros-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(upload.hasAttribute("aria-disabled")).toBe(false);
+    expect(upload.classList.contains("is-pending")).toBe(true);
+    el("intros-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(upload.classList.contains("is-pending")).toBe(false));
+  });
+
   it("shows a field the server refused at that field", async () => {
     const request = vi.fn(async (url, options) => {
       if (options?.method === "POST") throw apiError("Chance: must be at most 100", { status: 422, field: "chance" });

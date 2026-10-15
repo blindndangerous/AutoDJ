@@ -290,8 +290,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const body = { [input.dataset.field]: input.checked };
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
+    // pendingFolderEdits holds off another toggle (see the click guard).
+    // No aria-disabled: NVDA speaks the state change on the focused
+    // control, so the press was heard as "unavailable" (#331).
     pendingFolderEdits.add(input);
-    input.setAttribute("aria-disabled", "true");
+    input.classList.add("is-pending");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
@@ -299,19 +302,21 @@ export function installLibraryFolders({ document: doc = document, request = requ
       if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
       pendingFolderEdits.delete(input);
-      if (requestCurrent(epoch, generation)) { input.removeAttribute("aria-disabled"); await refresh(); }
+      input.classList.remove("is-pending");
+      if (requestCurrent(epoch, generation)) await refresh();
     }
   });
   list.addEventListener("click", async (event) => {
     if (suspended) return;
-    if (event.target.closest('[aria-disabled="true"]')) { event.preventDefault(); return; }
+    // A checkbox or Remove still saving takes no second press.
+    if (pendingFolderEdits.has(event.target.closest("input[data-field], button[data-action]"))) { event.preventDefault(); return; }
     const button = event.target.closest('button[data-action="remove"]');
     if (!button) return;
     const row = button.closest("tr");
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     pendingFolderEdits.add(button);
-    button.setAttribute("aria-disabled", "true");
+    button.classList.add("is-pending");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
@@ -319,7 +324,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
     } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
     finally {
       pendingFolderEdits.delete(button);
-      if (requestCurrent(epoch, generation)) { button.removeAttribute("aria-disabled"); await refresh(); }
+      button.classList.remove("is-pending");
+      if (requestCurrent(epoch, generation)) await refresh();
     }
   });
   const autoRescan = installAutoRescan({

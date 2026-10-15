@@ -574,8 +574,10 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const id = open.id;
     const value = startInput?.value ? { start: startInput.value } : {};
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    // generating holds off another press; no aria-disabled, or NVDA says
+    // "unavailable" on the pressed button (#331).
     generating = true;
-    button?.setAttribute("aria-disabled", "true");
+    button?.classList.add("is-pending");
     redrawSongs();
     say(`Generating the list for ${open.name}.`);
     try {
@@ -595,7 +597,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       say(`Could not generate the list: ${error.message}`, true);
     } finally {
       generating = false;
-      button?.removeAttribute("aria-disabled");
+      button?.classList.remove("is-pending");
       if (open?.id === id) redrawSongs();
     }
   }
