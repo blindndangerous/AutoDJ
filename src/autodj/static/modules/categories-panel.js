@@ -479,8 +479,26 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   async function remove(id) {
+    if (!byId(id)) return;
+    // The clockwheels that use it are looked up again first: one saved
+    // since the last refresh would be left out of the warning.  The list's
+    // words change in place, so focus stays on Delete.
+    const name = byId(id).name;
+    const loading = captureAuthenticatedRequestEpoch(), loadingMine = generation;
+    try {
+      const value = await request("/api/categories");
+      if (!current(loading, loadingMine)) return;
+      apply(value);
+    } catch (error) {
+      if (current(loading, loadingMine)) say(`Could not delete ${name}: ${error.message}`, true);
+      return;
+    }
     const category = byId(id);
-    if (!category) return;
+    if (!category) {
+      addButton.focus();
+      say(`${name} was already deleted.`);
+      return;
+    }
     const used = category.used_by || [];
     const index = data.categories.indexOf(category);
     let done = false;

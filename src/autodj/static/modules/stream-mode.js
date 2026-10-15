@@ -11,6 +11,11 @@
 //     "Set stopped" already said it once.
 //   - A station event is spoken once per (id, seq).  The first event seen
 //     after page load is only remembered, so a reload never repeats it.
+//   - While the page's own connection to AutoDJ is down, a stream that
+//     drops or stalls is not reported: the connection status already says
+//     the link is down.  Listen here stays on (pressed) and asks for the
+//     stream again until the link is back, and at once when it is; only a
+//     stream that still fails then is reported and turned off.
 
 import { announceStatus } from "./live-region.js";
 
@@ -38,7 +43,8 @@ const HAVE_FUTURE_DATA = 3;
 // request cannot reach AutoDJ (the network or a tunnel in front of it is
 // down for a moment) it is tried again after each of these waits, which
 // together stay inside the server's 30 s idle grace, before the drop is
-// reported.
+// reported.  While the page's link is down the last wait repeats until
+// the link is back.
 const LOOKUP_RETRY_MS = [2000, 4000, 8000, 12000];
 
 // A link lookup that never reached AutoDJ, as opposed to one it refused.
@@ -88,6 +94,8 @@ export function createStreamMode({
   let lookupTimer = null;
   let seenFirstApply = false;
   let lastEventKey = null;
+  // Whether the page's websocket to AutoDJ is up (see setLinkUp).
+  let linkUp = true;
 
   function say(text, tone = "info") {
     announceStatus(srStatus, text, { dwellMs: 4000, force: true, tone });
@@ -153,36 +161,54 @@ export function createStreamMode({
       await audio.play();
     } catch (err) {
       if (mine !== generation) return;
-      if (retry && isUnreachable(err) && lookupRetries < LOOKUP_RETRY_MS.length) {
+      if (retry && isUnreachable(err) && (!linkUp || lookupRetries < LOOKUP_RETRY_MS.length)) {
         // Still listening, quietly: the page's connection status already
         // says the link is down.
-        const delay = LOOKUP_RETRY_MS[lookupRetries];
-        lookupRetries += 1;
-        lookupTimer = setTimeout(() => {
-          lookupTimer = null;
-          if (mine === generation && listening) void connect({ retry: true });
-        }, delay);
+        retryLater();
         return;
       }
       fail(retry ? DROPPED_TEXT : startFailureText(err));
     }
   }
 
+  function retryLater() {
+    const mine = generation;
+    const delay = LOOKUP_RETRY_MS[Math.min(lookupRetries, LOOKUP_RETRY_MS.length - 1)];
+    lookupRetries += 1;
+    lookupTimer = setTimeout(() => {
+      lookupTimer = null;
+      if (mine === generation && listening) void connect({ retry: true });
+    }, delay);
+  }
+
   // A stream that never played is a failed start (for example the
   // listener limit).  Once it has played, a drop gets one silent retry
   // (a bitrate change or a blip); a second drop before audio plays again is
-  // reported.
+  // reported, unless the page's link is down too.
   function onDropped() {
     if (!listening) return;
     // The stall countdown belongs to the connection that dropped; the
     // retry gets its own.
     clearStall();
-    if (!hasPlayed || retried) {
+    if (!hasPlayed || (retried && linkUp)) {
       fail(mediaFailureText(audio, hasPlayed));
       return;
     }
+    reconnect();
+  }
+
+  // The quiet retry of a stream that played.  The first goes at once; one
+  // that failed too, while the link is down, waits like a lookup, so a
+  // stream that keeps failing is not asked for in a tight loop.
+  function reconnect() {
+    const again = retried;
     retried = true;
-    void connect({ retry: true });
+    if (lookupTimer !== null) {
+      clearTimeout(lookupTimer);
+      lookupTimer = null;
+    }
+    if (again) retryLater();
+    else void connect({ retry: true });
   }
   audio.addEventListener("error", onDropped);
   audio.addEventListener("ended", onDropped);
@@ -222,11 +248,20 @@ export function createStreamMode({
         armStall();
         return;
       }
+      // A stream that played is asked for again, like a drop: AutoDJ
+      // stopping or the network going away often hangs the connection
+      // without an error.
+      if (hasPlayed && (!retried || !linkUp)) {
+        reconnect();
+        return;
+      }
       fail(STALLED_TEXT);
     }, STALL_TIMEOUT_MS);
   }
   function onStalled() {
-    if (!listening || stallTimer !== null) return;
+    // While a retry waits on the link, the old connection's stalls are
+    // already being dealt with.
+    if (!listening || stallTimer !== null || lookupTimer !== null) return;
     armStall();
   }
   audio.addEventListener("stalled", onStalled);
@@ -286,6 +321,15 @@ export function createStreamMode({
     return STREAM_DELAY_ESTIMATE_S;
   }
 
+  // Told by app.js when the page's websocket opens (true) or drops
+  // (false).  A retry waiting on the link goes at once when it is back.
+  function setLinkUp(up) {
+    linkUp = Boolean(up);
+    if (!linkUp || !listening || lookupTimer === null) return;
+    clearLookupRetry();
+    void connect({ retry: true });
+  }
+
   // Another station's pushes follow (#70): its last station event is
   // remembered, not spoken, as on a fresh page.
   function forgetEvents() {
@@ -294,7 +338,7 @@ export function createStreamMode({
   }
 
   return {
-    apply, toggleListen, delaySeconds, stop, forgetEvents,
+    apply, toggleListen, delaySeconds, stop, forgetEvents, setLinkUp,
     isListening: () => listening,
   };
 }

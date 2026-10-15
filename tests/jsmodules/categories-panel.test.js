@@ -419,7 +419,7 @@ describe("categories form", () => {
     const changed = vi.fn();
     await open(fakeServer(), { onChange: changed });
     rowButton(0, "delete").click();
-    expect(byId("confirm-dialog").open).toBe(true);
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     expect(byId("confirm-title").textContent).toBe("Delete category Remembering the 2000s?");
     expect(byId("confirm-message").textContent).toBe("Throwback has a step for it. Those steps are skipped until you change them.");
     byId("confirm-accept").click();
@@ -428,10 +428,39 @@ describe("categories form", () => {
     expect(document.activeElement).toBe(rowButton(0, "edit"));
     expect(changed).toHaveBeenCalledTimes(1);
     rowButton(0, "delete").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
     byId("confirm-accept").click();
     await vi.waitFor(() => expect(status()).toBe("Deleted A."));
     expect(byId("categories-list").textContent).toBe("No categories yet. Press Add category to make one.");
     expect(document.activeElement).toBe(byId("categories-add"));
+  });
+
+  it("names a clockwheel saved since the last refresh before deleting, keeping focus on Delete", async () => {
+    const server = await open();
+    // A clockwheel step for A was saved after the list was loaded.
+    server.categories[1].used_by = ["Morning", "Evening"];
+    const button = rowButton(1, "delete");
+    button.focus();
+    button.click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    expect(byId("confirm-message").textContent).toBe("Morning, Evening have steps for it. Those steps are skipped until you change them.");
+    // The row's words changed in place; Delete keeps focus under the dialog.
+    expect(rowButton(1, "delete")).toBe(button);
+    expect(items()[1].textContent).toContain("Used by Morning, Evening.");
+    byId("confirm-cancel").click();
+    expect(server.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("says why Delete did nothing when the categories cannot be loaded", async () => {
+    const server = await open();
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation(async (url, options = {}) => {
+      if (url === "/api/categories" && !options.method) throw new Error("The AutoDJ server is not reachable.");
+      return request(url, options);
+    });
+    rowButton(0, "delete").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not delete Remembering the 2000s: The AutoDJ server is not reachable."));
+    expect(byId("confirm-dialog").open).toBe(false);
   });
 
   it("forgets everything on sign-out", async () => {

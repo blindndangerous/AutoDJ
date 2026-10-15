@@ -459,6 +459,19 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (focusIndex !== null) focusRow(focusIndex, action);
   }
 
+  // A category renamed or deleted under Categories changes the words of the
+  // steps that name it.  Only the words change, so focus and the grid's tab
+  // stop stay where they are.
+  function renderStepWords() {
+    if (!clock) return;
+    for (const item of steps.querySelectorAll(":scope > li[data-index]")) {
+      const step = clock.steps[Number(item.dataset.index)];
+      const button = item.querySelector('button[data-action="edit"]');
+      const text = step ? describe(step) : null;
+      if (button && text !== null && button.textContent !== text) button.textContent = text;
+    }
+  }
+
   const CELL = '[role="gridcell"][data-action]';
   const ENABLED_CELL = `${CELL}:not([aria-disabled="true"])`;
 
@@ -919,6 +932,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       data = { ...empty(), ...value };
       renderList();
       renderOptions();
+      renderStepWords();
       renderNotice();
       // The first look at the panel opens the active clockwheel, silently.
       if (!clock && data.active && data.names.includes(data.active)) await openClock(data.active, { quiet: true });
