@@ -62,6 +62,8 @@ class CertificateReloader:
         The pair is copied first and test-loaded into a scratch context, so a
         half-copied or mismatched pair is refused with a warning and the
         server keeps its current certificate.  A later change is tried again.
+        Files that could not be read (the renewal tool still holds them, a
+        share blipped) are tried again at the next check, changed or not.
 
         Returns:
             Whether a new certificate was loaded.
@@ -69,13 +71,13 @@ class CertificateReloader:
         stamp = self._stamp()
         if stamp is None or stamp == self._seen:
             return False
-        self._seen = stamp
         try:
             with tempfile.TemporaryDirectory(prefix="autodj-tls-") as scratch:
                 cert = Path(scratch) / "cert.pem"
                 key = Path(scratch) / "key.pem"
                 shutil.copyfile(self.certfile, cert)
                 shutil.copyfile(self.keyfile, key)
+                self._seen = stamp  # read: only a further change is tried again
                 ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain(cert, key)
                 self.context.load_cert_chain(cert, key)
         except (OSError, ssl.SSLError) as exc:

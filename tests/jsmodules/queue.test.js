@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { applyQueueState, installQueueButtons, installQueueClear, renderQueue, resetQueueState } from
   "../../src/autodj/static/modules/queue.js";
+import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
 
 describe("queue mutations", () => {
   it("uses one Tab stop and row and action shortcuts", () => {
@@ -235,7 +236,49 @@ describe("queue mutations", () => {
     vi.unstubAllGlobals();
   });
 
-  it("clears busy before focusing the queue list after final-row removal", async () => {
+  it("says what happened on the old station when the reply comes after a switch (#70)", async () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    installQueueButtons(els);
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const reply = (body, status) => answer(new globalThis.Response(JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } }));
+    try {
+      renderQueue([{ path: "one.mp3", display_name: "One" }, { path: "two.mp3", display_name: "Two" }], els);
+      els.queueList.querySelector('li[data-path="one.mp3"] [data-action="remove"]').click();
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      // The switch clears the queue for the new station's.
+      selectStation("night");
+      resetQueueState(els);
+      reply({ ok: true }, 200);
+      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+        .toBe("Done on Main, the station this page has just left."));
+      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
+
+      answer = null;
+      renderQueue([{ path: "owl.mp3", display_name: "Owl" }], els);
+      els.queueList.querySelector('li[data-path="owl.mp3"] [data-action="remove"]').click();
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      selectStation("default");
+      resetQueueState(els);
+      reply({ detail: "No such entry" }, 409);
+      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+        .toBe("Night did not do that; it is the station this page has just left."));
+      // The old station's queue is not drawn back under the new one's name.
+      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
+    } finally {
+      selectStation("default");
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps focus on the list while the last row's removal is sent, and clears busy after", async () => {
     document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
     const els = {
       queueList: document.querySelector("#queue"),
@@ -248,21 +291,17 @@ describe("queue mutations", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
       resolveRequest = resolve;
     })));
-    const focusSpy = vi.spyOn(els.queueList, "focus").mockImplementation(() => {
-      expect(els.queueList.getAttribute("aria-busy")).toBe("false");
-      globalThis.HTMLElement.prototype.focus.call(els.queueList);
-    });
-
-    els.queueList.querySelector('[data-action="remove"]').click();
+    const remove = els.queueList.querySelector('[data-action="remove"]');
+    remove.focus();
+    remove.click();
+    // Focus goes to the list before the row goes (#328), not to the page.
     expect(els.queueList.getAttribute("aria-busy")).toBe("true");
-    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(els.queueList);
     resolveRequest(new globalThis.Response('{"ok":true}', {
       headers: { "Content-Type": "application/json" },
     }));
-    await vi.waitFor(() => expect(focusSpy).toHaveBeenCalledOnce());
-
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
     expect(document.activeElement).toBe(els.queueList);
-    expect(els.queueList.getAttribute("aria-busy")).toBe("false");
     vi.unstubAllGlobals();
   });
 
@@ -457,7 +496,8 @@ describe("queue Top and Clear queue", () => {
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
     // The modal dialog as a browser runs it: closing puts focus back on
-    // the element that had it when the dialog opened.
+    // the element that had it when the dialog opened, when focus is still
+    // in the dialog.
     const dialog = document.querySelector("#confirm-dialog");
     let opener = null;
     dialog.showModal = vi.fn(() => {
@@ -467,8 +507,9 @@ describe("queue Top and Clear queue", () => {
     dialog.close = vi.fn((value) => {
       if (!dialog.hasAttribute("open")) return;
       if (value !== undefined) dialog.returnValue = value;
+      const focusInside = dialog.contains(document.activeElement);
       dialog.removeAttribute("open");
-      if (opener?.isConnected) opener.focus();
+      if (focusInside && opener?.isConnected) opener.focus();
       dialog.dispatchEvent(new Event("close"));
     });
     const els = {
@@ -495,7 +536,10 @@ describe("queue Top and Clear queue", () => {
     vi.stubGlobal("fetch", fetchImpl);
     const { els } = setup();
 
-    els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]').click();
+    // A press focuses the button, as a key or a click does in a browser.
+    const top = els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]');
+    top.focus();
+    top.click();
 
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toBe("Moved Charlie to position 1 of 3."));
@@ -621,6 +665,118 @@ describe("queue focus while a change is saved", () => {
 
     expect(els.queueList.contains(document.activeElement)).toBe(true);
     expect(document.activeElement.closest("li")?.dataset.path).toBe("c.mp3");
+    vi.unstubAllGlobals();
+  });
+
+  // #328: a list drawn again from scratch destroyed the focused button, and
+  // NVDA read a cut-off line of the list while the change was sent.
+  it("moves rows in place and never leaves focus on the page while a change is sent", async () => {
+    const { els, reply } = setupQueue();
+    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
+    const [alpha, bravo, charlie] = rowsOf();
+    const left = [];
+    document.addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) left.push(event.target);
+    });
+    pressFocused(els, "b.mp3", "down");
+    // At once, before the reply: the same nodes, Bravo's own Down kept.
+    expect(rowsOf()).toEqual([alpha, charlie, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
+    expect(bravo.querySelector(".queue-name").textContent).toBe("3. Bravo");
+    expect(bravo.querySelector('[data-action="down"]').disabled).toBe(true);
+    expect(charlie.querySelector('[data-action="down"]').disabled).toBe(false);
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="up"]'));
+
+    // Remove: focus goes to the next row's Remove before the row goes.
+    pressFocused(els, "c.mp3", "remove");
+    expect(rowsOf()).toEqual([alpha, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // A push with a new track keeps the rows that stay.
+    applyQueueState([
+      { path: "a.mp3", display_name: "Alpha" },
+      { path: "b.mp3", display_name: "Bravo" },
+      { path: "d.mp3", display_name: "Delta" },
+    ], els);
+    expect(rowsOf().slice(0, 2)).toEqual([alpha, bravo]);
+    expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
+    expect(left).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps each copy of a song queued twice as its own row (#328)", async () => {
+    const { els, reply } = setupQueue();
+    applyQueueState([
+      { path: "dup.mp3", display_name: "Dup" },
+      { path: "x.mp3", display_name: "Other" },
+      { path: "dup.mp3", display_name: "Dup" },
+    ], els);
+    const rowsOf = () => [...els.queueList.querySelectorAll("li[data-path]")];
+    const [first, other, second] = rowsOf();
+    expect(rowsOf().map((row) => row.querySelector(".queue-name").textContent))
+      .toEqual(["1. Dup", "2. Other", "3. Dup"]);
+    // Down on the first copy: it keeps its row and focus; Other moves round it.
+    pressFocused(els, "dup.mp3", "down");
+    expect(rowsOf()).toEqual([other, first, second]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="down"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // Remove the second copy: the first copy's Remove takes focus first.
+    const secondRemove = second.querySelector('[data-action="remove"]');
+    secondRemove.focus();
+    secondRemove.click();
+    expect(rowsOf()).toEqual([other, first]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    reply();
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    // A push with a third copy in front keeps the two rows that stay.
+    applyQueueState([
+      { path: "dup.mp3", display_name: "Dup" },
+      { path: "x.mp3", display_name: "Other" },
+      { path: "dup.mp3", display_name: "Dup" },
+    ], els);
+    expect(rowsOf().slice(0, 2)).toEqual([first, other]);
+    expect(document.activeElement).toBe(first.querySelector('[data-action="remove"]'));
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves focus where the user took it while the change was sent", async () => {
+    const { els, reply } = setupQueue();
+    const elsewhere = document.createElement("button");
+    elsewhere.textContent = "Search";
+    document.body.append(elsewhere);
+    pressFocused(els, "b.mp3", "down");
+    elsewhere.focus();
+    reply();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Moved"));
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    expect(document.activeElement).toBe(elsewhere);
+
+    // Nor after a failure that draws the old order back.
+    pressFocused(els, "a.mp3", "remove");
+    elsewhere.focus();
+    reply(500);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
+    expect(document.activeElement).toBe(elsewhere);
+    vi.unstubAllGlobals();
+  });
+
+  it("answers a second press while a change is sent, once", async () => {
+    const { els, reply } = setupQueue();
+    pressFocused(els, "b.mp3", "down");
+    const said = [];
+    new window.MutationObserver(() => {
+      if (els.queueAnnounce.textContent) said.push(els.queueAnnounce.textContent);
+    }).observe(els.queueAnnounce, { childList: true, characterData: true, subtree: true });
+    pressFocused(els, "a.mp3", "remove");
+    pressFocused(els, "a.mp3", "remove");
+    await vi.waitFor(() => expect(said).toEqual(["Still sending the last change…"]));
+    reply();
+    await vi.waitFor(() => expect(said.at(-1)).toMatch(/^Moved Bravo/));
+    expect(said.filter((text) => text.startsWith("Still"))).toHaveLength(1);
     vi.unstubAllGlobals();
   });
 

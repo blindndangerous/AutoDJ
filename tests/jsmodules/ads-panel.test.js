@@ -272,8 +272,13 @@ describe("the Ads tab", () => {
 
   it("saves the rules and refuses a missed time shorter than the late one", async () => {
     await start();
+    // The rules card is closed by default; a refused field opens it, so
+    // focus and the error are on screen.
+    const card = byId("ads-rules-form").closest("details");
+    expect(card.open).toBe(false);
     byId("ads-rules-late").value = "40";
     byId("ads-rules-form").requestSubmit();
+    expect(card.open).toBe(true);
     expect(document.activeElement).toBe(byId("ads-rules-missed"));
     expect(byId("ads-rules-error").textContent).toBe("Missed after must not be shorter than Late after");
     byId("ads-rules-missed").value = "45";

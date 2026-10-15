@@ -93,6 +93,13 @@ Manage liner files, including Delete and Play dates, under **Settings > Voice li
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
 back on the result that opened it.
 
+An uploaded voice liner must be audio AutoDJ can play, or the upload is refused with "<name> is
+not an audio file AutoDJ can play." AutoDJ reads the file's header: libsndfile reads MP3, WAV, FLAC
+and Ogg, and FFmpeg's ffprobe reads M4A and AAC, and any MP3, WAV, FLAC or Ogg file libsndfile
+cannot read. Without ffprobe, an M4A or AAC upload is checked by its first bytes only, so a damaged
+one is found only when it plays. When ffprobe cannot run or takes longer than 30 seconds, the upload
+is refused with "Could not check <name>, so it was not saved."
+
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
 them. A track analysed before AutoDJ read those markers gets them the first time it plays while
@@ -442,7 +449,9 @@ when the AutoDJ account can read it.
 AutoDJ checks the two files every five minutes and loads a renewed certificate without a
 restart. New connections get it; open ones keep the old certificate until they reconnect. If
 AutoDJ finds the files half copied, or a certificate that does not match the key, it logs a
-warning, keeps serving the previous certificate, and tries again when the files change.
+warning, keeps serving the previous certificate, and tries again when the files change. If it
+cannot read the files at all (the renewal tool still has them open, or a share is away), it
+tries again at the next check.
 
 ### 3. Configure AutoDJ
 
@@ -771,7 +780,7 @@ off air, and notice when it is back.
 
 ### Settings
 
-In stream mode, **Settings, Stream** has a **Now-playing feed** group:
+In stream mode, **Settings, Stream** has a **Now-playing feed** card, closed until you open it:
 
 - **Now-playing link** shows this page's address for the feed, with **Copy now-playing link**.
   Opened as `localhost`, the page notes that the link only works on that computer.
@@ -790,7 +799,25 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** group:
 
 A station can take song requests from its listeners on a public page, `/requests` (and
 `/stations/<slug>/requests` for every station). It is off until you turn it on, for each station
-on its own; while it is off the page answers 404. The settings are read when AutoDJ starts:
+on its own: tick **Take listener requests** in the **Listener requests** card in Queue & Search
+and choose **Save request settings**. The page opens at once, with no restart. Turning it off
+closes the page at once too. While it is off the page answers 404 with a page that says
+"Requests are closed", and a request sent from a page opened earlier gets the same answer.
+Requests already waiting are kept, and come back when you turn requests on again (each still
+expires three hours after it was sent).
+
+**Approval** in the same card chooses **I approve each one** (`approval = "manual"`) or
+**Automatic** (`"auto"`): a request that keeps the rules joins the queue at once.
+
+Until you save **Take listener requests** and **Approval** with this card, `enabled` and
+`approval` under `[requests]` in config.toml are in charge for the station, and a change there
+takes effect at the next start; saving any other setting on the page (volume, EQ and the like)
+does not change that. Once you save the card, the station's `web_state.json` keeps both, and
+they take the place of the config.toml values at every start from then on. When a saved value
+differs from config.toml, the log says so once at start, for example "Listener requests on for
+icecold (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
+in `web_state.json` whenever the station's settings are saved, as before. The other keys are read
+from config.toml when AutoDJ starts:
 
 ```toml
 [requests]
@@ -902,8 +929,9 @@ when a listener's request is approved automatically; the lock covers the final v
 insertion, bridge markers and the existing queue refresh. The operator's list, which refreshes
 every 15 seconds, never runs the search: it says when approving would look for bridge songs.
 
-**What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
-how many requests are waiting and how many the station took today. Each waiting request shows who
+**What you do.** Queue & Search has a **Listener requests** card. While requests are off it says
+so, and its form holds the switch to turn them on. While they are on, it says how many requests
+are waiting and how many the station took today. Each waiting request shows who
 sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
 Artist: same key, 2 BPM apart.") or what stops it. Each request has three buttons:
 
@@ -914,14 +942,17 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
   and the queued songs after it.
 - **Turn down**.
 
-Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
+Below the decisions, **Request settings** starts with **Take listener requests** and
+**Approval**, then **Smooth transitions** holds four more of the `[requests]` settings:
 **Add bridge songs before a request that would sound abrupt**, **Most bridge songs** (1 to 3),
 **Roughness limit** (0 to 10, the `bridge_cost_threshold`) and **When no smooth spot is found**
 (**Use the best spot that keeps the rules** or **Keep the request waiting for you to decide**).
-**Save request settings** saves them for this station at once (`POST /api/requests/settings`);
-they are kept in `web_state.json` and, like the other settings saved on the page, take the place
-of the config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the
-browser: the field is marked, its error shown under it and linked to it, and focus goes to it.
+**Save request settings** saves them all for this station at once (`POST
+/api/requests/settings`, which also takes `enabled` and `approval`), and says whether the request
+page opened or closed. While it saves, the button is marked busy. They are kept in
+`web_state.json` and, like the other settings saved on the page, take the place of the
+config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the browser:
+the field is marked, its error shown under it and linked to it, and focus goes to it.
 
 Focus moves to the next request's Approve button (its first button when Approve is not offered),
 or to the card's title when none is left, and the result is said once just after that. Recent
@@ -1096,8 +1127,10 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
   not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
-  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
-  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  catalog and applies the measured gain when it decodes a track. Voice clips of kind `liner`
+  (liners and voice breaks) use an 18 dB cap when they need more boost. Liners also pass through
+  voice compression, and server-mixed playback holds decoded track audio in memory while
+  it is mixed.
   Earlier versions wrote processed copies to a `prepared` folder inside the active index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After
@@ -1135,7 +1168,7 @@ The listening address stays the same across restarts. There is no key to copy or
 ### More formats: AAC and Opus
 
 Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
-own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+own address and bitrate. Turn them on in Settings, Stream, **More formats** (a card closed until you open it), with **AAC
 quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
 
 ```toml
@@ -1198,7 +1231,8 @@ encoders, so multiply by the stations whose format is being heard.
 
 ### Listener statistics
 
-Settings, Stream, **Listener statistics** shows, for the station the page controls:
+Settings, Stream, **Listener statistics**, a card closed until you open it, shows, for the station
+the page controls:
 
 - a summary in words: how many are listening now on each format, today's peak and when it was,
   today's sessions and listening hours, and the same for the chosen period with its peak day
@@ -1239,8 +1273,8 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-In **Settings > Stream**, add or edit relays, enable or disable them, and check their
-connection status. Set the station name, genre, description and website there too; relays
+In **Settings > Stream**, open the **Relays** card to add or edit relays, enable or disable them,
+and check their connection status. Set the station name, genre, description and website there too; relays
 inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
 listeners connected. Changing one relay reconnects that relay only.
 
@@ -1283,7 +1317,10 @@ password = "the source password from your host"
 
 Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
 upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
-without a password stops AutoDJ at startup with an error naming the table.
+without a password stops AutoDJ at startup with an error naming the table. Two relay names that
+read the same variable, such as `a-b` and `a_b` or `Main` and `main`, stop AutoDJ at startup
+when that variable is set, so one server's password is never sent to another; Settings refuses
+such a name then too. While the variable is unset, each relay uses its own table's password.
 
 The keys:
 
@@ -2121,7 +2158,7 @@ for any tag you changed (an ISRC, in most beets libraries), beets is left exactl
 
 If the file is saved but AutoDJ's own library cannot be updated, the page says the tags were
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
-analysed again.
+analysed again. Rescans also detect external tag edits that fit inside existing file padding.
 
 In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
 that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
@@ -2132,9 +2169,11 @@ that AutoDJ is not allowed to change the file. Remove `:ro` from the music volum
 When a file moves between registered folders in the same catalog, a scan can recognize it by its
 size and a fingerprint of 64 KiB from the middle of the file. The existing vector, metadata,
 analysis and cues stay with that track. A track is re-pathed only when exactly one missing file and
-exactly one new file match. A copy, two identical files, or a file whose bytes changed (retagged)
+exactly one new file match. A copy, two identical files, or a file whose size or fingerprint changed
 is handled as a changed or new song. Register the destination folder before rescanning. This does
-not make a copied catalog portable to paths on another machine.
+not make a copied catalog portable to paths on another machine. A rescan also checks modification
+time, so an in-place tag edit is read even if size and fingerprint stay the same.
+The first rescan after upgrading re-reads existing files once to record their modification times.
 
 Use `autodj migrate-index` to move a published index and supported old state into the current
 `library.db`. It accepts schema-3 and schema-4 indexes, imports their vectors unchanged, and does not
@@ -2405,7 +2444,21 @@ that splices them in at once.
 ### Turning breaks on
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
-off by default. Turn them on for each station that takes them:
+off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
+**Take breaks on this station** and choose **Save break settings**. They work from then on, with
+no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
+up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
+liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
+saved-point playback. The result of a save is said once.
+
+Turning breaks off drops the breaks still waiting for their song change, from the announcer
+program and the Voice tracks tab; a break already mixed into the next song change still plays,
+and the ad schedule's spots stay. From then on the announcer's `GET context` answers
+`"accepting": false` with the reason "Breaks are off for this station: turn them on in
+Settings, Breaks", and an upload is refused with 409 and the same words.
+
+The `[breaks]` section in config.toml holds them, for another station under
+`[stations.<slug>.breaks]`:
 
 ```toml
 [breaks]
@@ -2413,9 +2466,16 @@ enabled = true
 dj_placement = "auto"
 ```
 
-For another station, the same keys go under `[stations.<slug>.breaks]`. With breaks off, AutoDJ
-picks songs exactly as before and the API says so. The other `[breaks]` keys, with their
-defaults, are in `config.toml.example`:
+Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
+`min_intro_seconds` and `duck_db` under `[breaks]` in config.toml are in charge, and a change
+there takes effect at the next start; saving any other setting on the page (volume, EQ and the
+like) does not change that. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
+under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
+and they take the place of the config.toml values at every start from then on. When the saved
+switch differs from config.toml, the log says so once at start, for example "Breaks on for
+icecold (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
+as before and the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
+`[breaks]` keys, with their defaults, are in `config.toml.example`:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
   upcoming song when its intro (Start to Intro) is at least `min_intro_seconds` long (2 seconds),
@@ -2641,7 +2701,7 @@ aired, dropped or expired, and why.
 
 The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
 change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
-It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+It needs breaks turned on for the station (Settings, Breaks, with saved-point playback);
 otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
 signed-in browser.
 
@@ -2660,10 +2720,11 @@ read out on its own.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
    Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
-3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
-   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
-   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
-   song's outro** lets your voice begin while the ending song plays out.
+3. Choose the **Placement**: **Automatic** (follows **Where a DJ break goes** in Settings, Breaks;
+   the description under it says what it will do for this change), **Talk up the next song's
+   intro** (your voice ends as the vocal starts), or **Standalone, between the songs**. For a
+   talk-up, **Start over the ending song's outro** lets your voice begin while the ending song
+   plays out.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
@@ -3043,7 +3104,7 @@ Nothing is ever dropped without a word in the report:
 
 ### The ad report
 
-Under **Ad report**, choose **From** and **To** (both days included, in the station time zone)
+Open the **Ad report** card, closed until you open it, and choose **From** and **To** (both days included, in the station time zone)
 and **Show report**. The summary is said once; below it are two tables with column headers:
 **Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
 seconds aired) and
@@ -3275,7 +3336,7 @@ a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 so
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
 says so.
 
-With `[breaks] enabled = true`, the station picks the song after the next one a song early so
+With breaks on, the station picks the song after the next one a song early so
 announcer breaks can name it (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)),
 and a booked break keeps that song whatever the queue does. The rotation tester does not model
 either: it picks each song when the one before it ends, as a station with breaks off does.
@@ -3370,7 +3431,8 @@ Backtiming goes to each fixed point in the span:
   it, whether that song is fixed or predicted, and how far it runs past the restart. Liners and
   breaks that run straight into a song start its song change.
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
-  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+  late it runs. A hard event runs on time; the preview reports a cut only when its action skips
+  the playing song. Ad breaks and stream changes leave the song playing.
 
 The card shows how many rows are fixed and predicted, such as "3 fixed items, 20 predicted,
 through 13:40.", with the backtiming lines under it. **Refresh preview** and **Shift+H** (from
@@ -3783,10 +3845,11 @@ version does not have (one a newer AutoDJ added) never runs and is not listed, b
 and written back exactly as it was with every save, so going back and forth between versions
 loses no event; it counts toward the 100 events. An event for an action this version has, but
 with settings it does not accept, is copied to `schedule.json.bad-<id>` and left out, as
-before. Events are not replayed after downtime: a one-time event whose
-time passed while AutoDJ was stopped is disabled and recorded as missed, and an event more than
-two minutes late (the computer slept) is recorded as missed instead of running. The schedule
-holds at most 100 events.
+before. Events due before startup are not replayed: a one-time event whose time passed while
+AutoDJ was stopped is disabled and recorded as missed, including one due exactly at startup.
+After a stall, each event gets one missed record that counts occurrences more than two minutes
+late. The latest occurrence still within that window runs once. The schedule holds at most 100
+events.
 
 ## Clockwheels
 

@@ -833,6 +833,7 @@ class RelayManager:
         self._by_name: dict[str, tuple[Relay, Any]] = {}
         self._started = False
         self._closed = False
+        self._title: tuple[str, str] | None = None
         by_bitrate: dict[int, Any] = {}
         for cfg in self._configs:
             if not cfg.enabled:
@@ -968,6 +969,9 @@ class RelayManager:
                 self._by_name[name] = (relay, output)
             self._configs = configs
             self._relays = [relay for relay, _ in self._by_name.values()]
+            for output in created:
+                if self._title is not None:
+                    output.set_title(*self._title)
             for relay in staged:
                 relay.resume()
             used = {id(output) for _, output in self._by_name.values()}
@@ -986,6 +990,7 @@ class RelayManager:
 
     def set_title(self, artist: str, title: str) -> None:
         """Retitle the extra outputs (the stream's own is retitled by the bridge)."""
+        self._title = (artist, title)
         for output in self.outputs:
             output.set_title(artist, title)
 

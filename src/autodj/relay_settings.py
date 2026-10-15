@@ -47,6 +47,7 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
         logger.error("Invalid saved relay settings; refusing to reactivate TOML relays")
         return {}
     loaded: dict[str, RelayConfig] = {}
+    variables: set[str] = set()
     try:
         for item in data["relays"]:
             if not isinstance(item, dict):
@@ -55,7 +56,15 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
             if not isinstance(name, str) or name in loaded:
                 raise ValueError("relay name must be a unique string")
             password = item.get("password")
-            variable = password_variable(slug, name) if isinstance(name, str) else ""
+            variable = password_variable(slug, name)
+            if variable in variables and variable in os.environ:
+                # Two names (a-b and a_b) read one variable: one server's
+                # source password would go to the other.
+                raise ValueError(
+                    f"relay {name} reads {variable}, which is set and is another relay's "
+                    "password variable too; rename one of them"
+                )
+            variables.add(variable)
             if variable in os.environ:
                 password = os.environ[variable]
             elif password is None and name in baseline:
@@ -70,8 +79,9 @@ def load_relays(path: Path, baseline: dict[str, RelayConfig], slug: str) -> dict
             loaded[name] = RelayConfig.from_table(name, {**values, "password": password})
     except (KeyError, TypeError, ValueError) as exc:
         logger.error(
-            "Invalid saved relay settings (%s); refusing to reactivate TOML relays",
+            "Invalid saved relay settings (%s: %s); refusing to reactivate TOML relays",
             type(exc).__name__,
+            exc,
         )
         return {}
     return loaded

@@ -322,7 +322,6 @@ def start_stream_station(
     first_track: IndexEntry | None = None,
     recorder: Recorder | None = None,
     paths: StationPaths | None = None,
-    owns_liner: Callable[[str], bool] | None = None,
 ) -> StreamOutput:
     """Build the stream output, liner scheduler and station; attach them.
 
@@ -348,8 +347,6 @@ def start_stream_station(
         first_track: The first set's first track (``--seed``), if given.
         recorder: Receives the stream's audio while a recording runs.
         paths: The station's state files; the default station's when omitted.
-        owns_liner: Whether a registered liner belongs to this station;
-            every one does when omitted.
 
     Returns:
         The stream output (closed by :func:`stop_stream_station`).
@@ -430,7 +427,7 @@ def start_stream_station(
             bus,
             can_fire=lambda: station.state == "playing",
             vocal_start=player.vocal_start_s,
-            registered_liners=functools.partial(_registered_liners, bridge, owns_liner)
+            registered_liners=functools.partial(_registered_liners, bridge)
             if bridge.library is not None
             else None,
             path_decoder=functools.partial(_processed_liner, bridge)
@@ -485,9 +482,7 @@ def _undo_stream_start(
     bridge.attach_stream(stream=None, station=None, relays=None, mounts=None)
 
 
-def start_server_audio_liners(
-    bridge: PlayerBridge, liner_folder: Path, owns_liner: Callable[[str], bool] | None = None
-) -> None:
+def start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None:
     """Fire voice liners into the plain ``--server-audio`` mix bus.
 
     Same triggers, rotation and ducking as stream mode; automatic
@@ -497,7 +492,6 @@ def start_server_audio_liners(
     Args:
         bridge: The bridge whose player mixes on the server.
         liner_folder: Where liners are read from.
-        owns_liner: Whether a registered liner belongs to this station.
     """
     from autodj.liner_scheduler import LinerScheduler
 
@@ -509,7 +503,7 @@ def start_server_audio_liners(
         bus,
         can_fire=lambda: bus.playing and not player._state.is_paused,
         vocal_start=player.vocal_start_s,
-        registered_liners=functools.partial(_registered_liners, bridge, owns_liner)
+        registered_liners=functools.partial(_registered_liners, bridge)
         if bridge.library is not None
         else None,
         path_decoder=functools.partial(_processed_liner, bridge)
@@ -653,14 +647,11 @@ def prune_matched_intros(station: StationRuntime) -> list[str]:
     return forgotten
 
 
-def _registered_liners(
-    bridge: PlayerBridge, owns: Callable[[str], bool] | None = None
-) -> list[tuple[str, Path]]:
+def _registered_liners(bridge: PlayerBridge) -> list[tuple[str, Path]]:
     return [
         (record["id"], Path(entry.path))
         for entry in bridge.library.entries_snapshot("liner")
-        if (owns is None or owns(entry.path))
-        and (record := bridge.library.catalog.record_for_path(entry.path)) is not None
+        if (record := bridge.library.catalog.record_for_path(entry.path)) is not None
     ]
 
 
@@ -777,10 +768,6 @@ async def _cancel(task: asyncio.Task[None] | None, *quiet: type[BaseException]) 
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError, *quiet):
         await task
-
-
-def _every_liner(_path: str) -> bool:
-    return True
 
 
 def _reusable(task: asyncio.Future[Any] | None) -> bool:
@@ -943,9 +930,6 @@ class StationRuntime:
         self.master_left = False
         # Set while the station is stopped; its routes then answer 409.
         self.stopped = False
-        # Whether a liner registered in the shared library is this station's
-        # (set by the registry); with one station, every liner is.
-        self.owns_liner: Callable[[str], bool] = _every_liner
         # Every station's entry, for the switcher in its pages' pushes (set
         # by the registry when there are several stations); none with one.
         self.station_list: Callable[[], list[dict[str, Any]]] | None = None
@@ -953,14 +937,13 @@ class StationRuntime:
         self.liner_folder_empty_scans = 0
 
     def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
-        """This station's liners among *entries* that may play at the expected air time.
+        """The liners among *entries* that may play at the expected air time.
 
-        *at* is the Unix time the pick expects to air, as the player's pick
-        context gives it; ``None`` means now.
+        Every registered liner is every station's.  *at* is the Unix time the
+        pick expects to air, as the player's pick context gives it; ``None``
+        means now.
         """
-        owns = self.owns_liner
-        owned = [entry for entry in entries if owns(entry.path)]
-        return self.liner_gate.playable(entries if len(owned) == len(entries) else owned, at)
+        return self.liner_gate.playable(entries, at)
 
     @property
     def name(self) -> str:
@@ -1116,7 +1099,7 @@ class StationRuntime:
                     logger.info("%d planned break(s) missed: live DJ on air", missed)
             except Exception:
                 logger.exception("Could not mark the planned breaks missed")
-        for out in (bridge.stream, bridge.relays):
+        for out in (bridge.stream, bridge.relays, bridge.mounts):
             if out is not None:
                 try:
                     out.set_title(status["dj"], self.live.title)
@@ -1193,15 +1176,12 @@ class StationRuntime:
                 self.first_track,
                 self.recorder,
                 self.paths,
-                self.owns_liner,
             )
             if bridge.station is not None:
                 bridge.station.live_active = lambda: self.live.active
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         elif self.server_audio:
-            await asyncio.to_thread(
-                start_server_audio_liners, bridge, self.paths.liners, self.owns_liner
-            )
+            await asyncio.to_thread(start_server_audio_liners, bridge, self.paths.liners)
             self._stream_ticker = asyncio.create_task(tick_stream_workers(bridge))
         if bridge.liner_scheduler is not None:
             # The time check after the hour plays where an automatic liner would.
@@ -1488,11 +1468,23 @@ class StoppedStation:
 
     stopped = True
 
-    def __init__(self, extra: ExtraStation, *, state: str = "stopped") -> None:
+    def __init__(
+        self,
+        extra: ExtraStation,
+        *,
+        state: str = "stopped",
+        name: str | None = None,
+        requests_enabled: bool | None = None,
+    ) -> None:
         self.slug = extra.slug
         self.defined_in = extra.defined_in
-        self.name = extra.name
-        self.requests_enabled = extra.requests_enabled
+        # The name it last had: one changed in Settings is in its saved
+        # settings, not in its configuration.
+        self.name = name or extra.name
+        # Likewise whether it takes requests (the Listener requests card).
+        self.requests_enabled = (
+            extra.requests_enabled if requests_enabled is None else requests_enabled
+        )
         self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
@@ -1531,34 +1523,46 @@ async def _shielded[T](coro: Coroutine[Any, Any, T]) -> T:
     return await asyncio.shield(task)
 
 
-@functools.lru_cache(maxsize=4096)
-def _normalized(path: str | Path) -> str:
-    """*path* as the file system resolves it: symbolic links and Windows short (8.3) names
-    followed, case-folded on Windows.
+def _saved_station_name(paths: StationPaths) -> str | None:
+    """The station name a stopped station's saved settings give it, if any and valid.
 
-    The catalog keeps a path as it was spelled when its folder was added,
-    so a liner folder reached through a link or a short name must be
-    resolved before two paths are compared.  Cached, up to 4096 paths: a
-    liner check runs for every liner at each pick.  The cache is emptied at
-    each library scan (:func:`forget_resolved_paths`), so a link changed
-    since is followed again.
+    Settings, Stream saves a new name there, not in the station's configuration.
     """
-    return os.path.normcase(os.path.realpath(os.path.expanduser(path)))
+    from pydantic import ValidationError
 
+    from autodj.settings_bodies import StreamSettingsBody
 
-def forget_resolved_paths() -> None:
-    """Empty the cache of resolved liner paths; the library calls it when it scans."""
-    _normalized.cache_clear()
-
-
-def _inside(path: str, root: str) -> bool:
     try:
-        relative = os.path.relpath(path, root)
-    except ValueError:  # another drive on Windows
+        data = json.loads(paths.web_state.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    playback = data.get("playback") if isinstance(data, dict) else None
+    name = playback.get("stream_station_name") if isinstance(playback, dict) else None
+    if not isinstance(name, str):
+        return None
+    try:
+        return StreamSettingsBody.model_validate({"station_name": name}, strict=True).station_name
+    except ValidationError:
+        return None
+
+
+def _saved_requests_enabled(paths: StationPaths) -> bool | None:
+    """Whether a stopped station's saved settings say it takes requests, if they say."""
+    try:
+        data = json.loads(paths.web_state.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    playback = data.get("playback") if isinstance(data, dict) else None
+    enabled = playback.get("requests_enabled") if isinstance(playback, dict) else None
+    return enabled if isinstance(enabled, bool) else None
+
+
+def _takes_requests(runtime: Any) -> bool:
+    """Whether a running station takes listener requests now."""
+    try:
+        return runtime.cfg.requests.enabled is True
+    except AttributeError:
         return False
-    return relative != os.curdir and not (
-        relative == os.pardir or relative.startswith(os.pardir + os.sep) or os.path.isabs(relative)
-    )
 
 
 def _saved_preset(paths: StationPaths) -> str | None:
@@ -1585,6 +1589,12 @@ class StationRegistry:
     def __init__(self, default: StationRuntime, extras: Sequence[ExtraStation] = ()) -> None:
         self._default = default
         self._extras = {extra.slug: extra for extra in extras}
+        # The name each stopped station shows: its saved one, read the first
+        # time it is asked for, then the name it had when it last stopped (it
+        # changes only while the station runs).
+        self._stopped_names: dict[str, str] = {}
+        # Whether each stopped station takes requests, kept the same way.
+        self._stopped_requests: dict[str, bool] = {}
         self._running: dict[str, StationRuntime] = {default.slug: default}
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
@@ -1641,11 +1651,22 @@ class StationRegistry:
         if running is not None and slug not in self._stopping:
             return running
         extra = self._extras[slug]
+        name = self._stopped_names.get(slug)
+        if name is None:
+            name = self._stopped_names[slug] = _saved_station_name(extra.paths) or extra.name
+        requests = self._stopped_requests.get(slug)
+        if requests is None:
+            saved = _saved_requests_enabled(extra.paths)
+            requests = self._stopped_requests[slug] = (
+                extra.requests_enabled if saved is None else saved
+            )
         if slug in self._stopping:
-            return StoppedStation(extra, state="stopping")
+            return StoppedStation(extra, state="stopping", name=name, requests_enabled=requests)
         if slug in self._stuck:
-            return StoppedStation(extra, state="stuck stopping")
-        return StoppedStation(extra)
+            return StoppedStation(
+                extra, state="stuck stopping", name=name, requests_enabled=requests
+            )
+        return StoppedStation(extra, name=name, requests_enabled=requests)
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
@@ -1682,6 +1703,8 @@ class StationRegistry:
         if extra.slug in self.slugs():
             raise StationControlError(f"Station {extra.slug} already exists")
         self._extras[extra.slug] = extra
+        self._stopped_names.pop(extra.slug, None)
+        self._stopped_requests.pop(extra.slug, None)
         self._locks[extra.slug] = asyncio.Lock()
 
     def paths(self) -> tuple[StationPaths, ...]:
@@ -1727,28 +1750,6 @@ class StationRegistry:
         document["station"]["autostart"] = enabled
         atomic_write(path, json.dumps(document, indent=2) + "\n")
         self._extras[slug] = replace(extra, autostart=enabled)
-
-    def owns_liner(self, slug: str, path: str) -> bool:
-        """Whether the registered liner at *path* is station *slug*'s.
-
-        A liner belongs to the station whose liner folder holds it most
-        closely: when one station's folder sits inside another's, the
-        inner folder's liners are the inner station's only.  The default
-        station also has every liner that is in no station's folder, as
-        before there were several stations.  Stations given the same
-        folder share its liners.
-        """
-        if not self._extras:
-            return True
-        where = _normalized(path)
-        roots = {
-            self._default.slug: _normalized(self._default.paths.liners),
-            **{other: _normalized(extra.paths.liners) for other, extra in self._extras.items()},
-        }
-        holding = [root for root in roots.values() if _inside(where, root)]
-        if not holding:
-            return slug == self._default.slug
-        return roots.get(slug) == max(holding, key=len)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
         """The station other than *exclude* that uses Stereo Tool, in words, or ``None``.
@@ -1917,6 +1918,8 @@ class StationRegistry:
                     with self.stereo_tool_lock:
                         self._stopping_runtimes[slug] = runtime
                         del self._running[slug]
+                    self._stopped_names[slug] = runtime.name
+                    self._stopped_requests[slug] = _takes_requests(runtime)
                     warnings = await _run_as(slug, self._stop_extra(runtime, extra))
         finally:
             with self.stereo_tool_lock:

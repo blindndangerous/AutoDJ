@@ -82,6 +82,10 @@ _DECODER_QUEUE_CHUNKS = 64
 _MAX_CREDENTIAL_FILE_BYTES = 256 * 1024
 MAX_DJS = 50
 _SCRYPT = {"n": 2**14, "r": 8, "p": 1}
+# The longest Basic value a saved account can send: a 64-character ASCII
+# username, a colon and a 256-character password of up to 4 UTF-8 bytes
+# each, base64-encoded.  Longer values are refused before decoding.
+_MAX_BASIC_LENGTH = 4 * -(-(64 + 1 + 256 * 4) // 3)
 
 
 @dataclass(frozen=True)
@@ -275,7 +279,7 @@ class DjCredentials:
         """
         try:
             scheme, _, encoded = header.partition(" ")
-            if scheme.lower() != "basic" or not encoded or len(encoded) > 512:
+            if scheme.lower() != "basic" or not encoded or len(encoded) > _MAX_BASIC_LENGTH:
                 return None
             username, sep, password = (
                 base64.b64decode(encoded.strip(), validate=True).decode("utf-8").partition(":")

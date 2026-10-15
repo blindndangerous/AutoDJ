@@ -21,7 +21,7 @@
 
 import { requestBinary, requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { srSpeak, stationDay } from "./dom-helpers.js";
+import { focusRevealed, srSpeak, stationDay } from "./dom-helpers.js";
 import { shortcutsEnabled } from "./hotkeys.js";
 import { announceStatus } from "./live-region.js";
 
@@ -270,7 +270,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
       linkError(field, true);
     }
     say(message, true);
-    field.focus();
+    focusRevealed(field);
   }
 
   async function save(button) {

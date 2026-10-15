@@ -15,7 +15,9 @@ budget.  Shared fixtures ``client`` / ``bridge`` come from
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +32,7 @@ from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge, create_app
 from autodj.settings_bodies import PlaybackSettingsBody
 
-from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock
+from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock, wav_bytes
 
 
 def _tls_files(tmp_path: Path) -> dict[str, str]:
@@ -621,15 +623,75 @@ class TestLiners:
         bridge.player._cfg.playback.liners_folder = str(folder)
 
         tc = TestClient(create_app(bridge))
-        files = {"file": ("hello.mp3", b"audio-bytes", "audio/mpeg")}
+        audio = wav_bytes()
+        files = {"file": ("hello.wav", audio, "audio/wav")}
         resp = tc.post("/api/liners/upload", files=files)
         assert resp.status_code == 200
         body = resp.json()
-        assert body["filename"] == "hello.mp3"
-        assert (folder / "hello.mp3").read_bytes() == b"audio-bytes"
+        assert body["filename"] == "hello.wav"
+        assert (folder / "hello.wav").read_bytes() == audio
 
         body = tc.get("/api/liners").json()
-        assert "hello.mp3" in body["files"]
+        assert "hello.wav" in body["files"]
+
+    def test_a_file_that_is_not_audio_is_refused_at_upload(self, bridge, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        tc = TestClient(create_app(bridge))
+
+        # Nine bytes of text named .mp3 (#323): refused with the reason in words.
+        files = {"file": ("broken.mp3", b"not audio", "audio/mpeg")}
+        refused = tc.post("/api/liners/upload", files=files)
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == "broken.mp3 is not an audio file AutoDJ can play."
+        assert list(folder.iterdir()) == []
+
+        # A WAV named .wav is stored; a replacement that is not audio leaves it as it was.
+        audio = wav_bytes()
+        assert tc.post("/api/liners/upload", files={"file": ("id.wav", audio)}).status_code == 200
+        replaced = tc.post(
+            "/api/liners/upload?replace=true", files={"file": ("id.wav", b"RIFFwavedata")}
+        )
+        assert replaced.status_code == 422
+        assert (folder / "id.wav").read_bytes() == audio
+        assert [path.name for path in folder.iterdir()] == ["id.wav"]
+
+    @pytest.mark.parametrize(
+        "failure",
+        [subprocess.TimeoutExpired(["ffprobe"], 30), PermissionError(13, "Access is denied")],
+    )
+    def test_a_liner_that_could_not_be_checked_is_refused_in_words(
+        self, bridge, tmp_path, monkeypatch, failure
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj import break_audio
+
+        folder = tmp_path / "liners"
+        folder.mkdir()
+        bridge.player._cfg.playback.liners_folder = str(folder)
+        monkeypatch.setattr(break_audio.shutil, "which", lambda _name: "ffprobe")
+
+        def hangs(*_args: object, **_kwargs: object) -> None:
+            raise failure
+
+        monkeypatch.setattr(break_audio.subprocess, "run", hangs)
+        monkeypatch.setattr(
+            break_audio,
+            "check_playable",
+            functools.partial(break_audio.check_playable, runner=hangs),
+        )
+        tc = TestClient(create_app(bridge))
+        mp4 = b"\0\0\0\x18ftypM4A " + b"rest of the file"
+        refused = tc.post("/api/liners/upload", files={"file": ("promo.m4a", mp4)})
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == (
+            "Could not check promo.m4a, so it was not saved. Try again in a moment."
+        )
+        assert list(folder.iterdir()) == []
 
     def test_a_new_liner_upload_does_not_inherit_left_behind_dates(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -642,19 +704,19 @@ class TestLiners:
         bridge.player._cfg.index.active_dir = str(tmp_path / "active")
         tc = TestClient(create_app(bridge))
         store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
-        # promo.mp3 was deleted outside AutoDJ; its dates stayed behind.
-        store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
+        # promo.wav was deleted outside AutoDJ; its dates stayed behind.
+        store.set("promo.wav", ClipDates(not_after="2000-01-01"))
         store.set("id.wav", ClipDates(not_after="2000-01-01"))
-        files = {"file": ("promo.mp3", b"audio-bytes", "audio/mpeg")}
+        files = {"file": ("promo.wav", wav_bytes(), "audio/wav")}
         assert tc.post("/api/liners/upload", files=files).status_code == 200
         assert set(store.all()) == {"id.wav"}
         listed = {entry["id"]: entry for entry in tc.get("/api/liners").json()["items"]}
-        assert listed["promo.mp3"]["playable"] is True
+        assert listed["promo.wav"]["playable"] is True
         # Replacing a liner on purpose keeps its dates.
         (folder / "id.wav").write_bytes(b"\x00")
         replaced = tc.post(
             "/api/liners/upload?replace=true",
-            files={"file": ("id.wav", b"new-bytes", "audio/wav")},
+            files={"file": ("id.wav", wav_bytes(0.2), "audio/wav")},
         )
         assert replaced.status_code == 200, replaced.text
         assert set(store.all()) == {"id.wav"}
@@ -726,19 +788,20 @@ class TestLiners:
 
         folder = tmp_path / "liners"
         folder.mkdir()
-        target = folder / "clip.mp3"
+        target = folder / "clip.wav"
         target.write_bytes(b"old")
         bridge.player._cfg.playback.liners_folder = str(folder)
 
         tc = TestClient(create_app(bridge))
-        files = {"file": ("clip.mp3", b"new", "audio/mpeg")}
+        audio = wav_bytes()
+        files = {"file": ("clip.wav", audio, "audio/wav")}
         conflict = tc.post("/api/liners/upload", files=files)
         assert conflict.status_code == 409
         assert target.read_bytes() == b"old"
 
         replaced = tc.post("/api/liners/upload?replace=true", files=files)
         assert replaced.status_code == 200
-        assert target.read_bytes() == b"new"
+        assert target.read_bytes() == audio
 
     def test_liner_upload_rejects_unknown_extension(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -1213,7 +1276,7 @@ class TestProfiles:
         assert tc.get("/api/profiles").status_code == 200
         assert tc.post("/api/profiles/Io/apply").status_code == 200
         assert tc.delete("/api/profiles/Io").status_code == 200
-        files = {"file": ("b.mp3", b"y", "audio/mpeg")}
+        files = {"file": ("b.wav", wav_bytes(), "audio/wav")}
         assert tc.post("/api/liners/upload", files=files).status_code == 200
         assert tc.get("/api/liners/file/a.mp3").status_code == 200
         assert tc.delete("/api/liners/file/a.mp3").status_code == 200
@@ -3363,6 +3426,33 @@ class TestMisc:
         resp = tc.post("/api/repick-next", json={"blacklist": "/x.flac"})
         assert resp.status_code == 200
         assert bridge.player._state.next_track is None
+
+    def test_repick_next_blacklist_must_be_a_path(self, bridge) -> None:
+        """A blacklist that is not a string never reaches the no-repeat window.
+
+        An object or list there made every later pick raise TypeError, because
+        the picker builds a set from recently_played.
+        """
+        from fastapi.testclient import TestClient
+
+        bridge.player._dry_run = True
+        bridge.player._pick_next.return_value = _make_entry(9)
+
+        tc = TestClient(create_app(bridge))
+        for bad in ({"bad": 1}, ["a", "b"], 5, True):
+            resp = tc.post("/api/repick-next", json={"blacklist": bad})
+            assert resp.status_code == 200
+        assert list(bridge.player._state.recently_played) == []
+        resp = tc.post("/api/repick-next", json={"blacklist": "/library/bad.flac"})
+        assert resp.status_code == 200
+        assert list(bridge.player._state.recently_played) == ["/library/bad.flac"]
+        set(bridge.player._state.recently_played)  # what each pick builds
+
+    def test_bridge_repick_next_ignores_non_string_blacklist(self, bridge) -> None:
+        """The bridge refuses a non-string blacklist too, whoever calls it."""
+        bridge.player._pick_next.return_value = _make_entry(9)
+        bridge.repick_next(blacklist_path={"bad": 1})  # type: ignore[arg-type]
+        assert list(bridge.player._state.recently_played) == []
 
     def test_advance_now_uses_queued_next(self, bridge) -> None:
         """queued_next (search -> Now / reseed_random) wins over next_track."""

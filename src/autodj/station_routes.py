@@ -89,6 +89,7 @@ from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
+    from autodj.listener_requests import RequestDesk
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +447,25 @@ def _save_stream_relay_locked(
     if body.is_edit and old is None:
         raise HTTPException(status_code=404, detail="Relay not found.")
     variable = password_variable(station.slug, body.name)
+    sharing = next(
+        (
+            name
+            for name in station.cfg.stream.relays
+            if name != body.name and password_variable(station.slug, name) == variable
+        ),
+        None,
+    )
     managed = variable in os.environ
+    if sharing is not None and managed:
+        # a-b and a_b (or Main and main) read one password variable; once it
+        # is set, both would send its password.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Relay {sharing} takes its password from the same environment variable, "
+                "which is set; choose another name."
+            ),
+        )
     if managed and body.password:
         raise HTTPException(
             status_code=409, detail="This relay password is managed by the environment."
@@ -970,8 +989,6 @@ def equip_station(
         lambda: station.paths.liners,
         station.paths.state_dir,
         api_root,
-        # Looked up at each call: the registry sets it after this.
-        owns_liner=lambda path: station.owns_liner(path),
     )
 
     async def profile(name: str) -> dict:
@@ -1044,27 +1061,8 @@ def equip_station(
     bridge.player.break_desk = station.breaks
     _equip_ads(station, schedule)
 
-    requests_cfg = station.cfg.requests
-    if requests_cfg.enabled is True:
-        from autodj.listener_requests import (
-            FORM_TOKENS,
-            TRACK_SECRET,
-            RequestBook,
-            RequestDesk,
-            TrackIds,
-        )
-
-        station.requests = RequestDesk(
-            station.slug,
-            requests_cfg,
-            bridge,
-            RequestBook(station.paths.listener_requests, timezone=station.timezone),
-            music_dir=station.cfg.library.music_dir,
-            tokens=FORM_TOKENS,
-            track_ids=TrackIds(TRACK_SECRET),
-            on_queued=station.nowplaying.refresh,
-            shows=station.show_runner,
-        )
+    if station.cfg.requests.enabled is True:
+        station.requests = request_desk(station)
         # A show that starts ahead of queued requests updates their notes.
         station.show_runner.on_started = station.requests.show_started
 
@@ -1087,6 +1085,33 @@ def equip_station(
         library=lambda: bridge.library,
     )
     bridge.player.matched_intros = station.intros
+
+
+def request_desk(station: StationRuntime) -> RequestDesk:
+    """A new listener request desk for *station* (blocking: it reads the request book).
+
+    Built when the station starts with requests on, or when they are first
+    turned on while it runs.  The caller sets it on the station.
+    """
+    from autodj.listener_requests import (
+        FORM_TOKENS,
+        TRACK_SECRET,
+        RequestBook,
+        RequestDesk,
+        TrackIds,
+    )
+
+    return RequestDesk(
+        station.slug,
+        station.cfg.requests,
+        station.bridge,
+        RequestBook(station.paths.listener_requests, timezone=station.timezone),
+        music_dir=station.cfg.library.music_dir,
+        tokens=FORM_TOKENS,
+        track_ids=TrackIds(TRACK_SECRET),
+        on_queued=station.nowplaying.refresh,
+        shows=station.show_runner,
+    )
 
 
 def _equip_ads(station: StationRuntime, schedule: Any) -> None:
@@ -1619,8 +1644,6 @@ def install_station_routes(router: StationRouter) -> None:
         library = station.bridge.library
         if library is not None:
             for entry in await asyncio.to_thread(library.entries_snapshot, "liner"):
-                if not station.owns_liner(entry.path):
-                    continue  # another station's liner folder
                 record = await asyncio.to_thread(library.catalog.record_for_path, entry.path)
                 if not record or record.get("kind") != "liner":
                     continue
@@ -1685,6 +1708,7 @@ def install_station_routes(router: StationRouter) -> None:
         station: StationDep, file: UploadFile = File(...), replace: bool = False
     ) -> dict[str, str | int]:
         """Validate, bound, and atomically store a liner clip."""
+        from autodj.break_audio import AudioCheckError, BreakAudioError, check_playable
         from autodj.liner_files import (
             InvalidLinerName,
             LinerConflictError,
@@ -1722,6 +1746,9 @@ def install_station_routes(router: StationRouter) -> None:
                 file,
                 max_bytes=station.cfg.server.liner_upload_max_bytes,
                 replace=replace,
+                # A file that is not audio is refused now, not when it plays
+                # (#323), with the header check the breaks use.
+                check=lambda part: check_playable(part, os.path.splitext(name)[1]),
             )
         except InvalidLinerName as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1729,6 +1756,16 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=409, detail="Liner already exists") from exc
         except LinerTooLargeError as exc:
             raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except AudioCheckError as exc:
+            logger.warning("Liner upload %r not checked: %s", name, exc.__cause__ or exc)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not check {name}, so it was not saved. Try again in a moment.",
+            ) from exc
+        except BreakAudioError as exc:
+            raise HTTPException(
+                status_code=422, detail=f"{name} is not an audio file AutoDJ can play."
+            ) from exc
         return {"filename": target.name, "size": size}
 
     @router.delete("/liners/file/{name}")
@@ -1973,7 +2010,11 @@ def install_station_routes(router: StationRouter) -> None:
         blacklist = None
         try:
             body = await request.json()
-            blacklist = body.get("blacklist") if isinstance(body, dict) else None
+            if isinstance(body, dict) and isinstance(body.get("blacklist"), str):
+                # Only a path: any other JSON value would go into the
+                # no-repeat window, and an object or list there breaks
+                # every later pick (the picker builds a set from it).
+                blacklist = body["blacklist"]
         except (ValueError, TypeError):
             # No JSON body or malformed payload — endpoint accepts either.
             logger.debug("repick_next: no JSON body, blacklist not set")

@@ -362,6 +362,68 @@ def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | No
     return None  # pragma: no cover - every rule matches within a week
 
 
+def _count_skipped(event: EventSpec, first: datetime, cutoff: datetime, zone: ZoneInfo) -> int:
+    """Count occurrences from *first* through, but not including, *cutoff*."""
+    if event.repeat == "once":
+        return 1
+    if event.repeat != "interval":
+        assert event.time is not None
+        day = first.astimezone(zone).date() - timedelta(days=1)
+        last_day = cutoff.astimezone(zone).date()
+        count = 0
+        while day <= last_day:
+            if _runs_on(event, day) and first <= _resolve(day, event.time, zone) < cutoff:
+                count += 1
+            day += timedelta(days=1)
+        return count
+
+    assert event.interval_minutes is not None
+    step = timedelta(minutes=event.interval_minutes)
+    first_wall = first.astimezone(zone).replace(tzinfo=None)
+    last_wall = (cutoff - timedelta(microseconds=1)).astimezone(zone).replace(tzinfo=None)
+    day = first_wall.date() - timedelta(days=1)
+    last_day = last_wall.date()
+    count = 0
+    previous = None
+    after_change = False
+    while day <= last_day:
+        if _runs_on(event, day):
+            start = datetime.combine(day, event.window_start or Time(0))
+            if event.window_start is None or event.window_end is None:
+                end = datetime.combine(day + timedelta(days=1), Time(0)) - timedelta(seconds=1)
+            else:
+                end = datetime.combine(day, event.window_end)
+                if event.window_end < event.window_start:
+                    end += timedelta(days=1)
+            start_local = start.replace(tzinfo=zone)
+            end_local = end.replace(tzinfo=zone)
+            clock_changed = (
+                start_local.utcoffset() != end_local.utcoffset()
+                or start_local.astimezone(UTC).astimezone(zone).replace(tzinfo=None) != start
+                or end_local.astimezone(UTC).astimezone(zone).replace(tzinfo=None) != end
+            )
+            if clock_changed or after_change:
+                # At a clock change, skipped wall slots can share one UTC instant.
+                slot = start
+                while slot <= end:
+                    instant = _resolve(slot.date(), slot.time(), zone)
+                    if instant != previous and first <= instant < cutoff:
+                        count += 1
+                    previous = instant
+                    slot += step
+            else:
+                low = max(first_wall, start)
+                high = min(last_wall, end)
+                if low <= high:
+                    # Round the lower slot up and the upper slot down.
+                    first_slot = max(0, -((start - low) // step))
+                    last_slot = (high - start) // step
+                    count += max(0, last_slot - first_slot + 1)
+            after_change = clock_changed
+        day += timedelta(days=1)
+    return count
+
+
 def _hhmm(value: Time | None) -> str:
     return clock_text(value) if value is not None else ""
 
@@ -575,10 +637,12 @@ class Scheduler:
         self.lock = threading.Lock()
         # Soft events waiting for the current song to end, in due order.
         self.pending: list[str] = []
+        # One write of the file at a time, in the order the changes were made.
+        self._save_lock = asyncio.Lock()
         self._pending_hard_deadline: dict[str, datetime] = {}
         self.started = False
         self.cursor = clock()
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._tasks: set[asyncio.Task[bool]] = set()
 
     def register(self, action: Action) -> None:
         """Add *action*; every action must be registered before :meth:`start`."""
@@ -651,6 +715,10 @@ class Scheduler:
 
     def save(self) -> None:
         """Write the schedule atomically."""
+        self._write(self._document_text())
+
+    def _document_text(self) -> str:
+        """The schedule file's text for the events and runs as they are now."""
         document = ScheduleFile(
             schema_version=SCHEMA_VERSION,
             events=[*self.events.values(), *self.kept],
@@ -665,8 +733,11 @@ class Scheduler:
                     del event[key]
             if not event["wait_seconds"]:
                 del event["wait_seconds"]
+        return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+
+    def _write(self, text: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
+        atomic_write(self.path, text)
 
     def _save_quietly(self) -> None:
         """Save from the timer: a failed write is logged, never raised."""
@@ -675,6 +746,25 @@ class Scheduler:
         except OSError:
             logger.exception("Could not save the schedule to %s", self.path)
 
+    async def _save_off_loop(self, *, quietly: bool = False) -> None:
+        """Save without holding up the event loop.
+
+        The text is built here, from the state as it is now, and written in
+        a worker thread: on Windows the write can wait about half a second
+        for a reader to let go of the file (see :func:`atomic_write`).
+
+        Raises:
+            OSError: The write failed, unless *quietly*, when it is logged.
+        """
+        text = self._document_text()
+        async with self._save_lock:
+            try:
+                await asyncio.to_thread(self._write, text)
+            except OSError:
+                if not quietly:
+                    raise
+                logger.exception("Could not save the schedule to %s", self.path)
+
     async def _publish(self, message: dict[str, Any]) -> None:
         try:
             await self._publisher(message)
@@ -682,7 +772,7 @@ class Scheduler:
             logger.exception("Could not tell the web pages about a schedule change")
 
     async def _changed(self) -> None:
-        self.save()
+        await self._save_off_loop()
         await self._publish({"type": "schedule_changed"})
 
     # -- editing --------------------------------------------------------
@@ -784,13 +874,28 @@ class Scheduler:
         self.runs = [*self.runs, record][-MAX_RUNS:]
         return record
 
-    async def _record(self, event: ScheduledEvent, result: RunResult, message: str) -> RunRecord:
+    async def _record(
+        self,
+        event: ScheduledEvent,
+        result: RunResult,
+        message: str,
+        deferred: list[RunRecord] | None = None,
+    ) -> RunRecord:
         record = self._append_run(event, result, message)
-        self._save_quietly()
-        await self._publish({"type": "schedule_run", "run": record.model_dump(mode="json")})
+        if deferred is not None:
+            deferred.append(record)
+        else:
+            await self._save_off_loop(quietly=True)
+            await self._publish({"type": "schedule_run", "run": record.model_dump(mode="json")})
         return record
 
-    async def run(self, event: ScheduledEvent, *, interrupt: bool = True) -> RunRecord:
+    async def run(
+        self,
+        event: ScheduledEvent,
+        *,
+        interrupt: bool = True,
+        deferred: list[RunRecord] | None = None,
+    ) -> RunRecord:
         """Run *event*'s action now; a failure is recorded, never raised."""
         action = self.actions.get(event.action)
         summary = self.summary(event)
@@ -803,7 +908,7 @@ class Scheduler:
             if hard and action.hard is not None:
                 await action.hard(dict(event.params))
                 logger.info("Scheduled event %r ran: %s", event.name, summary)
-                return await self._record(event, "ok", "")
+                return await self._record(event, "ok", "", deferred)
             play = await action.handle(dict(event.params))
             if hard and action.interrupt == "before":
                 self._interrupt()
@@ -815,9 +920,9 @@ class Scheduler:
             message = str(exc) or type(exc).__name__
             logger.warning("Scheduled event %r (%s) failed: %s", event.name, summary, message)
             logger.debug("Scheduled event failure", exc_info=True)
-            return await self._record(event, "error", message)
+            return await self._record(event, "error", message, deferred)
         logger.info("Scheduled event %r ran: %s", event.name, summary)
-        return await self._record(event, "ok", "")
+        return await self._record(event, "ok", "", deferred)
 
     async def tick(self) -> None:
         """Run, queue or log every event that fell due since the last tick."""
@@ -829,19 +934,40 @@ class Scheduler:
             return
         self.cursor = now
         disabled = False
+        records: list[RunRecord] = []
         for event in list(self.events.values()):
             if not event.enabled:
                 continue
             due = next_run(event, before, self.zone)
             if due is None or due > now:
                 continue
-            if event.repeat == "once":
+            cutoff = now - MISSED_AFTER
+            if due < cutoff:
+                skipped = _count_skipped(event, due, cutoff, self.zone)
+                logger.warning("Scheduled event %r missed %d occurrences", event.name, skipped)
+                word = "occurrence" if skipped == 1 else "occurrences"
+                records.append(
+                    self._append_run(
+                        event,
+                        "missed",
+                        f"Skipped {skipped} {word} while the computer slept or stalled",
+                    )
+                )
+                due = next_run(event, cutoff - timedelta(microseconds=1), self.zone)
+            latest = None
+            while due is not None and due <= now:
+                latest = due
+                due = next_run(event, due, self.zone)
+            if latest is None:
+                if event.repeat == "once":
+                    event.enabled = False
+                    disabled = True
+                continue
+            waiting_soft = event.timing == "soft" and self._waits(event) and self._song_playing()
+            if event.repeat == "once" and not waiting_soft:
                 event.enabled = False
                 disabled = True
-            if now - due > MISSED_AFTER:
-                logger.warning("Scheduled event %r due at %s was missed", event.name, due)
-                await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif event.timing == "soft" and self._waits(event) and self._song_playing():
+            if waiting_soft:
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             elif (
@@ -850,27 +976,32 @@ class Scheduler:
                 and (action := self.actions.get(event.action)) is not None
                 and action.interrupt != "none"
                 and self._song_playing()
-                and 0 <= self._song_remaining() + (now - due).total_seconds() <= event.wait_seconds
+                and 0
+                <= self._song_remaining() + (now - latest).total_seconds()
+                <= event.wait_seconds
             ):
                 if event.id not in self.pending:
                     self.pending.append(event.id)
                 self._pending_hard_deadline.setdefault(
-                    event.id, due + timedelta(seconds=event.wait_seconds)
+                    event.id, latest + timedelta(seconds=event.wait_seconds)
                 )
             else:
-                await self.run(event)
-        if disabled:
-            self._save_quietly()
-            await self._publish({"type": "schedule_changed"})
+                await self.run(event, deferred=records)
         if self._song_playing():
             for event_id, deadline in list(self._pending_hard_deadline.items()):
                 if now >= deadline:
                     waited = self.events.get(event_id)
                     self._forget_pending(event_id)
                     if waited is not None:
-                        await self.run(waited)
+                        await self.run(waited, deferred=records)
         if self.pending and not self._song_playing():
-            await self._run_pending()
+            disabled |= await self._run_pending(deferred=records)
+        if records or disabled:
+            await self._save_off_loop(quietly=True)
+        for record in records:
+            await self._publish({"type": "schedule_run", "run": record.model_dump(mode="json")})
+        if disabled:
+            await self._publish({"type": "schedule_changed"})
 
     def _waits(self, event: ScheduledEvent) -> bool:
         """Whether a soft *event* waits for the song playing to end."""
@@ -885,13 +1016,21 @@ class Scheduler:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _run_pending(self) -> None:
+    async def _run_pending(self, deferred: list[RunRecord] | None = None) -> bool:
         waiting, self.pending = self.pending, []
+        disabled = False
         for event_id in waiting:
             event = self.events.get(event_id)
             no_skip = self._pending_hard_deadline.pop(event_id, None) is not None
             if event is not None:
-                await self.run(event, interrupt=not no_skip)
+                if event.repeat == "once":
+                    event.enabled = False
+                    disabled = True
+                    if deferred is None:
+                        self._save_quietly()
+                        await self._publish({"type": "schedule_changed"})
+                await self.run(event, interrupt=not no_skip, deferred=deferred)
+        return disabled
 
     def hard_events(self) -> tuple[ScheduledEvent, ...]:
         """The enabled hard events, copied under :attr:`lock` (any thread; hour fitting)."""

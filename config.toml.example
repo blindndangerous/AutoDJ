@@ -21,8 +21,9 @@
 # defaults < config.toml < config.local.toml < environment
 #   < settings saved from the web page (web_state.json, serve only) < CLI
 #
-# Configuration keys are validated when loaded. An unknown section or key stops
-# AutoDJ with an error that names it; delete the unsupported line.
+# Configuration keys are validated when loaded. An unknown section or key is
+# ignored with a warning that names it, and the setting keeps its default, so a
+# misspelled key changes nothing: correct or delete the line.
 #
 # Supported environment overrides:
 # BEGIN ENVIRONMENT OVERRIDES
@@ -256,7 +257,7 @@ prefetch_next_track = true
 silence_trigger_crossfade = true
 
 # Optional — how often discovery plays a sonically distant track: every N
-# tracks.  Discovery starts off; the Discovery button on the page turns it on
+# tracks, 1 or more.  Discovery starts off; the Discovery button on the page turns it on
 # and off, and setting the interval under Settings turns it on.
 # discovery_every = 20
 
@@ -416,6 +417,11 @@ pack_order = "rotate"                    # "rotate" (take turns) or "random"
 # break joins the change after the next song.  Breaks need saved-point
 # playback (transition mode "saved_points").  docs/operations.md, "Announcer
 # breaks", has the API with example requests.
+# enabled, dj_placement, min_intro_seconds and duck_db are used until you
+# save Settings, Breaks for the station.  That tab changes them without a
+# restart, and once it has saved them they win over these at every start (the
+# log says so when they differ).  Saving other settings does not do that.  The
+# limits below always stay here.
 [breaks]
 enabled = false
 dj_placement = "auto"          # "auto": talk up the next song's intro when it
@@ -644,6 +650,11 @@ history_limit = 5
 # Public listener request page at /requests: listeners search the library and
 # request songs. Off by default; it answers 404 while it is off. See "Listener
 # requests" in docs/operations.md.
+# enabled and approval are used until you save them in the Listener requests
+# card in Queue & Search.  The card changes them without a restart, and once it
+# has saved them they win over these at every start (the log says so when they
+# differ).  Saving other settings does not do that.  The four bridge settings
+# are kept whenever the station's settings are saved.
 [requests]
 enabled = false
 # "manual": each request waits for you in Queue & Search; "auto": a request

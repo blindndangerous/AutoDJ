@@ -53,7 +53,8 @@ describe("Settings subtabs markup", () => {
     const tabs = [...byId("settings-tabs").querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.textContent)).toEqual([
       "Transitions", "DJ mixing", "Song picking", "Sound", "Display and keys",
-      "Voice liners", "Time checks", "Schedule", "Stream", "Live DJ", "Stations", "Profiles and access",
+      "Voice liners", "Time checks", "Breaks", "Schedule", "Stream", "Live DJ", "Stations",
+      "Profiles and access",
       "Analysis workers",
     ]);
     for (const tab of tabs) {

@@ -99,9 +99,11 @@
 //         the spot form refused (its error linked to the file field), the
 //         break form, and the report's two tables; by keyboard Add spot
 //         focuses the file field, a refused save keeps focus there and
-//         says the error once, Cancel returns to Add spot, and Show report
-//         keeps focus, says the totals once and shows tables with column
-//         and row headers in regions that take focus;
+//         says the error once, Cancel returns to Add spot, Enter on the
+//         closed Ad report card's summary opens it without moving focus or
+//         saying anything, and Show report keeps focus, says the totals once
+//         and shows tables with column and row headers in regions that take
+//         focus;
 //       - the status message stays while the pointer is over it, goes
 //         after the pointer leaves, lets a click on its frame (outside the
 //         message and the button) through to the page underneath, and its
@@ -1158,6 +1160,22 @@ async function adsProblems(page) {
   await page.locator("#ads-spot-cancel").focus();
   await page.keyboard.press("Enter");
   if (await focusId() !== "ads-spot-add") problems.push(`Cancel moved focus to ${await focusId()}`);
+  // The Ad report card is closed until opened: Enter on its summary opens
+  // it, keeps focus there and says nothing (the browser says expanded).
+  await page.evaluate(() => { window.__adsSaid = []; });
+  await page.locator("summary:has(> #ads-report-heading)").focus();
+  await page.keyboard.press("Enter");
+  const opened = await page.evaluate(() => {
+    const summary = document.getElementById("ads-report-heading").parentElement;
+    return {
+      open: summary.parentElement.open,
+      focused: document.activeElement === summary,
+      said: [...window.__adsSaid],
+    };
+  });
+  if (!opened.open) problems.push("Enter on the Ad report summary did not open the card");
+  if (!opened.focused) problems.push("opening the Ad report card moved focus off its summary");
+  if (opened.said.length) problems.push(`opening the Ad report card said ${JSON.stringify(opened.said)}`);
   await page.evaluate(() => { window.__adsSaid = []; });
   await page.locator("#ads-report-show").focus();
   await page.keyboard.press("Enter");

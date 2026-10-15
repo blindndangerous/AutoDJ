@@ -32,6 +32,7 @@ from __future__ import annotations
 import bisect
 import codecs
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -544,6 +545,8 @@ def read_file_tags(audio_path: str | Path) -> FileTags:
             bpm = float(bpm_raw)
         except (TypeError, ValueError):
             bpm = 0.0
+    if not math.isfinite(bpm):
+        bpm = 0.0
 
     year = 0
     if year_raw:

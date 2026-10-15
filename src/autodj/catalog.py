@@ -95,7 +95,8 @@ _SCHEMA = """
         key INTEGER NOT NULL DEFAULT -1, mode INTEGER NOT NULL DEFAULT -1,
         tempo_confidence REAL NOT NULL DEFAULT 0,
         embedded_at REAL NOT NULL DEFAULT 0, size INTEGER NOT NULL DEFAULT 0,
-        fingerprint TEXT NOT NULL DEFAULT '', points TEXT NOT NULL DEFAULT '{}',
+        fingerprint TEXT NOT NULL DEFAULT '', mtime_ns INTEGER NOT NULL DEFAULT 0,
+        points TEXT NOT NULL DEFAULT '{}',
         point_sources TEXT NOT NULL DEFAULT '{}',
         intro_lift_db REAL,
         loudness TEXT NOT NULL DEFAULT '{}',
@@ -371,6 +372,7 @@ class LibraryCatalog:
         )
         self._conn.row_factory = sqlite3.Row
         try:
+            self._conn.execute("PRAGMA foreign_keys=ON")
             # WAL: a reload's long read never blocks the play log's writes,
             # and other processes (the analysis job) read alongside.  Only
             # this machine uses library.db: an index copied from another
@@ -381,6 +383,14 @@ class LibraryCatalog:
             self._conn.executescript(_SCHEMA)
             self._add_missing_columns()
             self._conn.executescript(_CHANGE_TRACKING)
+            if self._conn.execute(
+                "SELECT 1 FROM catalog_vectors WHERE entry_id NOT IN "
+                "(SELECT id FROM catalog_entries) LIMIT 1"
+            ).fetchone():
+                self._conn.execute(
+                    "DELETE FROM catalog_vectors WHERE entry_id NOT IN (SELECT id FROM catalog_entries)"
+                )
+                self._conn.commit()
             _tune(self._conn)
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
@@ -415,6 +425,10 @@ class LibraryCatalog:
             if "user_tags" not in entries:
                 db.execute(
                     "ALTER TABLE catalog_entries ADD COLUMN user_tags TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "mtime_ns" not in entries:
+                db.execute(
+                    "ALTER TABLE catalog_entries ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0"
                 )
             have = {row[1] for row in db.execute("PRAGMA table_info(play_history)")}
             if "performances" not in have:
@@ -912,6 +926,10 @@ class LibraryCatalog:
             return str(row["id"])
         record_id = row["id"] if row else uuid.uuid4().hex
         values = [getattr(entry, name) for name in _ENTRY_FIELDS]
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns
+        except OSError:
+            mtime_ns = 0
         if not entry.size or not entry.fingerprint:
             size, fingerprint = file_fingerprint(path)
             values[_ENTRY_FIELDS.index("size")] = entry.size or size
@@ -940,15 +958,15 @@ class LibraryCatalog:
         placeholders = ",".join("?" for _ in _ENTRY_FIELDS)
         if row:
             self._db().execute(
-                f"UPDATE catalog_entries SET kind=?, {','.join(f'{n}=?' for n in _ENTRY_FIELDS)} WHERE path=?",  # nosec B608 -- constant field names; values are bound
-                (kind, *values, path),
+                f"UPDATE catalog_entries SET kind=?, mtime_ns=?, {','.join(f'{n}=?' for n in _ENTRY_FIELDS)} WHERE path=?",  # nosec B608 -- constant field names; values are bound
+                (kind, mtime_ns, *values, path),
             )
             if kind != "liner":
                 self._db().execute("UPDATE catalog_entries SET allow_outro=0 WHERE path=?", (path,))
         else:
             self._db().execute(
-                f"INSERT INTO catalog_entries (id,path,kind,{cols}) VALUES (?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
-                (record_id, path, kind, *values),
+                f"INSERT INTO catalog_entries (id,path,kind,mtime_ns,{cols}) VALUES (?,?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
+                (record_id, path, kind, mtime_ns, *values),
             )
         self._merge_points(path, points or {}, point_source)
         return record_id
@@ -1183,6 +1201,7 @@ class LibraryCatalog:
                 "id": row["id"],
                 "path": normalized,
                 "kind": row["kind"],
+                "mtime_ns": row["mtime_ns"],
                 "allow_outro": bool(row["allow_outro"]),
                 "points": json.loads(row["points"]),
                 "point_sources": json.loads(row["point_sources"]),
@@ -1313,7 +1332,8 @@ class LibraryCatalog:
         """Save a song's advanced analysis if it is still the file it was made from.
 
         The record must still be music with this *size* and *fingerprint*,
-        and so must the file on disk.  The analysed fields, the stale-check
+        and the file must still match those values.
+        The analysed fields, the stale-check
         stamp and the vector change in one transaction, so the change
         counters show the server a complete result.
 
@@ -1547,7 +1567,7 @@ class LibraryCatalog:
         remembered in ``user_tags`` so a later analysis keeps it; clearing
         it hands it back to the analysis.  ``remember_manual=False`` is for
         imported embedded tags: manual BPM/key overrides stay untouched, and
-        unchanged tag values do not cause a database write.
+        unchanged tags and file identity do not cause a database write.
 
         Args:
             path: The recording, rewritten on disk or left as it was.
@@ -1575,7 +1595,7 @@ class LibraryCatalog:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     "SELECT id,size,fingerprint,embedded_at,loudness,user_tags,"
-                    "title,artist,album,genre,year,bpm,key,mode FROM catalog_entries WHERE path=?",
+                    "title,artist,album,genre,year,bpm,key,mode,mtime_ns FROM catalog_entries WHERE path=?",
                     (normalized,),
                 ).fetchone()
                 if row is None:
@@ -1589,10 +1609,19 @@ class LibraryCatalog:
                         for name, value in fields.items()
                         if name not in protected and value != row[name]
                     }
-                    if not fields:
+                    if not fields and (row["size"], row["fingerprint"], row["mtime_ns"]) == (
+                        size,
+                        fingerprint,
+                        stat.st_mtime_ns,
+                    ):
                         db.rollback()
                         return True
-                values: dict[str, Any] = {**fields, "size": size, "fingerprint": fingerprint}
+                values: dict[str, Any] = {
+                    **fields,
+                    "size": size,
+                    "fingerprint": fingerprint,
+                    "mtime_ns": stat.st_mtime_ns,
+                }
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.

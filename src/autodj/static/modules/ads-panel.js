@@ -15,7 +15,7 @@
 
 import { requestFile, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { stationDay } from "./dom-helpers.js";
+import { focusRevealed, stationDay } from "./dom-helpers.js";
 import { exportFilename, saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
 
@@ -173,7 +173,7 @@ export function installAdsPanel({
       linkError(control, error, true);
     }
     say(message, "error");
-    controls[0]?.focus();
+    focusRevealed(controls[0]);
     return controls.length > 0;
   }
 

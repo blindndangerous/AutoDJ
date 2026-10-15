@@ -92,6 +92,17 @@ def test_editing_a_dj_keeps_the_password_unless_a_new_one_is_given(tmp_path) -> 
     assert store.authenticate(_basic("alice", "another long password")) is None
 
 
+def test_every_password_the_store_saves_can_log_in(tmp_path) -> None:
+    """The Basic header cap fits the longest username and password save accepts."""
+    store = DjCredentials(tmp_path / "live_djs.json")
+    username = "u" * 64
+    for password in ("пароль-" * 30, chr(0x1F600) * 256, "p" * 256):
+        store.save(username, "DJ Long", password)
+        assert store.authenticate(_basic(username, password)) == (username, "DJ Long")
+    too_long = "Basic " + "A" * (live_module._MAX_BASIC_LENGTH + 4)
+    assert store.authenticate(too_long) is None
+
+
 def test_a_damaged_account_file_lets_nobody_in(tmp_path) -> None:
     path = tmp_path / "live_djs.json"
     store = DjCredentials(path)

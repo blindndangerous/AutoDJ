@@ -7,6 +7,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+import soundfile as sf
+from mutagen.flac import FLAC
+from starlette.responses import JSONResponse
 
 from autodj.catalog import LibraryCatalog, _path
 from autodj.config import (
@@ -18,7 +21,7 @@ from autodj.config import (
     PlaybackConfig,
     StationSpec,
 )
-from autodj.indexer import FEATURE_DIM, IndexEntry
+from autodj.indexer import FEATURE_DIM, FINGERPRINT_BYTES, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
 
 
@@ -1087,6 +1090,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         del wrapper, workers, throttle_ms, report
         advanced = make_entry(tracks[0].path)
         advanced.bpm, advanced.key, advanced.mode = 121.0, 7, 1
+        advanced.size, advanced.fingerprint = file_fingerprint(advanced.path)
         checkpoint([advanced], [vector])
         return [advanced], [vector]
 
@@ -1095,10 +1099,188 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
     check = LibraryManager(cfg, Similarity())
     try:
         assert check.catalog.has_vector(song)
-        assert check.entry_for_path(song).bpm == 121
+        assert check.entry_for_path(song).bpm == 120
+        assert check.entry_for_path(song).key == 7
         assert not (cfg.index.active_dir / "index-manifest.json").exists()
     finally:
         check.close()
+
+
+@pytest.mark.parametrize("change_file", [None, "size", "same_fingerprint"])
+def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_file):
+    cfg = make_config(tmp_path)
+    song = cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"x" * (FINGERPRINT_BYTES * 2))
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        catalog.add_source(cfg.library.music_dir, advanced=True)
+        catalog.put_entry(make_entry(song, title="Old title"), points={"start": 0, "end": 180})
+        catalog.set_points(song, {"intro": 12.5}, source="user")
+
+    def decode(path):
+        with LibraryCatalog(cfg.index.active_dir / "library.db") as other:
+            assert other.retag(path, {"title": "New title"})
+        if change_file == "size":
+            song.write_bytes(b"y" * 4100)
+        elif change_file == "same_fingerprint":
+            before = file_fingerprint(song)
+            with song.open("r+b") as audio:
+                audio.write(b"y")
+            assert file_fingerprint(song) == before
+            os.utime(song, ns=(song.stat().st_atime_ns, song.stat().st_mtime_ns + 1_000_000_000))
+        return np.ones(16, np.float32), np.zeros(10, np.float32), 22050, {}
+
+    from autodj.indexer import TrackAnalysis
+
+    vector = np.zeros(FEATURE_DIM, np.float32)
+    vector[0] = 1.0
+    analysis = TrackAnalysis(vector, 0.3, 5, 1, 120.0, 0.9)
+    with (
+        patch("autodj.indexer._extract_librosa_features", side_effect=decode),
+        patch("autodj.indexer.finish_analysis", return_value=analysis),
+    ):
+        # Size and fingerprint stand for the audio bytes; a change they do
+        # not see (same_fingerprint) still stores the analysis, but the tag
+        # edit and the user cue made during the decode are kept either way.
+        stored = change_file != "size"
+        assert analyse_library(cfg, wrapper=None) == (1 if stored else 0)
+
+    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        record = catalog.record_for_path(song)
+        assert record["title"] == "New title"
+        assert record["points"]["intro"] == 12.5
+        assert catalog.has_vector(song) is stored
+
+
+def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    voice = music / "Voice"
+    voice.mkdir(parents=True)
+    clip = voice / "id.flac"
+    clip.write_bytes(b"station id" * 50)
+    manager = manager_factory(music=music)
+    manager.set_dj_analysis_enabled(False)
+    with (
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch("autodj.audio_meta.read_file_tags", side_effect=OSError),
+    ):
+        manager.scan()
+        assert manager.catalog.record_for_path(clip)["kind"] == "music"
+        manager.catalog.add_source(voice, kind="liner")
+        manager.scan()
+    assert manager.catalog.record_for_path(clip)["kind"] == "liner"
+    assert any(entry.path == _path(clip) for entry in manager.entries_snapshot("liner"))
+
+
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("migrated", [False, True])
+def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp_path, migrated):
+    from autodj.dj_meta import Cue, DjMeta
+
+    song = tmp_path / "Music" / "song.flac"
+    song.parent.mkdir()
+    audio_samples = np.random.default_rng(1).uniform(-0.3, 0.3, (44100 * 5, 2))
+    sf.write(song, audio_samples.astype(np.float32), 44100, format="FLAC")
+    audio = FLAC(song)
+    audio["title"] = "Old title"
+    audio.save()
+    manager = manager_factory(music=song.parent, processing="smooth")
+    manager.set_dj_analysis_enabled(False)
+    with patch("autodj.library.analyze_loudness", side_effect=fake_loudness):
+        manager.scan()
+        assert manager.entry_for_path(song).title == "Old title"
+        manager.catalog.set_points(song, {"intro": 0.2}, source="user")
+        manager.catalog.set_intro_lift(song, 2.0)
+        vector = np.zeros(FEATURE_DIM, np.float32)
+        vector[0] = 1
+        manager.catalog.set_vector(song, vector)
+        cue = Cue(0.3, type="user", label="My cue", source="user")
+        cache = manager._dj_cache()
+        cache.set(str(song), DjMeta(analysed=True, beats=[0.3], cues=[cue]))
+        cache.flush(force=True)
+        before = file_fingerprint(song)
+        before_mtime = song.stat().st_mtime_ns
+        if migrated:
+            manager.catalog._db().execute(
+                "UPDATE catalog_entries SET mtime_ns=0 WHERE path=?", (_path(song),)
+            )
+            manager.catalog._db().commit()
+        else:
+            audio = FLAC(song)
+            audio["title"] = "Edited elsewhere"
+            audio.save()
+            os.utime(song, ns=(song.stat().st_atime_ns, before_mtime + 1_000_000_000))
+        assert file_fingerprint(song) == before
+        before_record = manager.catalog.record_for_path(song)
+        manager.set_dj_analysis_enabled(True)
+        with (
+            patch("autodj.library.analyze_basic", side_effect=AssertionError("basic analysis")),
+            patch("autodj.library.load_for_analysis", side_effect=AssertionError("DJ analysis")),
+            patch("autodj.library.analyze_loudness", side_effect=AssertionError("loudness")),
+        ):
+            manager.scan()
+    assert manager.entry_for_path(song).title == ("Old title" if migrated else "Edited elsewhere")
+    assert manager.catalog.points(song)["intro"] == 0.2
+    assert manager.catalog.has_vector(song)
+    after_record = manager.catalog.record_for_path(song)
+    assert after_record["mtime_ns"] == song.stat().st_mtime_ns
+    assert after_record["loudness"]["mtime_ns"] == song.stat().st_mtime_ns
+    assert after_record["intro_lift_db"] == before_record["intro_lift_db"]
+    assert after_record["energy"] == before_record["energy"]
+    assert cache.get(str(song)).cues == [cue]
+    assert cache.get(str(song)).beats == [0.3]
+
+
+def test_nonfinite_bpm_tags_do_not_drop_tracks_or_break_browse(manager_factory, tmp_path):
+    music = tmp_path / "Music"
+    music.mkdir()
+    audio_samples = np.random.default_rng(2).uniform(-0.3, 0.3, (44100, 2))
+    for name, bpm in (("inf", "inf"), ("nan", "nan"), ("ok", "120")):
+        song = music / f"{name}.flac"
+        sf.write(song, audio_samples.astype(np.float32), 44100, format="FLAC")
+        audio = FLAC(song)
+        audio["title"] = name
+        audio["bpm"] = bpm
+        audio.save()
+    manager = manager_factory(music=music)
+    with patch("autodj.library.analyze_loudness", return_value={}):
+        manager.scan()
+    assert sorted(entry.title for entry in manager.entries_snapshot()) == ["inf", "nan", "ok"]
+    JSONResponse(manager.browse_tracks())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="catalog case-folds paths on Windows")
+@pytest.mark.dj_analysis
+def test_dj_backlog_finds_imported_cues_for_case_folded_catalog_path(manager_factory, tmp_path):
+    from autodj.dj_meta import DjMeta, close_cache
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    song = music / "My Song.flac"
+    song.write_bytes(b"x" * 1000)
+    url = "file://localhost/" + song.as_posix().replace(" ", "%20")
+    (music / "Library.xml").write_text(
+        "<DJ_PLAYLISTS><COLLECTION>"
+        f'<TRACK Location="{url}"><POSITION_MARK Name="Drop" Type="0" Start="42.0"/></TRACK>'
+        "</COLLECTION></DJ_PLAYLISTS>",
+        encoding="utf-8",
+    )
+    manager = manager_factory(music=music)
+    manager.catalog.add_source(music)
+    manager.catalog.put_entry(make_entry(song), points={"start": 0, "end": 180})
+    manager.set_dj_analysis_enabled(True)
+    object.__setattr__(manager.cfg.playback, "import_external_cues", True)
+    catalog_path = manager.catalog.all_entries("music")[0]["path"]
+    try:
+        with (
+            patch("autodj.dj_cues_import._default_search_paths", return_value=[]),
+            patch("autodj.dj_meta.analyse_audio", return_value=DjMeta(analysed=True)),
+        ):
+            manager._dj_analyse(Path(catalog_path), mono=np.zeros(22050 * 5, np.float32))
+        meta = manager._dj_cache().get(catalog_path)
+        assert any(abs(cue.time_s - 42.0) < 0.01 for cue in meta.cues)
+    finally:
+        close_cache()
 
 
 def test_scan_does_not_create_prepared_audio(manager_factory, tmp_path):

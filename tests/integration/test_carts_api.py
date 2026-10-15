@@ -463,7 +463,7 @@ def test_a_cart_outside_its_play_dates_is_skipped_in_words(tmp_path: Path) -> No
         assert "not_after" not in saved["pages"][0]["slots"][2]
 
 
-def test_liners_in_another_stations_folder_are_not_offered(tmp_path: Path) -> None:
+def test_every_registered_liner_is_offered(tmp_path: Path) -> None:
     own = tmp_path / "liners" / "own.wav"
     theirs = tmp_path / "liners" / "nightowl" / "owl.wav"
     records = {
@@ -483,9 +483,12 @@ def test_liners_in_another_stations_folder_are_not_offered(tmp_path: Path) -> No
         publish,
         lambda: tmp_path / "liners",
         tmp_path,
-        owns_liner=lambda path: "nightowl" not in Path(path).parts,
     )
-    assert carts.clip_choices()["liners"] == [{"id": "rec-own", "name": "own.wav"}]
+    # Every registered liner is every station's, in whatever folder.
+    assert carts.clip_choices()["liners"] == [
+        {"id": "rec-own", "name": "own.wav"},
+        {"id": "rec-owl", "name": "owl.wav"},
+    ]
 
 
 def test_closing_the_carts_cancels_the_end_timer_without_announcing(tmp_path: Path) -> None:

@@ -8,6 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Announcer breaks can be turned on and off for each station in the new Settings, Breaks tab,
+  without editing `config.toml` or restarting. The tab also sets where a DJ break goes
+  (automatic, talking up the next song, or between the songs), the shortest intro to talk up,
+  and how far the music drops under a break. Turning breaks off drops the breaks still waiting
+  for their song change, and the announcer program is told breaks are off.
+- Listener requests can be turned on and off, and their approval set (you approve each one, or
+  automatic), in the Listener requests card in Queue & Search, which now shows while requests
+  are off. The request page opens or closes at once. While closed it says "Requests are closed",
+  also to a listener whose page was open when requests were turned off.
+- `[breaks]` and `[requests]` in `config.toml` stay in charge of these settings until you save
+  them on the page for the station; saving another setting, such as the volume, does not change
+  that. Once saved there, the page's values are kept with the station's other settings and win at
+  every start, and the log says so once when they differ from `config.toml`. The break upload
+  limits and quotas, and the request limits, stay in `config.toml`.
+
+### Changed
+
+- A new index name, given with `--name`, may not contain `:` or end with a dot or a space,
+  because Windows reads such a name as another folder: `D:music` is a folder on drive D:, and
+  `chill.` is the folder of `chill`. An `[index] name` already in `config.toml` that does this
+  still loads, with a warning asking you to rename the index folder and the setting. Only a name
+  that would put the index outside `index_dir`, such as `D:music` on Windows, stops AutoDJ at
+  startup, with a message saying so.
+- Two relays whose names read the same password variable, such as `a-b` and `a_b`, stop AutoDJ
+  at startup, and are refused in Settings, when that variable is set, so one server's source
+  password is never sent to another. While it is unset, each relay keeps its own password.
+- Long groups that are set once or read now and then are now cards, closed until opened: Repeats
+  and Test rotation in Settings, Song picking; Relays, More formats, Now-playing feed and Listener
+  statistics in Settings, Stream; Rules for every break and Ad report in Ads; and Uploaded clips in
+  Carts. A field with an error opens its card before it takes focus. In Settings, Stream,
+  Broadcast recording now comes before these cards, just after the general settings.
+
 ## [0.21.0] - 2026-10-14
 
 AutoDJ 0.21.0 is the first release since 0.19.1. It also ships everything listed under 0.20.0
