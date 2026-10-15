@@ -67,6 +67,8 @@ TERMINAL = frozenset({AIRED, DROPPED, EXPIRED})
 #: operator recording it in the browser's voice tracker (#128), or the
 #: station's ad schedule (#51).
 ANNOUNCER, VOICE_TRACK, AD_SCHEDULE = "announcer", "voice_track", "ads"
+#: What the announcer and the voice tracker are told while breaks are off.
+BREAKS_OFF = "Breaks are off for this station: turn them on in Settings, Breaks"
 #: The kind of an ad spot booked by the ad schedule: it plays between the songs.
 AD = "ad"
 #: File types a break may be.
@@ -532,11 +534,16 @@ class BreakDesk:
         Its reservation, if any, becomes the break.
 
         Raises:
-            BreakError: As :meth:`check_room`.
+            BreakError: As :meth:`check_room`; 409 for an announcer's or voice
+                tracker's break while breaks are off.  Checked under the lock
+                :meth:`drop_waiting_breaks` takes, so an upload that was let in
+                before breaks were turned off can never be booked after.
         """
         with self._lock:
             held = self._reserved.pop(item.break_id, None)
             try:
+                if item.source in (ANNOUNCER, VOICE_TRACK) and not self.enabled:
+                    raise BreakError(409, BREAKS_OFF, "disabled")
                 if not item.keep_file:
                     self._room_locked(item.slot_id, item.size)
             except BreakError:
@@ -685,6 +692,25 @@ class BreakDesk:
                     item, DROPPED, f"cut short: {reason}" if item.state == ON_AIR else reason
                 )
         self._flush()
+        return len(items)
+
+    def drop_waiting_breaks(self, reason: str) -> int:
+        """Drop the announcer's and voice tracker's breaks still waiting for their song change.
+
+        Breaks turned off in Settings: a break already mixed into the next
+        song change still airs, and ad spots booked by the ad schedule
+        stay.  Returns how many were dropped.
+        """
+        with self._lock:
+            items = [
+                item
+                for item in self._breaks.values()
+                if item.state == QUEUED and item.source in (ANNOUNCER, VOICE_TRACK)
+            ]
+            for item in items:
+                self._finish_locked(item, DROPPED, reason)
+            slots = {item.slot_id for item in items}
+        self._flush(slots)
         return len(items)
 
     def on_air(self, break_id: str) -> None:

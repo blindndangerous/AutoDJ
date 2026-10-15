@@ -21,6 +21,7 @@ from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
 
 from autodj.config import (
+    BreaksConfig,
     DmcaConfig,
     NowPlayingConfig,
     PlayerPageConfig,
@@ -122,6 +123,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.stream = StreamConfig()
     cfg.nowplaying = NowPlayingConfig()
     cfg.requests = RequestsConfig()
+    cfg.breaks = BreaksConfig()
     cfg.player_page = PlayerPageConfig()
     cfg.time_checks = TimeChecksConfig()
     cfg.dmca = DmcaConfig()

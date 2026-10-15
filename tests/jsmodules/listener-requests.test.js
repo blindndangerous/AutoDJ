@@ -4,9 +4,11 @@ import {
   ANNOUNCE_DELAY_MS,
   THRESHOLD_ERROR,
   fitText,
+  OFF_SUMMARY,
   installListenerRequests,
   parseThreshold,
   requestedText,
+  savedText,
   songText,
   summaryText,
 } from "../../src/autodj/static/modules/listener-requests.js";
@@ -23,6 +25,9 @@ function mount() {
         <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
         <ul id="requests-recent" hidden></ul>
         <form id="requests-settings" novalidate>
+          <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
+          <input type="radio" name="requests-approval" id="requests-approval-manual" value="manual" checked>
+          <input type="radio" name="requests-approval" id="requests-approval-auto" value="auto">
           <input type="checkbox" id="requests-bridges" aria-describedby="requests-bridges-help">
           <select id="requests-max-bridges"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
           <input type="text" id="requests-threshold" aria-describedby="requests-threshold-help">
@@ -46,6 +51,7 @@ const WAITING = [
 ];
 const STATE = {
   enabled: true, approval: "manual", today: 2, daily_limit: 50, pending: WAITING, recent: [],
+  bridges_enabled: false, max_bridges: 3, bridge_cost_threshold: 2, no_smooth_spot: "best",
 };
 
 const byId = (id) => document.getElementById(id);
@@ -64,6 +70,17 @@ describe("listener request words", () => {
     expect(summaryText({ ...STATE, pending: [WAITING[0]], approval: "auto" }))
       .toBe("1 request waiting. 2 of 50 taken today. Requests that keep the rules join the queue at once.");
     expect(summaryText({ ...STATE, pending: [] })).toMatch(/^No requests waiting\./);
+    expect(summaryText({ ...STATE, enabled: false })).toBe(OFF_SUMMARY);
+  });
+
+  it("says whether a save opened or closed the request page", () => {
+    expect(savedText({ enabled: false }, { enabled: true, approval: "manual" }))
+      .toBe("Listener requests are on. The request page is open. Each request waits for you.");
+    expect(savedText({ enabled: false }, { enabled: true, approval: "auto" }))
+      .toBe("Listener requests are on. The request page is open. Requests that keep the rules join the queue at once.");
+    expect(savedText({ enabled: true }, { enabled: false }))
+      .toBe("Listener requests are off. The request page now says requests are closed.");
+    expect(savedText({ enabled: true }, { enabled: true })).toBe("Request settings saved.");
   });
 });
 
@@ -92,11 +109,83 @@ describe("listener requests card", () => {
     request = vi.fn(async () => STATE);
   });
 
-  it("stays hidden while requests are off", async () => {
-    request = vi.fn(async () => ({ enabled: false, pending: [], recent: [] }));
+  it("shows while requests are off, with the switch off and no lists", async () => {
+    request = vi.fn(async () => ({
+      ...STATE, enabled: false, approval: "auto", pending: WAITING, recent: [],
+    }));
+    install();
+    await flush();
+    expect(byId("requests-card").hidden).toBe(false);
+    expect(byId("requests-summary").textContent).toBe(OFF_SUMMARY);
+    expect(byId("requests-enabled").checked).toBe(false);
+    expect(byId("requests-approval-auto").checked).toBe(true);
+    expect(byId("requests-list").hidden).toBe(true);
+    expect(byId("requests-list").children).toHaveLength(0);
+  });
+
+  it("stays hidden when the station does not answer", async () => {
+    request = vi.fn(async () => { throw new Error("401"); });
     install();
     await flush();
     expect(byId("requests-card").hidden).toBe(true);
+  });
+
+  it("turns requests on with automatic approval and says the page is open", async () => {
+    request = vi.fn(async () => ({ ...STATE, enabled: false, pending: [] }));
+    install();
+    await flush();
+    byId("requests-enabled").checked = true;
+    byId("requests-approval-auto").checked = true;
+    byId("requests-settings").dispatchEvent(new Event("change"));
+    let answer;
+    request.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    const save = byId("requests-settings-save");
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    // Busy while it saves: aria-busy, never aria-disabled (#331); a second press waits.
+    expect(save.getAttribute("aria-busy")).toBe("true");
+    expect(save.classList.contains("is-pending")).toBe(true);
+    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    expect(save.disabled).toBe(false);
+    const calls = request.mock.calls.length;
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(request.mock.calls.length).toBe(calls);
+    const body = JSON.parse(request.mock.calls.at(-1)[1].body);
+    expect((({ enabled, approval }) => ({ enabled, approval }))(body))
+      .toEqual({ enabled: true, approval: "auto" });
+    answer({ ...STATE, approval: "auto", pending: [] });
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe(
+      "Listener requests are on. The request page is open. Requests that keep the rules join the queue at once.",
+    ));
+    expect(save.hasAttribute("aria-busy")).toBe(false);
+    expect(save.classList.contains("is-pending")).toBe(false);
+    expect(byId("requests-summary").textContent).toMatch(/^No requests waiting\./);
+  });
+
+  it("turns requests off: the lists go and the summary says the page is closed", async () => {
+    install();
+    await flush();
+    expect(byId("requests-list").children).toHaveLength(2);
+    byId("requests-enabled").checked = false;
+    byId("requests-settings").dispatchEvent(new Event("change"));
+    request.mockResolvedValueOnce({ ...STATE, enabled: false, pending: [], recent: [] });
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("requests-status").textContent).toBe(
+      "Listener requests are off. The request page now says requests are closed.",
+    ));
+    expect(JSON.parse(request.mock.calls.at(-1)[1].body).enabled).toBe(false);
+    expect(byId("requests-summary").textContent).toBe(OFF_SUMMARY);
+    expect(byId("requests-list").hidden).toBe(true);
+    expect(byId("requests-card").hidden).toBe(false);
+  });
+
+  it("says why a save failed and keeps the button usable", async () => {
+    install();
+    await flush();
+    request.mockRejectedValueOnce(new Error("Request failed (500)"));
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("requests-status").textContent)
+      .toBe("Could not save the request settings: Request failed (500)"));
+    expect(byId("requests-settings-save").hasAttribute("aria-busy")).toBe(false);
   });
 
   it("lists waiting requests with named buttons, Approve only where it fits", async () => {
@@ -361,6 +450,7 @@ describe("smooth transitions (#49)", () => {
     const [url, options] = request.mock.calls.at(-1);
     expect(url).toBe("/api/requests/settings");
     expect(JSON.parse(options.body)).toEqual({
+      enabled: true, approval: "manual",
       bridges_enabled: false, max_bridges: 2, bridge_cost_threshold: 3, no_smooth_spot: "best",
     });
     await vi.waitFor(() => expect(byId("requests-status").textContent).toBe("Request settings saved."));
