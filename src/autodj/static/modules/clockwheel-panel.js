@@ -60,7 +60,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const list = el("clock-list");
   const steps = el("clock-slots");
   const undoButton = el("clock-undo");
-  const editor = steps?.closest("section");
+  const editor = steps?.closest(".card");
   const nameInput = el("clock-name");
   const resync = el("clock-resync-minutes");
   const status = el("clock-status");

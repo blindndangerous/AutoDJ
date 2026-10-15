@@ -3182,8 +3182,8 @@
            aria-labelledby="library-log-heading"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
 
-    <section class="card" aria-labelledby="categories-heading">
-      <h2 id="categories-heading">Categories</h2>
+    <details class="card" open>
+      <summary><h2 id="categories-heading">Categories</h2></summary>
       <!-- categories-panel.js fills this section.  The list and the match
            count are plain text, not live regions: each result of a button
            (Check, Save and Delete included) is said once through
@@ -3284,10 +3284,11 @@
           <button type="button" id="categories-cancel">Cancel</button>
         </fieldset>
       </form>
-    </section>
+    </details>
 
-    <section class="card flow-form" aria-labelledby="clockwheel-heading">
-      <h2 id="clockwheel-heading">Clockwheels</h2>
+    <details class="card" open>
+      <summary><h2 id="clockwheel-heading">Clockwheels</h2></summary>
+      <div class="flow-form">
       <!-- clockwheel-panel.js fills this section.  Each result of a button
            is said once through #clock-status; the lists are plain text. -->
       <p>A clockwheel is a repeating order of steps: music or voice liners from a library folder, music from a category, a specific track, or a preset change. Keep as many as you like. The active one plays when Pick mode is set to Clockwheel, and the Schedule can switch to another one at set times.</p>
@@ -3428,10 +3429,11 @@
       </select>
       <p id="clock-apply-help">Continuing keeps the next step number. Moving or deleting steps can change what plays there. If that number no longer exists, the clock starts at step 1.</p>
       <button type="button" id="clock-save">Save clockwheel</button>
-    </section>
+    </div>
+    </details>
 
-    <section class="card" aria-labelledby="shows-heading" id="shows-card">
-      <h2 id="shows-heading">Shows</h2>
+    <details class="card" id="shows-card" open>
+      <summary><h2 id="shows-heading">Shows</h2></summary>
       <!-- shows-panel.js fills this section.  The lists, the on-air line and
            the totals are plain text, not live regions: each result of a
            button is said once through #shows-status.  A refused field gets
@@ -3504,10 +3506,10 @@
         <button type="button" id="shows-play-now">Start after this song</button>
         <button type="button" id="shows-close">Close list</button>
       </section>
-    </section>
+    </details>
 
-    <section class="card" id="intro-rules" aria-labelledby="intro-rules-heading">
-      <h2 id="intro-rules-heading">Intro rules</h2>
+    <details class="card" id="intro-rules" open>
+      <summary><h2 id="intro-rules-heading">Intro rules</h2></summary>
       <!-- intro-rules-panel.js fills this section.  The list is plain text;
            each result of a button is said once through #intro-rules-status.
            A refused field is marked aria-invalid, its error is linked to it
@@ -3589,7 +3591,7 @@
         </fieldset>
       </form>
       <p id="intro-rules-status" role="status" aria-live="polite" aria-atomic="true"></p>
-    </section>
+    </details>
   </section>
 
 <!-- Volume announcement region — only written on user-initiated volume changes -->
