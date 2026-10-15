@@ -422,6 +422,13 @@ function _installDatesForm(els, doc = document) {
     event.preventDefault();
     if (!editing) return;
     clearError();
+    // A half-typed date reads as empty, and a five-digit year reaches the server.
+    for (const [field, input, label] of [["not_before", notBefore, "Not before"], ["not_after", notAfter, "Do not play after"]]) {
+      if (input.validity?.badInput || (input.value && !/^\d{4}-\d{2}-\d{2}$/.test(input.value))) {
+        showError(field, `Enter ${label} as a full date, or leave it empty.`);
+        return;
+      }
+    }
     if (notBefore.value && notAfter.value && notAfter.value < notBefore.value) {
       showError("not_after", "Do not play after must be on or after the Not before date");
       return;
