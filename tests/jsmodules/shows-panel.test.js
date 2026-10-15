@@ -341,6 +341,7 @@ describe("review fixes", () => {
     // spoke that on the focused button (#331).
     expect(byId("shows-generate").hasAttribute("aria-disabled")).toBe(false);
     expect(byId("shows-generate").classList.contains("is-pending")).toBe(true);
+    expect(byId("shows-generate").getAttribute("aria-busy")).toBe("true");
     songButton(1, "remove").click();
     await vi.waitFor(() => expect(status()).toBe("The list is being generated; change it when that is done."));
     expect(songRows()).toHaveLength(3);
@@ -349,6 +350,7 @@ describe("review fixes", () => {
     await vi.waitFor(() => expect(songRows()).toHaveLength(2));
     expect(songButton(0, "remove").hasAttribute("aria-disabled")).toBe(false);
     expect(byId("shows-generate").classList.contains("is-pending")).toBe(false);
+    expect(byId("shows-generate").hasAttribute("aria-busy")).toBe(false);
   });
 
   it("says a failed refresh once, not on every retry", async () => {

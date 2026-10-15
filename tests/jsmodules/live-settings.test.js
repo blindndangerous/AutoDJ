@@ -217,11 +217,13 @@ describe("Live DJ settings", () => {
     save.click();
     expect(save.hasAttribute("aria-disabled")).toBe(false);
     expect(save.classList.contains("is-pending")).toBe(true);
+    expect(save.getAttribute("aria-busy")).toBe("true");
     save.click();
     expect(calls.filter(([url]) => url === "/api/live/settings")).toHaveLength(1);
     release();
     await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
     expect(save.classList.contains("is-pending")).toBe(false);
+    expect(save.hasAttribute("aria-busy")).toBe(false);
     expect(document.activeElement).toBe(save);
   });
 

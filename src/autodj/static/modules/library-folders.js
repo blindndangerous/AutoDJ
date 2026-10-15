@@ -292,9 +292,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const generation = protectedGeneration;
     // pendingFolderEdits holds off another toggle (see the click guard).
     // No aria-disabled: NVDA speaks the state change on the focused
-    // control, so the press was heard as "unavailable" (#331).
+    // control, so the press was heard as "unavailable" (#331).  aria-busy
+    // says it is busy instead.
     pendingFolderEdits.add(input);
     input.classList.add("is-pending");
+    input.setAttribute("aria-busy", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
@@ -303,6 +305,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     } finally {
       pendingFolderEdits.delete(input);
       input.classList.remove("is-pending");
+      input.removeAttribute("aria-busy");
       if (requestCurrent(epoch, generation)) await refresh();
     }
   });
@@ -317,6 +320,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     const generation = protectedGeneration;
     pendingFolderEdits.add(button);
     button.classList.add("is-pending");
+    button.setAttribute("aria-busy", "true");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
@@ -325,6 +329,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     finally {
       pendingFolderEdits.delete(button);
       button.classList.remove("is-pending");
+      button.removeAttribute("aria-busy");
       if (requestCurrent(epoch, generation)) await refresh();
     }
   });

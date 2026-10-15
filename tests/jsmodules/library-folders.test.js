@@ -224,6 +224,7 @@ describe("clock folder and points controls", () => {
     expect(checkbox.disabled).toBe(false);
     // Busy to the eye only: aria-disabled made NVDA say "unavailable" (#331).
     expect(checkbox.classList.contains("is-pending")).toBe(true);
+    expect(checkbox.getAttribute("aria-busy")).toBe("true");
     expect(checkbox.hasAttribute("aria-disabled")).toBe(false);
     expect(document.activeElement).toBe(checkbox);
     checkbox.click();
@@ -237,6 +238,7 @@ describe("clock folder and points controls", () => {
     const replacement = document.querySelector('[data-field="recursive"]');
     expect(replacement.checked).toBe(true);
     expect(replacement.classList.contains("is-pending")).toBe(false);
+    expect(replacement.hasAttribute("aria-busy")).toBe(false);
     expect(document.activeElement).toBe(replacement);
   });
 
@@ -253,10 +255,12 @@ describe("clock folder and points controls", () => {
     remove.click();
     expect(remove.hasAttribute("aria-disabled")).toBe(false);
     expect(remove.classList.contains("is-pending")).toBe(true);
+    expect(remove.getAttribute("aria-busy")).toBe("true");
     remove.click();
     expect(request.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(1);
     finish({});
     await vi.waitFor(() => expect(remove.classList.contains("is-pending")).toBe(false));
+    expect(remove.hasAttribute("aria-busy")).toBe(false);
   });
 
   it("restores the checkbox after a failed save without losing focus", async () => {

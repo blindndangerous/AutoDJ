@@ -72,7 +72,8 @@ export function installLiveSettings({
   let returnFocus = null;
   let generation = 0;
   // The Save buttons with a request on the go: another press waits.  No
-  // aria-disabled, or NVDA says "unavailable" on the pressed button (#331).
+  // aria-disabled, or NVDA says "unavailable" on the pressed button (#331);
+  // aria-busy says it is busy instead.
   const saving = new Set();
 
   function link(control, errorNode, on) {
@@ -222,6 +223,7 @@ export function installLiveSettings({
     try {
       saving.add(control);
       control?.classList.add("is-pending");
+      control?.setAttribute("aria-busy", "true");
       await request("/api/live/djs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -236,6 +238,7 @@ export function installLiveSettings({
     } finally {
       saving.delete(control);
       control?.classList.remove("is-pending");
+      control?.removeAttribute("aria-busy");
     }
     hideForm();
     await refresh();
@@ -284,6 +287,7 @@ export function installLiveSettings({
     try {
       saving.add(control);
       control.classList.add("is-pending");
+      control.setAttribute("aria-busy", "true");
       const saved = await request("/api/live/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -302,6 +306,7 @@ export function installLiveSettings({
     } finally {
       saving.delete(control);
       control.classList.remove("is-pending");
+      control.removeAttribute("aria-busy");
     }
     announce("Talk settings saved.");
   }

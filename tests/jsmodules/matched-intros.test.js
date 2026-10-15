@@ -220,11 +220,13 @@ describe("Track info matched intros", () => {
     await settle();
     expect(upload.hasAttribute("aria-disabled")).toBe(false);
     expect(upload.classList.contains("is-pending")).toBe(true);
+    expect(upload.getAttribute("aria-busy")).toBe("true");
     el("intros-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await settle();
     expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
     release();
     await vi.waitFor(() => expect(upload.classList.contains("is-pending")).toBe(false));
+    expect(upload.hasAttribute("aria-busy")).toBe(false);
   });
 
   it("shows a field the server refused at that field", async () => {

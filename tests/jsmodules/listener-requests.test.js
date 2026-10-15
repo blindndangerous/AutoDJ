@@ -246,6 +246,8 @@ describe("listener requests card", () => {
     approve.click();
     expect(approve.hasAttribute("aria-disabled")).toBe(false);
     expect(approve.classList.contains("is-pending")).toBe(true);
+    // Busy, a state NVDA can report, in place of "unavailable".
+    expect(approve.getAttribute("aria-busy")).toBe("true");
     expect(document.activeElement).toBe(approve);
     // A second press while the first sends sends nothing.
     approve.click();
