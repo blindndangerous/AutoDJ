@@ -815,7 +815,7 @@ takes effect at the next start; saving any other setting on the page (volume, EQ
 does not change that. Once you save the card, the station's `web_state.json` keeps both, and
 they take the place of the config.toml values at every start from then on. When a saved value
 differs from config.toml, the log says so once at start, for example "Listener requests on for
-icecold (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
+nightowl (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
 in `web_state.json` whenever the station's settings are saved, as before. The other keys are read
 from config.toml when AutoDJ starts:
 
@@ -2300,7 +2300,7 @@ it with `--ca-cert`.
 ### 2. Create a token
 
 On any paired browser, open Settings, Analysis workers. Under Machine tokens, type a name for the
-computer, such as Alienware, leave Token use at Analysis worker, and choose Create token. The
+computer, such as Studio PC, leave Token use at Analysis worker, and choose Create token. The
 token appears once, in a read-only field with a Copy token
 button; copy it now, because it is never shown again. Choose Done to hide it. If it is lost,
 choose Revoke on its row and create another. A worker token can only claim songs, download those
@@ -2313,7 +2313,7 @@ On a server without a browser at hand, for example inside a container, the same 
 the command line (`docker exec -it autodj autodj tokens ...` in a container):
 
 ```bash
-uv run autodj tokens create Alienware --scope analysis-worker   # prints the token once
+uv run autodj tokens create studio-pc --scope analysis-worker   # prints the token once
 uv run autodj tokens list                                       # ids, names, scopes, last use
 uv run autodj tokens revoke <id>
 ```
@@ -2384,18 +2384,18 @@ the server's own analysis is paused. Revoking a token stops its worker at its ne
 
 ### Sharing the GPU with another program
 
-On the Alienware the 8 GB graphics card is shared with radiodj's text-to-speech container
-(`qwen3-tts`, rootless podman, about 6 GB), which leaves too little room for the model. The
-worker can stop it first and start it again when it is done:
+When another program uses the same graphics card, such as a text-to-speech service in a
+container, it can leave too little graphics memory for the model. The worker can stop that
+program first and start it again when it is done:
 
 ```bash
 uv run autodj worker --server https://nas.local:8080 --idle-exit 10 \
-  --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
+  --before-command "podman stop tts-service" --after-command "podman start tts-service"
 ```
 
 ```powershell
 uv run autodj worker --server https://nas.local:8080 --idle-exit 10 `
-  --before-command "podman stop qwen3-tts" --after-command "podman start qwen3-tts"
+  --before-command "podman stop tts-service" --after-command "podman start tts-service"
 ```
 
 The worker logs "Queue empty; waiting up to 10 minutes for new songs." when it runs out of work,
@@ -2405,7 +2405,7 @@ and "Queue empty for 10 minutes; stopping." when it gives up.
   server and before it loads the model.
 - `--after-command` runs once, when the worker stops for any reason: the queue stayed empty for the
   `--idle-exit` wait (or was empty with `--once`), Ctrl+C, a revoked token or another error. The
-  container stays stopped while the worker waits for new songs; neither command runs between
+  other program stays stopped while the worker waits for new songs; neither command runs between
   empty polls. The worker moves the model off the graphics card and
   frees its memory first.
 - Each runs without a shell: the text is split into words as a shell would, but pipes, `&&` and
@@ -2413,18 +2413,18 @@ and "Queue empty for 10 minutes; stopping." when it gives up.
   two minutes. The worker logs the command, its output and its exit code, and goes on even if it
   fails.
 
-Without `--once` or `--idle-exit` the worker keeps the text-to-speech container stopped for as long
-as it runs.
+Without `--once` or `--idle-exit` the worker keeps the other program stopped for as long as it
+runs.
 
-### The new-music routine
+### Adding new music
 
-1. Import the new music with beets on the NAS, as usual (`beet import /path/to/new`).
+1. Add the new music to the library as usual (for example `beet import /path/to/new`).
 2. In AutoDJ, open Library tools and choose Rescan (or restart the server). The new songs can be
    played at once, before advanced analysis.
 3. The worker catches up: a worker left running analyses them within a minute or so; otherwise run
-   the `--idle-exit 10` command above on the Alienware. You can start it at the same time as the
+   the `--idle-exit 10` command above on the GPU machine. You can start it at the same time as the
    Rescan: it analyses songs as the scan finds them, and exits once nothing new has turned up for
-   ten minutes, starting the text-to-speech container again.
+   ten minutes, running its `--after-command` if it has one.
 
 ## Announcer breaks (DJ breaks, news and weather)
 
@@ -2474,7 +2474,7 @@ like) does not change that. Once you save Settings, Breaks (`POST /api/breaks/se
 under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
 and they take the place of the config.toml values at every start from then on. When the saved
 switch differs from config.toml, the log says so once at start, for example "Breaks on for
-icecold (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
+nightowl (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
 as before and the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
 `[breaks]` keys, with their defaults, are in `config.toml.example`:
 

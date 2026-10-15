@@ -482,9 +482,9 @@ is now licensed under the AGPL-3.0-or-later instead of MIT. The screen-reader sa
   it cannot read are kept as written, each save reads the file again first, a file that cannot
   be read refuses saves rather than lose what it holds, and a switch saved while dates are saved
   keeps both.
-- Announcer breaks (#88): an announcer program on the station's machine, such as radiodj, can
+- Announcer breaks (#88): an announcer program on the station's machine can
   send a station DJ breaks, news, weather and music news through a new breaks API, with no
-  AzuraCast in between. AutoDJ prepares each song change one song ahead, so it now also picks the
+  other program in between. AutoDJ prepares each song change one song ahead, so it now also picks the
   song after the next one and offers that song change as the open slot; the program writes a
   break for that pair of songs and uploads it. A DJ break talks up the next song (the speech ends
   as its vocal starts, over its intro) when the song has an intro of at least two seconds, and
@@ -2548,7 +2548,7 @@ The "make it feel like a real radio station" release.
 
 ### Tests
 
-- 1296 Python tests pass.  26 JavaScript module tests pass.  Cross-browser audit (Chromium / Firefox / WebKit) verified end-to-end on a NAS deployment.
+- 1296 Python tests pass.  26 JavaScript module tests pass.  Cross-browser audit (Chromium / Firefox / WebKit) verified end-to-end on a network-storage deployment.
 
 ---
 

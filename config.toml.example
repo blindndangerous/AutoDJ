@@ -421,7 +421,7 @@ pack_order = "rotate"                    # "rotate" (take turns) or "random"
 # ---------------------------------------------------------------------------
 # Announcer breaks: DJ breaks, news and weather from another program
 # ---------------------------------------------------------------------------
-# An announcer program on this machine (such as radiodj) can send this
+# An announcer program on this machine can send this
 # station spoken breaks through the breaks API, with a machine token made in
 # Settings, Analysis workers (or `autodj tokens create NAME --scope announcer
 # --station default`).  AutoDJ prepares each song change one song ahead, so a
