@@ -1655,3 +1655,22 @@ def test_clock_save_during_pick_keeps_original_slots_and_step(station, monkeypat
     assert picked.step_snapshot["step"] == {"type": "track", "path": a.path}
     old_steps[0]["path"] = b.path
     assert picked.step_snapshot["step"]["path"] == a.path
+
+
+def test_a_pick_without_a_restart_carries_the_restart_time_on(station, monkeypatch):
+    """A set starts with no restart time on its cursor; the next pick passes the station's on (#357)."""
+    from autodj.clockwheel import ClockPick
+
+    player, (a, b, *_), _points = station
+    player._cfg.playback.pick_mode = "clock"
+    player._clock = {"cursor": 4, "resync_minutes": [0]}
+    now = 1_791_621_000.0
+    player._clock_next_boundary = now + 3600
+    player._set_render_cursor(a, 0, "clock", clock_cursor=4, clock_revision=0)
+    assert player._pending_clock_boundary is None
+    monkeypatch.setattr("autodj.player.time.time", lambda: now)
+    monkeypatch.setattr(player, "_clock_pick", MagicMock(return_value=ClockPick(b, None, 5, [])))
+    context = player._pick_context(pending=a, peek_queue=True)
+    entry, mode, _liners, cursor, _key = player._choose_station_next(a, context)
+    assert (entry, mode, cursor) == (b, "clock", 5)
+    assert player._pending_clock_boundary == now + 3600
