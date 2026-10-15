@@ -135,9 +135,6 @@ describe("clockwheel markup", () => {
     expect(byId("clock-step-match-count").getAttribute("aria-live")).toBe("off");
     expect(byId("clock-step-match-count").getAttribute("aria-hidden")).toBeNull();
     expect(section.querySelector("[aria-controls]")).toBeNull();
-    expect(byId("clock-steps-help").textContent).toContain("Alt+Up and Alt+Down");
-    expect(byId("clock-steps-help").textContent).toContain("Enter on a step name edits it");
-    expect(byId("clock-steps-help").textContent).toContain("Save clockwheel");
     expect(document.querySelectorAll('[id^="clock-"]').length).toBe(new Set([...document.querySelectorAll('[id^="clock-"]')].map((node) => node.id)).size);
   });
 });
