@@ -5,7 +5,7 @@ import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
-import { announceStatus } from "./live-region.js";
+import { NBSP, announceStatus } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
@@ -163,10 +163,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
 
   function announceAction(message, error = false) {
     status.dataset.tone = error ? "error" : "info";
+    // A no-break space on every other repeat makes the same message change the text.
+    const text = status.textContent === message ? message + NBSP : message;
     status.textContent = "";
     const announcement = ++actionAnnouncement;
     setTimeout(() => {
-      if (!suspended && announcement === actionAnnouncement) status.textContent = message;
+      if (!suspended && announcement === actionAnnouncement) status.textContent = text;
     }, 0);
   }
   function clearAddError() {

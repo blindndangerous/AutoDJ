@@ -136,7 +136,8 @@ describe("announceStatus force", () => {
 
     expect(spoken.count()).toBe(2);
     expect(shown.count()).toBe(2);
-    expect(region.textContent).toBe("Moved Kryptonite up.");
+    // The repeat ends in a no-break space, so the text itself changes.
+    expect(region.textContent).toBe(`Moved Kryptonite up.${String.fromCharCode(160)}`);
     expect(toast.textContent).toBe("Moved Kryptonite up.");
     spoken.stop();
     shown.stop();
@@ -149,7 +150,7 @@ describe("announceStatus force", () => {
     expect(announceStatus(region, "Saved.", { force: true })).toBe(true);
     expect(region.textContent).toBe("");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(region.textContent).toBe("Saved.");
+    expect(region.textContent).toBe(`Saved.${String.fromCharCode(160)}`);
   });
 
   it("still honours the dwell when forced", async () => {

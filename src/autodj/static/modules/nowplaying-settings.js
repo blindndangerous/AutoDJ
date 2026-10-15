@@ -150,10 +150,9 @@ export function installNowPlayingSettings({
     if (empty.hidden) empty.hidden = false;
   }
 
-  function sendTest(hook, button) {
+  function sendTest(hook) {
     if (sending.has(hook.index)) return;
     sending.add(hook.index);
-    button.setAttribute("aria-disabled", "true");
     say(settingsStatus, `Sending a test to ${hook.host}.`);
     const mine = generation;
     void (async () => {
@@ -173,7 +172,6 @@ export function installNowPlayingSettings({
         say(settingsStatus, `Could not send a test to ${hook.host}: ${err.message}`, "error");
       } finally {
         sending.delete(hook.index);
-        button.removeAttribute("aria-disabled");
       }
     })();
   }
@@ -195,7 +193,7 @@ export function installNowPlayingSettings({
       const hadFocus = list.contains(doc.activeElement);
       list.replaceChildren(...hooks.map((hook) => {
         const button = rowButton(doc, "Send test", testButtonName(hook),
-          (pressed) => sendTest(hook, pressed));
+          () => sendTest(hook));
         const item = listRow(doc, webhookText(hook), "", button);
         item.dataset.key = `${hook.index}|${hook.host}`;
         return item;

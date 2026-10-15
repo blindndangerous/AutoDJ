@@ -108,7 +108,7 @@ describe("categories markup", () => {
       expect(byId(id).hasAttribute("aria-describedby")).toBe(false);
       expect(byId(`${id}-help`).textContent.trim()).not.toBe("");
     }
-    expect(byId("categories-check").getAttribute("aria-describedby")).toBe("categories-match");
+    expect(byId("categories-check").hasAttribute("aria-describedby")).toBe(false);
     expect(byId("categories-list").getAttribute("aria-labelledby")).toBe("categories-list-heading");
     expect(byId("categories-match").getAttribute("aria-live")).toBe("off");
     expect(byId("categories-match").getAttribute("aria-hidden")).toBeNull();

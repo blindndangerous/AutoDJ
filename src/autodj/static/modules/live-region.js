@@ -13,6 +13,8 @@
 // the same element reset the timer instead of stacking, so the most
 // recent announcement always controls the dwell.
 
+// Added to a repeated message so the region text changes.
+export const NBSP = String.fromCharCode(160);
 const _timers = new WeakMap();
 
 export function clearLiveRegionLater(el, dwellMs = 3000) {
@@ -177,9 +179,13 @@ export function announceStatus(
   const text = message == null ? "" : String(message);
   const doc = region.ownerDocument || globalThis.document;
   if (force && text) {
+    // Chrome can merge the clear and the new text into one change, so the
+    // same message again is not spoken.  A trailing no-break space on every
+    // other repeat makes the text itself change.
+    const repeat = region.textContent === text ? text + NBSP : text;
     region.textContent = "";
     setTimeout(() => {
-      region.textContent = text;
+      region.textContent = repeat;
       if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
     }, 0);
     if (mirror) showVisibleStatus(text, doc, { force: true, tone });

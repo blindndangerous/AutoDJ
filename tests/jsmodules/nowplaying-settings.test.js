@@ -345,14 +345,14 @@ describe("now-playing settings", () => {
       : new Promise((resolve) => { answer = resolve; })));
     button.click();
     await said("settings-status", "Sending a test to discord.com.");
-    expect(button.getAttribute("aria-disabled")).toBe("true");
+    // The button stays enabled, so NVDA does not say "unavailable".
+    expect(button.hasAttribute("aria-disabled")).toBe(false);
     // A second press while it is out sends nothing more.
     button.click();
     expect(request.mock.calls.filter(([url]) => url.endsWith("/test"))).toHaveLength(1);
     expect(request).toHaveBeenCalledWith("/api/webhooks/0/test", { method: "POST" });
     answer({ delivered: true });
     await said("settings-status", "Test delivered to discord.com.");
-    expect(button.hasAttribute("aria-disabled")).toBe(false);
   });
 
   it("says a failed delivery in words and where to look", async () => {
@@ -376,7 +376,7 @@ describe("now-playing settings", () => {
     request.mockRejectedValueOnce(authError());
     button.click();
     await said("settings-status", "Sending a test to discord.com.");
-    await vi.waitFor(() => expect(button.hasAttribute("aria-disabled")).toBe(false));
+    await tick();
     await tick();
     expect(byId("settings-status").textContent).toBe("Sending a test to discord.com.");
   });

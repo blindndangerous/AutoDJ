@@ -86,6 +86,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let optionsSignature = "";
   let lastNotice = null;
   let lastPendingUpdate = false;
+  let loadFailed = false;
   let timer = null;
   let generation = 0;
   let suspended = false;
@@ -896,6 +897,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     try {
       const value = await request("/api/library/clock");
       if (!current(epoch, mine)) return;
+      loadFailed = false;
       data = { ...empty(), ...value };
       renderList();
       renderOptions();
@@ -903,7 +905,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
       // The first look at the panel opens the active clockwheel, silently.
       if (!clock && data.active && data.names.includes(data.active)) await openClock(data.active, { quiet: true });
       else renderNext();
-    } catch (error) { if (current(epoch, mine)) say(`Could not load clockwheels: ${error.message}`, true); }
+    } catch (error) {
+      // A failed automatic refresh is said once, not on every retry.
+      if (current(epoch, mine) && !loadFailed) say(`Could not load clockwheels: ${error.message}`, true);
+      if (current(epoch, mine)) loadFailed = true;
+    }
   }
 
   // Runs one change on the server, applies its result and reloads the list.
