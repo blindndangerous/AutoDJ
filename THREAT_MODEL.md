@@ -929,7 +929,8 @@ give accounts only to trusted DJs. Their sets are logged in History as kind `liv
 ## Relay credentials (outbound)
 
 Relays (`[stream.relays.<name>]`) push the stream to external Icecast or Shoutcast servers.
-This is the only place AutoDJ holds a credential for another system:
+Besides the Stereo Tool licence key (see "Stereo Tool program and licence key"), this is the
+only place AutoDJ holds a credential for another system:
 
 - Each relay's source password comes from `config.toml`, `config.local.toml` (recommended, so the
   shared file can be committed or copied without it) or `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`.
@@ -959,6 +960,70 @@ This is the only place AutoDJ holds a credential for another system:
 - While any relay is enabled the station keeps playing with no local listeners, so the operator's
   library is being sent to the external server whenever AutoDJ runs in stream mode. Set
   `enabled = false` to stop a relay without deleting it.
+
+## Stereo Tool program and licence key
+
+AutoDJ may not redistribute Thimeo's Stereo Tool, and the container image has none. Each install
+gets the command-line build itself, and may give it a licence key. Both are set from Settings,
+Sound, under the same session, Host and Origin policy as every other settings route: when pairing
+is on, only a paired browser reaches them. There are no user roles (see "Scope and trust
+boundaries"), so every paired browser may do this. Machine tokens (analysis workers, the announcer)
+work only under their own route prefixes and never reach these routes, nor do live DJ source
+credentials. Tests check that a request without a session, or with only a bearer token, is refused.
+
+**Download.** `POST /api/stereo-tool/download` takes one field, `accept_terms`, which must be
+`true`; the page sends it only when the operator ticks that they accept Thimeo's terms. The body is
+capped at 8 KiB. The request carries no address and no file: the server picks Thimeo's build for
+its own platform from a fixed list (`https://download.thimeo.com/stereo_tool_cmd_64`,
+`.../stereo_tool_pi2_64`, `.../stereo_tool_cmd.exe`). It follows at most five redirects, each
+checked before it is requested: HTTPS only, port 443, no user information, and a host that is
+`thimeo.com` or ends in `.thimeo.com`. Certificates are verified with the system's trust store.
+A declared or streamed size over 200 MB is refused. The file is written under a hidden
+`.download-<random>` name in `<index_dir>/tools/stereo-tool/`, its header must be a 64-bit
+little-endian ELF for the right machine (x86-64 or AArch64) on Linux or a PE for x64 or x86 on
+Windows, and it is run once with `--version` (then `--full-version`), with no input, no shell, a
+15-second timeout and its folder as working directory; it must exit 0 and print a version. Only
+then is it renamed over `stereo_tool_cmd` (on Windows a running copy is renamed aside first), so a
+failed download never replaces a working program and leaves no part file. One download runs at a
+time; a second answers 409. Each attempt is audited as `stereo-tool-download` with its outcome and
+status, besides the request's own audit line, and the log names the version and source URL only.
+The download trusts thimeo.com and its TLS certificate: whoever controls Thimeo's download host
+controls the program AutoDJ runs. There is no published checksum or signature to check against.
+
+The page never uploads a program. An upload route would let anyone who can change settings run
+any program on the server; the fixed download list cannot. The program lives on the writable
+index volume (`/index` in the container), so anyone who can write the index folder can replace the
+program AutoDJ runs. That is the same trust AutoDJ already gives the index folder and the
+configuration (which names `stereotool_path`). No other route writes there: preset uploads go to
+`stereo-tool-presets`, restore writes only its listed folders, and backups leave `tools/` out.
+
+**Licence key.** The key is write-only. `PUT /api/stereo-tool/license` (8 KiB body) saves one for
+every station or, with `"scope": "station"`, for the station the URL names; `DELETE` clears it.
+Answers say only where a key comes from ("install", "station", "environment", "station-config")
+or that none is set, never the key. A refused key is never repeated: the validation message is
+fixed text, and the 422 handler drops the rejected input. Keys are 4 to 2048 printable ASCII
+characters with no spaces. They are stored with `write_private_file`, the same as relay
+passwords: atomically, mode 0600 on POSIX and a protected access list for the current user only
+on Windows, in `<index_dir>/.stereo-tool-license` and `<station folder>/.stereo-tool-license`.
+Backups name their files explicitly and include neither, and restore never writes them. The
+environment (`AUTODJ_STEREOTOOL_LICENSE_KEY`, or a file named by `AUTODJ_STEREOTOOL_LICENSE_FILE`)
+and a station's `[playback] stereotool_license_file` override the saved key and are read-only in
+the page. The key is read each time Stereo Tool starts; AutoDJ keeps no other copy. A problem
+with a configured key is logged once, naming the setting, never the key or the file's contents.
+
+Thimeo documents one way to give the command-line build its key: `-k <key>` on its command line.
+No key file, environment variable or preset entry for the command-line build is documented, so
+the key does not go into the temporary preset copy AutoDJ writes (that copy, in a private
+temporary folder that is removed when the master closes, holds only the preset). The trade-off:
+while Stereo Tool runs, its command line, and so the key, can be read by the same user, by
+administrators and root, and on Linux by any local user unless `/proc` is mounted with
+`hidepid=2` (or `hidepid=invisible`). In the container only processes in the container can see it.
+On Windows, other standard users cannot read another user's process command line. Run AutoDJ as
+its own user on a machine you trust, or mount `/proc` with `hidepid`, if other local users must not
+see the key. AutoDJ never logs a mastering command line: a stuck process is logged without its
+exception text (which would repeat the command line), Stereo Tool's own output is discarded, and
+an error shown on the page has the key replaced by `<licence key>`. If Thimeo documents a way to
+pass the key outside the command line, AutoDJ should switch to it.
 
 ## Backup and restore boundary
 
