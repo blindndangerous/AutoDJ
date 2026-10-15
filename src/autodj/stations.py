@@ -1469,14 +1469,22 @@ class StoppedStation:
     stopped = True
 
     def __init__(
-        self, extra: ExtraStation, *, state: str = "stopped", name: str | None = None
+        self,
+        extra: ExtraStation,
+        *,
+        state: str = "stopped",
+        name: str | None = None,
+        requests_enabled: bool | None = None,
     ) -> None:
         self.slug = extra.slug
         self.defined_in = extra.defined_in
         # The name it last had: one changed in Settings is in its saved
         # settings, not in its configuration.
         self.name = name or extra.name
-        self.requests_enabled = extra.requests_enabled
+        # Likewise whether it takes requests (the Listener requests card).
+        self.requests_enabled = (
+            extra.requests_enabled if requests_enabled is None else requests_enabled
+        )
         self.player_page = extra.player_page
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
@@ -1538,6 +1546,25 @@ def _saved_station_name(paths: StationPaths) -> str | None:
         return None
 
 
+def _saved_requests_enabled(paths: StationPaths) -> bool | None:
+    """Whether a stopped station's saved settings say it takes requests, if they say."""
+    try:
+        data = json.loads(paths.web_state.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    playback = data.get("playback") if isinstance(data, dict) else None
+    enabled = playback.get("requests_enabled") if isinstance(playback, dict) else None
+    return enabled if isinstance(enabled, bool) else None
+
+
+def _takes_requests(runtime: Any) -> bool:
+    """Whether a running station takes listener requests now."""
+    try:
+        return runtime.cfg.requests.enabled is True
+    except AttributeError:
+        return False
+
+
 def _saved_preset(paths: StationPaths) -> str | None:
     """The Stereo Tool preset a stopped station's saved settings name, if any."""
     try:
@@ -1566,6 +1593,8 @@ class StationRegistry:
         # time it is asked for, then the name it had when it last stopped (it
         # changes only while the station runs).
         self._stopped_names: dict[str, str] = {}
+        # Whether each stopped station takes requests, kept the same way.
+        self._stopped_requests: dict[str, bool] = {}
         self._running: dict[str, StationRuntime] = {default.slug: default}
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
@@ -1625,11 +1654,19 @@ class StationRegistry:
         name = self._stopped_names.get(slug)
         if name is None:
             name = self._stopped_names[slug] = _saved_station_name(extra.paths) or extra.name
+        requests = self._stopped_requests.get(slug)
+        if requests is None:
+            saved = _saved_requests_enabled(extra.paths)
+            requests = self._stopped_requests[slug] = (
+                extra.requests_enabled if saved is None else saved
+            )
         if slug in self._stopping:
-            return StoppedStation(extra, state="stopping", name=name)
+            return StoppedStation(extra, state="stopping", name=name, requests_enabled=requests)
         if slug in self._stuck:
-            return StoppedStation(extra, state="stuck stopping", name=name)
-        return StoppedStation(extra, name=name)
+            return StoppedStation(
+                extra, state="stuck stopping", name=name, requests_enabled=requests
+            )
+        return StoppedStation(extra, name=name, requests_enabled=requests)
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
@@ -1667,6 +1704,7 @@ class StationRegistry:
             raise StationControlError(f"Station {extra.slug} already exists")
         self._extras[extra.slug] = extra
         self._stopped_names.pop(extra.slug, None)
+        self._stopped_requests.pop(extra.slug, None)
         self._locks[extra.slug] = asyncio.Lock()
 
     def paths(self) -> tuple[StationPaths, ...]:
@@ -1881,6 +1919,7 @@ class StationRegistry:
                         self._stopping_runtimes[slug] = runtime
                         del self._running[slug]
                     self._stopped_names[slug] = runtime.name
+                    self._stopped_requests[slug] = _takes_requests(runtime)
                     warnings = await _run_as(slug, self._stop_extra(runtime, extra))
         finally:
             with self.stereo_tool_lock:

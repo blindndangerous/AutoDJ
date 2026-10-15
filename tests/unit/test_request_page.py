@@ -192,3 +192,18 @@ def test_work_waits_on_the_loop_and_says_busy_when_every_slot_is_taken(
         assert await request_page.bounded(lambda x: x + 1, 1) == 2
 
     asyncio.run(scenario())
+
+
+def test_a_closed_page_says_so_and_offers_no_form() -> None:
+    html = render_request_page(
+        "Night Owl Radio",
+        page_path="/stations/nightowl/requests",
+        status_path="/stations/nightowl/status",
+        desk=None,
+        closed=True,
+    )
+    assert "<title>Requests are closed: Night Owl Radio</title>" in html
+    assert '<h2 id="req-message">Requests are closed</h2>' in html
+    assert "Night Owl Radio is not taking requests right now." in html
+    assert "<form" not in html
+    assert 'href="/stations/nightowl/status"' in html

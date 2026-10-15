@@ -21,6 +21,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clip** are chosen from the files in the time checks folder, and **Upload a clip** adds one.
   Only the text-to-speech command stays in `config.toml`, because it runs a program on the
   server; `clips_folder`, `intro_clip` and `outro_clip` there are now starting values.
+- Announcer breaks can be turned on and off for each station in the new Settings, Breaks tab,
+  without editing `config.toml` or restarting. The tab also sets where a DJ break goes
+  (automatic, talking up the next song, or between the songs), the shortest intro to talk up,
+  and how far the music drops under a break. Turning breaks off drops the breaks still waiting
+  for their song change, and the announcer program is told breaks are off.
+- Listener requests can be turned on and off, and their approval set (you approve each one, or
+  automatic), in the Listener requests card in Queue & Search, which now shows while requests
+  are off. The request page opens or closes at once. While closed it says "Requests are closed",
+  also to a listener whose page was open when requests were turned off.
+- `[breaks]` and `[requests]` in `config.toml` stay in charge of these settings until you save
+  them on the page for the station; saving another setting, such as the volume, does not change
+  that. Once saved there, the page's values are kept with the station's other settings and win at
+  every start, and the log says so once when they differ from `config.toml`. The break upload
+  limits and quotas, and the request limits, stay in `config.toml`.
 
 ### Changed
 
