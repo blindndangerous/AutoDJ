@@ -13,7 +13,9 @@ delegate to these.
 
 from __future__ import annotations
 
+import io
 import tempfile
+import wave
 from pathlib import Path
 from types import MethodType
 from unittest.mock import MagicMock, PropertyMock
@@ -35,6 +37,17 @@ from autodj.repeat_settings import RepeatRule, RepeatSettings
 # Left as a MagicMock, ``index_dir`` stringifies into a literal "MagicMock/..."
 # tree of real directories and SQLite files inside the checkout.
 NO_INDEX_DIR = Path(tempfile.gettempdir()).resolve() / "_autodj_no_index"
+
+
+def wav_bytes(seconds: float = 0.1) -> bytes:
+    """A short silent mono WAV, for uploads that must be real audio."""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(44100)
+        writer.writeframes(b"\0\0" * round(44100 * seconds))
+    return output.getvalue()
 
 
 def _make_entry(i: int = 0) -> IndexEntry:

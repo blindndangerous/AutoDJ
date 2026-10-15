@@ -93,6 +93,13 @@ Manage liner files, including Delete and Play dates, under **Settings > Voice li
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
 back on the result that opened it.
 
+An uploaded voice liner must be audio AutoDJ can play, or the upload is refused with "<name> is
+not an audio file AutoDJ can play." AutoDJ reads the file's header: libsndfile reads MP3, WAV, FLAC
+and Ogg, and FFmpeg's ffprobe reads M4A and AAC, and any MP3, WAV, FLAC or Ogg file libsndfile
+cannot read. Without ffprobe, an M4A or AAC upload is checked by its first bytes only, so a damaged
+one is found only when it plays. When ffprobe cannot run or takes longer than 30 seconds, the upload
+is refused with "Could not check <name>, so it was not saved."
+
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
 them. A track analysed before AutoDJ read those markers gets them the first time it plays while

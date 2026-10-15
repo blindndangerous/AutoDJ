@@ -9,11 +9,13 @@ file operations themselves are plain ``open``/``os.replace``/``unlink``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ntpath
 import os
 import secrets
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
@@ -114,10 +116,13 @@ async def store_liner_upload(
     *,
     max_bytes: int,
     replace: bool,
+    check: Callable[[Path], None] | None = None,
 ) -> tuple[Path, int]:
     """Stream an upload to a hidden ``.part`` file, then move it into place.
 
-    Refuses to overwrite an existing liner unless *replace* is true.  The
+    Refuses to overwrite an existing liner unless *replace* is true.  When
+    given, *check* runs on the finished ``.part`` file in a worker thread
+    and its exception refuses the upload before anything is replaced.  The
     ``.part`` file is removed on any failure.
 
     Returns:
@@ -147,6 +152,8 @@ async def store_liner_upload(
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
+        if check is not None:
+            await asyncio.to_thread(check, part)
         if not replace and target.exists():
             raise LinerConflictError(name)
         os.replace(part, target)
