@@ -1675,7 +1675,8 @@ def create_app(
             try:
                 ident, _ = await add_task
             except Exception:
-                pass
+                # Admission itself failed, so there is no listener to remove.
+                logger.debug("Cancelled listener admission had failed", exc_info=True)
             else:
                 access.remove(ident)
             raise
