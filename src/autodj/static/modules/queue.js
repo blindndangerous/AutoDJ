@@ -4,7 +4,7 @@
 // single handler.  Optimistic local render + key tracking so the UI updates
 // immediately without waiting for the server round trip.
 
-import { escHtml, fmtTrack } from "./dom-helpers.js";
+import { fmtTrack, placeRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import {
@@ -34,10 +34,9 @@ function bridgeText(track) {
   return target ? `Bridge to ${target}` : "";
 }
 
-// A websocket push rebuilds every row, which destroys the button a
-// keyboard user is standing on and drops focus to the top of the page.
-// Remember which row (path plus which duplicate of it) and which action
-// held focus, then put focus back on the same control in the new list.
+// A websocket push draws the list again.  Remember which row (path plus
+// which duplicate of it) and which action held focus, so focus can go back
+// to the same control when its row is gone or the action is off.
 function _focusedQueueSpot(queueList) {
   const active = queueList.ownerDocument?.activeElement;
   const button = active?.closest?.(".queue-btn");
@@ -54,18 +53,23 @@ function _focusedQueueSpot(queueList) {
   };
 }
 
-function _restoreQueueFocus(queueList, spot) {
-  const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
-  if (rows.length === 0) {
-    queueList.focus();
-    return;
-  }
-  const samePath = rows.filter((row) => row.dataset.path === spot.path);
-  const row = samePath[spot.occurrence]
-    || rows[Math.min(spot.index, rows.length - 1)];
-  const target = row.querySelector(`.queue-btn[data-action="${spot.action}"]:not(:disabled)`)
-    || row.querySelector('.queue-btn:not([data-action="info"]):not(:disabled)');
-  target?.focus();
+// The button for *action* in *row*, or the row's first other action that
+// is on once the list is drawn.
+function _rowAction(row, action, usable) {
+  if (!row) return null;
+  const named = row.querySelector(`.queue-btn[data-action="${action}"]`);
+  if (usable(named)) return named;
+  return [...row.querySelectorAll('.queue-btn:not([data-action="info"])')].find(usable) || null;
+}
+
+// Where focus goes after a push: the same control on the same track, or
+// the row now where it was.
+function _spotTarget(spot) {
+  return (rows, usable) => {
+    const samePath = rows.filter((row) => row.dataset.path === spot.path);
+    const row = samePath[spot.occurrence] || rows[Math.min(spot.index, rows.length - 1)];
+    return _rowAction(row, spot.action, usable);
+  };
 }
 
 export function applyQueueState(queue, els) {
@@ -73,8 +77,7 @@ export function applyQueueState(queue, els) {
   if (key === _lastKey || key === _pendingFromKey) return;
   _lastKey = key;
   const spot = els.queueList ? _focusedQueueSpot(els.queueList) : null;
-  renderQueue(queue, els);
-  if (spot) _restoreQueueFocus(els.queueList, spot);
+  renderQueue(queue, els, { focus: spot ? _spotTarget(spot) : null });
 }
 
 export function resetQueueState(els) {
@@ -84,49 +87,128 @@ export function resetQueueState(els) {
   renderQueue(empty, els);
 }
 
-export function renderQueue(queue, { queueList, queueCount }) {
+const EMPTY_TEXT = "Queue is empty.  Search, then use Play next or Add to queue.";
+// Each row's buttons: action, words on screen, icon, and the name built
+// from the song.
+const ROW_ACTIONS = [
+  ["top", "Top", "", (name) => `Move ${name} to top of queue`],
+  ["up", "Up", "▲", (name) => `Move ${name} up in queue`],
+  ["down", "Down", "▼", (name) => `Move ${name} down in queue`],
+  ["remove", "Remove", "✕", (name) => `Remove ${name} from queue`],
+  ["info", "Track info", "", (name) => `Track info for ${name}`],
+];
+const ROW_LABELS = Object.fromEntries(ROW_ACTIONS.map(([action, , , label]) => [action, label]));
+
+function _newQueueRow(doc, path) {
+  const row = doc.createElement("li");
+  row.dataset.path = path;
+  const name = doc.createElement("span");
+  name.className = "queue-name";
+  row.append(name);
+  for (const [action, words, icon] of ROW_ACTIONS) {
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.className = "queue-btn";
+    button.dataset.action = action;
+    button.dataset.path = path;
+    if (action !== "info") button.setAttribute("aria-describedby", "station-context");
+    if (icon) {
+      const shape = doc.createElement("span");
+      shape.setAttribute("aria-hidden", "true");
+      shape.textContent = icon;
+      button.append(shape, ` ${words}`);
+    } else {
+      button.textContent = words;
+    }
+    row.append(button);
+  }
+  return row;
+}
+
+// Changes only what differs, so a row that stays says nothing new.
+function _fillQueueRow(row, track, index) {
+  const bridge = bridgeText(track);
+  const shown = fmtTrack(track);
+  // Each button names the song, and a bridge says which request it leads into.
+  const name = bridge ? `${shown}, b${bridge.slice(1)}` : shown;
+  if (row.dataset.queueIndex !== String(index)) row.dataset.queueIndex = String(index);
+  if (bridge) {
+    if (row.dataset.bridgeTo !== track.bridge_to) row.dataset.bridgeTo = track.bridge_to;
+  } else if ("bridgeTo" in row.dataset) {
+    delete row.dataset.bridgeTo;
+  }
+  const label = row.querySelector(".queue-name");
+  const text = `${index + 1}. ${shown}`;
+  if (label.textContent !== text) label.textContent = text;
+  if (label.title !== shown) label.title = shown;
+  let note = row.querySelector(".queue-bridge");
+  if (bridge) {
+    if (!note) {
+      note = row.ownerDocument.createElement("span");
+      note.className = "queue-bridge";
+      label.after(note);
+    }
+    if (note.textContent !== bridge) note.textContent = bridge;
+  } else {
+    note?.remove();
+  }
+  for (const button of row.querySelectorAll(":scope > .queue-btn")) {
+    const words = ROW_LABELS[button.dataset.action](name);
+    if (button.getAttribute("aria-label") !== words) button.setAttribute("aria-label", words);
+  }
+}
+
+// Draws the queue in place (#328): a row that stays keeps its node, the
+// focused row is never moved, and focus never sits on a row that goes or
+// a button that goes off.  *focus*, when given, picks the button that
+// gets focus from the new rows (an empty queue gives it to the list).
+export function renderQueue(queue, { queueList, queueCount }, { focus = null } = {}) {
   if (queueCount) queueCount.textContent = queue.length ? `(${queue.length})` : "";
   if (!queueList) return;
   _renderGeneration += 1;
+  const doc = queueList.ownerDocument;
   if (queue.length === 0) {
-    queueList.innerHTML = `
-      <li class="no-results">
-        Queue is empty.  Search, then use Play next or Add to queue.
-      </li>`;
+    let empty = queueList.querySelector(":scope > li.no-results");
+    if (!empty) {
+      empty = doc.createElement("li");
+      empty.className = "no-results";
+      empty.textContent = EMPTY_TEXT;
+    }
+    if (focus) queueList.focus();
+    placeRows(queueList, [empty]);
     return;
   }
-  queueList.innerHTML = queue.map((t, i) => {
-    const bridge = bridgeText(t);
-    // Each button names the song, and a bridge says which request it leads into.
-    const name = escHtml(bridge ? `${fmtTrack(t)}, b${bridge.slice(1)}` : fmtTrack(t));
-    const shown = escHtml(fmtTrack(t));
-    const path = escHtml(t.path);
-    const isFirst = i === 0;
-    const isLast  = i === queue.length - 1;
-    const bridgeAttr = bridge ? ` data-bridge-to="${escHtml(t.bridge_to)}"` : "";
-    const bridgeNote = bridge ? `<span class="queue-bridge">${escHtml(bridge)}</span>` : "";
-    return `<li data-path="${path}" data-queue-index="${i}"${bridgeAttr}>
-      <span class="queue-name" title="${shown}">${i + 1}. ${shown}</span>${bridgeNote}
-      <button class="queue-btn" data-action="top"    data-path="${path}"
-              aria-label="Move ${name} to top of queue" aria-describedby="station-context" ${isFirst ? "disabled" : ""}>
-        Top
-      </button>
-      <button class="queue-btn" data-action="up"     data-path="${path}"
-              aria-label="Move ${name} up in queue" aria-describedby="station-context" ${isFirst ? "disabled" : ""}>
-        <span aria-hidden="true">▲</span> Up
-      </button>
-      <button class="queue-btn" data-action="down"   data-path="${path}"
-              aria-label="Move ${name} down in queue" aria-describedby="station-context" ${isLast  ? "disabled" : ""}>
-        <span aria-hidden="true">▼</span> Down
-      </button>
-      <button class="queue-btn" data-action="remove" data-path="${path}"
-              aria-label="Remove ${name} from queue" aria-describedby="station-context">
-        <span aria-hidden="true">✕</span> Remove
-      </button>
-      <button type="button" class="queue-btn" data-action="info" data-path="${path}"
-              aria-label="Track info for ${name}">Track info</button>
-    </li>`;
-  }).join("");
+  // The rows already drawn, by song and which duplicate of it.
+  const drawn = new Map();
+  const seen = new Map();
+  const keyOf = (path) => {
+    const occurrence = seen.get(path) || 0;
+    seen.set(path, occurrence + 1);
+    return JSON.stringify([path, occurrence]);
+  };
+  for (const row of queueList.querySelectorAll(":scope > li[data-path]")) {
+    drawn.set(keyOf(row.dataset.path), row);
+  }
+  seen.clear();
+  const off = new Map();
+  const rows = queue.map((track, index) => {
+    const row = drawn.get(keyOf(track.path)) || _newQueueRow(doc, track.path);
+    _fillQueueRow(row, track, index);
+    for (const button of row.querySelectorAll(":scope > .queue-btn")) {
+      const action = button.dataset.action;
+      off.set(button, action === "top" || action === "up" ? index === 0
+        : action === "down" ? index === queue.length - 1 : false);
+    }
+    return row;
+  });
+  // Buttons come on first, so focus can go to them; they go off last,
+  // once focus has left them.
+  for (const [button, disabled] of off) if (!disabled && button.disabled) button.disabled = false;
+  const target = focus ? focus(rows, (button) => Boolean(button) && off.get(button) === false) : null;
+  if (target?.isConnected) target.focus();
+  placeRows(queueList, rows);
+  if (target && doc.activeElement !== target) target.focus();
+  for (const [button, disabled] of off) if (disabled && !button.disabled) button.disabled = true;
   installActionListNavigation(queueList).refresh();
 }
 
@@ -188,6 +270,9 @@ export function installQueueButtons(els) {
   const { queueList, queueAnnounce } = els;
   if (!queueList) return;
   let mutationPending = false;
+  // Whether a press while a change is sent has been answered yet: once per
+  // change, so a held key does not repeat it.
+  let stillSendingSaid = false;
 
   installActionListNavigation(queueList);
 
@@ -204,7 +289,14 @@ export function installQueueButtons(els) {
       }));
       return;
     }
-    if (mutationPending) return;
+    if (mutationPending) {
+      // A second press while a change is sent does nothing; it says why.
+      if (!stillSendingSaid) {
+        stillSendingSaid = true;
+        announceStatus(queueAnnounce, "Still sending the last change…", { dwellMs: 3000, force: true });
+      }
+      return;
+    }
     const epoch = captureAuthenticatedRequestEpoch();
 
     const items = Array.from(queueList.querySelectorAll("li[data-path]"));
@@ -256,17 +348,21 @@ export function installQueueButtons(els) {
       return;
     }
 
-    // Whether the pressed button had focus.  The optimistic render below
-    // destroys it, so focus sits on the page itself until the reply; a
-    // push that rebuilds the list meanwhile has nothing to put back
-    // (applyQueueState), so the reply places focus whatever the order.
+    // Whether the pressed button had focus.  The optimistic render moves it
+    // at once to where it lands (the moved track's button, the next row's
+    // Remove, or the list when none is left), so it never sits on the page
+    // while the change is sent (#328); the reply places it again whatever
+    // the order.  The pressed button stays on: mutationPending refuses a
+    // second press, and a button turned off under focus dropped focus.
     const hadFocus = queueList.contains(queueList.ownerDocument.activeElement);
 
     // Optimistic local render so the user sees instant feedback.
     mutationPending = true;
+    stillSendingSaid = false;
     queueList.setAttribute("aria-busy", "true");
-    btn.disabled = true;
-    renderQueue(newQueue, els);
+    renderQueue(newQueue, els, {
+      focus: hadFocus ? (rows, usable) => _rowAction(rows[focusIndex], focusAction, usable) : null,
+    });
     const optimisticGeneration = _renderGeneration;
     const newPaths = newQueue.map((item) => item.path);
     _pendingFromKey = _queueKey(snapshot);
@@ -322,13 +418,18 @@ export function installQueueButtons(els) {
     }
 
     if (!isAuthenticatedRequestCurrent(epoch)) return;
+    // The reply places focus only when it was in the queue at the press and
+    // still is (or was lost to the page): focus the user has taken
+    // elsewhere meanwhile stays there.
+    if (!hadFocus) return;
+    const active = queueList.ownerDocument.activeElement;
+    const onPage = !active || active === queueList.ownerDocument.body;
+    if (!onPage && !queueList.contains(active)) return;
     if (!ownsRenderedQueue) {
       // A push drew the list the server has.  Focus that was on the
       // pressed button goes to the same track's button there, or to the
-      // row now where it was; focus that was elsewhere stays put.
-      if (!hadFocus) return;
-      const active = queueList.ownerDocument.activeElement;
-      if (active && active !== queueList.ownerDocument.body) return;
+      // row now where it was.
+      if (!onPage) return;
       const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
       const own = action === "remove" ? -1 : rows.findIndex((row) => row.dataset.path === path);
       focusQueueList = rows.length === 0;

@@ -28,6 +28,84 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
   _timers.set(el, t);
 }
 
+// Shown, not said: *text* goes into a live region with the region off, and
+// the region is on again a second later, once the browser has passed the
+// change on.  For words a reader has heard already, or that another line
+// says: the connection pill's "Live" after a station switch (#327), the
+// last library job's result after a reload (#329).  Words that must be
+// said next go through writeLive.
+const _quiet = new WeakMap();
+const _pending = new WeakMap();
+// How long a region turned back on waits before new words go in, so the
+// browser has seen it on and says them.
+const LIVE_AGAIN_MS = 100;
+
+function cancelPending(region) {
+  const pending = _pending.get(region);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  _pending.delete(region);
+}
+
+// The words a region shows, or is about to show.
+export function shownText(region) {
+  return _pending.has(region) ? _pending.get(region).text : region?.textContent ?? "";
+}
+
+export function writeQuietly(region, text, { restoreMs = 1000 } = {}) {
+  if (!region) return;
+  cancelPending(region);
+  if (region.textContent === text) return;
+  const before = _quiet.get(region);
+  if (before) clearTimeout(before.timer);
+  const live = before ? before.live : region.getAttribute("aria-live");
+  region.setAttribute("aria-live", "off");
+  region.textContent = text;
+  const timer = setTimeout(() => liveAgain(region), restoreMs);
+  _quiet.set(region, { timer, live });
+}
+
+// Turns a region writeQuietly turned off back on at once.
+export function liveAgain(region) {
+  const quiet = region && _quiet.get(region);
+  if (!quiet) return;
+  clearTimeout(quiet.timer);
+  _quiet.delete(region);
+  if (quiet.live === null) region.removeAttribute("aria-live");
+  else region.setAttribute("aria-live", quiet.live);
+}
+
+// Words to be said in a region writeQuietly may have turned off: the region
+// is turned on first, and the words go in LIVE_AGAIN_MS later, once the
+// browser has seen it on.  Written at once, they could reach the browser
+// with the region still off, and nothing was said.  A later write replaces
+// one still waiting.
+export function writeLive(region, text) {
+  if (!region) return;
+  cancelPending(region);
+  if (!_quiet.has(region)) {
+    if (region.textContent !== text) region.textContent = text;
+    return;
+  }
+  liveAgain(region);
+  const timer = setTimeout(() => {
+    _pending.delete(region);
+    if (region.textContent !== text) region.textContent = text;
+  }, LIVE_AGAIN_MS);
+  _pending.set(region, { timer, text });
+}
+
+// A press whose request is still out after PENDING_SAY_MS says *text*
+// ("Saving…") through *say*, once, so the press is heard: NVDA, JAWS and
+// VoiceOver do not say aria-busy on the focused control (#384).  A result
+// that comes sooner is the only thing said.  Call the returned function
+// when the request ends.
+const PENDING_SAY_MS = 300;
+export function sayIfStillPending(say, text, delayMs = PENDING_SAY_MS) {
+  const timer = setTimeout(() => say(text), delayMs);
+  return () => clearTimeout(timer);
+}
+
 // ----------------------------------------------------------------
 // Visible mirror of the announcement channel.
 //

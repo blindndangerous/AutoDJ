@@ -521,6 +521,13 @@ export function installLiners(els, deps) {
         await _refreshLibrary(els);
       } catch (err) {
         if (!isAuthenticatedRequestCurrent(epoch)) return;
+        // A file that is not audio is refused with the server's own sentence
+        // ("broken.mp3 is not an audio file AutoDJ can play."), said again
+        // when the same file is tried again.
+        if (err.status === 422) {
+          _setStatus(els, err.message, { force: true, tone: "error" });
+          return;
+        }
         _setStatus(els, err.status === 409 && !replace
           ? `Upload failed: a liner named ${f.name} already exists.  Tick Replace existing file to overwrite it.`
           : `Upload failed: ${err.message}`);

@@ -227,6 +227,54 @@ describe("Live DJ settings", () => {
     expect(document.activeElement).toBe(save);
   });
 
+  it("says a short line while a slow save or removal runs, and nothing extra when it is quick (#384)", async () => {
+    let release;
+    let removed;
+    const { ui, announce } = install({
+      "PUT /api/live/settings": (options) => new Promise((resolve) => {
+        release = () => resolve(JSON.parse(options.body));
+      }),
+      "DELETE /api/live/djs/alice": () => new Promise((resolve) => { removed = () => resolve({ ok: true }); }),
+    });
+    await ui.refresh();
+    vi.useFakeTimers();
+    try {
+      byId("live-talkover-save").click();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(announce).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(announce.mock.calls).toEqual([["Saving the talk settings…"]]);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(announce.mock.calls.at(-1)).toEqual(["Talk settings saved."]);
+
+      // Remove DJ runs inside the confirmation, where the page is inert:
+      // the dialog's own status line says it.
+      byId("live-dj-rows").querySelectorAll("button")[1].click();
+      byId("confirm-accept").click();
+      expect(byId("confirm-accept").getAttribute("aria-busy")).toBe("true");
+      await vi.advanceTimersByTimeAsync(350);
+      expect(byId("confirm-status").textContent).toBe("Removing DJ alice…");
+      expect(byId("confirm-dialog").contains(byId("confirm-status"))).toBe(true);
+      removed();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(announce.mock.calls.at(-1)).toEqual(["DJ alice removed."]);
+      expect(byId("confirm-status").textContent).toBe("");
+      expect(byId("confirm-accept").hasAttribute("aria-busy")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says only the result of a quick save (#384)", async () => {
+    const { ui, announce } = install({ "PUT /api/live/settings": (options) => JSON.parse(options.body) });
+    await ui.refresh();
+    byId("live-talkover-save").click();
+    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(announce.mock.calls).toEqual([["Talk settings saved."]]);
+  });
+
   it("says what a save answered after a switch did, with no error on the form (#70)", async () => {
     const stale = await answeredAfterSwitch({ mic_return_seconds: 1, mic_duck_db: 12 });
     const { ui, announce } = install({ "PUT /api/live/settings": stale });

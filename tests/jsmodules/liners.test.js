@@ -697,6 +697,24 @@ describe("liner settings and upload", () => {
     await vi.waitFor(() => expect(fetchImpl.mock.calls
       .some(([url]) => url === "/api/liners/upload?replace=true")).toBe(true));
   });
+
+  it("says why a file that is not audio was refused (#323)", async () => {
+    const refusal = "broken.mp3 is not an audio file AutoDJ can play.";
+    const fetchImpl = vi.fn(() => Promise.resolve(new globalThis.Response(
+      JSON.stringify({ detail: refusal }),
+      { status: 422, headers: { "Content-Type": "application/json" } },
+    )));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    const elements = els();
+    installLiners(elements, { postSettings: vi.fn(), canPlay: () => false });
+    Object.defineProperty(elements.lnUpload, "files", {
+      value: [new globalThis.File(["not audio"], "broken.mp3")], configurable: true,
+    });
+
+    elements.lnUploadSubmit.click();
+    await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(refusal));
+  });
 });
 
 

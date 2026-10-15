@@ -209,7 +209,7 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/folders/abc", { method: "DELETE" });
   });
 
-  it("keeps checkbox focus and blocks another toggle while saving, then survives a redraw", async () => {
+  it("keeps checkbox focus and blocks another toggle while saving, then keeps the checkbox (#330)", async () => {
     document.getElementById("panel-library").hidden = false;
     let folders = [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }];
     let finish;
@@ -233,13 +233,51 @@ describe("clock folder and points controls", () => {
     folders = [{ ...folders[0], recursive: true }];
     await controls.refresh();
     expect(document.activeElement).toBe(checkbox);
+    const left = [];
+    document.addEventListener("focusout", (event) => {
+      if (!event.relatedTarget) left.push(event.target);
+    });
     finish({});
-    await vi.waitFor(() => expect(document.querySelector('[data-field="recursive"]')).not.toBe(checkbox));
-    const replacement = document.querySelector('[data-field="recursive"]');
-    expect(replacement.checked).toBe(true);
-    expect(replacement.classList.contains("is-pending")).toBe(false);
-    expect(replacement.hasAttribute("aria-busy")).toBe(false);
-    expect(document.activeElement).toBe(replacement);
+    await vi.waitFor(() => expect(checkbox.hasAttribute("aria-busy")).toBe(false));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The redraw after the save keeps the same checkbox, so focus never
+    // leaves it and NVDA stays in focus mode.
+    expect(document.querySelector('[data-field="recursive"]')).toBe(checkbox);
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.classList.contains("is-pending")).toBe(false);
+    expect(document.activeElement).toBe(checkbox);
+    // Another page's change is set on it in place.
+    folders = [{ ...folders[0], recursive: false, advanced: true }];
+    await controls.refresh();
+    expect(document.querySelector('[data-field="recursive"]')).toBe(checkbox);
+    expect(checkbox.checked).toBe(false);
+    expect(document.querySelector('[data-field="advanced"]').checked).toBe(true);
+    expect(document.activeElement).toBe(checkbox);
+    expect(left).toEqual([]);
+  });
+
+  it("says a short line while a slow folder save runs (#384)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "PATCH"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ folders: [{ id: "abc", path: "M:/", kind: "music", recursive: false, advanced: false }] }));
+    installLibraryFolders({ document, request });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const status = document.getElementById("source-folders-status");
+    vi.useFakeTimers();
+    try {
+      document.querySelector('[data-field="recursive"]').click();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(status.textContent).toBe("");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(status.textContent).toBe("Saving folder settings…");
+      finish({});
+      await vi.advanceTimersByTimeAsync(10);
+      expect(status.textContent).toBe("Folder settings saved.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never says unavailable on Remove while it removes, and takes no second press (#331)", async () => {
@@ -585,6 +623,32 @@ describe("clock folder and points controls", () => {
     expect(title.value).toBe("");
   });
 
+  it("says the save result once, after the other track has opened (#332)", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<div id="sr-status" role="status" aria-live="polite"></div>');
+    const region = document.getElementById("sr-status");
+    const said = [];
+    new window.MutationObserver(() => { if (region.textContent) said.push(region.textContent); })
+      .observe(region, { childList: true, characterData: true, subtree: true });
+    const request = trackRequest();
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-save").click();
+    await switching;
+    expect(document.activeElement).toBe(document.getElementById("track-info-heading"));
+    await vi.waitFor(() => expect(said).toEqual(["Saved changes to Artist — One."]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(said).toHaveLength(1);
+    // Discard says nothing about a save.
+    document.querySelector('[data-point="intro"]').value = "0:20";
+    const discarding = controls.openEditor("M:/one.flac");
+    document.getElementById("track-info-discard").click();
+    await discarding;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(said).toHaveLength(1);
+  });
+
   it("keeps editing like Escape: no save, the draft kept and focus back on the opener", async () => {
     const request = trackRequest();
     const controls = installLibraryFolders({ document, request });
@@ -616,15 +680,82 @@ describe("clock folder and points controls", () => {
     await controls.openEditor("M:/one.flac");
     document.querySelector('[data-point="intro"]').value = "0:10";
     const switching = controls.openEditor("M:/two.flac");
-    document.getElementById("track-info-save").click();
+    const save = document.getElementById("track-info-save");
+    save.focus();
+    save.click();
     const keep = document.getElementById("track-info-keep");
-    expect(keep.disabled).toBe(true);
+    // Nothing turned off under focus: NVDA said Save "unavailable" (#332).
+    expect(keep.disabled).toBe(false);
+    expect(save.disabled).toBe(false);
+    expect(save.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(save);
     keep.click();
     expect(document.getElementById("track-info-dialog").open).toBe(true);
     finish({ points: { intro: 10, end: 180 } });
     await switching;
-    expect(keep.disabled).toBe(false);
+    expect(save.hasAttribute("aria-busy")).toBe(false);
     expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
+  });
+
+  it("says Saving… in its own line, and lets go of focus before Save and Discard close it", async () => {
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"), title: "One", kind: "music", points: { end: 180 } }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    const dialog = document.getElementById("track-info-dialog");
+    // As a browser closes it: focus still in the dialog goes back to the opener.
+    const close = dialog.close;
+    const focusInDialogAtClose = [];
+    dialog.close = (value) => { focusInDialogAtClose.push(dialog.contains(document.activeElement)); close(value); };
+    const opener = document.createElement("button");
+    document.getElementById("panel-now").append(opener);
+    opener.focus();
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    vi.useFakeTimers();
+    try {
+      const switching = controls.openEditor("M:/two.flac", "music", opener);
+      document.getElementById("track-info-save").focus();
+      document.getElementById("track-info-save").click();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(document.getElementById("track-info-progress").textContent).toBe("Saving…");
+      expect(dialog.contains(document.getElementById("track-info-progress"))).toBe(true);
+      expect(document.getElementById("track-info-error").textContent).toBe("");
+      finish({ points: { intro: 10, end: 180 } });
+      await vi.advanceTimersByTimeAsync(10);
+      await switching;
+      expect(document.getElementById("track-info-progress").textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+    document.querySelector('[data-point="intro"]').value = "0:20";
+    opener.focus();
+    const discarding = controls.openEditor("M:/one.flac", "music", opener);
+    document.getElementById("track-info-discard").focus();
+    document.getElementById("track-info-discard").click();
+    await discarding;
+    expect(focusInDialogAtClose).toEqual([false, false]);
+  });
+
+  it("leaves focus somewhere steady when a switch stops short", async () => {
+    let respond;
+    const request = vi.fn((url) => (url.includes("two")
+      ? new Promise((resolve) => { respond = resolve; })
+      : Promise.resolve({ path: "M:/one.flac", title: "One", kind: "music", points: { end: 180 } })));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.getElementById("panel-track-info").hidden = false;
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-discard").click();
+    await vi.waitFor(() => expect(respond).toBeTypeOf("function"));
+    // Signed out while the other track loads, with focus lost to the page.
+    invalidateAuthenticatedRequestEpoch();
+    document.activeElement?.blur?.();
+    respond({ path: "M:/two.flac", title: "Two", kind: "music", points: {} });
+    await switching;
+    expect(document.activeElement).toBe(document.getElementById("track-info-heading"));
   });
 
   it("discards a liner draft without saving, and offers the same liner fields", async () => {
@@ -694,8 +825,9 @@ describe("clock folder and points controls", () => {
     request.mockImplementationOnce(() => new Promise(resolve => { finishSave = resolve; }));
     const switching = controls.openEditor("M:/two.flac");
     document.getElementById("track-info-save").click();
-    expect(document.getElementById("track-info-save").disabled).toBe(true);
-    expect(document.getElementById("track-info-discard").disabled).toBe(true);
+    document.getElementById("track-info-save").click();
+    document.getElementById("track-info-discard").click();
+    expect(document.getElementById("track-info-dialog").open).toBe(true);
     const escape = new Event("cancel", { cancelable: true });
     document.getElementById("track-info-dialog").dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(true);
