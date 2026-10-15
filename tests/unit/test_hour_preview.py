@@ -434,6 +434,7 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
         "through 13:10."
     )
     assert view["points"] == []
+    assert view["counts_text"] == f"3 fixed items, {len(predicted)} predicted, through 13:10."
     assert view["stopped"] is None
 
     later = build_preview(source, 60, now=NOW + 31)

@@ -293,10 +293,11 @@ describe("hour preview card", () => {
     }
   });
 
-  it("asks for the chosen span and says its summary once", async () => {
+  it("asks for the chosen span and says only its counts once", async () => {
     vi.useFakeTimers();
     try {
-      const { request } = harness([view(), view({ minutes: 120, summary: "Two hours." })]);
+      const counts = "3 fixed items, 9 predicted, through 14:10.";
+      const { request } = harness([view(), view({ minutes: 120, summary: "Two hours.", counts_text: counts })]);
       await open();
       const span = byId("hour-preview-span");
       span.value = "120";
@@ -304,7 +305,8 @@ describe("hour preview card", () => {
       await settle();
       await vi.advanceTimersByTimeAsync(1);
       expect(request).toHaveBeenLastCalledWith("/api/hour-preview?minutes=120");
-      expect(byId("hour-preview-status").textContent).toBe("Showing the next 2 hours. Two hours.");
+      expect(byId("hour-preview-status").textContent).toBe(counts);
+      expect(byId("hour-preview-summary").textContent).toBe(counts);
     } finally {
       vi.useRealTimers();
     }
@@ -328,7 +330,7 @@ describe("hour preview card", () => {
       release(view({ summary: "Two hours." }));
       await settle();
       await vi.advanceTimersByTimeAsync(1);
-      expect(byId("hour-preview-status").textContent).toBe("Showing the next 3 hours. Three hours.");
+      expect(byId("hour-preview-status").textContent).toBe("Three hours.");
       expect(byId("hour-preview-summary").textContent).toBe("Three hours.");
     } finally {
       vi.useRealTimers();

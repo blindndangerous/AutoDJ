@@ -1793,6 +1793,7 @@ def build_preview(
         if stopped
         else None
     )
+    view["counts_text"] = _counts_text(view, zone, end)
     view["summary"] = _summary(view, landings, zone, end)
     return view
 
@@ -1858,13 +1859,18 @@ def _point_view(landing: Landing, zone: ZoneInfo) -> dict[str, Any]:
     }
 
 
-def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, end: float) -> str:
+def _counts_text(view: dict[str, Any], zone: ZoneInfo, end: float) -> str:
+    """ "4 fixed items, 23 predicted, through 14:10." for the card and a new span."""
     counts = view["counts"]
     fixed = counts["fixed"]
-    listed = (
+    return (
         f"{fixed} fixed item{'' if fixed == 1 else 's'}, {counts['predicted']} predicted, "
         f"through {clock_text(end, zone)}."
     )
+
+
+def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, end: float) -> str:
+    listed = view["counts_text"]
     if not landings:
         return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
     return f"{_next_words(landings[0], zone)} {listed}"
