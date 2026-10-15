@@ -322,6 +322,8 @@ class MixBus:
         self._cued_duck = 1.0
         self._liner: np.ndarray | None = None
         self._liner_pos = 0
+        self._replaced_liner: np.ndarray | None = None
+        self._replaced_liner_pos = 0
         self._duck_gain = 1.0
         self._duck_target = 1.0
         self._duck_step = 0.0
@@ -640,6 +642,21 @@ class MixBus:
 
     def _start_liner(self, audio: np.ndarray, gain: float) -> None:
         """Start *audio* on the next block and duck the music to *gain* (lock held)."""
+        if self._liner is not None:
+            previous = self._replaced_liner
+            previous_pos = self._replaced_liner_pos
+            self._replaced_liner = np.zeros((_DUCK_RAMP_FRAMES, 2), dtype=np.float32)
+            tail = self._liner[self._liner_pos : self._liner_pos + _DUCK_RAMP_FRAMES]
+            self._replaced_liner[: len(tail)] = tail
+            if previous is not None:
+                frames = min(_DUCK_RAMP_FRAMES, len(previous) - previous_pos)
+                positions = np.arange(previous_pos, previous_pos + frames)
+                old_gain = (1.0 - positions / _DUCK_RAMP_FRAMES).astype(np.float32)[:, None]
+                self._replaced_liner[:frames] *= 1.0 - old_gain
+                self._replaced_liner[:frames] += (
+                    previous[previous_pos : previous_pos + frames] * old_gain
+                )
+            self._replaced_liner_pos = 0
         self._liner = audio
         self._liner_pos = 0
         self._start_duck_ramp(gain)
@@ -696,6 +713,7 @@ class MixBus:
     def _drop_liner(self) -> None:
         """Forget any liner and put the music back at full level (lock held)."""
         self._liner = None
+        self._replaced_liner = None
         self._liner_cue = None
         self._cued_liner = None
         self._duck_gain = 1.0
@@ -832,6 +850,24 @@ class MixBus:
             liner,
             self._liner_pos,
         )
+        if self._replaced_liner is not None:
+            remaining = len(self._replaced_liner) - self._replaced_liner_pos
+            frames = min(len(block), remaining)
+            if frames:
+                positions = np.arange(self._replaced_liner_pos, self._replaced_liner_pos + frames)
+                old_gain = (1.0 - positions / _DUCK_RAMP_FRAMES).astype(np.float32)[:, None]
+                block[:frames] += (
+                    self._replaced_liner[
+                        self._replaced_liner_pos : self._replaced_liner_pos + frames
+                    ]
+                    * old_gain
+                )
+                if self._liner is not None:
+                    new = self._liner[self._liner_pos : self._liner_pos + frames]
+                    block[: len(new)] -= new * old_gain[: len(new)]
+            self._replaced_liner_pos += frames
+            if self._replaced_liner_pos >= len(self._replaced_liner):
+                self._replaced_liner = None
         if ramp_frames:
             self._duck_gain = self._duck_gain + self._duck_step * ramp_frames
             self._duck_remaining -= ramp_frames

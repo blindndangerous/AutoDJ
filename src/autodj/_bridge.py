@@ -718,7 +718,7 @@ class PlayerBridge:
         # Best-effort blacklist: stuff the bad path into recently-played
         # so the similarity engine skips it on the next pick.  Falls back
         # silently if the helper isn't available on this player build.
-        if blacklist_path:
+        if blacklist_path and isinstance(blacklist_path, str):
             try:
                 with p._pick_lock:  # the history lock: picks copy it meanwhile
                     state.recently_played.append(blacklist_path)

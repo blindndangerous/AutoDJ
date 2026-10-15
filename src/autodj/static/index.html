@@ -428,7 +428,7 @@
       <summary><h3 id="tags-heading">Tags</h3></summary>
       <p id="tags-unavailable" hidden>AutoDJ cannot write tags into this kind of file, so Save tags changes them in AutoDJ only.</p>
       <form id="tags-form" novalidate>
-        
+
         <div class="settings-row tag-field">
           <label for="tag-title">Title</label>
           <input type="text" id="tag-title" data-tag="title" autocomplete="off" required>
@@ -1117,10 +1117,14 @@
       </span>
     </fieldset>
 
-    <!-- The rules' shared help is the outer group's description, read once
-         when focus enters Repeats, not repeated on all twelve boxes. -->
-    <fieldset>
-      <legend>Repeats</legend>
+    <!-- The rules' shared help is a visible paragraph at the top of
+         Repeats, read when browsing; it is not linked to the group or to
+         the twelve boxes, so Tab never repeats it on every box.
+         Repeats is set once and left, and is the longest group here, so
+         it is a card closed by default; its heading names the fieldset. -->
+    <details class="card">
+    <summary><h4 id="repeat-heading">Repeats</h4></summary>
+    <fieldset aria-labelledby="repeat-heading">
       <p class="setting-desc" id="repeat-rules-desc">Keep songs, artists and albums apart. 0 turns a limit off. If no song passes, the rules give way for that pick so music can continue.</p>
       <fieldset>
         <legend>Prevent the same artist from repeating within</legend>
@@ -1248,6 +1252,7 @@
       <p class="field-error" id="repeat-error" hidden></p>
       <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
+    </details>
 
     <fieldset>
       <legend>BPM range</legend>
@@ -1286,9 +1291,20 @@
          server.  Both buttons stay enabled and in place at every step, so
          focus never lands on a hidden or dead control.  The start and the
          end are said once through #rotation-status; the progress line is
-         plain text, and the results are headings and lists, not live. -->
-    <fieldset id="rotation-test">
-      <legend>Test rotation</legend>
+         plain text, and the results are headings and lists, not live.
+         A tool rather than a setting, so it is a card closed by default,
+         its results inside it.  The status region and the progress line
+         sit outside the card, so a run's start, progress and end are said
+         and shown even while the card is closed. -->
+    <div id="rotation-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <div class="settings-row" id="rotation-progress-row" hidden>
+      <label for="rotation-progress">Progress</label>
+      <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
+      <span id="rotation-progress-text"></span>
+    </div>
+    <details class="card">
+    <summary><h4 id="rotation-test-heading">Test rotation</h4></summary>
+    <fieldset id="rotation-test" aria-labelledby="rotation-test-heading">
       <p class="setting-desc" id="rotation-test-desc">Simulate song picking with current rules, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent.</p>
       <div class="settings-row">
         <label for="rotation-span">Simulate</label>
@@ -1317,17 +1333,12 @@
         <button type="button" id="rotation-run">Test rotation</button>
         <button type="button" id="rotation-cancel">Cancel test</button>
       </div>
-      <div class="settings-row" id="rotation-progress-row" hidden>
-        <label for="rotation-progress">Progress</label>
-        <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
-        <span id="rotation-progress-text"></span>
-      </div>
-      <div id="rotation-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     </fieldset>
     <section id="rotation-results" aria-labelledby="rotation-results-heading" hidden>
-      <h4 id="rotation-results-heading">Rotation test results</h4>
+      <h5 id="rotation-results-heading">Rotation test results</h5>
       <div id="rotation-results-body"></div>
     </section>
+    </details>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-sound" aria-labelledby="stab-sound" hidden>
@@ -1923,32 +1934,6 @@
       <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
       <p class="setting-desc">Station metadata changes reconnect enabled relays after you save. Description is sent to Icecast; Shoutcast and direct listener streams do not support it.</p>
       <button type="button" id="stream-metadata-save">Save station metadata</button>
-      <div id="stream-relay-settings">
-        <h4>Relays</h4>
-        <button type="button" id="stream-relay-add">Add relay</button>
-        <div id="stream-relay-table-wrap">
-        <table id="stream-relay-table" role="grid" aria-label="Stream relays">
-          <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
-          <tbody id="stream-relay-rows"></tbody>
-        </table>
-        </div>
-        <form id="stream-relay-form" hidden>
-          <h5 id="stream-relay-form-title">Add relay</h5>
-          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
-          <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
-          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
-          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
-          <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password" aria-describedby="stream-relay-password-help">
-          <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
-          <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
-          <div id="stream-relay-icecast"><label for="stream-relay-mount">Mount point</label><input id="stream-relay-mount" value="/live"><label for="stream-relay-user">Username</label><input id="stream-relay-user" value="source"></div>
-          <div id="stream-relay-shoutcast2" hidden><label for="stream-relay-stream-id">Stream ID</label><input id="stream-relay-stream-id" type="number" min="1" value="1"></div>
-          <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
-          <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
-          <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
-          <button type="submit">Save relay</button><button type="button" id="stream-relay-cancel">Cancel</button>
-        </form>
-      </div>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
         <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
@@ -1968,90 +1953,6 @@
       <span class="setting-desc" id="stream-continuous-desc">
         Keep the station running even when nobody is listening. When off, it starts when a listener connects and stops after a short wait once the last listener leaves.
       </span>
-      <!-- The AAC and Opus streams beside the MP3 one (#50), filled by
-           stream-formats.js.  The address list is plain text, rebuilt
-           only when it changes; saves and Copy speak through the status
-           regions. -->
-      <fieldset id="stream-formats">
-        <legend>More formats</legend>
-        <p class="setting-desc" id="stream-formats-desc">
-          Serve the station in AAC or Opus too, each at its own address beside the MP3 one. Each format that is on runs its own encoder on this computer. Listeners on every format count toward the listener limit.
-        </p>
-        <div class="settings-row">
-          <label for="stream-aac-bitrate">AAC quality</label>
-          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning">
-            <option value="0">Off</option>
-            <option value="64">64 kbps</option>
-            <option value="96">96 kbps</option>
-            <option value="128">128 kbps</option>
-            <option value="192">192 kbps</option>
-            <option value="256">256 kbps</option>
-          </select>
-        </div>
-        <span class="setting-desc" id="stream-aac-desc">
-          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. <span id="stream-aac-warning">Changing it makes AAC listeners reconnect for a moment.</span>
-        </span>
-        <div class="settings-row">
-          <label for="stream-opus-bitrate">Opus quality</label>
-          <select id="stream-opus-bitrate">
-            <option value="0">Off</option>
-            <option value="48">48 kbps</option>
-            <option value="64">64 kbps</option>
-            <option value="96">96 kbps</option>
-            <option value="128">128 kbps</option>
-            <option value="192">192 kbps</option>
-          </select>
-        </div>
-        <span class="setting-desc" id="stream-opus-desc">
-          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream. 
-        </span>
-        <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
-        <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
-      </fieldset>
-      <!-- The public now-playing feed and the webhooks from
-           config.local.toml; nowplaying-settings.js fills it.  Nested so
-           it shows, hides and hands focus away with the Stream settings.
-           The webhook list and its empty note are plain text, not live:
-           results of Copy, the show-next save and Send test go to the
-           status regions. -->
-      <fieldset id="np-settings">
-        <legend>Now-playing feed</legend>
-        <div class="settings-row">
-          <label for="np-url">Now-playing link</label>
-          <input type="text" id="np-url" readonly aria-describedby="np-url-desc">
-          <button type="button" id="np-copy">Copy now-playing link</button>
-        </div>
-        <span class="setting-desc" id="np-url-desc">
-          Public JSON for web pages, overlays and other services. Anyone who can reach AutoDJ can read it without pairing.
-        </span>
-        <div class="settings-row">
-          <label for="np-status-url">Status page link</label>
-          <input type="text" id="np-status-url" readonly aria-describedby="np-status-url-desc">
-          <button type="button" id="np-status-copy">Copy status page link</button>
-        </div>
-        <span class="setting-desc" id="np-status-url-desc">
-          A public page for listeners with the same details as plain text, updated every 15 seconds. It needs no pairing.
-        </span>
-        <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
-        <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
-        <!-- DMCA mode ([dmca] enabled in config.toml, read at start-up).
-             Plain text, not live: it only changes on a restart.  While it
-             is on, nowplaying-settings.js shows both notes, marks the
-             show-next box aria-disabled (still focusable, so NVDA reads
-             it and why) and adds the reason to its description. -->
-        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on: song picks keep to the album, artist and box set limits, songs that would break them are queued only after you confirm, and the next song is never shown publicly.</p>
-        <div class="settings-check">
-          <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
-          <label for="np-show-next">Show the next song publicly</label>
-        </div>
-        <span class="setting-desc" id="np-show-next-desc">
-          Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
-        </span>
-        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode is on, so the next song is never shown publicly. Turn DMCA mode off in config.toml to use it.</span>
-        <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
-        <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
-        <p class="stream-detail" id="np-webhooks-empty" hidden></p>
-      </fieldset>
       <!-- Broadcast recording ([recording] in config.toml).
            recording-controls.js shows it once the server reports recording
            status.  The toggle keeps one name; aria-pressed says whether it
@@ -2099,6 +2000,124 @@
         </span>
         <button type="button" id="recording-save">Save recording settings</button>
       </fieldset>
+      <!-- Relays, More formats, the now-playing feed and Listener statistics
+           are set up once or read now and then, so each is a card closed by
+           default.  They follow the general settings and Broadcast
+           recording, so no general setting sits under one of their headings. -->
+      <details class="card" id="stream-relay-settings">
+        <summary><h4>Relays</h4></summary>
+        <button type="button" id="stream-relay-add">Add relay</button>
+        <div id="stream-relay-table-wrap">
+        <table id="stream-relay-table" role="grid" aria-label="Stream relays">
+          <thead><tr><th scope="col">Relay</th><th scope="col">Status and error</th><th scope="col">Edit</th><th scope="col">Enable</th><th scope="col">Remove</th></tr></thead>
+          <tbody id="stream-relay-rows"></tbody>
+        </table>
+        </div>
+        <form id="stream-relay-form" hidden>
+          <h5 id="stream-relay-form-title">Add relay</h5>
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
+          <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
+          <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
+          <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
+          <label for="stream-relay-password">Source password</label><input id="stream-relay-password" type="password" autocomplete="new-password" aria-describedby="stream-relay-password-help">
+          <p id="stream-relay-password-help">Saved passwords stay private. Leave blank to keep the current password.</p>
+          <p>Relay TLS is unsupported; the source password is sent without encryption.</p>
+          <div id="stream-relay-icecast"><label for="stream-relay-mount">Mount point</label><input id="stream-relay-mount" value="/live"><label for="stream-relay-user">Username</label><input id="stream-relay-user" value="source"></div>
+          <div id="stream-relay-shoutcast2" hidden><label for="stream-relay-stream-id">Stream ID</label><input id="stream-relay-stream-id" type="number" min="1" value="1"></div>
+          <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
+          <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
+          <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
+          <button type="submit">Save relay</button><button type="button" id="stream-relay-cancel">Cancel</button>
+        </form>
+      </details>
+      <!-- The AAC and Opus streams beside the MP3 one (#50), filled by
+           stream-formats.js.  The address list is plain text, rebuilt
+           only when it changes; saves and Copy speak through the status
+           regions. -->
+      <details class="card">
+      <summary><h4 id="stream-formats-heading">More formats</h4></summary>
+      <fieldset id="stream-formats" aria-labelledby="stream-formats-heading">
+        <p class="setting-desc" id="stream-formats-desc">
+          Serve the station in AAC or Opus too, each at its own address beside the MP3 one. Each format that is on runs its own encoder on this computer. Listeners on every format count toward the listener limit.
+        </p>
+        <div class="settings-row">
+          <label for="stream-aac-bitrate">AAC quality</label>
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning">
+            <option value="0">Off</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+            <option value="256">256 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-aac-desc">
+          AAC sounds better than MP3 at the same bitrate and plays on most phones, browsers and smart speakers. Players that show song titles get them. <span id="stream-aac-warning">Changing it makes AAC listeners reconnect for a moment.</span>
+        </span>
+        <div class="settings-row">
+          <label for="stream-opus-bitrate">Opus quality</label>
+          <select id="stream-opus-bitrate">
+            <option value="0">Off</option>
+            <option value="48">48 kbps</option>
+            <option value="64">64 kbps</option>
+            <option value="96">96 kbps</option>
+            <option value="128">128 kbps</option>
+            <option value="192">192 kbps</option>
+          </select>
+        </div>
+        <span class="setting-desc" id="stream-opus-desc">
+          Opus sounds good at low bitrates, which suits mobile data. Browsers and players such as VLC play it; some smart speakers and older players do not. Song titles are not sent in an Opus stream.
+        </span>
+        <p class="stream-detail" id="stream-formats-intro">Addresses for each format that is on:</p>
+        <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
+      </fieldset>
+      </details>
+      <!-- The public now-playing feed and the webhooks from
+           config.local.toml; nowplaying-settings.js fills it.  Nested so
+           it shows, hides and hands focus away with the Stream settings.
+           The webhook list and its empty note are plain text, not live:
+           results of Copy, the show-next save and Send test go to the
+           status regions. -->
+      <details class="card">
+      <summary><h4 id="np-settings-heading">Now-playing feed</h4></summary>
+      <fieldset id="np-settings" aria-labelledby="np-settings-heading">
+        <div class="settings-row">
+          <label for="np-url">Now-playing link</label>
+          <input type="text" id="np-url" readonly aria-describedby="np-url-desc">
+          <button type="button" id="np-copy">Copy now-playing link</button>
+        </div>
+        <span class="setting-desc" id="np-url-desc">
+          Public JSON for web pages, overlays and other services. Anyone who can reach AutoDJ can read it without pairing.
+        </span>
+        <div class="settings-row">
+          <label for="np-status-url">Status page link</label>
+          <input type="text" id="np-status-url" readonly aria-describedby="np-status-url-desc">
+          <button type="button" id="np-status-copy">Copy status page link</button>
+        </div>
+        <span class="setting-desc" id="np-status-url-desc">
+          A public page for listeners with the same details as plain text, updated every 15 seconds. It needs no pairing.
+        </span>
+        <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
+        <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
+        <!-- DMCA mode ([dmca] enabled in config.toml, read at start-up).
+             Plain text, not live: it only changes on a restart.  While it
+             is on, nowplaying-settings.js shows both notes, marks the
+             show-next box aria-disabled (still focusable, so NVDA reads
+             it and why) and adds the reason to its description. -->
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on: song picks keep to the album, artist and box set limits, songs that would break them are queued only after you confirm, and the next song is never shown publicly.</p>
+        <div class="settings-check">
+          <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
+          <label for="np-show-next">Show the next song publicly</label>
+        </div>
+        <span class="setting-desc" id="np-show-next-desc">
+          Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
+        </span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode is on, so the next song is never shown publicly. Turn DMCA mode off in config.toml to use it.</span>
+        <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
+        <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
+        <p class="stream-detail" id="np-webhooks-empty" hidden></p>
+      </fieldset>
+      </details>
       <section aria-labelledby="listener-control-title">
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
@@ -2140,8 +2159,8 @@
            They change only when asked (opening, Refresh, Show), so reading
            a table is never disturbed; results speak through the settings
            status region. -->
-      <section id="listener-stats" aria-labelledby="listener-stats-title">
-        <h4 id="listener-stats-title" tabindex="-1">Listener statistics</h4>
+      <details class="card" id="listener-stats">
+        <summary><h4 id="listener-stats-title">Listener statistics</h4></summary>
         <p class="setting-desc" id="listener-stats-privacy">
           Counts only: no address, player name or other detail of a listener is kept. Days are in the station's time zone, and a session counts on the day it began.
         </p>
@@ -2199,7 +2218,7 @@
         <span class="setting-desc" id="listener-stats-export-desc">
           A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
         </span>
-      </section>
+      </details>
     </fieldset>
   </div>
 
@@ -2234,7 +2253,20 @@
       <button type="button" id="time-settings-save">Save time settings</button>
     </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
-    <ul id="stations-list" aria-labelledby="stations-list-heading"></ul>
+    <div class="data-table-scroll">
+      <table id="stations-table" role="grid" aria-labelledby="stations-list-heading">
+        <thead>
+          <tr>
+            <th scope="col">Station</th>
+            <th scope="col">Now playing</th>
+            <th scope="col">Listeners</th>
+            <th scope="col">Start with the server</th>
+            <th scope="col">Start or stop</th>
+          </tr>
+        </thead>
+        <tbody id="stations-list"></tbody>
+      </table>
+    </div>
     <form id="station-create-form" novalidate>
       <fieldset>
         <legend>New station</legend>
@@ -2670,8 +2702,10 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="cart-upload-heading">
-        <h3 id="cart-upload-heading">Uploaded clips</h3>
+      <!-- Clips are uploaded now and then, so this is a card closed by
+           default; the editor above stays open. -->
+      <details class="card">
+        <summary><h3 id="cart-upload-heading">Uploaded clips</h3></summary>
         <div class="settings-row">
           <label for="cart-upload-file">Audio clip</label>
           <input type="file" id="cart-upload-file" aria-describedby="cart-upload-desc"
@@ -2685,7 +2719,7 @@
         <span class="setting-desc" id="cart-delete-desc">
           Deletes the uploaded clip chosen under Clip in the editor. A clip still on a cart cannot be deleted.
         </span>
-      </section>
+      </details>
 
       <section class="card" aria-labelledby="cart-page-heading">
         <h3 id="cart-page-heading">Rename this page</h3>
@@ -2939,8 +2973,10 @@
         <ul id="ads-recent" class="ads-plain" aria-labelledby="ads-recent-heading"></ul>
       </section>
 
-      <section class="card" aria-labelledby="ads-rules-heading">
-        <h3 id="ads-rules-heading">Rules for every break</h3>
+      <!-- The rules and the report are set once or read now and then, so
+           each is a card closed by default; Spots and Ad breaks stay open. -->
+      <details class="card">
+        <summary><h3 id="ads-rules-heading">Rules for every break</h3></summary>
         <form id="ads-rules-form" novalidate>
           <p id="ads-rules-error" class="field-error" hidden></p>
           <div class="settings-row">
@@ -2962,10 +2998,10 @@
           <span class="setting-desc" id="ads-rules-missed-desc">A break that cannot air this long after its time is dropped and reported as missed.</span>
           <button type="submit" id="ads-rules-save">Save rules</button>
         </form>
-      </section>
+      </details>
 
-      <section class="card" aria-labelledby="ads-report-heading">
-        <h3 id="ads-report-heading">Ad report</h3>
+      <details class="card">
+        <summary><h3 id="ads-report-heading">Ad report</h3></summary>
         <form id="ads-report-form" novalidate>
           <p class="setting-desc" id="ads-report-desc">
             What aired and when, late or on time, and what was missed, for the days you choose, both included.
@@ -3027,7 +3063,7 @@
           </table>
         </div>
         <p id="ads-report-note" class="setting-desc" hidden></p>
-      </section>
+      </details>
     </div>
   </section>
   <!-- ============================================================

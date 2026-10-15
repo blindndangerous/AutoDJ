@@ -166,7 +166,11 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
             and lufs > -65
             and math.isfinite(gain)
             and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
-            and math.isclose(gain, target - lufs, abs_tol=0.01)
+            and math.isclose(
+                gain,
+                min(target - lufs, MAX_GAIN_DB) if kind == "liner" else target - lufs,
+                abs_tol=0.01,
+            )
         )
     except (KeyError, TypeError, ValueError, OverflowError, OSError):
         return False
@@ -236,6 +240,8 @@ def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -
     if not math.isfinite(lufs) or lufs <= -65:
         raise ValueError(f"silent or invalid audio: {source}")
     gain_db = _kind(kind) - lufs
+    if kind == "liner":
+        gain_db = min(gain_db, MAX_GAIN_DB)
     if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
         raise ValueError(f"required gain outside safe range: {source}")
     return {
@@ -508,23 +514,26 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     window = sample_rate
     tail_start = max(0, len(audio) - 60 * sample_rate)
     tail = audio[tail_start:]
-    bins = len(tail) // window
-    if bins < 6:
+    if len(tail) < 6 * window:
         return None
-    rms = np.sqrt(
-        np.mean(
-            tail[: bins * window].reshape(bins, window).astype(np.float64) ** 2,
-            axis=1,
-        )
-        + 1e-12
+    rms = np.asarray(
+        [
+            np.sqrt(np.mean(tail[start : start + window].astype(np.float64) ** 2) + 1e-12)
+            for start in range(0, len(tail), window)
+        ]
     )
     body = rms[:-5]
     reference = float(np.median(body))
     if reference <= 1e-6:
         return None
     threshold = reference * 10 ** (-10 / 20)
-    for index in range(max(0, bins - 5)):
-        if np.all(rms[index : index + 5] <= threshold):
-            point = (tail_start + index * window) / sample_rate
-            return point if 0 < point < len(audio) / sample_rate else None
-    return None
+    index = len(rms) - 1
+    while index >= 0 and rms[index] <= threshold:
+        index -= 1
+    point = (tail_start + (index + 1) * window) / sample_rate
+    quiet_duration = len(tail) - (index + 1) * window
+    return (
+        point
+        if quiet_duration >= 5 * sample_rate and 0 < point < len(audio) / sample_rate
+        else None
+    )

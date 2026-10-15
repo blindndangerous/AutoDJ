@@ -141,11 +141,14 @@ Before every release, each flow below must be sampled with either NVDA and Firef
 - Stream mode (`serve --stream`): the Settings, Stream subtab, the station name, Copy address,
   the quality choice and listener count, and Listen here starting and stopping the stream in the page,
   and still playing, with nothing said by the stream, after the page's connection drops and returns.
-- Stream mode, Settings, Stream, Now-playing feed: Copy now-playing link said once per press,
+- Stream mode, Settings, Stream, Now-playing feed (a card closed by default: open it first, with
+  Enter or Space on its heading, and confirm it is read as collapsed, then expanded): Copy
+  now-playing link said once per press,
   Show the next song publicly saved and its result said once, the webhook list read as plain text
   (or the config.local.toml note when there are none), and each Send test naming its host and
   saying "Sending" and then the result once, with focus staying on the button.
-- Stream mode, Settings, Stream, More formats and Listener statistics (#50): AAC quality and
+- Stream mode, Settings, Stream, More formats and Listener statistics (#50), each a card closed
+  by default (open each first, with Enter or Space on its heading): AAC quality and
   Opus quality read with their help, a choice saved once it settles and said once ("Opus stream
   on at 64 kbps."), the address list read as plain text with a named Copy button for each
   format; Listener statistics read by heading, the summary as one paragraph, both tables with

@@ -1,8 +1,11 @@
 // Settings > Stations (#233): the stations on this server, and New station.
 //
-// The list and the Start from choice come from the station list the page
+// The table and the Start from choice come from the station list the page
 // already keeps (stations.js), so they follow the switcher; render() is
-// called whenever that list changes.  Start from is AutoDJ defaults or a
+// called whenever that list changes.  Each row is built once and its cells
+// change in place, so focus stays where it is.  Start with the server and
+// Start or Stop say their result once through #stations-status; Stop asks
+// first, since it takes the station off the air.  Start from is AutoDJ defaults or a
 // copy of a station; Also copy (clockwheels, schedule, carts) shows only
 // for a copy.  The server checks everything again (POST /api/stations).
 //
@@ -15,8 +18,11 @@
 // Switching moves focus to the Station button, which names the station.
 
 import { requestJson, withDisabled } from "./api-client.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
-import { knownStations, stationItemText } from "./stations.js";
+import { isOnAir, knownStations } from "./stations.js";
+import { installTableNavigation } from "./table-navigation.js";
+import { tableRow } from "./table-row.js";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const NAME_MAX = 80;
@@ -69,9 +75,10 @@ export function checkNewStation({ slug, name }, stations) {
   return null;
 }
 
-// "Night Owl Radio, off air, ID nightowl"
-export function stationRowText(station) {
-  return `${stationItemText(station)}, ID ${station.slug}`;
+// The Now playing and Listeners cells of a station's row.
+export function stationCells(station) {
+  if (!isOnAir(station)) return [station.state === "stopped" ? "Off air" : "Stopping", ""];
+  return [station.title || "Nothing playing", String(station.listeners ?? 0)];
 }
 
 // "Created Night Owl Radio, off air. Copied saved settings and carts."
@@ -90,6 +97,7 @@ export function installStationCreator({
   request = requestJson,
   stations = knownStations,
   onCreated = async () => {},
+  onChanged = async () => {},
   onSwitch = async () => false,
 } = {}) {
   const get = (id) => doc.getElementById(id);
@@ -112,22 +120,91 @@ export function installStationCreator({
     return { render: () => {} };
   }
   let createdSlug = null;
+  const navigation = installTableNavigation(list);
+  const say = (text, error = false) =>
+    announceStatus(status, text, { force: true, dwellMs: 6000, tone: error ? "error" : "info" });
+
+  async function saveAutostart(station, box) {
+    try {
+      await request(`/api/stations/${encodeURIComponent(station.slug)}/autostart`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: box.checked }),
+      });
+    } catch (errorValue) {
+      box.checked = !box.checked;
+      say(`Could not save. ${errorValue?.message || ""}`.trim(), true);
+      return;
+    }
+    say(box.checked ? `${station.name} starts with the server.`
+      : `${station.name} no longer starts with the server.`);
+    await onChanged();
+  }
+
+  async function startOrStop(station) {
+    const stop = isOnAir(station);
+    if (stop && !await confirmAction(doc, {
+      title: `Stop ${station.name}?`,
+      message: "It goes off the air and its listeners are disconnected.",
+      confirmLabel: "Stop station",
+    })) return;
+    let entry;
+    try {
+      entry = await request(`/api/stations/${encodeURIComponent(station.slug)}/${stop ? "stop" : "start"}`,
+        { method: "POST" });
+    } catch (errorValue) {
+      say(`Could not ${stop ? "stop" : "start"} ${station.name}. ${errorValue?.message || ""}`.trim(), true);
+      return;
+    }
+    const warnings = Array.isArray(entry?.warnings) ? entry.warnings.join(" ") : "";
+    say(`${stop ? "Stopped" : "Started"} ${station.name}.${warnings ? ` ${warnings}` : ""}`);
+    await onChanged();
+  }
+
+  function stationRow(station) {
+    const box = doc.createElement("input");
+    box.type = "checkbox";
+    box.addEventListener("change", () => void saveAutostart(row.station, box));
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.addEventListener("click", () => void withDisabled(button, () => startOrStop(row.station)));
+    const row = tableRow(doc, ["", "", "", box, button]);
+    row.dataset.station = station.slug;
+    row.station = station;
+    return row;
+  }
+
+  function fillRow(row, station) {
+    row.station = station;
+    const cells = [...row.children];
+    const [nameCell, playingCell, listenersCell] = cells;
+    const [playing, listeners] = stationCells(station);
+    for (const [cell, text] of [[nameCell, station.name], [playingCell, playing], [listenersCell, listeners]]) {
+      if (cell.textContent !== text) cell.textContent = text;
+    }
+    const box = cells[3].querySelector("input");
+    box.checked = Boolean(station.autostart);
+    box.disabled = Boolean(station.autostart_locked);
+    box.setAttribute("aria-label", `Start ${station.name} with the server`);
+    const button = cells[4].querySelector("button");
+    // The default station runs as long as the server does.
+    button.hidden = station.slug === "default";
+    const action = isOnAir(station) ? "Stop" : "Start";
+    if (button.textContent !== action) button.textContent = action;
+    button.setAttribute("aria-label", `${action} ${station.name}`);
+  }
 
   function renderList(all) {
     const rows = all.map((station) => {
-      let li = list.querySelector(`[data-station="${station.slug}"]`);
-      if (!li) {
-        li = doc.createElement("li");
-        li.dataset.station = station.slug;
-      }
-      const text = stationRowText(station);
-      if (li.textContent !== text) li.textContent = text;
-      return li;
+      const row = list.querySelector(`[data-station="${station.slug}"]`) || stationRow(station);
+      fillRow(row, station);
+      return row;
     });
     for (const child of [...list.children]) if (!rows.includes(child)) child.remove();
-    rows.forEach((li, index) => {
-      if (list.children[index] !== li) list.insertBefore(li, list.children[index] || null);
+    rows.forEach((row, index) => {
+      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
     });
+    navigation.refresh();
   }
 
   function renderSources(all) {

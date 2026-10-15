@@ -442,7 +442,9 @@ when the AutoDJ account can read it.
 AutoDJ checks the two files every five minutes and loads a renewed certificate without a
 restart. New connections get it; open ones keep the old certificate until they reconnect. If
 AutoDJ finds the files half copied, or a certificate that does not match the key, it logs a
-warning, keeps serving the previous certificate, and tries again when the files change.
+warning, keeps serving the previous certificate, and tries again when the files change. If it
+cannot read the files at all (the renewal tool still has them open, or a share is away), it
+tries again at the next check.
 
 ### 3. Configure AutoDJ
 
@@ -771,7 +773,7 @@ off air, and notice when it is back.
 
 ### Settings
 
-In stream mode, **Settings, Stream** has a **Now-playing feed** group:
+In stream mode, **Settings, Stream** has a **Now-playing feed** card, closed until you open it:
 
 - **Now-playing link** shows this page's address for the feed, with **Copy now-playing link**.
   Opened as `localhost`, the page notes that the link only works on that computer.
@@ -1096,8 +1098,10 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
   not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
-  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
-  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  catalog and applies the measured gain when it decodes a track. Voice clips of kind `liner`
+  (liners and voice breaks) use an 18 dB cap when they need more boost. Liners also pass through
+  voice compression, and server-mixed playback holds decoded track audio in memory while
+  it is mixed.
   Earlier versions wrote processed copies to a `prepared` folder inside the active index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After
@@ -1135,7 +1139,7 @@ The listening address stays the same across restarts. There is no key to copy or
 ### More formats: AAC and Opus
 
 Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
-own address and bitrate. Turn them on in Settings, Stream, **More formats**, with **AAC
+own address and bitrate. Turn them on in Settings, Stream, **More formats** (a card closed until you open it), with **AAC
 quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
 
 ```toml
@@ -1198,7 +1202,8 @@ encoders, so multiply by the stations whose format is being heard.
 
 ### Listener statistics
 
-Settings, Stream, **Listener statistics** shows, for the station the page controls:
+Settings, Stream, **Listener statistics**, a card closed until you open it, shows, for the station
+the page controls:
 
 - a summary in words: how many are listening now on each format, today's peak and when it was,
   today's sessions and listening hours, and the same for the chosen period with its peak day
@@ -1239,8 +1244,8 @@ connections. Relays run in stream mode only. Supported servers:
 - Shoutcast 1 (DNAS 1.9).
 - Shoutcast 2 (DNAS 2), through its Shoutcast 1 source login with a stream ID.
 
-In **Settings > Stream**, add or edit relays, enable or disable them, and check their
-connection status. Set the station name, genre, description and website there too; relays
+In **Settings > Stream**, open the **Relays** card to add or edit relays, enable or disable them,
+and check their connection status. Set the station name, genre, description and website there too; relays
 inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
 listeners connected. Changing one relay reconnects that relay only.
 
@@ -1283,7 +1288,10 @@ password = "the source password from your host"
 
 Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
 upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
-without a password stops AutoDJ at startup with an error naming the table.
+without a password stops AutoDJ at startup with an error naming the table. Two relay names that
+read the same variable, such as `a-b` and `a_b` or `Main` and `main`, stop AutoDJ at startup
+when that variable is set, so one server's password is never sent to another; Settings refuses
+such a name then too. While the variable is unset, each relay uses its own table's password.
 
 The keys:
 
@@ -3040,7 +3048,7 @@ Nothing is ever dropped without a word in the report:
 
 ### The ad report
 
-Under **Ad report**, choose **From** and **To** (both days included, in the station time zone)
+Open the **Ad report** card, closed until you open it, and choose **From** and **To** (both days included, in the station time zone)
 and **Show report**. The summary is said once; below it are two tables with column headers:
 **Totals by advertiser and campaign** (aired, aired late, missed, may have aired, waiting and
 seconds aired) and

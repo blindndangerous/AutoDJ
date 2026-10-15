@@ -25,6 +25,23 @@ def _source(path: Path, *, silence: bool = False) -> Path:
     return path
 
 
+def test_quiet_break_accepted_for_upload_can_be_processed_for_air(tmp_path: Path) -> None:
+    from autodj.breaks_api import _decode_cues
+    from autodj.stereo import SAMPLE_RATE
+
+    t = np.arange(4 * SAMPLE_RATE, dtype=np.float32) / SAMPLE_RATE
+    voice = 0.005 * np.sin(2 * np.pi * 220 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3 * t))
+    source = tmp_path / "quiet.wav"
+    sf.write(source, np.column_stack((voice, voice)), SAMPLE_RATE)
+    assert _decode_cues(source, 300.0)
+    audio, measurement = processing.load_and_measure_audio(
+        source, "liner", 301.0, input_format="wav"
+    )
+    assert len(audio) > 0
+    assert measurement["gain_db"] == processing.MAX_GAIN_DB
+    assert processing.loudness_matches(measurement, source, "liner")
+
+
 def _mono_48k_source(path: Path) -> Path:
     rate = 48_000
     t = np.arange(rate * 2, dtype=np.float32) / rate
@@ -239,6 +256,22 @@ def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     assert points["start"] == pytest.approx(0.0, abs=1 / processing.SAMPLE_RATE)
     assert points["end"] == pytest.approx(3.0, abs=1 / processing.SAMPLE_RATE)
     assert points["segue"] is None
+
+
+def test_music_segue_requires_a_quiet_final_suffix_including_partial_bin() -> None:
+    rate = processing.SAMPLE_RATE
+    audio = np.full(rate * 12 + rate // 2, 0.2, dtype=np.float32)
+    audio[rate * 2 : rate * 5] = 0.0  # Interior breakdown followed by a loud return.
+    assert processing._suggest_segue(audio, rate) is None
+
+    audio[rate * 7 :] = 0.0
+    assert processing._suggest_segue(audio, rate) == pytest.approx(7.0)
+
+    audio[-rate // 2 :] = 0.2  # A loud return in the fractional final bin cancels the cue.
+    assert processing._suggest_segue(audio, rate) is None
+
+    assert processing._suggest_segue(np.full(rate * 6 - 1, 0.2), rate) is None
+    assert processing._suggest_segue(np.full(rate * 8, 0.2), rate) is None
 
 
 def test_liner_segue_uses_only_a_sustained_final_drop() -> None:

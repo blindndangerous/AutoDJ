@@ -36,6 +36,22 @@ def _definition(cfg, slug: str, table: dict) -> Path:
     return path
 
 
+def test_name_flag_loads_the_selected_index_web_stations(tmp_path: Path) -> None:
+    """``--name other`` reads web stations from index "other", not the configured one."""
+    from autodj.cli import _apply_index_name
+
+    cfg = _root(tmp_path, '[stations.fixed.recording]\nfolder = "rec-fixed"\n')
+    _definition(cfg, "morning", {"autostart": False, "recording": {"folder": "rec-morning"}})
+    cfg.index.name = "other"
+    _definition(cfg, "owl", {"autostart": False, "recording": {"folder": "rec-owl"}})
+    cfg = load_config(cfg.config_path, environ={})
+    assert [spec.slug for spec in cfg.stations] == ["fixed", "morning"]
+
+    assert _apply_index_name(cfg, "other") is True
+    assert [spec.slug for spec in cfg.stations] == ["fixed", "owl"]
+    assert StationPaths.for_station(cfg, "owl").definition.is_file()
+
+
 def test_new_station_uses_defaults_and_loads_after_restart(tmp_path: Path) -> None:
     cfg = _root(tmp_path)
     table = duplicate_table(cfg, None, "new", "New station", False)

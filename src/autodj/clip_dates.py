@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from autodj.fsutil import atomic_write, file_signature, set_aside
+from autodj.fsutil import atomic_write, file_signature, read_bytes_shared, set_aside
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
@@ -195,7 +195,7 @@ class LinerDates:
             return dict(self._dates)
         dates: dict[str, ClipDates] = {}
         if stamp is not None:
-            data = self.path.read_bytes()
+            data = read_bytes_shared(self.path)
             try:
                 dates = _LinerDatesFile.model_validate_json(data).liners
             except ValueError as exc:

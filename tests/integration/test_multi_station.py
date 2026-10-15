@@ -244,6 +244,28 @@ def test_create_station_registers_stopped_and_persists(rig: Any) -> None:
         assert len(client.app.state.stations.get("new").ws_clients) == 1
 
 
+def test_start_with_the_server_is_saved_for_a_station_made_in_the_page(rig: Any) -> None:
+    client, _library, cfg, _song, _closes = rig
+    origin = {"Origin": "http://testserver"}
+    assert client.post("/api/stations", json={"slug": "new", "name": "New Radio"}, headers=origin)
+    assert _stations(client)["new"]["autostart"] is False
+    assert _stations(client)["new"]["autostart_locked"] is False
+    response = client.put("/api/stations/new/autostart", json={"enabled": True}, headers=origin)
+    assert response.status_code == 200, response.text
+    assert response.json()["autostart"] is True
+    assert load_config(cfg.config_path, environ={}).stations[-1].autostart is True
+    # The default station, and a station written in config.toml, cannot be changed here.
+    assert _stations(client)["default"]["autostart_locked"] is True
+    assert _stations(client)["nightowl"]["autostart_locked"] is True
+    for slug in ("default", "nightowl"):
+        refused = client.put(
+            f"/api/stations/{slug}/autostart", json={"enabled": False}, headers=origin
+        )
+        assert refused.status_code == 409
+    missing = client.put("/api/stations/nobody/autostart", json={"enabled": True}, headers=origin)
+    assert missing.status_code == 404
+
+
 def test_create_station_rejects_conflicts_and_bad_flags(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
     headers = {"Origin": "http://testserver"}
@@ -362,6 +384,8 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "m3u_path": "/stations/nightowl.m3u",
         "player_path": "/stations/nightowl/player",
         "embed_path": "/stations/nightowl/embed",
+        "autostart": True,
+        "autostart_locked": True,
     }
     assert listing["default"]["player_path"] is None
     assert listing["default"]["embed_path"] is None

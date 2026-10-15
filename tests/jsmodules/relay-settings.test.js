@@ -3,6 +3,7 @@ import { installRelaySettings } from "../../src/autodj/static/modules/relay-sett
 
 function markup() {
   document.body.innerHTML = `
+    <details class="card" id="relay-card" open><summary><h4>Relays</h4></summary>
     <button id="stream-relay-add"></button><form id="stream-relay-form" hidden>
       <h5 id="stream-relay-form-title"></h5>
       <input id="stream-relay-name"><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast2">Shoutcast 2</option></select>
@@ -15,6 +16,7 @@ function markup() {
     </form><button id="stream-metadata-save"></button>
     <input id="stream-station-name"><input id="stream-station-genre"><input id="stream-station-description"><input id="stream-station-url">
     <table role="grid"><tbody id="stream-relay-rows"></tbody></table>
+    </details>
     <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
       <button id="confirm-accept"></button><button id="confirm-cancel"></button></dialog>`;
 }
@@ -40,6 +42,33 @@ describe("relay settings", () => {
     await vi.waitFor(() => expect(post).toHaveBeenCalled());
     expect(post.mock.calls[0][1].password).toBe("never-return-this");
     expect(document.getElementById("stream-relay-rows").textContent).not.toContain("never-return-this");
+    ui.reset();
+  });
+
+  it("opens the closed Relays card before focusing a refused field", async () => {
+    const post = vi.fn(async (_path, _payload, _form, { onError }) => {
+      onError(new Error("host is required"));
+      return false;
+    });
+    const announce = vi.fn();
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [] })), post,
+      remove: vi.fn(), announce,
+    });
+    ui.setAvailable(true);
+    document.getElementById("stream-relay-add").click();
+    document.getElementById("stream-relay-name").value = "main";
+    const card = document.getElementById("relay-card");
+    card.open = false;
+    document.getElementById("stream-relay-form").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    await vi.waitFor(() => expect(post).toHaveBeenCalled());
+    const host = document.getElementById("stream-relay-host");
+    await vi.waitFor(() => expect(host.getAttribute("aria-invalid")).toBe("true"));
+    expect(card.open).toBe(true);
+    expect(document.activeElement).toBe(host);
+    expect(announce).toHaveBeenCalledWith("host is required", true);
     ui.reset();
   });
 
