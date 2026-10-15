@@ -193,6 +193,30 @@ describe("planning a show", () => {
     await vi.waitFor(() => expect(status()).toContain("Saved Throwback hour."));
   });
 
+  it("keeps focus on Save show until the saved show's Open list button takes it", async () => {
+    // Chrome drops focus to the page when the focused button is hidden, and
+    // NVDA then reads the whole card; the list reload must not run with the
+    // form, and so Save show, hidden.
+    const server = fakeServer();
+    const reloads = [];
+    const request = server.request;
+    server.request = vi.fn(async (url, options = {}) => {
+      if (url === "/api/shows" && !options.method && server.calls.some((call) => call.method === "POST")) {
+        reloads.push({ focused: document.activeElement, formHidden: byId("shows-form").hidden });
+      }
+      return request(url, options);
+    });
+    await open(server);
+    byId("shows-add").click();
+    byId("shows-name").value = "Throwback hour";
+    byId("shows-save").focus();
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(status()).toContain("Saved Throwback hour."));
+    expect(reloads).toEqual([{ focused: byId("shows-save"), formHidden: false }]);
+    expect(byId("shows-form").hidden).toBe(true);
+    expect(document.activeElement).toBe(rowButton(1, "open"));
+  });
+
   it("puts a field the server refuses in words, linked and focused", async () => {
     const server = await open();
     server.refuse = new FieldError("That category no longer exists; choose another", "category");

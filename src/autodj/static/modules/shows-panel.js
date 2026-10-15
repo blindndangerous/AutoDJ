@@ -329,10 +329,15 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         : await send("/api/shows", "POST", value);
       if (!current(epoch, mine)) return;
       const added = !editing;
-      closeForm();
-      await load();
+      // The list is drawn again while focus is still on Save show, and focus
+      // moves to the saved show before the form is hidden.  Hiding the form
+      // first dropped focus to the page for the reload, and NVDA then read
+      // the whole Shows card before the Open list button.
+      try { await load(); } catch (_) { /* the next refresh draws the list */ }
+      if (!current(epoch, mine)) return;
       if (open?.id === show.id) applyOpen(show);
-      rowFor(show.id)?.focus();
+      (rowFor(show.id) || addButton).focus();
+      closeForm();
       say(added ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.` : `Saved ${show.name}.`);
     } catch (error) {
       if (!current(epoch, mine)) return;
