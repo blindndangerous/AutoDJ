@@ -268,6 +268,27 @@ describe("clockwheel editor", () => {
     });
   });
 
+  it("changes a step's words in place when its category is deleted, keeping focus", async () => {
+    const categories = [{ id: "c1", name: "Rock gold" }];
+    const server = fakeServer({ categories });
+    server.clocks.Morning.steps[0] = {
+      type: "music", match: "all", conditions: [{ field: "category", category: "c1" }],
+      selection: "least_recent", enforce_rules: true,
+    };
+    await open(server);
+    expect(rowText(0)).toBe("music from category Rock gold, least recently played");
+    const cell = rowCell(0, "edit");
+    const button = rowButton(0, "edit");
+    cell.focus();
+    categories.splice(0);
+    await controls.refresh();
+    expect(rowText(0)).toBe("music from category that no longer exists, least recently played");
+    // The same row and cell, so the grid's place and focus stay.
+    expect(rowButton(0, "edit")).toBe(button);
+    expect(document.activeElement).toBe(cell);
+    expect(status()).toBe("");
+  });
+
   it("says a step's days and hours in words", async () => {
     const { stepHoursText } = await import("../../src/autodj/static/modules/step-hours.js");
     expect(stepHoursText({})).toBe("");
