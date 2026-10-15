@@ -1570,8 +1570,9 @@ client for a running server.
 
 One AutoDJ server can play more than one station from the same music library. The root sections
 of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
-before: a server with one station needs no change. Another station has a `[stations.<slug>]`
-table or a `station.json` definition created from the web page. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
+before: a server with one station needs no change. Another station is defined by its own
+`station.json`, made from the web page. A `[stations.<slug>]` table in `config.toml` is moved
+into a `station.json` the next time `autodj serve` starts. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
 schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
 similarity index, pairing and the web server are shared.
 
@@ -1685,11 +1686,12 @@ configured for the new station. Music files, library records, analysis, song cue
 Stereo Tool preset files remain shared.
 
 AutoDJ stores the definition at `<index_dir>/<name>/stations/<slug>/station.json` alongside
-that station's state. It never edits `config.toml`, which may be read-only. To move a web-created
-station into `config.toml`, copy the `station` table from `station.json` into
-`[stations.<slug>]`; `config.toml` then wins and the existing state folder remains in use.
-Move the definition into `config.toml` before adding that station's secrets to
-`config.local.toml`. To remove a web-created station, stop AutoDJ and move its station folder
+that station's state. A station's secrets (its stream relays, listener user and password, and
+webhooks) never go in `station.json`: put them under `[stations.<slug>]` in `config.toml` or
+`config.local.toml`. When `autodj serve` moves a `[stations.<slug>]` table into `station.json`,
+it leaves `config.toml` as it is, which may be read-only; after that only the secrets in that
+table are read, and a warning lists anything else left there to remove. Moved stations come
+before stations made in the page, in `config.toml`'s order. To remove a web-created station, stop AutoDJ and move its station folder
 away. There is no delete button yet.
 
 ### Running

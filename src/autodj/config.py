@@ -2269,6 +2269,7 @@ def _build_config(
     *,
     config_path: Path | None,
     sources: list[str],
+    local_only: Iterable[str] = (),
 ) -> AutoDJConfig:
     """Validate raw sections and construct the typed application configuration."""
     from autodj.presets import load_user_presets
@@ -2292,10 +2293,122 @@ def _build_config(
         config_path=config_path,
         config_sources=tuple(sources),
     )
+    tables = raw.get("stations", {})
+    if local_only or "stations" in raw:
+        from autodj.stations import SLUG_PATTERN, StationPaths
+    for slug in local_only:
+        if not (
+            isinstance(slug, str)
+            and SLUG_PATTERN.fullmatch(slug)
+            and StationPaths.for_station(cfg, slug).definition.exists()
+        ):
+            raise ValueError(
+                f"[stations.{slug}] is in config.local.toml but no station has that ID; "
+                "config.local.toml holds only a station's secrets, so correct the name"
+            )
     if "stations" in raw:
-        cfg.stations = _build_stations(raw["stations"], cfg)
-    _load_web_stations(cfg)
+        # Checked as before; one not yet moved into its station.json is read from here.
+        defined = tables
+        if isinstance(tables, Mapping):
+            defined = {slug: table for slug, table in tables.items() if slug not in local_only}
+        cfg.stations = tuple(
+            spec
+            for spec in _build_stations(defined, cfg)
+            if not StationPaths.for_station(cfg, spec.slug).definition.exists()
+        )
+    if not isinstance(tables, Mapping):
+        tables = {}
+    _load_web_stations(cfg, tables)
     return cfg
+
+
+#: A station's secrets: read from config.toml and config.local.toml, never
+#: kept in its station.json.
+_STATION_SECRETS = {"stream": ("relays", "listener_user", "listener_password")}
+
+
+def _without_secrets(table: Mapping[str, Any]) -> dict[str, Any]:
+    """*table* without the keys :data:`_STATION_SECRETS` names, nor webhooks."""
+    copy = deepcopy(dict(table))
+    copy.pop("webhooks", None)
+    for section, keys in _STATION_SECRETS.items():
+        part = copy.get(section)
+        if isinstance(part, dict):
+            for key in keys:
+                part.pop(key, None)
+    return copy
+
+
+def _secrets_of(table: Mapping[str, Any]) -> dict[str, Any]:
+    """Only the secrets in a ``[stations.<slug>]`` table."""
+    out: dict[str, Any] = {}
+    if "webhooks" in table:
+        out["webhooks"] = table["webhooks"]
+    for section, keys in _STATION_SECRETS.items():
+        part = table.get(section)
+        if isinstance(part, Mapping):
+            found = {key: part[key] for key in keys if key in part}
+            if found:
+                out[section] = found
+    return out
+
+
+def move_station_tables(cfg: AutoDJConfig) -> bool:
+    """Give each ``[stations.<slug>]`` table of config.toml its own station.json.
+
+    Stations are defined in their own files, as the page makes them.  A
+    table with no station.json yet is copied into one, without its
+    secrets, which config.toml and config.local.toml still hold.  Moved
+    stations sort before any made in the page, in config.toml's order.
+    Settings left in config.toml besides the secrets are not read again.
+    Run by ``autodj serve``; loading the configuration never writes.
+
+    Returns:
+        Whether any station was moved, so the caller loads the
+        configuration again.
+    """
+    from autodj.fsutil import atomic_write
+    from autodj.stations import StationPaths
+
+    if cfg.config_path is None or not Path(cfg.config_path).is_file():
+        return False
+    with Path(cfg.config_path).open("rb") as fh:
+        tables = tomllib.load(fh).get("stations", {})
+    if not isinstance(tables, Mapping):
+        return False
+    moved_any = False
+    for index, (slug, table) in enumerate(tables.items()):
+        if not isinstance(table, Mapping):
+            continue
+        path = StationPaths.for_station(cfg, slug).definition
+        moved = _without_secrets(table)
+        if path.exists():
+            if moved:
+                logger.warning(
+                    "[stations.%s] in config.toml is not read: the station is defined by %s. "
+                    "Keep only its secrets (stream relays, listener user and password, "
+                    "webhooks) in config.toml or config.local.toml.",
+                    slug,
+                    path,
+                )
+            continue
+        moved_any = True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        document = {
+            "version": 1,
+            # Before any station made in the page, in config.toml's order.
+            "created": datetime(2000, 1, 1, tzinfo=UTC).replace(second=index).isoformat(),
+            "source": None,
+            "station": moved,
+        }
+        atomic_write(path, json.dumps(document, indent=2) + "\n")
+        logger.warning(
+            "Moved [stations.%s] from config.toml into %s; remove it from config.toml "
+            "except its secrets.",
+            slug,
+            path,
+        )
+    return moved_any
 
 
 def _definition_spec(
@@ -2305,8 +2418,9 @@ def _definition_spec(
     existing: tuple[StationSpec, ...],
     *,
     document: object | None = None,
+    secrets: Mapping[str, Any] | None = None,
 ) -> StationSpec:
-    """Validate a web definition with the same station rules as config.toml."""
+    """Validate a station's definition; *secrets* come from config.toml and config.local.toml."""
     if document is None:
         document = json.loads(path.read_text(encoding="utf-8"))
     if (
@@ -2339,7 +2453,9 @@ def _definition_spec(
         raise ValueError("station.json must not contain secrets")
     if len(existing) >= MAX_STATIONS:
         raise ValueError(f"stations allows at most {MAX_STATIONS} stations besides the default")
-    spec = replace(_build_station(slug, table, root), defined_in="web")
+    spec = replace(
+        _build_station(slug, _deep_merge(table, dict(secrets or {})), root), defined_in="web"
+    )
     if spec.name.strip().casefold() in {
         root.stream.station_name.strip().casefold(),
         *(item.name.strip().casefold() for item in existing),
@@ -2349,13 +2465,15 @@ def _definition_spec(
     return spec
 
 
-def _load_web_stations(cfg: AutoDJConfig) -> None:
+def _load_web_stations(cfg: AutoDJConfig, tables: Mapping[str, Any] | None = None) -> None:
+    """Load every station from its station.json, with its secrets from *tables*."""
     folder = Path(cfg.index.active_dir) / "stations"
     if not folder.is_dir():
         return
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
 
     skipped: list[tuple[str, str]] = []
+    found: list[tuple[str, Path]] = []
     for child in sorted(folder.iterdir()):
         slug = child.name
         if (
@@ -2377,13 +2495,30 @@ def _load_web_stations(cfg: AutoDJConfig) -> None:
             logger.error("Skipping %s: %s", path, reason)
             skipped.append((str(path), reason))
             continue
-        if any(spec.slug == slug for spec in cfg.stations):
-            reason = "config.toml defines this station and takes precedence"
-            logger.warning("Ignoring %s: %s", path, reason)
+        found.append((slug, path))
+    documents = []
+    for slug, path in found:
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            reason = str(exc)
+            logger.error("Skipping %s: %s", path, reason)
             skipped.append((str(path), reason))
             continue
+        created = document.get("created") if isinstance(document, dict) else None
+        documents.append((str(created), slug, path, document))
+    # Stations moved from config.toml first, in its order, then the page's.
+    for _created, slug, path, document in sorted(documents, key=lambda item: item[:2]):
+        table = (tables or {}).get(slug)
         try:
-            spec = _definition_spec(path, slug, cfg, cfg.stations)
+            spec = _definition_spec(
+                path,
+                slug,
+                cfg,
+                cfg.stations,
+                document=document,
+                secrets=_secrets_of(table) if isinstance(table, Mapping) else {},
+            )
         except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
             reason = str(exc)
             logger.error("Skipping %s: %s", path, reason)
@@ -2612,30 +2747,6 @@ def _load_webhooks(raw: Any) -> tuple[WebhookConfig, ...]:
     return tuple(hooks)
 
 
-def _refuse_local_only_stations(local: Mapping[str, Any], defined: set[str]) -> None:
-    """Refuse a station that config.local.toml names but config.toml does not.
-
-    config.local.toml only adds a station's secrets.  A station named only
-    there is a typo or a station removed from config.toml: building it would
-    start a public stream with default settings, and the real station would
-    run without the credentials meant for it.
-
-    Raises:
-        ValueError: Naming the station.
-    """
-    stations = local.get("stations")
-    if not isinstance(stations, Mapping):
-        return
-    for slug in stations:
-        if slug not in defined:
-            raise ValueError(
-                f"[stations.{slug}] is in config.local.toml but not in config.toml; define "
-                "the station in config.toml (config.local.toml holds only its secrets), "
-                "or correct the name. A web-created station is defined by station.json; "
-                "move its table into config.toml before adding secrets here"
-            )
-
-
 def load_config(
     path: str | Path | None = None, *, environ: Mapping[str, str] | None = None
 ) -> AutoDJConfig:
@@ -2657,6 +2768,7 @@ def load_config(
     loaded_path: Path | None = None
     # The stations config.toml defines; config.local.toml only adds their secrets.
     defined_stations: set[str] = set()
+    local_only: set[str] = set()
 
     if candidate.exists():
         with candidate.open("rb") as fh:
@@ -2682,7 +2794,9 @@ def load_config(
         if local_path.exists():
             with local_path.open("rb") as fh:
                 local = tomllib.load(fh)
-            _refuse_local_only_stations(local, defined_stations)
+            local_stations = local.get("stations")
+            if isinstance(local_stations, Mapping):
+                local_only = set(local_stations) - defined_stations
             raw = _deep_merge(raw, local)
             sources.append(str(local_path))
 
@@ -2700,4 +2814,4 @@ def load_config(
             f"{presets_path} is no longer read: move each [NAME] table into config.toml "
             "as [presets.NAME], then delete presets.toml"
         )
-    return _build_config(raw, config_path=loaded_path, sources=sources)
+    return _build_config(raw, config_path=loaded_path, sources=sources, local_only=local_only)
