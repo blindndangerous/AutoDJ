@@ -1768,16 +1768,25 @@ function refreshStationPanels() {
 async function loadStation({ announce = true } = {}) {
   const station = currentStation();
   let state = null;
+  let failure = null;
   try {
     state = await requestStationState();
   } catch (errorValue) {
     if (station !== currentStation()) return null;
-    reportBackgroundRequestError(errorValue);
+    failure = errorValue;
+    // Said below with the station's name when the switch is announced.
+    if (!announce) reportBackgroundRequestError(errorValue);
   }
   if (station !== currentStation()) return null;
   if (state) {
     setOffAir(false);
     applyState(state);
+    if (!_ws) connectWS({ quiet: true });
+  } else if (failure) {
+    // Only a 409 says the station is stopped.  Any other failure is
+    // not "Off air": the socket brings the state when it opens, and its
+    // retries cover a server that cannot be reached.
+    setOffAir(false);
     if (!_ws) connectWS({ quiet: true });
   } else {
     stationWentOffAir();
@@ -1787,8 +1796,10 @@ async function loadStation({ announce = true } = {}) {
     // Off air is said by the connection pill; this names the station.
     announceStatus(document.getElementById("sr-status"), state
       ? controllingText(stationEntry(), state.current_track ? fmtTrack(state.current_track) : null)
-      : `Now controlling ${stationName()}.`,
-    { dwellMs: 6000, force: true });
+      : failure
+        ? `Now controlling ${stationName()}. Its state could not be loaded: ${failure.message}`
+        : `Now controlling ${stationName()}.`,
+    { dwellMs: 6000, force: true, tone: failure ? "error" : "info" });
   }
   return state;
 }

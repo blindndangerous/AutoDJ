@@ -3785,6 +3785,25 @@ describe("several stations (#70)", () => {
     }
   });
 
+  it("is not off air when the new station's state fails to load; only a 409 says stopped", async () => {
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => (url === "/api/stations/nightowl/status"
+        ? jsonResponse({ detail: "The AutoDJ server hit an error." }, 500)
+        : owlRequests(url)),
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    chooseOwl();
+    // The socket brings the state when it opens.
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0].url).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(document.getElementById("station-off-air").hidden).toBe(true);
+    expect(document.getElementById("conn-status").textContent).not.toBe("Off air");
+    await vi.waitFor(() => expect(said.join(" | ")).toContain(
+      "Now controlling Night Owl Radio. Its state could not be loaded: The AutoDJ server hit an error."));
+  });
+
   it("keeps Listen here on the station it started on, and says so", async () => {
     const app = await setupApp({
       initialState: { stream_mode: true, stream_state: "playing" },
