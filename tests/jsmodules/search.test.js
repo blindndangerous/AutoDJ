@@ -281,4 +281,43 @@ describe("library browsing", () => {
     expect(document.activeElement).toBe(els.searchInput);
     vi.unstubAllGlobals();
   });
+
+  it("runs the search when Enter is pressed in Search text", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({
+      total: 2, offset: 0, results: [{ path: "a.mp3", title: "A" }, { path: "b.mp3", title: "B" }],
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+    const els = setupBrowser();
+    els.searchInput.value = "song";
+    els.searchInput.focus();
+    els.searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => expect(els.searchCount.textContent).toBe("2 tracks found; showing 1–2."));
+    expect(String(fetchMock.mock.calls[0][0])).toContain("q=song");
+    vi.unstubAllGlobals();
+  });
+
+  it("selects Search text when focus arrives by keyboard or returns, not on a click", () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    const els = setup();
+    const input = els.searchInput;
+    input.value = "old search";
+    input.focus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, "old search".length]);
+    // Focus put back after leaving (Tab away and back, or a return from results).
+    els.btnSearch.focus();
+    input.setSelectionRange(3, 3);
+    input.focus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, "old search".length]);
+    // A click into the unfocused field leaves the caret to the browser.
+    els.btnSearch.focus();
+    input.setSelectionRange(3, 3);
+    input.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    input.focus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([3, 3]);
+    // The next keyboard focus selects again.
+    els.btnSearch.focus();
+    input.focus();
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, "old search".length]);
+    vi.unstubAllGlobals();
+  });
 });

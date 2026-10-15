@@ -5,7 +5,7 @@
 // Not on the results table: a click listener there made NVDA call the
 // whole table "clickable".
 
-import { fmtTrack } from "./dom-helpers.js";
+import { fmtTrack, selectOnFocus } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { announceStatus } from "./live-region.js";
@@ -29,6 +29,8 @@ export function installSearch({
   playNow = async (request) => { await request(); return true; },
 }) {
   if (!searchInput || !searchResults) return;
+  // Typing after Tab, or after focus returns here, replaces the old search.
+  selectOnFocus(searchInput);
   const browsing = Boolean(folderSelect && kindSelect && previousPage && nextPage);
   // The search in flight: a newer one, or emptying the field, aborts it.
   let searchRequest = null;

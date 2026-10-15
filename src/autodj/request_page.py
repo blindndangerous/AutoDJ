@@ -271,7 +271,11 @@ def _headers(retry_after: int | None = None) -> dict[str, str]:
         "Content-Security-Policy": REQUEST_PAGE_CSP,
         "X-Content-Type-Options": "nosniff",
         "X-Frame-Options": "DENY",
-        "Referrer-Policy": "no-referrer",
+        # same-origin, not no-referrer: under no-referrer browsers send
+        # "Origin: null" with the page's own form posts, which the Origin
+        # check refuses, so no request could be sent.  same-origin still
+        # gives other sites no referrer.
+        "Referrer-Policy": "same-origin",
     }
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)

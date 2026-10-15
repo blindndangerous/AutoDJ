@@ -85,8 +85,8 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
    artifacts.
 
 The README install command uses `X.Y.Z` placeholders, so it needs no edit per release. Only
-v0.12.0, v0.16.0, v0.16.1, v0.18.0, v0.18.1, v0.18.2, v0.19.0, and v0.19.1 were tagged. The other versions from 0.1.0 through 0.15.0,
-and 0.17.0, exist only as changelog entries.
+v0.12.0, v0.16.0, v0.16.1, v0.18.0, v0.18.1, v0.18.2, v0.19.0, v0.19.1, and v0.21.0 were tagged. The other versions from 0.1.0 through 0.15.0,
+0.17.0, and 0.20.0, exist only as changelog entries.
 
 ## Where things live
 

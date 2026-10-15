@@ -96,6 +96,26 @@ export function isTypingTarget(el) {
   return false;
 }
 
+// A search field whose text is selected when focus arrives by keyboard or
+// is put back by the page (after a search, or on return from its results),
+// so typing replaces the old search.  A click into the field still puts
+// the caret where it lands.
+export function selectOnFocus(input) {
+  if (!input) return;
+  let pointer = false;
+  input.addEventListener("pointerdown", () => {
+    pointer = input.ownerDocument.activeElement !== input;
+  });
+  input.addEventListener("focus", () => {
+    if (!pointer && input.value) {
+      input.setSelectionRange(0, input.value.length);
+      // Selecting during focus stops WebKit scrolling the field into view.
+      input.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    }
+    pointer = false;
+  });
+}
+
 // ----------------------------------------------------------------
 // Settings lists: saved profiles, paired devices, voice liners.
 // ----------------------------------------------------------------

@@ -87,6 +87,9 @@ def test_a_listener_searches_confirms_and_sends(bridge, tmp_path: Path) -> None:
     headers = page.headers
     assert headers["cache-control"] == "no-store"
     assert headers["x-frame-options"] == "DENY"
+    # Not no-referrer: under it browsers send "Origin: null" with this page's
+    # own form posts, and the Origin check would refuse every request.
+    assert headers["referrer-policy"] == "same-origin"
     assert "form-action 'self'" in headers["content-security-policy"]
     assert "frame-ancestors 'none'" in headers["content-security-policy"]
     assert "<title>AutoDJ: request a song</title>" in page.text
