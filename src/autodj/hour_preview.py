@@ -1382,11 +1382,11 @@ class Point:
     """A time the hour is timed to.
 
     Attributes:
-        kind: ``"hour"`` (the top of the hour), ``"restart"`` (the
-            clockwheel restarts, at the top of the hour or not) or
-            ``"event"`` (a scheduled event).
+        kind: ``"hour"`` (the top of the hour, when Fit songs to the hour
+            is on), ``"restart"`` (the clockwheel restarts, at the top of
+            the hour or not) or ``"event"`` (a scheduled event or ad break).
         at: When, in wall-clock seconds.
-        label: Its name, such as "Top of the hour" or an event's name.
+        label: Its name, such as "Clockwheel restart" or an event's name.
         timing: An event's ``"hard"`` or ``"soft"``; empty otherwise.
         detail: What an event does, in words.
         wait_seconds: How long a hard event lets the playing song finish.
@@ -1408,12 +1408,14 @@ def fixed_points(
     resync_minutes: Sequence[int] = (),
     events: Sequence[Any] = (),
     describe: Callable[[Any], str] | None = None,
+    hours: bool = False,
 ) -> list[Point]:
-    """The tops of the hour, clockwheel restarts and scheduled events after *now*, up to *end*.
+    """The clockwheel restarts and scheduled events after *now*, up to *end*.
 
     *resync_minutes* are the active clockwheel's restart minutes (none when
-    the station is not playing a clockwheel); a restart at the top of the
-    hour replaces the plain top of the hour.  Clockwheel restarts are read
+    the station is not playing a clockwheel).  *hours* adds each top of the
+    hour, which the station aims at when Fit songs to the hour is on; a
+    restart at the top of the hour replaces it.  Clockwheel restarts are read
     in the computer's time zone, as the player reads them.  Each kind is
     bounded by :data:`MAX_POINTS`; the preview times the first
     :data:`MAX_POINTS` of them all and says when there were more.
@@ -1421,7 +1423,7 @@ def fixed_points(
     found: dict[float, Point] = {}
     top = datetime.fromtimestamp(now, zone).replace(minute=0, second=0, microsecond=0)
     moment = top.timestamp()
-    while len(found) < MAX_POINTS:
+    while hours and len(found) < MAX_POINTS:
         moment = (
             datetime.fromtimestamp(moment + 3600, zone)
             .replace(minute=0, second=0, microsecond=0)
@@ -1446,7 +1448,9 @@ def fixed_points(
                 break
             cursor = boundary.timestamp()
             label = (
-                "Top of the hour, clockwheel restart" if cursor in found else "Clockwheel restart"
+                "Top of the hour, clockwheel restart"
+                if boundary.minute == 0
+                else "Clockwheel restart"
             )
             found[cursor] = Point("restart", cursor, label)
     points = sorted(found.values(), key=lambda point: point.at)
@@ -1548,8 +1552,8 @@ def land(point: Point, changes: Sequence[tuple[float, Item]], ends: float) -> La
 
     A soft event waits for the song playing to end, so it runs late by
     what is left of it.  A hard event runs on time and cuts that song
-    short.  At the top of the hour, and at a clockwheel restart (which
-    the station makes at the nearer song change), the nearer song change
+    short.  At a clockwheel restart (which the station makes at the
+    nearer song change), the nearer song change
     counts: early when the change into the song playing started closer
     before it.
     """
@@ -1650,7 +1654,7 @@ def landing_words(landing: Landing, zone: ZoneInfo) -> tuple[str, str]:
 
 
 def landing_heading(landing: Landing, zone: ZoneInfo) -> str:
-    """ "Top of the hour, 13:00" or "News (Play a liner: news.mp3), 12:30, hard"."""
+    """ "Clockwheel restart, 13:30" or "News (Play a liner: news.mp3), 12:30, hard"."""
     point = landing.point
     when = clock_text(point.at, zone)
     if point.kind != "event":
@@ -1768,6 +1772,7 @@ def build_preview(
         resync_minutes=clock.get("resync_minutes", ()) if clock_on else (),
         events=source.events,
         describe=describe,
+        hours=snapshot.cfg.playback.hour_fit is True,
     )
     points.extend(
         Point("event", run.at, run.label, "soft", run.detail)
@@ -1860,19 +1865,13 @@ def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, 
         f"{fixed} fixed item{'' if fixed == 1 else 's'}, {counts['predicted']} predicted, "
         f"through {clock_text(end, zone)}."
     )
-    hours = [landing for landing in landings if landing.point.kind in {"hour", "restart"}]
-    first = hours[0] if hours else (landings[0] if landings else None)
-    if first is None:
+    if not landings:
         return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
-    said = [first]
-    # A plain top of the hour does not restart the clockwheel: say the restart too.
-    if first.point.kind == "hour":
-        said += [landing for landing in hours if landing.point.kind == "restart"][:1]
-    return " ".join(_next_words(landing, zone) for landing in said) + f" {listed}"
+    return f"{_next_words(landings[0], zone)} {listed}"
 
 
 def _next_words(landing: Landing, zone: ZoneInfo) -> str:
-    """ "Next top of the hour, 13:00: expected 0:32 early." for the summary."""
+    """ "Next clockwheel restart, 13:30: expected 0:32 early." for the summary."""
     heading = landing_heading(landing, zone)
     if landing.point.kind != "event":
         heading = heading[0].lower() + heading[1:]

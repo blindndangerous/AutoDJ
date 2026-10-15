@@ -337,7 +337,7 @@ def _event(name: str, **fields: Any) -> ScheduledEvent:
     return ScheduledEvent.model_validate(spec)
 
 
-def test_fixed_points_are_hours_restarts_and_events_in_the_span() -> None:
+def test_fixed_points_are_restarts_and_events_in_the_span() -> None:
     zone = ZoneInfo(system_timezone())
     now = datetime(2026, 10, 12, 12, 10, tzinfo=zone).timestamp()
     events = [
@@ -368,7 +368,14 @@ def test_fixed_points_are_hours_restarts_and_events_in_the_span() -> None:
     assert points[1].timing == "hard"
     assert points[1].detail == "Play a liner: news.mp3"
     plain = fixed_points(now, now + 7200, zone)
-    assert [(point.kind, point.label) for point in plain] == [("hour", "Top of the hour")] * 2
+    assert plain == []
+    fitted = fixed_points(now, now + 7200, zone, resync_minutes=[30], hours=True)
+    assert [(point.kind, point.label) for point in fitted] == [
+        ("restart", "Clockwheel restart"),
+        ("hour", "Top of the hour"),
+        ("restart", "Clockwheel restart"),
+        ("hour", "Top of the hour"),
+    ]
 
 
 # -- what is fixed, browser playback ---------------------------------------------
@@ -422,18 +429,18 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"].startswith("Next top of the hour, 13:00: expected ")
-    assert view["summary"].endswith(
-        f"early. 3 fixed items, {len(predicted)} predicted, through 13:10."
+    assert view["summary"] == (
+        f"No top of the hour, clockwheel restart or scheduled event. 3 fixed items, {len(predicted)} predicted, "
+        "through 13:10."
     )
-    assert [point["kind"] for point in view["points"]] == ["hour"]
+    assert view["points"] == []
     assert view["stopped"] is None
 
     later = build_preview(source, 60, now=NOW + 31)
     assert later["summary"].endswith("through 13:10:31.")
 
 
-def test_the_summary_adds_the_next_restart_after_a_plain_top_of_the_hour(tmp_path: Path) -> None:
+def test_the_summary_skips_a_plain_top_of_the_hour(tmp_path: Path) -> None:
     source, _power, gold = _station(
         tmp_path,
         clockwheels=[
@@ -447,8 +454,7 @@ def test_the_summary_adds_the_next_restart_after_a_plain_top_of_the_hour(tmp_pat
     later = NOW + 1800  # 12:40: the top of the hour comes before the 13:30 restart
     _playing(source, gold[0], later - 50)
     summary = build_preview(source, 120, now=later)["summary"]
-    assert summary.startswith("Next top of the hour, 13:00: expected ")
-    assert ". Next clockwheel restart, " in summary
+    assert summary.startswith("Next clockwheel restart, 13:30: expected ")
 
 
 def test_queued_bridge_names_its_request_in_preview(tmp_path: Path) -> None:
@@ -1121,7 +1127,17 @@ def test_a_position_from_another_render_is_not_used(tmp_path: Path) -> None:
 
 
 def test_more_fixed_points_than_are_timed_are_said(tmp_path: Path, monkeypatch) -> None:
-    source, _power, gold = _station(tmp_path, events=[_event("News", time=clock_time(12, 20))])
+    source, _power, gold = _station(
+        tmp_path,
+        events=[_event("News", time=clock_time(12, 20))],
+        clockwheels=[
+            {
+                "name": "Main",
+                "resync_minutes": [0],
+                "steps": [liner_step(), category_step("power"), category_step("gold")],
+            }
+        ],
+    )
     _playing(source, gold[0], NOW - 50)
     monkeypatch.setattr(hour_preview, "MAX_POINTS", 2)
     view = build_preview(source, 180, now=NOW)
