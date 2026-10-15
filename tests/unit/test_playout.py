@@ -89,7 +89,7 @@ def test_unknown_intro_means_zero_and_voice_never_advances_music():
     assert handoff.incoming_s == pytest.approx(8)
 
 
-def test_positive_liner_overlap_preserves_full_plague_tail_after_music_entry():
+def test_positive_liner_overlap_preserves_full_clockwheel_tail_after_music_entry():
     handoff = render_handoff(
         audio(12),
         {"start": 0, "segue": 5, "end": 12},

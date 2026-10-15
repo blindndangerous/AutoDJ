@@ -207,9 +207,9 @@ def test_locate_folder_picks_the_innermost_source_and_keeps_letter_case():
 
 
 def test_the_station_pal_converts_into_a_native_clockwheel():
-    text = Path("plague2024.pal").read_text(encoding="utf-8")
+    text = Path("tests/fixtures/example-clock.pal").read_text(encoding="utf-8")
     slots = parse_pal(text, [r"c:\station\drops"])
-    result = from_pal("Plague", slots, WINDOWS_SOURCES, [0])
+    result = from_pal("Throwback", slots, WINDOWS_SOURCES, [0])
     assert len(result["steps"]) == len(slots) == 27
     assert result["steps"][0]["source"] == "top"
     assert result["steps"][0]["folder"] == ""
@@ -225,7 +225,7 @@ def test_the_station_pal_converts_into_a_native_clockwheel():
     assert result["steps"][-1]["recursive"] is True
     assert result["steps"][-1]["folder"] == ""
     with pytest.raises(ValueError, match="PAL line for step 3"):
-        from_pal("Plague", slots, WINDOWS_SOURCES[:2], [0])
+        from_pal("Throwback", slots, WINDOWS_SOURCES[:2], [0])
 
 
 def test_source_folder_joins_in_the_source_style():
