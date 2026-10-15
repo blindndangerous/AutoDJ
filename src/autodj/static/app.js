@@ -1458,8 +1458,10 @@ function connectWS({ quiet = false } = {}) {
       _outageNoticeSaid = false;
       applyPageLevel();
       setPlaybackStale(false);
-      // An advance or a deck load that failed in the outage goes again.
+      // An advance or a deck load that failed in the outage goes again,
+      // and so does Listen here waiting for the stream.
       setLinkUp(true);
+      streamMode.setLinkUp(true);
     }
   };
 
@@ -1518,6 +1520,7 @@ function connectWS({ quiet = false } = {}) {
     // ceiling, so a restarted server cannot push the page louder (D15).
     holdVolumeCeiling();
     setLinkUp(false);
+    streamMode.setLinkUp(false);
     authenticatedActivityActive = false;
     invalidateReconnectAttempt();
     const generation = reconnectGeneration;
@@ -1562,6 +1565,7 @@ function connectWS({ quiet = false } = {}) {
     }
     setPlaybackStale(true);
     setLinkUp(false);
+    streamMode.setLinkUp(false);
   };
 }
 

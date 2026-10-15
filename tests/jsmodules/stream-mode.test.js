@@ -313,6 +313,103 @@ describe("stream mode", () => {
     vi.useRealTimers();
   });
 
+  describe("while the page's link is down", () => {
+    afterEach(() => vi.useRealTimers());
+
+    // AutoDJ stops and starts again: the link lookup cannot reach it while
+    // *down* is true.
+    function outage() {
+      const state = { down: false };
+      const fetchInfo = vi.fn(async () => {
+        if (state.down) throw new TypeError("Failed to fetch");
+        return { path: "/stream.mp3" };
+      });
+      return { state, ...setup({ fetchInfo }) };
+    }
+
+    it("keeps Listen here on through a long outage and plays again once the link is back", async () => {
+      vi.useFakeTimers();
+      const { state, mode, audio, button, fetchInfo, sr } = outage();
+      const say = vi.spyOn(sr, "textContent", "set");
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      state.down = true;
+      mode.setLinkUp(false);
+      // The connection hangs without an error, as when AutoDJ stops.
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(120000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(fetchInfo.mock.calls.length).toBeGreaterThan(5);
+      // Neither the old connection's stalls nor the retries say anything.
+      audio.dispatchEvent(new Event("stalled"));
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(say).not.toHaveBeenCalled();
+      const plays = audio.play.mock.calls.length;
+      state.down = false;
+      mode.setLinkUp(true);
+      await vi.advanceTimersByTimeAsync(0);
+      // At once, not at the next wait.
+      expect(audio.play).toHaveBeenCalledTimes(plays + 1);
+      audio.dispatchEvent(new Event("playing"));
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(say).not.toHaveBeenCalled();
+    });
+
+    it("keeps Listen here on after a drop and asks again at the old pace, not in a tight loop", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, fetchInfo, sr } = outage();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      mode.setLinkUp(false);
+      audio.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchInfo).toHaveBeenCalledTimes(2);
+      // The retried stream fails as well: the next try waits.
+      audio.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(fetchInfo).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchInfo).toHaveBeenCalledTimes(3);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+    });
+
+    it("reports a stream that still fails once the link is back", async () => {
+      vi.useFakeTimers();
+      const { state, mode, audio, button, sr } = outage();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      state.down = true;
+      mode.setLinkUp(false);
+      audio.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      // The link is back, but the stream link lookup still cannot reach
+      // AutoDJ: after the usual quiet retries the drop is said.
+      mode.setLinkUp(true);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(sr.textContent).toBe(DROPPED);
+    });
+
+    it("leaves a stopped Listen here off when the link comes back", async () => {
+      const { mode, audio, button, fetchInfo } = outage();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      mode.setLinkUp(false);
+      await mode.toggleListen();
+      mode.setLinkUp(true);
+      await tick();
+      expect(fetchInfo).toHaveBeenCalledTimes(1);
+      expect(audio.play).toHaveBeenCalledTimes(1);
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+    });
+  });
+
   it("allows a fresh reconnect after the stream played again", async () => {
     const { mode, audio, fetchInfo, button } = setup();
     mode.apply({ stream_mode: true, stream_state: "playing" });
@@ -356,9 +453,9 @@ describe("stream mode", () => {
   describe("stalled connection", () => {
     afterEach(() => vi.useRealTimers());
 
-    it("stops and says so once when a stall lasts 15 seconds", async () => {
+    it("asks again quietly after a 15-second stall, then stops and says so once", async () => {
       vi.useFakeTimers();
-      const { mode, audio, button, sr } = setup();
+      const { mode, audio, button, fetchInfo, sr } = setup();
       const say = vi.spyOn(sr, "textContent", "set");
       mode.apply({ stream_mode: true, stream_state: "playing" });
       await mode.toggleListen();
@@ -368,8 +465,15 @@ describe("stream mode", () => {
       // A second stall signal does not restart or double the countdown.
       audio.dispatchEvent(new Event("waiting"));
       await vi.advanceTimersByTimeAsync(4999);
-      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(fetchInfo).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
+      // A stream that played is asked for again, like a drop, saying nothing.
+      expect(fetchInfo).toHaveBeenCalledTimes(2);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
+      // The new connection never plays: that is said.
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(15000);
       expect(button.getAttribute("aria-pressed")).toBe("false");
       expect(audio.getAttribute("src")).toBeNull();
       await vi.advanceTimersByTimeAsync(1);
@@ -424,11 +528,33 @@ describe("stream mode", () => {
       position = 13;   // played on in fits and starts
       await vi.advanceTimersByTimeAsync(5000);
       expect(button.getAttribute("aria-pressed")).toBe("true");
-      // Stuck from here: the next round fails it.
+      // Stuck from here: the next round asks for it again, and the
+      // round after that, with the new connection stuck too, fails it.
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      audio.dispatchEvent(new Event("waiting"));
       await vi.advanceTimersByTimeAsync(15000);
       expect(button.getAttribute("aria-pressed")).toBe("false");
       await vi.advanceTimersByTimeAsync(1);
       expect(sr.textContent).toBe(STALLED);
+    });
+
+    it("plays on when the stream comes back after a stall", async () => {
+      vi.useFakeTimers();
+      const { mode, audio, button, fetchInfo, sr } = setup();
+      mode.apply({ stream_mode: true, stream_state: "playing" });
+      await mode.toggleListen();
+      audio.dispatchEvent(new Event("playing"));
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(fetchInfo).toHaveBeenCalledTimes(2);
+      audio.dispatchEvent(new Event("playing"));
+      // Playing again allows a fresh quiet retry for the next stall.
+      audio.dispatchEvent(new Event("waiting"));
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(fetchInfo).toHaveBeenCalledTimes(3);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      expect(sr.textContent).toBe("");
     });
 
     it("drops the old stall countdown before the silent retry", async () => {

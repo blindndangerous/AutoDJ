@@ -2633,6 +2633,46 @@ describe("stream mode", () => {
     expect(status.textContent).toBe("");
   });
 
+  it("keeps Listen here on while AutoDJ is down and asks for the stream again once the link is back", async () => {
+    let down = false;
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: streamState,
+      onRequest: (url) => {
+        if (url !== "/api/stream") return lyricsFor("a.mp3");
+        if (down) throw new TypeError("Failed to fetch");
+        return jsonResponse({ path: "/stream.mp3", m3u_path: "/stream.m3u" });
+      },
+    });
+    const audio = document.getElementById("stream-audio");
+    audio.play = vi.fn().mockResolvedValue();
+    audio.pause = vi.fn();
+    const listen = document.getElementById("btn-listen");
+    const status = document.getElementById("sr-status");
+    listen.click();
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledOnce());
+    audio.dispatchEvent(new Event("playing"));
+    vi.useFakeTimers();
+
+    // AutoDJ stops: the link and the stream go together, for longer than
+    // the stream's own quiet retries last.
+    down = true;
+    webSocket.onclose({ code: 1006, wasClean: false });
+    audio.dispatchEvent(new Event("error"));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(WebSocketImpl.mock.calls.length).toBeGreaterThan(1);
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(status.textContent).toBe("");
+
+    // Back: the stream is asked for at once and plays, with nothing said.
+    down = false;
+    webSocket.onopen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(document.getElementById("conn-status").textContent).toBe("Live");
+    expect(audio.play).toHaveBeenCalledTimes(2);
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(status.textContent).toBe("");
+  });
+
   it("stops listening once the reconnect check finds the session ended", async () => {
     let authChecks = 0;
     const { dialog, webSocket } = await setupApp({
