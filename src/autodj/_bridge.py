@@ -954,7 +954,8 @@ class PlayerBridge:
         """
         state = self.player._state
         state.discovery_enabled = not state.discovery_enabled
-        self.player.refresh_render_ahead()
+        if refresh := getattr(self.player, "refresh_render_ahead", None):
+            refresh()
         return state.discovery_enabled
 
     # ------------------------------------------------------------------
@@ -2392,7 +2393,8 @@ class PlayerBridge:
         p = self.player
         if not name:
             p._preset = None
-            p.refresh_render_ahead()
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
             return
         from autodj.presets import get_preset
 
@@ -2405,7 +2407,8 @@ class PlayerBridge:
         except ValueError:
             pass
         else:
-            p.refresh_render_ahead()
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
 
     def set_transition(self, effect: str) -> None:
         """Set the transition effect by name.
@@ -2475,11 +2478,16 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
-        if any(hasattr(cfg.playback, key) for key in values) or (
+        picking_changed = any(hasattr(cfg.playback, key) for key in values) or bool(
             {"pure_shuffle", "anchor_to_seed"} & values.keys()
+        )
+        if (
+            picking_changed
+            and not restoring
+            and (refresh := getattr(player, "refresh_render_ahead", None))
         ):
             # The playing render is immutable; refresh its unrendered successor.
-            player.refresh_render_ahead()
+            refresh()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 
@@ -2624,7 +2632,7 @@ class PlayerBridge:
         else:
             self.player._bpm_range = (lo, hi)
 
-    def set_discovery_every(self, every: int | None) -> None:
+    def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
         """Set the discovery rate; null disables.
 
         Configuring a rate also arms the runtime toggle.  Without that,
@@ -2637,4 +2645,5 @@ class PlayerBridge:
         else:
             self.player._discovery_every = int(every)
             self.player._state.discovery_enabled = True
-        self.player.refresh_render_ahead()
+        if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
+            refresh()

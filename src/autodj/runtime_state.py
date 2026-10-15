@@ -416,7 +416,7 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         if every is not _INVALID:
             # The same setter as the route, so a saved rate also turns the
             # Discovery button on and the rate fires after a restart.
-            bridge.set_discovery_every(every)
+            bridge.set_discovery_every(every, restoring=True)
     if "discovery_enabled" in data:
         # The Discovery button has no request body, so like ``is_muted`` the
         # saved value only has to be a real Boolean.  It stays off without a rate.

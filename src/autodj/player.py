@@ -3688,9 +3688,9 @@ class Player:
         clock_mode = self._cfg.playback.pick_mode == "clock"
         return (
             repr(self._cfg.playback),
-            repr(self._preset),
+            repr(getattr(self, "_preset", None)),
             self._state.discovery_enabled,
-            self._discovery_every,
+            getattr(self, "_discovery_every", None),
             self._clock_revision if clock_mode else None,
             self._clock is not None if clock_mode else None,
         )

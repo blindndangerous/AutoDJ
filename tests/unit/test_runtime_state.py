@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -422,6 +423,13 @@ class TestLoadInto:
         _load(p, tmp_path)
         assert p._discovery_every == 7
         assert p._state.discovery_enabled is True
+
+    def test_restore_does_not_refresh_render_ahead(self, tmp_path) -> None:
+        _write_state(tmp_path, {"playback": {"crossfade_seconds": 5.0}, "discovery_every": 7})
+        p = _make_player()
+        p.refresh_render_ahead = MagicMock()
+        _load(p, tmp_path)
+        p.refresh_render_ahead.assert_not_called()
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_discovery_button_state_survives_a_restart(self, tmp_path, enabled) -> None:
