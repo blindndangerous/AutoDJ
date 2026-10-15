@@ -182,11 +182,16 @@ describe("listener statistics view", () => {
     view.apply({ stream_mode: true });
     await tick();
     const keep = document.getElementById("listener-stats-keep");
+    // The Listener statistics card is closed by default; a refused value
+    // opens it before focus moves to the field.
+    const card = keep.closest("details");
     for (const bad of ["-1", "3651", "2.5", ""]) {
+      card.open = false;
       keep.value = bad;
       keep.dispatchEvent(new Event("change"));
       await vi.waitFor(() => expect(status())
         .toBe("Days to keep statistics must be a whole number from 0 to 3650."));
+      expect(card.open).toBe(true);
       expect(document.activeElement).toBe(keep);
       document.getElementById("settings-status").textContent = "";
     }

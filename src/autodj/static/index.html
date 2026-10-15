@@ -1122,8 +1122,9 @@
       </span>
     </fieldset>
 
-    <!-- The rules' shared help is the outer group's description, read once
-         when focus enters Repeats, not repeated on all twelve boxes.
+    <!-- The rules' shared help is a visible paragraph at the top of
+         Repeats, read when browsing; it is not linked to the group or to
+         the twelve boxes, so Tab never repeats it on every box.
          Repeats is set once and left, and is the longest group here, so
          it is a card closed by default; its heading names the fieldset. -->
     <details class="card">
@@ -1297,7 +1298,15 @@
          end are said once through #rotation-status; the progress line is
          plain text, and the results are headings and lists, not live.
          A tool rather than a setting, so it is a card closed by default,
-         its results inside it. -->
+         its results inside it.  The status region and the progress line
+         sit outside the card, so a run's start, progress and end are said
+         and shown even while the card is closed. -->
+    <div id="rotation-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <div class="settings-row" id="rotation-progress-row" hidden>
+      <label for="rotation-progress">Progress</label>
+      <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
+      <span id="rotation-progress-text"></span>
+    </div>
     <details class="card">
     <summary><h4 id="rotation-test-heading">Test rotation</h4></summary>
     <fieldset id="rotation-test" aria-labelledby="rotation-test-heading">
@@ -1329,15 +1338,9 @@
         <button type="button" id="rotation-run">Test rotation</button>
         <button type="button" id="rotation-cancel">Cancel test</button>
       </div>
-      <div class="settings-row" id="rotation-progress-row" hidden>
-        <label for="rotation-progress">Progress</label>
-        <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
-        <span id="rotation-progress-text"></span>
-      </div>
-      <div id="rotation-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     </fieldset>
     <section id="rotation-results" aria-labelledby="rotation-results-heading" hidden>
-      <h4 id="rotation-results-heading">Rotation test results</h4>
+      <h5 id="rotation-results-heading">Rotation test results</h5>
       <div id="rotation-results-body"></div>
     </section>
     </details>

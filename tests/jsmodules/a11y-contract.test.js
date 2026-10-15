@@ -2049,6 +2049,10 @@ describe("static accessibility contracts", () => {
       for (const attribute of ["aria-expanded", "aria-label", "aria-labelledby", "role", "tabindex"]) {
         expect(summary.hasAttribute(attribute), `${title} ${attribute}`).toBe(false);
       }
+      // A closed card's content is not rendered, so a live region in it
+      // could drop what it says; every status region stays outside.
+      expect(card.querySelector("[aria-live], [role='status'], [role='alert'], [role='log']"), title)
+        .toBeNull();
     }
     // The groups people use often stay as they were: plain sections and
     // fieldsets, always shown.
@@ -2601,10 +2605,17 @@ describe("static accessibility contracts", () => {
       expect(button.disabled).toBe(false);
     }
     // One polite status for the start and the end; progress is a labelled
-    // native bar and plain text, never live.
-    const live = [...group.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
-    expect(live.map((node) => node.id)).toEqual(["rotation-status"]);
-    expect(live[0].getAttribute("aria-live")).toBe("polite");
+    // native bar and plain text, never live.  Both sit just before the
+    // card, outside it, so a run is said and shown while it is closed.
+    expect(group.querySelector("[aria-live], [role='status'], [role='alert']")).toBeNull();
+    const status = document.getElementById("rotation-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.closest("details")).toBeNull();
+    expect(status.parentElement.id).toBe("spanel-picking");
+    const progressRow = document.getElementById("rotation-progress-row");
+    expect(progressRow.closest("details")).toBeNull();
+    expect(progressRow.nextElementSibling).toBe(card);
     const bar = document.getElementById("rotation-progress");
     expect(bar.tagName).toBe("PROGRESS");
     expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
@@ -2612,7 +2623,8 @@ describe("static accessibility contracts", () => {
     const results = document.getElementById("rotation-results");
     expect(results.tagName).toBe("SECTION");
     expect(results.hidden).toBe(true);
-    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H4");
+    // Under the card's h4 title, so h5, its sections h6.
+    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H5");
     expect(results.querySelector("table")).toBeNull();
     // Colours come from the theme tokens only, so the light theme follows.
     const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
