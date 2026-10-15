@@ -269,7 +269,7 @@ describe("queue mutations", () => {
       resetQueueState(els);
       reply({ detail: "No such entry" }, 409);
       await vi.waitFor(() => expect(els.queueAnnounce.textContent)
-        .toBe("Night, the station this page has just left, did not do that."));
+        .toBe("Night did not do that; it is the station this page has just left."));
       // The old station's queue is not drawn back under the new one's name.
       expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
     } finally {

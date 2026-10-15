@@ -9,7 +9,9 @@
 // Each button or setting result is said once through #tc-status; the
 // automatic check after the hour says nothing.
 
-import { isStaleStationReply, requestBinary, requestJson, withDisabled } from "./api-client.js";
+import {
+  isStaleStationReply, requestBinary, requestJson, staleActionText, withDisabled,
+} from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 
 const MINUTES = 1440;
@@ -177,6 +179,11 @@ export function installTimeChecks({ doc = document, request = requestJson,
       const pack = settings.packs?.find((item) => item.name === name);
       say(pack?.dates_text ? `Saved. Voice pack ${name}: ${pack.dates_text}.` : `Saved. Voice pack ${name} plays on any day.`);
     } catch (error) {
+      const left = staleActionText(error);
+      if (left) {
+        say(left, error.actionDone ? "info" : "error");
+        return;
+      }
       const field = { not_before: dates.from, not_after: dates.until }[error.field];
       const message = `Could not save the play dates. ${error.message}`;
       if (field) datesError(field, message);
@@ -239,6 +246,13 @@ export function installTimeChecks({ doc = document, request = requestJson,
       showSettings();
       say("Time check settings saved.");
     } catch (error) {
+      // Answered after a station switch: the form now shows the new
+      // station's settings, so it is left alone (#70).
+      const left = staleActionText(error);
+      if (left) {
+        say(left, error.actionDone ? "info" : "error");
+        return;
+      }
       if (settings) {
         enabled.checked = settings.enabled;
         format.value = settings.hour_format;
@@ -274,7 +288,9 @@ export function installTimeChecks({ doc = document, request = requestJson,
       if (await playHere(pack)) say("Time check played.");
       else say("Time check was not played.");
     } catch (error) {
-      say(`Time check failed: ${error.message}`, "error");
+      const left = staleActionText(error);
+      if (left) say(left, error.actionDone ? "info" : "error");
+      else say(`Time check failed: ${error.message}`, "error");
     }
   }
 

@@ -66,12 +66,28 @@ export function isStaleStationReply(errorValue) {
 // An action (any request but GET or HEAD) answered after a switch was
 // still done, or refused, on the station the page left.  This says which,
 // for the caller to say in place of "Could not ...": the server may well
-// have done it.  Null for any other failure.
+// have done it.  A server error or a reply that cannot be read leaves it
+// unknown.  Null for any other failure.
 export function staleActionText(errorValue) {
   if (!isStaleStationReply(errorValue) || !errorValue.stationLeft) return null;
-  return errorValue.actionDone
-    ? `Done on ${errorValue.stationLeft}, the station this page has just left.`
-    : `${errorValue.stationLeft}, the station this page has just left, did not do that.`;
+  const name = errorValue.stationLeft;
+  if (errorValue.actionOutcome === "done") return `Done on ${name}, the station this page has just left.`;
+  if (errorValue.actionOutcome === "refused") return `${name} did not do that; it is the station this page has just left.`;
+  return `${name} may not have done that; it is the station this page has just left.`;
+}
+
+// What an action's reply says it did, judged as checkedResponse judges
+// a reply: "done", "refused", or "unknown" for a server error or a reply
+// that cannot be read.
+async function actionOutcome(response) {
+  if (response.status >= 500) return "unknown";
+  if (!response.ok) return "refused";
+  if (!isJsonResponse(response)) return "unknown";
+  try {
+    return refusedPayload(await response.json()) ? "refused" : "done";
+  } catch (_) {
+    return "unknown";
+  }
 }
 
 // Every request goes through here.  A route that acts on one station goes
@@ -91,17 +107,18 @@ async function rawRequest(url, options) {
     throw error;
   }
   if (sentFor !== null && sentFor !== stationEpoch()) {
-    try {
-      await response.body?.cancel?.();
-    } catch (_) {
-      // The reply is dropped whether or not its body can be cancelled.
-    }
     const error = new ApiError(STALE_STATION_TEXT, { status: response.status });
     error.staleStation = true;
     const method = String(options?.method || "GET").toUpperCase();
     if (method !== "GET" && method !== "HEAD") {
       error.stationLeft = sentName;
-      error.actionDone = response.ok;
+      error.actionOutcome = await actionOutcome(response);
+      error.actionDone = error.actionOutcome === "done";
+    }
+    try {
+      await response.body?.cancel?.();
+    } catch (_) {
+      // The reply is dropped whether or not its body can be cancelled.
     }
     throw error;
   }
@@ -146,6 +163,12 @@ function payloadMessage(payload, fallback) {
   return fallback;
 }
 
+// A reply that succeeded in HTTP terms but says the server did not do it.
+function refusedPayload(payload) {
+  return Boolean(payload && typeof payload === "object"
+    && (payload.ok === false || payload.success === false));
+}
+
 // A 401 opens the shared authentication dialog and fails the request.
 function throwIfUnauthorized(response) {
   if (response.status !== 401) return;
@@ -179,8 +202,7 @@ async function checkedResponse(response) {
       { status: response.status, field: typeof payload?.field === "string" ? payload.field : null },
     );
   }
-  if (payload && typeof payload === "object"
-      && (payload.ok === false || payload.success === false)) {
+  if (refusedPayload(payload)) {
     throw new ApiError(
       payloadMessage(payload, NOT_ACCEPTED_TEXT),
       { status: response.status },

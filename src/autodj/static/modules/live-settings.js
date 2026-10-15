@@ -13,6 +13,7 @@
 // to the settings status region; a refused save shows its error in words
 // under the form, linked to the field it is about, and focus moves there.
 
+import { staleActionText } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
@@ -227,7 +228,10 @@ export function installLiveSettings({
         body: JSON.stringify(payload),
       });
     } catch (err) {
-      fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
+      // Answered after a station switch: the form is the new station's (#70).
+      const left = staleActionText(err);
+      if (left) announce(left, !err.actionDone);
+      else fail(id(`dj-${fieldFor(err.message)}`), formError, `Could not save the DJ. ${err.message}`);
       return false;
     } finally {
       saving.delete(control);
@@ -250,7 +254,8 @@ export function installLiveSettings({
         try {
           await request(`/api/live/djs/${encodeURIComponent(dj.username)}`, { method: "DELETE" });
         } catch (err) {
-          announce(`Could not remove DJ ${dj.username}: ${err.message}`, true);
+          const left = staleActionText(err);
+          announce(left || `Could not remove DJ ${dj.username}: ${err.message}`, !err.actionDone);
           return null;
         }
         await refresh();
@@ -286,6 +291,11 @@ export function installLiveSettings({
       });
       renderSettings(saved);
     } catch (err) {
+      const left = staleActionText(err);
+      if (left) {
+        announce(left, !err.actionDone);
+        return;
+      }
       const field = String(err.message).toLowerCase().includes("duck") ? duckField : returnField;
       fail(field, talkError, `Could not save the talk settings. ${err.message}`);
       return;

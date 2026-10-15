@@ -208,7 +208,29 @@ describe("requests while switching", () => {
     selectStation(DEFAULT_STATION);
     answer(jsonResponse({ detail: "No" }, { status: 409 }));
     expect(staleActionText(await refused.catch((error) => error)))
-      .toBe(`${OWL.name}, the station this page has just left, did not do that.`);
+      .toBe(`${OWL.name} did not do that; it is the station this page has just left.`);
+
+    // A 200 whose body says ok: false was refused, as checkedResponse reads it.
+    const notOk = requestJson("/api/skip", { method: "POST" });
+    selectStation("nightowl");
+    answer(jsonResponse({ ok: false, detail: "Nothing to skip" }));
+    const notOkFailure = await notOk.catch((error) => error);
+    expect(notOkFailure.actionDone).toBe(false);
+    expect(staleActionText(notOkFailure))
+      .toBe(`${AUTODJ.name} did not do that; it is the station this page has just left.`);
+    const notSuccess = requestJson("/api/skip", { method: "POST" });
+    selectStation(DEFAULT_STATION);
+    answer(jsonResponse({ success: false }));
+    expect(staleActionText(await notSuccess.catch((error) => error)))
+      .toBe(`${OWL.name} did not do that; it is the station this page has just left.`);
+
+    // A server error leaves it unknown.
+    const crashed = requestJson("/api/skip", { method: "POST" });
+    selectStation("nightowl");
+    answer(jsonResponse({ detail: "boom" }, { status: 500 }));
+    expect(staleActionText(await crashed.catch((error) => error)))
+      .toBe(`${AUTODJ.name} may not have done that; it is the station this page has just left.`);
+    selectStation(DEFAULT_STATION);
 
     // A load, not an action: nothing was done, so there is nothing to say.
     const load = requestJson("/api/status");

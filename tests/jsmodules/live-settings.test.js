@@ -4,6 +4,22 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { installLiveSettings, sourceFacts, transportNote } from "../../src/autodj/static/modules/live-settings.js";
+import { requestJson } from "../../src/autodj/static/modules/api-client.js";
+import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
+
+// A real reply to an action that came back after a station switch.
+async function answeredAfterSwitch(body, status = 200) {
+  setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+  let answer;
+  vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+  const sent = requestJson("/api/live/settings", { method: "PUT" });
+  selectStation("night");
+  answer(new globalThis.Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
+  const error = await sent.catch((failure) => failure);
+  selectStation("default");
+  vi.unstubAllGlobals();
+  return error;
+}
 
 const byId = (id) => document.getElementById(id);
 
@@ -207,6 +223,17 @@ describe("Live DJ settings", () => {
     await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
     expect(save.classList.contains("is-pending")).toBe(false);
     expect(document.activeElement).toBe(save);
+  });
+
+  it("says what a save answered after a switch did, with no error on the form (#70)", async () => {
+    const stale = await answeredAfterSwitch({ mic_return_seconds: 1, mic_duck_db: 12 });
+    const { ui, announce } = install({ "PUT /api/live/settings": stale });
+    await ui.refresh();
+    byId("live-talkover-save").click();
+    await vi.waitFor(() => expect(announce)
+      .toHaveBeenCalledWith("Done on Main, the station this page has just left.", false));
+    expect(byId("live-talkover-error").hidden).toBe(true);
+    expect(byId("live-return-seconds").hasAttribute("aria-invalid")).toBe(false);
   });
 
   it("ignores an answer that arrives after a station switch", async () => {

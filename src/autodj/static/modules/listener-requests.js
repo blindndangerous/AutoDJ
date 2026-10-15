@@ -21,7 +21,7 @@
 // error linked to the field and shown under it, and focus; the result of a
 // save is said once through #requests-status.
 
-import { requestJson } from "./api-client.js";
+import { requestJson, staleActionText } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 import { clockText } from "./time-format.js";
 
@@ -367,7 +367,9 @@ export function installListenerRequests({
       const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
       later(() => say(done), ANNOUNCE_DELAY_MS);
     } catch (error) {
-      say(error?.message || "That did not work.", "error");
+      // Answered after a station switch: done, or not, on the old station.
+      const left = staleActionText(error);
+      say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
     } finally {
       busy = false;
       button.classList.remove("is-pending");
