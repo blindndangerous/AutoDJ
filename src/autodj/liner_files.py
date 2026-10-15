@@ -68,13 +68,13 @@ _WINDOWS_DEVICES = {
 }
 
 
-def validate_liner_name(name: str) -> None:
-    """Reject anything but one plain filename with a liner audio extension.
+def validate_plain_name(name: str, what: str = "liner name") -> None:
+    """Reject anything but one plain file or folder name, on any system.
 
     Refuses path separators, ``.``/``..``, drive or stream colons, control
     and Windows-forbidden characters, trailing dots or spaces, Windows
-    device names, names over :data:`MAX_LINER_NAME_BYTES` UTF-8 bytes, and
-    extensions outside :data:`~autodj.liners.LINER_EXTS`.
+    device names and names over :data:`MAX_LINER_NAME_BYTES` UTF-8 bytes.
+    *what* starts the message, such as ``voice pack name``.
     """
     if (
         not name
@@ -85,13 +85,22 @@ def validate_liner_name(name: str) -> None:
         or any(character in _WINDOWS_FORBIDDEN or ord(character) < 32 for character in name)
         or name != name.rstrip(" .")
     ):
-        raise InvalidLinerName("liner name must be one plain filename")
+        raise InvalidLinerName(f"{what} must be one plain filename")
     if len(name.encode("utf-8")) > MAX_LINER_NAME_BYTES:
-        raise InvalidLinerName(f"liner name must be at most {MAX_LINER_NAME_BYTES} bytes")
+        raise InvalidLinerName(f"{what} must be at most {MAX_LINER_NAME_BYTES} bytes")
     device_stem = name.split(".", 1)[0].rstrip(" .").upper()
     is_reserved = getattr(ntpath, "isreserved", lambda _name: False)
     if device_stem in _WINDOWS_DEVICES or is_reserved(name):
         raise InvalidLinerName("reserved device filename")
+
+
+def validate_liner_name(name: str) -> None:
+    """Reject anything but one plain filename with a liner audio extension.
+
+    The name must pass :func:`validate_plain_name`, and its extension must
+    be one of :data:`~autodj.liners.LINER_EXTS`.
+    """
+    validate_plain_name(name)
     if os.path.splitext(name)[1].lower() not in LINER_EXTS:
         raise InvalidLinerName(
             f"liner name must use a supported audio extension: {', '.join(LINER_EXTS)}"
@@ -184,4 +193,5 @@ __all__ = [
     "open_liner_file",
     "store_liner_upload",
     "validate_liner_name",
+    "validate_plain_name",
 ]

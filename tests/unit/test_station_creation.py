@@ -85,7 +85,8 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     old.time_checks.write_text(
-        '{"version": 1, "settings": {"enabled": true}, "pack_dates": {"old": {}}}',
+        '{"version": 1, "settings": {"enabled": true, "intro": "hi.wav", "outro": "",'
+        ' "recorded_folder": "Clips"}, "pack_dates": {"old": {}}}',
         encoding="utf-8",
     )
     old.schedule.write_text(

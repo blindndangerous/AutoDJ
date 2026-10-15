@@ -174,7 +174,14 @@ def stage_station(
                         or not isinstance(data.get("settings"), dict)
                     ):
                         raise ValueError("invalid time-check settings")
-                    atomic_write(state, json.dumps({"version": 1, "settings": data["settings"]}))
+                    # The clip choices name files in the old station's own
+                    # time checks folder, which is not copied (#388).
+                    settings = {
+                        key: value
+                        for key, value in data["settings"].items()
+                        if key not in ("recorded_folder", "intro", "outro")
+                    }
+                    atomic_write(state, json.dumps({"version": 1, "settings": settings}))
                 except (OSError, UnicodeError, ValueError) as exc:
                     raise CreationConflict(f"Cannot copy {old.time_checks}: {exc}") from exc
                 if "saved settings" not in copied:

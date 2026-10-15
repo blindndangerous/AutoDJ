@@ -6,9 +6,16 @@ scheduler, so it gets the liner duck depth and, after a song change, the
 liner talk-up timing.  The time comes from the first source that has it: an
 enabled voice pack (hour and minute files joined by :mod:`autodj.voice_packs`),
 a recorded clip named for the station-local minute (``HH_MM``), or an
-operator-configured text to speech command.  Paths and the command come only
-from the config files; a paired browser can change the switches in
-:class:`SettingsBody` and name a configured pack, never a path.
+operator-configured text to speech command.
+
+Voice packs are the folders listed in ``[time_checks] voice_packs`` and every
+folder in the station's time checks folder, found again whenever the
+settings are read, so a pack copied in or added from the page needs no
+restart (:func:`found_packs`).  A paired browser changes the switches in
+:class:`SettingsBody`, names packs, clips and folders by name, never by path,
+and adds or removes packs and clips through :mod:`autodj.time_check_files`.
+The text to speech command comes only from the config files, because it runs
+a program on the server.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import secrets
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
 import threading
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -32,7 +40,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import soundfile as sf
-from fastapi import Body, HTTPException
+from fastapi import Body, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr, field_validator
 
@@ -43,6 +51,24 @@ from autodj.scheduler import Action
 from autodj.station_routes import StationDep, StationRouter
 from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
+from autodj.time_check_files import (
+    MAX_PACK_UPLOAD_BYTES,
+    PackConflict,
+    PackError,
+    PackExists,
+    PackNotFound,
+    PackTooLarge,
+    check_clip_name,
+    check_pack_name,
+    clip_files,
+    hidden_name,
+    install_clip,
+    install_pack,
+    plan_pack,
+    receive_upload,
+    remove_pack,
+    subfolders,
+)
 from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
 
 if TYPE_CHECKING:
@@ -52,6 +78,10 @@ logger = logging.getLogger(__name__)
 EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg")
 STATE_VERSION = 1
 TTS_TIMEOUT_S = 20
+MIB = 1024 * 1024
+#: The time check routes that take an upload, for the request body caps.
+PACK_UPLOAD_PATH = "/api/time-checks/packs"
+CLIP_UPLOAD_PATH = "/api/time-checks/clips"
 
 
 def spoken_text(now: datetime, hour_format: str) -> str:
@@ -88,16 +118,137 @@ def missing_minutes(folder: Path) -> list[str]:
     ]
 
 
-def pack_folders(cfg: AutoDJConfig) -> dict[str, Path]:
-    """Configured voice packs by name (the folder name), in config order."""
-    return {Path(path).name: Path(path) for path in cfg.time_checks.voice_packs}
+def shared_folder(cfg: AutoDJConfig) -> Path:
+    """The library's own time checks folder, ``<index_dir>/<name>/time_checks``.
+
+    Every station finds the voice packs in it, as well as those in its own
+    time checks folder; for the default station without a ``clips_folder``
+    the two are the same folder.
+    """
+    return Path(cfg.index.active_dir) / "time_checks"
+
+
+@dataclass(frozen=True)
+class PackFolder:
+    """Where one voice pack is, and how AutoDJ found it.
+
+    Attributes:
+        path: The pack's folder.
+        source: ``config`` (listed in ``voice_packs``), ``station`` (a folder
+            in the station's time checks folder) or ``shared`` (a folder in
+            the library's time checks folder, :func:`shared_folder`).
+    """
+
+    path: Path
+    source: str
+
+    @property
+    def removable(self) -> bool:
+        """Only a folder in the station's own time checks folder may be removed from the page."""
+        return self.source == "station"
+
+
+@dataclass(frozen=True)
+class FoundPacks:
+    """The voice packs by name, in order, and the folders left out for a taken name."""
+
+    packs: dict[str, PackFolder]
+    clashes: tuple[str, ...] = ()
+
+
+def _folder_key(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def found_packs(
+    cfg: AutoDJConfig, paths: StationPaths | None = None, *, skip: str = ""
+) -> FoundPacks:
+    """Every voice pack: those listed in config, then the folders found.
+
+    The order is the ``voice_packs`` list, then the folders in the station's
+    time checks folder (``[time_checks] clips_folder`` or the default), then
+    those in :func:`shared_folder`, each by name.  A pack's name is its
+    folder name, compared without regard to case.  One folder is one pack,
+    however it was found, and the first source wins: a configured pack
+    keeps its name over a found folder, and the station's own folder over
+    the shared one; the folder left out is named in ``clashes``.  *skip* is
+    the station folder chosen for recorded minute clips, which is not a
+    pack.  Hidden folders (``.name``) are AutoDJ's unfinished uploads and
+    are never packs.
+    """
+    paths = paths or StationPaths.default(cfg)
+    packs: dict[str, PackFolder] = {}
+    names: dict[str, str] = {}
+    folders: set[str] = set()
+    clashes: list[str] = []
+
+    def add(folder: Path, source: str) -> None:
+        key = _folder_key(folder)
+        if key in folders:
+            return
+        folders.add(key)
+        taken = names.get(folder.name.casefold())
+        if taken is not None:
+            clashes.append(
+                f"{folder} is not used: the voice pack name {folder.name} is taken by "
+                f"{packs[taken].path}"
+            )
+            return
+        names[folder.name.casefold()] = folder.name
+        packs[folder.name] = PackFolder(folder, source)
+
+    for listed in cfg.time_checks.voice_packs:
+        add(Path(listed), "config")
+    own = clips_folder(cfg, paths)
+    for folder in subfolders(own):
+        if not skip or folder.name != skip:
+            add(folder, "station")
+    shared = shared_folder(cfg)
+    if _folder_key(shared) != _folder_key(own):
+        for folder in subfolders(shared):
+            add(folder, "shared")
+    return FoundPacks(packs, tuple(clashes))
+
+
+def pack_folders(cfg: AutoDJConfig, paths: StationPaths | None = None) -> dict[str, Path]:
+    """Every voice pack's folder by name (see :func:`found_packs`)."""
+    return {name: found.path for name, found in found_packs(cfg, paths).packs.items()}
+
+
+def clip_sources(
+    cfg: AutoDJConfig, settings: SettingsBody, paths: StationPaths | None = None
+) -> tuple[Path, Path | None, Path | None]:
+    """The recorded minute clips folder and the intro and outro files in use.
+
+    Each comes from the choice saved from Settings, by name in the
+    station's time checks folder; an intro or outro never chosen there is
+    ``intro_clip`` or ``outro_clip`` from the config files.
+    """
+    root = clips_folder(cfg, paths)
+    folder = root / settings.recorded_folder if settings.recorded_folder else root
+
+    def chosen(value: str | None, configured: str | None) -> Path | None:
+        if value is None:
+            return Path(configured) if configured else None
+        return root / value if value else None
+
+    return (
+        folder,
+        chosen(settings.intro, cfg.time_checks.intro_clip),
+        chosen(settings.outro, cfg.time_checks.outro_clip),
+    )
 
 
 class SettingsBody(BaseModel):
     """Only non-secret switches are writable from a paired browser.
 
-    ``enabled_packs`` holds pack names; a name that is not configured is
+    ``enabled_packs`` holds pack names; a name that is not a pack is
     refused by the route and ignored when it comes from a saved file.
+    ``recorded_folder`` names a folder in the station's time checks folder
+    for the minute clips (``""``: the time checks folder itself).  ``intro``
+    and ``outro`` name a file there; ``""`` is none, and ``None`` (never
+    chosen) uses ``intro_clip`` or ``outro_clip`` from the config files.
+    Names only: a path is refused.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -106,6 +257,9 @@ class SettingsBody(BaseModel):
     rule: StrictStr
     enabled_packs: list[StrictStr]
     pack_order: StrictStr
+    recorded_folder: StrictStr = ""
+    intro: StrictStr | None = None
+    outro: StrictStr | None = None
 
     @field_validator("hour_format")
     @classmethod
@@ -135,6 +289,28 @@ class SettingsBody(BaseModel):
             raise ValueError("pack_order must be rotate or random")
         return value
 
+    @field_validator("recorded_folder")
+    @classmethod
+    def check_folder(cls, value: str) -> str:
+        if value:
+            try:
+                check_pack_name(value)
+            except PackError as exc:
+                raise ValueError(f"recorded_folder: {exc}") from None
+            if value != value.strip():
+                raise ValueError("recorded_folder must be a folder name")
+        return value
+
+    @field_validator("intro", "outro")
+    @classmethod
+    def check_clip(cls, value: str | None) -> str | None:
+        if value:
+            try:
+                check_clip_name(value)
+            except PackError as exc:
+                raise ValueError(str(exc)) from None
+        return value
+
 
 class PlayNowBody(BaseModel):
     """Optionally test one configured pack by name."""
@@ -152,7 +328,7 @@ def load_settings(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Setti
     """The switches saved from Settings over the config file's.
 
     A key the saved file lacks takes the config value; with no saved
-    ``enabled_packs``, every configured pack is enabled.
+    ``enabled_packs``, every pack is enabled.
 
     Raises:
         ValueError: The saved file has another version or bad values.
@@ -162,7 +338,7 @@ def load_settings(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Setti
         "enabled": tc.enabled,
         "hour_format": tc.hour_format,
         "rule": tc.rule,
-        "enabled_packs": list(pack_folders(cfg)),
+        "enabled_packs": list(pack_folders(cfg, paths)),
         "pack_order": tc.pack_order,
     }
     path = state_path(cfg, paths)
@@ -172,6 +348,22 @@ def load_settings(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Setti
     if state.get("version") != STATE_VERSION:
         raise ValueError(f"Unsupported time checks state version in {path}")
     return SettingsBody.model_validate({**defaults, **state["settings"]})
+
+
+def _packs_saved(path: Path) -> bool:
+    """Whether ``time_checks.json`` names the ticked packs.
+
+    A file that cannot be read counts as naming them, so no pack is ticked
+    on its own while the saved choice is out of reach.
+    """
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+    settings = state.get("settings") if isinstance(state, dict) else None
+    return not isinstance(settings, dict) or "enabled_packs" in settings
 
 
 #: The keys ``time_checks.json`` holds; any other is warned about and ignored.
@@ -327,11 +519,15 @@ class TimeChecks:
         paths = paths or StationPaths.default(cfg)
         self.cfg = cfg
         self.config = cfg.time_checks
+        self.paths = paths
         self.zone = ZoneInfo(timezone)
-        self.folder = clips_folder(cfg, paths)
+        #: The station's time checks folder: minute clips, intro and outro
+        #: clips, and one folder per voice pack added from the page.
+        self.root = clips_folder(cfg, paths)
         self.cache = paths.time_checks_cache
         self.state_path = state_path(cfg, paths)
         self.settings = load_settings(cfg, paths)
+        self._packs_chosen = _packs_saved(self.state_path)
         kept = read_pack_dates(cfg, paths)
         self.pack_dates = kept.dates
         # Kept as written and saved back: see PackDatesState.
@@ -349,18 +545,49 @@ class TimeChecks:
                 "Time checks: %s could not be read; settings are not saved until it can",
                 self.state_path,
             )
-        self.packs = pack_folders(cfg)
         self._joined = JoinCache()
         self._rotation = 0
         self._lock = threading.Lock()
         self._tts_lock = threading.Lock()
+        # One pack or clip added or removed at a time.
+        self._files_lock = threading.Lock()
+        self._clashes_logged: set[str] = set()
+        self.packs: dict[str, PackFolder] = {}
+        self.rescan()
         self._hour = _hour_key(datetime.now(self.zone))
         self._aired_hour: HourKey | None = None
         self._pending = False
         self._warned_unavailable = False
 
+    @property
+    def folder(self) -> Path:
+        """The recorded minute clips folder in use (see :func:`clip_sources`)."""
+        return clip_sources(self.cfg, self.settings, self.paths)[0]
+
+    def rescan(self) -> dict[str, PackFolder]:
+        """Find the voice packs again, so a folder added or removed counts at once.
+
+        Called before each status and each time check.  While no choice of
+        packs has been saved, every pack found is ticked, as every listed
+        pack always was.  A folder left out for a taken name is logged once.
+        """
+        with self._lock:
+            skip = self.settings.recorded_folder
+        found = found_packs(self.cfg, self.paths, skip=skip)
+        for clash in found.clashes:
+            if clash not in self._clashes_logged:
+                self._clashes_logged.add(clash)
+                logger.warning("Time checks: %s", clash)
+        with self._lock:
+            self.packs = found.packs
+            if not self._packs_chosen:
+                self.settings = self.settings.model_copy(
+                    update={"enabled_packs": list(found.packs)}
+                )
+        return found.packs
+
     def save(self, settings: SettingsBody) -> None:
-        """Write operator switches atomically; clips and commands remain in TOML.
+        """Write operator switches atomically; the speech command stays in TOML.
 
         Raises:
             TimeChecksUnreadable: The file could not be read; nothing was saved.
@@ -376,6 +603,117 @@ class TimeChecks:
                 self.settings = settings
                 if not settings.enabled or settings.rule == "off":
                     self._pending = False
+        self.rescan()
+
+    def check_choices(self, settings: SettingsBody) -> str | None:
+        """Why *settings* names a folder or clip that is not there, or ``None``."""
+        if settings.recorded_folder and settings.recorded_folder not in {
+            folder.name for folder in subfolders(self.root)
+        }:
+            return f"No folder named {settings.recorded_folder} in the time checks folder"
+        files = clip_files(self.root)
+        for label, value in (("intro", settings.intro), ("outro", settings.outro)):
+            if value and value not in files:
+                return f"No {label} clip named {value} in the time checks folder"
+        return None
+
+    def _forget_pack(self, name: str) -> None:
+        """Untick pack *name* and drop its play dates, for a pack removed or new.
+
+        Raises:
+            TimeChecksUnreadable: The file could not be read; nothing was changed.
+        """
+        with self._save_lock:
+            self._first_folder_locked()
+            settings = self._reread_locked()
+            with self._lock:
+                settings = settings or self.settings
+                dates = dict(self.pack_dates)
+                unread = dict(self._unread_pack_dates)
+                chosen = self._packs_chosen
+            ticked = chosen and name in settings.enabled_packs
+            if not (ticked or name in dates or name in unread):
+                return
+            dates.pop(name, None)
+            unread.pop(name, None)
+            if ticked:
+                settings = settings.model_copy(
+                    update={
+                        "enabled_packs": [item for item in settings.enabled_packs if item != name]
+                    }
+                )
+            self._write(settings, dates, unread)
+            with self._lock:
+                self.settings = settings
+                self.pack_dates = dates
+                self._unread_pack_dates = unread
+
+    def add_pack(self, name: str, upload: Path, *, replace: bool) -> str:
+        """Unpack the zip *upload* as voice pack *name* in the time checks folder.
+
+        A new pack starts unticked once a choice of packs has been saved
+        (ticked while none has, like every pack), with no play dates; a
+        replaced one keeps its tick and dates.
+
+        Returns:
+            The pack's name.
+
+        Raises:
+            PackConflict: The name is taken and *replace* is false, or it is a
+                pack that cannot be replaced from the page.
+            PackError: The zip is refused.
+            TimeChecksUnreadable: The settings file could not be read.
+            OSError: The folder could not be written.
+        """
+        name = check_pack_name(name)
+        with self._files_lock:
+            packs = self.rescan()
+            taken = next((key for key in packs if key.casefold() == name.casefold()), None)
+            if taken is not None:
+                if not packs[taken].removable:
+                    raise PackConflict(f"{_pack_place(taken, packs[taken])}; choose another name")
+                if not replace:
+                    raise PackExists(f"A voice pack named {taken} already exists")
+                name = taken
+            elif self.settings.recorded_folder.casefold() == name.casefold():
+                raise PackConflict(
+                    f"{name} is the recorded minute clips folder; choose another name"
+                )
+            if taken is None:
+                self._forget_pack(name)
+            install_pack(self.root, name, upload, replace=replace)
+            self.rescan()
+        return name
+
+    def delete_pack(self, name: str) -> None:
+        """Remove voice pack *name*, a folder in the time checks folder, untick it and drop its dates.
+
+        Raises:
+            PackNotFound: No pack by that name.
+            PackConflict: It is listed in config.toml or kept in the shared folder.
+            TimeChecksUnreadable: The settings file could not be read; nothing was removed.
+            OSError: The folder could not be removed.
+        """
+        with self._files_lock:
+            packs = self.rescan()
+            found = packs.get(name)
+            if found is None:
+                raise PackNotFound(f"No voice pack named {name}")
+            if not found.removable:
+                raise PackConflict(f"{_pack_place(name, found)}, so it cannot be removed here")
+            self._forget_pack(name)
+            remove_pack(self.root, name)
+            self.rescan()
+
+    def add_clip(self, name: str, upload: Path, *, replace: bool) -> None:
+        """Check the received clip *upload* and move it to *name* in the time checks folder.
+
+        Raises:
+            PackConflict: *name* exists and *replace* is false.
+            PackError: The name or the audio is refused.
+        """
+        with self._files_lock:
+            install_clip(self.root, name, upload, replace=replace)
 
     def save_pack_dates(self, name: str, dates: ClipDates) -> None:
         """Save voice pack *name*'s play dates; empty dates remove them.
@@ -500,6 +838,8 @@ class TimeChecks:
             os.fsync(handle.fileno())
         os.replace(temp, self.state_path)
         self._seen = True
+        # The file now names the ticked packs, so a pack found later starts unticked.
+        self._packs_chosen = True
 
     def pack_refusal(self, name: str, today: date) -> str | None:
         """Why voice pack *name* may not speak on the station's *today*, or ``None``."""
@@ -507,11 +847,11 @@ class TimeChecks:
         return found.refusal(today) if found is not None else None
 
     def pack_status(self) -> list[dict[str, Any]]:
-        """Each configured pack's name, switch, coverage and play dates, without its path."""
+        """Each pack's name, switch, coverage, play dates and source, without its path."""
         today = datetime.now(self.zone).date()
         result = []
-        for name, folder in self.packs.items():
-            pack = scan_pack(folder)
+        for name, found in self.packs.items():
+            pack = scan_pack(found.path)
             covered = coverage(pack, self.settings.hour_format)
             result.append(
                 {
@@ -519,22 +859,39 @@ class TimeChecks:
                     "enabled": name in self.settings.enabled_packs,
                     "minutes_covered": covered.minutes_covered,
                     "summary": covered.describe(pack),
+                    "source": found.source,
+                    "removable": found.removable,
                     **self.pack_dates.get(name, ClipDates()).view(today),
                 }
             )
         return result
 
     def status(self) -> dict[str, Any]:
-        """Expose useful clip coverage without exposing paths or command arguments."""
+        """Expose useful clip coverage without exposing paths or command arguments.
+
+        The packs are found again first, so one copied in shows at once.
+        ``folders`` and ``clip_files`` are the names the recorded clips
+        folder and the intro and outro may be chosen from; ``intro_config``
+        and ``outro_config`` are the file names (only) of the config files'
+        clips, used while none is chosen.
+        """
+        self.rescan()
         missing = missing_minutes(self.folder)
+        tc = self.config
         return {
             **self.settings.model_dump(),
             "packs": self.pack_status(),
             "missing_minutes": len(missing),
             "missing_examples": missing[:10],
-            "tts_available": bool(self.config.tts_command),
+            "tts_available": bool(tc.tts_command),
             "timezone": self.zone.key,
             "duck_db": self.cfg.playback.liners_duck_db,
+            "folders": [folder.name for folder in subfolders(self.root)],
+            "clip_files": clip_files(self.root),
+            "intro_config": Path(tc.intro_clip).name if tc.intro_clip else None,
+            "outro_config": Path(tc.outro_clip).name if tc.outro_clip else None,
+            "pack_upload_max_mb": MAX_PACK_UPLOAD_BYTES // MIB,
+            "clip_upload_max_mb": self.cfg.server.liner_upload_max_bytes // MIB,
         }
 
     def tick(self, now: datetime, song_playing: bool) -> None:
@@ -601,7 +958,10 @@ class TimeChecks:
         the next source speaks instead.
         """
         hour_format = self.settings.hour_format
-        paths = pieces_for(scan_pack(self.packs[name]), local.hour, local.minute, hour_format)
+        found = self.packs.get(name)
+        if found is None:
+            return None
+        paths = pieces_for(scan_pack(found.path), local.hour, local.minute, hour_format)
         if paths is None:
             return None
         key = (name, local.hour, local.minute, hour_format)
@@ -627,6 +987,7 @@ class TimeChecks:
             subprocess.TimeoutExpired: Decoding it took too long.
             LinerDecodeError: It could not be decoded.
         """
+        self.rescan()
         for name in self._candidates(pack, local.date()):
             audio = self._pack_voice(name, local)
             if audio is not None:
@@ -697,10 +1058,8 @@ class TimeChecks:
                     self._warned_unavailable = True
                 return None
             self._warned_unavailable = False
-            intro, outro = (
-                [decode_liner_path(Path(path))] if path else []
-                for path in (self.config.intro_clip, self.config.outro_clip)
-            )
+            _folder, *clips = clip_sources(self.cfg, self.settings, self.paths)
+            intro, outro = ([decode_liner_path(path)] if path else [] for path in clips)
             return Rendered(np.concatenate([*intro, voice[0], *outro], axis=0), voice[1])
         except (OSError, subprocess.TimeoutExpired, LinerDecodeError) as exc:
             logger.warning("Skipping time check: audio could not be decoded: %s", exc)
@@ -764,10 +1123,55 @@ def time_check_action(checks: TimeChecks, bridge: Any) -> Action:
     return Action("time_check", "Time check", scheduled, interrupt="before")
 
 
+def _pack_place(name: str, found: PackFolder) -> str:
+    """Why pack *name* is not the page's to replace or remove, in words."""
+    if found.source == "config":
+        return f"Voice pack {name} is listed in config.toml"
+    return f"Voice pack {name} is in the library's shared time checks folder"
+
+
 def _known_pack(checks: TimeChecks, pack: str | None) -> str | None:
     if pack is not None and pack not in checks.packs:
         raise HTTPException(status_code=404, detail=f"No voice pack named {pack}")
     return pack
+
+
+def _file_error(exc: PackError | OSError) -> JSONResponse:
+    """The answer for a pack or clip that was refused or could not be written.
+
+    A name the page may replace answers ``409`` with ``"field": "replace"``,
+    so the page can ask before it sends the upload again with ``replace``.
+    """
+    content: dict[str, str] = {"detail": str(exc)}
+    if isinstance(exc, TimeChecksUnreadable):
+        return JSONResponse(status_code=503, content=content)
+    if isinstance(exc, OSError):
+        logger.warning("Time checks: a pack or clip could not be written: %s", exc)
+        content["detail"] = (
+            "The time checks folder could not be changed just now (a file in it may be "
+            "in use); nothing was changed. Try again in a moment"
+        )
+        return JSONResponse(status_code=503, content=content)
+    status = 400
+    if isinstance(exc, PackExists):
+        status, content["field"] = 409, "replace"
+    elif isinstance(exc, PackConflict):
+        status = 409
+    elif isinstance(exc, PackTooLarge):
+        status = 413
+    elif isinstance(exc, PackNotFound):
+        status = 404
+    return JSONResponse(status_code=status, content=content)
+
+
+def _pack_name_from(zip_path: Path, filename: str) -> str:
+    """The name for a pack uploaded without one: its zip's one folder, or the zip's name."""
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            _planned, top = plan_pack(archive.infolist())
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise PackError("The upload is not a zip file") from exc
+    return top or Path(filename).stem
 
 
 def install_time_checks(router: StationRouter) -> None:
@@ -780,13 +1184,73 @@ def install_time_checks(router: StationRouter) -> None:
     @router.put("/time-checks")
     async def put_settings(station: StationDep, body: SettingsBody) -> dict[str, Any]:
         checks = station.time_checks
+        # The clip choices a request leaves out keep their saved values.
+        body = SettingsBody.model_validate(
+            {**checks.settings.model_dump(), **body.model_dump(exclude_unset=True)}
+        )
         for name in body.enabled_packs:
             _known_pack(checks, name)
+        refusal = await asyncio.to_thread(checks.check_choices, body)
+        if refusal is not None:
+            raise HTTPException(status_code=400, detail=refusal)
         try:
             await asyncio.to_thread(checks.save, body)
         except TimeChecksUnreadable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return await asyncio.to_thread(checks.status)
+
+    @router.post("/time-checks/packs", response_model=None)
+    async def add_pack(
+        station: StationDep,
+        file: UploadFile = File(...),
+        name: str = "",
+        replace: bool = False,
+    ) -> dict[str, Any] | JSONResponse:
+        """Add a voice pack from a zip of its audio files (see :mod:`autodj.time_check_files`)."""
+        checks = station.time_checks
+        upload = hidden_name(checks.root, "pack-upload", ".zip")
+        try:
+            await receive_upload(file, upload, MAX_PACK_UPLOAD_BYTES)
+            chosen = name.strip() or await asyncio.to_thread(
+                _pack_name_from, upload, file.filename or ""
+            )
+            added = await asyncio.to_thread(checks.add_pack, chosen, upload, replace=replace)
+        except (PackError, OSError) as exc:
+            return _file_error(exc)
+        finally:
+            await asyncio.to_thread(upload.unlink, missing_ok=True)
+        return {**await asyncio.to_thread(checks.status), "added": added}
+
+    @router.delete("/time-checks/packs/{name}", response_model=None)
+    async def delete_pack(station: StationDep, name: str) -> dict[str, Any] | JSONResponse:
+        """Remove a voice pack that is a folder in the station's time checks folder."""
+        checks = station.time_checks
+        try:
+            await asyncio.to_thread(checks.delete_pack, name)
+        except (PackError, OSError) as exc:
+            return _file_error(exc)
+        return {**await asyncio.to_thread(checks.status), "removed": name}
+
+    @router.post("/time-checks/clips", response_model=None)
+    async def add_clip(
+        station: StationDep, file: UploadFile = File(...), replace: bool = False
+    ) -> dict[str, Any] | JSONResponse:
+        """Upload one clip, such as an intro, an outro or a minute clip, to the time checks folder."""
+        checks = station.time_checks
+        filename = file.filename or ""
+        try:
+            check_clip_name(filename)
+        except PackError as exc:
+            return _file_error(exc)
+        upload = hidden_name(checks.root, "clip-upload", Path(filename).suffix.lower())
+        try:
+            await receive_upload(file, upload, station.cfg.server.liner_upload_max_bytes)
+            await asyncio.to_thread(checks.add_clip, filename, upload, replace=replace)
+        except (PackError, OSError) as exc:
+            return _file_error(exc)
+        finally:
+            await asyncio.to_thread(upload.unlink, missing_ok=True)
+        return {**await asyncio.to_thread(checks.status), "uploaded": filename}
 
     @router.put("/time-checks/packs/{name}/dates", response_model=None)
     async def put_pack_dates(
