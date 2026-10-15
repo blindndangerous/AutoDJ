@@ -24,7 +24,7 @@ import {
   withDisabled,
 } from "./api-client.js";
 import { fmtTime, setNoValue } from "./dom-helpers.js";
-import { announceStatus } from "./live-region.js";
+import { announceStatus, writeLive, writeQuietly } from "./live-region.js";
 
 // The page has one Library panel.  Its memory: the phase last spoken, the
 // log lines on screen, whether installLibraryJobs ran (only then does the
@@ -37,12 +37,18 @@ let installed = false;
 let latest = null;
 
 // Write `text` into the live region only when the phase actually
-// changed.  Repeated ticks carrying the same phase are silent.
-function setJobPhase(jobStatus, phase, text) {
+// changed.  Repeated ticks carrying the same phase are silent.  quiet: the
+// phase the page finds when it loads, shown but not said, so a reload does
+// not say the last job's result (or its start) a second time (#329).
+function setJobPhase(jobStatus, phase, text, { quiet = false } = {}) {
   if (!jobStatus) return;
   if (spokenPhase === phase) return;
   spokenPhase = phase;
-  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+  if (quiet) {
+    writeQuietly(jobStatus, text);
+    return;
+  }
+  writeLive(jobStatus, text);
 }
 
 // Errors are user-visible failures of a specific action, not a job
@@ -52,7 +58,7 @@ function setJobPhase(jobStatus, phase, text) {
 function reportJobError(jobStatus, text) {
   if (!jobStatus) return;
   spokenPhase = null;
-  if (jobStatus.textContent !== text) jobStatus.textContent = text;
+  writeLive(jobStatus, text);
 }
 
 // The runner's own lines: the command it started ("[autodj-jobs] $ ...")
@@ -96,7 +102,7 @@ export function libraryJobStatusText(job) {
   return "No library job has run.";
 }
 
-function updateJobStatus(job, jobStatus, jobElapsed) {
+function updateJobStatus(job, jobStatus, jobElapsed, quiet = false) {
   // Silent clock.  Never announced: the node is aria-live="off".
   if (jobElapsed) {
     const elapsed = job.running
@@ -107,14 +113,14 @@ function updateJobStatus(job, jobStatus, jobElapsed) {
   if (!jobStatus) return;
 
   if (job.running) {
-    setJobPhase(jobStatus, `running:${job.name}`, `${job.name} running.`);
+    setJobPhase(jobStatus, `running:${job.name}`, `${job.name} running.`, { quiet });
     return;
   }
   if (job.exit_code != null) {
-    setJobPhase(jobStatus, `finished:${job.name}:${job.exit_code}`, finishedText(job));
+    setJobPhase(jobStatus, `finished:${job.name}:${job.exit_code}`, finishedText(job), { quiet });
     return;
   }
-  if (!job.name) setJobPhase(jobStatus, "idle", "Idle.");
+  if (!job.name) setJobPhase(jobStatus, "idle", "Idle.", { quiet });
 }
 
 // The count rides in the log's heading, which also names the region, so
@@ -402,7 +408,8 @@ export function applyLibraryJobState(s, els) {
     fullLogFor: previous ? previous.fullLogFor : null,
   };
   latest = current;
-  updateJobStatus(job, jobStatus, jobElapsed);
+  // The first state after the page loads was said on the page before.
+  updateJobStatus(job, jobStatus, jobElapsed, previous === null);
   // The full log of this finished job is already shown; the websocket's
   // 25-line window would cut it back down.
   if (job.running || current.fullLogFor !== job.started_at) {

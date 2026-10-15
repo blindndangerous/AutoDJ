@@ -2030,6 +2030,8 @@ describe("app request behavior", () => {
       original.focus();
       original.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      // The row went and came back: a new button for the same song.
+      renderQueue([], els);
       renderQueue([{ path: "M:/song.flac", title: "Song" }], els);
       const replacement = queueList.querySelector('[data-action="info"]');
       expect(replacement).not.toBe(original);
@@ -2196,6 +2198,69 @@ describe("app request behavior", () => {
       expect(document.activeElement).toBe(trackRows()[1].cells[2]);
       expect(document.activeElement.closest("tr").querySelector(".history-info").dataset.historyId).toBe("three");
       expect(document.querySelector("#sr-status").textContent).toContain("no longer on this History page");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("steps back from the last page after Go to a page past it", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const asked = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => {
+          if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
+          // The server keeps a page past the last to the last.
+          const page = Math.max(1, Math.min(asked(url), 3));
+          return jsonResponse({ total: 120, page, pages: 3, items: [
+            { event_id: `p${page}`, played_at: "2026-01-01T00:00:00Z", path: `M:/${page}.flac`,
+              title: `Song ${page}`, artist: "A", duration: 60 },
+          ] });
+        },
+      });
+      const info = document.querySelector("#hist-page-info");
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 1 of 3"));
+      document.querySelector("#hist-goto").value = "9";
+      document.querySelector("#hist-go").click();
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 3 of 3"));
+      document.querySelector("#hist-prev").click();
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 2 of 3"));
+      const pages = fetchImpl.mock.calls.map(([url]) => url)
+        .filter((url) => url.startsWith("/api/history")).map(asked);
+      expect(pages.slice(-2)).toEqual([9, 2]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("puts focus on Refresh history when a failed Next hides the pager", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const asked = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      await setupApp({
+        onRequest: (url) => {
+          if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
+          if (asked(url) === 2) return jsonResponse({ detail: "History offline" }, 503);
+          return jsonResponse({ total: 60, page: 1, pages: 2, items: [
+            { event_id: "one", played_at: "2026-01-01T00:00:00Z", path: "M:/1.flac",
+              title: "One", artist: "A", duration: 60 },
+          ] });
+        },
+      });
+      const next = document.querySelector("#hist-next");
+      await vi.waitFor(() => expect(next.getAttribute("aria-disabled")).toBe("false"));
+      next.focus();
+      next.click();
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toBe("Could not load history: History offline"));
+      expect(document.querySelector("#history-pagination").hidden).toBe(true);
+      expect(document.activeElement).toBe(document.querySelector("#hist-refresh"));
     } finally {
       window.location.hash = "";
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3637,6 +3702,66 @@ describe("several stations (#70)", () => {
       "Now controlling Night Owl Radio. On air, 3 listeners. Playing Owl"));
   });
 
+  it("says a dropped link that comes inside the switch's quiet second (#327)", async () => {
+    const app = await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const pill = document.getElementById("conn-status");
+    pill.textContent = "Off air";
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].onopen();
+    expect(pill.textContent).toBe("Live");
+    expect(pill.getAttribute("aria-live")).toBe("off");
+    const written = [];
+    new window.MutationObserver(() => written.push([pill.textContent, pill.getAttribute("aria-live")]))
+      .observe(pill, { childList: true, characterData: true, subtree: true });
+    sockets[0].onclose({ code: 1006, wasClean: false });
+    // On at once; the words go in once the browser has seen it on.
+    expect(pill.getAttribute("aria-live")).toBe("polite");
+    await vi.waitFor(() => expect(written).toEqual([["Disconnected, retrying", "polite"]]));
+  });
+
+  it("says a switch once: not the song line, and not Live when the socket opens (#327)", async () => {
+    const app = await setupApp({
+      initialState: { current_track: { path: "a.mp3", artist: "A", title: "B" } },
+      stations: [AUTODJ, OWL],
+      onRequest: owlRequests,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    const pill = document.getElementById("conn-status");
+    const song = document.getElementById("track-announce");
+    document.getElementById("announce-track-changes").value = "all";
+    document.getElementById("announce-track-changes").dispatchEvent(new Event("change"));
+    // The pill said something else before: the words "Live" would be news.
+    pill.textContent = "Off air";
+    const written = [];
+    new window.MutationObserver(() => written.push([pill.textContent, pill.getAttribute("aria-live")]))
+      .observe(pill, { childList: true, characterData: true, subtree: true });
+    const songs = [];
+    new window.MutationObserver(() => { if (song.textContent) songs.push(song.textContent); })
+      .observe(song, { childList: true, characterData: true, subtree: true });
+
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await vi.waitFor(() => expect(said.join(" | ")).toContain("Now controlling Night Owl Radio."));
+    expect(document.getElementById("now-playing-title").textContent).toContain("Owl — Hoot");
+    sockets[0].onopen();
+    await vi.waitFor(() => expect(written).toEqual([["Live", "off"]]));
+    expect(songs).toEqual([]);
+    // Polite again afterwards: the next real transition is said.
+    await vi.waitFor(() => expect(pill.getAttribute("aria-live")).toBe("polite"), { timeout: 2000 });
+    // A song change on the new station is said as before.
+    sockets[0].onmessage({ data: JSON.stringify({
+      current_track: { path: "owl2.mp3", artist: "Owl", title: "Night" }, queue: [], eq: {}, volume: 1,
+    }) });
+    await vi.waitFor(() => expect(songs.join(" | ")).toContain("Owl — Night"));
+  });
+
   it("opens the station named in the address", async () => {
     window.history.replaceState(null, "", "/?station=nightowl");
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
@@ -3708,6 +3833,204 @@ describe("several stations (#70)", () => {
     document.getElementById("confirm-accept").click();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(stopAllDecks).toHaveBeenCalled();
+  });
+
+  it("asks once before a switch drops unsaved clockwheel work, and switches only on yes", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    const clockwheel = {
+      refresh: vi.fn(async () => {}), clearProtectedData: vi.fn(), resume: vi.fn(), destroy: vi.fn(),
+      hasUnsavedWork: vi.fn(() => true),
+    };
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => clockwheel,
+    }));
+    try {
+      const stopAllDecks = vi.fn();
+      const app = await setupApp({
+        audio: { _lastBrowserPlayback: true, playbackEnabled: true, stopAllDecks },
+        stations: [AUTODJ, OWL],
+        onRequest: owlRequests,
+      });
+      const sockets = trackSockets(app.WebSocketImpl);
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      confirm.close = vi.fn((value) => {
+        confirm.open = false;
+        confirm.returnValue = value;
+        confirm.dispatchEvent(new Event("close"));
+      });
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      // One dialog names both losses: the decks that stop and the work dropped.
+      expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
+      expect(document.getElementById("confirm-message").textContent).toBe(
+        "This page is playing AutoDJ itself. Switching stops that music on this page; the station goes on for everyone else. "
+        + "It also discards the clockwheel changes not saved yet.");
+      expect(document.getElementById("confirm-accept").textContent).toBe("Switch and discard");
+      document.getElementById("confirm-cancel").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sockets).toHaveLength(0);
+      expect(clockwheel.clearProtectedData).not.toHaveBeenCalled();
+      expect(stopAllDecks).not.toHaveBeenCalled();
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      document.getElementById("confirm-accept").click();
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      expect(confirm.showModal).toHaveBeenCalledTimes(2);
+      expect(clockwheel.clearProtectedData).toHaveBeenCalled();
+      expect(stopAllDecks).toHaveBeenCalled();
+      expect(document.getElementById("page-heading").textContent).toBe("AutoDJ: Night Owl Radio");
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
+  it("asks about unsaved work alone when no decks play", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    try {
+      await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
+      expect(document.getElementById("confirm-message").textContent)
+        .toBe("Switching discards the clockwheel changes not saved yet.");
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
+  it("names a voice track not booked, with the clockwheel changes, in the one question", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    const voicePath = "../../src/autodj/static/modules/voice-tracker.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    const voice = { refresh: async () => {}, toggle() {}, clear: vi.fn(), hasUnsavedWork: () => true };
+    vi.doMock(voicePath, async () => ({
+      ...(await vi.importActual(voicePath)),
+      installVoiceTracker: () => voice,
+    }));
+    try {
+      await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const confirm = document.getElementById("confirm-dialog");
+      confirm.showModal = vi.fn(() => { confirm.open = true; });
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      expect(document.getElementById("confirm-message").textContent).toBe(
+        "Switching discards the clockwheel changes not saved yet and the voice track not booked yet.");
+      expect(voice.clear).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock(clockwheelPath);
+      vi.doUnmock(voicePath);
+    }
+  });
+
+  it("leaves focus on the Station button after the question, answered either way", async () => {
+    const clockwheelPath = "../../src/autodj/static/modules/clockwheel-panel.js";
+    vi.doMock(clockwheelPath, async () => ({
+      ...(await vi.importActual(clockwheelPath)),
+      installClockwheelPanel: () => ({
+        refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {},
+        hasUnsavedWork: () => true,
+      }),
+    }));
+    try {
+      const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+      const sockets = trackSockets(app.WebSocketImpl);
+      // As a browser does: a modal dialog gives focus back to what had it.
+      const confirm = document.getElementById("confirm-dialog");
+      let opener = null;
+      confirm.showModal = vi.fn(() => {
+        opener = document.activeElement;
+        confirm.open = true;
+      });
+      confirm.close = vi.fn((value) => {
+        confirm.open = false;
+        confirm.returnValue = value;
+        opener?.focus();
+        confirm.dispatchEvent(new Event("close"));
+      });
+      const button = document.getElementById("station-button");
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
+      expect(opener).toBe(button);
+      expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
+      document.getElementById("confirm-cancel").click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(document.activeElement).toBe(button);
+
+      chooseOwl();
+      await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
+      document.getElementById("confirm-accept").click();
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      await vi.waitFor(() => expect(document.getElementById("page-heading").textContent)
+        .toBe("AutoDJ: Night Owl Radio"));
+      expect(document.activeElement).toBe(button);
+    } finally {
+      vi.doUnmock(clockwheelPath);
+    }
+  });
+
+  it("says a station off air when its state answers 409 on a switch", async () => {
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => (url === "/api/stations/nightowl/status"
+        ? jsonResponse({ detail: "Night Owl Radio is not running." }, 409)
+        : owlRequests(url)),
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    chooseOwl();
+    await vi.waitFor(() => expect(document.getElementById("station-off-air").hidden).toBe(false));
+    expect(document.getElementById("station-off-air-text").textContent).toBe("Night Owl Radio is off air.");
+    expect(document.getElementById("conn-status").textContent).toBe("Off air");
+    expect(sockets).toHaveLength(0);
+  });
+
+  it("is not off air when the new station's state fails with anything but a 409", async () => {
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest: (url) => (url === "/api/stations/nightowl/status"
+        ? jsonResponse({ detail: "The AutoDJ server hit an error." }, 500)
+        : owlRequests(url)),
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    const said = spoken();
+    chooseOwl();
+    // The socket brings the state when it opens.
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0].url).toMatch(/\/api\/stations\/nightowl\/ws$/);
+    expect(document.getElementById("station-off-air").hidden).toBe(true);
+    expect(document.getElementById("conn-status").textContent).not.toBe("Off air");
+    await vi.waitFor(() => expect(said.join(" | ")).toContain(
+      "Now controlling Night Owl Radio. Its state could not be loaded: The AutoDJ server hit an error."));
+  });
+
+  it("says why a station cannot be chosen while the link is down", async () => {
+    const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
+    const sockets = trackSockets(app.WebSocketImpl);
+    app.webSocket.onclose({ code: 1006, wasClean: false });
+    chooseOwl();
+    await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
+      .toBe("AutoDJ is reconnecting. Choose the station again once it is back."));
+    expect(sockets).toHaveLength(0);
+    expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
+    expect(document.activeElement.id).toBe("station-button");
   });
 
   it("keeps Listen here on the station it started on, and says so", async () => {

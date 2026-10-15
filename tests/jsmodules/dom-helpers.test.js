@@ -1,7 +1,7 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
 import { describe, it, expect } from "vitest";
-import { fmtTime, fmtTrack, escHtml, focusRevealed, isTypingTarget } from
+import { fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
@@ -106,5 +106,59 @@ describe("focusRevealed", () => {
   });
   it("does nothing without a control", () => {
     expect(() => focusRevealed(null)).not.toThrow();
+  });
+});
+
+describe("placeRows (#328)", () => {
+  function list(names) {
+    document.body.innerHTML = "<ul></ul>";
+    const ul = document.querySelector("ul");
+    for (const name of names) {
+      const li = document.createElement("li");
+      li.innerHTML = `<button>${name}</button>`;
+      li.dataset.name = name;
+      ul.append(li, " ");
+    }
+    return ul;
+  }
+  const names = (ul) => [...ul.childNodes].map((node) => node.dataset?.name ?? "#text");
+
+  it("orders the rows in place, removes the rest and never moves the focused row", () => {
+    const ul = list(["a", "b", "c", "d"]);
+    const [a, b, c, d] = ul.querySelectorAll("li");
+    c.querySelector("button").focus();
+    const moved = [];
+    const original = ul.insertBefore.bind(ul);
+    ul.insertBefore = (node, ref) => { moved.push(node); return original(node, ref); };
+    placeRows(ul, [c, a, d]);
+    expect(names(ul)).toEqual(["c", "a", "d"]);
+    expect(moved).not.toContain(c);
+    expect(b.isConnected).toBe(false);
+    expect(document.activeElement).toBe(c.querySelector("button"));
+    placeRows(ul, [d, a, c]);
+    expect(names(ul)).toEqual(["d", "a", "c"]);
+    expect(document.activeElement).toBe(c.querySelector("button"));
+  });
+
+  it("places new rows when focus is elsewhere", () => {
+    const ul = list(["a"]);
+    const fresh = document.createElement("li");
+    fresh.dataset.name = "z";
+    placeRows(ul, [fresh, ul.querySelector("li")]);
+    expect(names(ul)).toEqual(["z", "a"]);
+  });
+});
+
+describe("focusAfterDialog", () => {
+  it("does not count the page body as a place focus returned to", () => {
+    expect(focusAfterDialog(document.body)).toBe(false);
+  });
+
+  it("focuses a connected control and reports it", () => {
+    const button = document.createElement("button");
+    document.body.append(button);
+    expect(focusAfterDialog(button)).toBe(true);
+    expect(document.activeElement).toBe(button);
+    button.remove();
   });
 });

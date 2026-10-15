@@ -61,6 +61,7 @@ import base64
 import binascii
 import contextlib
 import logging
+import os
 import sqlite3
 import struct
 
@@ -573,7 +574,10 @@ def merge_imported_cues(meta: DjMeta, path: str, library_cues: Mapping[str, list
     ``autodj index``, ``autodj analyse`` and the player all merge through
     this when ``[playback] import_external_cues`` is on.
     """
-    external = [*library_cues.get(path, ()), *import_from_serato_tags(Path(path))]
+    external = [
+        *library_cues.get(path, library_cues.get(os.path.normcase(path), ())),
+        *import_from_serato_tags(Path(path)),
+    ]
     if external:
         meta.cues = merge_cues(meta.cues, external)
         apply_imported_markers(meta)
@@ -685,7 +689,7 @@ def _normalise_keys(by_path: dict[str, list[Cue]]) -> dict[str, list[Cue]]:
         if not raw:
             continue
         try:
-            key = str(Path(raw))
+            key = os.path.normcase(str(Path(raw)))
         except (OSError, ValueError):
             key = raw
         cues.sort(key=lambda c: c.time_s)

@@ -1101,7 +1101,7 @@ class TestLinerUploadDelete:
 
         from autodj.server import PlayerBridge, create_app
 
-        from ._helpers import _make_player_mock, _make_sim_mock
+        from ._helpers import _make_player_mock, _make_sim_mock, wav_bytes
 
         player = _make_player_mock()
         player._cfg.index.active_dir = str(tmp_path)
@@ -1109,7 +1109,7 @@ class TestLinerUploadDelete:
         client = TestClient(create_app(bridge))
         resp = client.post(
             "/api/liners/upload",
-            files={"file": ("clip.wav", b"RIFFwavedata", "audio/wav")},
+            files={"file": ("clip.wav", wav_bytes(), "audio/wav")},
         )
         assert resp.status_code == 200
         # Delete it to exercise the unlink success path.

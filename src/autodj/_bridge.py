@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
 from autodj.identity_map import attached
+from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -211,6 +212,37 @@ def _request_settings(requests: Any) -> dict[str, Any]:
     }
 
 
+def _request_switches(requests: Any, page_saved: set[str]) -> dict[str, Any]:
+    """Whether the station takes requests and how they are approved, once the card saved them.
+
+    Until the Listener requests card has saved them for this station,
+    ``[requests]`` in config.toml stays in charge: no other save (volume,
+    EQ ...) writes them to ``web_state.json``.
+    """
+    if requests is None or PAGE_SAVED_REQUESTS not in page_saved:
+        return {}
+    return {
+        "requests_enabled": bool(requests.enabled),
+        "requests_approval": requests.approval,
+    }
+
+
+def _break_settings(breaks: Any, page_saved: set[str]) -> dict[str, Any]:
+    """The announcer break settings, once Settings, Breaks saved them for the station (#88).
+
+    Until then ``[breaks]`` in config.toml stays in charge, as for
+    :func:`_request_switches`.
+    """
+    if breaks is None or PAGE_SAVED_BREAKS not in page_saved:
+        return {}
+    return {
+        "breaks_enabled": bool(breaks.enabled),
+        "breaks_dj_placement": breaks.dj_placement,
+        "breaks_min_intro_seconds": float(breaks.min_intro_seconds),
+        "breaks_duck_db": None if breaks.duck_db is None else float(breaks.duck_db),
+    }
+
+
 @dataclass(frozen=True)
 class RequestInsert:
     """One request and its preceding bridge songs, committed together."""
@@ -255,6 +287,11 @@ class PlayerBridge:
     # Whether a queue entry is a show's own copy (#106): a remove or reorder
     # aimed by path at another entry of the same file never takes it.
     show_entry: Callable[[Any], bool] | None = None
+    # The setting groups whose own route has saved them for this station
+    # (PAGE_SAVED_REQUESTS, PAGE_SAVED_BREAKS), or that web_state.json held
+    # at start.  Only those are written to web_state.json; the others stay
+    # config.toml's.
+    page_saved: set[str] = field(default_factory=set)
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -954,6 +991,8 @@ class PlayerBridge:
         """
         state = self.player._state
         state.discovery_enabled = not state.discovery_enabled
+        if refresh := getattr(self.player, "refresh_render_ahead", None):
+            refresh()
         return state.discovery_enabled
 
     # ------------------------------------------------------------------
@@ -1367,9 +1406,8 @@ class PlayerBridge:
         tail when it mixed *upcoming* in (``"none"`` when there was no room
         for an overlap); before a render exists, and in browser mode, it is
         the player's plan for the pair (:meth:`Player.planned_transition`),
-        which a later render of the pair uses too.  Always a concrete
-        effect name, never ``random``, ``rotate`` or ``auto``; ``None``
-        when there is no next track.
+        which a later render of the pair uses too.  Browser rotate returns
+        ``None`` so the browser chooses when the fade actually starts.
         """
         if current is None or upcoming is None:
             return None
@@ -1377,6 +1415,8 @@ class PlayerBridge:
         playing = getattr(player, "_playing_render", None) if self._bus_mode() else None
         if playing is not None and playing.entry is current and playing.next_entry is upcoming:
             return str(playing.transition_fx or "none")
+        if not self._bus_mode() and str(player._cfg.transitions.effect).lower() == "rotate":
+            return None
         picked = getattr(player, "_next_pick", None)
         pick_mode = picked[1] if picked and picked[0] == upcoming.path else ""
         try:
@@ -2370,6 +2410,8 @@ class PlayerBridge:
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 **_request_settings(getattr(cfg, "requests", None)),
+                **_request_switches(getattr(cfg, "requests", None), self.page_saved),
+                **_break_settings(getattr(cfg, "breaks", None), self.page_saved),
                 "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
                 "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
                 "stream_stats_days": int(cfg.stream.stats_days),
@@ -2390,6 +2432,8 @@ class PlayerBridge:
         p = self.player
         if not name:
             p._preset = None
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
             return
         from autodj.presets import get_preset
 
@@ -2401,6 +2445,9 @@ class PlayerBridge:
                 p._discovery_every = p._preset.discovery_every
         except ValueError:
             pass
+        else:
+            if refresh := getattr(p, "refresh_render_ahead", None):
+                refresh()
 
     def set_transition(self, effect: str) -> None:
         """Set the transition effect by name.
@@ -2470,10 +2517,16 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
-        if "music_speed_percent" in values and self._bus_mode():
-            # The playing render is immutable. Refresh only the unrendered
-            # lookahead so the new speed starts at the next buffer boundary.
-            player.refresh_render_ahead()
+        picking_changed = any(hasattr(cfg.playback, key) for key in values) or bool(
+            {"pure_shuffle", "anchor_to_seed"} & values.keys()
+        )
+        if (
+            picking_changed
+            and not restoring
+            and (refresh := getattr(player, "refresh_render_ahead", None))
+        ):
+            # The playing render is immutable; refresh its unrendered successor.
+            refresh()
         if "repeat_rules" in values and (ledger := self._ledger()) is not None:
             player.restore_repeat_history(ledger, refresh=True)
 
@@ -2618,7 +2671,7 @@ class PlayerBridge:
         else:
             self.player._bpm_range = (lo, hi)
 
-    def set_discovery_every(self, every: int | None) -> None:
+    def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
         """Set the discovery rate; null disables.
 
         Configuring a rate also arms the runtime toggle.  Without that,
@@ -2631,3 +2684,5 @@ class PlayerBridge:
         else:
             self.player._discovery_every = int(every)
             self.player._state.discovery_enabled = True
+        if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
+            refresh()

@@ -232,6 +232,14 @@ class TestPlaybackChoiceValidation:
 
 
 class TestApplyLiners:
+    def test_pick_setting_change_refreshes_render_ahead(self, bridge, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        refresh = MagicMock()
+        monkeypatch.setattr(bridge.player, "refresh_render_ahead", refresh)
+        bridge.set_playback_settings(PlaybackSettingsBody(liners_enabled=True))
+        refresh.assert_called_once_with()
+
     def test_liners_every_minutes_disable_when_zero(self, bridge) -> None:
         bridge.set_playback_settings(PlaybackSettingsBody(liners_every_minutes=5.0))
         assert bridge.player._cfg.playback.liners_every_minutes == 5.0
@@ -434,6 +442,11 @@ class TestNextTransitionFx:
         bridge.player.planned_transition.assert_called_with(
             state.current_track, state.next_track, "discovery"
         )
+
+    def test_browser_rotate_waits_for_the_fade(self, bridge) -> None:
+        bridge.player._cfg.transitions.effect = "rotate"
+        assert bridge.get_state()["next_transition_fx"] is None
+        bridge.player.planned_transition.assert_not_called()
 
     def test_pick_mode_of_another_track_is_not_used(self, bridge) -> None:
         state = bridge.player._state

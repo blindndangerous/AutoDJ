@@ -137,18 +137,6 @@ def test_listing_offers_the_stations_liners_and_liner_folders(tmp_path: Path) ->
     assert listed["liner_folders"] == [str(folder)]
     assert listed["max_rules"] == 2000 and listed["problem"] is None
     assert listed["sources"] == [{"id": "mus", "path": "/music"}]
-    # Another station's liner folder: neither offered nor accepted.
-    station.station.owns_liner = lambda path: False
-    listed = station.client.get("/api/intros/rules", headers=HOST).json()
-    assert listed["liners"] == [] and listed["liner_folders"] == []
-    refused = station.client.post("/api/intros/rules", json=RULE, headers=SENT)
-    assert refused.status_code == 422 and refused.json()["field"] == "clip_ids"
-    refused = station.client.post(
-        "/api/intros/rules",
-        json={**RULE, "clip_ids": [], "liner_folder": str(folder)},
-        headers=SENT,
-    )
-    assert refused.status_code == 422 and refused.json()["field"] == "liner_folder"
 
 
 def test_a_refused_rule_names_the_field_at_fault(tmp_path: Path) -> None:

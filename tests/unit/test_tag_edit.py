@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import os
 import sqlite3
+import stat
 import struct
 import time
 from pathlib import Path
@@ -195,6 +196,21 @@ def test_file_system_refusals_are_explained(tmp_path, monkeypatch, number, words
     with pytest.raises(TagError, match=words):
         write_tags(path, validate_tags({"title": "Changed"}))
     assert path.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only check")
+def test_disappearing_file_during_read_only_check_is_tag_error(tmp_path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    original_stat = Path.stat
+
+    def vanished(self, *args, **kwargs):
+        if self == path:
+            raise FileNotFoundError(errno.ENOENT, "No such file", str(path))
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", vanished)
+    with pytest.raises(TagError, match="could not be written"):
+        write_tags(path, validate_tags({"title": "Changed"}))
 
 
 def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch) -> None:
@@ -595,7 +611,7 @@ def test_a_hand_set_key_and_bpm_outlive_analysis(tmp_path: Path) -> None:
         stored = catalog.record_for_path(song)
         assert (stored["key"], stored["mode"], stored["bpm"]) == (9, 0, 99.0)
         assert stored["energy"] == pytest.approx(0.3)
-        # The CPU analysis job stores a whole entry for the same file.
+        # Another catalog update for the same file preserves manual tags.
         measured = make_entry(song)
         _apply_analysis_metadata(measured, {**analysis, "bpm": 0.0})
         measured.key, measured.mode, measured.bpm = 4, 1, 150.0
@@ -830,3 +846,17 @@ def test_imported_tags_preserve_manual_values_and_skip_unchanged_writes(tmp_path
         assert catalog._db().total_changes == changes
     finally:
         catalog.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only replacement behavior")
+def test_read_only_file_reports_permission_and_leaves_no_copy(tmp_path: Path) -> None:
+    song = make_audio(tmp_path, ".flac")
+    before = song.read_bytes()
+    os.chmod(song, stat.S_IREAD)
+    try:
+        with pytest.raises(tag_edit.TagError, match="read-only"):
+            tag_edit.write_tags(song, tag_edit.validate_tags({"title": "New"}))
+        assert song.read_bytes() == before
+        assert not list(tmp_path.glob(f".*{tag_edit.TEMP_SUFFIX}"))
+    finally:
+        os.chmod(song, stat.S_IREAD | stat.S_IWRITE)

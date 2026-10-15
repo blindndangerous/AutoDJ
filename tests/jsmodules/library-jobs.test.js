@@ -110,8 +110,9 @@ describe("library job live region", () => {
       },
     };
     applyLibraryJobState(finished, els);
-    await settle();
-    expect(els.jobStatus.textContent).toBe("index finished cleanly in 1:01.");
+    // The first phase was shown quietly; the region is turned on and the
+    // finish goes in a moment later.
+    await vi.waitFor(() => expect(els.jobStatus.textContent).toBe("index finished cleanly in 1:01."));
     expect(seen.announcements()).toBe(2);
 
     for (let i = 0; i < 10; i++) applyLibraryJobState(finished, els);
@@ -211,6 +212,81 @@ describe("library job live region", () => {
     expect(seen.announcements()).toBe(afterClick);
     seen.stop();
     vi.unstubAllGlobals();
+  });
+
+  it("says a phase that comes while the reload's result is still quiet (#329)", async () => {
+    vi.useFakeTimers();
+    try {
+      const els = makeEls();
+      els.jobStatus.setAttribute("aria-live", "polite");
+      const written = [];
+      new window.MutationObserver(() => written.push(
+        [els.jobStatus.textContent, els.jobStatus.getAttribute("aria-live")],
+      )).observe(els.jobStatus, { childList: true, characterData: true, subtree: true });
+      applyLibraryJobState({ library_job: {
+        name: "analyse", running: false, elapsed_seconds: 92, exit_code: 0, started_at: 1, lines: [],
+      } }, els);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(els.jobStatus.getAttribute("aria-live")).toBe("off");
+      // A new job starts inside the quiet second: the region is on before
+      // its words go in, so they are said.
+      applyLibraryJobState({ library_job: {
+        name: "index", running: true, elapsed_seconds: 0, started_at: 2, lines: [],
+      } }, els);
+      expect(els.jobStatus.getAttribute("aria-live")).toBe("polite");
+      expect(els.jobStatus.textContent).toBe("analyse finished cleanly in 1:32.");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(written).toEqual([
+        ["analyse finished cleanly in 1:32.", "off"],
+        ["index running.", "polite"],
+      ]);
+      // The quiet second's own timer changes nothing afterwards.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(els.jobStatus.getAttribute("aria-live")).toBe("polite");
+      expect(written).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the last job's result after a reload without saying it again (#329)", async () => {
+    vi.useFakeTimers();
+    try {
+      const els = makeEls();
+      els.jobStatus.setAttribute("aria-live", "polite");
+      const written = [];
+      new window.MutationObserver(() => written.push(
+        [els.jobStatus.textContent, els.jobStatus.getAttribute("aria-live")],
+      )).observe(els.jobStatus, { childList: true, characterData: true, subtree: true });
+      const finished = (startedAt) => ({ library_job: {
+        name: "analyse", running: false, elapsed_seconds: 92, exit_code: 0,
+        started_at: startedAt, lines: [],
+      } });
+
+      // The page's first state: shown with the region off.
+      applyLibraryJobState(finished(1), els);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(els.jobStatus.textContent).toBe("analyse finished cleanly in 1:32.");
+      expect(written).toEqual([["analyse finished cleanly in 1:32.", "off"]]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(els.jobStatus.getAttribute("aria-live")).toBe("polite");
+
+      // The next job's start and end are said, once each.
+      applyLibraryJobState({ library_job: {
+        name: "index", running: true, elapsed_seconds: 1, started_at: 2, lines: [],
+      } }, els);
+      await vi.advanceTimersByTimeAsync(0);
+      applyLibraryJobState({ library_job: {
+        name: "index", running: false, elapsed_seconds: 2, exit_code: 0, started_at: 2, lines: [],
+      } }, els);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(written.slice(1)).toEqual([
+        ["index running.", "polite"],
+        ["index finished cleanly in 0:02.", "polite"],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

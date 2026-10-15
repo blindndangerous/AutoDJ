@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_index_for_serve, cli
-from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets
+from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets, file_fingerprint
 from tests.unit._legacy_index import save_index
 from tests.unit.test_library import fake_basic, fake_loudness, make_config
 
@@ -57,8 +57,10 @@ def _fake_embed(calls: list[dict]):
         del wrapper, throttle_ms, report
         calls.append({"tracks": tracks, "workers": workers})
         for track in tracks:
+            entry = _entry(track.path, title=track.title)
+            entry.size, entry.fingerprint = file_fingerprint(track.path)
             checkpoint(
-                [_entry(track.path, title=track.title)],
+                [entry],
                 [np.full(FEATURE_DIM, len(calls), dtype=np.float32)],
             )
         return [], []

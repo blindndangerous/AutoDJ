@@ -135,6 +135,7 @@ def _builtin_actions(
         if enabled and bridge.player._discovery_every is None:
             raise ValueError("Set a discovery rate in Song picking first")
         bridge.player._state.discovery_enabled = enabled
+        bridge.player.refresh_render_ahead()
         bridge.save_persistent_state()
 
     return [

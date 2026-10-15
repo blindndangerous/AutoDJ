@@ -256,6 +256,37 @@ def test_drops_and_their_reasons(desk):
     assert {item.state for item in desk.listing()} == {DROPPED}
 
 
+def test_turning_breaks_off_drops_only_the_waiting_uploads(desk):
+    from dataclasses import replace
+
+    from autodj.breaks import AD_SCHEDULE, VOICE_TRACK
+
+    desk, clock, config = desk
+    config.max_per_slot = 5
+    config.max_queued = 10
+    mixed_slot, open_slot = new_id(), new_id()
+    mixed = make_break(desk, mixed_slot)
+    desk.add(mixed)
+    desk.take(mixed_slot, clock.now)  # already in the next song change
+    waiting = make_break(desk, open_slot)
+    voice = replace(make_break(desk, open_slot), source=VOICE_TRACK)
+    ad = replace(make_break(desk, open_slot, kind="ad"), source=AD_SCHEDULE, keep_file=True)
+    for item in (waiting, voice, ad):
+        desk.add(item)
+    emptied: list[str] = []
+    desk.on_slot_empty = emptied.append
+
+    assert desk.drop_waiting_breaks("breaks were turned off in Settings") == 2
+    assert desk.get(waiting.break_id).state == DROPPED
+    assert desk.get(voice.break_id).reason == "breaks were turned off in Settings"
+    # The ad schedule's spot and the break already mixed in stay; the
+    # slot still holds the ad, so it stays pinned.
+    assert desk.get(ad.break_id).state == QUEUED
+    assert desk.get(mixed.break_id).state == RENDERED
+    assert emptied == []
+    assert desk.drop_waiting_breaks("again") == 0
+
+
 def test_the_first_upkeep_sweeps_files_a_previous_run_left(desk):
     desk, _clock, _config = desk
     leftover = desk.folder / f"brk-{new_id()}.mp3"

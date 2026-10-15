@@ -259,11 +259,11 @@ describe("voice tracker", () => {
     const { controls, server } = tracker();
     server.slot = null;
     server.accepting = false;
-    server.reason = "Breaks are off for this station: set [breaks] enabled = true";
+    server.reason = "Breaks are off for this station: turn them on in Settings, Breaks";
     await controls.refresh();
     expect(byId("vt-slot").hidden).toBe(true);
     expect(byId("vt-unavailable").textContent).toBe(
-      "No song change can take a voice track now. Breaks are off for this station: set [breaks] enabled = true.");
+      "No song change can take a voice track now. Breaks are off for this station: turn them on in Settings, Breaks.");
     await press("vt-record");
     expect(byId("vt-error").hidden).toBe(false);
     expect(byId("vt-record").getAttribute("aria-describedby").split(" ")).toContain("vt-error");
@@ -577,6 +577,22 @@ describe("voice tracker", () => {
     byId("panel-voice").hidden = true;
     expect(altR(document.body).defaultPrevented).toBe(false);
     expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a recording or a take not booked as unsaved work, for a station switch", async () => {
+    const { controls } = tracker();
+    await controls.refresh();
+    expect(controls.hasUnsavedWork()).toBe(false);
+    await press("vt-record");
+    expect(controls.hasUnsavedWork()).toBe(true);
+    await press("vt-record");
+    expect(controls.hasUnsavedWork()).toBe(true);
+    await press("vt-discard");
+    expect(controls.hasUnsavedWork()).toBe(false);
+    await press("vt-record");
+    await press("vt-record");
+    controls.clear();
+    expect(controls.hasUnsavedWork()).toBe(false);
   });
 
   it("lets the microphone go when the page signs out mid-recording", async () => {

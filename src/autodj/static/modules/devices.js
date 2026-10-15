@@ -24,7 +24,7 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
+import { fmtTime, focusAfterDialog, nextRowControl, releaseDialogFocus, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -311,13 +311,17 @@ export function installAccess(els, { onSignedOut }) {
         return;
       }
       pending = false;
+      releaseDialogFocus(dialog);
       dialog.close("save");
     }
     function cancelClick() {
-      if (!pending) dialog.close("cancel");
+      if (pending) return;
+      releaseDialogFocus(dialog);
+      dialog.close("cancel");
     }
     function holdWhilePending(event) {
       if (pending) event.preventDefault();
+      else releaseDialogFocus(dialog);
     }
     function closed() {
       form.removeEventListener("submit", submit);
@@ -325,7 +329,8 @@ export function installAccess(els, { onSignedOut }) {
       dialog.removeEventListener("cancel", holdWhilePending);
       dialog.removeEventListener("close", closed);
       error.textContent = "";
-      (row.rename.isConnected ? row.rename : refresh).focus();
+      // Focus goes back once the dialog has closed (#385).
+      focusAfterDialog(row.rename.isConnected ? row.rename : refresh);
       if (saved !== null) say(`Renamed to ${saved}.`);
     }
     form.addEventListener("submit", submit);

@@ -114,6 +114,28 @@ export function createConditionRow({
   return { row, field, source, folder, recursive, operator, input, upper, genre, name, category };
 }
 
+/**
+ * Number the condition rows in *host* from 1, before focus moves into one of
+ * them.  A row whose number changes gets a new legend element, not new text
+ * in the old one: Chrome did not always pass a legend's new text on to its
+ * group's name before the focus that followed, so NVDA read the group by its
+ * old number ("Condition 3 grouping" after Remove on condition 2, #326).  A
+ * new child of the group makes its name be worked out again.
+ */
+export function renumberConditionRows(host) {
+  [...host.children].forEach((row, at) => {
+    const text = `Condition ${at + 1}`;
+    const legend = row.querySelector("legend");
+    if (legend && legend.textContent !== text) {
+      const fresh = legend.cloneNode(false);
+      fresh.textContent = text;
+      legend.replaceWith(fresh);
+    }
+    const remove = row.querySelector("button[data-remove-condition]");
+    if (remove) remove.textContent = `Remove condition ${at + 1}`;
+  });
+}
+
 /** Read and validate the common row format into the condition objects sent to the API. */
 export function readConditionRows(rows, {
   interactive = true,

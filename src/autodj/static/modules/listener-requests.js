@@ -2,8 +2,10 @@
 // from the public request page, for the operator to approve, play next or
 // turn down.
 //
-// The card shows only when [requests] is on for the station.  While it is
-// open (and the tab is showing) it refreshes every 15 seconds, silently:
+// The card shows once the station answers.  Take listener requests opens
+// and closes the station's public request page; while requests are off the
+// summary says so and the lists stay hidden.  While the card is open (and
+// the tab is showing) it refreshes every 15 seconds, silently:
 // the summary and the lists are plain text.  A refresh updates each
 // request's row in place, adds new rows and removes decided ones, so the
 // list is never rebuilt under the operator: a row that holds focus stays
@@ -15,14 +17,16 @@
 // is said once through #requests-status a moment later, so the speech for
 // the newly focused button does not cut it off.
 //
-// Smooth transitions (bridge songs and what happens when no smooth spot is
-// found) save with their own button.  A refresh fills the form only while
+// Request settings (on or off, approval, bridge songs and what happens when
+// no smooth spot is found) save with their own button.  While it saves, the
+// button is marked busy (aria-busy), never aria-disabled, so NVDA does not
+// call the pressed button unavailable (#331).  A refresh fills the form only while
 // nobody is changing it.  A refused Roughness limit gets aria-invalid, its
 // error linked to the field and shown under it, and focus; the result of a
 // save is said once through #requests-status.
 
-import { requestJson } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { requestJson, staleActionText } from "./api-client.js";
+import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clockText } from "./time-format.js";
 
 const POLL_MS = 15000;
@@ -64,7 +68,10 @@ export function parseThreshold(text) {
 
 export const THRESHOLD_ERROR = "Enter a roughness limit from 0 to 10, such as 2 or 1.5.";
 
+export const OFF_SUMMARY = "Listener requests are off for this station. Its request page says requests are closed.";
+
 export function summaryText(state) {
+  if (state.enabled === false) return OFF_SUMMARY;
   const waiting = state.pending.length;
   const mode = state.approval === "auto"
     ? "Requests that keep the rules join the queue at once."
@@ -73,6 +80,20 @@ export function summaryText(state) {
     ? "No requests waiting."
     : `${waiting} request${waiting === 1 ? "" : "s"} waiting.`;
   return `${count} ${state.today} of ${state.daily_limit} taken today. ${mode}`;
+}
+
+// What a save says: whether it opened or closed the request page, or just "saved".
+export function savedText(before, after) {
+  if (before?.enabled !== true && after.enabled === true) {
+    const mode = after.approval === "auto"
+      ? "Requests that keep the rules join the queue at once."
+      : "Each request waits for you.";
+    return `Listener requests are on. The request page is open. ${mode}`;
+  }
+  if (before?.enabled === true && after.enabled !== true) {
+    return "Listener requests are off. The request page now says requests are closed.";
+  }
+  return "Request settings saved.";
 }
 
 const STATUS_WORDS = {
@@ -193,6 +214,8 @@ export function installListenerRequests({
   }
 
   const settingsForm = doc.getElementById("requests-settings");
+  const enabledBox = doc.getElementById("requests-enabled");
+  const saveButton = doc.getElementById("requests-settings-save");
   const bridgesBox = doc.getElementById("requests-bridges");
   const maxBridges = doc.getElementById("requests-max-bridges");
   const threshold = doc.getElementById("requests-threshold");
@@ -227,10 +250,19 @@ export function installListenerRequests({
     return settingsForm?.querySelector('input[name="requests-no-smooth"]:checked')?.value || "best";
   }
 
+  function approvalChoice() {
+    return settingsForm?.querySelector('input[name="requests-approval"]:checked')?.value || "manual";
+  }
+
   // The saved settings, unless the operator is changing them now.
   function fillSettings(state) {
     if (!settingsForm || settingsDirty || saving) return;
     if (settingsForm.contains(doc.activeElement)) return;
+    if (enabledBox) enabledBox.checked = state.enabled === true;
+    const approval = settingsForm.querySelector(
+      `input[name="requests-approval"][value="${state.approval === "auto" ? "auto" : "manual"}"]`,
+    );
+    if (approval) approval.checked = true;
     if (bridgesBox) bridgesBox.checked = state.bridges_enabled === true;
     if (maxBridges && state.max_bridges != null) maxBridges.value = String(state.max_bridges);
     if (threshold && state.bridge_cost_threshold != null) {
@@ -255,12 +287,18 @@ export function installListenerRequests({
         return;
       }
       const body = {
+        enabled: Boolean(enabledBox?.checked),
+        approval: approvalChoice(),
         bridges_enabled: Boolean(bridgesBox?.checked),
         max_bridges: Number(maxBridges?.value || 3),
         bridge_cost_threshold: limit,
         no_smooth_spot: noSmoothChoice(),
       };
+      const before = lastState;
+      // saving holds off another press; aria-busy, not aria-disabled (#331).
       saving = true;
+      saveButton?.classList.add("is-pending");
+      saveButton?.setAttribute("aria-busy", "true");
       try {
         const reply = await request("/api/requests/settings", {
           method: "POST",
@@ -270,12 +308,18 @@ export function installListenerRequests({
         settingsDirty = false;
         saving = false;
         lastJson = null;
-        render({ ...reply, pending: reply.pending || [], recent: reply.recent || [] });
-        say("Request settings saved.");
+        const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
+        render(state);
+        say(savedText(before, state));
       } catch (error) {
-        say(error?.message || "Could not save the request settings.", "error");
+        // Answered after a station switch: the form is the new station's (#70).
+        const left = staleActionText(error);
+        if (left) say(left, error?.actionDone ? "info" : "error");
+        else say(`Could not save the request settings: ${error?.message || "no answer"}`, "error");
       } finally {
         saving = false;
+        saveButton?.classList.remove("is-pending");
+        saveButton?.removeAttribute("aria-busy");
       }
     });
   }
@@ -287,9 +331,11 @@ export function installListenerRequests({
     lastJson = json;
     fillSettings(state);
     setText(summary, summaryText(state));
-    renderPending(state.pending);
+    // Off: nothing is waiting or decided for the operator to act on.
+    const off = state.enabled === false;
+    renderPending(off ? [] : state.pending);
     // The decisions list has no buttons, so it may be rebuilt when it changes.
-    const lines = state.recent.map(recentLine);
+    const lines = off ? [] : state.recent.map(recentLine);
     if (lines.join("\n") !== [...recent.children].map((li) => li.textContent).join("\n")) {
       recent.replaceChildren(...lines.map((line) => {
         const li = doc.createElement("li");
@@ -318,10 +364,8 @@ export function installListenerRequests({
     } catch {
       return;
     }
-    if (!state?.enabled) {
-      card.hidden = true;
-      return;
-    }
+    if (!state || typeof state !== "object") return;
+    // Shown off or on: Take listener requests is here.
     card.hidden = false;
     render({ ...state, pending: state.pending || [], recent: state.recent || [] });
   }
@@ -349,8 +393,19 @@ export function installListenerRequests({
     const { id, action } = button.dataset;
     const song = button.dataset.song || "the song";
     const next = neighbours(id);
+    // busy holds off another press.  No aria-disabled: NVDA speaks the
+    // state change on the focused button, so the press was heard as
+    // "unavailable" (#331).  .is-pending gives the busy look, and
+    // aria-busy a state a screen reader can report.
     busy = true;
-    button.setAttribute("aria-disabled", "true");
+    button.classList.add("is-pending");
+    button.setAttribute("aria-busy", "true");
+    // A short line when the reply is slow, so the press is heard (#384).
+    const stopPending = sayIfStillPending(say, {
+      approve: `Queueing ${song}…`,
+      "play-next": `Queueing ${song} to play next…`,
+      reject: `Turning down ${song}…`,
+    }[action] || "Sending…");
     try {
       const reply = await request(`/api/requests/${encodeURIComponent(id)}/${action}`, {
         method: "POST",
@@ -364,10 +419,14 @@ export function installListenerRequests({
       const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
       later(() => say(done), ANNOUNCE_DELAY_MS);
     } catch (error) {
-      button.removeAttribute("aria-disabled");
-      say(error?.message || "That did not work.", "error");
+      // Answered after a station switch: done, or not, on the old station.
+      const left = staleActionText(error);
+      say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
     } finally {
+      stopPending();
       busy = false;
+      button.classList.remove("is-pending");
+      button.removeAttribute("aria-busy");
     }
   });
 
