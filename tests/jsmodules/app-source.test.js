@@ -2030,6 +2030,8 @@ describe("app request behavior", () => {
       original.focus();
       original.click();
       await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      // The row went and came back: a new button for the same song.
+      renderQueue([], els);
       renderQueue([{ path: "M:/song.flac", title: "Song" }], els);
       const replacement = queueList.querySelector('[data-action="info"]');
       expect(replacement).not.toBe(original);
