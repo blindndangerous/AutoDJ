@@ -650,6 +650,7 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-cancel").click();
   await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
+  await page.locator("#clock-new-step").click();
   const condition = page.locator("#clock-step-conditions").getByRole("group").first();
   await condition.getByLabel("Condition type", { exact: true }).selectOption("title");
   await condition.getByLabel("Value", { exact: true }).fill("Audit");
@@ -668,6 +669,7 @@ async function openDaypartErrors(page, visit) {
   await visit("library/ad-step-error");
   await page.locator("#clock-step-ad-seconds").fill("0");
   await page.locator("#clock-step-type").selectOption("music");
+  await page.locator("#clock-cancel-edit").click();
 }
 
 // Library tools: an automatic rescan under 5 minutes refused in the
