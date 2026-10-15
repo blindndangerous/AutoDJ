@@ -2202,6 +2202,69 @@ describe("app request behavior", () => {
     }
   });
 
+  it("steps back from the last page after Go to a page past it", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const asked = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      const { fetchImpl } = await setupApp({
+        onRequest: (url) => {
+          if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
+          // The server keeps a page past the last to the last.
+          const page = Math.max(1, Math.min(asked(url), 3));
+          return jsonResponse({ total: 120, page, pages: 3, items: [
+            { event_id: `p${page}`, played_at: "2026-01-01T00:00:00Z", path: `M:/${page}.flac`,
+              title: `Song ${page}`, artist: "A", duration: 60 },
+          ] });
+        },
+      });
+      const info = document.querySelector("#hist-page-info");
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 1 of 3"));
+      document.querySelector("#hist-goto").value = "9";
+      document.querySelector("#hist-go").click();
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 3 of 3"));
+      document.querySelector("#hist-prev").click();
+      await vi.waitFor(() => expect(info.textContent).toBe("Page 2 of 3"));
+      const pages = fetchImpl.mock.calls.map(([url]) => url)
+        .filter((url) => url.startsWith("/api/history")).map(asked);
+      expect(pages.slice(-2)).toEqual([9, 2]);
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
+  it("puts focus on Refresh history when a failed Next hides the pager", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    window.location.hash = "#history";
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const asked = (url) => Number(new URL(url, "http://x").searchParams.get("page"));
+    try {
+      await setupApp({
+        onRequest: (url) => {
+          if (!url.startsWith("/api/history")) return jsonResponse({ ok: true });
+          if (asked(url) === 2) return jsonResponse({ detail: "History offline" }, 503);
+          return jsonResponse({ total: 60, page: 1, pages: 2, items: [
+            { event_id: "one", played_at: "2026-01-01T00:00:00Z", path: "M:/1.flac",
+              title: "One", artist: "A", duration: 60 },
+          ] });
+        },
+      });
+      const next = document.querySelector("#hist-next");
+      await vi.waitFor(() => expect(next.getAttribute("aria-disabled")).toBe("false"));
+      next.focus();
+      next.click();
+      await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+        .toBe("Could not load history: History offline"));
+      expect(document.querySelector("#history-pagination").hidden).toBe(true);
+      expect(document.activeElement).toBe(document.querySelector("#hist-refresh"));
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
   it("clears stale history and exposes a current load failure", async () => {
     await setupApp({
       onRequest: (url) => url.startsWith("/api/history")

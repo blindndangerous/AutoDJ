@@ -2822,6 +2822,9 @@ async function fetchHistory(page, { announce = false } = {}) {
       signal: request.signal,
     });
     if (request.signal.aborted) return;
+    // The server keeps a page past the last to the last page; Previous
+    // and Next step from the page it sent.
+    if (Number.isInteger(data.page) && data.page > 0) _histPage = data.page;
     const tbody = document.getElementById("history-tbody");
     const table = document.getElementById("history-table");
     const empty = document.getElementById("history-empty");
@@ -2898,10 +2901,15 @@ async function fetchHistory(page, { announce = false } = {}) {
         { dwellMs: 6000, force: true, tone: "error" });
       return;
     }
+    // Focus on a row or a pager button about to be hidden would fall to
+    // the page body (WCAG 2.4.3); it goes to Refresh history, which tries
+    // the same page again.
+    const focusHidden = [tbody, pag].some((element) => element?.contains(document.activeElement));
     if (tbody) tbody.replaceChildren();
     historyNavigation.refresh();
     if (table) table.setAttribute("hidden", "");
     if (pag) pag.setAttribute("hidden", "");
+    if (focusHidden) document.getElementById("hist-refresh")?.focus();
     if (empty) {
       empty.textContent = `Could not load history: ${err.message}`;
       empty.removeAttribute("hidden");
