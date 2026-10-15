@@ -258,6 +258,22 @@ def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     assert points["segue"] is None
 
 
+def test_music_segue_requires_a_quiet_final_suffix_including_partial_bin() -> None:
+    rate = processing.SAMPLE_RATE
+    audio = np.full(rate * 12 + rate // 2, 0.2, dtype=np.float32)
+    audio[rate * 2 : rate * 5] = 0.0  # Interior breakdown followed by a loud return.
+    assert processing._suggest_segue(audio, rate) is None
+
+    audio[rate * 7 :] = 0.0
+    assert processing._suggest_segue(audio, rate) == pytest.approx(7.0)
+
+    audio[-rate // 2 :] = 0.2  # A loud return in the fractional final bin cancels the cue.
+    assert processing._suggest_segue(audio, rate) is None
+
+    assert processing._suggest_segue(np.full(rate * 6 - 1, 0.2), rate) is None
+    assert processing._suggest_segue(np.full(rate * 8, 0.2), rate) is None
+
+
 def test_liner_segue_uses_only_a_sustained_final_drop() -> None:
     rate = processing.SAMPLE_RATE
     audio = np.full(rate * 6, 0.2, dtype=np.float32)

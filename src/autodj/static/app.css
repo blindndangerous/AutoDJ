@@ -1310,7 +1310,9 @@
     details.card > summary {
       list-style: none;
       cursor: pointer;
-      padding: 1rem 1.25rem;
+      /* The right side leaves room for the marker, so a title that wraps
+         at 320 px never runs under it. */
+      padding: 1rem 2.75rem 1rem 1.25rem;
       user-select: none;
       position: relative;
       /* Heading appearance for the card title (an <h2> inside the
@@ -1323,7 +1325,7 @@
     }
     /* The card title is an <h2> inside the summary so heading navigation
        reaches every card.  It takes the summary's look, not .card h2. */
-    details.card > summary > :is(h2, h3) {
+    details.card > summary > :is(h2, h3, h4) {
       display: inline;
       margin: 0;
       font: inherit;
@@ -1360,6 +1362,27 @@
     details.card > button {
       padding: 0.55rem 1.1rem;
       margin: 0 1.25rem 1rem;
+    }
+    /* A fieldset that is the whole body of a card (Repeats, More formats)
+       is named by the card's heading and framed by the card, so it drops
+       its own frame. */
+    details.card > fieldset {
+      border: 0;
+      margin: 0;
+    }
+    /* A card inside a Settings group stands where a fieldset stood, so it
+       keeps a fieldset's tighter inset: inside Stream's own fieldset the
+       card's usual 1.25rem left too little room for a field at 320 px. */
+    .card details.card > summary {
+      padding: 0.75rem 2.25rem 0.75rem 0.75rem;
+    }
+    .card details.card > summary::after { right: 0.75rem; }
+    .card details.card > *:not(summary) {
+      padding: 0 0.75rem 0.75rem;
+    }
+    .card details.card > button {
+      padding: 0.55rem 1.1rem;
+      margin: 0 0.75rem 0.75rem;
     }
 
     /* ---- Library tools ---- */
@@ -1508,11 +1531,11 @@
       width: min(100%, 16rem);
       height: 1.25rem;
     }
-    #rotation-results h4 {
+    #rotation-results h5 {
       font-size: 1rem;
       margin: 1rem 0 0.5rem;
     }
-    #rotation-results h5 {
+    #rotation-results h6 {
       font-size: 0.95rem;
       margin: 0.75rem 0 0.25rem;
     }

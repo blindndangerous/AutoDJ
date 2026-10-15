@@ -11,7 +11,7 @@ import {
 } from "../../src/autodj/static/modules/stream-formats.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-const start = html.indexOf('<fieldset id="stream-formats">');
+const start = html.indexOf('<fieldset id="stream-formats"');
 const fieldset = html.slice(start, html.indexOf("</fieldset>", start) + "</fieldset>".length);
 
 const INFO = {

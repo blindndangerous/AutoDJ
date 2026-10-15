@@ -23,20 +23,31 @@ describe("playback controls grouping", () => {
 });
 
 describe("card headings", () => {
-  it("gives every card a level-two heading inside its disclosure summary", () => {
-    // Track info's cards sit under its own h2, so theirs are h3s (#297).
+  it("gives every card a heading inside its disclosure summary, one level below its context", () => {
+    // Track info's, Ads' and Carts' cards sit under the view's own h2, so
+    // theirs are h3s (#297); a card inside a Settings group sits under the
+    // group's h3, so it has an h4.  The rest are h2s.
     installIndex();
     const summaries = [...document.querySelectorAll("details.card > summary")];
     expect(summaries.length).toBeGreaterThan(0);
+    const expectedLevel = (summary) => {
+      if (summary.closest("#panel-settings [role='tabpanel']")) return "H4";
+      if (summary.closest("#panel-track-info, #panel-ads, #panel-carts")) return "H3";
+      return "H2";
+    };
     for (const summary of summaries) {
       const headings = summary.querySelectorAll("h1, h2, h3, h4, h5, h6");
       expect(headings, summary.textContent.trim()).toHaveLength(1);
-      expect(headings[0].tagName).toBe(summary.closest("#panel-track-info") ? "H3" : "H2");
+      expect(headings[0].tagName, summary.textContent.trim()).toBe(expectedLevel(summary));
       expect(headings[0].parentElement).toBe(summary);
+      // Native details carries the state; the name is the heading alone.
+      expect(summary.hasAttribute("aria-expanded")).toBe(false);
+      expect(summary.hasAttribute("aria-label")).toBe(false);
     }
     // Library h3s and the voice-liner "Files" h3 now sit under an h2.
     for (const h3 of document.querySelectorAll("main h3")) {
       if (h3.closest("#panel-track-info")) continue;
+      if (h3.parentElement.tagName === "SUMMARY") continue;
       const card = h3.closest("details.card");
       expect(card?.querySelector(":scope > summary > h2"), h3.textContent).not.toBeNull();
     }

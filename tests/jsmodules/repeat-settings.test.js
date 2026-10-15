@@ -85,7 +85,14 @@ describe("Repeats markup", () => {
   it("groups each rule under a legend and labels every box", () => {
     const els = installPage();
     const outer = els.save.closest("fieldset");
-    expect(outer.querySelector(":scope > legend").textContent).toBe("Repeats");
+    // Repeats is a card closed by default; the heading in its summary
+    // names the outer group.
+    const card = outer.parentElement;
+    expect(card.matches("details.card:not([open])")).toBe(true);
+    const heading = card.querySelector(":scope > summary > h4");
+    expect(heading.textContent).toBe("Repeats");
+    expect(outer.getAttribute("aria-labelledby")).toBe(heading.id);
+    expect(outer.querySelector(":scope > legend")).toBeNull();
     const groups = [...outer.querySelectorAll(":scope > fieldset")];
     expect(groups.map((group) => group.querySelector(":scope > legend").textContent)).toEqual([
       "Prevent the same artist from repeating within",
@@ -415,8 +422,12 @@ describe("repeat settings", () => {
   it("keeps invalid edits, marks and focuses the field, names its rule, and clears when fixed", async () => {
     const { els, postSettings, settingsStatus } = setup();
     applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    // The Repeats card is closed by default; focusing a refused box opens it.
+    const card = els.save.closest("details");
+    expect(card.open).toBe(false);
     type(els.artistTracks, "1.5");
     els.save.click();
+    expect(card.open).toBe(true);
     expect(els.artistTracks.value).toBe("1.5");
     expect(els.artistTracks.getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(els.artistTracks);
