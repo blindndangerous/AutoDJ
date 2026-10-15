@@ -24,7 +24,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SKIP_FADE_FRAMES = int(0.15 * SAMPLE_RATE)
-_DUCK_RAMP_FRAMES = int(0.04 * SAMPLE_RATE)
+_DUCK_RAMP_FRAMES = int(0.25 * SAMPLE_RATE)
+_LINER_FADE_FRAMES = int(0.04 * SAMPLE_RATE)
 # Frames over which a skip effect that is installed late takes over.
 _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 # Blocks :meth:`MixBus.run` may render back to back to make up for a late
@@ -646,13 +647,13 @@ class MixBus:
         if self._liner is not None:
             previous = self._replaced_liner
             previous_pos = self._replaced_liner_pos
-            self._replaced_liner = np.zeros((_DUCK_RAMP_FRAMES, 2), dtype=np.float32)
-            tail = self._liner[self._liner_pos : self._liner_pos + _DUCK_RAMP_FRAMES]
+            self._replaced_liner = np.zeros((_LINER_FADE_FRAMES, 2), dtype=np.float32)
+            tail = self._liner[self._liner_pos : self._liner_pos + _LINER_FADE_FRAMES]
             self._replaced_liner[: len(tail)] = tail
             if previous is not None:
-                frames = min(_DUCK_RAMP_FRAMES, len(previous) - previous_pos)
+                frames = min(_LINER_FADE_FRAMES, len(previous) - previous_pos)
                 positions = np.arange(previous_pos, previous_pos + frames)
-                old_gain = (1.0 - positions / _DUCK_RAMP_FRAMES).astype(np.float32)[:, None]
+                old_gain = (1.0 - positions / _LINER_FADE_FRAMES).astype(np.float32)[:, None]
                 self._replaced_liner[:frames] *= 1.0 - old_gain
                 self._replaced_liner[:frames] += (
                     previous[previous_pos : previous_pos + frames] * old_gain
@@ -665,13 +666,13 @@ class MixBus:
     def stop_liner(self) -> None:
         """Fade out the liner that is playing; the music comes back up when it ends.
 
-        The fade takes 40 ms, like the duck ramp, so the stop does not
-        click.  A liner cued for later is left waiting.
+        The fade takes 40 ms so the stop does not click. A liner cued for
+        later is left waiting.
         """
         with self._lock:
             if self._liner is None:
                 return
-            tail = self._liner[self._liner_pos : self._liner_pos + _DUCK_RAMP_FRAMES]
+            tail = self._liner[self._liner_pos : self._liner_pos + _LINER_FADE_FRAMES]
             fade = np.linspace(1.0, 0.0, len(tail), dtype=np.float32)[:, None]
             self._liner = tail * fade
             self._liner_pos = 0
@@ -821,7 +822,7 @@ class MixBus:
 
         Fixes the per-sample step once, at the moment the target changes,
         so the full swing always takes exactly ``_DUCK_RAMP_FRAMES``
-        (40 ms) regardless of how many blocks it is consumed across.
+        (250 ms) regardless of how many blocks it is consumed across.
         """
         self._duck_target = target
         self._duck_step = (target - self._duck_gain) / _DUCK_RAMP_FRAMES
@@ -834,9 +835,8 @@ class MixBus:
         set, then holds at the target once the ramp is spent — never
         stepping instantly and clicking.  Done in one compiled pass (see
         :mod:`autodj.kernels`); at full level with no liner it is skipped.
-        Assumes a block never runs past the ramp frames remaining while the
-        ramp is in progress, which holds because ``_DUCK_RAMP_FRAMES`` is a
-        whole multiple of ``MixBus.BLOCK``.
+        A block may contain the ramp's final frames followed by its held
+        target; ``ramp_frames`` bounds the compiled ramp to the exact end.
         """
         ramp_frames = max(0, min(self._duck_remaining, len(block)))
         if not ramp_frames and self._duck_target == 1.0 and self._liner is None:
@@ -856,7 +856,7 @@ class MixBus:
             frames = min(len(block), remaining)
             if frames:
                 positions = np.arange(self._replaced_liner_pos, self._replaced_liner_pos + frames)
-                old_gain = (1.0 - positions / _DUCK_RAMP_FRAMES).astype(np.float32)[:, None]
+                old_gain = (1.0 - positions / _LINER_FADE_FRAMES).astype(np.float32)[:, None]
                 block[:frames] += (
                     self._replaced_liner[
                         self._replaced_liner_pos : self._replaced_liner_pos + frames

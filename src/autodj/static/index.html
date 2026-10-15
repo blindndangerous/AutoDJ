@@ -1657,12 +1657,11 @@
         Random picks any liner each time.  Sequential plays them in file-name order and starts again after the last one.
       </span>
       <div class="settings-row">
-        <label for="ln-duck-db">Duck depth (decibels)</label>
-        <input type="number" id="ln-duck-db" min="-30" max="0" step="1" value="-12" inputmode="decimal"
-              >
+        <label for="ln-duck-db">Music duck (dB)</label>
+        <input type="number" id="ln-duck-db" min="0" max="30" step="1" value="3" inputmode="decimal">
       </div>
       <span class="setting-desc" id="ln-duck-db-desc">
-        Lower the music during live liner overlays: 0 leaves it unchanged; minus 30 makes it very quiet. The default is minus 12. Saved segue playback fits liners using their cues and does not use this duck.
+        How far the music drops under liners, from 0 to 30 dB. The default is 3 dB; 0 leaves music unchanged. Applies to overlays and scheduled IDs, with smooth fades down and back up.
       </span>
       <div class="settings-check">
         <input type="checkbox" id="ln-talk-up">

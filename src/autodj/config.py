@@ -528,7 +528,7 @@ class PlaybackConfig(_Section):
     liners_random_min_minutes: float | None = None
     liners_random_max_minutes: float | None = None
     liners_pick_mode: str = "random"
-    liners_duck_db: float = -12.0
+    liners_duck_db: float = -3.0
     # Matched song intros may take the automatic liner slot unless this is enabled.
     matched_intro_only_without_liner: bool = False
     # Server mix only: time a liner due at a track start to end just

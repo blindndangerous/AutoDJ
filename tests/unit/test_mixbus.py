@@ -164,8 +164,8 @@ def test_eq_boost_without_master_is_bounded() -> None:
 def test_liner_ducks_music_and_is_mixed_in() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000)])
     bus.start_set()
-    bus.play_liner(np.full((882 * 3, 2), 0.2, np.float32), duck_db=-12.0)
-    for _ in range(2):
+    bus.play_liner(np.full((882 * 20, 2), 0.2, np.float32), duck_db=-12.0)
+    for _ in range(13):
         bus.render_block()
     block = bus.render_block()
     duck = 10 ** (-12.0 / 20.0)
@@ -175,15 +175,18 @@ def test_liner_ducks_music_and_is_mixed_in() -> None:
 def test_liner_duck_ramps_rather_than_steps() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000)])
     bus.start_set()
-    bus.play_liner(np.zeros((882 * 3, 2), np.float32), duck_db=-12.0)
+    bus.play_liner(np.zeros((882 * 20, 2), np.float32), duck_db=-12.0)
     first = bus.render_block()
     duck_target = 10 ** (-12.0 / 20.0)
     # At the very start of the block the duck has barely moved...
     assert first[0, 0] == pytest.approx(0.5, abs=0.02)
-    # ...and by the end of the block (half of the 40 ms ramp) it is well
-    # below unity but not yet at the fully-ducked target: a ramp, not a step.
-    assert first[-1, 0] > 0.5 * duck_target + 0.05
+    # The first 20 ms block covers only one twelfth of the 250 ms ramp.
+    assert first[-1, 0] > 0.5 * duck_target + 0.25
     assert first[-1, 0] < first[0, 0]
+    blocks = [first, *(bus.render_block() for _ in range(12))]
+    assert blocks[11][-1, 0] > 0.5 * duck_target
+    assert blocks[12][-1, 0] == pytest.approx(0.5 * duck_target, abs=1e-6)
+    assert bus.render_block()[-1, 0] == pytest.approx(0.5 * duck_target, abs=1e-6)
 
 
 def test_music_returns_to_full_level_after_liner_ends() -> None:
@@ -192,7 +195,7 @@ def test_music_returns_to_full_level_after_liner_ends() -> None:
     bus.play_liner(np.zeros((882, 2), np.float32), duck_db=-12.0)
     bus.render_block()  # the liner plays out and ends within this one block
     block = bus.render_block()
-    for _ in range(2):
+    for _ in range(12):
         block = bus.render_block()
     np.testing.assert_allclose(block[:, 0], 0.5, atol=0.01)
 
@@ -201,14 +204,14 @@ def test_stop_liner_fades_the_liner_out_and_brings_the_music_back() -> None:
     bus, _, _ = _bus([_track(0.5, 50_000)])
     bus.start_set()
     bus.play_liner(np.full((882 * 50, 2), 0.2, np.float32), duck_db=float("-inf"))
-    for _ in range(3):
+    for _ in range(14):
         silenced = bus.render_block()
     np.testing.assert_allclose(silenced[:, 0], 0.2, atol=1e-6)  # music replaced
     bus.stop_liner()
     fade = np.concatenate([bus.render_block(), bus.render_block()])
     # The liner falls away over 40 ms instead of cutting off with a click.
     assert np.all(np.diff(fade[:, 0]) <= 1e-6)
-    for _ in range(3):
+    for _ in range(14):
         block = bus.render_block()
     np.testing.assert_allclose(block[:, 0], 0.5, atol=1e-6)
     bus.stop_liner()  # nothing playing: no effect

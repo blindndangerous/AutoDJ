@@ -158,6 +158,8 @@ def render_handoff(
     outro_lead_limit: float | None = 0.0,
     duck_spans: tuple[tuple[float, float], ...] = (),
     duck_db: float = 0.0,
+    liner_duck_spans: tuple[tuple[float, float], ...] = (),
+    liner_duck_db: float = 0.0,
 ) -> Handoff:
     """Plan a handoff from saved points without rendering incoming music.
 
@@ -284,25 +286,41 @@ def render_handoff(
         fade_end,
         (liner_start + liner_frames) if liner_start is not None else incoming_frame,
     )
+    if liner_start is not None:
+        for spans, depth in ((duck_spans, duck_db), (liner_duck_spans, liner_duck_db)):
+            if depth < 0 and spans:
+                # Keep the incoming head through release so the next chunk cannot jump up.
+                overlay_end = max(
+                    overlay_end,
+                    liner_start
+                    + max(_frames(last, "duck span") for _, last in spans)
+                    + _frames(DUCK_RAMP_SECONDS, "duck ramp"),
+                )
     # One buffer for the chunk and the overlay, split at the incoming frame.
     full = outgoing_segment(chunk_start, overlay_end)
     split = max(0, incoming_frame - chunk_start)
     envelope = None
-    if liner is not None and liner_start is not None and duck_spans and duck_db < 0:
-        if not math.isfinite(duck_db):
-            raise ValueError("duck_db must be finite")
-        envelope = duck_envelope(
-            len(full),
-            tuple(
-                (
-                    liner_start - chunk_start + _frames(first, "duck span"),
-                    liner_start - chunk_start + _frames(last, "duck span"),
-                )
-                for first, last in duck_spans
-            ),
-            float(10 ** (duck_db / 20)),
-            _frames(DUCK_RAMP_SECONDS, "duck ramp"),
-        )
+    if liner is not None and liner_start is not None:
+        for spans, depth in ((duck_spans, duck_db), (liner_duck_spans, liner_duck_db)):
+            if not math.isfinite(depth):
+                raise ValueError("duck_db must be finite")
+            if not spans or depth >= 0:
+                continue
+            gain = duck_envelope(
+                len(full),
+                tuple(
+                    (
+                        liner_start - chunk_start + _frames(first, "duck span"),
+                        liner_start - chunk_start + _frames(last, "duck span"),
+                    )
+                    for first, last in spans
+                ),
+                float(10 ** (depth / 20)),
+                _frames(DUCK_RAMP_SECONDS, "duck ramp"),
+            )
+            if gain is not None:
+                # Adjacent voice/ID ramps use the deeper duck, never a doubled drop.
+                envelope = gain if envelope is None else np.minimum(envelope, gain)
         if envelope is not None:
             full *= envelope[:, None]
     if liner is not None and liner_start is not None:

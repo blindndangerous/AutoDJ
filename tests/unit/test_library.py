@@ -125,12 +125,12 @@ def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None
 
 
 def fake_loudness(path: Path, kind: str = "music") -> dict:
-    from autodj.processing import PREPARATION_VERSION, TARGET_LUFS
+    from autodj.processing import LINER_PREPARATION_VERSION, PREPARATION_VERSION, TARGET_LUFS
 
     stat = path.stat()
     lufs = TARGET_LUFS[kind] - 2.0
     return {
-        "version": PREPARATION_VERSION,
+        "version": PREPARATION_VERSION if kind == "music" else LINER_PREPARATION_VERSION,
         "kind": kind,
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,

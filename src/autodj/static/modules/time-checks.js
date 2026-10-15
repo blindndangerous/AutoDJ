@@ -602,7 +602,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
   async function playHere(pack = "") {
     const query = pack ? `?pack=${encodeURIComponent(pack)}` : "";
     const audio = await binary(`/api/time-checks/preview${query}`);
-    return playLiner(audio, settings?.duck_db ?? -12);
+    return playLiner(audio, settings?.duck_db ?? -3);
   }
 
   async function testNow() {
