@@ -40,6 +40,30 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
+  it("names the heading in another column and the song on another row", () => {
+    document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th></tr></thead><tbody id="rows">
+      <tr><td role="gridcell" data-name>Song 1</td><td role="gridcell">Band 1</td></tr>
+      <tr><td role="gridcell" data-name>Song 2</td><td role="gridcell">Band 2</td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [song1, band1, song2, band2] = body.querySelectorAll("td");
+    song1.focus();
+    song1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(band1);
+    expect(band1.getAttribute("aria-label")).toBe("Artist, Band 1");
+    band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(band2);
+    expect(band1.hasAttribute("aria-label")).toBe(false);
+    expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
+    band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    expect(song2.getAttribute("aria-label")).toBe("Title, Song 2");
+    band2.innerHTML = '<button aria-label="Track info for Song 2">Track info</button>';
+    song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(band2);
+    expect(band2.hasAttribute("aria-label")).toBe(false);
+  });
+
   it("moves between data rows across browsable date headings", () => {
     document.body.innerHTML = `<table><tbody id="rows">
       <tr><td role="gridcell">Newer</td></tr>
