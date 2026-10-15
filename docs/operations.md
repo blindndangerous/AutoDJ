@@ -1889,7 +1889,17 @@ AutoDJ never loads the library into the server itself. Each station that uses St
 a small helper process of AutoDJ's own (`python -m autodj.stereotool_host`) that loads the library
 and turns it into a pipe; the mix goes through it and then through AutoDJ's output limiter. If
 Thimeo's code crashes, only that helper ends: the station plays on with its limited bypass and
-starts Stereo Tool again.
+starts Stereo Tool again. The library prints its own messages too, such as ALSA and JACK
+complaints ("Unknown PCM dmix", "jack server is not running") because it looks for sound cards it
+does not use. AutoDJ discards them: they never reach its log or the page.
+
+**Delay.** A preset adds its own delay (about 100 ms for a typical broadcast preset). The helper
+measures it when Stereo Tool starts and drops that much of Stereo Tool's first output, so the
+processed audio stays in time with the mix and the station's advertised delay stays the same
+480 ms as with Smooth processing; nothing adds the preset's delay on top. A preset whose delay is
+over about 160 ms makes Stereo Tool take longer to take over from the bypass when it starts. The
+log line "Stereo Tool 11.05 started; its preset adds 100.6 ms, dropped to stay in time (preset
+load type 20386)" gives the measured delay and how the preset was loaded.
 
 The download only ever fetches Thimeo's own plugin: the page sends no address and no file, the
 server follows redirects only to thimeo.com hosts over HTTPS, refuses a zip over 768 MB, takes out

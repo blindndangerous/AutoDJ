@@ -504,6 +504,7 @@ class ContinuousMaster:
         for name, kind in (
             ("version", str),
             ("latency_ms", (int, float)),
+            ("preset_load_type", int),
             ("licensed", bool),
             ("unlicensed", str),
             ("error", str),
@@ -516,9 +517,11 @@ class ContinuousMaster:
             self._stereotool_report.update(kept)
         if "version" in kept or "latency_ms" in kept:
             logger.info(
-                "Stereo Tool %s started; its preset adds %s ms",
+                "Stereo Tool %s started; its preset adds %s ms, dropped to stay in time "
+                "(preset load type %s)",
                 kept.get("version", "(version unknown)"),
                 kept.get("latency_ms", "?"),
+                kept.get("preset_load_type", "?"),
             )
         if kept.get("licensed") is True:
             logger.info("Stereo Tool says its licence covers this preset")

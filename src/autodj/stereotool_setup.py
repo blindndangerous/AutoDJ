@@ -468,9 +468,20 @@ def plugin_version(top: str) -> str | None:
     return f"{int(digits[:-2])}.{digits[-2:]}"
 
 
+def _member_name(name: str) -> str:
+    """A zip member name with ``/`` separators.
+
+    Thimeo's zip names its members with backslashes
+    (``libStereoTool_1105\\lib\\Linux\\...``), which Python's zipfile keeps
+    as they are except on Windows, so a backslash counts as a separator.
+    """
+    return name.replace("\\", "/")
+
+
 def _safe_name(name: str) -> bool:
     """Whether a zip member name stays inside the folder it is unpacked in."""
-    if not name or "\\" in name or "\0" in name or name.startswith("/") or ":" in name:
+    name = _member_name(name)
+    if not name or "\0" in name or name.startswith("/") or ":" in name:
         return False
     return ".." not in PurePosixPath(name).parts
 
@@ -497,7 +508,9 @@ def extract_library(archive: Path, build: Build, out: BinaryIO) -> str | None:
                     "Thimeo's download names a file outside its own folder, so nothing was "
                     "installed."
                 )
-            top, _, rest = info.filename.partition("/")
+            # Only the library straight in the build's folder: never the
+            # copy in a Kantar subfolder (Thimeo's watermarking build).
+            top, _, rest = _member_name(info.filename).partition("/")
             if rest == f"lib/{build.member}" and _TOP.fullmatch(top):
                 found.append((top, info))
         if len(found) != 1:

@@ -90,7 +90,7 @@ def _library(*, create3: bool = True, presets: tuple[bool, ...] = (True,), licen
         "stereoTool_LoadPreset": lambda *_args: next(answers),
         "stereoTool_CheckLicenseValid": licensed,
         "stereoTool_GetUnlicensedUsedFeatures": unlicensed,
-        "stereoTool_GetSoftwareVersion": 1105,
+        "stereoTool_GetSoftwareVersion": 11050,  # what 11.05 really returns
         "stereoTool_GetLatency2": 441,
         "stereoTool_global_setBindIp": None,
     }
@@ -123,6 +123,7 @@ def test_stereo_tool_starts_with_the_key_on_this_computer_only_and_zeroes_it() -
     assert set(key) == {0}
     assert calls[2][1][1:] == [b"/presets/Night.sts", host.LOAD_ALL_SETTINGS]
     assert engine.version() == "11.05"
+    assert engine.load_type == host.LOAD_ALL_SETTINGS
     assert engine.latency_frames() == 441
     assert engine.licence() == (True, None)
     engine.close()
@@ -140,9 +141,10 @@ def test_an_old_library_without_create3_uses_create() -> None:
 
 def test_the_older_load_type_is_tried_when_the_new_one_is_refused() -> None:
     lib, calls = _library(presets=(False, True))
-    host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
+    engine = host.StereoTool("lib.so", bytearray(), "p.sts", "h", loader=lambda _p: lib)
     loads = [args[2] for name, args in calls if name == "stereoTool_LoadPreset"]
     assert loads == [host.LOAD_ALL_SETTINGS, 10386]
+    assert engine.load_type == 10386
 
 
 def test_a_preset_that_will_not_load_stops_stereo_tool() -> None:
@@ -227,3 +229,18 @@ def test_main_says_a_missing_library_and_never_the_key(monkeypatch, capsys, tmp_
     assert values["missing"] is True
     assert "is not there" in values["error"]
     assert KEY not in err
+
+
+@pytest.mark.parametrize(
+    ("number", "version"),
+    [
+        (11050, "11.05"),
+        (11051, "11.05.1"),
+        (10920, "10.92"),
+        (1105, "11.05"),
+        (912, "9.12"),
+        (0, None),
+    ],
+)
+def test_the_software_version_reads_as_thimeo_writes_it(number: int, version: str | None) -> None:
+    assert host.software_version(number) == version

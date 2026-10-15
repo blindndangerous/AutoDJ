@@ -54,6 +54,9 @@ def _zip(entries: dict[str, bytes], *, links: tuple[str, ...] = ()) -> bytes:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in entries.items():
             info = zipfile.ZipInfo(name)
+            # Kept as written: ZipInfo turns backslashes into slashes on
+            # Windows, and Thimeo's zip has backslashes.
+            info.filename = name
             info.compress_type = zipfile.ZIP_DEFLATED
             if name in links:
                 info.external_attr = (stat.S_IFLNK | 0o777) << 16
@@ -442,12 +445,10 @@ def test_a_file_that_is_not_a_library_for_this_computer_is_refused(
         "../evil.so",
         f"{TOP}/../../evil.so",
         "/etc/cron.d/evil",
-        pytest.param(
-            f"{TOP}\\lib\\evil.dll",
-            marks=pytest.mark.skipif(
-                os.name == "nt", reason="zipfile reads a backslash as a separator on Windows"
-            ),
-        ),
+        # Thimeo's own names use backslashes, so these are traversal too.
+        f"{TOP}\\..\\..\\evil.so",
+        "\\evil.so",
+        "C:\\Windows\\evil.dll",
         "C:/Windows/evil.dll",
     ],
 )
@@ -458,6 +459,34 @@ def test_a_zip_with_a_name_outside_its_folder_is_refused(tmp_path: Path, name: s
         setup.install(tmp_path, build=build, open_url=_thimeo(body))
     assert not (tmp_path / "evil.so").exists()
     assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("build", "kantar"),
+    [
+        (setup._LINUX_X86_64, "Linux\\IntelAMD\\64\\Kantar\\libStereoTool_intel64.so"),
+        (setup._LINUX_ARM64, "Linux\\ARM\\64\\Kantar\\libStereoTool_noX11_arm64.so"),
+        (setup._WINDOWS_X64, "Windows\\64\\Kantar\\libStereoTool_64.dll"),
+    ],
+)
+def test_thimeos_backslash_names_are_read_and_the_kantar_copy_never_picked(
+    tmp_path: Path, build: setup.Build, kantar: str
+) -> None:
+    """The member names exactly as Thimeo's 11.05 zip writes them, on any platform."""
+    real = _elf(build.machine) if build.kind == "elf" else _pe()
+    member = "libStereoTool_1105\\lib\\" + build.member.replace("/", "\\")
+    entries = {
+        "libStereoTool_1105\\include\\libStereoTool.h": b"// header",
+        "libStereoTool_1105\\lib\\Linux\\IntelAMD\\64\\libStereoToolX11_intel64.so": _elf(),
+        "libStereoTool_1105\\lib\\Linux\\IntelAMD\\64\\Kantar\\libStereoToolX11_intel64.so": _elf(),
+        f"libStereoTool_1105\\lib\\{kantar}": real + b"KANTAR WATERMARKING BUILD",
+        member: real,
+    }
+    archive = tmp_path / "plugin.zip"
+    archive.write_bytes(_zip(entries))
+    out = io.BytesIO()
+    assert setup.extract_library(archive, build, out) == "11.05"
+    assert out.getvalue() == real
 
 
 def test_a_library_that_is_a_link_is_refused(tmp_path: Path) -> None:
@@ -826,3 +855,21 @@ def test_a_licence_problem_is_logged_once_without_any_key(tmp_path: Path, caplog
     messages = [record.getMessage() for record in caplog.records]
     assert len(messages) == 1
     assert KEY not in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("name", "safe"),
+    [
+        (r"libStereoTool_1105\lib\Linux\IntelAMD\64\libStereoTool_intel64.so", True),
+        ("libStereoTool_1105/lib/Windows/64/libStereoTool_64.dll", True),
+        (r"libStereoTool_1105\..\..\evil.so", False),
+        (r"\evil.so", False),
+        (r"C:\evil.dll", False),
+        ("libStereoTool_1105\\lib\\evil\0.so", False),
+    ],
+)
+def test_a_backslash_in_a_member_name_is_a_separator(name: str, safe: bool) -> None:
+    """Checked without zipfile, which converts backslashes itself only on Windows."""
+    assert setup._safe_name(name) is safe
+    if safe:
+        assert "\\" not in setup._member_name(name)

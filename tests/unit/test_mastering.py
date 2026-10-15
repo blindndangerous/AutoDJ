@@ -646,16 +646,20 @@ def test_licence_reports_are_logged_without_any_key(caplog) -> None:
     master = ContinuousMaster(mode=lambda: "smooth")
     try:
         with caplog.at_level(logging.INFO, logger="autodj.mastering"):
-            master._note_report({"version": "11.05", "latency_ms": 12.5, "ignored": "x"})
+            master._note_report(
+                {"version": "11.05", "latency_ms": 12.5, "preset_load_type": 20386, "ignored": "x"}
+            )
             master._note_report({"licensed": False, "unlicensed": "Declipper"})
         assert master.stereotool_report == {
             "version": "11.05",
             "latency_ms": 12.5,
+            "preset_load_type": 20386,
             "licensed": False,
             "unlicensed": "Declipper",
         }
         text = " ".join(record.getMessage() for record in caplog.records)
         assert "Stereo Tool 11.05 started" in text
+        assert "preset load type 20386" in text
         assert "not licensed for this preset: Declipper" in text
     finally:
         master.close()

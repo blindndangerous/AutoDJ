@@ -17,9 +17,10 @@ So the key is never on a command line or in the environment.  It is
 handed to ``stereoTool_Create3`` and the buffers that held it are zeroed.
 
 Stdout carries only audio.  Anything the library prints is sent to stderr,
-where AutoDJ's own report lines start with ``AUTODJ-STEREOTOOL `` and hold
-one JSON object: ``{"version": "11.05", "latency_ms": 12.3}`` once the
-preset is loaded, ``{"licensed": true, "unlicensed": null}`` once some
+(the library prints ALSA and JACK complaints there, and more), where
+AutoDJ's own report lines start with ``AUTODJ-STEREOTOOL `` and hold
+one JSON object: ``{"version": "11.05", "latency_ms": 12.3,
+"preset_load_type": 20386}`` once the preset is loaded, ``{"licensed": true, "unlicensed": null}`` once some
 audio has passed, or ``{"error": "..."}`` before it exits.  Every other
 stderr line is the library's and is ignored.  Nothing here prints the key.
 
@@ -165,10 +166,16 @@ class StereoTool:
             raise LibraryError("Stereo Tool did not start")
         self._handle = handle
         path = _c_path(preset)
-        if not (
-            lib.stereoTool_LoadPreset(handle, path, LOAD_ALL_SETTINGS)
-            or lib.stereoTool_LoadPreset(handle, path, _OLD_LOAD_ALL_SETTINGS)
-        ):
+        #: The load type the preset loaded with (20386 or the older 10386).
+        self.load_type = next(
+            (
+                load_type
+                for load_type in (LOAD_ALL_SETTINGS, _OLD_LOAD_ALL_SETTINGS)
+                if lib.stereoTool_LoadPreset(handle, path, load_type)
+            ),
+            None,
+        )
+        if self.load_type is None:
             self.close()
             raise ValueError(f"Stereo Tool could not load the preset {Path(preset).name}")
 
@@ -204,9 +211,8 @@ class StereoTool:
                 function.restype = result
 
     def version(self) -> str | None:
-        """The library's version, such as ``11.05`` (it reports ``1105``)."""
-        number = int(self._lib.stereoTool_GetSoftwareVersion())
-        return f"{number // 100}.{number % 100:02d}" if number > 0 else None
+        """The library's version, such as ``11.05``; see :func:`software_version`."""
+        return software_version(int(self._lib.stereoTool_GetSoftwareVersion()))
 
     def latency_frames(self) -> int:
         """Frames of delay the preset adds; feeds a little silence to find out."""
@@ -227,6 +233,22 @@ class StereoTool:
         handle, self._handle = getattr(self, "_handle", None), None
         if handle:
             self._lib.stereoTool_Delete(handle)
+
+
+def software_version(number: int) -> str | None:
+    """``11.05`` from what ``stereoTool_GetSoftwareVersion`` returns.
+
+    The header's example is ``912`` for 9.12, but the 11.05 library
+    returns ``11050``: two digits of minor version and one more digit, a
+    patch number shown only when it is not 0.
+    """
+    if number <= 0:
+        return None
+    if number < 10000:
+        return f"{number // 100}.{number % 100:02d}"
+    major, rest = divmod(number, 1000)
+    minor, patch = divmod(rest, 10)
+    return f"{major}.{minor:02d}" + (f".{patch}" if patch else "")
 
 
 def _load(library: str) -> ctypes.CDLL:
@@ -330,6 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             status,
             version=engine.version(),
             latency_ms=round(latency * 1000 / SAMPLE_RATE, 1),
+            preset_load_type=engine.load_type,
         )
         pump(engine, source, sink, status, skip_frames=latency)
     except (BrokenPipeError, OSError):
