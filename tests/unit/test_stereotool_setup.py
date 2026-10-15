@@ -1,54 +1,77 @@
-"""Getting Stereo Tool and its licence key (autodj.stereotool_setup).
+"""Getting Stereo Tool's plugin library and its licence key (autodj.stereotool_setup).
 
-Nothing here downloads the real Stereo Tool: every HTTP answer is a stand-in.
+Nothing here downloads the real Stereo Tool: every HTTP answer is a stand-in,
+and the "libraries" in the stand-in zips are only headers, never loaded.
 """
 
 from __future__ import annotations
 
 import io
-import json
 import logging
 import os
 import stat
 import subprocess
 import sys
 import urllib.error
+import zipfile
 from email.message import Message
 from pathlib import Path
 
 import pytest
 
 from autodj import stereotool_setup as setup
-from autodj.config import DEFAULT_STEREOTOOL_PATH
+from autodj.config import DEFAULT_STEREOTOOL_PATH, stereotool_library_name
 
 KEY = "<ABCD-1234-SECRET-KEY-5678>"
-
-LINUX = setup.Build(
-    "https://download.thimeo.com/stereo_tool_cmd_64", "Linux, 64-bit PC", "elf", frozenset({62})
-)
-WINDOWS = setup.Build(
-    "https://download.thimeo.com/stereo_tool_cmd.exe", "Windows", "pe", frozenset({0x8664})
-)
+TOP = "libStereoTool_1105"
 
 
-def _elf(machine: int = 62, size: int = 256) -> bytes:
-    head = bytearray(b"\x7fELF" + bytes([2, 1, 1]) + bytes(11))
-    head += machine.to_bytes(2, "little")
+def _elf(machine: int = 62, kind: int = 3, size: int = 256) -> bytes:
+    head = bytearray(b"\x7fELF" + bytes([2, 1, 1]) + bytes(9))
+    head += kind.to_bytes(2, "little") + machine.to_bytes(2, "little")
     return bytes(head) + bytes(size)
 
 
-def _pe(machine: int = 0x8664) -> bytes:
+def _pe(machine: int = 0x8664, dll: bool = True) -> bytes:
     data = bytearray(512)
     data[0:2] = b"MZ"
     data[60:64] = (128).to_bytes(4, "little")
     data[128:132] = b"PE\0\0"
     data[132:134] = machine.to_bytes(2, "little")
+    data[150:152] = (0x2022 if dll else 0x0022).to_bytes(2, "little")
     return bytes(data)
 
 
-def _program() -> tuple[setup.Build, bytes]:
-    """This platform's build and a file that passes its header check."""
-    return (WINDOWS, _pe()) if os.name == "nt" else (LINUX, _elf())
+def _build() -> tuple[setup.Build, bytes]:
+    """This computer's build (as if it had one) and a library header that passes."""
+    if os.name == "nt":
+        return setup._WINDOWS_X64, _pe()
+    return setup._LINUX_X86_64, _elf()
+
+
+def _zip(entries: dict[str, bytes], *, links: tuple[str, ...] = ()) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            info = zipfile.ZipInfo(name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            if name in links:
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(info, data)
+    return buffer.getvalue()
+
+
+def _plugin(build: setup.Build, library: bytes, top: str = TOP, **extra: bytes) -> bytes:
+    """A stand-in for Thimeo's plugin zip with *library* at *build*'s place."""
+    entries = {
+        f"{top}/include/libStereoTool.h": b"// header",
+        f"{top}/lib/Linux/IntelAMD/64/libStereoToolX11_intel64.so": _elf(),
+        f"{top}/lib/Linux/ARM/64/libStereoTool_arm64.so": _elf(183),
+        f"{top}/lib/Windows/32/libStereoTool_32.dll": _pe(0x14C),
+        f"{top}/lib/{build.member}": library,
+    }
+    entries.update(extra)
+    return _zip(entries)
 
 
 class _Response:
@@ -86,27 +109,30 @@ def _server(answers: dict[str, object]):
     return open_url
 
 
-def _runs(output: bytes = b"Stereo Tool 11.05\n", code: int | None = 0):
-    """A stand-in runner: (argv, folder, timeout) to (exit code, output)."""
-    calls: list[list[str]] = []
-
-    def run(argv, cwd, timeout):
-        calls.append(argv)
-        assert cwd == str(Path(argv[0]).parent)
-        assert timeout > 0
-        return code, output
-
-    run.calls = calls  # type: ignore[attr-defined]
-    return run
-
-
-def _will_not_run(argv, _cwd, _timeout):
-    raise PermissionError(13, "Permission denied", argv[0])
+def _thimeo(body: bytes):
+    return _server({setup.PLUGIN_URL: _Response(body)})
 
 
 # ---------------------------------------------------------------------------
-# Where the program is
+# Where the library is
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "name"),
+    [
+        ("linux", "x86_64", "libStereoTool_intel64.so"),
+        ("linux", "aarch64", "libStereoTool_noX11_arm64.so"),
+        ("win32", "AMD64", "libStereoTool_64.dll"),
+        ("darwin", "arm64", "libStereoTool_64.dylib"),
+    ],
+)
+def test_each_platform_names_its_library(system: str, machine: str, name: str) -> None:
+    assert stereotool_library_name(system, machine) == name
+
+
+def test_the_default_path_names_the_library() -> None:
+    assert f"./tools/stereo-tool/{stereotool_library_name()}" == DEFAULT_STEREOTOOL_PATH
 
 
 def test_default_path_looks_in_the_index_folder_first(tmp_path: Path) -> None:
@@ -115,159 +141,109 @@ def test_default_path_looks_in_the_index_folder_first(tmp_path: Path) -> None:
     managed = setup.managed_path(tmp_path)
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"x")
-    assert managed == tmp_path / "tools" / "stereo-tool" / setup.executable_name()
+    assert managed == tmp_path / "tools" / "stereo-tool" / stereotool_library_name()
     assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == str(managed)
     assert setup.location(DEFAULT_STEREOTOOL_PATH, tmp_path) == "index"
+    assert setup.library_present(str(managed))
+    assert not setup.library_present(str(tmp_path / "gone.so"))
 
 
 def test_a_configured_path_is_always_kept(tmp_path: Path) -> None:
     managed = setup.managed_path(tmp_path)
     managed.parent.mkdir(parents=True)
     managed.write_bytes(b"x")
-    assert setup.resolve_path("C:/Radio/Night Owl.exe", tmp_path) == "C:/Radio/Night Owl.exe"
-    assert setup.location("C:/Radio/Night Owl.exe", tmp_path) == "configured"
+    assert setup.resolve_path("C:/Radio/libStereoTool_64.dll", tmp_path) == (
+        "C:/Radio/libStereoTool_64.dll"
+    )
+    assert setup.location("C:/Radio/libStereoTool_64.dll", tmp_path) == "configured"
 
 
-def test_a_folder_named_like_the_program_is_not_used(tmp_path: Path) -> None:
+def test_a_folder_named_like_the_library_is_not_used(tmp_path: Path) -> None:
     setup.managed_path(tmp_path).mkdir(parents=True)
     assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == DEFAULT_STEREOTOOL_PATH
+    assert not setup.library_present(str(setup.managed_path(tmp_path)))
+
+
+def test_a_missing_library_says_what_to_do() -> None:
+    assert "Download Stereo Tool button" in setup.missing_message(DEFAULT_STEREOTOOL_PATH)
+    configured = setup.missing_message("/opt/stereo/libStereoTool_intel64.so")
+    assert "named by stereotool_path in the configuration is missing" in configured
+    assert "Download it" not in configured
 
 
 @pytest.mark.parametrize(
-    ("system", "machine", "url"),
+    ("system", "machine", "member"),
     [
-        ("linux", "x86_64", "https://download.thimeo.com/stereo_tool_cmd_64"),
-        # Thimeo's ARM build takes 16-bit audio only; AutoDJ sends 32-bit float.
-        ("linux", "aarch64", None),
-        ("win32", "AMD64", "https://download.thimeo.com/stereo_tool_cmd.exe"),
-        ("win32", "ARM64", "https://download.thimeo.com/stereo_tool_cmd.exe"),
+        ("linux", "x86_64", "Linux/IntelAMD/64/libStereoTool_intel64.so"),
+        ("linux", "aarch64", "Linux/ARM/64/libStereoTool_noX11_arm64.so"),
+        ("win32", "AMD64", "Windows/64/libStereoTool_64.dll"),
+        ("win32", "ARM64", None),
         ("darwin", "arm64", None),
         ("linux", "armv7l", None),
     ],
 )
-def test_each_platform_gets_thimeos_own_build(system: str, machine: str, url: str | None) -> None:
+def test_each_platform_gets_its_library_from_the_plugin(
+    system: str, machine: str, member: str | None
+) -> None:
     build = setup.platform_build(system, machine)
-    assert (build.url if build else None) == url
-    if build:
-        assert setup.allowed_url(build.url)
+    assert (build.member if build else None) == member
 
 
-def test_arm_gets_no_download_and_is_told_why(monkeypatch) -> None:
-    note = setup.unsupported_note("linux", "aarch64")
-    assert "16-bit audio only" in note
+def test_a_computer_without_a_library_is_told_why(monkeypatch) -> None:
+    note = setup.unsupported_note("darwin", "arm64")
+    assert "64-bit Linux (PC or ARM) and 64-bit Windows" in note
+    assert "darwin, arm64" in note
     assert "stereotool_path" in note
-    assert "tools/stereo-tool" in note
-    assert "no command-line Stereo Tool for this computer (darwin, arm64)" in (
-        setup.unsupported_note("darwin", "arm64")
-    )
     monkeypatch.setattr(setup, "platform_build", lambda: None)
     monkeypatch.setattr(setup, "unsupported_note", lambda: note)
     status = setup.program_status(DEFAULT_STEREOTOOL_PATH, Path("nowhere"))
     assert status["download"] == {"available": False, "platform": None, "note": note, "busy": False}
-    with pytest.raises(setup.NoBuildError, match="16-bit audio only"):
+    with pytest.raises(setup.NoBuildError, match="64-bit Windows"):
         setup.install(Path("nowhere"))
 
 
-def test_status_reports_the_version_and_never_a_path(tmp_path: Path) -> None:
-    managed = setup.managed_path(tmp_path)
-    managed.parent.mkdir(parents=True)
-    managed.write_bytes(b"x")
-    managed.chmod(0o755)
-    run = _runs(b"Stereo Tool version 11.05 (64-bit)\n")
-    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, run=run)
+def test_status_reports_the_recorded_version_and_never_a_path(tmp_path: Path) -> None:
+    build, library = _build()
+    setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
+    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)
     assert result["installed"] is True
     assert result["version"] == "11.05"
     assert result["location"] == "index"
     assert str(tmp_path) not in repr(result)
-    # Remembered until the file changes.
-    setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, run=run)
-    assert len(run.calls) == 1
 
 
-def test_status_of_a_missing_program(tmp_path: Path) -> None:
-    run = _runs()
-    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, run=run)
+def test_a_hand_placed_library_takes_the_version_stereo_tool_reports(tmp_path: Path) -> None:
+    managed = setup.managed_path(tmp_path)
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"x")
+    assert setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)["version"] is None
+    running = {"version": "11.10"}
+    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path, running=running)
+    assert status["version"] == "11.10"
+    # A version recorded for another file is not this one's.
+    (managed.parent / setup.VERSION_FILE).write_text("libStereoTool_other.so 11.05\n")
+    assert setup.installed_version(managed) is None
+
+
+def test_status_of_a_missing_library(tmp_path: Path) -> None:
+    result = setup.program_status(DEFAULT_STEREOTOOL_PATH, tmp_path)
     assert result["installed"] is False
     assert result["version"] is None
-    assert run.calls == []
 
 
-def test_version_tries_each_flag_and_takes_a_version_whatever_the_exit_code(
-    tmp_path: Path,
-) -> None:
-    program = tmp_path / "stereo_tool_cmd"
-    program.write_bytes(b"x")
-    answers = iter(
-        [
-            (1, b"unknown option --version"),
-            (2, b"unknown option"),
-            (1, b"Stereo Tool 10.92\nUsage: ..."),
-        ]
-    )
-    seen: list[str] = []
-
-    def run(argv, _cwd, _timeout):
-        seen.append(argv[1])
-        return next(answers)
-
-    assert setup.read_version(program, run=run) == "10.92"
-    assert seen == ["--version", "--full-version", "-h"]
-    # Ran, but named no version (or was stopped at its timeout): unknown, not refused.
-    assert setup.read_version(program, run=_runs(b"no version here")) is None
-    assert setup.read_version(program, run=_runs(b"", code=None)) is None
-
-
-def test_a_program_that_cannot_start_raises_will_not_run(tmp_path: Path) -> None:
-    program = tmp_path / "stereo_tool_cmd"
-    program.write_bytes(b"x")
-    with pytest.raises(setup.WillNotRun):
-        setup.read_version(program, run=_will_not_run)
-    assert setup.installed_version(program, run=_will_not_run) is None
-
-
-def _python(code: str) -> list[str]:
-    return [sys.executable, "-I", "-c", code]
-
-
-def test_the_version_check_gets_a_minimal_environment(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("AUTODJ_STEREOTOOL_LICENSE_KEY", KEY)
-    monkeypatch.setenv("SOME_API_TOKEN", "not-for-stereo-tool")
-    code, output = setup._run_bounded(
-        _python("import json, os; print(json.dumps(sorted(os.environ)))"), str(tmp_path), 20
-    )
-    assert code == 0
-    names = set(json.loads(output.decode()))
-    assert "AUTODJ_STEREOTOOL_LICENSE_KEY" not in names
-    assert "SOME_API_TOKEN" not in names
-    assert KEY.encode() not in output
-    assert names <= {"PATH", "HOME", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE"} | {
-        # Set by the interpreter itself on some platforms.
-        "__CF_USER_TEXT_ENCODING",
-        "LC_CTYPE",
-    }
-
-
-def test_the_version_check_reads_at_most_64_kb_and_stops_a_slow_program(tmp_path: Path) -> None:
-    import time
-
-    code, output = setup._run_bounded(
-        _python(
-            "import sys, time\nsys.stdout.write('x' * 1000000)\nsys.stdout.flush()\ntime.sleep(30)"
-        ),
-        str(tmp_path),
-        20,
-    )
-    assert len(output) == 64 * 1024
-    assert code is None
-    started = time.monotonic()
-    code, _output = setup._run_bounded(_python("import time; time.sleep(30)"), str(tmp_path), 0.5)
-    assert code is None
-    assert time.monotonic() - started < 10
-
-
-def test_the_version_check_refuses_a_file_that_will_not_start(tmp_path: Path) -> None:
-    with pytest.raises(OSError):
-        setup._run_bounded([str(tmp_path / "missing-program")], str(tmp_path), 5)
+@pytest.mark.parametrize(
+    ("top", "version"),
+    [
+        ("libStereoTool_1105", "11.05"),
+        ("libStereoTool_1001", "10.01"),
+        ("libStereoTool_912", "9.12"),
+        ("libStereoTool_1106BETA3", "11.06"),
+        ("libStereoTool_x", None),
+        ("Stereo_Tool_Generic_plugin_1105", None),
+    ],
+)
+def test_the_version_comes_from_the_zip_folder(top: str, version: str | None) -> None:
+    assert setup.plugin_version(top) == version
 
 
 # ---------------------------------------------------------------------------
@@ -278,10 +254,10 @@ def test_the_version_check_refuses_a_file_that_will_not_start(tmp_path: Path) ->
 @pytest.mark.parametrize(
     "url",
     [
-        "http://download.thimeo.com/stereo_tool_cmd_64",
-        "https://download.thimeo.com.evil.example/stereo_tool_cmd_64",
-        "https://evilthimeo.com/stereo_tool_cmd_64",
-        "https://example.com/stereo_tool_cmd_64",
+        "http://download.thimeo.com/Stereo_Tool_Generic_plugin.zip",
+        "https://download.thimeo.com.evil.example/Stereo_Tool_Generic_plugin.zip",
+        "https://evilthimeo.com/Stereo_Tool_Generic_plugin.zip",
+        "https://example.com/Stereo_Tool_Generic_plugin.zip",
         "https://user:pass@download.thimeo.com/x",
         "https://download.thimeo.com:8443/x",
         "ftp://download.thimeo.com/x",
@@ -310,15 +286,15 @@ def test_odd_characters_in_the_address_are_refused(url: str) -> None:
 
 
 def test_a_download_past_its_deadline_is_stopped() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
     now = [0.0]
 
     class Slow(_Response):
         def read(self, size: int = -1) -> bytes:
-            now[0] += 400  # each chunk "takes" 400 seconds
+            now[0] += 1000  # each chunk "takes" 1000 seconds
             return super().read(4)
 
-    with pytest.raises(setup.DownloadError, match="took longer than 10 minutes"):
+    with pytest.raises(setup.DownloadError, match="took longer than 30 minutes"):
         setup.fetch(
             start,
             io.BytesIO(),
@@ -329,13 +305,13 @@ def test_a_download_past_its_deadline_is_stopped() -> None:
 
 def test_thimeo_and_its_subdomains_are_allowed() -> None:
     assert setup.allowed_url("https://thimeo.com/x")
-    assert setup.allowed_url("https://download.thimeo.com/stereo_tool_cmd_64")
+    assert setup.allowed_url("https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip")
     assert setup.allowed_url("https://cdn.download.thimeo.com:443/x")
 
 
 def test_a_redirect_to_another_thimeo_host_is_followed() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
-    moved = "https://files.thimeo.com/11.05/stereo_tool_cmd_64"
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
+    moved = "https://files.thimeo.com/11.05/Stereo_Tool_Generic_plugin.zip"
     open_url = _server({start: _redirect(start, moved), moved: _Response(b"program")})
     out = io.BytesIO()
     assert setup.fetch(start, out, open_url=open_url) == 7
@@ -344,24 +320,30 @@ def test_a_redirect_to_another_thimeo_host_is_followed() -> None:
 
 
 def test_a_relative_redirect_stays_on_the_host() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
-    moved = "https://download.thimeo.com/new/stereo_tool_cmd_64"
-    open_url = _server({start: _redirect(start, "/new/stereo_tool_cmd_64"), moved: _Response(b"x")})
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
+    moved = "https://download.thimeo.com/new/Stereo_Tool_Generic_plugin.zip"
+    open_url = _server(
+        {start: _redirect(start, "/new/Stereo_Tool_Generic_plugin.zip"), moved: _Response(b"x")}
+    )
     setup.fetch(start, io.BytesIO(), open_url=open_url)
     assert open_url.asked == [start, moved]
 
 
 def test_a_redirect_to_another_host_is_refused_before_it_is_asked() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
-    open_url = _server({start: _redirect(start, "https://mirror.example.net/stereo_tool_cmd_64")})
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
+    open_url = _server(
+        {start: _redirect(start, "https://mirror.example.net/Stereo_Tool_Generic_plugin.zip")}
+    )
     with pytest.raises(setup.DownloadError, match=r"Refused to download from mirror\.example\.net"):
         setup.fetch(start, io.BytesIO(), open_url=open_url)
     assert open_url.asked == [start]
 
 
 def test_a_redirect_to_plain_http_is_refused() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
-    open_url = _server({start: _redirect(start, "http://download.thimeo.com/stereo_tool_cmd_64")})
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
+    open_url = _server(
+        {start: _redirect(start, "http://download.thimeo.com/Stereo_Tool_Generic_plugin.zip")}
+    )
     with pytest.raises(setup.DownloadError, match=r"only fetched from thimeo\.com over HTTPS"):
         setup.fetch(start, io.BytesIO(), open_url=open_url)
 
@@ -375,24 +357,24 @@ def test_endless_redirects_stop() -> None:
 
 
 def test_an_oversized_download_is_refused_by_its_declared_length() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
     response = _Response(b"", length=str(setup.MAX_DOWNLOAD_BYTES + 1))
     out = io.BytesIO()
-    with pytest.raises(setup.DownloadError, match="larger than 200 MB"):
+    with pytest.raises(setup.DownloadError, match="larger than 768 MB"):
         setup.fetch(start, out, open_url=_server({start: response}))
     assert out.getvalue() == b""
     assert response.closed
 
 
 def test_an_oversized_download_is_refused_while_it_streams() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
     response = _Response(b"x" * 2048, length="")
     with pytest.raises(setup.DownloadError, match="larger than"):
         setup.fetch(start, io.BytesIO(), open_url=_server({start: response}), limit=1024)
 
 
 def test_error_answers_and_empty_files_are_refused() -> None:
-    start = "https://download.thimeo.com/stereo_tool_cmd_64"
+    start = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
     missing = urllib.error.HTTPError(start, 404, "Not Found", Message(), io.BytesIO(b""))
     with pytest.raises(setup.DownloadError, match="error 404"):
         setup.fetch(start, io.BytesIO(), open_url=_server({start: missing}))
@@ -403,130 +385,175 @@ def test_error_answers_and_empty_files_are_refused() -> None:
         setup.fetch(start, io.BytesIO(), open_url=_server({start: offline}))
 
 
-def test_install_puts_a_checked_program_in_the_index_folder(tmp_path: Path) -> None:
-    build, body = _program()
+def test_install_takes_only_this_computers_library_from_the_zip(tmp_path: Path) -> None:
+    build, library = _build()
     before = setup.generation()
-    run = _runs(b"11.05\n")
-    installed = setup.install(
-        tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=run
-    )
+    installed = setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
     target = setup.managed_path(tmp_path)
     assert installed == setup.Installed(target, "11.05")
-    assert target.read_bytes() == body
+    assert target.read_bytes() == library
     assert setup.generation() > before
-    # The version check ran the downloaded file before it was put in place.
-    assert Path(run.calls[0][0]).parent == target.parent
-    assert Path(run.calls[0][0]).name.startswith(".download-")
-    assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
-    if os.name != "nt":
-        assert stat.S_IMODE(target.stat().st_mode) == 0o755
-    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == str(target)
-    assert setup.installed_version(target, run=_runs(b"never asked")) == "11.05"
-
-
-def test_a_program_that_runs_without_naming_a_version_is_installed_as_unknown(
-    tmp_path: Path,
-) -> None:
-    build, body = _program()
-    run = _runs(b"Usage: stereo_tool_cmd [options] in out", code=1)
-    installed = setup.install(
-        tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=run
+    # Only the library and its version record: no other member, no zip left.
+    assert sorted(path.name for path in target.parent.iterdir()) == sorted(
+        [target.name, setup.VERSION_FILE]
     )
-    assert installed.version is None
-    assert len(run.calls) == 3
-    assert setup.managed_path(tmp_path).read_bytes() == body
-    assert setup.installed_version(setup.managed_path(tmp_path), run=_runs(b"never")) is None
+    assert setup.resolve_path(DEFAULT_STEREOTOOL_PATH, tmp_path) == str(target)
+    assert setup.installed_version(target) == "11.05"
 
 
-def test_a_program_that_cannot_start_is_refused_and_noexec_is_named(tmp_path: Path) -> None:
-    build, body = _program()
-    old = setup.managed_path(tmp_path)
-    old.parent.mkdir(parents=True)
-    old.write_bytes(b"working program")
-    with pytest.raises(setup.DownloadError, match="noexec") as caught:
-        setup.install(
-            tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=_will_not_run
-        )
-    assert "could not be started (Permission denied)" in str(caught.value)
-    assert old.read_bytes() == b"working program"
-    assert sorted(path.name for path in old.parent.iterdir()) == [old.name]
-
-
-def test_update_replaces_the_old_program(tmp_path: Path) -> None:
-    build, body = _program()
+def test_update_replaces_the_old_library(tmp_path: Path) -> None:
+    build, library = _build()
     target = setup.managed_path(tmp_path)
     target.parent.mkdir(parents=True)
     target.write_bytes(b"old")
     setup.install(
-        tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=_runs()
+        tmp_path, build=build, open_url=_thimeo(_plugin(build, library, top="libStereoTool_1110"))
     )
-    assert target.read_bytes() == body
+    assert target.read_bytes() == library
+    assert setup.installed_version(target) == "11.10"
 
 
 @pytest.mark.parametrize(
-    "body",
-    [b"#!/bin/sh\nrm -rf /\n", b"<html>not found</html>", "wrong-machine"],
+    "library",
+    ["script", "html", "wrong-machine", "program-not-library"],
 )
-def test_a_file_that_is_not_a_program_for_this_computer_is_refused(tmp_path: Path, body) -> None:
-    build, _good = _program()
-    if body == "wrong-machine":
-        body = _elf(machine=183) if build.kind == "elf" else _pe(machine=0x1C0)
-    run = _runs()
+def test_a_file_that_is_not_a_library_for_this_computer_is_refused(
+    tmp_path: Path, library: str
+) -> None:
+    build, _good = _build()
+    data = {
+        "script": b"#!/bin/sh\nrm -rf /\n",
+        "html": b"<html>not found</html>",
+        "wrong-machine": _elf(machine=183) if build.kind == "elf" else _pe(machine=0x14C),
+        "program-not-library": _elf(kind=2) if build.kind == "elf" else _pe(dll=False),
+    }[library]
     old = setup.managed_path(tmp_path)
     old.parent.mkdir(parents=True)
-    old.write_bytes(b"working program")
-    with pytest.raises(setup.DownloadError, match=r"not a .* program, so it was not installed"):
-        setup.install(
-            tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=run
-        )
-    assert run.calls == []  # never run
-    assert old.read_bytes() == b"working program"
+    old.write_bytes(b"working library")
+    with pytest.raises(setup.DownloadError, match=r"is not a .* library, so it was not installed"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, data)))
+    assert old.read_bytes() == b"working library"
     assert sorted(path.name for path in old.parent.iterdir()) == [old.name]
 
 
-def test_an_oversized_install_leaves_nothing_behind(tmp_path: Path) -> None:
-    build, _body = _program()
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../evil.so",
+        f"{TOP}/../../evil.so",
+        "/etc/cron.d/evil",
+        pytest.param(
+            f"{TOP}\\lib\\evil.dll",
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="zipfile reads a backslash as a separator on Windows"
+            ),
+        ),
+        "C:/Windows/evil.dll",
+    ],
+)
+def test_a_zip_with_a_name_outside_its_folder_is_refused(tmp_path: Path, name: str) -> None:
+    build, library = _build()
+    body = _plugin(build, library, **{name: b"evil"})
+    with pytest.raises(setup.DownloadError, match="outside its own folder"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(body))
+    assert not (tmp_path / "evil.so").exists()
+    assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+def test_a_library_that_is_a_link_is_refused(tmp_path: Path) -> None:
+    build, _library = _build()
+    member = f"{TOP}/lib/{build.member}"
+    body = _zip({member: b"/etc/passwd"}, links=(member,))
+    with pytest.raises(setup.DownloadError, match="is a link"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(body))
+    assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("body", "words"),
+    [
+        (b"not a zip at all", "not a readable zip"),
+        (_zip({f"{TOP}/include/libStereoTool.h": b"x"}), "has no"),
+    ],
+)
+def test_a_zip_without_this_library_is_refused(tmp_path: Path, body: bytes, words: str) -> None:
+    build, _library = _build()
+    with pytest.raises(setup.DownloadError, match=words):
+        setup.install(tmp_path, build=build, open_url=_thimeo(body))
+    assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+def test_a_zip_with_two_libraries_for_this_computer_is_refused(tmp_path: Path) -> None:
+    build, library = _build()
+    body = _plugin(build, library, **{f"libStereoTool_1110/lib/{build.member}": library})
+    with pytest.raises(setup.DownloadError, match="more than one"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(body))
+
+
+def test_a_damaged_library_in_the_zip_is_refused(tmp_path: Path) -> None:
+    build, library = _build()
+    body = bytearray(_zip({f"{TOP}/lib/{build.member}": library + b"x" * 4096}))
+    # Corrupt the stored CRC in the local header and the central directory.
+    for marker in (b"PK\x03\x04", b"PK\x01\x02"):
+        at = body.find(marker)
+        crc = at + (14 if marker == b"PK\x03\x04" else 16)
+        body[crc : crc + 4] = b"\0\0\0\0"
+    with pytest.raises(setup.DownloadError, match="damaged"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(bytes(body)))
+    assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+def test_an_oversized_library_in_the_zip_is_refused(tmp_path: Path, monkeypatch) -> None:
+    build, library = _build()
+    monkeypatch.setattr(setup, "MAX_LIBRARY_BYTES", 1024)
+    body = _plugin(build, library + bytes(4096))
+    with pytest.raises(setup.DownloadError, match="too large"):
+        setup.install(tmp_path, build=build, open_url=_thimeo(body))
+    assert list(setup.tools_dir(tmp_path).iterdir()) == []
+
+
+def test_an_oversized_download_leaves_nothing_behind(tmp_path: Path) -> None:
+    build, _library = _build()
     with pytest.raises(setup.DownloadError, match="larger than"):
         setup.install(
             tmp_path,
             build=build,
-            open_url=_server({build.url: _Response(b"x" * 4096, length="")}),
-            run=_runs(),
+            open_url=_server({setup.PLUGIN_URL: _Response(b"x" * 4096, length="")}),
             limit=1024,
         )
     assert list(setup.tools_dir(tmp_path).iterdir()) == []
 
 
-def test_no_build_and_a_second_download_are_refused(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(setup, "platform_build", lambda: None)
-    with pytest.raises(setup.NoBuildError, match="no command-line Stereo Tool for this computer"):
-        setup.install(tmp_path)
-    monkeypatch.undo()
-    build, _body = _program()
+def test_a_busy_download_is_refused(tmp_path: Path) -> None:
+    build, _library = _build()
     assert setup._install_lock.acquire(blocking=False)
     try:
         with pytest.raises(setup.DownloadBusy):
-            setup.install(tmp_path, build=build, open_url=_server({}), run=_runs())
+            setup.install(tmp_path, build=build, open_url=_server({}))
     finally:
         setup._install_lock.release()
 
 
 def test_leftovers_of_an_interrupted_download_are_removed(tmp_path: Path) -> None:
-    build, body = _program()
+    build, library = _build()
     folder = setup.tools_dir(tmp_path)
     folder.mkdir(parents=True)
-    (folder / ".download-0123").write_bytes(b"partial")
-    (folder / ".stereo_tool_cmd.old-abc").write_bytes(b"old")
+    target = setup.managed_path(tmp_path)
+    (folder / ".download-0123.zip").write_bytes(b"partial")
+    (folder / f".download-0123{target.suffix}").write_bytes(b"partial")
+    (folder / "..version.abc").write_bytes(b"partial")
+    (folder / f".{target.stem}.old-abc{target.suffix}").write_bytes(b"old")
     (folder / "README.txt").write_text("kept")
-    setup.install(
-        tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=_runs()
-    )
+    target.write_bytes(b"current")
+    setup.install(tmp_path, build=build, open_url=_thimeo(_plugin(build, library)))
     assert sorted(path.name for path in folder.iterdir()) == sorted(
-        ["README.txt", setup.executable_name()]
+        ["README.txt", target.name, setup.VERSION_FILE]
     )
 
 
-def test_an_old_program_left_by_a_cut_short_update_is_put_back_not_deleted(tmp_path: Path) -> None:
+def test_an_old_library_left_by_a_cut_short_update_is_put_back_not_deleted(
+    tmp_path: Path,
+) -> None:
     folder = setup.tools_dir(tmp_path)
     folder.mkdir(parents=True)
     target = setup.managed_path(tmp_path)
@@ -541,7 +568,7 @@ def test_an_old_program_left_by_a_cut_short_update_is_put_back_not_deleted(tmp_p
 
 
 # ---------------------------------------------------------------------------
-# Putting the new program in place on Windows (os.replace stood in for)
+# Putting the new library in place on Windows (os.replace stood in for)
 # ---------------------------------------------------------------------------
 
 
@@ -566,38 +593,38 @@ def _replacer(monkeypatch, fails):
     return calls
 
 
-def _setup_part(tmp_path: Path, old: bytes | None = b"old program") -> tuple[Path, Path]:
+def _setup_part(tmp_path: Path, old: bytes | None = b"old library") -> tuple[Path, Path]:
     folder = tmp_path / "tools"
     folder.mkdir()
-    part = folder / ".download-1.exe"
-    part.write_bytes(b"new program")
-    target = folder / "stereo_tool_cmd.exe"
+    part = folder / ".download-1.dll"
+    part.write_bytes(b"new library")
+    target = folder / "libStereoTool_64.dll"
     if old is not None:
         target.write_bytes(old)
     return part, target
 
 
-def test_a_running_program_is_moved_aside_and_replaced(tmp_path: Path, monkeypatch) -> None:
+def test_a_loaded_library_is_moved_aside_and_replaced(tmp_path: Path, monkeypatch) -> None:
     part, target = _setup_part(tmp_path)
-    calls = _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): 1})
+    calls = _replacer(monkeypatch, {(".download", "libStereoTool_64"): 1})
     setup._replace(part, target, windows=True, sleep=lambda _s: None)
-    assert target.read_bytes() == b"new program"
+    assert target.read_bytes() == b"new library"
     assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
     assert [dest.split("-")[0] for _src, dest in calls] == [
-        "stereo_tool_cmd.exe",
-        ".stereo_tool_cmd.old",
-        "stereo_tool_cmd.exe",
+        "libStereoTool_64.dll",
+        ".libStereoTool_64.old",
+        "libStereoTool_64.dll",
     ]
 
 
-def test_the_old_program_is_put_back_when_the_new_one_cannot_take_its_place(
+def test_the_old_library_is_put_back_when_the_new_one_cannot_take_its_place(
     tmp_path: Path, monkeypatch
 ) -> None:
     part, target = _setup_part(tmp_path)
-    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    _replacer(monkeypatch, {(".download", "libStereoTool_64"): -1})
     with pytest.raises(PermissionError):
         setup._replace(part, target, windows=True, sleep=lambda _s: None)
-    assert target.read_bytes() == b"old program"
+    assert target.read_bytes() == b"old library"
     assert sorted(path.name for path in target.parent.iterdir()) == sorted([target.name, part.name])
 
 
@@ -606,7 +633,7 @@ def test_a_locked_download_on_a_first_install_gives_words_not_file_not_found(
 ) -> None:
     part, target = _setup_part(tmp_path, old=None)
     waits: list[float] = []
-    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    _replacer(monkeypatch, {(".download", "libStereoTool_64"): -1})
     with pytest.raises(setup.DownloadError, match="stayed in use"):
         setup._replace(part, target, windows=True, sleep=waits.append)
     assert len(waits) == setup._REPLACE_TRIES
@@ -615,18 +642,18 @@ def test_a_locked_download_on_a_first_install_gives_words_not_file_not_found(
 
 def test_a_download_locked_for_a_moment_is_retried(tmp_path: Path, monkeypatch) -> None:
     part, target = _setup_part(tmp_path, old=None)
-    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): 2})
+    _replacer(monkeypatch, {(".download", "libStereoTool_64"): 2})
     setup._replace(part, target, windows=True, sleep=lambda _s: None)
-    assert target.read_bytes() == b"new program"
+    assert target.read_bytes() == b"new library"
 
 
 def test_elsewhere_a_refused_rename_is_not_retried(tmp_path: Path, monkeypatch) -> None:
     part, target = _setup_part(tmp_path)
-    calls = _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    calls = _replacer(monkeypatch, {(".download", "libStereoTool_64"): -1})
     with pytest.raises(PermissionError):
         setup._replace(part, target, windows=False, sleep=lambda _s: None)
     assert len(calls) == 1
-    assert target.read_bytes() == b"old program"
+    assert target.read_bytes() == b"old library"
 
 
 # ---------------------------------------------------------------------------

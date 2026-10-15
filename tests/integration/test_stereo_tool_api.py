@@ -226,14 +226,14 @@ def test_download_through_the_route_refuses_a_redirect_off_thimeo(
     def opened(url, _timeout):
         asked.append(url)
         headers = Message()
-        headers["Location"] = "https://evil.example/stereo_tool_cmd"
+        headers["Location"] = "https://evil.example/Stereo_Tool_Generic_plugin.zip"
         raise urllib.error.HTTPError(url, 302, "Found", headers, io.BytesIO(b""))
 
     monkeypatch.setattr(setup, "_open", opened)
     response = _client(tmp_path).post("/api/stereo-tool/download", json={"accept_terms": True})
     assert response.status_code == 502
     assert "evil.example" in response.json()["detail"]
-    assert asked == [build.url]
+    assert asked == [setup.PLUGIN_URL]
     assert not setup.managed_path(tmp_path).exists()
     assert list(setup.tools_dir(tmp_path).iterdir()) == []
 
@@ -291,7 +291,7 @@ def test_a_program_without_a_version_is_reported_as_unknown(tmp_path: Path, monk
 
 def test_a_computer_without_a_build_is_told_why(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(setup, "platform_build", lambda: None)
-    note = setup.unsupported_note("linux", "aarch64")
+    note = setup.unsupported_note("darwin", "arm64")
     monkeypatch.setattr(setup, "unsupported_note", lambda: note)
     client = _client(tmp_path)
     download = client.get("/api/stereo-tool").json()["download"]
@@ -311,3 +311,20 @@ def test_saving_the_same_key_again_changes_nothing(tmp_path: Path) -> None:
     again = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
     assert again.json()["changed"] is False
     assert (setup.generation(), setup.generation(state_dir)) == before
+
+
+def test_status_says_what_the_running_stereo_tool_said_of_its_licence(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    player = client.app.state.stations.default.bridge.player
+    player._continuous_master = type(
+        "Master",
+        (),
+        {"stereotool_report": {"version": "11.05", "licensed": False, "unlicensed": "Declipper"}},
+    )()
+    body = client.get("/api/stereo-tool").json()
+    assert body["running"] == {"licensed": False, "unlicensed": "Declipper"}
+    # A library put there by hand takes the version the running Stereo Tool reports.
+    managed = setup.managed_path(tmp_path)
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"library")
+    assert client.get("/api/stereo-tool").json()["version"] == "11.05"

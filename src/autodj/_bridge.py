@@ -220,6 +220,12 @@ class RequestInsert:
     bridge_clock_next: tuple[int | None, ...] = ()
 
 
+def _stereotool_report(master: Any) -> dict[str, Any] | None:
+    """The running Stereo Tool's report (version, latency, licence), or ``None``."""
+    report = getattr(master, "stereotool_report", None)
+    return dict(report) if isinstance(report, dict) else None
+
+
 @dataclass
 class PlayerBridge:
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
@@ -1356,6 +1362,8 @@ class PlayerBridge:
                 "preset_warning": master.preset_warning
                 if master is not None and processing == "stereotool"
                 else None,
+                # What Stereo Tool said: version, latency and licence (never the key).
+                "stereotool": _stereotool_report(master) if processing == "stereotool" else None,
                 "latency_seconds": master.latency_seconds
                 if master is not None and processing in {"smooth", "stereotool"}
                 else 0.0,

@@ -321,7 +321,7 @@ exists.
 
 The image does not include Thimeo's Stereo Tool, which AutoDJ may not redistribute. To use it,
 choose Stereo Tool in Settings, Sound, accept Thimeo's terms and press Download Stereo Tool, or
-copy the command-line program into the index volume; see "Getting Stereo Tool and its licence" in
+copy Thimeo's plugin library into the index volume; see "Getting Stereo Tool and its licence" in
 [Operations](docs/operations.md).
 
 ## How to use the web UI

@@ -207,12 +207,13 @@ stereotool_input_trim_db = 0.0
 stereotool_agc_drive_db = 7.0
 # "included" or a .sts filename uploaded in Settings > Sound.
 stereotool_preset = "included"
-# Optional Stereo Tool command-line executable.  Settings > Sound > Download
-# Stereo Tool installs Thimeo's build in <index_dir>/tools/stereo-tool/, which
-# the default finds first; then ./tools/stereo-tool/stereo_tool_cmd.exe on
-# Windows or ./tools/stereo-tool/stereo_tool_cmd elsewhere.  Set this only to
-# use another copy.
-# stereotool_path = "./tools/stereo-tool/stereo_tool_cmd"
+# Optional path of Thimeo's Stereo Tool plugin library (it named the old
+# command-line program before).  Settings > Sound > Download Stereo Tool puts
+# the library in <index_dir>/tools/stereo-tool/, which the default finds first:
+# libStereoTool_intel64.so (64-bit Linux PC), libStereoTool_noX11_arm64.so
+# (64-bit ARM Linux) or libStereoTool_64.dll (Windows).  Set this only to use
+# another copy or build.
+# stereotool_path = "/opt/stereo-tool/libStereoTool_intel64.so"
 # Optional file holding this station's Stereo Tool licence key, for installs
 # without a browser.  Normally the key is saved in Settings > Sound, or given
 # for every station in AUTODJ_STEREOTOOL_LICENSE_KEY or

@@ -5,9 +5,12 @@ from __future__ import annotations
 import atexit
 import collections
 import contextlib
+import json
 import logging
 import math
+import os
 import subprocess  # nosec B404 -- processors use fixed argv pipelines, never a shell
+import sys
 import tempfile
 import threading
 import weakref
@@ -23,6 +26,7 @@ from autodj.kernels import nan_to_num_in_place
 from autodj.processing import MASTER_FILTER
 from autodj.station_log import station_thread
 from autodj.stereo import SAMPLE_RATE
+from autodj.stereotool_host import REPORT_PREFIX, encode_header, zero
 from autodj.stereotool_presets import INCLUDED_PATH, agc_drive_preset_data
 
 # Every mastering child process (Stereo Tool and its limiter, or the FFmpeg
@@ -42,8 +46,7 @@ def _end_process(proc: subprocess.Popen[bytes]) -> bool:
             proc.kill()
             proc.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        # Not with the exception: its text holds the command line, and
-        # Stereo Tool's holds the licence key.
+        # Not with the exception, whose text repeats the whole command line.
         logger.warning("A mastering process did not stop within 2 seconds")
     except OSError:
         logger.warning("A mastering process could not be stopped", exc_info=True)
@@ -116,28 +119,33 @@ def _command(
     mode: str = "smooth",
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
     preset: Path | None = None,
-    license_key: str | None = None,
+    home: str | None = None,
 ) -> list[str]:
     if mode == "stereotool":
-        # -k is the only way we found documented to give the command-line build
-        # its key; THREAT_MODEL.md says who can read a command line.
-        licence = ["-k", license_key] if license_key else []
+        # Thimeo's plugin library in a child process of our own
+        # (autodj.stereotool_host); the licence key goes over its stdin.
         return [
+            sys.executable,
+            "-m",
+            "autodj.stereotool_host",
+            "--library",
             stereotool_path,
-            "-",
-            "-",
-            "-b",
-            "32f",
-            "-r",
-            str(SAMPLE_RATE),
-            "-s",
+            "--preset",
             str(preset or INCLUDED_PATH),
-            "-l",
-            "1024",
-            "-q",
-            *licence,
+            "--home",
+            home or tempfile.gettempdir(),
         ]
     return _ffmpeg_command(MASTER_FILTER)
+
+
+def _child_env() -> dict[str, str]:
+    """The environment for the Stereo Tool host: AutoDJ's own secrets left out."""
+    secret = {"HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"}
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith("AUTODJ_") and name.upper() not in secret
+    }
 
 
 def _ffmpeg_command(audio_filter: str) -> list[str]:
@@ -184,20 +192,18 @@ STEREOTOOL_MISSING: Final = (
 def _unavailable(
     mode: str,
     exc: Exception,
-    license_key: str | None,
     *,
     missing: bool = False,
     missing_text: str = STEREOTOOL_MISSING,
 ) -> str:
-    """Why the processor did not start, in words for the page; never the licence key.
+    """Why the processor did not start, in words for the page.
 
     *missing* says the error came from starting the processor itself, so a
-    missing file there is the program, and *missing_text* says so.
+    missing file there is Stereo Tool's library, and *missing_text* says so.
     """
     if mode == "stereotool" and missing and isinstance(exc, FileNotFoundError):
         return missing_text
-    text = str(exc)
-    return text.replace(license_key, "<licence key>") if license_key else text
+    return str(exc)
 
 
 class ContinuousMaster:
@@ -219,6 +225,7 @@ class ContinuousMaster:
         stereotool_license: Callable[[], str | None] = lambda: None,
         setup_generation: Callable[[], int] = lambda: 0,
         stereotool_missing: Callable[[], str] = lambda: STEREOTOOL_MISSING,
+        library_present: Callable[[str], bool] | None = None,
     ) -> None:
         self._popen = popen_factory
         # Taken around starting a process and around refusing new ones, so
@@ -231,18 +238,25 @@ class ContinuousMaster:
         _MASTERS.add(self)
         self._select_mode = mode
         self._mode = mode()
-        # Looked up each time Stereo Tool starts, so a program downloaded
+        # Looked up each time Stereo Tool starts, so a library downloaded
         # while the station runs is found without a restart.
         self._stereotool_path: Callable[[], str] = (
             stereotool_path if callable(stereotool_path) else lambda: stereotool_path
         )
         self._stereotool_license = stereotool_license
-        # Changes when a licence is saved or cleared or the program replaced;
+        # Changes when a licence is saved or cleared or the library replaced;
         # part of the Stereo Tool signature, so Stereo Tool restarts with it.
         self._setup_generation = setup_generation
-        # What to say when the program is not there: download it, or the
+        # What to say when the library is not there: download it, or the
         # configured path is wrong.
         self._stereotool_missing = stereotool_missing
+        # Checked before each start, so a missing library is said at once
+        # instead of starting a host process twice a second to find out.
+        self._library_present = library_present
+        # What the Stereo Tool host last reported (autodj.stereotool_host):
+        # version, latency, licence; never the key.
+        self._stereotool_report: dict[str, object] = {}
+        self._report_threads: dict[subprocess.Popen[bytes], threading.Thread] = {}
         self._select_preset = preset or (lambda: INCLUDED_PATH)
         self._select_agc_drive = agc_drive_db
         self._preset_temp = tempfile.TemporaryDirectory(prefix="autodj-stereo-tool-")
@@ -291,6 +305,12 @@ class ContinuousMaster:
     def error(self) -> str | None:
         with self._lock:
             return self._error
+
+    @property
+    def stereotool_report(self) -> dict[str, object]:
+        """What the running Stereo Tool said: version, latency and licence."""
+        with self._lock:
+            return dict(self._stereotool_report)
 
     @property
     def preset_warning(self) -> str | None:
@@ -445,14 +465,68 @@ class ContinuousMaster:
         target.write_bytes(data)
         return target
 
-    def _unavailable_text(
-        self, mode: str, exc: Exception, license_key: str | None, missing: bool
-    ) -> str:
-        text = STEREOTOOL_MISSING
-        if missing and mode == "stereotool":
-            with contextlib.suppress(Exception):
-                text = self._stereotool_missing()
-        return _unavailable(mode, exc, license_key, missing=missing, missing_text=text)
+    def _missing_text(self) -> str:
+        try:
+            return self._stereotool_missing()
+        except Exception:
+            return STEREOTOOL_MISSING
+
+    def _unavailable_text(self, mode: str, exc: Exception, missing: bool) -> str:
+        text = self._missing_text() if missing and mode == "stereotool" else STEREOTOOL_MISSING
+        return _unavailable(mode, exc, missing=missing, missing_text=text)
+
+    def _read_reports(self, stream: object) -> None:
+        """Keep the Stereo Tool host's report lines; ignore everything else it prints."""
+        readline = getattr(stream, "readline", None)
+        if readline is None:
+            return
+        while True:
+            try:
+                raw = readline(8192)
+            except (OSError, ValueError):
+                return
+            if not raw or not isinstance(raw, bytes | str):
+                return
+            line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+            # The library's own output may share the line.
+            at = line.find(REPORT_PREFIX)
+            if at < 0:
+                continue
+            try:
+                values = json.loads(line[at + len(REPORT_PREFIX) :])
+            except ValueError:
+                continue
+            if isinstance(values, dict):
+                self._note_report(values)
+
+    def _note_report(self, values: dict[str, object]) -> None:
+        kept: dict[str, object] = {}
+        for name, kind in (
+            ("version", str),
+            ("latency_ms", (int, float)),
+            ("licensed", bool),
+            ("unlicensed", str),
+            ("error", str),
+            ("missing", bool),
+        ):
+            value = values.get(name)
+            if isinstance(value, kind):
+                kept[name] = value[:500] if isinstance(value, str) else value
+        with self._lock:
+            self._stereotool_report.update(kept)
+        if "version" in kept or "latency_ms" in kept:
+            logger.info(
+                "Stereo Tool %s started; its preset adds %s ms",
+                kept.get("version", "(version unknown)"),
+                kept.get("latency_ms", "?"),
+            )
+        if kept.get("licensed") is True:
+            logger.info("Stereo Tool says its licence covers this preset")
+        elif kept.get("licensed") is False:
+            logger.warning(
+                "Stereo Tool is not licensed for this preset: %s",
+                kept.get("unlicensed") or "no valid licence key",
+            )
 
     def _note_preset_warning(self, message: str | None, cause: Exception | None = None) -> None:
         with self._lock:
@@ -509,31 +583,45 @@ class ContinuousMaster:
             if proc is None or generation != active_generation:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop, post_proc)
-                license_key = None
                 # Set only while the processor itself starts: a file missing
-                # then is the program, not a preset.
+                # then is Stereo Tool's library, not a preset.
                 starting_program = False
                 try:
                     command_preset = None
-                    executable = DEFAULT_STEREOTOOL_PATH
+                    library = DEFAULT_STEREOTOOL_PATH
+                    license_key = None
                     if mode == "stereotool":
-                        executable = self._stereotool_path()
+                        library = self._stereotool_path()
                         license_key = self._stereotool_license()
+                        with self._lock:
+                            self._stereotool_report = {}
                     if mode == "stereotool" and preset is not None:
                         # Build after stopping the old child so one temp file can be reused safely.
                         command_preset = self._runtime_stereotool_preset(preset)
                     starting_program = True
-                    proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
-                        _command(mode, executable, command_preset, license_key),
+                    if (
+                        mode == "stereotool"
+                        and self._library_present is not None
+                        and not self._library_present(library)
+                    ):
+                        raise FileNotFoundError(library)
+                    stereotool = mode == "stereotool"
+                    proc = self._factory(  # nosec B603 -- fixed argv (our own host or FFmpeg), no shell
+                        _command(mode, library, command_preset, self._preset_temp.name),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
-                        stderr=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE if stereotool else subprocess.DEVNULL,
                         bufsize=0,
                         creationflags=_creation_flags(),
+                        **({"env": _child_env()} if stereotool else {}),
                     )
                     starting_program = False
                     if proc.stdin is None or proc.stdout is None:
                         raise OSError(f"{name} master pipes unavailable")
+                    if stereotool:
+                        self._start_reports(proc)
+                        self._send_header(proc, license_key)
+                        license_key = None
                     post_proc = None
                     if mode == "stereotool":
                         post_proc = self._factory(  # nosec B603 -- fixed FFmpeg argv, no shell
@@ -559,7 +647,7 @@ class ContinuousMaster:
                         self._recovery_outputs = 0
                         self._input.clear()
                         self._output.clear()
-                        self._error = f"{name} master unavailable: {self._unavailable_text(mode, exc, license_key, starting_program)}"
+                        self._error = f"{name} master unavailable: {self._unavailable_text(mode, exc, starting_program)}"
                         self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()
@@ -615,9 +703,16 @@ class ContinuousMaster:
                     self._recovery_outputs = 0
                     self._input.clear()
                     self._output.clear()
-                    self._error = (
-                        f"{name} master exited ({exited.returncode}); using limited bypass"
-                    )
+                    said = self._stereotool_report.get("error") if mode == "stereotool" else None
+                    if isinstance(said, str) and exited is proc:
+                        text = (
+                            self._missing_text() if self._stereotool_report.get("missing") else said
+                        )
+                        self._error = f"{name} master unavailable: {text}"
+                    else:
+                        self._error = (
+                            f"{name} master exited ({exited.returncode}); using limited bypass"
+                        )
                     self._restarts += 1
                 proc = post_proc = writer = reader = None
                 stop = None
@@ -628,13 +723,42 @@ class ContinuousMaster:
             self._changed.wait(0.02)
             self._changed.clear()
 
+    def _start_reports(self, proc: subprocess.Popen[bytes]) -> None:
+        stream = getattr(proc, "stderr", None)
+        if stream is None:
+            return
+        thread = station_thread(
+            target=self._read_reports, args=(stream,), name="autodj-stereo-tool-report", daemon=True
+        )
+        self._report_threads[proc] = thread
+        thread.start()
+
+    @staticmethod
+    def _send_header(proc: subprocess.Popen[bytes], license_key: str | None) -> None:
+        """Hand the host its licence key over stdin, then forget the copy."""
+        header = encode_header(license_key)
+        try:
+            view = memoryview(header)
+            stdin = proc.stdin
+            assert stdin is not None
+            while view:
+                written = stdin.write(view)
+                if not isinstance(written, int):
+                    break  # a buffered stream (or a test's stand-in) took it all
+                if not written:
+                    raise OSError("Stereo Tool did not take its settings")
+                view = view[written:]
+        finally:
+            del view
+            zero(header)
+
     def _write_loop(
         self, proc: subprocess.Popen[bytes], generation: int, stop: threading.Event
     ) -> None:
         stdin = proc.stdin
         if stdin is None:
             return
-        # Stereo Tool's CLI drops samples on short input chunks; feed full 1024-frame blocks.
+        # The Stereo Tool host processes whole 1024-frame blocks.
         write_bytes = (1024 if self._mode == "stereotool" else BLOCK_FRAMES) * 2 * 4
         pending = bytearray()
         while not stop.is_set():
@@ -736,7 +860,15 @@ class ContinuousMaster:
                     self._children.discard(stage)
                 with _LIVE_LOCK:
                     _LIVE_PROCESSES.discard(stage)
-            for stream in (getattr(stage, "stdin", None), getattr(stage, "stdout", None)):
+            report = getattr(self, "_report_threads", {}).pop(stage, None)
+            if report is not None and report.ident is not None:
+                # It ends with the process; its last line may say why.
+                report.join(timeout=0.5)
+            for stream in (
+                getattr(stage, "stdin", None),
+                getattr(stage, "stdout", None),
+                getattr(stage, "stderr", None),
+            ):
                 try:
                     if stream:
                         stream.close()

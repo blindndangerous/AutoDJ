@@ -1,15 +1,16 @@
-// Settings > Sound > Stereo Tool program and licence: download Thimeo's
-// command-line Stereo Tool onto the server and set its licence key.
+// Settings > Sound > Stereo Tool library and licence: download Thimeo's
+// Stereo Tool plugin library onto the server and set its licence key.
 //
 // AutoDJ cannot include Stereo Tool, so Download Stereo Tool asks the
-// server to fetch Thimeo's own build from thimeo.com.  The page never
-// uploads a program.  It needs the "I accept Thimeo's terms" box ticked;
+// server to fetch Thimeo's own plugin from thimeo.com.  The page never
+// uploads a file.  It needs the "I accept Thimeo's terms" box ticked;
 // pressing it without the tick says so and moves focus to the box.  Once
 // Stereo Tool is installed the same button reads Update Stereo Tool.
 //
 // The licence key is write-only: the field is a password field, the page
 // is told only whether a licence is set and where it comes from ("Licence
-// set" or "No licence"), and the field is emptied once the key is saved.
+// set" or "No licence") and what the running Stereo Tool said of it, and
+// the field is emptied once the key is saved.
 // With several stations, "For this station only" saves a key that only
 // this station uses; otherwise the key is for every station.  A key set
 // in the server's configuration or environment is reported but cannot be
@@ -33,8 +34,8 @@ export function installText(data) {
   const busy = data.download?.busy ? " A download is running." : "";
   if (data.location === "configured") {
     return data.installed
-      ? `This station uses the Stereo Tool${version} program set in the server configuration. Download Stereo Tool installs a copy for the stations without that setting.${busy}`
-      : `This station is set to use a Stereo Tool program named in the server configuration, and it is not there. Check stereotool_path in the configuration.${busy}`;
+      ? `This station uses the Stereo Tool${version} library set in the server configuration. Download Stereo Tool installs a copy for the stations without that setting.${busy}`
+      : `This station is set to use a Stereo Tool library named in the server configuration, and it is not there. Check stereotool_path in the configuration.${busy}`;
   }
   if (data.installed) {
     return data.version
@@ -43,14 +44,23 @@ export function installText(data) {
   }
   if (data.download && !data.download.available) {
     return `Stereo Tool is not installed. ${data.download.note
-      || "Thimeo offers no command-line Stereo Tool that AutoDJ can download for this computer."}`;
+      || "AutoDJ cannot download Stereo Tool for this computer."}`;
   }
   return `Stereo Tool is not installed. Tick that you accept Thimeo's terms, then press Download Stereo Tool.${busy}`;
 }
 
-export function licenseText(data) {
-  const license = data?.license;
-  if (!license) return "Checking the licence.";
+// What the running Stereo Tool said of its licence, once audio has passed.
+function verdictText(running) {
+  if (running?.licensed === true) return " Stereo Tool says the licence key is valid.";
+  if (running?.licensed === false) {
+    const what = running.unlicensed ? ` ${running.unlicensed}` : "";
+    return ` Not licensed: Stereo Tool says the licence does not cover this preset.${what} The station plays Thimeo's unlicensed reminder until a key covers it.`;
+  }
+  return "";
+}
+
+function sourceText(data) {
+  const license = data.license;
   const every = data.several_stations ? " for every station" : "";
   const unlicensed = "Stereo Tool runs unlicensed, with the limits of its free version.";
   if (license.problem) return `No licence. ${license.problem} ${unlicensed}`;
@@ -66,6 +76,11 @@ export function licenseText(data) {
     default:
       return `No licence. ${unlicensed}`;
   }
+}
+
+export function licenseText(data) {
+  if (!data?.license) return "Checking the licence.";
+  return sourceText(data) + verdictText(data.running);
 }
 
 export function installStereoToolSetup({ document: doc = document, request = requestJson,
@@ -144,7 +159,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
     if (panel.open) void refresh();
   });
   if (panel.open) void refresh();
-  // Another station's licence and program setting differ.
+  // Another station's licence and library setting differ.
   stationChanges(() => {
     current = null;
     if (panel.open) void refresh();

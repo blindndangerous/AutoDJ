@@ -92,7 +92,7 @@ describe("Stereo Tool setup markup", () => {
 
   it("is its own group, shown only for Stereo Tool", () => {
     expect(group.tagName).toBe("FIELDSET");
-    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool program and licence");
+    expect(group.querySelector(":scope > legend").textContent).toBe("Stereo Tool library and licence");
     expect(group.dataset.showWhen).toBe("pb-replaygain=stereotool");
   });
 
@@ -140,12 +140,12 @@ describe("Stereo Tool setup words", () => {
     expect(installText(status({ installed: true })))
       .toBe("Stereo Tool is installed (version unknown).");
     expect(installText(status({ download: { available: false } })))
-      .toContain("Thimeo offers no command-line Stereo Tool");
+      .toContain("AutoDJ cannot download Stereo Tool for this computer");
     expect(installText(status({ download: { available: false,
       note: "Thimeo's ARM build of Stereo Tool processes 16-bit audio only." } })))
       .toBe("Stereo Tool is not installed. Thimeo's ARM build of Stereo Tool processes 16-bit audio only.");
     expect(installText(status({ location: "configured", installed: true, version: "10.9" })))
-      .toContain("Stereo Tool 10.9 program set in the server configuration");
+      .toContain("Stereo Tool 10.9 library set in the server configuration");
   });
 
   it("says Licence set or No licence and never needs the key", () => {
@@ -157,6 +157,17 @@ describe("Stereo Tool setup words", () => {
       .toBe("Licence set for this station only.");
     expect(licenseText(status({ license: { in_use: "environment", problem: "AUTODJ_STEREOTOOL_LICENSE_KEY does not hold a licence key." } })))
       .toMatch(/^No licence\. AUTODJ_STEREOTOOL_LICENSE_KEY/);
+  });
+
+  it("adds what the running Stereo Tool said of the licence", () => {
+    expect(licenseText(status({ license: { in_use: "install" }, running: { licensed: true } })))
+      .toBe("Licence set. Stereo Tool says the licence key is valid.");
+    const text = licenseText(status({ license: { in_use: null },
+      running: { licensed: false, unlicensed: "Declipper, 5-band AGC" } }));
+    expect(text).toContain("Not licensed: Stereo Tool says the licence does not cover this preset. Declipper, 5-band AGC");
+    expect(text).toContain("Thimeo's unlicensed reminder");
+    expect(licenseText(status({ license: { in_use: "install" }, running: { licensed: null } })))
+      .toBe("Licence set.");
   });
 });
 

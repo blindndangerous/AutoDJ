@@ -34,11 +34,31 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from autodj.liners import LINER_PICK_MODES
 from autodj.repeat_settings import RepeatSettings, ignore_unknown_repeat_keys
 
-DEFAULT_STEREOTOOL_PATH = (
-    "./tools/stereo-tool/stereo_tool_cmd.exe"
-    if os.name == "nt"
-    else "./tools/stereo-tool/stereo_tool_cmd"
-)
+
+def stereotool_library_name(system: str | None = None, machine: str | None = None) -> str:
+    """The file name of Thimeo's Stereo Tool plugin library for this computer.
+
+    The names are those in Thimeo's Generic plugin zip: the 64-bit Windows
+    DLL, the Linux build without X11 (AutoDJ needs no Stereo Tool window),
+    and the macOS library, which AutoDJ does not download.
+    """
+    import platform
+    import sys
+
+    system = sys.platform if system is None else system
+    machine = (platform.machine() if machine is None else machine).lower()
+    if system == "win32":
+        return "libStereoTool_64.dll"
+    if system == "darwin":
+        return "libStereoTool_64.dylib"
+    if machine in {"aarch64", "arm64"}:
+        return "libStereoTool_noX11_arm64.so"
+    return "libStereoTool_intel64.so"
+
+
+# The Stereo Tool plugin library; the default also looks in
+# <index_dir>/tools/stereo-tool/ first (autodj.stereotool_setup).
+DEFAULT_STEREOTOOL_PATH = f"./tools/stereo-tool/{stereotool_library_name()}"
 
 if TYPE_CHECKING:
     from autodj.presets import Preset
@@ -403,8 +423,10 @@ class PlaybackConfig(_Section):
     stereotool_input_trim_db: float = 0.0
     stereotool_agc_drive_db: float = 7.0
     stereotool_preset: str = "included"
-    # Executable name or path used by Stereo Tool processing; installation setting.
-    # The default also finds a program in <index_dir>/tools/stereo-tool/ first.
+    # Path of Thimeo's Stereo Tool plugin library (libStereoTool_*.so or
+    # .dll); installation setting.  The name is kept from when it named the
+    # command-line program.  The default finds the library Settings, Sound,
+    # Download Stereo Tool puts in <index_dir>/tools/stereo-tool/.
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH
     # A file holding this station's Stereo Tool licence key; installation
     # setting.  Empty uses the key saved in Settings, Sound, or the

@@ -392,7 +392,10 @@ def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) 
 
     bridge.player._active_processing_mode = mode
     bridge.player._continuous_master = SimpleNamespace(
-        error="Processor restarting", latency_seconds=0.28, preset_warning="No drive"
+        error="Processor restarting",
+        latency_seconds=0.28,
+        preset_warning="No drive",
+        stereotool_report={"version": "11.05", "licensed": True},
     )
     bridge.player._playing_render = SimpleNamespace(full_audio=object(), next_entry=object())
     status = bridge.get_state()["playout"]
@@ -400,6 +403,7 @@ def test_state_exposes_continuous_processing_and_prepared_handoff(bridge, mode) 
         "processing": mode,
         "error": "Processor restarting",
         "preset_warning": "No drive" if mode == "stereotool" else None,
+        "stereotool": {"version": "11.05", "licensed": True} if mode == "stereotool" else None,
         "latency_seconds": 0.28,
     }
     bridge.player._active_processing_mode = "off"

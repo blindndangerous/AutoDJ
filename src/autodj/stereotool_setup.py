@@ -1,24 +1,28 @@
-"""Getting Stereo Tool onto this machine and giving it a licence key.
+"""Getting Thimeo's Stereo Tool plugin library and giving it a licence key.
 
-AutoDJ may not redistribute Thimeo's Stereo Tool, so each install gets the
-command-line build itself:
+AutoDJ may not redistribute Stereo Tool, so each install gets it itself.
+AutoDJ uses Thimeo's plugin library (``libStereoTool``), as AzuraCast and
+Liquidsoap do, run in a child process of its own
+(:mod:`autodj.stereotool_host`):
 
-- :func:`install` downloads Thimeo's official build for this platform from
-  ``download.thimeo.com`` over HTTPS (redirects only to thimeo.com hosts, size
-  capped and time-limited), checks that the file is a program for this
-  computer and that it runs, reads its version if it reports one, and only
-  then moves it into
-  ``<index_dir>/tools/stereo-tool/``, the writable data folder (``/index`` in
-  the container).  The page never uploads a program: an upload route would
-  let anyone who can change settings run any program on the server.
-- :func:`resolve_path` makes the default ``[playback] stereotool_path`` look
-  in that folder first, so a binary downloaded there, or dropped there by
-  hand, is used with no configuration change.
+- :func:`install` downloads Thimeo's Generic plugin zip from
+  ``download.thimeo.com`` over HTTPS (redirects only to thimeo.com hosts,
+  size capped and time-limited), takes out only the one library for this
+  computer (no other member is written, and names that could leave the
+  folder or links are refused), checks that it is a shared library for
+  this processor, and only then moves it into ``<index_dir>/tools/stereo-tool/``,
+  the writable data folder (``/index`` in the container), with its version
+  from the zip's folder name.  The page never uploads a file: an upload
+  route would let anyone who can change settings run any code on the server.
+- :func:`resolve_path` makes the default ``[playback] stereotool_path``
+  (which now names the library) look in that folder first, so a library
+  downloaded there, or put there by hand, is used with no configuration
+  change.
 
-The licence key is a secret.  The only way we found documented to give the
-command-line build its key is ``-k <key>`` on its command line (see
-``THREAT_MODEL.md`` for what that exposes).  AutoDJ stores the key in a file
-only its own user can read (:func:`autodj.secret_files.write_private_file`),
+The licence key is a secret.  It is handed to the library's
+``stereoTool_Create3`` inside the host process, over that process's stdin,
+never on a command line or in an environment.  AutoDJ stores the key in a
+file only its own user can read (:func:`autodj.secret_files.write_private_file`),
 outside backups, and never returns it to the page or writes it to a log.
 Where it comes from, first match wins, for one station:
 
@@ -38,52 +42,48 @@ import os
 import platform
 import re
 import secrets
-import shutil
 import stat
-import subprocess  # nosec B404 -- fixed argv, never a shell
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Literal
 from urllib.parse import urljoin, urlsplit
 
-from autodj.config import DEFAULT_STEREOTOOL_PATH
+from autodj.config import DEFAULT_STEREOTOOL_PATH, stereotool_library_name
 from autodj.secret_files import write_private_file
 
 logger = logging.getLogger(__name__)
 
 TERMS_URL = "https://www.thimeo.com/terms-and-conditions/"
 LICENSING_URL = "https://www.thimeo.com/stereo-tool/licenses/"
+#: Thimeo's "Plugin SDK with binaries for all OS's" (https://www.thimeo.com/stereo-tool/download/).
+PLUGIN_URL = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
 LICENSE_ENV = "AUTODJ_STEREOTOOL_LICENSE_KEY"
 LICENSE_FILE_ENV = "AUTODJ_STEREOTOOL_LICENSE_FILE"
 LICENSE_FILE_NAME = ".stereo-tool-license"
-#: Thimeo's builds are 30 to 65 MB (September 2026); anything far bigger is not one.
-MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
+#: The 11.05 zip is 318 MB (October 2026); anything far bigger is not it.
+MAX_DOWNLOAD_BYTES = 768 * 1024 * 1024
+#: The one library taken out of it; Thimeo's are 33 to 117 MB.
+MAX_LIBRARY_BYTES = 256 * 1024 * 1024
 MAX_REDIRECTS = 5
 _CHUNK_BYTES = 1024 * 1024
 _HTTP_TIMEOUT_SECONDS = 60.0
 #: The whole download, redirects included, must end within this.
-DOWNLOAD_DEADLINE_SECONDS = 600.0
-_VERSION_TIMEOUT_SECONDS = 15.0
-#: The most of a version check's output that is read; the rest is not waited for.
-_MAX_VERSION_OUTPUT = 64 * 1024
+DOWNLOAD_DEADLINE_SECONDS = 1800.0
 _REPLACE_TRIES = 5
+VERSION_FILE = ".version"
 # Printable ASCII without spaces: Thimeo's keys are long runs of these,
-# sometimes in angle brackets.
+# in angle brackets.
 _KEY = re.compile(r"[\x21-\x7e]{4,2048}")
 _MAX_KEY_FILE_BYTES = 8192
-_VERSION = re.compile(r"(?<![\d.])(\d{1,3}\.\d{1,3}(?:\.\d{1,4})?)(?![\d.])")
-# Thimeo's version history names --version (Linux builds, 10.11) and
-# --full-version (10.30); no public page shows their output, and -h prints
-# the usage, which may carry the version.  Tried in this order.
-_VERSION_FLAGS = ("--version", "--full-version", "-h")
-#: What the page shows for a program that runs but names no version.
-UNKNOWN_VERSION = "unknown"
+# The zip's top folder: libStereoTool_1105, or with BETA and a number.
+_TOP = re.compile(r"libStereoTool_(\d{3,4})(?:BETA\w{0,8})?")
 
 LicenseSource = Literal["station-config", "station", "environment", "install"]
 
@@ -97,7 +97,7 @@ class DownloadBusy(DownloadError):
 
 
 class NoBuildError(DownloadError):
-    """Thimeo offers no command-line build for this computer."""
+    """Thimeo's plugin has no library AutoDJ can use on this computer."""
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def _scope(state_dir: Path | str | None) -> str:
 def generation(state_dir: Path | str | None = None) -> int:
     """A number that grows whenever what Stereo Tool starts with changes for a station.
 
-    It counts changes for the whole install (the program, the key for every
+    It counts changes for the whole install (the library, the key for every
     station) plus changes to the key of the station whose folder is
     *state_dir*, so a key saved for one station restarts only that one.
     Masters compare it on every mix block, so it is two dictionary reads.
@@ -132,30 +132,25 @@ def _bump(state_dir: Path | str | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Where the program lives
+# Where the library lives
 # ---------------------------------------------------------------------------
 
 
-def executable_name() -> str:
-    """The file name AutoDJ gives the command-line build."""
-    return "stereo_tool_cmd.exe" if os.name == "nt" else "stereo_tool_cmd"
-
-
 def tools_dir(index_dir: Path | str) -> Path:
-    """The folder in the writable index folder that holds the program."""
+    """The folder in the writable index folder that holds the library."""
     return Path(index_dir) / "tools" / "stereo-tool"
 
 
 def managed_path(index_dir: Path | str) -> Path:
-    """Where a downloaded (or dropped-in) program is looked for."""
-    return tools_dir(index_dir) / executable_name()
+    """Where a downloaded (or hand-placed) library is looked for."""
+    return tools_dir(index_dir) / stereotool_library_name()
 
 
 def resolve_path(configured: str, index_dir: Path | str) -> str:
-    """The program a station runs: its own setting, else the index folder's copy.
+    """The library a station uses: its own setting, else the index folder's copy.
 
     A station that keeps the default ``stereotool_path`` uses
-    ``<index_dir>/tools/stereo-tool/`` when the program is there, and the
+    ``<index_dir>/tools/stereo-tool/`` when the library is there, and the
     old ``./tools/stereo-tool/`` beside the working folder otherwise.
     """
     if configured != DEFAULT_STEREOTOOL_PATH:
@@ -169,12 +164,20 @@ def resolve_path(configured: str, index_dir: Path | str) -> str:
     return configured
 
 
+def library_present(path: str) -> bool:
+    """Whether a library file is there to start Stereo Tool with."""
+    try:
+        return os.path.isfile(path)
+    except OSError:
+        return False
+
+
 def missing_message(configured: str) -> str:
-    """What a station says when its Stereo Tool program is not there."""
+    """What a station says when its Stereo Tool library is not there."""
     if configured != DEFAULT_STEREOTOOL_PATH:
         return (
-            "The Stereo Tool program named by stereotool_path in the configuration is "
-            "missing. Correct that path, or remove it to use the one Settings, Sound, "
+            "The Stereo Tool plugin library named by stereotool_path in the configuration "
+            "is missing. Correct that path, or remove it to use the one Settings, Sound, "
             "Download Stereo Tool installs."
         )
     return (
@@ -184,171 +187,40 @@ def missing_message(configured: str) -> str:
 
 
 def location(configured: str, index_dir: Path | str) -> Literal["index", "default", "configured"]:
-    """Which program a station uses, in words the page can choose from."""
+    """Which library a station uses, in words the page can choose from."""
     if configured != DEFAULT_STEREOTOOL_PATH:
         return "configured"
     return "index" if resolve_path(configured, index_dir) != configured else "default"
 
 
-_version_lock = threading.Lock()
-_versions: dict[tuple[str, int, int], str | None] = {}
-
-#: Runs a program: (argv, working folder, timeout) to (exit code or None, output).
-Runner = Callable[[list[str], str, float], tuple[int | None, bytes]]
-
-
-class WillNotRun(OSError):
-    """The program could not be started at all (not a version that failed)."""
-
-
-def _minimal_env() -> dict[str, str]:
-    """What a version check needs from the environment, and nothing secret.
-
-    No ``AUTODJ_*`` variable (the licence key among them) or any other is
-    passed on.  ``HOME`` (``USERPROFILE`` on Windows) stays: Stereo Tool
-    keeps its settings file there and complains on Linux without it.
-    """
-    names = ["PATH", "HOME"]
-    if os.name == "nt":
-        names += ["SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE"]
-    return {name: os.environ[name] for name in names if name in os.environ}
-
-
-def _run_bounded(argv: list[str], cwd: str, timeout: float) -> tuple[int | None, bytes]:
-    """Run *argv* with no input and a minimal environment; read at most 64 KB of output.
-
-    It is killed once *timeout* seconds pass or the output passes the cap,
-    and its exit code is then ``None``.
-
-    Raises:
-        OSError: The program could not be started.
-    """
-    proc = subprocess.Popen(  # nosec B603 -- the downloaded program, fixed flag, no shell
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=cwd,
-        env=_minimal_env(),
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    chunks: list[bytes] = []
-    size = 0
-
-    def read() -> None:
-        nonlocal size
-        stream = proc.stdout
-        assert stream is not None
-        while size < _MAX_VERSION_OUTPUT:
-            try:
-                data = stream.read1(_MAX_VERSION_OUTPUT - size)  # type: ignore[attr-defined]
-            except (OSError, ValueError):
-                return
-            if not data:
-                return
-            chunks.append(data)
-            size += len(data)
-
-    deadline = time.monotonic() + timeout
-    reader = threading.Thread(target=read, name="autodj-stereo-tool-version", daemon=True)
-    reader.start()
-    reader.join(timeout)
-    code: int | None = None
+def installed_version(library: Path) -> str | None:
+    """The version recorded beside a downloaded library, if it is that library's."""
     try:
-        # Past the cap there is nothing more to read: stop it rather than wait.
-        if not reader.is_alive() and size < _MAX_VERSION_OUTPUT:
-            code = proc.wait(timeout=max(0.05, deadline - time.monotonic()))
-    except subprocess.TimeoutExpired:
-        code = None
-    finally:
-        if proc.poll() is None:
-            with contextlib.suppress(OSError):
-                proc.kill()
-            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-                proc.wait(timeout=2)
-            code = None
-        reader.join(1)
-        if proc.stdout is not None:
-            with contextlib.suppress(OSError):
-                proc.stdout.close()
-    return code, b"".join(chunks)[:_MAX_VERSION_OUTPUT]
-
-
-def read_version(
-    path: Path,
-    *,
-    run: Runner | None = None,
-    timeout: float = _VERSION_TIMEOUT_SECONDS,
-) -> str | None:
-    """Run the program with each version flag; return the first version it prints.
-
-    A version in the output counts whatever the exit code, since Thimeo's
-    builds may exit non-zero after printing help.  Nothing is fed to the
-    program, its environment is minimal, its output is capped and it is
-    stopped after *timeout* seconds, so a file that is not Stereo Tool
-    cannot hang the server.
-
-    Returns:
-        The version, or ``None`` if the program ran but named none.
-
-    Raises:
-        WillNotRun: The program could not be started with any flag (for
-            example a ``noexec`` volume, or not a program at all).
-    """
-    run = run or _run_bounded
-    started = False
-    failure: OSError | None = None
-    for flag in _VERSION_FLAGS:
-        try:
-            _code, output = run([str(path), flag], str(path.parent), timeout)
-        except OSError as exc:
-            failure = exc
-            continue
-        except (subprocess.SubprocessError, ValueError):
-            continue
-        started = True
-        match = _VERSION.search(output[:_MAX_VERSION_OUTPUT].decode("utf-8", "replace"))
-        if match:
-            return match.group(1)
-    if not started and failure is not None:
-        raise WillNotRun(failure.errno, failure.strerror or str(failure))
-    return None
-
-
-def installed_version(path: Path, *, run: Runner | None = None) -> str | None:
-    """:func:`read_version`, remembered until the file changes; ``None`` if it names none."""
-    try:
-        info = path.stat()
-    except OSError:
+        text = (library.parent / VERSION_FILE).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
         return None
-    if not stat.S_ISREG(info.st_mode):
-        return None
-    key = (str(path), info.st_size, info.st_mtime_ns)
-    with _version_lock:
-        if key in _versions:
-            return _versions[key]
-    try:
-        version = read_version(path, run=run)
-    except WillNotRun:
-        version = None
-    with _version_lock:
-        _versions[key] = version
-    return version
+    name, _, version = text.partition(" ")
+    return version if name == library.name and re.fullmatch(r"\d{1,2}\.\d{2,3}", version) else None
 
 
 def program_status(
-    configured: str, index_dir: Path | str, *, run: Callable[..., Any] | None = None
+    configured: str, index_dir: Path | str, *, running: Mapping[str, object] | None = None
 ) -> dict[str, Any]:
-    """Whether a station's program is there, its version and where it is.
+    """Whether a station's library is there, its version and where it is.
 
     Never a path: the page only needs to know which of the three it is.
+    *running* is what the station's running Stereo Tool reported, whose
+    version counts for a library put there by hand.
     """
-    resolved = resolve_path(configured, index_dir)
-    found = shutil.which(resolved)
-    version = installed_version(Path(found), run=run) if found else None
+    resolved = Path(resolve_path(configured, index_dir))
+    installed = library_present(str(resolved))
+    version = installed_version(resolved) if installed else None
+    reported = (running or {}).get("version")
+    if installed and version is None and isinstance(reported, str):
+        version = reported
     build = platform_build()
     return {
-        "installed": found is not None,
+        "installed": installed,
         "version": version,
         "location": location(configured, index_dir),
         "download": {
@@ -362,57 +234,53 @@ def program_status(
 
 
 # ---------------------------------------------------------------------------
-# Downloading the official build
+# Downloading Thimeo's plugin
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class Build:
-    """Thimeo's command-line build for one platform."""
+    """The library in Thimeo's plugin zip for one platform."""
 
-    url: str
+    #: Its path in the zip below ``libStereoTool_<version>/lib/``.
+    member: str
     label: str
-    # "elf" or "pe", and the machine types such a file may name.
+    # "elf" or "pe", and the machine type such a file must name.
     kind: Literal["elf", "pe"]
-    machines: frozenset[int]
+    machine: int
 
 
 _ELF_X86_64 = 62
+_ELF_AARCH64 = 183
 _PE_AMD64 = 0x8664
-_PE_I386 = 0x14C
 
-# From https://www.thimeo.com/stereo-tool/download/ ("Command line version").
+# The zip's Linux builds without X11: AutoDJ shows no Stereo Tool window,
+# and a slim container has no X11 libraries to load.
 _LINUX_X86_64 = Build(
-    "https://download.thimeo.com/stereo_tool_cmd_64",
-    "Linux, 64-bit PC",
-    "elf",
-    frozenset({_ELF_X86_64}),
+    "Linux/IntelAMD/64/libStereoTool_intel64.so", "Linux, 64-bit PC", "elf", _ELF_X86_64
 )
-# Windows on ARM runs the x64 build through its emulation.
-_WINDOWS = Build(
-    "https://download.thimeo.com/stereo_tool_cmd.exe",
-    "Windows",
-    "pe",
-    frozenset({_PE_AMD64, _PE_I386}),
+_LINUX_ARM64 = Build(
+    "Linux/ARM/64/libStereoTool_noX11_arm64.so", "Linux, 64-bit ARM", "elf", _ELF_AARCH64
 )
-
-
-_ARM = frozenset({"aarch64", "arm64", "armv7l", "armv6l", "armv8l", "arm"})
+_WINDOWS_X64 = Build("Windows/64/libStereoTool_64.dll", "Windows, 64-bit", "pe", _PE_AMD64)
 
 
 def platform_build(system: str | None = None, machine: str | None = None) -> Build | None:
-    """Thimeo's command-line build for this computer, or ``None`` if AutoDJ can use none.
+    """The library for this computer, or ``None`` if AutoDJ downloads none here.
 
-    Thimeo's ARM builds (``stereo_tool_pi2``, ``stereo_tool_pi2_64``) process
-    16-bit audio only, and AutoDJ feeds Stereo Tool 32-bit float, so ARM
-    Linux gets no download for now.
+    The Python running AutoDJ must be 64-bit, like the library it loads.
     """
     system = sys.platform if system is None else system
     machine = (platform.machine() if machine is None else machine).lower()
-    if system.startswith("linux") and machine in {"x86_64", "amd64"}:
-        return _LINUX_X86_64
-    if system == "win32" and machine in {"amd64", "x86_64", "arm64"}:
-        return _WINDOWS
+    if sys.maxsize <= 2**32:
+        return None
+    if system.startswith("linux"):
+        if machine in {"x86_64", "amd64"}:
+            return _LINUX_X86_64
+        if machine in {"aarch64", "arm64"}:
+            return _LINUX_ARM64
+    if system == "win32" and machine in {"amd64", "x86_64"}:
+        return _WINDOWS_X64
     return None
 
 
@@ -420,19 +288,12 @@ def unsupported_note(system: str | None = None, machine: str | None = None) -> s
     """Why this computer gets no download, and how to use Stereo Tool anyway."""
     system = sys.platform if system is None else system
     machine = (platform.machine() if machine is None else machine).lower()
-    by_hand = (
-        "To use another Stereo Tool build, put it in tools/stereo-tool in AutoDJ's index "
+    return (
+        f"AutoDJ downloads Thimeo's Stereo Tool plugin library for 64-bit Linux (PC or ARM) "
+        f"and 64-bit Windows, and this computer is {system}, {machine or 'unknown processor'}. "
+        "To use another build of the library, put it in tools/stereo-tool in AutoDJ's index "
         "folder, or name it with stereotool_path in the station's playback settings in the "
         "configuration."
-    )
-    if system.startswith("linux") and machine in _ARM:
-        return (
-            "Thimeo's ARM build of Stereo Tool processes 16-bit audio only, and AutoDJ sends "
-            f"it 32-bit audio, so it is not supported yet. {by_hand}"
-        )
-    return (
-        f"Thimeo offers no command-line Stereo Tool for this computer "
-        f"({system}, {machine or 'unknown processor'}) that AutoDJ can download. {by_hand}"
     )
 
 
@@ -564,36 +425,113 @@ def _too_big(limit: int) -> str:
     return f"The download is larger than {limit // (1024 * 1024)} MB, so it is not Stereo Tool."
 
 
-def check_program(path: Path, build: Build) -> None:
-    """Refuse a file that is not a program for this computer.
+def check_library(path: Path, build: Build) -> None:
+    """Refuse a file that is not a shared library for this computer.
 
     Raises:
-        DownloadError: Not an ELF (Linux) or PE (Windows) program for one of
-            *build*'s machine types.
+        DownloadError: Not a 64-bit little-endian ELF shared object for the
+            build's machine (Linux), or not a PE DLL for x64 (Windows).
     """
     with path.open("rb") as handle:
         head = handle.read(4096)
-    machine: int | None = None
+    ok = False
     if build.kind == "elf":
-        # 64-bit, little-endian ELF; e_machine is at byte 18.
-        if head[:4] == b"\x7fELF" and len(head) >= 20 and head[4] == 2 and head[5] == 1:
-            machine = int.from_bytes(head[18:20], "little")
+        # e_type 3 is a shared object; e_machine is at byte 18.
+        ok = (
+            head[:4] == b"\x7fELF"
+            and len(head) >= 20
+            and head[4] == 2
+            and head[5] == 1
+            and int.from_bytes(head[16:18], "little") == 3
+            and int.from_bytes(head[18:20], "little") == build.machine
+        )
     elif head[:2] == b"MZ" and len(head) >= 64:
         offset = int.from_bytes(head[60:64], "little")
-        if offset + 6 <= len(head) and head[offset : offset + 4] == b"PE\0\0":
+        if offset + 24 <= len(head) and head[offset : offset + 4] == b"PE\0\0":
             machine = int.from_bytes(head[offset + 4 : offset + 6], "little")
-    if machine is None or machine not in build.machines:
+            characteristics = int.from_bytes(head[offset + 22 : offset + 24], "little")
+            # 0x2000: IMAGE_FILE_DLL.
+            ok = machine == build.machine and bool(characteristics & 0x2000)
+    if not ok:
         raise DownloadError(
-            f"The download is not a {build.label} program, so it was not installed."
+            f"The Stereo Tool library in Thimeo's download is not a {build.label} library, "
+            "so it was not installed."
         )
+
+
+def plugin_version(top: str) -> str | None:
+    """``11.05`` from the zip's top folder ``libStereoTool_1105``."""
+    match = _TOP.fullmatch(top)
+    if match is None:
+        return None
+    digits = match.group(1)
+    return f"{int(digits[:-2])}.{digits[-2:]}"
+
+
+def _safe_name(name: str) -> bool:
+    """Whether a zip member name stays inside the folder it is unpacked in."""
+    if not name or "\\" in name or "\0" in name or name.startswith("/") or ":" in name:
+        return False
+    return ".." not in PurePosixPath(name).parts
+
+
+def extract_library(archive: Path, build: Build, out: BinaryIO) -> str | None:
+    """Copy this computer's library from Thimeo's zip to *out*; return its version.
+
+    Only the one member is read.  Every name in the zip must be safe to
+    unpack and the member must not be a link, or the zip is refused.
+
+    Raises:
+        DownloadError: Not a zip, an unsafe name, no or several matching
+            libraries, a link, a library over the size cap, or a damaged member.
+    """
+    try:
+        opened = zipfile.ZipFile(archive)
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise DownloadError(f"Thimeo's download is not a readable zip file ({exc}).") from None
+    with opened:
+        found = []
+        for info in opened.infolist():
+            if not _safe_name(info.filename):
+                raise DownloadError(
+                    "Thimeo's download names a file outside its own folder, so nothing was "
+                    "installed."
+                )
+            top, _, rest = info.filename.partition("/")
+            if rest == f"lib/{build.member}" and _TOP.fullmatch(top):
+                found.append((top, info))
+        if len(found) != 1:
+            raise DownloadError(
+                f"Thimeo's download has {'no' if not found else 'more than one'} "
+                f"{build.label} Stereo Tool library, so nothing was installed."
+            )
+        top, info = found[0]
+        if stat.S_ISLNK(info.external_attr >> 16) or info.is_dir():
+            raise DownloadError("The Stereo Tool library in Thimeo's download is a link.")
+        if info.file_size > MAX_LIBRARY_BYTES:
+            raise DownloadError("The Stereo Tool library in Thimeo's download is too large.")
+        copied = 0
+        try:
+            with opened.open(info) as member:
+                while chunk := member.read(_CHUNK_BYTES):
+                    copied += len(chunk)
+                    if copied > MAX_LIBRARY_BYTES:
+                        raise DownloadError(
+                            "The Stereo Tool library in Thimeo's download is too large."
+                        )
+                    out.write(chunk)
+        except (zipfile.BadZipFile, OSError, EOFError, ValueError) as exc:
+            # A bad CRC is a BadZipFile; a damaged stream a zlib error (ValueError kin).
+            raise DownloadError(f"Thimeo's download is damaged ({exc}).") from None
+        return plugin_version(top)
 
 
 @dataclass(frozen=True)
 class Installed:
-    """A program :func:`install` put in place."""
+    """A library :func:`install` put in place."""
 
     path: Path
-    #: ``None`` when the program runs but names no version.
+    #: ``None`` when the zip's folder name gives none.
     version: str | None
 
 
@@ -605,20 +543,19 @@ def install(
     *,
     build: Build | None = None,
     open_url: Callable[[str, float], Any] | None = None,
-    run: Runner | None = None,
     limit: int = MAX_DOWNLOAD_BYTES,
     clock: Callable[[], float] = time.monotonic,
 ) -> Installed:
-    """Download Thimeo's build for this computer and put it in the index folder.
+    """Download Thimeo's plugin zip and put this computer's library in the index folder.
 
-    The file is written beside its final place under a hidden name, checked,
-    run for its version, and only then renamed over the old program, so a
-    failed or partial download never replaces a working one.  A program that
-    runs but names no version is installed with its version unknown; one
-    that cannot be started at all is refused.
+    The zip is saved beside the library under a hidden name, the one
+    library is taken out to another hidden name and checked, and only then
+    renamed over the old one, so a failed or partial download never
+    replaces a working library.  The zip is deleted afterwards.  Nothing
+    downloaded is run or loaded here.
 
     Raises:
-        NoBuildError: Thimeo has no command-line build for this computer.
+        NoBuildError: AutoDJ downloads no library for this computer.
         DownloadBusy: Another download is running.
         DownloadError: The download or one of its checks failed.
     """
@@ -635,44 +572,55 @@ def install(
         except OSError as exc:
             raise DownloadError(f"Could not make the Stereo Tool folder: {exc.strerror}.") from None
         _remove_leftovers(folder, target)
-        # Windows runs only a file whose name ends in .exe.
-        part = folder / f".download-{secrets.token_hex(8)}{target.suffix}"
+        token = secrets.token_hex(8)
+        archive = folder / f".download-{token}.zip"
+        part = folder / f".download-{token}{target.suffix}"
         try:
             try:
+                with archive.open("xb") as out:
+                    fetch(PLUGIN_URL, out, open_url=open_url, limit=limit, clock=clock)
+                    out.flush()
                 with part.open("xb") as out:
-                    fetch(build.url, out, open_url=open_url, limit=limit, clock=clock)
+                    version = extract_library(archive, build, out)
                     out.flush()
                     os.fsync(out.fileno())
             except OSError as exc:
-                raise DownloadError(f"Could not save the download: {exc.strerror}.") from None
-            check_program(part, build)
-            part.chmod(0o755)
-            try:
-                version = read_version(part, run=run)
-            except WillNotRun as exc:
                 raise DownloadError(
-                    f"The downloaded Stereo Tool could not be started ({exc.strerror}), so it "
-                    "was not installed. If AutoDJ's index folder is on a volume mounted with "
-                    "noexec, programs cannot run from it: mount it without noexec, or put "
-                    "Stereo Tool elsewhere and name it with stereotool_path."
+                    f"Could not save the download: {exc.strerror or exc}. Stereo Tool needs "
+                    "about 400 MB free in AutoDJ's index folder while it downloads."
                 ) from None
+            check_library(part, build)
             try:
                 _replace(part, target)
+                _write_version(folder, target, version)
             except OSError as exc:
                 raise DownloadError(
                     f"Could not put Stereo Tool in place: {exc.strerror or exc}."
                 ) from None
         finally:
-            with contextlib.suppress(OSError):
-                part.unlink(missing_ok=True)
-        info = target.stat()
-        with _version_lock:
-            _versions[(str(target), info.st_size, info.st_mtime_ns)] = version
+            for leftover in (archive, part):
+                with contextlib.suppress(OSError):
+                    leftover.unlink(missing_ok=True)
         _bump()
-        logger.info("Stereo Tool %s installed from %s", version or "(version unknown)", build.url)
+        logger.info(
+            "Stereo Tool %s plugin library installed from %s",
+            version or "(version unknown)",
+            PLUGIN_URL,
+        )
         return Installed(target, version)
     finally:
         _install_lock.release()
+
+
+def _write_version(folder: Path, target: Path, version: str | None) -> None:
+    """Record which library this version is for, beside it."""
+    record = folder / VERSION_FILE
+    if version is None:
+        record.unlink(missing_ok=True)
+        return
+    temporary = folder / f".{VERSION_FILE}.{secrets.token_hex(6)}"
+    temporary.write_text(f"{target.name} {version}\n", encoding="ascii")
+    os.replace(temporary, record)
 
 
 def _replace(
@@ -682,10 +630,10 @@ def _replace(
     windows: bool = os.name == "nt",
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Rename *part* over *target*, even while *target* runs on Windows.
+    """Rename *part* over *target*, even while *target* is loaded on Windows.
 
-    Windows will not replace a running program's file but will rename it,
-    so the old program is moved aside first; if the new one then cannot
+    Windows will not replace a loaded library's file but will rename it,
+    so the old library is moved aside first; if the new one then cannot
     take its place, the old one is put back.  A *part* that stays locked
     (a virus scanner reading the new file) is retried a few times.
 
@@ -701,7 +649,7 @@ def _replace(
             if not windows:
                 raise
             if target.exists():
-                break  # most likely the old program, running
+                break  # most likely the old library, loaded by Stereo Tool
             sleep(0.2 * (attempt + 1))
     else:
         raise DownloadError(
@@ -731,9 +679,9 @@ def _replace(
 
 
 def _remove_leftovers(folder: Path, target: Path) -> None:
-    """Delete parts of interrupted downloads and old programs that have stopped.
+    """Delete parts of interrupted downloads and old libraries no longer loaded.
 
-    An old program set aside by an update that was cut short is the only
+    An old library set aside by an update that was cut short is the only
     working copy when *target* is missing: the newest one is put back
     instead of deleted.
     """
@@ -749,12 +697,14 @@ def _remove_leftovers(folder: Path, target: Path) -> None:
             os.replace(newest, target)
         except OSError:
             logger.warning("Could not put back the old Stereo Tool %s", newest.name)
-    for path in [*folder.glob(".download-*"), *(path for _mtime, path in olds)]:
+    stray = [*folder.glob(".download-*"), *folder.glob(f".{VERSION_FILE}.*")]
+    for path in [*stray, *(path for _mtime, path in olds)]:
         with contextlib.suppress(OSError):
             if path.is_file() and not path.is_symlink():
                 path.unlink()
 
 
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # The licence key
 # ---------------------------------------------------------------------------

@@ -1,19 +1,21 @@
 """Settings, Sound: getting Stereo Tool and giving it a licence key.
 
 The page reads one station's view (``GET /api/stereo-tool``): whether its
-program is there and its version, whether Thimeo has a build to download
-for this computer, and which licence it uses.  The licence key is
+Stereo Tool plugin library is there and its version, whether AutoDJ can
+download one for this computer, which licence it uses, and what the
+running Stereo Tool said of that licence.  The licence key is
 write-only: ``PUT /api/stereo-tool/license`` saves one for every station or
 for this station only, ``DELETE`` clears it, and no answer ever holds a key.
 A key that comes from the server's configuration or environment is
 reported, and the page cannot change it.
 
 ``POST /api/stereo-tool/download`` is shared by every station: it fetches
-Thimeo's build from thimeo.com (:func:`autodj.stereotool_setup.install`).
+Thimeo's plugin zip from thimeo.com and installs the one library this
+computer needs (:func:`autodj.stereotool_setup.install`).
 It is a browser route like every settings change: it needs a paired
 browser session when pairing is on and an allowed Origin, and machine
 tokens (analysis workers, the announcer) never reach it.  It takes no file
-and no address, so it can only ever install Thimeo's own program.
+and no address, so it can only ever install Thimeo's own library.
 """
 
 from __future__ import annotations
@@ -64,17 +66,34 @@ def _several_stations(request: Request) -> bool:
         return False
 
 
+def _running(station: StationRuntime) -> dict[str, object]:
+    """What this station's running Stereo Tool reported, if it runs one."""
+    master = getattr(station.bridge.player, "_continuous_master", None)
+    report = getattr(master, "stereotool_report", None)
+    return dict(report) if isinstance(report, dict) else {}
+
+
 def status(station: StationRuntime, several: bool) -> dict[str, Any]:
-    """One station's Stereo Tool program and licence, with no path and no key."""
+    """One station's Stereo Tool library and licence, with no path and no key."""
     cfg = station.bridge.player._cfg
     licence = setup.license_state(
         index_dir=cfg.index.index_dir,
         state_dir=station.paths.state_dir,
         configured_file=cfg.playback.stereotool_license_file,
     )
+    running = _running(station)
     return {
-        **setup.program_status(cfg.playback.stereotool_path, cfg.index.index_dir),
+        **setup.program_status(cfg.playback.stereotool_path, cfg.index.index_dir, running=running),
         "license": licence.public(),
+        # Stereo Tool's own verdict once audio has passed: covered or not, and what not.
+        "running": {
+            "licensed": running.get("licensed")
+            if isinstance(running.get("licensed"), bool)
+            else None,
+            "unlicensed": running.get("unlicensed")
+            if isinstance(running.get("unlicensed"), str)
+            else None,
+        },
         "several_stations": several,
         "terms_url": setup.TERMS_URL,
         "licensing_url": setup.LICENSING_URL,

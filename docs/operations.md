@@ -1833,72 +1833,90 @@ problem.
 ### Getting Stereo Tool and its licence
 
 AutoDJ cannot include Thimeo's Stereo Tool, and the container image does not either. Each install
-gets the command-line Stereo Tool itself, from Settings, Sound, with no configuration file:
+gets Thimeo's Stereo Tool plugin library (`libStereoTool`, the same one AzuraCast and Liquidsoap
+use) itself, from Settings, Sound, with no configuration file:
 
-1. Choose **Stereo Tool** under Output processing. The **Stereo Tool program and licence** group
+1. Choose **Stereo Tool** under Output processing. The **Stereo Tool library and licence** group
    appears under it.
 2. Read Thimeo's [terms and conditions](https://www.thimeo.com/terms-and-conditions/) and
    [licensing](https://www.thimeo.com/stereo-tool/licenses/) (both linked there), then tick
    **I accept Thimeo's terms for Stereo Tool**. Download refuses without the tick and moves focus
    to the box.
-3. Press **Download Stereo Tool**. The server fetches Thimeo's command-line build for its own
-   platform straight from thimeo.com over HTTPS: `stereo_tool_cmd_64` for 64-bit Linux PCs and
-   `stereo_tool_cmd.exe` for Windows. It takes a minute or two; the status line says
-   "Downloading Stereo Tool from thimeo.com" until it ends, then "Stereo Tool 11.05 is installed"
-   with the version the program reports, or "Stereo Tool is installed (version unknown)" when it
-   names none. The button then reads **Update Stereo Tool**; press it to fetch Thimeo's latest
-   build. A running Stereo Tool restarts with the new program, and the sound bypasses it for a
-   moment.
-4. Paste the key Thimeo sent you in **Stereo Tool licence key** and press **Save licence key**.
-   The status line says "Licence set" or "No licence"; the key is never shown again. **Clear
-   licence** deletes the saved key after asking. Stereo Tool restarts when the key changes: a key
-   for every station restarts every station that runs Stereo Tool, a key for one station
-   restarts only that one, and saving the same key again restarts nothing.
+3. Press **Download Stereo Tool**. The server fetches Thimeo's Generic plugin zip
+   (`Stereo_Tool_Generic_plugin.zip`, about 320 MB) straight from thimeo.com over HTTPS and keeps
+   only the one library this server needs: `libStereoTool_intel64.so` on 64-bit Linux PCs,
+   `libStereoTool_noX11_arm64.so` on 64-bit ARM Linux (a Raspberry Pi 4 or 5 with a 64-bit
+   system), and `libStereoTool_64.dll` on 64-bit Windows. The Linux libraries are the builds
+   without X11, so a server or container without a desktop can load them. It takes a few minutes;
+   the status line says "Downloading Stereo Tool from thimeo.com" until it ends, then "Stereo Tool
+   11.05 is installed", with the version from the zip. The button then reads **Update Stereo
+   Tool**; press it to fetch Thimeo's latest plugin. A running Stereo Tool restarts with the new
+   library, and the sound bypasses it for a moment.
+4. Paste the key Thimeo sent you (it starts with `<` and ends with `>`) in **Stereo Tool licence
+   key** and press **Save licence key**. The status line says "Licence set" or "No licence"; the
+   key is never shown again. About a second after Stereo Tool starts with it, the line adds what
+   Stereo Tool itself says: "Stereo Tool says the licence key is valid", or "Not licensed: Stereo
+   Tool says the licence does not cover this preset", followed by the features it lists, while the
+   station plays Thimeo's unlicensed reminder. **Clear licence** deletes the saved key after
+   asking. Stereo Tool restarts when the key changes: a key for every station restarts every
+   station that runs Stereo Tool, a key for one station restarts only that one, and saving the
+   same key again restarts nothing.
 5. Choose a preset in the **Stereo Tool** group below, or upload your own `.sts` file there.
+   AutoDJ loads it with all of its processing settings but not Stereo Tool's configuration
+   settings, so a preset cannot change how Stereo Tool itself is set up.
 
 Without a key, Stereo Tool runs as its free version, with the limits Thimeo sets for it.
 
-The program is kept in `tools/stereo-tool/` inside the index folder (`/index` in the container),
-named `stereo_tool_cmd` (`stereo_tool_cmd.exe` on Windows). A station that keeps the default
+The download needs about 400 MB free in the index folder while it runs (the zip is deleted
+afterwards) and stops if it has not finished within 30 minutes. If any check fails, the old
+library stays and the page says why, for example "Could not download Stereo Tool: thimeo.com
+answered with error 503."
+
+The library is kept in `tools/stereo-tool/` inside the index folder (`/index` in the container),
+under its name from the zip, with a `.version` file beside it. A station that keeps the default
 `[playback] stereotool_path` uses that copy when it is there, and `./tools/stereo-tool/` beside
-the working folder otherwise, so neither needs a configuration change. You can also put a
-command-line Stereo Tool you downloaded yourself from thimeo.com there by hand (make it
-executable on Linux); the page then shows its version. Backups leave the program out.
+the working folder otherwise, so neither needs a configuration change. You can also put the
+library from a plugin zip you downloaded yourself from thimeo.com there by hand, under the same
+name; the page then shows the version Stereo Tool reports once it runs. Backups leave the library
+out.
 
-The program runs from the index folder, so that folder must not be on a volume mounted with
-`noexec` (some NAS shares and hardened `/srv` mounts are). Download then says the program "could
-not be started" and mentions noexec, and nothing is replaced. Mount the volume without `noexec`,
-or keep Stereo Tool on another volume and name it with `[playback] stereotool_path`.
+**`stereotool_path` now names the library.** It used to name Thimeo's command-line program
+(`stereo_tool_cmd`). AutoDJ no longer runs that program: a station whose `stereotool_path` still
+names it says that file "is not Thimeo's Stereo Tool plugin library". Point it at a
+`libStereoTool_*.so` or `.dll`, or remove it to use the downloaded one.
 
-**ARM.** Thimeo's ARM builds (`stereo_tool_pi2`, `stereo_tool_pi2_64`, for the Raspberry Pi)
-process 16-bit audio only, and AutoDJ feeds Stereo Tool 32-bit float audio, so they are not
-supported yet. On ARM Linux the Download button is replaced by a note saying so. To try another
-build by hand, put it in `tools/stereo-tool/` in the index folder or name it with
-`stereotool_path` in the station's `[playback]` table. Thimeo offers no command-line build for
-macOS that AutoDJ downloads either; the same by-hand route applies.
+AutoDJ never loads the library into the server itself. Each station that uses Stereo Tool starts
+a small helper process of AutoDJ's own (`python -m autodj.stereotool_host`) that loads the library
+and turns it into a pipe; the mix goes through it and then through AutoDJ's output limiter. If
+Thimeo's code crashes, only that helper ends: the station plays on with its limited bypass and
+starts Stereo Tool again.
 
-The download only ever fetches Thimeo's own build: the page sends no address and no file, the
-server follows redirects only to thimeo.com hosts over HTTPS, stops a download that takes more
-than 10 minutes, refuses a file over 200 MB or one that is not a program for this computer, and
-starts the new file with `--version`, `--full-version` and then `-h` to read a version before it
-replaces anything. No public Thimeo page shows what those print, so a program that starts but
-names no version is still installed, as "version unknown"; one that cannot start at all is
-refused. If any check fails, the old program stays and the page says why, for example "Could not
-download Stereo Tool: thimeo.com answered with error 503." The page never accepts an uploaded
-program: that would let anyone who can change settings run any program on the server.
+The download only ever fetches Thimeo's own plugin: the page sends no address and no file, the
+server follows redirects only to thimeo.com hosts over HTTPS, refuses a zip over 768 MB, takes out
+only the member for this computer (refusing a zip that names anything outside its own folder, or
+a library that is a link or over 256 MB), and checks that it is a 64-bit shared library for this
+processor before it replaces anything. Nothing downloaded is run during the download. The page
+never accepts an uploaded file: that would let anyone who can change settings run any code on
+the server.
 
-If a station is set to Stereo Tool and the program is not there, the station plays on with its
+AutoDJ downloads no library for 32-bit systems, 32-bit ARM, Windows on ARM or macOS. Thimeo's zip
+has builds for some of them; to try one, put it in `tools/stereo-tool/` in the index folder under
+the name AutoDJ looks for, or name it with `stereotool_path` in the station's `[playback]` table.
+The page says so on those computers instead of offering the download.
+
+If a station is set to Stereo Tool and the library is not there, the station plays on with its
 limited bypass, and `/api/status` reports `playout.error` as "Stereo Tool master unavailable:
 Stereo Tool is not installed. Download it in Settings, Sound, with the Download Stereo Tool
 button." It starts Stereo Tool by itself within a second of the download finishing. A station
-whose own `stereotool_path` names a missing program says that path is missing instead.
+whose own `stereotool_path` names a missing library says that path is missing instead. While
+Stereo Tool runs, `/api/status` reports what it said under `playout.stereotool`: its version, the
+delay its preset adds (`latency_ms`), and whether the licence covers the preset.
 
-In Docker, use the Download button, or copy the program into the index volume:
+In Docker, use the Download button, or copy the library into the index volume:
 
 ```bash
 docker compose exec autodj mkdir -p /index/tools/stereo-tool
-docker compose cp stereo_tool_cmd_64 autodj:/index/tools/stereo-tool/stereo_tool_cmd
-docker compose exec autodj chmod 755 /index/tools/stereo-tool/stereo_tool_cmd
+docker compose cp libStereoTool_intel64.so autodj:/index/tools/stereo-tool/libStereoTool_intel64.so
 ```
 
 #### One licence or one per station
@@ -1914,7 +1932,8 @@ unrestricted broadcast use is free.
 Saved keys are files readable only by the user AutoDJ runs as (mode 0600 on Linux and macOS, a
 protected access list on Windows): `<index_dir>/.stereo-tool-license` for every station and
 `.stereo-tool-license` in a station's own folder for that station. Backups never include them, so
-save the key again after restoring on another machine.
+save the key again after restoring on another machine. A saved key that cannot be read is
+reported on the page ("No licence. This station's saved licence cannot be read ...").
 
 For an install without a browser, give the key in the environment instead. These are read when
 Stereo Tool starts and override the key saved for every station, which the page then reports as
@@ -1928,25 +1947,24 @@ A station's `[playback] stereotool_license_file` names a key file for that stati
 cannot change it. The order, first match wins, is: that file, the station's own saved key, the
 environment, the key saved for every station.
 
-The only way we found documented to give the command-line build its key is `-k <key>` on its
-command line. AutoDJ passes it that way, so while Stereo Tool runs, the key can be read by the
-user AutoDJ runs as, by administrators and root, and on Linux by any local user unless `/proc` is
-mounted with `hidepid`. In Docker the container's processes are processes of the host: the
-host's root, and any host user unless the host mounts `/proc` with `hidepid`, can read the key.
-AutoDJ never writes the command line to its log. See `THREAT_MODEL.md`.
+AutoDJ hands the key to the library inside the helper process, over the helper's standard input,
+then zeroes the buffers that held it. It is never on a command line and never in the helper's
+environment (AutoDJ's own `AUTODJ_*` variables are left out of it), so other users cannot read it
+from the process list. The user AutoDJ runs as, and root or administrators, can still read it
+from the key file or from the processes' memory. AutoDJ never writes the key to its log. See
+`THREAT_MODEL.md`.
 
 #### Several Stereo Tool instances
 
-Each station owns its own mastering process and may run Stereo Tool at the same time as other
-stations. For independent instances, Thimeo instructs users to make separately named executable
-copies. Set each station's existing `playback.stereotool_path` to its own executable
-in that station's configuration. A shared default executable path is not a guarantee that a
-particular Stereo Tool build supports independent instances. For example:
+Each station that uses Stereo Tool runs its own helper process with its own Stereo Tool instance,
+so stations may run Stereo Tool at the same time with the same library. Each instance needs its
+own licence (above). A station can also use another copy or build of the library with its own
+`stereotool_path`:
 
 ```toml
 [stations.nightowl.playback]
 loudness_processing = "stereotool"
-stereotool_path = "C:/Radio/Stereo Tool Night Owl.exe"
+stereotool_path = "C:/Radio/libStereoTool_64.dll"
 ```
 
 A station with its own `stereotool_path` keeps it; the downloaded copy serves the stations without
