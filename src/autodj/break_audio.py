@@ -62,6 +62,10 @@ class BreakAudioError(ValueError):
     """A break file AutoDJ will not decode, with the reason in words."""
 
 
+class AudioCheckError(BreakAudioError):
+    """FFmpeg's ffprobe could not be run on a file, or ran too long: not checked."""
+
+
 def demuxer_for(path: Path) -> str:
     """The FFmpeg demuxer for *path*'s extension.
 
@@ -87,26 +91,30 @@ def _ffprobe(path: Path, demuxer: str, runner: Callable[..., Any]) -> tuple[int,
     ffprobe = shutil.which("ffprobe")
     if ffprobe is None:
         raise BreakAudioError("reading this type needs FFmpeg's ffprobe")
-    result = runner(
-        [
-            ffprobe,
-            "-v",
-            "error",
-            *SAFE_FFMPEG_INPUT,
-            "-f",
-            demuxer,
-            "-select_streams",
-            "a:0",
-            "-show_entries",
-            "stream=sample_rate,channels:format=duration",
-            "-of",
-            "json",
-            str(path),
-        ],
-        capture_output=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        result = runner(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                *SAFE_FFMPEG_INPUT,
+                "-f",
+                demuxer,
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=sample_rate,channels:format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # A probe that hangs or cannot start says nothing about the file.
+        raise AudioCheckError("FFmpeg's ffprobe could not check it") from exc
     try:
         found = json.loads(result.stdout or b"{}")
         stream = found["streams"][0]
@@ -158,6 +166,50 @@ def check_break_audio(
     rate, channels, seconds = _ffprobe(path, demuxer, runner)
     _check(rate, channels, seconds, max_seconds, path)
     return "ffmpeg"
+
+
+def check_playable(
+    path: Path,
+    suffix: str | None = None,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Refuse a file that is not audio AutoDJ can play (a voice liner, #323).
+
+    The header check of :func:`check_break_audio` without a break's rate,
+    channel and length limits.  *suffix* names the type when *path* is a
+    staging file whose own name ends otherwise.  An MP4 or AAC file must
+    start as one; its stream is read only where FFmpeg's ffprobe is
+    installed, since the browser plays it without FFmpeg.  An MP3, FLAC,
+    Ogg or WAV file that libsndfile cannot read is given to ffprobe, where
+    it is installed, before it is refused.
+
+    Raises:
+        AudioCheckError: ffprobe could not be run on it, or ran too long.
+        BreakAudioError: The type is not a liner type, or the contents are
+            not audio of that type.
+    """
+    path = Path(path)
+    suffix = (suffix or path.suffix).lower()
+    demuxer = DEMUXERS.get(suffix)
+    if demuxer is None:
+        raise BreakAudioError("it is not audio AutoDJ can play")
+    try:
+        info = sf.info(str(path))
+    except (RuntimeError, OSError):
+        info = None
+    if info is not None:
+        if info.format not in _SOUNDFILE_FORMATS.get(suffix, frozenset()):
+            raise BreakAudioError(f"its contents are not {suffix} audio")
+        return
+    has_ffprobe = shutil.which("ffprobe") is not None
+    if suffix in _SOUNDFILE_FORMATS:
+        if not has_ffprobe:
+            raise BreakAudioError("it is not audio AutoDJ can play")
+    elif not _looks_like(path, suffix):
+        raise BreakAudioError("it is not audio AutoDJ can play")
+    if has_ffprobe:
+        _ffprobe(path, demuxer, runner)
 
 
 def _looks_like(path: Path, suffix: str) -> bool:
@@ -295,8 +347,10 @@ __all__ = [
     "DEMUXERS",
     "MAX_CHANNELS",
     "MAX_RATE",
+    "AudioCheckError",
     "BreakAudioError",
     "check_break_audio",
+    "check_playable",
     "decode_break",
     "demuxer_for",
 ]

@@ -1126,10 +1126,19 @@ describe("clockwheel step conditions, for screen readers", () => {
     const removeButtons = () => conditions().map((row) => row.querySelector("button").textContent);
     expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2", "Remove condition 3"]);
     const third = conditions()[2];
+    const oldLegend = third.querySelector("legend");
+    let legendAtFocus = null;
+    third.querySelector("select").addEventListener("focus", () => {
+      legendAtFocus = third.querySelector("legend").textContent;
+    }, { once: true });
+    conditions()[1].querySelector("button").focus();
     conditions()[1].querySelector("button").click();
     await vi.waitFor(() => expect(status()).toBe("Condition 2 removed, 2 conditions left."));
-    // The condition that took its place has focus, renumbered.
+    // The condition that took its place has focus, renumbered before focus
+    // arrived, with a new legend so its group's name is worked out again (#326).
     expect(document.activeElement).toBe(third.querySelector("select"));
+    expect(legendAtFocus).toBe("Condition 2");
+    expect(third.querySelector("legend")).not.toBe(oldLegend);
     expect(third.querySelector("legend").textContent).toBe("Condition 2");
     expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2"]);
     const first = conditions()[0];

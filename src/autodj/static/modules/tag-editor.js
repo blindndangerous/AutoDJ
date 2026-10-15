@@ -149,8 +149,9 @@ export function installTagEditor({ document: doc = document, request = requestJs
   }
 
   // Resolves true once saved (or nothing to save).  errorTarget, from the
-  // Save or Discard dialog, receives a message that is not about a field.
-  async function saveTags(errorTarget = null) {
+  // Save or Discard dialog, receives a message that is not about a field;
+  // said, from the same dialog, collects the result to be said after it.
+  async function saveTags(errorTarget = null, said = null) {
     if (saving || !path || form.hidden) return false;
     clearErrors();
     const changed = changes();
@@ -199,7 +200,9 @@ export function installTagEditor({ document: doc = document, request = requestJs
         failed: `Saved the tags of ${name} ${where}, but beets was not updated: ${record.beets_error || "unknown error"}. Run beet update to read them into beets.`,
       }[record.beets] || `Saved the tags of ${name} ${where}.`;
       const problem = record.beets === "failed" || !!record.warning;
-      say(record.warning ? `${message} ${record.warning}` : message, problem ? "error" : "info");
+      const result = record.warning ? `${message} ${record.warning}` : message;
+      say(result, problem ? "error" : "info");
+      said?.push(result);
       return true;
     } catch (error) {
       if (mine !== generation || !isAuthenticatedRequestCurrent(epoch)) return false;

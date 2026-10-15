@@ -26,7 +26,7 @@
 // save is said once through #requests-status.
 
 import { requestJson, staleActionText } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
+import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clockText } from "./time-format.js";
 
 const POLL_MS = 15000;
@@ -400,6 +400,12 @@ export function installListenerRequests({
     busy = true;
     button.classList.add("is-pending");
     button.setAttribute("aria-busy", "true");
+    // A short line when the reply is slow, so the press is heard (#384).
+    const stopPending = sayIfStillPending(say, {
+      approve: `Queueing ${song}…`,
+      "play-next": `Queueing ${song} to play next…`,
+      reject: `Turning down ${song}…`,
+    }[action] || "Sending…");
     try {
       const reply = await request(`/api/requests/${encodeURIComponent(id)}/${action}`, {
         method: "POST",
@@ -417,6 +423,7 @@ export function installListenerRequests({
       const left = staleActionText(error);
       say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
     } finally {
+      stopPending();
       busy = false;
       button.classList.remove("is-pending");
       button.removeAttribute("aria-busy");

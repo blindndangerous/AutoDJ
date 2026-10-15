@@ -22,7 +22,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
-import { fmtTime, selectOnFocus } from "./dom-helpers.js";
+import { fmtTime, placeRows, selectOnFocus } from "./dom-helpers.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
@@ -379,55 +379,93 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   // ---- The open list ---------------------------------------------------
-  function songRow(song, index) {
+  // A song's row is built once and then changed in place: a list drawn
+  // again from scratch destroyed the focused button, and NVDA read a cut-off
+  // line of the list after Move up, Move down, Remove and Add (#328).
+  function songRow() {
     const item = doc.createElement("li");
-    item.dataset.index = String(index);
     const row = doc.createElement("div");
     row.className = "show-row";
-    const text = doc.createElement("span");
-    text.className = song.missing ? "show-song show-missing" : "show-song";
-    if (song.missing) {
-      text.textContent = `${song.title}, not in the library; skipped on the air`;
-    } else {
-      text.textContent = `${song.title}, ${song.length_text}`;
-    }
-    const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
-    if (others.length) {
-      text.append(`; warning: also number ${others.join(" and ")} in the list`);
-    }
-    const which = song.title;
-    const up = namedButton("up", "Move up", which, { index: String(index) });
-    const down = namedButton("down", "Move down", which, { index: String(index) });
-    const removeButton = namedButton("remove", "Remove", which, { index: String(index) });
-    // At the ends, and while the list is generated, the buttons stay in the
-    // tab order and say why they do nothing.
-    if (index === 0 || generating) up.setAttribute("aria-disabled", "true");
-    if (index === songs.length - 1 || generating) down.setAttribute("aria-disabled", "true");
-    if (generating) removeButton.setAttribute("aria-disabled", "true");
-    row.append(text, up, down, removeButton);
+    row.append(
+      doc.createElement("span"),
+      namedButton("up", "Move up", ""),
+      namedButton("down", "Move down", ""),
+      namedButton("remove", "Remove", ""),
+    );
     item.append(row);
     return item;
   }
 
+  // Changes only what differs, so a row that stays says nothing new.
+  function fillSongRow(item, song, index) {
+    if (item.dataset.index !== String(index)) item.dataset.index = String(index);
+    const [text, ...buttons] = item.firstElementChild.children;
+    const className = song.missing ? "show-song show-missing" : "show-song";
+    if (text.className !== className) text.className = className;
+    let words = song.missing
+      ? `${song.title}, not in the library; skipped on the air`
+      : `${song.title}, ${song.length_text}`;
+    const others = (repeated.get(song.path) || []).filter((place) => place !== index + 1);
+    if (others.length) words += `; warning: also number ${others.join(" and ")} in the list`;
+    if (text.textContent !== words) text.textContent = words;
+    for (const button of buttons) {
+      const name = `${button.textContent} ${song.title}`;
+      if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
+      if (button.dataset.index !== String(index)) button.dataset.index = String(index);
+      // At the ends, and while the list is generated, the buttons stay in the
+      // tab order and say why they do nothing.
+      const action = button.dataset.action;
+      const off = generating || (action === "up" && index === 0)
+        || (action === "down" && index === songs.length - 1);
+      if (off && button.getAttribute("aria-disabled") !== "true") button.setAttribute("aria-disabled", "true");
+      else if (!off && button.hasAttribute("aria-disabled")) button.removeAttribute("aria-disabled");
+    }
+  }
+
   let repeated = new Map();
 
+  // Focus goes to its button before a row goes, so it never sits on the page.
   function renderSongs(focus = null) {
     const signature = JSON.stringify([songs, generating]);
     if (signature === songsSignature && !focus) return;
     songsSignature = signature;
     repeated = repeatedPlaces(songs);
     if (!songs.length) {
-      const none = doc.createElement("li");
-      none.className = "no-results";
-      none.textContent = "No songs yet. Press Generate list, or add songs below.";
-      songsList.replaceChildren(none);
-    } else {
-      songsList.replaceChildren(...songs.map(songRow));
+      let none = songsList.querySelector(":scope > li.no-results");
+      if (!none) {
+        none = doc.createElement("li");
+        none.className = "no-results";
+        none.textContent = "No songs yet. Press Generate list, or add songs below.";
+      }
+      if (focus) searchInput.focus();
+      placeRows(songsList, [none]);
+      return;
     }
-    if (focus) {
-      const button = songsList.querySelector(`button[data-action="${focus.action}"][data-index="${focus.index}"]`);
-      (button || searchInput).focus();
+    // The rows already drawn, by song and which copy of it.
+    const drawn = new Map();
+    const seen = new Map();
+    const keyOf = (path) => {
+      const copy = seen.get(path) || 0;
+      seen.set(path, copy + 1);
+      return JSON.stringify([path, copy]);
+    };
+    for (const item of songsList.querySelectorAll(":scope > li[data-path]")) {
+      drawn.set(keyOf(item.dataset.path), item);
     }
+    seen.clear();
+    const rows = songs.map((song, index) => {
+      const path = String(song.path ?? "");
+      const item = drawn.get(keyOf(path)) || songRow();
+      if (item.dataset.path !== path) item.dataset.path = path;
+      fillSongRow(item, song, index);
+      return item;
+    });
+    const target = focus
+      ? rows[Number(focus.index)]?.querySelector(`button[data-action="${focus.action}"]`) || null
+      : null;
+    if (target?.isConnected) target.focus();
+    placeRows(songsList, rows);
+    if (focus && doc.activeElement !== (target || searchInput)) (target || searchInput).focus();
   }
 
   // Draws the list again, keeping focus on the same button when it was in it.

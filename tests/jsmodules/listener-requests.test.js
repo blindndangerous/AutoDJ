@@ -345,6 +345,44 @@ describe("listener requests card", () => {
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
   });
 
+  it("says a short line when the reply is slow, and only the result when it is quick (#384)", async () => {
+    install();
+    await flush();
+    vi.useFakeTimers();
+    try {
+      const status = byId("requests-status");
+      const said = [];
+      new window.MutationObserver(() => { if (status.textContent) said.push(status.textContent); })
+        .observe(status, { childList: true, characterData: true, subtree: true });
+      let release;
+      request.mockImplementation((url, options) => (options?.method === "POST"
+        ? new Promise((resolve) => { release = () => resolve({ ...STATE, pending: [WAITING[1]] }); })
+        : Promise.resolve(STATE)));
+      row(A).querySelector('[data-action="approve"]').click();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(said).toEqual([]);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(said).toEqual(["Queueing Song by Artist…"]);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      runDelayed();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(said).toEqual(["Queueing Song by Artist…", "Queued Song by Artist."]);
+
+      // A quick reply: only its result.
+      said.length = 0;
+      request.mockImplementation(async (url, options) => (options?.method === "POST"
+        ? { ...STATE, pending: [] } : STATE));
+      row(B).querySelector('[data-action="reject"]').click();
+      await vi.advanceTimersByTimeAsync(0);
+      runDelayed();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(said).toEqual(["Turned down Two."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does nothing without its markup", () => {
     document.body.innerHTML = "";
     expect(installListenerRequests({ doc: document, request }).refresh).toBeTypeOf("function");
