@@ -1,4 +1,6 @@
-import { focusAfterDialog, releaseDialogFocus } from "./dom-helpers.js";
+import {
+  dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
+} from "./dom-helpers.js";
 import { sayIfStillPending } from "./live-region.js";
 import { severalStations, stationName } from "./stations.js";
 
@@ -25,21 +27,6 @@ import { severalStations, stationName } from "./stations.js";
 // moment says *pendingText* ("Removing…") in the dialog's own status line:
 // the page's status regions are inert behind the dialog (#384).
 
-// The dialog's own status line, made on first use.
-function dialogStatus(doc, dialog) {
-  let status = doc.getElementById("confirm-status");
-  if (!status) {
-    status = doc.createElement("p");
-    status.id = "confirm-status";
-    status.className = "visually-hidden";
-    status.setAttribute("role", "status");
-    status.setAttribute("aria-live", "polite");
-    status.setAttribute("aria-atomic", "true");
-    (dialog.querySelector("form") || dialog).append(status);
-  }
-  return status;
-}
-
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
 export function confirmAction(doc, {
@@ -59,7 +46,9 @@ export function confirmAction(doc, {
     : message;
   confirmButton.textContent = confirmLabel;
   dialog.returnValue = "";
-  const opener = doc.activeElement;
+  const opener = doc.activeElement === doc.body ? null : doc.activeElement;
+  // Where focus goes if the opener is gone when the dialog closes.
+  const place = dialogReturnPlace(opener);
   return new Promise((resolve) => {
     let pending = false;
     const listeners = [
@@ -68,6 +57,10 @@ export function confirmAction(doc, {
       [dialog, "cancel", holdWhilePending],
       [dialog, "close", closed],
     ];
+    // Back on the opener, or somewhere steady near it; never the page body.
+    function returnFocus() {
+      if (!focusAfterDialog(opener)) focusSteadyPlace(doc, place);
+    }
     function settle(value) {
       for (const [target, type, listener] of listeners) {
         target?.removeEventListener(type, listener);
@@ -80,7 +73,7 @@ export function confirmAction(doc, {
       pending = true;
       let target = null;
       if (onConfirm) {
-        const status = dialogStatus(doc, dialog);
+        const status = dialogStatusLine(dialog, "confirm-status");
         confirmButton.setAttribute("aria-busy", "true");
         const stopPending = sayIfStillPending((text) => { status.textContent = text; }, pendingText);
         try {
@@ -95,7 +88,7 @@ export function confirmAction(doc, {
       }
       releaseDialogFocus(dialog);
       dialog.close("confirm");
-      if (!(target?.isConnected && focusAfterDialog(target))) focusAfterDialog(opener);
+      if (!(target?.isConnected && focusAfterDialog(target))) returnFocus();
       settle(true);
     }
     function cancel(event) {
@@ -114,7 +107,7 @@ export function confirmAction(doc, {
     function closed() {
       if (pending) return;
       settle(false);
-      if (opener !== doc.body) focusAfterDialog(opener);
+      returnFocus();
     }
     for (const [target, type, listener] of listeners) {
       target?.addEventListener(type, listener);

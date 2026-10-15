@@ -697,6 +697,67 @@ describe("clock folder and points controls", () => {
     expect(document.getElementById("track-info-dialog").returnValue).toBe("save");
   });
 
+  it("says Saving… in its own line, and lets go of focus before Save and Discard close it", async () => {
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve({ path: decodeURIComponent(url.split("path=")[1] || "M:/one.flac"), title: "One", kind: "music", points: { end: 180 } }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    const dialog = document.getElementById("track-info-dialog");
+    // As a browser closes it: focus still in the dialog goes back to the opener.
+    const close = dialog.close;
+    const focusInDialogAtClose = [];
+    dialog.close = (value) => { focusInDialogAtClose.push(dialog.contains(document.activeElement)); close(value); };
+    const opener = document.createElement("button");
+    document.getElementById("panel-now").append(opener);
+    opener.focus();
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    vi.useFakeTimers();
+    try {
+      const switching = controls.openEditor("M:/two.flac", "music", opener);
+      document.getElementById("track-info-save").focus();
+      document.getElementById("track-info-save").click();
+      await vi.advanceTimersByTimeAsync(350);
+      expect(document.getElementById("track-info-progress").textContent).toBe("Saving…");
+      expect(dialog.contains(document.getElementById("track-info-progress"))).toBe(true);
+      expect(document.getElementById("track-info-error").textContent).toBe("");
+      finish({ points: { intro: 10, end: 180 } });
+      await vi.advanceTimersByTimeAsync(10);
+      await switching;
+      expect(document.getElementById("track-info-progress").textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+    document.querySelector('[data-point="intro"]').value = "0:20";
+    opener.focus();
+    const discarding = controls.openEditor("M:/one.flac", "music", opener);
+    document.getElementById("track-info-discard").focus();
+    document.getElementById("track-info-discard").click();
+    await discarding;
+    expect(focusInDialogAtClose).toEqual([false, false]);
+  });
+
+  it("leaves focus somewhere steady when a switch stops short", async () => {
+    let respond;
+    const request = vi.fn((url) => (url.includes("two")
+      ? new Promise((resolve) => { respond = resolve; })
+      : Promise.resolve({ path: "M:/one.flac", title: "One", kind: "music", points: { end: 180 } })));
+    const controls = installLibraryFolders({ document, request });
+    await controls.openEditor("M:/one.flac");
+    document.getElementById("panel-track-info").hidden = false;
+    document.querySelector('[data-point="intro"]').value = "0:10";
+    const switching = controls.openEditor("M:/two.flac");
+    document.getElementById("track-info-discard").click();
+    await vi.waitFor(() => expect(respond).toBeTypeOf("function"));
+    // Signed out while the other track loads, with focus lost to the page.
+    invalidateAuthenticatedRequestEpoch();
+    document.activeElement?.blur?.();
+    respond({ path: "M:/two.flac", title: "Two", kind: "music", points: {} });
+    await switching;
+    expect(document.activeElement).toBe(document.getElementById("track-info-heading"));
+  });
+
   it("discards a liner draft without saving, and offers the same liner fields", async () => {
     const request = vi.fn(async (url) => ({ path: decodeURIComponent(url.split("path=")[1]), title: "Test jingle", kind: "liner", points: { start: 0, segue: 5.3, end: 8.8, overlap_start: 5.3 } }));
     const controls = installLibraryFolders({ document, request });

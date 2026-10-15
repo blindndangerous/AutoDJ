@@ -154,7 +154,49 @@ export function focusAfterDialog(control) {
   if (!control?.isConnected || control.disabled) return false;
   if (control.ownerDocument.activeElement === control) control.blur();
   control.focus();
-  return true;
+  return control.ownerDocument.activeElement === control;
+}
+
+// A dialog's own status line, made on first use: the page's status regions
+// are inert behind a modal dialog, so what is said while it is open is said
+// here (#384, #332).
+export function dialogStatusLine(dialog, id) {
+  const doc = dialog.ownerDocument;
+  let status = doc.getElementById(id);
+  if (!status) {
+    status = doc.createElement("p");
+    status.id = id;
+    status.className = "visually-hidden";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    status.setAttribute("aria-atomic", "true");
+    (dialog.querySelector("form") || dialog).append(status);
+  }
+  return status;
+}
+
+// The card or panel *control* is in, found as a dialog opens, so focus has
+// somewhere steady to go if the control is gone when the dialog closes.
+export function dialogReturnPlace(control) {
+  return control?.closest?.("details, section[data-view]") || null;
+}
+
+// Where focus goes when the control it should return to is gone, turned
+// off, hidden, or was the page itself: *place*'s summary, else its heading,
+// else the main content.  Never the page body, where NVDA reads from the
+// top of the page.
+export function focusSteadyPlace(doc, place) {
+  const shown = (element) => element?.isConnected && !element.closest("[hidden]");
+  if (shown(place)) {
+    const summary = place.tagName === "DETAILS" ? place.querySelector(":scope > summary") : null;
+    if (summary && focusAfterDialog(summary)) return true;
+    const heading = place.querySelector("h2, h3");
+    if (shown(heading)) {
+      if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+      if (focusAfterDialog(heading)) return true;
+    }
+  }
+  return focusAfterDialog(doc.getElementById("main-content"));
 }
 
 // ----------------------------------------------------------------

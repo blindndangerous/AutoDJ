@@ -1,6 +1,9 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { fmtTrack, focusAfterDialog, placeRows, releaseDialogFocus } from "./dom-helpers.js";
+import {
+  dialogReturnPlace, dialogStatusLine, fmtTrack, focusAfterDialog, focusSteadyPlace, placeRows,
+  releaseDialogFocus,
+} from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
@@ -531,7 +534,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
         if (saving || pending) return;
         pending = true;
         save.setAttribute("aria-busy", "true");
-        const stopPending = sayIfStillPending((text) => { error.textContent = text; }, "Saving…");
+        // Its own status line: #track-info-error keeps the errors.
+        const progress = dialogStatusLine(dialog, "track-info-progress");
+        const stopPending = sayIfStillPending((text) => { progress.textContent = text; }, "Saving…");
         const said = [];
         try {
           const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
@@ -540,10 +545,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
           // The page behind the dialog is inert, so the result said there
           // was never heard; it is said once the other track has opened.
           savedBeforeSwitch = said.join(" ");
+          releaseDialogFocus(dialog);
           dialog.close("save");
         } finally {
           stopPending();
-          if (error.textContent === "Saving…") error.textContent = "";
+          progress.textContent = "";
           pending = false;
           save.removeAttribute("aria-busy");
         }
@@ -551,6 +557,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       function reject() {
         if (saving || pending) return;
         doc.getElementById("points-preview")?.pause();
+        releaseDialogFocus(dialog);
         dialog.close("discard");
       }
       // Keep editing and Escape put focus back once the dialog has closed
@@ -571,7 +578,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
         const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
-        if (!switching) focusAfterDialog(returnFocus);
+        // Back on the control that asked, once the dialog has closed (#385).
+        // A switch keeps focus there while the other track loads, rather
+        // than on the page, until the track's heading takes it.
+        if (!focusAfterDialog(returnFocus)) focusSteadyPlace(doc, dialogReturnPlace(returnFocus));
         resolve(switching);
       }
       save.addEventListener("click", accept);
@@ -592,8 +602,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     opening = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
+    let switched = false;
     try {
-      if (currentPath && unsaved() && !await confirmTrackChange()) return;
+      if (currentPath && unsaved()) {
+        if (!await confirmTrackChange()) return;
+        switched = true;
+      }
       if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
       const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
@@ -658,7 +672,19 @@ export function installLibraryFolders({ document: doc = document, request = requ
         announceStatus(pointStatus, message, { force: true, tone: "error" });
       }
     }
-    finally { if (generation === protectedGeneration) { editor.inert = false; opening = false; } }
+    finally {
+      if (generation === protectedGeneration) { editor.inert = false; opening = false; }
+      // A switch that stopped short (signed out, or the track went) leaves
+      // focus somewhere steady, never on the page.
+      if (switched) steadyAfterSwitch(opener);
+    }
+  }
+  function steadyAfterSwitch(opener) {
+    const active = doc.activeElement;
+    if (active && active !== doc.body) return;
+    const heading = doc.getElementById("track-info-heading");
+    if (heading && !heading.closest("[hidden]") && focusAfterDialog(heading)) return;
+    focusSteadyPlace(doc, dialogReturnPlace(opener));
   }
   doc.getElementById("edit-current-points").addEventListener("click", (event) => {
     const track = getCurrentTrack();

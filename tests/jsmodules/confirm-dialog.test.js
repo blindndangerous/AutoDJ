@@ -112,3 +112,49 @@ describe("confirmAction focus (#385)", () => {
     expect(focusedWhileOpen).toEqual([]);
   });
 });
+
+describe("confirmAction steady focus (#385)", () => {
+  it("goes to the card's summary when the opener is gone, and the main content when there was none", async () => {
+    const { dialog } = mount();
+    document.body.insertAdjacentHTML("afterbegin", `
+      <main id="main-content" tabindex="-1">
+        <details class="card" open><summary><h2>Categories</h2></summary>
+          <ul><li><button id="gone">Delete Legacy set</button></li></ul>
+        </details>
+      </main>`);
+    const gone = document.getElementById("gone");
+    gone.focus();
+    const answer = confirmAction(document, {
+      title: "Delete?", message: "Gone.", confirmLabel: "Delete",
+      onConfirm: async () => { gone.closest("li").remove(); return null; },
+    });
+    document.getElementById("confirm-accept").click();
+    await answer;
+    expect(document.activeElement.tagName).toBe("SUMMARY");
+
+    // Opened with focus on the page itself: the main content, not the body.
+    document.activeElement.blur();
+    const second = confirmAction(document, { title: "Sure?", message: "Yes.", confirmLabel: "OK" });
+    document.getElementById("confirm-cancel").click();
+    await second;
+    expect(document.activeElement).toBe(document.getElementById("main-content"));
+    expect(dialog.hasAttribute("open")).toBe(false);
+  });
+
+  it("goes to the card's heading when the opener was turned off meanwhile", async () => {
+    mount();
+    document.body.insertAdjacentHTML("afterbegin", `
+      <section data-view="queue"><h2>Queue</h2><button id="turned-off">Clear queue</button></section>`);
+    const button = document.getElementById("turned-off");
+    button.focus();
+    const answer = confirmAction(document, {
+      title: "Clear?", message: "All of it.", confirmLabel: "Clear",
+      onConfirm: async () => { button.disabled = true; return null; },
+    });
+    document.getElementById("confirm-accept").click();
+    await answer;
+    const heading = document.querySelector("section h2");
+    expect(document.activeElement).toBe(heading);
+    expect(heading.getAttribute("tabindex")).toBe("-1");
+  });
+});
