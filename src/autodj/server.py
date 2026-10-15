@@ -80,6 +80,7 @@ from pydantic import (
     model_validator,
 )
 from starlette.background import BackgroundTask
+from starlette.convertors import Convertor, register_url_convertor
 from starlette.datastructures import Headers
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.staticfiles import NotModifiedResponse
@@ -511,15 +512,30 @@ class _GZipExceptStream(GZipMiddleware):
 
 #: The addresses' extensions: each stream format's, and the playlist's.
 _LISTEN_EXTENSIONS = frozenset({*FORMATS, "m3u"})
+#: A station's stream or playlist file at the top level, such as ``nightowl.mp3``.
+_STREAM_FILE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\.(?:" + "|".join(sorted(_LISTEN_EXTENSIONS)) + ")"
+)
+
+
+class _StreamFileConvertor(Convertor[str]):
+    """Matches only a stream file name, so ``/{name}`` shadows no other page."""
+
+    regex = _STREAM_FILE.pattern
+
+    def convert(self, value: str) -> str:
+        return value
+
+    def to_string(self, value: str) -> str:
+        return value
+
+
+register_url_convertor("streamfile", _StreamFileConvertor())
 
 
 def _is_stream_path(path: str) -> bool:
-    """Whether *path* is a station's stream or playlist: ``/stream.mp3``, ``/stations/x.m3u``."""
-    if path.startswith("/stream.") and path.removeprefix("/stream.") in _LISTEN_EXTENSIONS:
-        return True
-    name = path.removeprefix("/stations/")
-    _slug, dot, ext = name.rpartition(".")
-    return name != path and "/" not in name and bool(dot) and ext in _LISTEN_EXTENSIONS
+    """Whether *path* is a station's stream or playlist: ``/stream.mp3``, ``/nightowl.m3u``."""
+    return _STREAM_FILE.fullmatch(path.removeprefix("/")) is not None
 
 
 # Where the footer's build stamp links a commit.  A constant, so neither the
@@ -703,7 +719,7 @@ class CreateStationBody(BaseModel):
 
         if value == DEFAULT_SLUG or not SLUG_PATTERN.fullmatch(value):
             raise ValueError(
-                "Choose a station ID of 1 to 32 lowercase letters, digits or inner hyphens, other than default"
+                "Choose a station ID of 1 to 32 lowercase letters, digits or inner hyphens, other than default or stream"
             )
         return value
 
@@ -1517,7 +1533,7 @@ def create_app(
         """A station's public status page; a stopped station's says it is off air (503)."""
         slug = station.slug
         feed_url = public_feed_path(slug, by_name=by_name)
-        stream_path = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+        stream_path = f"/{slug}.mp3" if by_name else "/stream.mp3"
         m3u_path = stream_path.removesuffix(".mp3") + ".m3u"
         playlist_name = f"{slug}.m3u" if slug != DEFAULT_SLUG else "autodj.m3u"
         if isinstance(station, StoppedStation):
@@ -1737,9 +1753,9 @@ def create_app(
         """
         return await _serve_listener(stations.default, ext, request)
 
-    @app.api_route("/stations/{station_file}", methods=["GET", "HEAD"])
+    @app.api_route("/{station_file:streamfile}", methods=["GET", "HEAD"])
     async def api_station_stream(station_file: str, request: Request) -> Response:
-        """Serve ``/stations/<slug>.mp3`` or ``.m3u``: any station's stream by name.
+        """Serve ``/<slug>.mp3`` or ``.m3u``: any station's stream by name.
 
         ``.aac`` and ``.opus`` too, while the station has those formats on.
         404 for a name that is no station or another extension; 503 "off
@@ -2661,7 +2677,7 @@ def _extra_station(
             library=library,
             ledger=ledger,
             paths=paths,
-            stream_path=f"/stations/{slug}.mp3",
+            stream_path=f"/{slug}.mp3",
         )
         player.on_track_started = bridge.on_track_started
         bridge.load_persistent_state()
@@ -2982,7 +2998,7 @@ def serve(
         audio_mode = "server-audio" if not no_playback else "browser-driven"
     for extra in extra_stations:
         logger.info(
-            "Station %s (%s): %s/stations/%s.mp3, status page %s/stations/%s/status%s",
+            "Station %s (%s): %s/%s.mp3, status page %s/stations/%s/status%s",
             extra.slug,
             extra.name,
             advertised_origin,

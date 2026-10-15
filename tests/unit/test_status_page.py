@@ -148,14 +148,14 @@ def test_another_station_page_names_its_own_feed_and_stream() -> None:
         {**FEED, "station_name": "Night Owl Radio"},
         stream_mode=True,
         feed_url="/api/stations/nightowl/nowplaying",
-        stream_path="/stations/nightowl.mp3",
-        m3u_path="/stations/nightowl.m3u",
+        stream_path="/nightowl.mp3",
+        m3u_path="/nightowl.m3u",
         playlist_name="nightowl.m3u",
     )
     assert "<title>Night Owl Radio: station status</title>" in html
     assert '<body data-page="status" data-feed="/api/stations/nightowl/nowplaying">' in html
-    assert '<a href="/stations/nightowl.mp3">Listen to the stream</a>' in html
-    assert '<a href="/stations/nightowl.m3u" download="nightowl.m3u">' in html
+    assert '<a href="/nightowl.mp3">Listen to the stream</a>' in html
+    assert '<a href="/nightowl.m3u" download="nightowl.m3u">' in html
     assert '<a href="/api/stations/nightowl/nowplaying">The same details as JSON</a>' in html
     assert "/stream.mp3" not in html and '"/api/nowplaying"' not in html
 
@@ -164,8 +164,8 @@ def test_a_stopped_station_page_says_it_is_off_air_with_the_same_parts() -> None
     html = render_off_air_page(
         "Night Owl Radio",
         feed_url="/api/stations/nightowl/nowplaying",
-        stream_path="/stations/nightowl.mp3",
-        m3u_path="/stations/nightowl.m3u",
+        stream_path="/nightowl.mp3",
+        m3u_path="/nightowl.m3u",
         playlist_name="nightowl.m3u",
     )
     running = render_status_page(FEED, stream_mode=True)

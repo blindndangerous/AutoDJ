@@ -26,7 +26,7 @@ FEED = {
         {"artist": "Earlier", "title": "Before", "duration": 1.0, "played_at": "x"},
         {"artist": "", "title": "", "duration": 1.0, "played_at": "y"},
     ],
-    "stream_path": "/stations/nightowl.mp3",
+    "stream_path": "/nightowl.mp3",
 }
 OWL = PageAddresses.for_station("nightowl", by_name=True, streams=True, player_enabled=True)
 
@@ -168,8 +168,8 @@ def test_the_full_page_is_never_framed_and_the_embed_only_where_allowed() -> Non
 
 def test_addresses_by_name_and_for_the_default_station() -> None:
     assert OWL.feed == "/api/stations/nightowl/nowplaying"
-    assert OWL.stream == "/stations/nightowl.mp3"
-    assert OWL.m3u == "/stations/nightowl.m3u"
+    assert OWL.stream == "/nightowl.mp3"
+    assert OWL.m3u == "/nightowl.m3u"
     assert OWL.playlist_name == "nightowl.m3u"
     assert OWL.status == "/stations/nightowl/status"
     assert OWL.player == "/stations/nightowl/player"
@@ -190,7 +190,7 @@ def test_the_player_page_has_labelled_native_controls_and_one_song_region() -> N
     (body,) = outline.find("body")
     assert body["data-page"] == "player"
     assert body["data-feed"] == "/api/stations/nightowl/nowplaying"
-    assert body["data-stream"] == "/stations/nightowl.mp3"
+    assert body["data-stream"] == "/nightowl.mp3"
     (audio,) = outline.find("audio")
     # Nothing plays, or loads, until Play is pressed.
     assert audio["preload"] == "none"
@@ -219,7 +219,7 @@ def test_the_player_page_has_labelled_native_controls_and_one_song_region() -> N
     assert "<li>Before by Earlier.</li><li>Unknown title by an unknown artist.</li>" in html
     assert '<p id="player-history-empty" hidden>' in html
     assert '<section id="status-next-section" hidden>' in html
-    assert '<a href="/stations/nightowl.mp3">the stream</a>' in html
+    assert '<a href="/nightowl.mp3">the stream</a>' in html
     assert 'download="nightowl.m3u"' in html
     assert '<a href="/stations/nightowl/status">Station status</a>' in html
     assert [attrs["href"] for attrs in outline.find("script") if "href" in attrs] == []

@@ -228,8 +228,8 @@ def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
         "title": None,
         "status_path": "/stations/nightowl/status",
         "nowplaying_path": "/api/stations/nightowl/nowplaying",
-        "stream_path": "/stations/nightowl.mp3",
-        "m3u_path": "/stations/nightowl.m3u",
+        "stream_path": "/nightowl.mp3",
+        "m3u_path": "/nightowl.m3u",
         "player_path": None,
         "embed_path": None,
         "autostart": True,
@@ -434,11 +434,11 @@ def _bridge(tmp_path: Path, **kwargs: Any) -> PlayerBridge:
 def test_another_stations_settings_are_saved_in_its_folder(tmp_path: Path, cfg: Any) -> None:
     paths = StationPaths.for_station(_spec(cfg, "nightowl").cfg, "nightowl")
     paths.state_dir.mkdir(parents=True)
-    bridge = _bridge(tmp_path, paths=paths, stream_path="/stations/nightowl.mp3")
+    bridge = _bridge(tmp_path, paths=paths, stream_path="/nightowl.mp3")
     bridge.save_persistent_state()
     assert paths.web_state.is_file()
     assert not (tmp_path / "main" / "web_state.json").exists()
-    assert bridge.m3u_path == "/stations/nightowl.m3u"
+    assert bridge.m3u_path == "/nightowl.m3u"
     assert _bridge(tmp_path).m3u_path == "/stream.m3u"
 
 

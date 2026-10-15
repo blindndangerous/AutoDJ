@@ -69,7 +69,8 @@ logger = logging.getLogger(__name__)
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
-SLUG_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
+#: Not "stream": /stream.mp3 is the default station's, and others stream at /<slug>.mp3.
+SLUG_PATTERN = re.compile(r"(?!stream\Z)[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?\Z")
 
 
 def public_feed_path(slug: str, *, by_name: bool = True) -> str:
@@ -102,7 +103,7 @@ def public_addresses(
     ``None`` unless *player_page* turns them on.
     """
     by_name = slug != DEFAULT_SLUG
-    stream = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+    stream = f"/{slug}.mp3" if by_name else "/stream.mp3"
     player = player_page is not None and player_page.enabled
     embed = player_page is not None and player_page.embed
     return {

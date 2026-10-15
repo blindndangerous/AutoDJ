@@ -1178,7 +1178,7 @@ opus_bitrate = 64   # 0 (off), 48, 64, 96, 128 or 192
 ```
 
 A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
-`/stations/<slug>.aac` or `/stations/<slug>.opus` for any station; a format that is off answers
+`/<slug>.aac` or `/<slug>.opus` for any station; a format that is off answers
 404. Settings, Stream lists the address of every format that is on, each with its own Copy
 button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
 and per-address limit apply to them too. The choice made in Settings is saved in
@@ -1700,12 +1700,12 @@ away. There is no delete button yet.
 
 `autodj serve` starts the default station as before, then every other station with
 `autostart = true`. Each other station mixes on the server and streams at
-`/stations/<slug>.mp3`, with a one-line playlist at `/stations/<slug>.m3u`; the startup log lists
+`/<slug>.mp3`, with a one-line playlist at `/<slug>.m3u`; the startup log lists
 the addresses. A station's AAC and Opus streams, when its `[stations.<slug>.stream]` table sets
-`aac_bitrate` or `opus_bitrate` (or Settings does), are at `/stations/<slug>.aac` and
-`/stations/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
+`aac_bitrate` or `opus_bitrate` (or Settings does), are at `/<slug>.aac` and
+`/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
 `listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
-`/status`, and also answers at `/stations/default.mp3`. A station's stream needs ffmpeg, even when
+`/status`, and also answers at `/default.mp3`. A station's stream needs ffmpeg, even when
 the default station is browser-driven.
 
 Each station also has its own public status page and now-playing feed, for listeners and for
@@ -1747,7 +1747,7 @@ need a paired browser, like the default station's.
   {"slug": "nightowl", "defined_in": "config", "name": "Night Owl Radio", "state": "playing", "listeners": 3,
    "title": "Artist — Song", "status_path": "/stations/nightowl/status",
    "nowplaying_path": "/api/stations/nightowl/nowplaying",
-   "stream_path": "/stations/nightowl.mp3", "m3u_path": "/stations/nightowl.m3u",
+   "stream_path": "/nightowl.mp3", "m3u_path": "/nightowl.m3u",
    "player_path": "/stations/nightowl/player", "embed_path": null}
   ```
 - `POST /api/stations` creates a stopped station. Its JSON body requires string `slug` and
@@ -2194,7 +2194,7 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    `config.toml`) stops the configuration from loading, and doctor says which. Doctor offers to
    make the station's folder; AutoDJ also makes it when the station first starts.
 7. **Start AutoDJ.** The startup log names each station's stream and status page, such as
-   `/stations/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
+   `/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
    lines.
 8. **Set it up in the web page.** Choose Night Owl Radio with the Station button in the banner
    (see [The station switcher](#the-station-switcher)), then choose its clockwheel, DMCA mode
@@ -2202,7 +2202,7 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    station's clockwheels or profiles, copy files from `<index_dir>/<name>/clockwheels/` or
    `<index_dir>/profiles/` into `stations/nightowl/clockwheels/` or `stations/nightowl/profiles/`
    while AutoDJ is stopped.
-9. **Move the listeners.** Publish `https://<your host>/stations/nightowl.mp3`. If listeners
+9. **Move the listeners.** Publish `https://<your host>/nightowl.mp3`. If listeners
    already use an address on a hosted Icecast or Shoutcast server, add a relay from Night Owl to
    that server (see [Relaying to Icecast and Shoutcast](#relaying-to-icecast-and-shoutcast)) and
    stop whatever fed it before, so the address listeners use does not change.
