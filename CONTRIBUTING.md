@@ -24,7 +24,7 @@ npm test
 
 Full suite must remain green. `scripts/ci_pytest.py` fails below 90% line coverage (`fail_under` in
 `pyproject.toml`); there is no branch floor. Add a test only for a defect it would catch, not to
-raise the number. New behavior needs focused tests.
+raise the number. New behavior needs focused tests. Only add regression tests if they test a meaningful outcome.
 
 ## Branching + commits
 
@@ -43,6 +43,15 @@ docs: clarify MuQ fp32 requirement
 `commitlint` runs on `commit-msg` so you'll find out before you push if
 the format is wrong.
 
+## Writing issues and pull requests
+
+Write titles and descriptions in clear, natural language for someone who has not read the
+conversation. When using AI tools, use Humanize or a similar writing skill when available,
+or review the wording for clarity yourself. Lead with the problem and the intended or resulting
+behavior. Keep technical detail, validation results, and limitations that help readers assess
+the change; omit filler
+and repeated explanations. Preserve precise facts and the repository templates.
+
 ## Pull request checklist
 
 The PR template lists the first two; check the rest as well:
@@ -52,11 +61,20 @@ The PR template lists the first two; check the rest as well:
 - Use short native form labels; keep longer help outside the label, readable on demand without `aria-describedby`. Keep concise format hints, active restrictions, station context and validation errors associated with their controls, including `aria-invalid` and error focus. In Settings, use `data-help` when visibility logic needs to hide or show that help.
 - Use the same numeric times and concise counts for visual and screen-reader output; follow the [UI wording guidance](docs/accessibility-testing.md#ui-wording) rather than assuming numbers need spoken-word replacements.
 - Leave `CHANGELOG.md` alone; the release notes are written when releasing.
-- `ruff`, `mypy`, `bandit`, `vulture`, `deptry`, ESLint, and all tests pass locally. Commits run
-  only the quick hooks; the full test suite and the slower scans run when you `git push`. Run
-  every hook by hand with `uv run pre-commit run --all-files` followed by
-  `uv run pre-commit run --all-files --hook-stage pre-push`.
-- Run `uv run autodj doctor` against intended local configuration.
+- Run local tests and lint, type, and security checks relevant to what the change could break,
+  including affected callers and integrations. Documentation-only changes need content and link
+  checks; workflow changes need configuration validation and the affected jobs exercised in CI.
+  Full CI must pass on the final revision before merging; focused local checks do not replace it.
+- Broaden local validation for shared behavior, dependencies, security boundaries, failures, or
+  unresolved risks. Repeat successful checks when relevant code, configuration, or dependencies
+  change, or new evidence warrants it; do not rerun them solely to duplicate a completed gate.
+  Record what was checked and any remaining limitations in the PR.
+- Keep installed hooks enabled. Commits run quick hooks; pushes run the applicable full-suite
+  and slower checks. To run every hook manually, use `uv run pre-commit run --all-files` followed
+  by `uv run pre-commit run --all-files --hook-stage pre-push`. These commands are available for
+  broader validation, not an additional mandatory repeat after equivalent checks have passed.
+- For setup, configuration, dependency, or runtime changes, run `uv run autodj doctor` against
+  the intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with
   `AUTODJ_BROWSERS=chromium npm run audit:ci`. CI does not run WebKit, so also run
   `AUTODJ_BROWSERS=webkit npm run audit:visual` after `npx playwright install webkit`
@@ -74,7 +92,7 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
 2. In `CHANGELOG.md`, add `## [X.Y.Z] - YYYY-MM-DD` with the user-facing changes from the PRs
    merged since the last tag: a few lines for a big new feature, one short line for anything
    else. Leave out fixes to changes that were never released.
-   Keep an empty `## [Unreleased]` above it, and update the link references at the bottom of the
+   Update the link references at the bottom of the
    file.
 3. Record the manual screen-reader sample that
    [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
