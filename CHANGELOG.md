@@ -16,18 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   index folder; it then reads **Update Stereo Tool** and the page shows the installed version.
   AutoDJ still does not include Stereo Tool, and the container image has none: use the button, or
   copy the program into `tools/stereo-tool/` in the index folder. A station that keeps the default
-  `stereotool_path` finds it there with no configuration change.
+  `stereotool_path` finds it there with no configuration change. A program that runs but names no
+  version shows as "version unknown". ARM Linux gets no download yet, because Thimeo's ARM build
+  takes 16-bit audio only; the page says so and how to use another build by hand.
 - **Stereo Tool licence key** in Settings, Sound saves your key where only AutoDJ can read it,
   outside backups, and never shows it again; the page says "Licence set" or "No licence", and
   **Clear licence** removes it. One key serves every station, or tick **For this station only**
   to give one station its own. Installs without a browser can set
   `AUTODJ_STEREOTOOL_LICENSE_KEY` or `AUTODJ_STEREOTOOL_LICENSE_FILE`, or a station's
-  `[playback] stereotool_license_file`. Stereo Tool restarts with a new key or a new program.
+  `[playback] stereotool_license_file`. Stereo Tool restarts with a new key or a new program; a
+  key for one station restarts only that station, and saving the same key again restarts nothing.
 
 ### Changed
 
 - A station set to Stereo Tool without the program now says "Stereo Tool is not installed.
-  Download it in Settings, Sound, with the Download Stereo Tool button."
+  Download it in Settings, Sound, with the Download Stereo Tool button." A station whose own
+  `stereotool_path` names a missing program says that path is missing instead.
 
 - A new index name, given with `--name`, may not contain `:` or end with a dot or a space,
   because Windows reads such a name as another folder: `D:music` is a folder on drive D:, and

@@ -574,3 +574,26 @@ def test_a_stuck_process_is_logged_without_its_command_line(caplog) -> None:
         "KEY-SECRET" not in record.getMessage() and record.exc_info is None
         for record in caplog.records
     )
+
+
+def test_a_missing_configured_stereotool_names_the_setting() -> None:
+    from autodj import stereotool_setup
+
+    def factory(command, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_path=lambda: "C:/Radio/Gone.exe",
+        stereotool_missing=lambda: stereotool_setup.missing_message("C:/Radio/Gone.exe"),
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error is not None
+        assert "named by stereotool_path in the configuration is missing" in master.error
+        assert "Download it" not in master.error
+    finally:
+        master.close()

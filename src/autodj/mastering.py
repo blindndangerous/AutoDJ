@@ -119,7 +119,7 @@ def _command(
     license_key: str | None = None,
 ) -> list[str]:
     if mode == "stereotool":
-        # -k is the only way Thimeo documents to give the command-line build
+        # -k is the only way we found documented to give the command-line build
         # its key; THREAT_MODEL.md says who can read a command line.
         licence = ["-k", license_key] if license_key else []
         return [
@@ -175,19 +175,27 @@ def _ffmpeg_command(audio_filter: str) -> list[str]:
     ]
 
 
+STEREOTOOL_MISSING: Final = (
+    "Stereo Tool is not installed. Download it in Settings, Sound, "
+    "with the Download Stereo Tool button."
+)
+
+
 def _unavailable(
-    mode: str, exc: Exception, license_key: str | None, *, missing: bool = False
+    mode: str,
+    exc: Exception,
+    license_key: str | None,
+    *,
+    missing: bool = False,
+    missing_text: str = STEREOTOOL_MISSING,
 ) -> str:
     """Why the processor did not start, in words for the page; never the licence key.
 
     *missing* says the error came from starting the processor itself, so a
-    missing file there is the program.
+    missing file there is the program, and *missing_text* says so.
     """
     if mode == "stereotool" and missing and isinstance(exc, FileNotFoundError):
-        return (
-            "Stereo Tool is not installed. Download it in Settings, Sound, "
-            "with the Download Stereo Tool button."
-        )
+        return missing_text
     text = str(exc)
     return text.replace(license_key, "<licence key>") if license_key else text
 
@@ -210,6 +218,7 @@ class ContinuousMaster:
         agc_drive_db: Callable[[], float] = lambda: 7.0,
         stereotool_license: Callable[[], str | None] = lambda: None,
         setup_generation: Callable[[], int] = lambda: 0,
+        stereotool_missing: Callable[[], str] = lambda: STEREOTOOL_MISSING,
     ) -> None:
         self._popen = popen_factory
         # Taken around starting a process and around refusing new ones, so
@@ -231,6 +240,9 @@ class ContinuousMaster:
         # Changes when a licence is saved or cleared or the program replaced;
         # part of the Stereo Tool signature, so Stereo Tool restarts with it.
         self._setup_generation = setup_generation
+        # What to say when the program is not there: download it, or the
+        # configured path is wrong.
+        self._stereotool_missing = stereotool_missing
         self._select_preset = preset or (lambda: INCLUDED_PATH)
         self._select_agc_drive = agc_drive_db
         self._preset_temp = tempfile.TemporaryDirectory(prefix="autodj-stereo-tool-")
@@ -433,6 +445,15 @@ class ContinuousMaster:
         target.write_bytes(data)
         return target
 
+    def _unavailable_text(
+        self, mode: str, exc: Exception, license_key: str | None, missing: bool
+    ) -> str:
+        text = STEREOTOOL_MISSING
+        if missing and mode == "stereotool":
+            with contextlib.suppress(Exception):
+                text = self._stereotool_missing()
+        return _unavailable(mode, exc, license_key, missing=missing, missing_text=text)
+
     def _note_preset_warning(self, message: str | None, cause: Exception | None = None) -> None:
         with self._lock:
             changed = message != self._preset_warning
@@ -538,7 +559,7 @@ class ContinuousMaster:
                         self._recovery_outputs = 0
                         self._input.clear()
                         self._output.clear()
-                        self._error = f"{name} master unavailable: {_unavailable(mode, exc, license_key, missing=starting_program)}"
+                        self._error = f"{name} master unavailable: {self._unavailable_text(mode, exc, license_key, starting_program)}"
                         self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()

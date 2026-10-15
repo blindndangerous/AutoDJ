@@ -39,10 +39,11 @@ export function installText(data) {
   if (data.installed) {
     return data.version
       ? `Stereo Tool ${data.version} is installed.${busy}`
-      : `Stereo Tool is installed, but did not report its version.${busy}`;
+      : `Stereo Tool is installed (version unknown).${busy}`;
   }
   if (data.download && !data.download.available) {
-    return "Stereo Tool is not installed, and Thimeo offers no command-line Stereo Tool to download for this computer. Put one in the tools/stereo-tool folder of AutoDJ's index folder instead.";
+    return `Stereo Tool is not installed. ${data.download.note
+      || "Thimeo offers no command-line Stereo Tool that AutoDJ can download for this computer."}`;
   }
   return `Stereo Tool is not installed. Tick that you accept Thimeo's terms, then press Download Stereo Tool.${busy}`;
 }
@@ -157,7 +158,7 @@ export function installStereoToolSetup({ document: doc = document, request = req
       return;
     }
     if (current?.download && !current.download.available) {
-      speak(installText(current), true);
+      speak(current.download.note || installText(current), true);
       return;
     }
     downloading = true;
@@ -172,7 +173,8 @@ export function installStereoToolSetup({ document: doc = document, request = req
         body: JSON.stringify({ accept_terms: true }),
       });
       await refresh();
-      speak(`Stereo Tool ${result.version} installed.`);
+      speak(result.version ? `Stereo Tool ${result.version} installed.`
+        : "Stereo Tool installed (version unknown).");
     } catch (error) {
       await refresh();
       speak(`Could not download Stereo Tool: ${error.message}`, true);
@@ -207,10 +209,16 @@ export function installStereoToolSetup({ document: doc = document, request = req
       render(data);
       const where = scope === "station" ? " for this station"
         : data.several_stations ? " for every station" : "";
-      speak(`Licence key saved${where}. Stereo Tool restarts with it.`);
+      speak(data.changed === false
+        ? `That licence key is already saved${where}.`
+        : `Licence key saved${where}. Stereo Tool restarts with it.`);
     } catch (error) {
       if (isStaleStationReply(error)) return;
-      keyFailed(`Could not save the licence key: ${error.message}`);
+      const message = `Could not save the licence key: ${error.message}`;
+      // Only a refused key is the field's fault; a conflict or a server
+      // error is said without marking the field invalid.
+      if (error.status === 400 || error.status === 422) keyFailed(message);
+      else speak(message, true);
     } finally {
       saving = false;
       busy(save, false);
@@ -219,16 +227,21 @@ export function installStereoToolSetup({ document: doc = document, request = req
 
   clear.addEventListener("click", async () => {
     if (saving) return;
-    const inUse = current?.license?.in_use;
-    if (inUse === "station-config" || inUse === "environment") {
-      speak("This licence is set on the server, in its configuration or environment, so it cannot be cleared here.", true);
+    const license = current?.license || {};
+    const inUse = license.in_use;
+    // The key in use if it is a saved one; otherwise a saved key for
+    // every station, even while the configuration's key is used instead.
+    let scope = null;
+    if (inUse === "station") scope = "station";
+    else if (license.install === "saved") scope = "all";
+    if (!scope) {
+      if (inUse === "station-config" || inUse === "environment") {
+        speak("This licence is set on the server, in its configuration or environment, so it cannot be cleared here.", true);
+      } else {
+        speak("There is no saved licence to clear.");
+      }
       return;
     }
-    if (inUse !== "station" && inUse !== "install") {
-      speak("There is no saved licence to clear.");
-      return;
-    }
-    const scope = inUse === "station" ? "station" : "all";
     let result = null;
     const confirmed = await confirm(doc, {
       title: scope === "station" ? "Clear this station's Stereo Tool licence?"

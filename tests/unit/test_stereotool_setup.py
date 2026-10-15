@@ -6,6 +6,7 @@ Nothing here downloads the real Stereo Tool: every HTTP answer is a stand-in.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import stat
@@ -14,7 +15,6 @@ import sys
 import urllib.error
 from email.message import Message
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -86,18 +86,22 @@ def _server(answers: dict[str, object]):
     return open_url
 
 
-def _runs(output: bytes = b"Stereo Tool 11.05\n", code: int = 0):
+def _runs(output: bytes = b"Stereo Tool 11.05\n", code: int | None = 0):
+    """A stand-in runner: (argv, folder, timeout) to (exit code, output)."""
     calls: list[list[str]] = []
 
-    def run(argv, **kwargs):
+    def run(argv, cwd, timeout):
         calls.append(argv)
-        assert kwargs["stdin"] is subprocess.DEVNULL
-        assert kwargs["timeout"] > 0
-        assert "shell" not in kwargs
-        return SimpleNamespace(returncode=code, stdout=output)
+        assert cwd == str(Path(argv[0]).parent)
+        assert timeout > 0
+        return code, output
 
     run.calls = calls  # type: ignore[attr-defined]
     return run
+
+
+def _will_not_run(argv, _cwd, _timeout):
+    raise PermissionError(13, "Permission denied", argv[0])
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +137,8 @@ def test_a_folder_named_like_the_program_is_not_used(tmp_path: Path) -> None:
     ("system", "machine", "url"),
     [
         ("linux", "x86_64", "https://download.thimeo.com/stereo_tool_cmd_64"),
-        ("linux", "aarch64", "https://download.thimeo.com/stereo_tool_pi2_64"),
+        # Thimeo's ARM build takes 16-bit audio only; AutoDJ sends 32-bit float.
+        ("linux", "aarch64", None),
         ("win32", "AMD64", "https://download.thimeo.com/stereo_tool_cmd.exe"),
         ("win32", "ARM64", "https://download.thimeo.com/stereo_tool_cmd.exe"),
         ("darwin", "arm64", None),
@@ -145,6 +150,22 @@ def test_each_platform_gets_thimeos_own_build(system: str, machine: str, url: st
     assert (build.url if build else None) == url
     if build:
         assert setup.allowed_url(build.url)
+
+
+def test_arm_gets_no_download_and_is_told_why(monkeypatch) -> None:
+    note = setup.unsupported_note("linux", "aarch64")
+    assert "16-bit audio only" in note
+    assert "stereotool_path" in note
+    assert "tools/stereo-tool" in note
+    assert "no command-line Stereo Tool for this computer (darwin, arm64)" in (
+        setup.unsupported_note("darwin", "arm64")
+    )
+    monkeypatch.setattr(setup, "platform_build", lambda: None)
+    monkeypatch.setattr(setup, "unsupported_note", lambda: note)
+    status = setup.program_status(DEFAULT_STEREOTOOL_PATH, Path("nowhere"))
+    assert status["download"] == {"available": False, "platform": None, "note": note, "busy": False}
+    with pytest.raises(setup.NoBuildError, match="16-bit audio only"):
+        setup.install(Path("nowhere"))
 
 
 def test_status_reports_the_version_and_never_a_path(tmp_path: Path) -> None:
@@ -171,29 +192,82 @@ def test_status_of_a_missing_program(tmp_path: Path) -> None:
     assert run.calls == []
 
 
-def test_version_tries_the_second_flag_and_gives_up_quietly(tmp_path: Path) -> None:
+def test_version_tries_each_flag_and_takes_a_version_whatever_the_exit_code(
+    tmp_path: Path,
+) -> None:
     program = tmp_path / "stereo_tool_cmd"
     program.write_bytes(b"x")
     answers = iter(
         [
-            SimpleNamespace(returncode=1, stdout=b"unknown option"),
-            SimpleNamespace(returncode=0, stdout=b"10.92"),
+            (1, b"unknown option --version"),
+            (2, b"unknown option"),
+            (1, b"Stereo Tool 10.92\nUsage: ..."),
         ]
     )
     seen: list[str] = []
 
-    def run(argv, **_kwargs):
+    def run(argv, _cwd, _timeout):
         seen.append(argv[1])
         return next(answers)
 
     assert setup.read_version(program, run=run) == "10.92"
-    assert seen == ["--version", "--full-version"]
-
-    def hangs(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-
-    assert setup.read_version(program, run=hangs) is None
+    assert seen == ["--version", "--full-version", "-h"]
+    # Ran, but named no version (or was stopped at its timeout): unknown, not refused.
     assert setup.read_version(program, run=_runs(b"no version here")) is None
+    assert setup.read_version(program, run=_runs(b"", code=None)) is None
+
+
+def test_a_program_that_cannot_start_raises_will_not_run(tmp_path: Path) -> None:
+    program = tmp_path / "stereo_tool_cmd"
+    program.write_bytes(b"x")
+    with pytest.raises(setup.WillNotRun):
+        setup.read_version(program, run=_will_not_run)
+    assert setup.installed_version(program, run=_will_not_run) is None
+
+
+def _python(code: str) -> list[str]:
+    return [sys.executable, "-I", "-c", code]
+
+
+def test_the_version_check_gets_a_minimal_environment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AUTODJ_STEREOTOOL_LICENSE_KEY", KEY)
+    monkeypatch.setenv("SOME_API_TOKEN", "not-for-stereo-tool")
+    code, output = setup._run_bounded(
+        _python("import json, os; print(json.dumps(sorted(os.environ)))"), str(tmp_path), 20
+    )
+    assert code == 0
+    names = set(json.loads(output.decode()))
+    assert "AUTODJ_STEREOTOOL_LICENSE_KEY" not in names
+    assert "SOME_API_TOKEN" not in names
+    assert KEY.encode() not in output
+    assert names <= {"PATH", "HOME", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE"} | {
+        # Set by the interpreter itself on some platforms.
+        "__CF_USER_TEXT_ENCODING",
+        "LC_CTYPE",
+    }
+
+
+def test_the_version_check_reads_at_most_64_kb_and_stops_a_slow_program(tmp_path: Path) -> None:
+    import time
+
+    code, output = setup._run_bounded(
+        _python(
+            "import sys, time\nsys.stdout.write('x' * 1000000)\nsys.stdout.flush()\ntime.sleep(30)"
+        ),
+        str(tmp_path),
+        20,
+    )
+    assert len(output) == 64 * 1024
+    assert code is None
+    started = time.monotonic()
+    code, _output = setup._run_bounded(_python("import time; time.sleep(30)"), str(tmp_path), 0.5)
+    assert code is None
+    assert time.monotonic() - started < 10
+
+
+def test_the_version_check_refuses_a_file_that_will_not_start(tmp_path: Path) -> None:
+    with pytest.raises(OSError):
+        setup._run_bounded([str(tmp_path / "missing-program")], str(tmp_path), 5)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +289,42 @@ def test_version_tries_the_second_flag_and_gives_up_quietly(tmp_path: Path) -> N
 )
 def test_only_https_thimeo_addresses_are_allowed(url: str) -> None:
     assert not setup.allowed_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://download.thimeo.com%2eevil.example/x",
+        "https://download%2ethimeo.com/x",
+        "https://evil.example\\@download.thimeo.com/x",
+        "https://download.thimeo.com\\.evil.example/x",
+        "https://download.thimeo.com /x",
+        "https://download.thimeo.com\t.evil.example/x",
+        "https://down\nload.thimeo.com/x",
+        "https://download.thimeo.com\u3002evil.example/x",
+        "https://dównload.thimeo.com/x",
+    ],
+)
+def test_odd_characters_in_the_address_are_refused(url: str) -> None:
+    assert not setup.allowed_url(url)
+
+
+def test_a_download_past_its_deadline_is_stopped() -> None:
+    start = "https://download.thimeo.com/stereo_tool_cmd_64"
+    now = [0.0]
+
+    class Slow(_Response):
+        def read(self, size: int = -1) -> bytes:
+            now[0] += 400  # each chunk "takes" 400 seconds
+            return super().read(4)
+
+    with pytest.raises(setup.DownloadError, match="took longer than 10 minutes"):
+        setup.fetch(
+            start,
+            io.BytesIO(),
+            open_url=_server({start: Slow(b"x" * 64, length="")}),
+            clock=lambda: now[0],
+        )
 
 
 def test_thimeo_and_its_subdomains_are_allowed() -> None:
@@ -314,6 +424,34 @@ def test_install_puts_a_checked_program_in_the_index_folder(tmp_path: Path) -> N
     assert setup.installed_version(target, run=_runs(b"never asked")) == "11.05"
 
 
+def test_a_program_that_runs_without_naming_a_version_is_installed_as_unknown(
+    tmp_path: Path,
+) -> None:
+    build, body = _program()
+    run = _runs(b"Usage: stereo_tool_cmd [options] in out", code=1)
+    installed = setup.install(
+        tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=run
+    )
+    assert installed.version is None
+    assert len(run.calls) == 3
+    assert setup.managed_path(tmp_path).read_bytes() == body
+    assert setup.installed_version(setup.managed_path(tmp_path), run=_runs(b"never")) is None
+
+
+def test_a_program_that_cannot_start_is_refused_and_noexec_is_named(tmp_path: Path) -> None:
+    build, body = _program()
+    old = setup.managed_path(tmp_path)
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"working program")
+    with pytest.raises(setup.DownloadError, match="noexec") as caught:
+        setup.install(
+            tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=_will_not_run
+        )
+    assert "could not be started (Permission denied)" in str(caught.value)
+    assert old.read_bytes() == b"working program"
+    assert sorted(path.name for path in old.parent.iterdir()) == [old.name]
+
+
 def test_update_replaces_the_old_program(tmp_path: Path) -> None:
     build, body = _program()
     target = setup.managed_path(tmp_path)
@@ -346,17 +484,6 @@ def test_a_file_that_is_not_a_program_for_this_computer_is_refused(tmp_path: Pat
     assert sorted(path.name for path in old.parent.iterdir()) == [old.name]
 
 
-@pytest.mark.parametrize("run", [_runs(code=1), _runs(b"Segmentation fault")])
-def test_a_program_that_fails_its_version_check_is_refused(tmp_path: Path, run) -> None:
-    build, body = _program()
-    with pytest.raises(setup.DownloadError, match="did not run or did not report its version"):
-        setup.install(
-            tmp_path, build=build, open_url=_server({build.url: _Response(body)}), run=run
-        )
-    folder = setup.tools_dir(tmp_path)
-    assert list(folder.iterdir()) == []
-
-
 def test_an_oversized_install_leaves_nothing_behind(tmp_path: Path) -> None:
     build, _body = _program()
     with pytest.raises(setup.DownloadError, match="larger than"):
@@ -374,6 +501,7 @@ def test_no_build_and_a_second_download_are_refused(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(setup, "platform_build", lambda: None)
     with pytest.raises(setup.NoBuildError, match="no command-line Stereo Tool for this computer"):
         setup.install(tmp_path)
+    monkeypatch.undo()
     build, _body = _program()
     assert setup._install_lock.acquire(blocking=False)
     try:
@@ -398,6 +526,109 @@ def test_leftovers_of_an_interrupted_download_are_removed(tmp_path: Path) -> Non
     )
 
 
+def test_an_old_program_left_by_a_cut_short_update_is_put_back_not_deleted(tmp_path: Path) -> None:
+    folder = setup.tools_dir(tmp_path)
+    folder.mkdir(parents=True)
+    target = setup.managed_path(tmp_path)
+    older = folder / f".{target.stem}.old-111{target.suffix}"
+    newer = folder / f".{target.stem}.old-222{target.suffix}"
+    older.write_bytes(b"older")
+    newer.write_bytes(b"newest working copy")
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    setup._remove_leftovers(folder, target)
+    assert target.read_bytes() == b"newest working copy"
+    assert sorted(path.name for path in folder.iterdir()) == [target.name]
+
+
+# ---------------------------------------------------------------------------
+# Putting the new program in place on Windows (os.replace stood in for)
+# ---------------------------------------------------------------------------
+
+
+def _replacer(monkeypatch, fails):
+    """Make os.replace raise PermissionError for (source name, target name) pairs in *fails*.
+
+    *fails* maps a pair to how many more times it fails (-1: always).
+    """
+    real = os.replace
+    calls: list[tuple[str, str]] = []
+
+    def replace(src, dst):
+        pair = (Path(src).name, Path(dst).name)
+        calls.append(pair)
+        for (source, dest), left in list(fails.items()):
+            if Path(src).name.startswith(source) and Path(dst).name.startswith(dest) and left:
+                fails[(source, dest)] = left - 1
+                raise PermissionError(13, "Access is denied", str(src))
+        return real(src, dst)
+
+    monkeypatch.setattr(setup.os, "replace", replace)
+    return calls
+
+
+def _setup_part(tmp_path: Path, old: bytes | None = b"old program") -> tuple[Path, Path]:
+    folder = tmp_path / "tools"
+    folder.mkdir()
+    part = folder / ".download-1.exe"
+    part.write_bytes(b"new program")
+    target = folder / "stereo_tool_cmd.exe"
+    if old is not None:
+        target.write_bytes(old)
+    return part, target
+
+
+def test_a_running_program_is_moved_aside_and_replaced(tmp_path: Path, monkeypatch) -> None:
+    part, target = _setup_part(tmp_path)
+    calls = _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): 1})
+    setup._replace(part, target, windows=True, sleep=lambda _s: None)
+    assert target.read_bytes() == b"new program"
+    assert sorted(path.name for path in target.parent.iterdir()) == [target.name]
+    assert [dest.split("-")[0] for _src, dest in calls] == [
+        "stereo_tool_cmd.exe",
+        ".stereo_tool_cmd.old",
+        "stereo_tool_cmd.exe",
+    ]
+
+
+def test_the_old_program_is_put_back_when_the_new_one_cannot_take_its_place(
+    tmp_path: Path, monkeypatch
+) -> None:
+    part, target = _setup_part(tmp_path)
+    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    with pytest.raises(PermissionError):
+        setup._replace(part, target, windows=True, sleep=lambda _s: None)
+    assert target.read_bytes() == b"old program"
+    assert sorted(path.name for path in target.parent.iterdir()) == sorted([target.name, part.name])
+
+
+def test_a_locked_download_on_a_first_install_gives_words_not_file_not_found(
+    tmp_path: Path, monkeypatch
+) -> None:
+    part, target = _setup_part(tmp_path, old=None)
+    waits: list[float] = []
+    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    with pytest.raises(setup.DownloadError, match="stayed in use"):
+        setup._replace(part, target, windows=True, sleep=waits.append)
+    assert len(waits) == setup._REPLACE_TRIES
+    assert not target.exists()
+
+
+def test_a_download_locked_for_a_moment_is_retried(tmp_path: Path, monkeypatch) -> None:
+    part, target = _setup_part(tmp_path, old=None)
+    _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): 2})
+    setup._replace(part, target, windows=True, sleep=lambda _s: None)
+    assert target.read_bytes() == b"new program"
+
+
+def test_elsewhere_a_refused_rename_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    part, target = _setup_part(tmp_path)
+    calls = _replacer(monkeypatch, {(".download", "stereo_tool_cmd"): -1})
+    with pytest.raises(PermissionError):
+        setup._replace(part, target, windows=False, sleep=lambda _s: None)
+    assert len(calls) == 1
+    assert target.read_bytes() == b"old program"
+
+
 # ---------------------------------------------------------------------------
 # The licence key
 # ---------------------------------------------------------------------------
@@ -420,7 +651,7 @@ def test_a_key_is_trimmed() -> None:
 def test_a_saved_key_is_private_and_restarts_stereo_tool(tmp_path: Path) -> None:
     path = setup.install_license_path(tmp_path)
     before = setup.generation()
-    setup.save_license(path, KEY)
+    assert setup.save_license(path, KEY) is True
     assert path.read_text(encoding="ascii") == KEY + "\n"
     assert setup.generation() > before
     if os.name != "nt":
@@ -446,6 +677,47 @@ def _state(index: Path, station: Path, configured: str = "", **environ: str) -> 
     return setup.license_state(
         index_dir=index, state_dir=station, configured_file=configured, environ=environ
     )
+
+
+def test_a_station_key_restarts_only_that_station_and_an_unchanged_key_nothing(
+    tmp_path: Path,
+) -> None:
+    night, day = tmp_path / "night", tmp_path / "day"
+    every, night_before, day_before = (
+        setup.generation(),
+        setup.generation(night),
+        setup.generation(day),
+    )
+    assert setup.save_license(setup.station_license_path(night), KEY, station_dir=night) is True
+    assert setup.generation(night) > night_before
+    assert (setup.generation(), setup.generation(day)) == (every, day_before)
+    night_now = setup.generation(night)
+    assert (
+        setup.save_license(setup.station_license_path(night), f" {KEY} ", station_dir=night)
+        is False
+    )
+    assert setup.generation(night) == night_now
+    # The key for every station restarts every station.
+    setup.save_license(setup.install_license_path(tmp_path), KEY)
+    assert setup.generation(day) > day_before
+    assert setup.generation(night) > night_now
+    assert setup.clear_license(setup.station_license_path(night), station_dir=night) is True
+    assert setup.generation(day) == setup.generation()
+
+
+def test_an_unreadable_saved_key_is_reported(tmp_path: Path) -> None:
+    index, station = tmp_path, tmp_path / "night"
+    station.mkdir()
+    setup.save_license(setup.install_license_path(index), KEY)
+    setup.station_license_path(station).write_bytes(b"\xff\xfe not text")
+    state = _state(index, station)
+    assert (state.source, state.key, state.station) == ("station", None, "saved")
+    assert state.problem == "This station's saved licence does not hold a Stereo Tool licence key."
+    setup.station_license_path(station).unlink()
+    setup.install_license_path(index).write_text("two words")
+    state = _state(index, station)
+    assert (state.source, state.key, state.install) == ("install", None, "saved")
+    assert "does not hold a Stereo Tool licence key" in (state.problem or "")
 
 
 def test_the_install_key_is_shared_unless_a_station_has_its_own(tmp_path: Path) -> None:

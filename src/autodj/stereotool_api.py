@@ -124,18 +124,21 @@ def install_stereo_tool(router: StationRouter) -> None:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         path = await asyncio.to_thread(_license_path, station, body.scope)
+        own = station.paths.state_dir if body.scope == "station" else None
         try:
-            await asyncio.to_thread(setup.save_license, path, key)
+            changed = await asyncio.to_thread(setup.save_license, path, key, station_dir=own)
         except OSError as exc:
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not save the licence key: {exc.strerror or type(exc).__name__}.",
             ) from None
-        logger.info(
-            "Stereo Tool licence saved for %s",
-            "this station" if body.scope == "station" else "every station",
-        )
-        return await asyncio.to_thread(status, station, _several_stations(request))
+        if changed:
+            logger.info(
+                "Stereo Tool licence saved for %s",
+                "this station" if body.scope == "station" else "every station",
+            )
+        result = await asyncio.to_thread(status, station, _several_stations(request))
+        return {**result, "changed": changed}
 
     @router.delete("/stereo-tool/license")
     async def delete_license(
@@ -143,8 +146,9 @@ def install_stereo_tool(router: StationRouter) -> None:
     ) -> dict[str, Any]:
         """Delete a saved licence key; Stereo Tool restarts without it."""
         path = await asyncio.to_thread(_license_path, station, scope)
+        own = station.paths.state_dir if scope == "station" else None
         try:
-            cleared = await asyncio.to_thread(setup.clear_license, path)
+            cleared = await asyncio.to_thread(setup.clear_license, path, station_dir=own)
         except OSError as exc:
             raise HTTPException(
                 status_code=500,

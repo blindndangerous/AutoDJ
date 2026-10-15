@@ -51,7 +51,11 @@ function server(initial = status()) {
       return { version: "11.05" };
     }
     if (url === "/api/stereo-tool/license" && options.method === "PUT") {
-      if (state.failSave) throw new Error(state.failSave);
+      if (state.failSave) {
+        const error = new Error(state.failSave);
+        error.status = state.failStatus;
+        throw error;
+      }
       const { scope } = JSON.parse(options.body);
       state.data = { ...state.data, license: { ...state.data.license,
         in_use: scope === "station" ? "station" : "install",
@@ -95,7 +99,8 @@ describe("Stereo Tool setup markup", () => {
   it("takes the key in a labelled password field that browsers do not fill", () => {
     const field = page.getElementById("stereo-license-key");
     expect(field.type).toBe("password");
-    expect(field.getAttribute("autocomplete")).toBe("off");
+    // Browsers ignore "off" on password fields; "new-password" keeps saved logins out.
+    expect(field.getAttribute("autocomplete")).toBe("new-password");
     expect(page.querySelector('label[for="stereo-license-key"]').textContent)
       .toBe("Stereo Tool licence key");
     expect(field.getAttribute("aria-describedby").split(" "))
@@ -132,9 +137,13 @@ describe("Stereo Tool setup words", () => {
       "Stereo Tool is not installed. Tick that you accept Thimeo's terms, then press Download Stereo Tool.");
     expect(installText(status({ installed: true, version: "11.05" })))
       .toBe("Stereo Tool 11.05 is installed.");
-    expect(installText(status({ installed: true }))).toContain("did not report its version");
+    expect(installText(status({ installed: true })))
+      .toBe("Stereo Tool is installed (version unknown).");
     expect(installText(status({ download: { available: false } })))
       .toContain("Thimeo offers no command-line Stereo Tool");
+    expect(installText(status({ download: { available: false,
+      note: "Thimeo's ARM build of Stereo Tool processes 16-bit audio only." } })))
+      .toBe("Stereo Tool is not installed. Thimeo's ARM build of Stereo Tool processes 16-bit audio only.");
     expect(installText(status({ location: "configured", installed: true, version: "10.9" })))
       .toContain("Stereo Tool 10.9 program set in the server configuration");
   });
@@ -213,6 +222,33 @@ describe("Stereo Tool setup controls", () => {
     expect(document.activeElement).toBe($("stereo-download"));
   });
 
+  it("says when the installed program names no version", async () => {
+    const state = server();
+    const original = state.request;
+    state.request = vi.fn(async (url, options) => {
+      if (url === "/api/stereo-tool/download") {
+        state.data = { ...state.data, installed: true, version: null };
+        return { version: null };
+      }
+      return original(url, options);
+    });
+    await install(state);
+    $("stereo-accept-terms").checked = true;
+    $("stereo-download").click();
+    await vi.waitFor(() => expect(statusText()).toBe("Stereo Tool installed (version unknown)."));
+    expect($("stereo-install-status").textContent).toBe("Stereo Tool is installed (version unknown).");
+  });
+
+  it("explains why there is nothing to download for this computer", async () => {
+    const note = "Thimeo's ARM build of Stereo Tool processes 16-bit audio only, and AutoDJ sends it 32-bit audio, so it is not supported yet.";
+    const state = server(status({ download: { available: false, platform: null, note, busy: false } }));
+    await install(state);
+    $("stereo-accept-terms").checked = true;
+    $("stereo-download").click();
+    await vi.waitFor(() => expect(statusText()).toBe(note));
+    expect(state.calls.some(([url]) => url === "/api/stereo-tool/download")).toBe(false);
+  });
+
   it("says why a download failed", async () => {
     const state = server();
     state.failDownload = "The download is not a Windows program, so it was not installed.";
@@ -258,6 +294,7 @@ describe("Stereo Tool setup controls", () => {
   it("shows a refused key under the field and moves focus there", async () => {
     const state = server();
     state.failSave = "A Stereo Tool licence key is 4 to 2048 letters, digits and symbols, with no spaces or line breaks.";
+    state.failStatus = 400;
     await install(state);
     $("stereo-license-key").value = "bad key";
     $("stereo-license-save").click();
@@ -270,6 +307,41 @@ describe("Stereo Tool setup controls", () => {
     $("stereo-license-key").dispatchEvent(new Event("input"));
     expect($("stereo-license-error").hidden).toBe(true);
     expect($("stereo-license-key").hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("says when the key was already saved", async () => {
+    const state = server();
+    const original = state.request;
+    state.request = vi.fn(async (url, options = {}) => {
+      const reply = await original(url, options);
+      return options.method === "PUT" ? { ...reply, changed: false } : reply;
+    });
+    await install(state);
+    $("stereo-license-key").value = KEY;
+    $("stereo-license-save").click();
+    await vi.waitFor(() => expect(statusText()).toBe("That licence key is already saved."));
+  });
+
+  it.each([409, 500])("does not blame the field for a %i answer", async (code) => {
+    const state = server();
+    const original = state.request;
+    state.request = vi.fn(async (url, options = {}) => {
+      if (options.method === "PUT") {
+        const error = new Error("The licence for every station comes from the server.");
+        error.status = code;
+        throw error;
+      }
+      return original(url, options);
+    });
+    await install(state);
+    $("stereo-license-key").value = KEY;
+    $("stereo-license-save").focus();
+    $("stereo-license-save").click();
+    await vi.waitFor(() => expect(statusText())
+      .toBe("Could not save the licence key: The licence for every station comes from the server."));
+    expect($("stereo-license-key").hasAttribute("aria-invalid")).toBe(false);
+    expect($("stereo-license-error").hidden).toBe(true);
+    expect(document.activeElement).toBe($("stereo-license-save"));
   });
 
   it("asks for a key before saving an empty field", async () => {
@@ -289,6 +361,14 @@ describe("Stereo Tool setup controls", () => {
     await vi.waitFor(() => expect(statusText()).toMatch(/^Licence cleared\. No licence\./));
     expect(state.calls.some(([url, method]) => url === "/api/stereo-tool/license?scope=all" && method === "DELETE")).toBe(true);
     expect(document.activeElement).toBe($("stereo-license-clear"));
+  });
+
+  it("clears the saved key for every station even while the configuration's key is used", async () => {
+    const state = server(status({ license: { in_use: "station-config", install: "saved", station: "config", problem: null } }));
+    await install(state);
+    $("stereo-license-clear").click();
+    await vi.waitFor(() => expect(statusText()).toMatch(/^Licence cleared\./));
+    expect(state.calls.some(([url, method]) => url === "/api/stereo-tool/license?scope=all" && method === "DELETE")).toBe(true);
   });
 
   it("says a licence from the server cannot be cleared here", async () => {

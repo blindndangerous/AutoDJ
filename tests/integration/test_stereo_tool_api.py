@@ -278,3 +278,36 @@ def test_a_paired_browser_can_download(tmp_path: Path, monkeypatch) -> None:
     assert client.post("/api/pair", json={"code": code, "device_name": "Desk"}).status_code == 200
     response = client.post("/api/stereo-tool/download", json={"accept_terms": True})
     assert response.status_code == 200
+
+
+def test_a_program_without_a_version_is_reported_as_unknown(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        setup, "install", lambda index_dir: setup.Installed(setup.managed_path(index_dir), None)
+    )
+    response = _client(tmp_path).post("/api/stereo-tool/download", json={"accept_terms": True})
+    assert response.status_code == 200
+    assert response.json() == {"version": None}
+
+
+def test_a_computer_without_a_build_is_told_why(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(setup, "platform_build", lambda: None)
+    note = setup.unsupported_note("linux", "aarch64")
+    monkeypatch.setattr(setup, "unsupported_note", lambda: note)
+    client = _client(tmp_path)
+    download = client.get("/api/stereo-tool").json()["download"]
+    assert download["available"] is False
+    assert download["note"] == note
+    refused = client.post("/api/stereo-tool/download", json={"accept_terms": True})
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == note
+
+
+def test_saving_the_same_key_again_changes_nothing(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    state_dir = tmp_path / "main"
+    first = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+    assert first.json()["changed"] is True
+    before = (setup.generation(), setup.generation(state_dir))
+    again = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+    assert again.json()["changed"] is False
+    assert (setup.generation(), setup.generation(state_dir)) == before

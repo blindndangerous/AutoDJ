@@ -974,18 +974,27 @@ credentials. Tests check that a request without a session, or with only a bearer
 **Download.** `POST /api/stereo-tool/download` takes one field, `accept_terms`, which must be
 `true`; the page sends it only when the operator ticks that they accept Thimeo's terms. The body is
 capped at 8 KiB. The request carries no address and no file: the server picks Thimeo's build for
-its own platform from a fixed list (`https://download.thimeo.com/stereo_tool_cmd_64`,
-`.../stereo_tool_pi2_64`, `.../stereo_tool_cmd.exe`). It follows at most five redirects, each
-checked before it is requested: HTTPS only, port 443, no user information, and a host that is
-`thimeo.com` or ends in `.thimeo.com`. Certificates are verified with the system's trust store.
-A declared or streamed size over 200 MB is refused. The file is written under a hidden
-`.download-<random>` name in `<index_dir>/tools/stereo-tool/`, its header must be a 64-bit
-little-endian ELF for the right machine (x86-64 or AArch64) on Linux or a PE for x64 or x86 on
-Windows, and it is run once with `--version` (then `--full-version`), with no input, no shell, a
-15-second timeout and its folder as working directory; it must exit 0 and print a version. Only
-then is it renamed over `stereo_tool_cmd` (on Windows a running copy is renamed aside first), so a
-failed download never replaces a working program and leaves no part file. One download runs at a
-time; a second answers 409. Each attempt is audited as `stereo-tool-download` with its outcome and
+its own platform from a fixed list (`https://download.thimeo.com/stereo_tool_cmd_64` and
+`.../stereo_tool_cmd.exe`; ARM gets none, as Thimeo's ARM build takes 16-bit audio only). It
+follows at most five redirects, each checked before it is requested: HTTPS only, port 443, no
+user information, no whitespace, control characters or non-ASCII anywhere in the address, no `%`
+or backslash in its host part, and a host that is `thimeo.com` or ends in `.thimeo.com`.
+Certificates are verified with the system's trust store. A declared or streamed size over 200 MB
+is refused, and so is a download still running after 10 minutes. The file is written under a
+hidden `.download-<random>` name in `<index_dir>/tools/stereo-tool/`, and its header must be a
+64-bit little-endian x86-64 ELF on Linux or a PE for x64 or x86 on Windows. It is then started
+with `--version`, `--full-version` and `-h` in turn, with no input, no shell, its folder as
+working directory, an environment holding only `PATH` and `HOME` (plus `SYSTEMROOT`, `WINDIR`,
+`TEMP`, `TMP` and `USERPROFILE` on Windows; never `AUTODJ_*` or other secrets), at most 64 KB of
+its output read, and a 15-second limit after which it is killed. A version anywhere in that
+output counts whatever the exit code; a program that starts but names none is installed as
+"version unknown", because no public Thimeo page shows what these flags print. A file that cannot
+be started at all (for example on a `noexec` volume) is refused. Only then is it renamed over
+`stereo_tool_cmd`. On Windows a running copy is renamed aside first and put back if the new file
+cannot take its place, and a new file a virus scanner holds open is retried a few times; an
+interrupted update's set-aside copy is restored, never deleted, when it is the only one left. So
+a failed download never replaces a working program and leaves no part file. One download runs at
+a time; a second answers 409. Each attempt is audited as `stereo-tool-download` with its outcome and
 status, besides the request's own audit line, and the log names the version and source URL only.
 The download trusts thimeo.com and its TLS certificate: whoever controls Thimeo's download host
 controls the program AutoDJ runs. There is no published checksum or signature to check against.
@@ -999,8 +1008,10 @@ configuration (which names `stereotool_path`). No other route writes there: pres
 
 **Licence key.** The key is write-only. `PUT /api/stereo-tool/license` (8 KiB body) saves one for
 every station or, with `"scope": "station"`, for the station the URL names; `DELETE` clears it.
-Answers say only where a key comes from ("install", "station", "environment", "station-config")
-or that none is set, never the key. A refused key is never repeated: the validation message is
+Answers say only where a key comes from ("install", "station", "environment", "station-config"),
+that none is set, or that a saved or configured key cannot be used (a problem naming the setting),
+never the key. Saving the key already saved restarts nothing; a key for one station restarts
+only that station's Stereo Tool. A refused key is never repeated: the validation message is
 fixed text, and the 422 handler drops the rejected input. Keys are 4 to 2048 printable ASCII
 characters with no spaces. They are stored with `write_private_file`, the same as relay
 passwords: atomically, mode 0600 on POSIX and a protected access list for the current user only
@@ -1011,16 +1022,17 @@ and a station's `[playback] stereotool_license_file` override the saved key and 
 the page. The key is read each time Stereo Tool starts; AutoDJ keeps no other copy. A problem
 with a configured key is logged once, naming the setting, never the key or the file's contents.
 
-Thimeo documents one way to give the command-line build its key: `-k <key>` on its command line.
-No key file, environment variable or preset entry for the command-line build is documented, so
-the key does not go into the temporary preset copy AutoDJ writes (that copy, in a private
-temporary folder that is removed when the master closes, holds only the preset). The trade-off:
-while Stereo Tool runs, its command line, and so the key, can be read by the same user, by
-administrators and root, and on Linux by any local user unless `/proc` is mounted with
-`hidepid=2` (or `hidepid=invisible`). In the container only processes in the container can see it.
-On Windows, other standard users cannot read another user's process command line. Run AutoDJ as
-its own user on a machine you trust, or mount `/proc` with `hidepid`, if other local users must not
-see the key. AutoDJ never logs a mastering command line: a stuck process is logged without its
+The only way we found documented to give the command-line build its key is `-k <key>` on its
+command line. We found no documented key file, environment variable or preset entry for the
+command-line build, so the key does not go into the temporary preset copy AutoDJ writes (that
+copy, in a private temporary folder that is removed when the master closes, holds only the
+preset). The trade-off: while Stereo Tool runs, its command line, and so the key, can be read by
+the same user, by administrators and root, and on Linux by any local user unless `/proc` is
+mounted with `hidepid=2` (or `hidepid=invisible`). A container does not hide it: the container's
+processes are processes of the host, so the Docker host's root, and any host user unless the host
+mounts `/proc` with `hidepid`, can read the key. On Windows, other standard users cannot read
+another user's process command line. Run AutoDJ as its own user on a machine you trust, or mount
+`/proc` with `hidepid` (on the Docker host too), if other local users must not see the key. AutoDJ never logs a mastering command line: a stuck process is logged without its
 exception text (which would repeat the command line), Stereo Tool's own output is discarded, and
 an error shown on the page has the key replaced by `<licence key>`. If Thimeo documents a way to
 pass the key outside the command line, AutoDJ should switch to it.

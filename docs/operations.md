@@ -1842,16 +1842,18 @@ gets the command-line Stereo Tool itself, from Settings, Sound, with no configur
    **I accept Thimeo's terms for Stereo Tool**. Download refuses without the tick and moves focus
    to the box.
 3. Press **Download Stereo Tool**. The server fetches Thimeo's command-line build for its own
-   platform straight from thimeo.com over HTTPS: `stereo_tool_cmd_64` for 64-bit Linux PCs,
-   `stereo_tool_pi2_64` (Thimeo's 64-bit Raspberry Pi build) for 64-bit ARM Linux, and
+   platform straight from thimeo.com over HTTPS: `stereo_tool_cmd_64` for 64-bit Linux PCs and
    `stereo_tool_cmd.exe` for Windows. It takes a minute or two; the status line says
    "Downloading Stereo Tool from thimeo.com" until it ends, then "Stereo Tool 11.05 is installed"
-   (with the version it reports). The button then reads **Update Stereo Tool**; press it to fetch
-   Thimeo's latest build. A running Stereo Tool restarts with the new program, and the sound
-   bypasses it for a moment.
+   with the version the program reports, or "Stereo Tool is installed (version unknown)" when it
+   names none. The button then reads **Update Stereo Tool**; press it to fetch Thimeo's latest
+   build. A running Stereo Tool restarts with the new program, and the sound bypasses it for a
+   moment.
 4. Paste the key Thimeo sent you in **Stereo Tool licence key** and press **Save licence key**.
    The status line says "Licence set" or "No licence"; the key is never shown again. **Clear
-   licence** deletes the saved key after asking. Stereo Tool restarts whenever the key changes.
+   licence** deletes the saved key after asking. Stereo Tool restarts when the key changes: a key
+   for every station restarts every station that runs Stereo Tool, a key for one station
+   restarts only that one, and saving the same key again restarts nothing.
 5. Choose a preset in the **Stereo Tool** group below, or upload your own `.sts` file there.
 
 Without a key, Stereo Tool runs as its free version, with the limits Thimeo sets for it.
@@ -1863,19 +1865,33 @@ the working folder otherwise, so neither needs a configuration change. You can a
 command-line Stereo Tool you downloaded yourself from thimeo.com there by hand (make it
 executable on Linux); the page then shows its version. Backups leave the program out.
 
+The program runs from the index folder, so that folder must not be on a volume mounted with
+`noexec` (some NAS shares and hardened `/srv` mounts are). Download then says the program "could
+not be started" and mentions noexec, and nothing is replaced. Mount the volume without `noexec`,
+or keep Stereo Tool on another volume and name it with `[playback] stereotool_path`.
+
+**ARM.** Thimeo's ARM builds (`stereo_tool_pi2`, `stereo_tool_pi2_64`, for the Raspberry Pi)
+process 16-bit audio only, and AutoDJ feeds Stereo Tool 32-bit float audio, so they are not
+supported yet. On ARM Linux the Download button is replaced by a note saying so. To try another
+build by hand, put it in `tools/stereo-tool/` in the index folder or name it with
+`stereotool_path` in the station's `[playback]` table. Thimeo offers no command-line build for
+macOS that AutoDJ downloads either; the same by-hand route applies.
+
 The download only ever fetches Thimeo's own build: the page sends no address and no file, the
-server follows redirects only to thimeo.com hosts over HTTPS, refuses a file over 200 MB or one
-that is not a program for this computer, and runs the new file once with `--version` (or
-`--full-version`) before it replaces anything. If any check fails, the old program stays and the page says why, for example
-"Could not download Stereo Tool: thimeo.com answered with error 503." Thimeo offers no
-command-line build for macOS or 32-bit ARM to download here; put one in the folder by hand. The
-page never accepts an uploaded program: that would let anyone who can change settings run any
-program on the server.
+server follows redirects only to thimeo.com hosts over HTTPS, stops a download that takes more
+than 10 minutes, refuses a file over 200 MB or one that is not a program for this computer, and
+starts the new file with `--version`, `--full-version` and then `-h` to read a version before it
+replaces anything. No public Thimeo page shows what those print, so a program that starts but
+names no version is still installed, as "version unknown"; one that cannot start at all is
+refused. If any check fails, the old program stays and the page says why, for example "Could not
+download Stereo Tool: thimeo.com answered with error 503." The page never accepts an uploaded
+program: that would let anyone who can change settings run any program on the server.
 
 If a station is set to Stereo Tool and the program is not there, the station plays on with its
 limited bypass, and `/api/status` reports `playout.error` as "Stereo Tool master unavailable:
 Stereo Tool is not installed. Download it in Settings, Sound, with the Download Stereo Tool
-button." It starts Stereo Tool by itself within a second of the download finishing.
+button." It starts Stereo Tool by itself within a second of the download finishing. A station
+whose own `stereotool_path` names a missing program says that path is missing instead.
 
 In Docker, use the Download button, or copy the program into the index volume:
 
@@ -1912,10 +1928,12 @@ A station's `[playback] stereotool_license_file` names a key file for that stati
 cannot change it. The order, first match wins, is: that file, the station's own saved key, the
 environment, the key saved for every station.
 
-Thimeo documents one way to give the command-line build its key: `-k <key>` on its command line.
-AutoDJ passes it that way, so anyone who can list the processes of the user AutoDJ runs as (and,
-on Linux without `hidepid`, any local user) can read the key while Stereo Tool runs. AutoDJ never
-writes the command line to its log. See `THREAT_MODEL.md`.
+The only way we found documented to give the command-line build its key is `-k <key>` on its
+command line. AutoDJ passes it that way, so while Stereo Tool runs, the key can be read by the
+user AutoDJ runs as, by administrators and root, and on Linux by any local user unless `/proc` is
+mounted with `hidepid`. In Docker the container's processes are processes of the host: the
+host's root, and any host user unless the host mounts `/proc` with `hidepid`, can read the key.
+AutoDJ never writes the command line to its log. See `THREAT_MODEL.md`.
 
 #### Several Stereo Tool instances
 
