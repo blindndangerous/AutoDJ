@@ -380,8 +380,8 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "title": None,
         "status_path": "/stations/nightowl/status",
         "nowplaying_path": "/api/stations/nightowl/nowplaying",
-        "stream_path": "/stations/nightowl.mp3",
-        "m3u_path": "/stations/nightowl.m3u",
+        "stream_path": "/nightowl.mp3",
+        "m3u_path": "/nightowl.m3u",
         "player_path": "/stations/nightowl/player",
         "embed_path": "/stations/nightowl/embed",
         "autostart": True,
@@ -391,12 +391,12 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
     assert listing["default"]["embed_path"] is None
     stream = client.get(f"{OWL}/stream").json()
     assert (stream["path"], stream["m3u_path"]) == (
-        "/stations/nightowl.mp3",
-        "/stations/nightowl.m3u",
+        "/nightowl.mp3",
+        "/nightowl.m3u",
     )
     assert stream["bitrate"] == 192
     assert client.get("/api/stream").json()["path"] == "/stream.mp3"
-    assert client.get(f"{OWL}/nowplaying").json()["stream_path"] == "/stations/nightowl.mp3"
+    assert client.get(f"{OWL}/nowplaying").json()["stream_path"] == "/nightowl.mp3"
 
 
 def test_queue_pause_and_settings_stay_in_their_station(rig: Any) -> None:
@@ -426,9 +426,9 @@ def test_listeners_bans_and_recording_are_per_station(
     stations = client.app.state.stations
     default, owl = stations.default, stations.get("nightowl")
 
-    playlist = client.get("/stations/nightowl.m3u")
+    playlist = client.get("/nightowl.m3u")
     assert playlist.status_code == 200
-    assert playlist.text == "http://testserver/stations/nightowl.mp3\n"
+    assert playlist.text == "http://testserver/nightowl.mp3\n"
 
     # The test client reads a response to its end, so each listener hears
     # one chunk of the live stream; what the stations count is noted then.
@@ -445,7 +445,7 @@ def test_listeners_bans_and_recording_are_per_station(
             return
 
     monkeypatch.setattr(Listener, "chunks", one_chunk)
-    audio = client.get("/stations/nightowl.mp3", headers={"Icy-MetaData": "1"})
+    audio = client.get("/nightowl.mp3", headers={"Icy-MetaData": "1"})
     assert audio.status_code == 200
     assert audio.headers["icy-name"] == "Night Owl Radio"
     assert audio.headers["icy-br"] == "192"
@@ -456,7 +456,7 @@ def test_listeners_bans_and_recording_are_per_station(
 
     banned = client.post(f"{OWL}/stream/bans", json={"address": "192.0.2.4"})
     assert banned.status_code == 200
-    assert client.get("/stations/nightowl.mp3").status_code == 403
+    assert client.get("/nightowl.mp3").status_code == 403
     assert client.head("/stream.mp3").status_code == 200
     assert (owl.paths.state_dir / "listener_bans.json").is_file()
     assert not (cfg.index.active_dir / "listener_bans.json").exists()
@@ -470,7 +470,7 @@ def test_listeners_bans_and_recording_are_per_station(
 
 def test_unknown_station_streams_are_not_found(rig: Any) -> None:
     client, *_ = rig
-    assert client.get("/stations/daybreak.mp3").status_code == 404
+    assert client.get("/daybreak.mp3").status_code == 404
     assert client.get("/stations/nightowl.ogg").status_code == 404
     assert client.get("/stations/nightowl").status_code == 404
     assert client.post("/api/stations/daybreak/start").status_code == 404
@@ -501,7 +501,7 @@ def test_stop_and_start_clean_up_one_of_two_stereo_tool_stations(rig: Any) -> No
     assert encoder_stream.listener_count == 0
     assert stations.get("nightowl").stopped
     assert client.get(f"{OWL}/status").status_code == 409
-    assert client.get("/stations/nightowl.mp3").status_code == 503
+    assert client.get("/nightowl.mp3").status_code == 503
     assert _stations(client)["nightowl"]["state"] == "stopped"
     # Stopping again, or a running station's start, changes nothing.
     assert client.post(f"{OWL}/stop").status_code == 200
@@ -976,7 +976,7 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
         "/api/nowplaying": 200,
         "/api/stations/default/nowplaying": 200,
         "/api/stations/nightowl/nowplaying": 200,
-        "/stations/nightowl.m3u": 200,
+        "/nightowl.m3u": 200,
         # Only a configured station's public addresses are public.
         "/stations/daybreak/status": 401,
         "/api/stations/daybreak/nowplaying": 401,
@@ -997,7 +997,7 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
     html = page.text
     assert "<title>Night Owl Radio: station status</title>" in html
     assert 'data-feed="/api/stations/nightowl/nowplaying"' in html
-    assert '<a href="/stations/nightowl.mp3">' in html
+    assert '<a href="/nightowl.mp3">' in html
     assert 'download="nightowl.m3u"' in html
     default_page = client.get("/status").text
     assert "<title>AutoDJ: station status</title>" in default_page
@@ -1006,7 +1006,7 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
 
     feed = client.get("/api/stations/nightowl/nowplaying")
     assert feed.json()["station_name"] == "Night Owl Radio"
-    assert feed.json()["stream_path"] == "/stations/nightowl.mp3"
+    assert feed.json()["stream_path"] == "/nightowl.mp3"
     assert client.get("/api/nowplaying").json()["station_name"] == "AutoDJ"
     for text in (html, default_page, feed.text):
         assert TOKEN not in text
@@ -1025,7 +1025,7 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
     player = client.get("/stations/nightowl/player")
     assert player.status_code == 200
     assert "<title>Night Owl Radio: listen live</title>" in player.text
-    assert 'data-stream="/stations/nightowl.mp3"' in player.text
+    assert 'data-stream="/nightowl.mp3"' in player.text
     assert "frame-ancestors 'none'" in player.headers["content-security-policy"]
     embed = client.get("/stations/nightowl/embed")
     assert embed.headers["content-security-policy"].endswith(
@@ -1049,7 +1049,7 @@ def test_each_station_has_its_own_public_status_page_and_feed(rig: Any, tmp_path
     assert stopped_feed.status_code == 503
     assert stopped_feed.json() == {"detail": "That station is off air"}
     assert stopped_feed.headers["access-control-allow-origin"] == "*"
-    assert client.get("/stations/nightowl.mp3").status_code == 503
+    assert client.get("/nightowl.mp3").status_code == 503
     off_requests = client.get("/stations/nightowl/requests")
     assert off_requests.status_code == 503
     assert "Night Owl Radio is off air right now, so it is not taking requests." in (
@@ -1114,9 +1114,9 @@ def test_listener_credentials_and_webhooks_are_each_stations_own(rig: Any) -> No
     stations = client.app.state.stations
     owl = stations.get("nightowl")
     # Night Owl's listener password guards its stream only.
-    assert client.head("/stations/nightowl.mp3").status_code == 401
+    assert client.head("/nightowl.mp3").status_code == 401
     good = base64.b64encode(b"owl:night-owl-listener-secret").decode()
-    authorised = client.head("/stations/nightowl.mp3", headers={"Authorization": f"Basic {good}"})
+    authorised = client.head("/nightowl.mp3", headers={"Authorization": f"Basic {good}"})
     assert authorised.status_code == 200
     assert client.head("/stream.mp3").status_code == 200
     # Its status page and feed stay public, and say nothing of the secrets.

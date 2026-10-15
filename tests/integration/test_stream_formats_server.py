@@ -66,7 +66,7 @@ def rig(bridge, tmp_path: Path) -> Rig:
     return Rig(bridge, tmp_path)
 
 
-@pytest.mark.parametrize("path", ["/stream.aac", "/stream.opus", "/stations/default.opus"])
+@pytest.mark.parametrize("path", ["/stream.aac", "/stream.opus", "/default.opus"])
 def test_a_format_that_is_off_is_not_found(rig: Rig, path: str) -> None:
     assert rig.client.get(path).status_code == 404
     assert rig.client.head(path).status_code == 404
@@ -74,7 +74,7 @@ def test_a_format_that_is_off_is_not_found(rig: Rig, path: str) -> None:
 
 def test_the_aac_stream_carries_titles_for_players_that_ask(rig: Rig) -> None:
     rig.mounts.set_bitrate("aac", 96)
-    for path in ("/stream.aac", "/stations/default.aac"):
+    for path in ("/stream.aac", "/default.aac"):
         head = rig.client.head(path, headers={"Icy-MetaData": "1"})
         assert head.status_code == 200 and head.headers["content-type"] == "audio/aac"
         # Asking about it starts no encoder; only a listener does.

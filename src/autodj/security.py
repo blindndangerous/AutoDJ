@@ -490,7 +490,7 @@ def _is_public_path(path: str, slugs: AbstractSet[str] = frozenset()) -> bool:
     """Return whether a request path is accessible without authentication.
 
     Listening (``/stream.mp3`` and ``/stream.m3u``, and
-    ``/stations/<slug>.mp3`` and ``.m3u`` for a configured station, and the
+    ``/<slug>.mp3`` and ``.m3u`` for a configured station, and the
     same with ``.aac`` and ``.opus``, the other stream formats) does
     not require pairing; control APIs require a session.  A configured
     station's public now-playing feed is public under its station path too,
@@ -527,10 +527,8 @@ _STREAM_FILES = frozenset(f"/stream.{ext}" for ext in _STREAM_EXTENSIONS)
 
 
 def _is_station_stream(path: str, slugs: AbstractSet[str]) -> bool:
-    """Whether *path* is ``/stations/<slug>.mp3`` (or another stream extension) for *slug*."""
-    name = path.removeprefix("/stations/")
-    if name == path:
-        return False
+    """Whether *path* is ``/<slug>.mp3`` (or another stream extension) for *slug*."""
+    name = path.removeprefix("/")
     slug, dot, ext = name.rpartition(".")
     return bool(dot) and ext in _STREAM_EXTENSIONS and slug in slugs
 

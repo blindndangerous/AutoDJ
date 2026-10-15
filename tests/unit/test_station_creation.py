@@ -221,3 +221,11 @@ def test_serve_moves_a_config_station_into_its_own_file(tmp_path: Path) -> None:
     )
     again = load_config(cfg.config_path, environ={}).stations[0]
     assert again.cfg.stream.listener_password == "secret"
+
+
+def test_stream_is_not_a_station_id() -> None:
+    from autodj.stations import SLUG_PATTERN
+
+    # /stream.mp3 is the default station's; others stream at /<slug>.mp3.
+    assert SLUG_PATTERN.fullmatch("stream") is None
+    assert SLUG_PATTERN.fullmatch("streams") is not None

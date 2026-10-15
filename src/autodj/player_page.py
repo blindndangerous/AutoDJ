@@ -87,7 +87,7 @@ class PageAddresses:
         cls, slug: str, *, by_name: bool, streams: bool, player_enabled: bool
     ) -> PageAddresses:
         """The addresses of station *slug*, by name or as the default station's own."""
-        stream = f"/stations/{slug}.mp3" if by_name else "/stream.mp3"
+        stream = f"/{slug}.mp3" if by_name else "/stream.mp3"
         return cls(
             feed=public_feed_path(slug, by_name=by_name),
             stream=stream if streams else None,

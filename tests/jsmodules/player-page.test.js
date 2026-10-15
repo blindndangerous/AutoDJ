@@ -20,10 +20,10 @@ import {
 function mount(page = "player") {
   document.body.dataset.page = page;
   document.body.dataset.feed = "/api/stations/nightowl/nowplaying";
-  document.body.dataset.stream = "/stations/nightowl.mp3";
+  document.body.dataset.stream = "/nightowl.mp3";
   document.body.innerHTML = `
     <h1 id="status-station">Night Owl Radio</h1>
-    <audio id="player-audio" controls preload="none" src="/stations/nightowl.mp3"></audio>
+    <audio id="player-audio" controls preload="none" src="/nightowl.mp3"></audio>
     <div id="player-controls" class="player-controls" hidden>
       <button type="button" id="player-toggle">Play</button>
       <div id="player-volume-group">
@@ -60,7 +60,7 @@ describe("player page stream address", () => {
   };
 
   it("plays only an .mp3 path on this site", () => {
-    expect(named("/stations/nightowl.mp3")).toBe("/stations/nightowl.mp3");
+    expect(named("/nightowl.mp3")).toBe("/nightowl.mp3");
     expect(named("/stream.mp3")).toBe("/stream.mp3");
     for (const stream of [
       undefined,
@@ -127,7 +127,7 @@ describe("player controls", () => {
     toggle.focus();
     toggle.click();
     expect(audio.play).toHaveBeenCalledTimes(1);
-    expect(audio.getAttribute("src")).toBe("/stations/nightowl.mp3");
+    expect(audio.getAttribute("src")).toBe("/nightowl.mp3");
     expect(toggle.textContent).toBe("Stop");
     expect(toggle.hasAttribute("aria-pressed")).toBe(false);
     expect(byId("player-state").textContent).toBe(CONNECTING_TEXT);
@@ -151,7 +151,7 @@ describe("player controls", () => {
     expect(player.playing).toBe(false);
     // Play again joins the live stream afresh.
     toggle.click();
-    expect(audio.getAttribute("src")).toBe("/stations/nightowl.mp3");
+    expect(audio.getAttribute("src")).toBe("/nightowl.mp3");
     expect(byId("player-state").textContent).toBe(CONNECTING_TEXT);
   });
 
