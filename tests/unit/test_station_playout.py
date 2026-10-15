@@ -982,8 +982,12 @@ def test_seed_place_from_another_clockwheel_is_not_carried(
 
 
 @pytest.mark.parametrize("deferred", [False, True])
-def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypatch, deferred):
+def test_clock_resync_drops_unheard_pick_without_recording_it(
+    station, monkeypatch, deferred, caplog
+):
     from autodj.clockwheel import ClockPick
+
+    caplog.set_level("INFO", logger="autodj.player")
 
     player, (a, b, *_), _points = station
     player._cfg.playback.pick_mode = "clock"
@@ -1002,6 +1006,8 @@ def test_clock_resync_drops_unheard_pick_without_recording_it(station, monkeypat
     entry, mode, liners, cursor, _key = player._choose_station_next(a, context)
     assert (entry, mode, liners, cursor) == (b, "clock", (), 1)
     assert [call.args[1] for call in picked.call_args_list] == [4, 0]
+    # The decision is logged with the pick.
+    assert any("restarted the wheel" in record.getMessage() for record in caplog.records)
     assert player._clock["cursor"] == (0 if deferred else 4)
     if deferred:
         assert player._pending_clock_update is None

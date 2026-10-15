@@ -1523,3 +1523,24 @@ class TestClaimIndexForServe:
         _claim_index_for_serve(ctx, active)
         for close in closers:
             close()
+
+
+def test_serve_log_file_is_written_and_kept_for_a_week(tmp_path: Path) -> None:
+    import logging
+
+    from autodj.cli import _add_log_file
+
+    path = tmp_path / "logs" / "autodj.log"
+    root = logging.getLogger()
+    before = list(root.handlers)
+    _add_log_file(path)
+    added = [handler for handler in root.handlers if handler not in before]
+    try:
+        assert len(added) == 1 and added[0].backupCount == 7
+        logging.getLogger("autodj.test").warning("written to the file")
+        added[0].flush()
+        assert "written to the file" in path.read_text(encoding="utf-8")
+    finally:
+        for handler in added:
+            root.removeHandler(handler)
+            handler.close()
