@@ -19,6 +19,7 @@
 // Category conditions name a saved category (Categories, above) by its ID.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { releaseDialogFocus } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
@@ -864,6 +865,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
   });
   cancelEdit?.addEventListener("click", () => {
     const index = editing;
+    // The dialog lets go of focus first, so the step's Edit or New step
+    // takes it once the dialog has closed (#385).
+    releaseDialogFocus(stepDialog);
     resetForm();
     renderSteps();
     if (index !== null) {

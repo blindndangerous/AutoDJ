@@ -1,6 +1,6 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { fmtTrack, placeRows } from "./dom-helpers.js";
+import { fmtTrack, focusAfterDialog, placeRows, releaseDialogFocus } from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
@@ -553,8 +553,17 @@ export function installLibraryFolders({ document: doc = document, request = requ
         doc.getElementById("points-preview")?.pause();
         dialog.close("discard");
       }
-      function stay() { if (!saving && !pending) dialog.close("keep"); }
-      function cancel(event) { if (saving || pending) event.preventDefault(); }
+      // Keep editing and Escape put focus back once the dialog has closed
+      // (#385).
+      function stay() {
+        if (saving || pending) return;
+        releaseDialogFocus(dialog);
+        dialog.close("keep");
+      }
+      function cancel(event) {
+        if (saving || pending) event.preventDefault();
+        else releaseDialogFocus(dialog);
+      }
       function closed() {
         save.removeEventListener("click", accept);
         discard.removeEventListener("click", reject);
@@ -562,7 +571,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
         const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
-        if (!switching && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus();
+        if (!switching) focusAfterDialog(returnFocus);
         resolve(switching);
       }
       save.addEventListener("click", accept);

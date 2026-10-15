@@ -500,7 +500,8 @@ describe("queue Top and Clear queue", () => {
       <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
         <button id="confirm-cancel"></button><button id="confirm-accept"></button></dialog>`;
     // The modal dialog as a browser runs it: closing puts focus back on
-    // the element that had it when the dialog opened.
+    // the element that had it when the dialog opened, when focus is still
+    // in the dialog.
     const dialog = document.querySelector("#confirm-dialog");
     let opener = null;
     dialog.showModal = vi.fn(() => {
@@ -510,8 +511,9 @@ describe("queue Top and Clear queue", () => {
     dialog.close = vi.fn((value) => {
       if (!dialog.hasAttribute("open")) return;
       if (value !== undefined) dialog.returnValue = value;
+      const focusInside = dialog.contains(document.activeElement);
       dialog.removeAttribute("open");
-      if (opener?.isConnected) opener.focus();
+      if (focusInside && opener?.isConnected) opener.focus();
       dialog.dispatchEvent(new Event("close"));
     });
     const els = {

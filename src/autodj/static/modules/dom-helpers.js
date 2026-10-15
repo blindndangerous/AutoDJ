@@ -133,6 +133,31 @@ export function focusRevealed(control, options) {
 }
 
 // ----------------------------------------------------------------
+// Closing a modal <dialog> (#385).  The browser puts focus back on the
+// control that opened a dialog while the dialog is still closing, when the
+// page is still inert, and NVDA in Chrome then lost the focus and read the
+// top of the page (the Station menu) though the control had focus.  The
+// control in the dialog lets go of focus before the dialog closes, so the
+// browser has nothing to put back, and the page focuses the control once
+// the dialog is closed: a focus change NVDA reports.
+// ----------------------------------------------------------------
+
+// Before dialog.close(), or in its cancel event for Escape.
+export function releaseDialogFocus(dialog) {
+  const active = dialog?.ownerDocument?.activeElement;
+  if (active && active !== dialog && dialog.contains(active)) active.blur();
+}
+
+// Once the dialog is closed.  A control the browser focused anyway lets go
+// and takes focus again, so the change is still reported.
+export function focusAfterDialog(control) {
+  if (!control?.isConnected || control.disabled) return false;
+  if (control.ownerDocument.activeElement === control) control.blur();
+  control.focus();
+  return true;
+}
+
+// ----------------------------------------------------------------
 // Settings lists: saved profiles, paired devices, voice liners.
 // ----------------------------------------------------------------
 
