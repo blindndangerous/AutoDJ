@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -277,6 +278,37 @@ def test_a_stopped_station_shows_the_name_saved_in_settings(tmp_path: Path) -> N
 
     asyncio.run(scenario())
     assert registry.get("nightowl").name == "Owl After Dark"
+
+
+def test_a_stopped_stations_request_page_follows_its_saved_switch(tmp_path: Path) -> None:
+    """The Listener requests card saves on or off in web_state.json; config is the start."""
+    log: list[str] = []
+    saved = tmp_path / "nightowl" / "web_state.json"
+    saved.parent.mkdir()
+    saved.write_text(
+        json.dumps({"schema_version": 2, "playback": {"requests_enabled": True}}),
+        encoding="utf-8",
+    )
+    built: list[_Runtime] = []
+
+    def build(_registry: StationRegistry) -> _Runtime:
+        built.append(_Runtime("nightowl", log))
+        built[-1].cfg.requests = SimpleNamespace(enabled=False)
+        return built[-1]
+
+    nightowl = _extra("nightowl", build, tmp_path, autostart=False)
+    daybreak = replace(_extra("daybreak", build, tmp_path, autostart=False), requests_enabled=True)
+    registry = StationRegistry(_Runtime("default", log), [nightowl, daybreak])  # type: ignore[arg-type]
+    registry.prepare = lambda station: None
+    assert registry.get("nightowl").requests_enabled is True  # saved on; config off
+    assert registry.get("daybreak").requests_enabled is True  # nothing saved: config
+
+    async def scenario() -> None:
+        await registry.start("nightowl")
+        await registry.stop("nightowl")  # turned off while it ran
+
+    asyncio.run(scenario())
+    assert registry.get("nightowl").requests_enabled is False
 
 
 def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:

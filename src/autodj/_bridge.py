@@ -204,10 +204,24 @@ def _request_settings(requests: Any) -> dict[str, Any]:
     if requests is None:
         return {}
     return {
+        "requests_enabled": bool(requests.enabled),
+        "requests_approval": requests.approval,
         "requests_bridges_enabled": bool(requests.bridges_enabled),
         "requests_max_bridges": int(requests.max_bridges),
         "requests_bridge_cost_threshold": float(requests.bridge_cost_threshold),
         "requests_no_smooth_spot": requests.no_smooth_spot,
+    }
+
+
+def _break_settings(breaks: Any) -> dict[str, Any]:
+    """The announcer break settings Settings, Breaks saves (#88), when the station has them."""
+    if breaks is None:
+        return {}
+    return {
+        "breaks_enabled": bool(breaks.enabled),
+        "breaks_dj_placement": breaks.dj_placement,
+        "breaks_min_intro_seconds": float(breaks.min_intro_seconds),
+        "breaks_duck_db": None if breaks.duck_db is None else float(breaks.duck_db),
     }
 
 
@@ -2373,6 +2387,7 @@ class PlayerBridge:
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 **_request_settings(getattr(cfg, "requests", None)),
+                **_break_settings(getattr(cfg, "breaks", None)),
                 "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
                 "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
                 "stream_stats_days": int(cfg.stream.stats_days),

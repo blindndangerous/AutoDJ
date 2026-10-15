@@ -89,6 +89,7 @@ from autodj.stream_mounts import MountsClosedError
 
 if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
+    from autodj.listener_requests import RequestDesk
 
 logger = logging.getLogger(__name__)
 
@@ -1060,27 +1061,8 @@ def equip_station(
     bridge.player.break_desk = station.breaks
     _equip_ads(station, schedule)
 
-    requests_cfg = station.cfg.requests
-    if requests_cfg.enabled is True:
-        from autodj.listener_requests import (
-            FORM_TOKENS,
-            TRACK_SECRET,
-            RequestBook,
-            RequestDesk,
-            TrackIds,
-        )
-
-        station.requests = RequestDesk(
-            station.slug,
-            requests_cfg,
-            bridge,
-            RequestBook(station.paths.listener_requests, timezone=station.timezone),
-            music_dir=station.cfg.library.music_dir,
-            tokens=FORM_TOKENS,
-            track_ids=TrackIds(TRACK_SECRET),
-            on_queued=station.nowplaying.refresh,
-            shows=station.show_runner,
-        )
+    if station.cfg.requests.enabled is True:
+        station.requests = request_desk(station)
         # A show that starts ahead of queued requests updates their notes.
         station.show_runner.on_started = station.requests.show_started
 
@@ -1103,6 +1085,33 @@ def equip_station(
         library=lambda: bridge.library,
     )
     bridge.player.matched_intros = station.intros
+
+
+def request_desk(station: StationRuntime) -> RequestDesk:
+    """A new listener request desk for *station* (blocking: it reads the request book).
+
+    Built when the station starts with requests on, or when they are first
+    turned on while it runs.  The caller sets it on the station.
+    """
+    from autodj.listener_requests import (
+        FORM_TOKENS,
+        TRACK_SECRET,
+        RequestBook,
+        RequestDesk,
+        TrackIds,
+    )
+
+    return RequestDesk(
+        station.slug,
+        station.cfg.requests,
+        station.bridge,
+        RequestBook(station.paths.listener_requests, timezone=station.timezone),
+        music_dir=station.cfg.library.music_dir,
+        tokens=FORM_TOKENS,
+        track_ids=TrackIds(TRACK_SECRET),
+        on_queued=station.nowplaying.refresh,
+        shows=station.show_runner,
+    )
 
 
 def _equip_ads(station: StationRuntime, schedule: Any) -> None:

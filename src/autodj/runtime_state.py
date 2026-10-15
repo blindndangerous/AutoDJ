@@ -2,8 +2,9 @@
 
 Settings the user changes in the **browser** — preset, transition
 effect, DJ-mix options, playback settings, volume and mute, stream
-bitrate and station name, BPM range, discovery rate, EQ and whether discovery
-is on — are written to
+bitrate and station name, BPM range, discovery rate, EQ, whether discovery
+is on, and whether the station takes listener requests and announcer breaks
+and how — are written to
 ``<index_dir>/<name>/web_state.json`` so the next `autodj serve` boot
 restores them.
 
@@ -12,7 +13,8 @@ The on-disk format mirrors the dict returned by
 can set.  On restore every saved field is checked on its own against the
 rule of the route that sets it (:mod:`autodj.settings_bodies`) and applied
 through the same :class:`~autodj._bridge.PlayerBridge` setter: a bad value
-is skipped with a warning and the other saved settings still apply.  The
+is skipped with a warning and the other saved settings still apply.  A
+saved value wins over config.toml, which gives only the starting value.  The
 Library source folders are catalog-owned. The configured liner upload
 destination remains config-owned; neither is copied into browser-owned state.
 """
@@ -30,6 +32,7 @@ from autodj.fsutil import atomic_write
 from autodj.repeat_settings import ignore_unknown_repeat_keys
 from autodj.settings_bodies import (
     BpmRangeBody,
+    BreakSettingsBody,
     DiscoveryBody,
     DjMixBody,
     EqBody,
@@ -55,10 +58,21 @@ STATE_VERSION = 2
 #: Listener request settings the operator's Listener requests card saves
 #: (``/api/requests/settings``), by their ``[requests]`` names.
 REQUEST_SETTING_KEYS = (
+    "requests_enabled",
+    "requests_approval",
     "requests_bridges_enabled",
     "requests_max_bridges",
     "requests_bridge_cost_threshold",
     "requests_no_smooth_spot",
+)
+#: Announcer break settings Settings, Breaks saves (``/api/breaks/settings``),
+#: by their ``[breaks]`` names.  ``breaks_duck_db`` may be null: the voice
+#: liner duck depth.
+BREAK_SETTING_KEYS = (
+    "breaks_enabled",
+    "breaks_dj_placement",
+    "breaks_min_intro_seconds",
+    "breaks_duck_db",
 )
 
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
@@ -76,6 +90,7 @@ _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
         "nowplaying_show_next",
         "stream_max_listeners_per_address",
         *REQUEST_SETTING_KEYS,
+        *BREAK_SETTING_KEYS,
         "stream_aac_bitrate",
         "stream_opus_bitrate",
         "stream_stats_days",
@@ -317,6 +332,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             value = _checked(RequestSettingsBody, field, playback[key], key)
             if value is not _INVALID and value is not None:
                 setattr(player._cfg.requests, field, value)
+    _restore_breaks(getattr(player._cfg, "breaks", None), playback)
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
@@ -337,6 +353,24 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         except (ValueError, FileNotFoundError):
             _warn("stereotool_preset", values.pop("stereotool_preset"))
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
+
+
+def _restore_breaks(breaks: Any, playback: dict[str, Any]) -> None:
+    """Restore the saved announcer break settings over the ``[breaks]`` ones."""
+    if breaks is None:
+        return
+    for key in BREAK_SETTING_KEYS:
+        if key not in playback:
+            continue
+        field = key.removeprefix("breaks_")
+        saved = playback[key]
+        if field == "duck_db" and saved is None:
+            # Null: the voice liner duck depth, as an unset [breaks] duck_db.
+            breaks.duck_db = None
+            continue
+        value = _checked(BreakSettingsBody, field, saved, key)
+        if value is not _INVALID and value is not None:
+            setattr(breaks, field, value)
 
 
 def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:

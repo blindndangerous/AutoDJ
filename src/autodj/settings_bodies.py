@@ -93,19 +93,43 @@ class PresetBody(BaseModel):
 
 
 class RequestSettingsBody(BaseModel):
-    """Partial listener request settings: bridge songs and the give-up rule (#49).
+    """Partial listener request settings: on or off, approval, bridge songs and the give-up rule.
 
-    The same limits as ``[requests]`` in config.toml (:class:`RequestsConfig`).
+    The same limits as ``[requests]`` in config.toml (:class:`RequestsConfig`),
+    which gives only the starting values (#49).
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    enabled: bool | None = Field(default=None, strict=True)
+    approval: Literal["manual", "auto"] | None = None
     bridges_enabled: bool | None = Field(default=None, strict=True)
     max_bridges: Annotated[int, Field(ge=1, le=3, strict=True)] | None = None
     bridge_cost_threshold: Annotated[float, Field(ge=0.0, le=10.0, allow_inf_nan=False)] | None = (
         None
     )
     no_smooth_spot: Literal["best", "wait"] | None = None
+
+
+class BreakSettingsBody(BaseModel):
+    """Partial announcer break settings a station operator changes (#88).
+
+    The same rules as ``[breaks]`` in config.toml (:class:`BreaksConfig`),
+    which gives only the starting values.  The upload limits, quotas and
+    waiting times stay in config.toml.  ``duck_db`` sent as ``null`` means
+    "use the voice liner duck depth"; left out, it is left unchanged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = Field(default=None, strict=True)
+    dj_placement: Literal["auto", "talk_up", "standalone"] | None = None
+    min_intro_seconds: (
+        Annotated[float, Field(ge=0.0, le=60.0, allow_inf_nan=False, strict=True)] | None
+    ) = None
+    duck_db: Annotated[float, Field(ge=-30.0, le=0.0, allow_inf_nan=False, strict=True)] | None = (
+        None
+    )
 
 
 class StreamSettingsBody(BaseModel):

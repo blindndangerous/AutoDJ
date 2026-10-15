@@ -923,3 +923,87 @@ def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, c
     assert player._cfg.playback.repeat_rules == rules
     assert player._state.rules.artist_window == 12
     assert "Related artists file was not used" in caplog.text
+
+
+def _with_switches(player: SimpleNamespace) -> SimpleNamespace:
+    """Give *player* real ``[requests]`` and ``[breaks]`` sections, both off in config."""
+    from autodj.config import BreaksConfig, RequestsConfig
+
+    player._cfg.requests = RequestsConfig()
+    player._cfg.breaks = BreaksConfig()
+    return player
+
+
+def test_saved_request_and_break_settings_win_over_config(tmp_path) -> None:
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "requests_enabled": True,
+                "requests_approval": "auto",
+                "breaks_enabled": True,
+                "breaks_dj_placement": "standalone",
+                "breaks_min_intro_seconds": 4,
+                "breaks_duck_db": -9.5,
+            }
+        },
+    )
+    player = _with_switches(_make_player())
+    _load(player, tmp_path)
+    requests, breaks = player._cfg.requests, player._cfg.breaks
+    assert (requests.enabled, requests.approval) == (True, "auto")
+    assert (breaks.enabled, breaks.dj_placement) == (True, "standalone")
+    assert (breaks.min_intro_seconds, breaks.duck_db) == (4.0, -9.5)
+
+
+def test_a_saved_null_break_duck_follows_the_liners(tmp_path) -> None:
+    from autodj.config import BreaksConfig
+
+    _write_state(tmp_path, {"playback": {"breaks_duck_db": None}})
+    player = _with_switches(_make_player())
+    player._cfg.breaks = BreaksConfig(duck_db=-6.0)
+    _load(player, tmp_path)
+    assert player._cfg.breaks.duck_db is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("requests_enabled", "true"),
+        ("requests_enabled", 1),
+        ("requests_approval", "sometimes"),
+        ("breaks_enabled", "yes"),
+        ("breaks_dj_placement", "middle"),
+        ("breaks_min_intro_seconds", 61),
+        ("breaks_min_intro_seconds", True),
+        ("breaks_duck_db", 3),
+    ],
+)
+def test_bad_saved_switches_are_warned_and_config_kept(tmp_path, caplog, key, value) -> None:
+    _write_state(tmp_path, {"playback": {key: value, "requests_max_bridges": 2}})
+    player = _with_switches(_make_player())
+    _load(player, tmp_path)
+    assert _warnings(caplog, key) == 1
+    assert (player._cfg.requests.enabled, player._cfg.requests.approval) == (False, "manual")
+    breaks = player._cfg.breaks
+    assert (breaks.enabled, breaks.dj_placement, breaks.min_intro_seconds) == (False, "auto", 2.0)
+    assert breaks.duck_db is None
+    # The other saved settings still apply.
+    assert player._cfg.requests.max_bridges == 2
+
+
+def test_request_and_break_settings_round_trip(tmp_path) -> None:
+    player = _with_switches(_make_player())
+    player._cfg.requests.enabled = True
+    player._cfg.requests.approval = "auto"
+    player._cfg.breaks.enabled = True
+    player._cfg.breaks.dj_placement = "talk_up"
+    player._cfg.breaks.duck_db = -4.0
+    save_from_player(PlayerBridge(player, player._sim).get_settings(), tmp_path)
+    saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    assert saved["requests_enabled"] is True and saved["breaks_duck_db"] == -4.0
+    again = _with_switches(_make_player())
+    _load(again, tmp_path)
+    assert (again._cfg.requests.enabled, again._cfg.requests.approval) == (True, "auto")
+    assert (again._cfg.breaks.enabled, again._cfg.breaks.dj_placement) == (True, "talk_up")
+    assert again._cfg.breaks.duck_db == -4.0

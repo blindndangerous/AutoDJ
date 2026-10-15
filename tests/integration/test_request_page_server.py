@@ -240,7 +240,10 @@ def test_the_operator_lists_approves_and_turns_down(bridge, tmp_path: Path) -> N
 
 def test_requests_off_lists_nothing_for_the_operator(bridge, tmp_path: Path) -> None:
     client = _client(bridge, tmp_path, token=False)
-    assert client.get("/api/requests").json() == {"enabled": False, "pending": [], "recent": []}
+    view = client.get("/api/requests").json()
+    assert (view["enabled"], view["pending"], view["recent"]) == (False, [], [])
+    # The settings are listed while requests are off, so the card can turn them on.
+    assert (view["approval"], view["max_bridges"]) == ("manual", 3)
     assert client.post("/api/requests/" + "0" * 32 + "/approve", headers=ORIGIN).status_code == 404
 
 
@@ -355,7 +358,84 @@ def test_the_operator_saves_bridge_settings_and_they_survive_a_restart(
     assert (restored.bridge_cost_threshold, restored.no_smooth_spot) == (1.5, "wait")
 
 
-def test_bridge_settings_need_requests_on(bridge, tmp_path: Path) -> None:
+def test_bridge_settings_save_while_requests_are_off(bridge, tmp_path: Path) -> None:
     client = _client(bridge, tmp_path, token=False)
     answer = client.post("/api/requests/settings", json={"max_bridges": 2}, headers=ORIGIN)
-    assert answer.status_code == 404
+    assert answer.status_code == 200
+    assert (answer.json()["enabled"], answer.json()["max_bridges"]) == (False, 2)
+    # Still off: the public page stays closed.
+    assert client.get("/requests").status_code == 404
+
+
+def test_turning_requests_on_opens_the_page_without_a_restart(bridge, tmp_path: Path) -> None:
+    client = _client(bridge, tmp_path, token=False)
+    closed = client.get("/requests")
+    assert closed.status_code == 404
+    assert "<title>Requests are closed: AutoDJ</title>" in closed.text
+    assert '<h2 id="req-message">Requests are closed</h2>' in closed.text
+    assert 'id="req-q"' not in closed.text
+
+    turned_on = client.post(
+        "/api/requests/settings", json={"enabled": True, "approval": "auto"}, headers=ORIGIN
+    )
+    assert turned_on.status_code == 200, turned_on.text
+    assert (turned_on.json()["enabled"], turned_on.json()["approval"]) == (True, "auto")
+    assert client.get("/requests").status_code == 200
+    track, token = _confirm(client, 3)
+    sent = _send(client, track, token)
+    assert sent.status_code == 200, sent.text
+    # Automatic approval: queued at once, not left waiting.
+    assert "<title>Request accepted: AutoDJ</title>" in sent.text
+    assert [entry.title for entry in bridge.player._state.queue] == ["Song 3"]
+
+
+def test_turning_requests_off_closes_the_page_cleanly(bridge, tmp_path: Path) -> None:
+    client = _client(bridge, tmp_path, token=False, enabled=True)
+    track, token = _confirm(client, 2)
+    off = client.post("/api/requests/settings", json={"enabled": False}, headers=ORIGIN)
+    assert off.status_code == 200
+    assert off.json()["enabled"] is False
+    # The form a listener opened before is answered in words, not a bare 404.
+    late = _send(client, track, token, "Sam")
+    assert late.status_code == 404
+    assert "<title>Requests are closed: AutoDJ</title>" in late.text
+    assert client.get("/requests", params={"q": "song"}).status_code == 404
+    assert client.get("/api/requests").json()["enabled"] is False
+    assert client.post("/api/requests/" + "0" * 32 + "/reject", headers=ORIGIN).status_code == 404
+    assert bridge.player._state.queue == []
+    # On again: the same desk, and the page answers at once.
+    on = client.post("/api/requests/settings", json={"enabled": True}, headers=ORIGIN)
+    assert on.status_code == 200
+    assert client.get("/requests").status_code == 200
+
+
+def test_saved_request_switches_win_over_config_after_a_restart(bridge, tmp_path: Path) -> None:
+    import json
+
+    from autodj.runtime_state import load_into_bridge
+
+    client = _client(bridge, tmp_path, token=False)
+    saved = client.post(
+        "/api/requests/settings", json={"enabled": True, "approval": "auto"}, headers=ORIGIN
+    )
+    assert saved.status_code == 200
+    stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    assert (stored["requests_enabled"], stored["requests_approval"]) == (True, "auto")
+    # config.toml still says off and manual: the saved values win at the next start.
+    bridge.player._cfg.requests = RequestsConfig(enabled=False, approval="manual")
+    load_into_bridge(bridge, tmp_path)
+    restored = bridge.player._cfg.requests
+    assert (restored.enabled, restored.approval) == (True, "auto")
+    restarted = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
+    assert restarted.get("/requests").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "refused",
+    [{"enabled": "yes"}, {"enabled": 1}, {"approval": "sometimes"}, {"approval": True}],
+)
+def test_request_switches_are_checked(bridge, tmp_path: Path, refused: dict) -> None:
+    client = _client(bridge, tmp_path, token=False)
+    answer = client.post("/api/requests/settings", json=refused, headers=ORIGIN)
+    assert answer.status_code == 422, refused
+    assert client.get("/requests").status_code == 404

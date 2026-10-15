@@ -24,6 +24,16 @@ The routes answer under ``/api/announcer/`` for the default station and
 * ``GET breaks`` and ``GET breaks/<id>``: what became of the breaks.
 * ``DELETE breaks/<id>``: drop a break that is still waiting.
 
+Settings, Breaks (a browser route, like the voice tracker's) answers at
+``/api/breaks/settings`` and ``/api/stations/<slug>/breaks/settings``:
+
+* ``GET breaks/settings``: whether the station takes breaks, where a DJ
+  break goes, the shortest intro talked up and the duck under a break.
+* ``POST breaks/settings``: change any of them, saved with the station's
+  other settings in ``web_state.json`` and used at once.  Turning breaks
+  off drops the breaks still waiting for their song change; from then on
+  ``GET context`` says breaks are off and an upload is refused with 409.
+
 The voice tracker's routes answer under ``/api/voice-tracks`` and
 ``/api/stations/<slug>/voice-tracks``:
 
@@ -76,6 +86,7 @@ from autodj.breaks import (
 )
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.machine_tokens import SCOPE_ANNOUNCER, MachineToken
+from autodj.settings_bodies import BreakSettingsBody
 from autodj.station_routes import StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
 from autodj.worker_api import RateLimiter
@@ -105,6 +116,12 @@ DECODE_WAIT_SECONDS = 20.0
 BODY_DEADLINE_SECONDS = 60.0
 MIN_BODY_BYTES_PER_SECOND = 256 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
+#: What the announcer and the voice tracker are told while breaks are off.
+BREAKS_OFF = "Breaks are off for this station: turn them on in Settings, Breaks"
+#: ... and while the station does not play from saved segue points.
+NEEDS_SAVED_POINTS = "Breaks need saved-point playback (transition mode: use saved segue points)"
+#: Why the waiting breaks were dropped when breaks were turned off.
+TURNED_OFF = "breaks were turned off in Settings"
 
 
 def _path_id(path: str) -> str:
@@ -185,9 +202,9 @@ def _context(station: StationRuntime) -> dict[str, Any]:
     config = desk.config
     reason = None
     if not desk.enabled:
-        reason = "Breaks are off for this station: set [breaks] enabled = true"
+        reason = BREAKS_OFF
     elif not player._breaks_on():
-        reason = "Breaks need saved-point playback (transition mode: use saved segue points)"
+        reason = NEEDS_SAVED_POINTS
     plan, closes_in, airs_in = player.slot_status() if reason is None else (None, 0.0, 0.0)
     if reason is None and plan is None:
         reason = "No song change is open yet; ask again in a few seconds"
@@ -262,14 +279,9 @@ def install_breaks(router: StationRouter) -> None:
 
     def require_breaks(station: StationRuntime, desk: BreakDesk) -> None:
         if not desk.enabled:
-            raise HTTPException(
-                status_code=409, detail="Breaks are off for this station: set [breaks] enabled"
-            )
+            raise HTTPException(status_code=409, detail=BREAKS_OFF)
         if not station.player._breaks_on():
-            raise HTTPException(
-                status_code=409,
-                detail="Breaks need saved-point playback (transition mode: use saved segue points)",
-            )
+            raise HTTPException(status_code=409, detail=NEEDS_SAVED_POINTS)
 
     def refused(status: int, detail: str, reason: str, slot: dict[str, Any] | None) -> JSONResponse:
         return JSONResponse(
@@ -519,6 +531,64 @@ def install_breaks(router: StationRouter) -> None:
             detail = "No voice track has that id" if exc.status == 404 else exc.detail
             return refused(exc.status, detail, exc.reason, None)
         return JSONResponse(item.view(), headers=_NO_STORE)
+
+    # ------------------------------------------------------------------
+    # Settings, Breaks: browser routes, with the signed-in session
+    # ------------------------------------------------------------------
+
+    @router.get("/breaks/settings")
+    async def break_settings(station: StationDep) -> JSONResponse:
+        """Whether this station takes breaks, and how it places and ducks them."""
+        return JSONResponse(break_settings_view(station), headers=_NO_STORE)
+
+    @router.post("/breaks/settings")
+    async def save_break_settings(station: StationDep, body: BreakSettingsBody) -> JSONResponse:
+        """Change the break settings; saved for this station at once and used from now on.
+
+        Turning breaks off drops the breaks still waiting for their song
+        change (a break already mixed into the next one still airs), so the
+        announcer hears at once that breaks are off.
+        """
+        config = station.cfg.breaks
+        was_on = config.enabled is True
+        for field in body.model_fields_set:
+            value = getattr(body, field)
+            # Null leaves a setting as it is, except the duck: there it
+            # means "as far as a voice liner".
+            if value is not None or field == "duck_db":
+                setattr(config, field, value)
+        dropped = 0
+        desk: BreakDesk | None = getattr(station, "breaks", None)
+        if was_on and config.enabled is not True and desk is not None:
+            dropped = await asyncio.to_thread(desk.drop_waiting_breaks, TURNED_OFF)
+        if config.enabled is not was_on:
+            logger.info("Breaks turned %s in Settings", "on" if config.enabled else "off")
+        await asyncio.to_thread(station.bridge.save_persistent_state)
+        return JSONResponse({**break_settings_view(station), "dropped": dropped}, headers=_NO_STORE)
+
+
+def break_settings_view(station: StationRuntime) -> dict[str, Any]:
+    """What Settings, Breaks shows: the settings, and why breaks cannot be taken, if they cannot.
+
+    ``duck_db`` is ``None`` when a break ducks the music as far as a voice
+    liner does (``liners_duck_db``).
+    """
+    config = station.cfg.breaks
+    player = station.player
+    reason = None
+    if config.enabled is True and (
+        getattr(player, "_library", None) is None
+        or player._cfg.playback.transition_mode != "saved_points"
+    ):
+        reason = NEEDS_SAVED_POINTS
+    return {
+        "enabled": config.enabled is True,
+        "dj_placement": config.dj_placement,
+        "min_intro_seconds": float(config.min_intro_seconds),
+        "duck_db": None if config.duck_db is None else float(config.duck_db),
+        "liners_duck_db": float(player._cfg.playback.liners_duck_db),
+        "reason": reason,
+    }
 
 
 def _pair_label(slot: dict[str, Any] | None) -> str:

@@ -687,6 +687,25 @@ class BreakDesk:
         self._flush()
         return len(items)
 
+    def drop_waiting_breaks(self, reason: str) -> int:
+        """Drop the announcer's and voice tracker's breaks still waiting for their song change.
+
+        Breaks turned off in Settings: a break already mixed into the next
+        song change still airs, and ad spots booked by the ad schedule
+        stay.  Returns how many were dropped.
+        """
+        with self._lock:
+            items = [
+                item
+                for item in self._breaks.values()
+                if item.state == QUEUED and item.source in (ANNOUNCER, VOICE_TRACK)
+            ]
+            for item in items:
+                self._finish_locked(item, DROPPED, reason)
+            slots = {item.slot_id for item in items}
+        self._flush(slots)
+        return len(items)
+
     def on_air(self, break_id: str) -> None:
         """The break's voice has started.  Safe on the mix-bus thread."""
         with self._lock:

@@ -1,8 +1,11 @@
 """The public listener request page (#49), rendered on the server.
 
 The default station's page is ``/requests``; every station's is also
-``/stations/<slug>/requests``.  It is off until ``[requests] enabled``
-turns it on for the station, and answers 404 until then.
+``/stations/<slug>/requests``.  It is off until it is turned on for the
+station (the operator's Listener requests card, or ``[requests] enabled``
+before that is first changed); while it is off it answers 404 with a page
+that says requests are closed, so a listener whose page was open when
+requests were turned off is told so in words.
 
 The page needs no JavaScript: a search form (GET ``?q=``), the songs found
 as links (GET ``?track=<id>``), a confirmation form with an optional name
@@ -28,6 +31,7 @@ from fastapi.responses import HTMLResponse
 
 from autodj.listener_access import normalize_address
 from autodj.listener_requests import (
+    CLOSED,
     MAX_NAME,
     MAX_QUERY,
     MIN_QUERY,
@@ -69,6 +73,10 @@ _SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] 
 
 class Busy(RuntimeError):
     """Too many searches or requests are being worked on at once."""
+
+
+class Closed(LookupError):
+    """The station is not taking requests: the page says so, with status 404."""
 
 
 async def bounded[T, *Ts](work: Callable[[*Ts], T], *args: *Ts) -> T:
@@ -133,6 +141,7 @@ def render_request_page(
     token: str = "",
     outcome: Outcome | None = None,
     off_air: bool = False,
+    closed: bool = False,
 ) -> str:
     """Return the whole request page for one state of the conversation.
 
@@ -148,11 +157,20 @@ def render_request_page(
         token: The form token for the confirmation form.
         outcome: What happened to a request just sent.
         off_air: The station is stopped.
+        closed: The station is not taking requests.
     """
     name = escape(station)
     page = escape(page_path)
     parts: list[str] = []
-    if off_air:
+    if closed:
+        off_air = True  # no search form either
+        title = f"{CLOSED.headline}: {station}"
+        parts.append(
+            f'<section aria-labelledby="req-message" class="message">\n'
+            f'<h2 id="req-message">{escape(CLOSED.headline)}</h2>\n<p>{name} is not taking '
+            "requests right now. Please try again later.</p>\n</section>"
+        )
+    elif off_air:
         title = f"Off air: {station}"
         parts.append(
             f'<section aria-labelledby="req-message" class="message">\n'
@@ -322,14 +340,14 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
             raise HTTPException(status_code=404, detail="Not Found") from None
 
     def enabled_desk(station: StationRuntime | StoppedStation) -> RequestDesk | None:
-        """The station's desk; 404 unless requests are on for it."""
+        """The station's desk; ``None`` while it is stopped; :class:`Closed` unless requests are on."""
         if isinstance(station, StoppedStation):
             if not station.requests_enabled:
-                raise HTTPException(status_code=404, detail="Not Found")
+                raise Closed
             return None
         desk = station.requests
-        if desk is None:
-            raise HTTPException(status_code=404, detail="Not Found")
+        if desk is None or desk.cfg.enabled is not True:
+            raise Closed
         CURRENT_STATION.set(station.slug)
         return desk
 
@@ -354,6 +372,8 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
             return await _show(request, station, by_name)
         except Busy:
             return busy(station, by_name)
+        except Closed:
+            return respond(station, by_name, 404, desk=None, closed=True)
 
     async def send(request: Request, slug: str | None) -> HTMLResponse:
         station, by_name = lookup(slug)
@@ -361,6 +381,8 @@ def install_request_pages(app: FastAPI, stations: StationRegistry) -> None:
             return await _send(request, station, by_name)
         except Busy:
             return busy(station, by_name)
+        except Closed:
+            return respond(station, by_name, 404, desk=None, closed=True)
 
     def busy(station: StationRuntime | StoppedStation, by_name: bool) -> HTMLResponse:
         outcome = Outcome(
