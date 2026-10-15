@@ -272,13 +272,12 @@ class ListenerAccess:
         with self._lock:
             if self._banned_locked(address):
                 raise BannedAddressError(address)
-            open_entries = [entry for entry in self._listeners.values() if not entry[3].closed]
             count = self._pending.get(address, 0) + sum(
-                entry[0] == address for entry in open_entries
+                entry[0] == address for entry in self._listeners.values()
             )
             if self.max_per_address and count >= self.max_per_address:
                 raise AddressLimitError(address)
-            total = sum(self._pending.values()) + len(open_entries)
+            total = sum(self._pending.values()) + len(self._listeners)
             if self.max_total and total >= self.max_total:
                 raise StationFullError(address)
             self._pending[address] = self._pending.get(address, 0) + 1
@@ -321,11 +320,6 @@ class ListenerAccess:
 
     def listeners(self) -> list[dict[str, Any]]:
         with self._lock:
-            stale = [key for key, entry in self._listeners.items() if entry[3].closed]
-            for key in stale:
-                del self._listeners[key]
-            if stale:
-                self.revision += 1
             return [
                 {
                     "id": key,

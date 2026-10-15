@@ -856,6 +856,9 @@ async def _alac_response(audio_path: Path, method: str) -> Response | None:
 # ---------------------------------------------------------------------------
 
 
+_LISTENER_SEND_TIMEOUT = 10.0
+
+
 class _ListenerResponse(StreamingResponse):
     """A streaming response that frees its stream listener however it ends.
 
@@ -871,8 +874,12 @@ class _ListenerResponse(StreamingResponse):
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         """Send the response, then always release the listener."""
+
+        async def send_with_timeout(message: Any) -> None:
+            await asyncio.wait_for(send(message), timeout=_LISTENER_SEND_TIMEOUT)
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, send_with_timeout)
         finally:
             self._on_close()
 

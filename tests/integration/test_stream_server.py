@@ -1033,6 +1033,37 @@ def test_failure_while_sending_frees_the_listener_slot() -> None:
     assert closed == [True]
 
 
+def test_stalled_send_releases_the_listener(monkeypatch) -> None:
+    import asyncio
+
+    from starlette.requests import ClientDisconnect
+
+    from autodj import server
+
+    closed: list[bool] = []
+    sent_body = False
+
+    async def body():
+        yield b"audio"
+
+    async def stalled_send(message):
+        nonlocal sent_body
+        if message["type"] == "http.response.body":
+            sent_body = True
+            await asyncio.Event().wait()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(server, "_LISTENER_SEND_TIMEOUT", 0.01)
+    response = server._ListenerResponse(body(), on_close=lambda: closed.append(True))
+    scope = {"type": "http", "method": "GET", "asgi": {"spec_version": "2.4"}}
+    with pytest.raises(ClientDisconnect):  # Starlette wraps TimeoutError (an OSError).
+        asyncio.run(response(scope, receive, stalled_send))
+    assert sent_body
+    assert closed == [True]
+
+
 def test_head_on_the_stream_sends_headers_only(stream_app) -> None:
     client, stream = stream_app
     response = client.head("/stream.mp3", headers={"Icy-MetaData": "1"})

@@ -25,6 +25,23 @@ def _source(path: Path, *, silence: bool = False) -> Path:
     return path
 
 
+def test_quiet_break_accepted_for_upload_can_be_processed_for_air(tmp_path: Path) -> None:
+    from autodj.breaks_api import _decode_cues
+    from autodj.stereo import SAMPLE_RATE
+
+    t = np.arange(4 * SAMPLE_RATE, dtype=np.float32) / SAMPLE_RATE
+    voice = 0.005 * np.sin(2 * np.pi * 220 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3 * t))
+    source = tmp_path / "quiet.wav"
+    sf.write(source, np.column_stack((voice, voice)), SAMPLE_RATE)
+    assert _decode_cues(source, 300.0)
+    audio, measurement = processing.load_and_measure_audio(
+        source, "liner", 301.0, input_format="wav"
+    )
+    assert len(audio) > 0
+    assert measurement["gain_db"] == processing.MAX_GAIN_DB
+    assert processing.loudness_matches(measurement, source, "liner")
+
+
 def _mono_48k_source(path: Path) -> Path:
     rate = 48_000
     t = np.arange(rate * 2, dtype=np.float32) / rate

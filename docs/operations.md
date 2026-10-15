@@ -1096,8 +1096,10 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
   not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
-  catalog and applies the measured gain when it decodes a track. Liners also pass through voice
-  compression, and server-mixed playback holds decoded track audio in memory while it is mixed.
+  catalog and applies the measured gain when it decodes a track. Voice clips that need more than
+  18 dB of boost use an 18 dB cap, so quiet breaks, intros and spots still play. Liners also pass
+  through voice compression, and server-mixed playback holds decoded track audio in memory while
+  it is mixed.
   Earlier versions wrote processed copies to a `prepared` folder inside the active index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After

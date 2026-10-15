@@ -346,10 +346,13 @@ class StreamOutput:
         self._burst_size = 0
         self._failures: collections.deque[float] = collections.deque()
         self._cooldown_until = 0.0
+        self._retry_at = 0.0
+        self._needs_retry = False
         self._pcm_in = 0
         self._mp3_out = 0
+        self._encoder_generation = 0
         self._title = ""
-        self._pending_titles: collections.deque[tuple[int, str]] = collections.deque()
+        self._pending_titles: collections.deque[tuple[int, int, str]] = collections.deque()
         self._closed = False
 
         self._pcm_queue_max = max(1, int(_PCM_QUEUE_SECONDS / _BLOCK_SECONDS))
@@ -409,7 +412,7 @@ class StreamOutput:
         while self._pending_titles:
             last = self._pending_titles.popleft()
         if last is not None:
-            self._title = last[1]
+            self._title = last[2]
 
     def _install_encoder(self, encoder: FfmpegEncoder) -> None:
         """Make *encoder* current and start draining it (lock held).
@@ -418,8 +421,11 @@ class StreamOutput:
         marks from the old one are flushed first.
         """
         self._encoder = encoder
+        self._needs_retry = False
+        self._retry_at = 0.0
         self._flush_pending_titles()
         self._pcm_in = self._mp3_out = 0
+        self._encoder_generation += 1
         if self._format.paged:
             # A new encoder starts a new Ogg stream with its own header;
             # the old stream's pages would not follow on from it.
@@ -431,6 +437,20 @@ class StreamOutput:
         self._reader = self._start_reader(encoder)
         for sink in self._sinks:
             sink.encoder_changed()
+
+    def _start_encoder_locked(self) -> None:
+        """Retry a failed encoder after its cooldown (lock held)."""
+        now = self._clock()
+        if self._closed or now < max(self._cooldown_until, self._retry_at):
+            return
+        try:
+            new_encoder = self._factory(self._bitrate)
+        except Exception:
+            logger.error("Stream encoder factory failed; will retry", exc_info=True)
+            self._record_failure()
+            self._retry_at = now + 1.0
+            return
+        self._install_encoder(new_encoder)
 
     def _restart_encoder(self, dead: FfmpegEncoder | None = None) -> None:
         """Replace *dead* with a fresh encoder, counting the failure.
@@ -450,23 +470,12 @@ class StreamOutput:
                 return
             self._record_failure()
             self._disconnect_all_locked()
+            self._needs_retry = True
             try:
                 self._encoder.close()
             except Exception:
                 logger.debug("Closing the failed encoder raised", exc_info=True)
-            if self._clock() < self._cooldown_until or self._closed:
-                return
-            try:
-                new_encoder = self._factory(self._bitrate)
-            except Exception:
-                logger.error(
-                    "Stream encoder factory failed; will retry on the next "
-                    "restart or listener connection",
-                    exc_info=True,
-                )
-                self._record_failure()
-                return
-            self._install_encoder(new_encoder)
+            self._start_encoder_locked()
 
     def _read_loop(self, encoder: FfmpegEncoder) -> None:
         """Drain *encoder*'s MP3 output and restart it if it exits.
@@ -509,13 +518,17 @@ class StreamOutput:
         """Feed queued PCM to the current encoder, one block at a time."""
         while True:
             with self._pcm_cond:
-                while not self._pcm_queue and not self._closed:
+                if not self._pcm_queue and not self._closed:
                     self._pcm_cond.wait(0.5)
-                if not self._pcm_queue:
-                    return  # closed with nothing left to flush
-                pcm = self._pcm_queue.popleft()
+                if self._closed and not self._pcm_queue:
+                    return
+                pcm = self._pcm_queue.popleft() if self._pcm_queue else None
             with self._lock:
+                if self._needs_retry:
+                    self._start_encoder_locked()
                 encoder = self._encoder
+            if pcm is None:
+                continue
             if not encoder.alive:
                 self._log_write_problem_once("Stream encoder is not alive; dropping queued audio")
                 continue
@@ -566,7 +579,8 @@ class StreamOutput:
             artist: The track artist.
             title: The track title.
         """
-        self._pending_titles.append((self._pcm_in, format_stream_title(artist, title)))
+        formatted = format_stream_title(artist, title)
+        self._pending_titles.append((self._encoder_generation, self._pcm_in, formatted))
 
     def _on_encoded(self, encoder: FfmpegEncoder, data: bytes) -> None:
         """Advance the title cursor and burst buffer, then fan *data* out.
@@ -595,8 +609,11 @@ class StreamOutput:
                 # keeps up in real time, so the audio written so far is
                 # what is coming out, give or take a frame.
                 reached = self._pcm_in
-            while self._pending_titles and reached >= self._pending_titles[0][0]:
-                self._title = self._pending_titles.popleft()[1]
+            while self._pending_titles and (
+                self._pending_titles[0][0] != self._encoder_generation
+                or reached >= self._pending_titles[0][1]
+            ):
+                self._title = self._pending_titles.popleft()[2]
             if self._waiting and self._ogg_pending is None:
                 self._admit_waiting()
             burst_limit = int(self._bitrate * 1000 / 8 * _BURST_SECONDS)
@@ -616,6 +633,7 @@ class StreamOutput:
         for listener in listeners:
             if not listener.push(data, title):
                 logger.info("Dropping a stream listener that fell behind")
+                listener.abort()
                 self.remove_listener(listener)
         for sink in sinks:
             try:
@@ -735,6 +753,8 @@ class StreamOutput:
                     new_encoder = self._factory(self._bitrate)
                 except Exception as exc:
                     self._record_failure()
+                    self._needs_retry = True
+                    self._retry_at = self._clock() + 1.0
                     raise EncoderUnavailableError("stream encoder failed") from exc
                 self._install_encoder(new_encoder)
                 try:

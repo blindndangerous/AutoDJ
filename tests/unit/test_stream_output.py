@@ -260,6 +260,14 @@ async def test_listener_abort_discards_queue_and_ends_response_now() -> None:
     out.close()
 
 
+async def test_listener_falling_behind_is_aborted(output: StreamOutput) -> None:
+    listener = output.add_listener(icy=False)
+    output._on_encoded(output._encoder, b"x" * 300_000)
+    assert listener.closed and listener._aborted
+    assert output.listener_count == 0
+    assert [chunk async for chunk in listener.chunks()] == []
+
+
 async def test_remove_listener_is_idempotent(output: StreamOutput) -> None:
     listener = output.add_listener(icy=False)
     output.remove_listener(listener)
@@ -387,6 +395,30 @@ async def test_pending_titles_flushed_on_restart(output: StreamOutput) -> None:
     output._restart_encoder()
     assert output._title == "Second - Title"
     assert list(output._pending_titles) == []
+
+
+async def test_title_set_during_restart_is_not_stuck(output: StreamOutput, monkeypatch) -> None:
+    output._pcm_in = 50_000_000
+    entered = threading.Event()
+    resume = threading.Event()
+    original = stream.format_stream_title
+
+    def delayed(artist: str, title: str) -> str:
+        entered.set()
+        assert resume.wait(2)
+        return original(artist, title)
+
+    monkeypatch.setattr(stream, "format_stream_title", delayed)
+    worker = threading.Thread(target=output.set_title, args=("A", "Song 1"))
+    worker.start()
+    assert entered.wait(2)
+    output._restart_encoder()
+    resume.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    output.set_title("B", "Song 2")
+    output.write(_block())
+    _wait_until(lambda: output._title == "B - Song 2")
 
 
 async def test_pending_titles_flushed_on_set_bitrate(output: StreamOutput) -> None:
@@ -660,6 +692,76 @@ class _Sink:
 
     def encoder_changed(self) -> None:
         self.changes += 1
+
+
+async def test_sink_recovers_after_cooldown_without_listener() -> None:
+    now = [0.0]
+    calls = [0]
+
+    class Failing(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            super().__init__(bitrate)
+            calls[0] += 1
+            self.dies = calls[0] <= 5
+
+        def read(self, count: int) -> bytes:
+            if self.dies:
+                self.alive = False
+                return b""
+            return super().read(count)
+
+    out = StreamOutput(
+        320, 0, encoder_factory=Failing, clock=lambda: now[0], loop=asyncio.get_running_loop()
+    )
+    sink = _Sink()
+    out.add_sink(sink)
+    try:
+        for _ in range(100):
+            if out._cooldown_until > now[0]:
+                break
+            out.write(_block())
+            await asyncio.sleep(0.01)
+        assert calls[0] >= 5 and out._cooldown_until > now[0]
+        now[0] = 1000.0
+        for _ in range(100):
+            out.write(_block())
+            if sink.fed:
+                break
+            await asyncio.sleep(0.01)
+        assert sink.fed
+    finally:
+        out.close()
+
+
+async def test_sink_recovers_after_transient_factory_failure() -> None:
+    calls = [0]
+
+    class Failing(FakeEncoder):
+        def __init__(self, bitrate: int) -> None:
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("temporary failure")
+            super().__init__(bitrate)
+            self.dies = calls[0] == 1
+
+        def read(self, count: int) -> bytes:
+            if self.dies:
+                self.alive = False
+                return b""
+            return super().read(count)
+
+    out = StreamOutput(320, 0, encoder_factory=Failing, loop=asyncio.get_running_loop())
+    sink = _Sink()
+    out.add_sink(sink)
+    try:
+        for _ in range(200):
+            out.write(_block())
+            if sink.fed:
+                break
+            await asyncio.sleep(0.01)
+        assert calls[0] >= 3 and sink.fed
+    finally:
+        out.close()
 
 
 async def test_sinks_get_every_chunk_with_its_title_and_are_not_listeners(

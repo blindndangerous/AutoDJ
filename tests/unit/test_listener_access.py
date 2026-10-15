@@ -44,6 +44,20 @@ class FakeStream:
         self.open.remove(listener)
 
 
+def test_dropped_response_holds_address_slot_until_released(tmp_path: Path) -> None:
+    access = ListenerAccess(tmp_path / "bans.json", max_per_address=1, max_total=1)
+    stream = FakeStream()
+    ident, listener = access.add(stream, "192.0.2.4", "player", icy=False)
+    listener.abort()
+    with pytest.raises(AddressLimitError):
+        access.add(stream, "192.0.2.4", "player", icy=False)
+    with pytest.raises(StationFullError):
+        access.add(stream, "192.0.2.5", "player", icy=False)
+    assert len(access.listeners()) == 1
+    access.remove(ident)
+    access.add(stream, "192.0.2.4", "player", icy=False)
+
+
 @pytest.mark.parametrize(
     ("peer", "headers", "trusted", "expected"),
     [
@@ -273,7 +287,7 @@ def test_max_listeners_counts_every_format_together(tmp_path: Path) -> None:
     access = ListenerAccess(tmp_path / "bans.json", 0, max_total=3)
     mp3, aac, opus = FakeStream(), FakeStream(), FakeStream()
     first, _ = access.add(mp3, "192.0.2.4", "VLC", icy=False)
-    access.add(aac, "192.0.2.5", "Phone", icy=False, fmt="aac")
+    second, _ = access.add(aac, "192.0.2.5", "Phone", icy=False, fmt="aac")
     access.add(opus, "192.0.2.6", "Browser", icy=False, fmt="opus")
     with pytest.raises(StationFullError):
         access.add(mp3, "192.0.2.7", "VLC", icy=False)
@@ -283,6 +297,9 @@ def test_max_listeners_counts_every_format_together(tmp_path: Path) -> None:
     # A listener that leaves frees a place on any format.
     access.remove(first)
     access.add(opus, "192.0.2.7", "VLC", icy=False, fmt="opus")
-    # One that was dropped (closed) no longer counts either.
+    # A closed listener still owns its slot until its response releases it.
     aac.open[0].closed = True
+    with pytest.raises(StationFullError):
+        access.add(mp3, "192.0.2.8", "VLC", icy=False)
+    access.remove(second)
     access.add(mp3, "192.0.2.8", "VLC", icy=False)
