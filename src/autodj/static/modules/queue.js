@@ -270,6 +270,9 @@ export function installQueueButtons(els) {
   const { queueList, queueAnnounce } = els;
   if (!queueList) return;
   let mutationPending = false;
+  // Whether a press while a change is sent has been answered yet: once per
+  // change, so a held key does not repeat it.
+  let stillSendingSaid = false;
 
   installActionListNavigation(queueList);
 
@@ -286,7 +289,14 @@ export function installQueueButtons(els) {
       }));
       return;
     }
-    if (mutationPending) return;
+    if (mutationPending) {
+      // A second press while a change is sent does nothing; it says why.
+      if (!stillSendingSaid) {
+        stillSendingSaid = true;
+        announceStatus(queueAnnounce, "Still sending the last change…", { dwellMs: 3000, force: true });
+      }
+      return;
+    }
     const epoch = captureAuthenticatedRequestEpoch();
 
     const items = Array.from(queueList.querySelectorAll("li[data-path]"));
@@ -348,6 +358,7 @@ export function installQueueButtons(els) {
 
     // Optimistic local render so the user sees instant feedback.
     mutationPending = true;
+    stillSendingSaid = false;
     queueList.setAttribute("aria-busy", "true");
     renderQueue(newQueue, els, {
       focus: hadFocus ? (rows, usable) => _rowAction(rows[focusIndex], focusAction, usable) : null,
@@ -407,13 +418,18 @@ export function installQueueButtons(els) {
     }
 
     if (!isAuthenticatedRequestCurrent(epoch)) return;
+    // The reply places focus only when it was in the queue at the press and
+    // still is (or was lost to the page): focus the user has taken
+    // elsewhere meanwhile stays there.
+    if (!hadFocus) return;
+    const active = queueList.ownerDocument.activeElement;
+    const onPage = !active || active === queueList.ownerDocument.body;
+    if (!onPage && !queueList.contains(active)) return;
     if (!ownsRenderedQueue) {
       // A push drew the list the server has.  Focus that was on the
       // pressed button goes to the same track's button there, or to the
-      // row now where it was; focus that was elsewhere stays put.
-      if (!hadFocus) return;
-      const active = queueList.ownerDocument.activeElement;
-      if (active && active !== queueList.ownerDocument.body) return;
+      // row now where it was.
+      if (!onPage) return;
       const rows = Array.from(queueList.querySelectorAll("li[data-path]"));
       const own = action === "remove" ? -1 : rows.findIndex((row) => row.dataset.path === path);
       focusQueueList = rows.length === 0;

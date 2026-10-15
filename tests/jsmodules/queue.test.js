@@ -278,7 +278,7 @@ describe("queue mutations", () => {
     }
   });
 
-  it("clears busy before focusing the queue list after final-row removal", async () => {
+  it("keeps focus on the list while the last row's removal is sent, and clears busy after", async () => {
     document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
     const els = {
       queueList: document.querySelector("#queue"),
@@ -291,21 +291,17 @@ describe("queue mutations", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
       resolveRequest = resolve;
     })));
-    const focusSpy = vi.spyOn(els.queueList, "focus").mockImplementation(() => {
-      expect(els.queueList.getAttribute("aria-busy")).toBe("false");
-      globalThis.HTMLElement.prototype.focus.call(els.queueList);
-    });
-
-    els.queueList.querySelector('[data-action="remove"]').click();
+    const remove = els.queueList.querySelector('[data-action="remove"]');
+    remove.focus();
+    remove.click();
+    // Focus goes to the list before the row goes (#328), not to the page.
     expect(els.queueList.getAttribute("aria-busy")).toBe("true");
-    expect(focusSpy).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(els.queueList);
     resolveRequest(new globalThis.Response('{"ok":true}', {
       headers: { "Content-Type": "application/json" },
     }));
-    await vi.waitFor(() => expect(focusSpy).toHaveBeenCalledOnce());
-
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
     expect(document.activeElement).toBe(els.queueList);
-    expect(els.queueList.getAttribute("aria-busy")).toBe("false");
     vi.unstubAllGlobals();
   });
 
@@ -540,7 +536,10 @@ describe("queue Top and Clear queue", () => {
     vi.stubGlobal("fetch", fetchImpl);
     const { els } = setup();
 
-    els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]').click();
+    // A press focuses the button, as a key or a click does in a browser.
+    const top = els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]');
+    top.focus();
+    top.click();
 
     await vi.waitFor(() => expect(els.queueAnnounce.textContent)
       .toBe("Moved Charlie to position 1 of 3."));
@@ -705,6 +704,43 @@ describe("queue focus while a change is saved", () => {
     expect(rowsOf().slice(0, 2)).toEqual([alpha, bravo]);
     expect(document.activeElement).toBe(bravo.querySelector('[data-action="remove"]'));
     expect(left).toEqual([]);
+    vi.unstubAllGlobals();
+  });
+
+  it("leaves focus where the user took it while the change was sent", async () => {
+    const { els, reply } = setupQueue();
+    const elsewhere = document.createElement("button");
+    elsewhere.textContent = "Search";
+    document.body.append(elsewhere);
+    pressFocused(els, "b.mp3", "down");
+    elsewhere.focus();
+    reply();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("Moved"));
+    await vi.waitFor(() => expect(els.queueList.getAttribute("aria-busy")).toBe("false"));
+    expect(document.activeElement).toBe(elsewhere);
+
+    // Nor after a failure that draws the old order back.
+    pressFocused(els, "a.mp3", "remove");
+    elsewhere.focus();
+    reply(500);
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toContain("write failed"));
+    expect(document.activeElement).toBe(elsewhere);
+    vi.unstubAllGlobals();
+  });
+
+  it("answers a second press while a change is sent, once", async () => {
+    const { els, reply } = setupQueue();
+    pressFocused(els, "b.mp3", "down");
+    const said = [];
+    new window.MutationObserver(() => {
+      if (els.queueAnnounce.textContent) said.push(els.queueAnnounce.textContent);
+    }).observe(els.queueAnnounce, { childList: true, characterData: true, subtree: true });
+    pressFocused(els, "a.mp3", "remove");
+    pressFocused(els, "a.mp3", "remove");
+    await vi.waitFor(() => expect(said).toEqual(["Still sending the last change…"]));
+    reply();
+    await vi.waitFor(() => expect(said.at(-1)).toMatch(/^Moved Bravo/));
+    expect(said.filter((text) => text.startsWith("Still"))).toHaveLength(1);
     vi.unstubAllGlobals();
   });
 
