@@ -221,7 +221,7 @@ export function installHotkeys({
   // start with while there are several stations.
   focusStationSwitcher = () => false,
   getStationText = null,
-  getStationPrefix = () => "",
+  stepStation = () => false,
   // What Space / k do: Play / Pause, or in stream mode start or stop
   // listening on this page.
   togglePlay,
@@ -287,7 +287,13 @@ export function installHotkeys({
     if (!nowVisible && scrollsPage) return;
 
     let bumpVol = 0;
-    const speakForStation = (text) => srSpeak(`${getStationPrefix()}${text}`);
+    // Shift+[ and Shift+] switch to the previous and next station, by the
+    // physical key, whatever character the layout gives with Shift.
+    if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+      if (!stepStation(e.code === "BracketRight" ? 1 : -1)) return;
+      e.preventDefault();
+      return;
+    }
     switch (key) {
       case " ":
       case "k":
@@ -327,43 +333,43 @@ export function installHotkeys({
       // Status keys -- Shift+letter, speak via aria live region.
       case "T": {
         const t = getTrack && getTrack();
-        speakForStation(t ? `${t.artist || ""} - ${t.title || ""}`.trim() : "Nothing playing");
+        srSpeak(t ? `${t.artist || ""} - ${t.title || ""}`.trim() : "Nothing playing");
         break;
       }
       case "N": {
         const nx = getNextTrack && getNextTrack();
         if (nx) {
           const bpm = nx.bpm ? `, ${Math.round(nx.bpm)} BPM` : "";
-          speakForStation(`${nx.artist || ""}, ${nx.title || ""}${bpm}`.trim());
+          srSpeak(`${nx.artist || ""}, ${nx.title || ""}${bpm}`.trim());
         } else {
-          speakForStation("No next track");
+          srSpeak("No next track");
         }
         break;
       }
       case "R": {
         const rem = getRemaining && getRemaining();
-        speakForStation(rem != null ? fmtTime(rem) : "Position unknown");
+        srSpeak(rem != null ? fmtTime(rem) : "Position unknown");
         break;
       }
       case "B": {
         const bpm = getBpm && getBpm();
-        speakForStation(bpm > 0 ? `${Math.round(bpm)} BPM` : "BPM unknown");
+        srSpeak(bpm > 0 ? `${Math.round(bpm)} BPM` : "BPM unknown");
         break;
       }
       case "K": {
         const tk = getTrack && getTrack();
         // key_spoken is the key in words ("F sharp minor"); the display
         // label ("F#m") reads as "F number m" to a screen reader.
-        speakForStation(tk && tk.key_spoken ? tk.key_spoken : "Key unknown");
+        srSpeak(tk && tk.key_spoken ? tk.key_spoken : "Key unknown");
         break;
       }
       case "L":
-        speakForStation(getLyricLine ? getLyricLine() : "No lyrics for this track.");
+        srSpeak(getLyricLine ? getLyricLine() : "No lyrics for this track.");
         break;
       case "E": {
         const pos = getPosition && getPosition();
         // The seek slider's own wording, so the two never disagree.
-        speakForStation(pos ? `${fmtTime(pos.elapsed)} of ${fmtTime(pos.duration)}` : "Position unknown");
+        srSpeak(pos ? `${fmtTime(pos.elapsed)} of ${fmtTime(pos.duration)}` : "Position unknown");
         break;
       }
       case "V": {
@@ -373,7 +379,7 @@ export function installHotkeys({
         break;
       }
       case "Q":
-        speakForStation(_queueSummary(getQueue && getQueue()));
+        srSpeak(_queueSummary(getQueue && getQueue()));
         break;
       case "J":
         srSpeak(getJobStatus ? getJobStatus() : "No library job has run.");
@@ -387,7 +393,7 @@ export function installHotkeys({
         break;
       case "H":
         if (speakHour) void speakHour();
-        else speakForStation("No hour preview yet.");
+        else srSpeak("No hour preview yet.");
         break;
       case "[":
       case "]":
@@ -398,8 +404,8 @@ export function installHotkeys({
         if (!getUpcomingLandmark) return;
         void Promise.resolve()
           .then(getUpcomingLandmark)
-          .then((text) => { if (text) speakForStation(text); })
-          .catch((error) => speakForStation(`Could not load the landmarks: ${error.message}`));
+          .then((text) => { if (text) srSpeak(text); })
+          .catch((error) => srSpeak(`Could not load the landmarks: ${error.message}`));
         break;
       case "?":
         if (!toggleShortcutsModal()) return;

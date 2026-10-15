@@ -7,7 +7,6 @@ import {
   setAuthRequiredHandler,
   staleActionText,
 } from "../../src/autodj/static/modules/api-client.js";
-import { confirmAction } from "../../src/autodj/static/modules/confirm-dialog.js";
 import {
   DEFAULT_STATION,
   STATION_ROUTES,
@@ -22,7 +21,6 @@ import {
   setKnownStations,
   severalStations,
   stationApi,
-  stationContextText,
   stationEpoch,
   stationFromAddress,
   stationItemText,
@@ -134,11 +132,8 @@ describe("the current station", () => {
       .toBe("Now controlling Night Owl Radio. On air, 1 listener. Playing Band - Tune.");
     expect(controllingText(OWL)).toBe("Now controlling Night Owl Radio. On air, 1 listener. Nothing playing.");
     expect(controllingText(OLDIES)).toBe("Now controlling Oldies. Off air.");
-    selectStation("nightowl");
-    expect(stationContextText()).toBe("On Night Owl Radio");
     setKnownStations([AUTODJ]);
     expect(severalStations()).toBe(false);
-    expect(stationContextText()).toBe("");
   });
 
   it("reads and keeps ?station= in the address without a history entry", () => {
@@ -254,33 +249,6 @@ describe("requests while switching", () => {
     expect(load()).toBe(second);
     await Promise.all([first, second]);
     expect(calls).toBe(2);
-  });
-});
-
-describe("confirmations name the station", () => {
-  beforeEach(() => {
-    reset();
-    document.body.innerHTML = `
-      <dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p>
-        <button id="confirm-cancel">Cancel</button><button id="confirm-accept"></button></dialog>`;
-    const dialog = document.getElementById("confirm-dialog");
-    dialog.showModal ??= function showModal() { this.open = true; };
-  });
-
-  it("adds the station only for a station action, and only with several stations", () => {
-    selectStation("nightowl");
-    void confirmAction(document, { title: "Clear the queue?", message: "This removes 3.", confirmLabel: "Clear", station: true });
-    expect(document.getElementById("confirm-message").textContent)
-      .toBe("This removes 3. Station: Night Owl Radio.");
-    document.getElementById("confirm-dialog").close?.();
-    document.getElementById("confirm-dialog").open = false;
-    void confirmAction(document, { title: "Revoke?", message: "Signs it out.", confirmLabel: "Revoke" });
-    expect(document.getElementById("confirm-message").textContent).toBe("Signs it out.");
-    document.getElementById("confirm-dialog").close?.();
-    document.getElementById("confirm-dialog").open = false;
-    setKnownStations([AUTODJ]);
-    void confirmAction(document, { title: "Clear?", message: "This removes 3.", confirmLabel: "Clear", station: true });
-    expect(document.getElementById("confirm-message").textContent).toBe("This removes 3.");
   });
 });
 

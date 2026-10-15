@@ -37,7 +37,6 @@ export function createListenerControls(doc, status, saveLimit) {
     button.type = "button";
     button.textContent = label;
     // Disconnect and Ban act on this station's listeners only (#70).
-    button.setAttribute("aria-describedby", "station-context");
     button.addEventListener("click", action);
     return button;
   }

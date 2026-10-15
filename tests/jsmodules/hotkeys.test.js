@@ -463,8 +463,8 @@ describe("spoken status keys", () => {
       installHotkeys(options);
       const keydown = addEventListener.mock.calls.find(([type]) => type === "keydown")[1];
       addEventListener.mockRestore();
-      return (key) => {
-        const event = { key, repeat: false, target: document.body, preventDefault: vi.fn() };
+      return (key, extra = {}) => {
+        const event = { key, repeat: false, target: document.body, preventDefault: vi.fn(), ...extra };
         keydown(event);
         window.dispatchEvent(new KeyboardEvent("keyup", { key }));
         return event;
@@ -481,10 +481,9 @@ describe("spoken status keys", () => {
       expect(focusStationSwitcher).toHaveBeenCalledTimes(2);
     });
 
-    it("Shift+C says the station, and the status keys start with its name", async () => {
+    it("Shift+C says the station, and the status keys do not repeat its name", async () => {
       const press = install({
         getStationText: () => "Controlling Night Owl Radio. On air, 3 listeners.",
-        getStationPrefix: () => "Night Owl Radio: ",
         getTrack: () => ({ artist: "Owl", title: "Hoot" }),
         getQueue: () => [],
       });
@@ -493,9 +492,22 @@ describe("spoken status keys", () => {
       await vi.waitFor(() => expect(region.textContent)
         .toBe("Controlling Night Owl Radio. On air, 3 listeners."));
       press("T");
-      await vi.waitFor(() => expect(region.textContent).toBe("Night Owl Radio: Owl - Hoot"));
+      await vi.waitFor(() => expect(region.textContent).toBe("Owl - Hoot"));
       press("Q");
-      await vi.waitFor(() => expect(region.textContent).toBe("Night Owl Radio: Queue empty"));
+      await vi.waitFor(() => expect(region.textContent).toBe("Queue empty"));
+    });
+
+    it("Shift+[ and Shift+] switch to the previous and next station by the physical key", () => {
+      let several = false;
+      const stepStation = vi.fn(() => several);
+      const press = install({ stepStation });
+      // One station: nothing to switch to, and the key is left alone.
+      expect(press("{", { shiftKey: true, code: "BracketLeft" }).preventDefault).not.toHaveBeenCalled();
+      several = true;
+      expect(press("{", { shiftKey: true, code: "BracketLeft" }).preventDefault).toHaveBeenCalled();
+      // A layout that gives another character with Shift still switches.
+      expect(press("Ü", { shiftKey: true, code: "BracketRight" }).preventDefault).toHaveBeenCalled();
+      expect(stepStation.mock.calls.map(([by]) => by)).toEqual([-1, -1, 1]);
     });
 
     it("leaves the menu's own type-ahead letters alone", () => {
@@ -681,14 +693,13 @@ describe("landmark keys (#60)", () => {
     expect(press("U", altGraph("KeyU")).preventDefault).not.toHaveBeenCalled();
   });
 
-  it("says what is coming next on air with Shift+U, with the station's name", async () => {
+  it("says what is coming next on air with Shift+U", async () => {
     const press = install({
       getUpcomingLandmark: async () => "Drop in 12 seconds, 6 bars.",
-      getStationPrefix: () => "Night Owl Radio: ",
     });
     expect(press("U").preventDefault).toHaveBeenCalled();
     const region = document.querySelector("#sr-status");
-    await vi.waitFor(() => expect(region.textContent).toBe("Night Owl Radio: Drop in 12 seconds, 6 bars."));
+    await vi.waitFor(() => expect(region.textContent).toBe("Drop in 12 seconds, 6 bars."));
     // Lowercase u is not a shortcut.
     expect(press("u").preventDefault).not.toHaveBeenCalled();
   });

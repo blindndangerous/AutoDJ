@@ -26,6 +26,7 @@ the pure functions below; :class:`JoinCache` keeps recent joins in memory.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -256,7 +257,10 @@ def scan_pack(folder: Path) -> VoicePack:
     }
     problems: list[str] = []
     try:
-        entries = sorted(entry for entry in folder.iterdir() if entry.is_file())
+        # scandir gives each entry's type with the listing, so a folder on a
+        # share is one request, not one more per file.
+        with os.scandir(folder) as listing:
+            entries = sorted(folder / entry.name for entry in listing if entry.is_file())
     except OSError:
         return VoicePack(folder.name, False, {}, {}, {}, {}, ())
     for entry in entries:

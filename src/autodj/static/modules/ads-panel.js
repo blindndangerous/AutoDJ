@@ -254,7 +254,6 @@ export function installAdsPanel({
     row.append(rowButton("Edit", () => openBreakForm(breakById(row.dataset.id))));
     const run = rowButton("Run now", (button) => runBreak(breakById(row.dataset.id), button));
     // Run now changes what is on air at the station the page controls.
-    run.setAttribute("aria-describedby", "station-context");
     row.append(run);
     row.append(rowButton("Delete", (button) => deleteBreak(breakById(row.dataset.id), button)));
     return row;
@@ -438,7 +437,6 @@ export function installAdsPanel({
     const index = data.spots.findIndex((item) => item.id === spot.id);
     let result = null;
     const confirmed = await confirmAction(doc, {
-      station: true,
       title: `Delete spot ${spot.title}?`,
       message: "The spot and its audio are removed. What it aired stays in the ad report.",
       confirmLabel: "Delete spot",
@@ -572,7 +570,6 @@ export function installAdsPanel({
     const index = data.breaks.findIndex((entry) => entry.id === item.id);
     let result = null;
     const confirmed = await confirmAction(doc, {
-      station: true,
       title: `Delete ad break ${item.name}?`,
       message: "The break no longer runs. A Schedule event that names it fails until it names another. What it aired stays in the ad report.",
       confirmLabel: "Delete ad break",

@@ -65,7 +65,6 @@ export function installProfiles(els, { getSettings }) {
     }
     list.replaceChildren(...names.map((name) => {
       const apply = rowButton(doc, "Apply", `Apply profile ${name}`, () => void applyProfile(name));
-      apply.setAttribute("aria-describedby", "station-context");
       const remove = rowButton(doc, "Delete", `Delete profile ${name}`,
         (button) => void deleteProfile(name, button));
       remove.dataset.profile = name;
@@ -106,7 +105,6 @@ export function installProfiles(els, { getSettings }) {
     const exists = names.some((other) => other.toLowerCase() === name.toLowerCase());
     if (exists) {
       const confirmed = await confirmAction(doc, {
-        station: true,
         title: `Replace profile ${name}?`,
         message: "A profile with this name is already saved.  Saving replaces it with the current settings.",
         confirmLabel: "Replace profile",
@@ -153,7 +151,6 @@ export function installProfiles(els, { getSettings }) {
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
     const confirmed = await confirmAction(doc, {
-      station: true,
       title: `Delete profile ${name}?`,
       message: "The saved settings are removed.  The settings in use now do not change.",
       confirmLabel: "Delete profile",

@@ -111,7 +111,6 @@ function _newQueueRow(doc, path) {
     button.className = "queue-btn";
     button.dataset.action = action;
     button.dataset.path = path;
-    if (action !== "info") button.setAttribute("aria-describedby", "station-context");
     if (icon) {
       const shape = doc.createElement("span");
       shape.setAttribute("aria-hidden", "true");
@@ -236,7 +235,6 @@ export function installQueueClear({ queueList, queueAnnounce, queueClear, queueC
     // to the button with the list already empty (see confirmAction).  The
     // result is said after the dialog has closed.
     const confirmed = await confirmAction(doc, {
-      station: true,
       title: "Clear the queue?",
       message: `This removes all ${count} queued ${plural}.  AutoDJ keeps picking tracks on its own.`,
       confirmLabel: "Clear queue",

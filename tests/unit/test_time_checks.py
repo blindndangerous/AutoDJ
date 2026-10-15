@@ -419,6 +419,9 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
             "minutes_covered": 1440,
             "summary": "1440 of 1440 minutes covered. Hour files missing: none. "
             "Exact-hour files missing: none. Minute files missing: none.",
+            "source": "config",
+            "removable": False,
+            "shared_with_stations": False,
             **no_dates,
         },
         {
@@ -426,6 +429,9 @@ def test_status_lists_packs_by_name_with_coverage_and_no_paths(tmp_path: Path) -
             "enabled": False,
             "minutes_covered": 0,
             "summary": "Folder not found.",
+            "source": "config",
+            "removable": False,
+            "shared_with_stations": False,
             **no_dates,
         },
     ]
@@ -507,7 +513,7 @@ def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: P
     )
     check = _time_checks_check(cfg)
     assert check.status is CheckStatus.WARN
-    assert "saved voice pack Old is not in voice_packs" in check.summary
+    assert "saved voice pack Old is not found" in check.summary
     assert "no TTS fallback" in check.summary
     assert _voice_pack_checks(cfg)[0].summary.startswith("not enabled; ")
     state.write_text("{", encoding="utf-8")

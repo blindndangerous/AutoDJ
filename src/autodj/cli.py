@@ -1928,6 +1928,12 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     from autodj.library import LibraryManager
 
     _apply_index_name(cfg, index_name)
+    from autodj.config import move_station_tables
+
+    if move_station_tables(cfg):
+        # The moved stations are read from their own files from now on.
+        cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+        _apply_index_name(cfg, index_name)
     if isinstance(cfg.index.active_dir, Path):
         _add_log_file(cfg.index.active_dir / "logs" / "autodj.log")
     library = LibraryManager(cfg, sim)

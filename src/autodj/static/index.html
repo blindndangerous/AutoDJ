@@ -71,15 +71,10 @@
             aria-controls="station-menu"><span>Station:</span> <span class="station-switcher-name">AutoDJ</span><span class="station-switcher-caret" aria-hidden="true">▾</span></button>
     <ul id="station-menu" role="menu" aria-labelledby="station-button" hidden></ul>
   </div>
-  <!-- Descriptions, never shown: "On Night Owl Radio" for each control
-       that changes what is on air, and "Shared by all stations" for the
-       library and pairing.  Empty while the server has one station, so
-       nothing extra is spoken then. -->
-  <span id="station-context" hidden></span>
+  <!-- A description, never shown: "Shared by all stations" for the
+       library, cue points and Stations.  Empty while the server has one
+       station, so nothing extra is spoken then. -->
   <span id="shared-context" hidden></span>
-  <!-- The station's name, added to the name of each tab panel that shows
-       one station ("Queue & Search Night Owl Radio"). -->
-  <span id="station-name-label" hidden></span>
   <!-- Fix 4: no static aria-label — text content is the live announcement -->
   <span id="conn-status" role="status" aria-live="polite">Connecting…</span>
 </header>
@@ -137,7 +132,7 @@
          says "Off air" once. -->
     <div id="station-off-air" class="station-off-air" hidden>
       <p id="station-off-air-text"></p>
-      <button type="button" id="station-start" aria-describedby="station-context">Start station</button>
+      <button type="button" id="station-start">Start station</button>
     </div>
 
     <div class="now-playing-row">
@@ -243,12 +238,12 @@
              name plus aria-pressed. -->
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
-        <button id="btn-pause" aria-label="Play or Pause" aria-describedby="station-context" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
+        <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
         <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
              it plays the station in this browser, while Play / Pause
              pauses the station for every listener. -->
         <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
-        <button id="btn-skip" aria-describedby="station-context">
+        <button id="btn-skip">
           <span aria-hidden="true">⏭</span> Skip
         </button>
         <button id="btn-shuffle"
@@ -272,7 +267,7 @@
            The help, the note (busy, unavailable) and the error are plain
            text, linked by live-talk.js only while they have words. -->
       <div id="talk-desk" class="talk-desk" hidden>
-        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help station-context">Talk</button>
+        <button type="button" id="btn-talk" aria-pressed="false" aria-describedby="talk-help">Talk</button>
         <p id="talk-help" class="stream-detail">Press and hold to talk over the music, or press and hold Alt+M. 2 minutes max. When this server has no sign-in (pairing is off), anyone who can open this page can talk on the air.</p>
         <!-- Shown while talk is latched on.  Plain text: the latch is said once. -->
         <p id="talk-latched" class="talk-latched" hidden></p>
@@ -1684,13 +1679,14 @@
 
   <div class="card" role="tabpanel" id="spanel-time-checks" aria-labelledby="stab-time-checks" hidden>
     <h3>Time checks</h3>
-    <!-- time-checks.js fills this panel when it is seen.  The voice pack
-         folders, clip folder, intro and outro clips and the text-to-speech
-         command are set only in config.toml; the page sends pack names, never
-         paths.  Each result of a setting or the button is said once through
-         #tc-status; pack coverage is plain text, not a live region. -->
+    <!-- time-checks.js fills this panel when it is seen.  Voice packs,
+         the recorded clips folder and the intro and outro clips are added and
+         chosen here, by name, never by path; only the text-to-speech command
+         is set in config.toml, because it runs a program on the server.  Each
+         result of a setting or a button is said once through #tc-status;
+         pack coverage is plain text, not a live region. -->
     <p class="card-desc">
-      Say the station time over the music. Voice packs, clips and text to speech are set in config.toml.
+      Say the station time over the music. Add voice packs and choose clips here. Only the text-to-speech command is set in config.toml.
     </p>
 
     <div id="tc-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
@@ -1721,13 +1717,42 @@
       After the song playing at the top of the hour ends, say the time as the next song starts, in place of a voice liner.
     </span>
 
-    <fieldset id="tc-packs">
+    <!-- tabindex="-1": focus comes here after the last pack is removed. -->
+    <fieldset id="tc-packs" tabindex="-1">
       <legend>Voice packs</legend>
       <span class="setting-desc" id="tc-packs-desc">
-        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
+        Folders of hour and minute files, joined into one sentence like RadioBOSS does. Every folder in the station's time checks folder is a pack. Tick the packs to use. Each pack shows how many of the 1440 minutes it can say and which files are missing.
       </span>
-      <p id="tc-packs-empty">No voice packs are listed in config.toml.</p>
+      <p id="tc-packs-empty">No voice packs yet. Add one below.</p>
       <div id="tc-pack-list"></div>
+    </fieldset>
+    <button type="button" id="tc-rescan" aria-describedby="tc-rescan-desc">Look for new voice packs</button>
+    <span class="setting-desc" id="tc-rescan-desc">
+      Finds folders copied into the time checks folder on the server since this page loaded. No restart is needed.
+    </span>
+
+    <!-- Adding a pack: "Uploading" and the result are said through
+         #tc-status and focus moves to the new pack's checkbox; a taken name
+         asks before it is replaced.  A refused upload is shown in
+         #tc-pack-error, linked to the file input, which takes focus. -->
+    <fieldset id="tc-add-pack">
+      <legend>Add a voice pack</legend>
+      <span class="setting-desc" id="tc-add-pack-desc">
+        Upload a zip file of the pack's WAV, MP3, FLAC or OGG files, up to 256 MB. It becomes a folder in this station's time checks folder. A zip of recorded minute clips works the same way; then choose its folder under Recorded minute clips folder.
+      </span>
+      <div class="settings-row">
+        <label for="tc-pack-file">Voice pack zip file</label>
+        <input type="file" id="tc-pack-file" accept=".zip,application/zip" aria-describedby="tc-add-pack-desc">
+      </div>
+      <p id="tc-pack-error" class="field-error" hidden></p>
+      <div class="settings-row">
+        <label for="tc-pack-name">Pack name</label>
+        <input type="text" id="tc-pack-name" maxlength="100" autocomplete="off" spellcheck="false" aria-describedby="tc-pack-name-desc">
+      </div>
+      <span class="setting-desc" id="tc-pack-name-desc">
+        Optional. Left blank, the pack is named after the folder in the zip, or the zip file.
+      </span>
+      <button type="button" id="tc-pack-add">Add voice pack</button>
     </fieldset>
     <div class="settings-row">
       <label for="tc-pack-order">When several packs are ticked</label>
@@ -1763,6 +1788,42 @@
 
     <h4>Recordings</h4>
     <p id="tc-clips-status"></p>
+    <div class="settings-row">
+      <label for="tc-recorded-folder">Recorded minute clips folder</label>
+      <select id="tc-recorded-folder" aria-describedby="tc-recorded-folder-desc">
+        <option value="">The time checks folder itself</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-recorded-folder-desc">
+      Where the clips named 00_00 to 23_59 are, such as 15_05.wav for 3:05 in the afternoon. A folder chosen here is not a voice pack.
+    </span>
+    <div class="settings-row">
+      <label for="tc-intro">Intro clip</label>
+      <select id="tc-intro" aria-describedby="tc-clip-choice-desc">
+        <option value="">None</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label for="tc-outro">Outro clip</label>
+      <select id="tc-outro" aria-describedby="tc-clip-choice-desc">
+        <option value="">None</option>
+      </select>
+    </div>
+    <span class="setting-desc" id="tc-clip-choice-desc">
+      Played before and after every time check. Choose from the audio files in the time checks folder, or upload one below.
+    </span>
+    <fieldset id="tc-add-clip">
+      <legend>Upload a clip</legend>
+      <div class="settings-row">
+        <label for="tc-clip-file">Clip file</label>
+        <input type="file" id="tc-clip-file" accept=".wav,.mp3,.flac,.ogg,audio/*" aria-describedby="tc-clip-file-desc">
+      </div>
+      <p id="tc-clip-error" class="field-error" hidden></p>
+      <span class="setting-desc" id="tc-clip-file-desc">
+        An intro or outro, which goes in the time checks folder, or one recorded minute clip such as 15_05.wav, which goes in the recorded minute clips folder. When a clip with that name is already there, you are asked before it is replaced.
+      </span>
+      <button type="button" id="tc-clip-add">Upload clip</button>
+    </fieldset>
     <div class="settings-row">
       <label for="tc-test-voice">Voice to test</label>
       <select id="tc-test-voice">
@@ -1994,7 +2055,7 @@
       <div class="settings-row">
         <label for="stream-station-name">Station name</label>
         <input type="text" id="stream-station-name" maxlength="100" autocomplete="off"
-               aria-describedby="station-context">
+              >
       </div>
       <span class="setting-desc" id="stream-station-name-desc">
         The name players such as Sonos and VLC show for this station, up to 100 characters.  A player shows a new name the next time it connects.
@@ -2006,7 +2067,7 @@
       <button type="button" id="stream-metadata-save">Save station metadata</button>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
-        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc station-context">
+        <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
           <option value="128">128 kbps</option>
           <option value="192">192 kbps</option>
           <option value="256">256 kbps</option>
@@ -2017,7 +2078,7 @@
         Higher sounds better and uses more network.  Changing it makes every speaker reconnect for a moment.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="stream-continuous" aria-describedby="station-context">
+        <input type="checkbox" id="stream-continuous">
         <label for="stream-continuous">Keep playing without listeners</label>
       </div>
       <span class="setting-desc" id="stream-continuous-desc">
@@ -2037,7 +2098,7 @@
         </p>
         <div class="settings-row">
           <button type="button" id="recording-toggle" aria-pressed="false"
-                  aria-describedby="recording-status recording-error station-context">Record broadcast</button>
+                  aria-describedby="recording-status recording-error">Record broadcast</button>
           <button type="button" id="recording-split-now" aria-disabled="true">Split recording now</button>
         </div>
         <p class="stream-detail" id="recording-status"></p>
@@ -2112,7 +2173,7 @@
         </p>
         <div class="settings-row">
           <label for="stream-aac-bitrate">AAC quality</label>
-          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning station-context">
+          <select id="stream-aac-bitrate" aria-describedby="stream-aac-warning">
             <option value="0">Off</option>
             <option value="64">64 kbps</option>
             <option value="96">96 kbps</option>
@@ -2126,7 +2187,7 @@
         </span>
         <div class="settings-row">
           <label for="stream-opus-bitrate">Opus quality</label>
-          <select id="stream-opus-bitrate" aria-describedby="station-context">
+          <select id="stream-opus-bitrate">
             <option value="0">Off</option>
             <option value="48">48 kbps</option>
             <option value="64">64 kbps</option>
@@ -2236,13 +2297,13 @@
         </p>
         <div class="settings-row">
           <label for="listener-stats-span">Show</label>
-          <select id="listener-stats-span" aria-describedby="station-context">
+          <select id="listener-stats-span">
             <option value="7">Last 7 days</option>
             <option value="30" selected>Last 30 days</option>
             <option value="90">Last 90 days</option>
             <option value="3650">Every day kept</option>
           </select>
-          <button type="button" id="listener-stats-refresh" aria-describedby="station-context">Refresh statistics</button>
+          <button type="button" id="listener-stats-refresh">Refresh statistics</button>
         </div>
         <p class="stream-detail" id="listener-stats-summary">Statistics not loaded yet.</p>
         <table id="listener-stats-formats" hidden>
@@ -2277,30 +2338,19 @@
         <div class="settings-row">
           <label for="listener-stats-keep">Days to keep statistics</label>
           <input type="number" id="listener-stats-keep" min="0" max="3650" step="1" required
-                 aria-describedby="listener-stats-keep-desc station-context">
+                 aria-describedby="listener-stats-keep-desc">
         </div>
         <span class="setting-desc" id="listener-stats-keep-desc">
           From 0 to 3650; 90 unless changed. Older days are deleted. 0 keeps no statistics and deletes those kept.
         </span>
         <div class="settings-row">
-          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc station-context">Download statistics (CSV)</button>
+          <button type="button" id="listener-stats-export" aria-describedby="listener-stats-export-desc">Download statistics (CSV)</button>
         </div>
         <span class="setting-desc" id="listener-stats-export-desc">
           A spreadsheet file with one row per day kept: peaks, sessions, listening hours and session lengths, in total and for each format.
         </span>
       </details>
     </fieldset>
-    <!-- A station other than the default one can be stopped (#70); it asks
-         first in #confirm-dialog.  Hidden for the default station. -->
-    <div id="station-stop-row" hidden>
-      <div class="settings-row">
-        <button type="button" id="station-stop"
-                aria-describedby="station-stop-desc station-context">Stop station</button>
-      </div>
-      <span class="setting-desc" id="station-stop-desc">
-        Disconnects its listeners and relays and ends its recording until it is started again.
-      </span>
-    </div>
   </div>
 
   <!-- Stations on this server, and creating one (#233).  Shared by every
@@ -2441,7 +2491,7 @@
       <p class="stream-detail" id="live-transport-note"></p>
       <h4 id="live-djs-heading">DJ accounts</h4>
       <p class="setting-desc" id="live-djs-desc">Passwords are never shown, and backups leave them out: after restoring a backup, set each DJ's password again.</p>
-      <button type="button" id="live-dj-add" aria-describedby="station-context">Add DJ</button>
+      <button type="button" id="live-dj-add">Add DJ</button>
       <table id="live-dj-table" role="grid" aria-labelledby="live-djs-heading" aria-describedby="live-djs-desc" hidden>
         <thead><tr><th scope="col">DJ</th><th scope="col">Password</th><th scope="col">Edit</th><th scope="col">Remove</th></tr></thead>
         <tbody id="live-dj-rows"></tbody>
@@ -2482,7 +2532,7 @@
         </div>
         <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
         <p class="field-error" id="live-talkover-error" hidden></p>
-        <button type="button" id="live-talkover-save" aria-describedby="station-context">Save talk settings</button>
+        <button type="button" id="live-talkover-save">Save talk settings</button>
       </fieldset>
     </div>
   </div>
@@ -2635,7 +2685,7 @@
     </ol>
     <!-- Outside the list, so it stays put while rows come and go.  It asks
          before clearing, in #confirm-dialog. -->
-    <button type="button" id="queue-clear" aria-describedby="station-context">Clear queue</button>
+    <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
   <!-- Listener requests from the public request page, and the switch that
@@ -3782,6 +3832,7 @@
     <dt><kbd>Shift+U</kbd></dt><dd>Speak what is coming next in the song on air, such as “On air: Drop in 0:12, 6 bars”</dd>
     <dt style="margin-top:0.5rem"><kbd>c</kbd></dt><dd style="margin-top:0.5rem">Move to the station switcher. Only when the server has several stations.</dd>
     <dt><kbd>Shift+C</kbd></dt><dd>Speak which station this page controls, whether it is on air, its listeners and its song</dd>
+    <dt><kbd>Shift+[</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Shift+]</kbd></dt><dd>Switch to the previous or next station</dd>
   </dl>
   <p style="margin-top:1rem;color:var(--text-dim);font-size:0.9em">
     NVDA users: shortcuts work in focus mode (NVDA+Space to toggle).  In browse mode, NVDA intercepts the letter keys; switch to focus mode first, or press NVDA+F2 and then the shortcut to pass that one key through.

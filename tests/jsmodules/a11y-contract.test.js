@@ -1707,8 +1707,7 @@ describe("static accessibility contracts", () => {
       const refs = (document.getElementById(id).getAttribute("aria-describedby") || "").split(/\s+/);
       expect(refs, id).not.toContain(helpId);
     }
-    expect(document.getElementById("stream-station-name").getAttribute("aria-describedby"))
-      .toBe("station-context");
+    expect(document.getElementById("stream-station-name").hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("stream-relay-password").getAttribute("aria-describedby"))
       .toBe("stream-relay-password-help");
     expect(document.getElementById("token-secret").getAttribute("aria-describedby"))
@@ -1941,8 +1940,8 @@ describe("static accessibility contracts", () => {
     expect(name.getAttribute("type")).toBe("text");
     expect(name.getAttribute("maxlength")).toBe("100");
     expect(labelText("stream-station-name")).toBe("Station name");
-    // Long help stays visible; only the station context is announced.
-    expect(describedBy(name).map((element) => element?.id)).toEqual(["station-context"]);
+    // Long help stays visible and is not announced.
+    expect(name.hasAttribute("aria-describedby")).toBe(false);
     expect(document.getElementById("stream-station-name-desc").hidden).toBe(false);
 
     const address = document.querySelector("#stream-url");
@@ -2102,12 +2101,12 @@ describe("static accessibility contracts", () => {
       expect(select.options[0].textContent).toBe("Off");
       expect([...select.options].slice(1).every((option) => / kbps$/.test(option.textContent)))
         .toBe(true);
-      // The brief reconnect warning and the station context are announced;
-      // the longer format explanation stays visible in the panel.
+      // The brief reconnect warning is announced; the longer format
+      // explanation stays visible in the panel.
       const described = describedBy(select);
       expect(described.every(Boolean)).toBe(true);
       expect(described.map((element) => element.id)).toEqual(
-        id === "stream-aac-bitrate" ? ["stream-aac-warning", "station-context"] : ["station-context"],
+        id === "stream-aac-bitrate" ? ["stream-aac-warning"] : [],
       );
       expect(document.getElementById(`stream-${id.endsWith("aac-bitrate") ? "aac" : "opus"}-desc`).hidden)
         .toBe(false);
@@ -2168,7 +2167,7 @@ describe("static accessibility contracts", () => {
     const keep = document.getElementById("listener-stats-keep");
     expect(labelText("listener-stats-keep")).toBe("Days to keep statistics");
     expect([keep.type, keep.min, keep.max, keep.step]).toEqual(["number", "0", "3650", "1"]);
-    expect(keep.getAttribute("aria-describedby")).toBe("listener-stats-keep-desc station-context");
+    expect(keep.getAttribute("aria-describedby")).toBe("listener-stats-keep-desc");
     for (const [id, name] of [
       ["listener-stats-refresh", "Refresh statistics"],
       ["listener-stats-export", "Download statistics (CSV)"],
@@ -2176,7 +2175,6 @@ describe("static accessibility contracts", () => {
       const button = document.getElementById(id);
       expect(button.getAttribute("type")).toBe("button");
       expect(button.textContent.trim()).toBe(name);
-      expect(button.getAttribute("aria-describedby")).toContain("station-context");
     }
     // Colours come from the theme tokens only, so both themes follow.
     const rules = stripCssComments(cssSource).match(/#(?:listener-stats|stream-formats)-[^{]*\{[^}]*\}/g);
@@ -2273,7 +2271,7 @@ describe("static accessibility contracts", () => {
     expect(toggle.textContent.trim()).toBe("Record broadcast");
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
     expect(describedBy(toggle).map((element) => element?.id))
-      .toEqual(["recording-status", "recording-error", "station-context"]);
+      .toEqual(["recording-status", "recording-error"]);
 
     // Split stays focusable while unavailable, so pressing it is answered.
     const split = document.querySelector("#recording-split-now");
@@ -3228,7 +3226,7 @@ describe("static accessibility contracts", () => {
     expect(talk.textContent).toBe("Talk");
     expect(talk.hasAttribute("aria-label")).toBe(false);
     expect(talk.getAttribute("aria-pressed")).toBe("false");
-    expect(idsOf(talk)).toEqual(["talk-help", "station-context"]);
+    expect(idsOf(talk)).toEqual(["talk-help"]);
     expect(document.getElementById("talk-help").textContent).toMatch(/press and hold Alt\+M/);
     for (const id of ["talk-help", "talk-latched", "talk-note", "talk-error"]) {
       expect(quiet(document.getElementById(id)), id).toBe(true);
@@ -3364,7 +3362,7 @@ describe("static accessibility contracts", () => {
     }
     // Run now acts on air, so it names the station like the schedule's.
     const appSource = readFileSync(staticPath("modules", "ads-panel.js"), "utf8");
-    expect(appSource).toMatch(/run\.setAttribute\("aria-describedby", "station-context"\)/);
+    expect(appSource).not.toMatch(/station-context/);
   });
 
   it("keeps the transition effect description to one sentence", () => {
@@ -3544,26 +3542,6 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(menu.hidden).toBe(true);
   });
 
-  it("describes every control that changes what is on air with the station", () => {
-    installDocument();
-    const context = document.getElementById("station-context");
-    expect(context.hidden).toBe(true);
-    expect(context.textContent).toBe("");
-    for (const id of [
-      "btn-pause", "btn-skip", "queue-clear", "recording-toggle", "stream-station-name",
-      "stream-bitrate", "stream-continuous", "station-stop", "station-start",
-      "btn-talk", "live-dj-add", "live-talkover-save",
-    ]) {
-      const control = document.getElementById(id);
-      expect(control, id).not.toBeNull();
-      expect(ids(control, "aria-describedby"), id).toContain("station-context");
-      // Every id it names exists, so nothing is silently lost.
-      for (const ref of ids(control, "aria-describedby")) {
-        expect(document.getElementById(ref), `${id} -> ${ref}`).not.toBeNull();
-      }
-    }
-  });
-
   it("describes the shared controls as shared by all stations", () => {
     installDocument();
     const shared = document.getElementById("shared-context");
@@ -3638,22 +3616,6 @@ describe("station switcher and station context contracts (#70)", () => {
     expect(order).toEqual(["station-create-source", "station-create-name", "station-create-slug",
       "station-create-clockwheels", "station-create-schedule", "station-create-carts",
       "station-create-autostart", "station-create-submit"]);
-  });
-
-  it("gives queue rows, search results, carts, listeners, profiles and Run now the station", () => {
-    const sources = {
-      queue: readFileSync(staticPath("modules", "queue.js"), "utf8"),
-      search: readFileSync(staticPath("modules", "search.js"), "utf8"),
-      carts: readFileSync(staticPath("modules", "cart-wall.js"), "utf8"),
-      listeners: readFileSync(staticPath("modules", "listener-controls.js"), "utf8"),
-      profiles: readFileSync(staticPath("modules", "profiles.js"), "utf8"),
-      schedule: readFileSync(staticPath("modules", "scheduler-panel.js"), "utf8"),
-    };
-    // Every queue action but Track info.
-    expect(sources.queue).toMatch(/if \(action !== "info"\) button\.setAttribute\("aria-describedby", "station-context"\)/);
-    for (const [name, source] of Object.entries(sources)) {
-      expect(source, name).toMatch(/setAttribute\("aria-describedby", "station-context"\)/);
-    }
   });
 
   it("styles the menu with theme tokens, 44 px items and a tick for the checked one", () => {

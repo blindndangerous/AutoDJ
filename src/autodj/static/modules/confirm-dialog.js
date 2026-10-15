@@ -2,7 +2,6 @@ import {
   dialogReturnPlace, dialogStatusLine, focusAfterDialog, focusSteadyPlace, releaseDialogFocus,
 } from "./dom-helpers.js";
 import { sayIfStillPending } from "./live-region.js";
-import { severalStations, stationName } from "./stations.js";
 
 // Shared "are you sure" step for actions that cannot be undone: Clear
 // queue, Replace profile, Delete profile, Delete liner, Sign out and Revoke
@@ -30,7 +29,7 @@ import { severalStations, stationName } from "./stations.js";
 // station: the action changes one station (#70).  While the server has
 // several, the message then ends by naming the station the page controls.
 export function confirmAction(doc, {
-  title, message, confirmLabel, onConfirm = null, station = false, pendingText = "Working…",
+  title, message, confirmLabel, onConfirm = null, pendingText = "Working…",
 }) {
   const dialog = doc.getElementById("confirm-dialog");
   const heading = doc.getElementById("confirm-title");
@@ -41,9 +40,7 @@ export function confirmAction(doc, {
     return Promise.resolve(false);
   }
   heading.textContent = title;
-  text.textContent = station && severalStations()
-    ? `${message} Station: ${stationName()}.`
-    : message;
+  text.textContent = message;
   confirmButton.textContent = confirmLabel;
   dialog.returnValue = "";
   const opener = doc.activeElement === doc.body ? null : doc.activeElement;
