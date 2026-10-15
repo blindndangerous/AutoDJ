@@ -617,7 +617,7 @@
       <p id="landmarks-empty" hidden></p>
       <!-- role="list": list-style none drops the list role in Safari. -->
       <ol id="landmarks-list" class="landmark-list" role="list" aria-labelledby="landmarks-heading" hidden></ol>
-      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once AutoDJ has analysed this song: when it is next up to play, or when Analyse runs in Library tools.</p>
+      <p class="setting-desc" id="landmarks-note" hidden>Drops, breakdowns, phrases and bar numbers appear once a library scan has analysed this song.</p>
     </details>
   </section>
   <!-- ============================================================
@@ -3075,6 +3075,7 @@
         <label><input id="source-folder-override-tags" type="checkbox" aria-describedby="source-folder-override-tags-help"> Override with ID3 tags</label>
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
+        <label><input id="dj-analysis" type="checkbox" checked> Find beats and song structure</label>
         <fieldset id="auto-rescan">
           <legend>Automatic rescan every</legend>
           <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>
@@ -3123,8 +3124,6 @@
 
         <div class="settings-row"><button type="button" id="lib-run-enrich" aria-describedby="lib-enrich-desc">Enrich</button></div>
         <p class="setting-desc" id="lib-enrich-desc">Refreshes title, artist, genre, BPM and key from beets.</p>
-        <div class="settings-row"><button type="button" id="lib-run-analyse" aria-describedby="lib-analyse-desc">Analyse</button></div>
-        <p class="setting-desc" id="lib-analyse-desc">Finds the intro, outro, beat grid and cue points of songs not analysed yet.</p>
         <div class="settings-row"><button type="button" id="lib-run-prune" aria-describedby="lib-prune-desc">Remove missing tracks</button></div>
         <p class="setting-desc" id="lib-prune-desc">Lists songs whose files are gone and removes them after you confirm. Play history is kept.</p>
         <div class="settings-row"><button type="button" id="lib-run-stats" aria-describedby="lib-stats-desc">Detailed stats</button></div>

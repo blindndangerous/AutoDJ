@@ -25,6 +25,7 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
   const minutes = doc.getElementById("auto-rescan-minutes");
   const save = doc.getElementById("auto-rescan-save");
   const error = doc.getElementById("auto-rescan-error");
+  const djAnalysis = doc.getElementById("dj-analysis");
   if (!hours || !minutes || !save || !error) return null;
   const fields = { hours, minutes };
   let loaded = 0;
@@ -59,6 +60,10 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
     try {
       const value = await request("/api/library/auto-rescan");
       if (ticket === loaded && isCurrent()) show(value);
+      if (djAnalysis) {
+        const dj = await request("/api/library/dj-analysis");
+        if (ticket === loaded && isCurrent()) djAnalysis.checked = dj?.enabled !== false;
+      }
     } catch {
       // The fields keep what they show; Save reports any problem.
     }
@@ -69,6 +74,24 @@ export function installAutoRescan({ document: doc, request, say, isCurrent = () 
       if (field.getAttribute("aria-invalid") && !autoRescanProblem(hours.value, minutes.value)) clearError();
     });
   }
+
+  djAnalysis?.addEventListener("change", async () => {
+    if (!isCurrent()) return;
+    loaded += 1;
+    try {
+      const value = await request("/api/library/dj-analysis", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: djAnalysis.checked }),
+      });
+      if (!isCurrent()) return;
+      djAnalysis.checked = value?.enabled !== false;
+      say("Saved.");
+    } catch (err) {
+      if (!isCurrent()) return;
+      say(`Could not save Find beats and song structure: ${err?.message || "error"}`, true);
+    }
+  });
 
   save.addEventListener("click", async () => {
     if (!isCurrent()) return;

@@ -2680,7 +2680,6 @@ import {
 const _libEls = {
   runIndex:        document.getElementById("lib-run-index"),
   runEnrich:       document.getElementById("lib-run-enrich"),
-  runAnalyse:      document.getElementById("lib-run-analyse"),
   runPrune:        document.getElementById("lib-run-prune"),
   runStats:        document.getElementById("lib-run-stats"),
   runStop:         document.getElementById("lib-run-stop"),

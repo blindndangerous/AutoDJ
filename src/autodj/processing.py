@@ -377,8 +377,27 @@ def probe_seconds(source: Path) -> float | None:
     return seconds if math.isfinite(seconds) and seconds > 0 else None
 
 
+def load_for_analysis(source: Path, max_seconds: float | None = None) -> np.ndarray:
+    """Decode *source* as stereo at ``SAMPLE_RATE`` for :func:`analyze_basic`.
+
+    A track longer than *max_seconds* is refused from its header length
+    before anything is decoded.
+
+    Raises:
+        TrackTooLongError: If the track is longer than *max_seconds*.
+    """
+    if max_seconds is not None:
+        seconds = probe_seconds(source)
+        if seconds is not None and seconds > max_seconds + 1.0:
+            raise TrackTooLongError(str(source), seconds)
+    return load_stereo(str(source), SAMPLE_RATE, max_seconds)
+
+
 def analyze_basic(
-    source: Path, kind: str = "music", max_seconds: float | None = None
+    source: Path,
+    kind: str = "music",
+    max_seconds: float | None = None,
+    audio: np.ndarray | None = None,
 ) -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
 
@@ -392,6 +411,8 @@ def analyze_basic(
             (a three-hour mix needed about 10 GB), so a longer track is
             refused from its header length before anything is decoded, and
             the decode itself stops a second past the limit.
+        audio: The track already decoded by :func:`load_for_analysis`, so
+            the caller can reuse it; decoded here when ``None``.
 
     Raises:
         TrackTooLongError: If the track is longer than *max_seconds*.
@@ -404,11 +425,8 @@ def analyze_basic(
     if kind not in {"music", "liner"}:
         raise ValueError("kind must be 'music' or 'liner'")
     source = Path(source)
-    if max_seconds is not None:
-        seconds = probe_seconds(source)
-        if seconds is not None and seconds > max_seconds + 1.0:
-            raise TrackTooLongError(str(source), seconds)
-    audio = load_stereo(str(source), SAMPLE_RATE, max_seconds)
+    if audio is None:
+        audio = load_for_analysis(source, max_seconds)
     length = len(audio) / SAMPLE_RATE
     mono = audio.mean(axis=1)
     tags = read_file_tags(source)

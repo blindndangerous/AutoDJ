@@ -117,3 +117,32 @@ describe("automatic rescan", () => {
     expect(installAutoRescan({ document, request: vi.fn(), say: vi.fn() })).toBeNull();
   });
 });
+
+describe("find beats and song structure", () => {
+  it("loads the saved setting and saves a change with one Saved", async () => {
+    const page = document.createElement("template");
+    page.innerHTML = html;
+    document.body.replaceChildren(
+      page.content.querySelector("#auto-rescan").cloneNode(true),
+      page.content.querySelector("#dj-analysis").closest("label").cloneNode(true),
+    );
+    const box = field("dj-analysis");
+    expect(box.labels[0].textContent.trim()).toBe("Find beats and song structure");
+    expect(box.checked).toBe(true);
+    const request = vi.fn(async (url, options) => {
+      if (options) return JSON.parse(options.body);
+      return url.endsWith("dj-analysis") ? { enabled: false } : { hours: 0, minutes: 0 };
+    });
+    const say = vi.fn();
+    const controls = installAutoRescan({ document, request, say });
+    await controls.load();
+    expect(box.checked).toBe(false);
+    box.checked = true;
+    box.dispatchEvent(new Event("change"));
+    await flush();
+    expect(request).toHaveBeenLastCalledWith("/api/library/dj-analysis", expect.objectContaining({ method: "PUT" }));
+    expect(JSON.parse(request.mock.lastCall[1].body)).toEqual({ enabled: true });
+    expect(say).toHaveBeenCalledOnce();
+    expect(say).toHaveBeenCalledWith("Saved.");
+  });
+});

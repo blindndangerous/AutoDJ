@@ -2709,8 +2709,8 @@ Marks less than a second apart are one landmark. Of two marks of the same kind, 
 wins over DJ software, then lyrics, then analysis; two kinds that fall together share a name, such
 as "Drop and vocals". Bars count from the first beat of the beat grid, so bar 1 is the first
 detected beat; a song with no beat grid has no bar numbers. Drops, breakdowns, phrases and bars
-appear once the song has been analysed: when it is next up to play, or when Analyse runs in
-Library tools.
+appear once a library scan has analysed the song, while **Find beats and song structure** is on
+in Library tools (it is on by default).
 
 ### In Track info
 

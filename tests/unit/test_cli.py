@@ -1373,31 +1373,11 @@ class TestCmdAnalyse:
                 assert analyse.call_count == 2
             with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
                 assert catalog.points(entries[0].path)["intro"] == 9.0
-                assert catalog.points(entries[1].path)["intro"] == 5.0
-        finally:
-            close_cache()
-
-    def test_analyse_skips_invalid_automatic_cue_and_continues(self, tmp_path: Path) -> None:
-        from autodj.catalog import LibraryCatalog
-        from autodj.dj_meta import DjMeta, close_cache, get_cache
-
-        cfg = self._cfg_with_index(tmp_path, entries=2)
-        cfg.index.throttle_ms = 0
-        with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-            entries = catalog.entries_snapshot()
-        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
-        assert cache is not None
-        cache.set(entries[0].path, DjMeta(intro_end_s=999.0, analysed=True))
-        cache.set(entries[1].path, DjMeta(intro_end_s=9.0, analysed=True))
-        cache.flush(force=True)
-        try:
-            with patch("autodj.config.load_config", return_value=cfg):
-                result = CliRunner().invoke(cli, ["analyse"])
-            assert result.exit_code == 0, result.output
-            assert "Skipped automatic cue updates for 1 tracks" in result.output
-            with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-                assert catalog.points(entries[0].path).get("intro") is None
-                assert catalog.points(entries[1].path)["intro"] == 9.0
+                # The cues are placed from the saved Intro; none is written back.
+                assert catalog.points(entries[1].path)["intro"] is None
+            assert any(
+                call.args[1] and call.args[1]["intro"] == 9.0 for call in analyse.call_args_list
+            )
         finally:
             close_cache()
 

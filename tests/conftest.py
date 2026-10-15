@@ -22,3 +22,16 @@ def _close_global_dj_cache_between_tests():
     close_cache()
     yield
     close_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_scan_dj_analysis(request, monkeypatch):
+    """Scans in tests skip the beat and cue analysis, unless marked ``dj_analysis``.
+
+    Test songs are not real audio, so decoding them would fail.
+    """
+    if request.node.get_closest_marker("dj_analysis"):
+        return
+    from autodj.library import LibraryManager
+
+    monkeypatch.setattr(LibraryManager, "dj_analysis_enabled", lambda self: False)

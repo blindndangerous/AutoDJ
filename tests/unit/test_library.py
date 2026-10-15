@@ -109,8 +109,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None):
-    del kind, max_seconds
+def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
+    del kind, max_seconds, audio
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -244,7 +244,8 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
         manager.scan()
         assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
-        read_tags.assert_not_called()
+        # New music is listed from its tags first.
+        read_tags.assert_called_once_with(song)
 
 
 @pytest.mark.parametrize(
@@ -321,7 +322,7 @@ def test_queued_tag_override_runs_before_loudness_scan_finishes(manager_factory,
         assert not manager._thread.is_alive()
 
     assert manager.entry_for_path(song).title == "Tagged"
-    read_tags.assert_called_once_with(song)
+    read_tags.assert_called_with(song)
 
 
 def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
@@ -332,7 +333,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music", max_seconds=None):
+    def analyze(path, kind="music", max_seconds=None, audio=None):
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -521,7 +522,7 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     manager = manager_factory(music=music, processing="smooth")
     events = []
 
-    def basic(path, kind="music", max_seconds=None):
+    def basic(path, kind="music", max_seconds=None, audio=None):
         events.append(("basic", path.name))
         if path == old_song:
             source_id = manager.catalog.add_source(new_folder)["id"]
@@ -651,8 +652,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None):
-        del kind, max_seconds
+    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
+        del kind, max_seconds, audio
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -1747,3 +1748,88 @@ def test_a_scan_that_fails_part_way_runs_no_tidy_up(manager_factory, tmp_path):
     ):
         manager.scan()
     assert tidied == []
+
+
+@pytest.mark.dj_analysis
+def test_scan_finds_beats_from_the_same_decode_and_catches_up_older_songs(
+    manager_factory, tmp_path
+):
+    from autodj.dj_meta import DjMeta, get_cache
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    old, new = music / "old.flac", music / "new.flac"
+    old.write_bytes(b"old")
+    manager = manager_factory(music=music)
+    manager.cfg.playback.import_external_cues = False
+    manager.catalog.put_entry(make_entry(old))
+    manager.catalog.set_points(old, {"start": 0, "intro": 4.0, "outro": 170, "end": 179}, "user")
+    new.write_bytes(b"new")
+    decoded = np.zeros((44100 * 2, 2), dtype=np.float32)
+    calls = []
+
+    def analyse(audio, sr, intro_end_s=None, outro_start_s=None):
+        calls.append((len(audio), intro_end_s, outro_start_s))
+        return DjMeta(analysed=True)
+
+    with (
+        patch("autodj.library.load_for_analysis", return_value=decoded) as load,
+        patch("autodj.library.analyze_basic", side_effect=fake_basic) as basic,
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch("autodj.dj_meta.analyse_audio", side_effect=analyse),
+    ):
+        manager.scan()
+        # The new song is decoded once, for its cue points and its beats.
+        assert basic.call_args.kwargs["audio"] is decoded
+        assert load.call_count == 2  # the new song, then the older one catching up
+        # Beats and cues are placed from the saved Intro and Outro.
+        assert (len(decoded), 10.0, 165.0) in calls
+        assert (len(decoded), 4.0, 170) in calls
+        cache = get_cache()
+        assert cache.get(str(new)).analysed and cache.get(str(old)).analysed
+        manager.scan()
+        assert load.call_count == 2
+
+        manager.set_dj_analysis_enabled(False)
+        new.write_bytes(b"new bytes")
+        manager.scan()
+        assert basic.call_args.kwargs["audio"] is None
+        assert load.call_count == 2
+
+
+def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_factory, tmp_path):
+    from autodj.audio_meta import FileTags
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    good, bad = music / "good.flac", music / "bad.flac"
+    good.write_bytes(b"good")
+    bad.write_bytes(b"bad")
+    manager = manager_factory(music=music)
+    listed = {}
+
+    def basic(path, kind="music", max_seconds=None, audio=None):
+        # Both songs are already listed, silent, when the first is decoded.
+        for song in (good, bad):
+            entry = manager.entry_for_path(song)
+            listed[song.name] = entry is not None and entry.is_silent
+        if path.name == "bad.flac":
+            raise ValueError("not audio")
+        return fake_basic(path, kind, max_seconds)
+
+    with (
+        patch(
+            "autodj.audio_meta.read_file_tags", return_value=FileTags(title="Tagged", length=200.0)
+        ),
+        patch("autodj.library.analyze_basic", side_effect=basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+    ):
+        manager.scan()
+    assert listed == {"good.flac": True, "bad.flac": True}
+    assert not manager.entry_for_path(good).is_silent
+    # A song that cannot be decoded leaves the library, as before.
+    assert manager.catalog.record_for_path(bad) is None
+    errors = manager.snapshot()["import"]["errors"]
+    assert [error for error in errors if "Music" in error or "music" in error] == [
+        next(error for error in errors if "bad.flac" in error)
+    ]
