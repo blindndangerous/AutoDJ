@@ -1382,8 +1382,9 @@ class Point:
     """A time the hour is timed to.
 
     Attributes:
-        kind: ``"restart"`` (the clockwheel restarts, at the top of the
-            hour or not) or ``"event"`` (a scheduled event or ad break).
+        kind: ``"hour"`` (the top of the hour, when Fit songs to the hour
+            is on), ``"restart"`` (the clockwheel restarts, at the top of
+            the hour or not) or ``"event"`` (a scheduled event or ad break).
         at: When, in wall-clock seconds.
         label: Its name, such as "Clockwheel restart" or an event's name.
         timing: An event's ``"hard"`` or ``"soft"``; empty otherwise.
@@ -1407,17 +1408,31 @@ def fixed_points(
     resync_minutes: Sequence[int] = (),
     events: Sequence[Any] = (),
     describe: Callable[[Any], str] | None = None,
+    hours: bool = False,
 ) -> list[Point]:
     """The clockwheel restarts and scheduled events after *now*, up to *end*.
 
     *resync_minutes* are the active clockwheel's restart minutes (none when
-    the station is not playing a clockwheel).  A plain top of the hour is
-    no fixed point: nothing happens there.  Clockwheel restarts are read
+    the station is not playing a clockwheel).  *hours* adds each top of the
+    hour, which the station aims at when Fit songs to the hour is on; a
+    restart at the top of the hour replaces it.  Clockwheel restarts are read
     in the computer's time zone, as the player reads them.  Each kind is
     bounded by :data:`MAX_POINTS`; the preview times the first
     :data:`MAX_POINTS` of them all and says when there were more.
     """
-    points: list[Point] = []
+    found: dict[float, Point] = {}
+    top = datetime.fromtimestamp(now, zone).replace(minute=0, second=0, microsecond=0)
+    moment = top.timestamp()
+    while hours and len(found) < MAX_POINTS:
+        moment = (
+            datetime.fromtimestamp(moment + 3600, zone)
+            .replace(minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
+        if moment > end:
+            break
+        if moment > now:
+            found[moment] = Point("hour", moment, "Top of the hour")
     if resync_minutes:
         from autodj.clockwheel import next_boundary
 
@@ -1437,7 +1452,8 @@ def fixed_points(
                 if boundary.minute == 0
                 else "Clockwheel restart"
             )
-            points.append(Point("restart", cursor, label))
+            found[cursor] = Point("restart", cursor, label)
+    points = sorted(found.values(), key=lambda point: point.at)
     from autodj.scheduler import next_run
 
     after = datetime.fromtimestamp(now, UTC)
@@ -1756,6 +1772,7 @@ def build_preview(
         resync_minutes=clock.get("resync_minutes", ()) if clock_on else (),
         events=source.events,
         describe=describe,
+        hours=snapshot.cfg.playback.hour_fit is True,
     )
     points.extend(
         Point("event", run.at, run.label, "soft", run.detail)
@@ -1849,7 +1866,7 @@ def _summary(view: dict[str, Any], landings: Sequence[Landing], zone: ZoneInfo, 
         f"through {clock_text(end, zone)}."
     )
     if not landings:
-        return f"No clockwheel restart or scheduled event. {listed}"
+        return f"No top of the hour, clockwheel restart or scheduled event. {listed}"
     return f"{_next_words(landings[0], zone)} {listed}"
 
 

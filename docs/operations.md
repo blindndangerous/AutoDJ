@@ -3329,7 +3329,8 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 Now Playing > **Hour preview** lists what the station plays next, with the time each item is
 expected to start, and says how the hour lands: how early or late the song changes fall against
-each clockwheel restart and each scheduled event. Choose the next 30
+each clockwheel restart and each scheduled event, and the top of the hour when **Fit songs to
+the hour** is on. Choose the next 30
 minutes, hour, 2 hours or 3 hours under **Show**.
 
 Each row says in its Status column whether it is fixed or predicted:
@@ -3369,7 +3370,7 @@ Backtiming goes to each fixed point in the span:
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
   late it runs; a hard event runs on time and the preview says how much of the song it cuts.
 
-The card's summary is the next clockwheel restart or scheduled event and how it lands, then
+The card's summary is the next of these and how it lands, then
 how many rows are fixed and predicted, such as "Next clockwheel restart, 13:30: expected 0:35
 early. 3 fixed items, 20 predicted, through 13:40." **Refresh preview** says
 it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the

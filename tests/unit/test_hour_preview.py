@@ -369,6 +369,13 @@ def test_fixed_points_are_restarts_and_events_in_the_span() -> None:
     assert points[1].detail == "Play a liner: news.mp3"
     plain = fixed_points(now, now + 7200, zone)
     assert plain == []
+    fitted = fixed_points(now, now + 7200, zone, resync_minutes=[30], hours=True)
+    assert [(point.kind, point.label) for point in fitted] == [
+        ("restart", "Clockwheel restart"),
+        ("hour", "Top of the hour"),
+        ("restart", "Clockwheel restart"),
+        ("hour", "Top of the hour"),
+    ]
 
 
 # -- what is fixed, browser playback ---------------------------------------------
@@ -423,7 +430,7 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
     assert view["summary"] == (
-        f"No clockwheel restart or scheduled event. 3 fixed items, {len(predicted)} predicted, "
+        f"No top of the hour, clockwheel restart or scheduled event. 3 fixed items, {len(predicted)} predicted, "
         "through 13:10."
     )
     assert view["points"] == []
