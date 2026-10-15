@@ -43,7 +43,7 @@ import random
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -1398,6 +1398,7 @@ class Point:
     timing: str = ""
     detail: str = ""
     wait_seconds: int = 0
+    interrupts: bool = True
 
 
 def fixed_points(
@@ -1409,6 +1410,7 @@ def fixed_points(
     events: Sequence[Any] = (),
     describe: Callable[[Any], str] | None = None,
     hours: bool = False,
+    action_interrupts: Mapping[str, str] | None = None,
 ) -> list[Point]:
     """The clockwheel restarts and scheduled events after *now*, up to *end*.
 
@@ -1424,11 +1426,14 @@ def fixed_points(
     top = datetime.fromtimestamp(now, zone).replace(minute=0, second=0, microsecond=0)
     moment = top.timestamp()
     while hours and len(found) < MAX_POINTS:
-        moment = (
-            datetime.fromtimestamp(moment + 3600, zone)
-            .replace(minute=0, second=0, microsecond=0)
-            .timestamp()
-        )
+        moment += 3600
+        for _ in range(61):
+            wall = datetime.fromtimestamp(moment, zone)
+            if wall.minute == 0 and wall.second == 0:
+                break
+            moment += 60
+        else:
+            break
         if moment > end:
             break
         if moment > now:
@@ -1477,6 +1482,7 @@ def fixed_points(
                     event.timing,
                     detail,
                     getattr(event, "wait_seconds", 0),
+                    (action_interrupts or {}).get(event.action) != "none",
                 )
             )
             cursor_at = when
@@ -1572,7 +1578,12 @@ def land(point: Point, changes: Sequence[tuple[float, Item]], ends: float) -> La
         return Landing(point, playing, began, following, 0.0)
     late = following - at
     early = at - began
-    if point.kind == "event" and point.timing == "hard" and late > point.wait_seconds:
+    if (
+        point.kind == "event"
+        and point.timing == "hard"
+        and point.interrupts
+        and late > point.wait_seconds
+    ):
         cut = late if late >= ON_TIME_SECONDS else 0.0
         return Landing(point, playing, began, following, 0.0, cut)
     offset = late if point.kind == "event" or late <= early else -early
@@ -1773,6 +1784,7 @@ def build_preview(
         events=source.events,
         describe=describe,
         hours=snapshot.cfg.playback.hour_fit is True,
+        action_interrupts=source.action_interrupts,
     )
     points.extend(
         Point("event", run.at, run.label, "soft", run.detail)
@@ -2131,6 +2143,11 @@ def _source(station: Any) -> SimulationSource:
         station=station.slug,
         ledger=station.ledger,
         events=events,
+        action_interrupts=(
+            {name: action.interrupt for name, action in schedule.actions.items()}
+            if schedule is not None
+            else None
+        ),
         timezone=station.timezone,
         liner_dates=station.paths.liner_dates,
         ads=getattr(station, "ads", None),

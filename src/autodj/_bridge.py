@@ -954,6 +954,7 @@ class PlayerBridge:
         """
         state = self.player._state
         state.discovery_enabled = not state.discovery_enabled
+        self.player.refresh_render_ahead()
         return state.discovery_enabled
 
     # ------------------------------------------------------------------
@@ -2390,6 +2391,7 @@ class PlayerBridge:
         p = self.player
         if not name:
             p._preset = None
+            p.refresh_render_ahead()
             return
         from autodj.presets import get_preset
 
@@ -2401,6 +2403,8 @@ class PlayerBridge:
                 p._discovery_every = p._preset.discovery_every
         except ValueError:
             pass
+        else:
+            p.refresh_render_ahead()
 
     def set_transition(self, effect: str) -> None:
         """Set the transition effect by name.
@@ -2470,6 +2474,8 @@ class PlayerBridge:
             values["repeat_rules"] = body.repeat_rules
         with settings_lock(player):
             self._apply_playback_settings(values, related_artists, related_tracks)
+        if "pick_mode" in values:
+            player.refresh_render_ahead()
         if "music_speed_percent" in values and self._bus_mode():
             # The playing render is immutable. Refresh only the unrendered
             # lookahead so the new speed starts at the next buffer boundary.
@@ -2631,3 +2637,4 @@ class PlayerBridge:
         else:
             self.player._discovery_every = int(every)
             self.player._state.discovery_enabled = True
+        self.player.refresh_render_ahead()

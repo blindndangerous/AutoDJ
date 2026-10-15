@@ -186,6 +186,7 @@ class SimulationSource:
     ads: Any = None
     clockwheel: tuple[Mapping[str, Any], Sequence[Any]] | None = None
     shows: Any = None
+    action_interrupts: Mapping[str, str] | None = None
 
 
 #: The picker settings a run copies from the live player.

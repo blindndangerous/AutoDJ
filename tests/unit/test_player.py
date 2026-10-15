@@ -2138,6 +2138,8 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     first, second, third = MagicMock(), MagicMock(), MagicMock()
     picks = iter([second, third])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2171,6 +2173,8 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     bad, good, after = MagicMock(), MagicMock(), MagicMock()
     picks = iter([good, after])
     p._choose_next = lambda _current, _context: (next(picks), "similarity")
@@ -2205,6 +2209,8 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pending_clock_step = None
     p._pending_from_queue = False
     p._cfg = MagicMock()
+    p._preset = None
+    p._discovery_every = None
     p._choose_next = lambda _current, _context: (MagicMock(), "similarity")
     p._last_pick_mode = "similarity"
     attempts = []

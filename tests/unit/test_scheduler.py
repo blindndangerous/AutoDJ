@@ -515,6 +515,34 @@ def test_soft_event_waits_for_the_song_and_runs_once(tmp_path: Path) -> None:
     assert rig.calls == ["action"]
 
 
+def test_waiting_one_time_soft_event_is_recorded_missed_after_restart(tmp_path: Path) -> None:
+    path = tmp_path / "schedule.json"
+    first = Rig(path, now="2026-10-11 11:59", playing=True)
+    first.schedule.start()
+    event = first.add(repeat="once", date="2026-10-11", time="12:00")
+    first.tick_at("2026-10-11 12:00")
+    assert first.schedule.pending == [event.id]
+    assert first.schedule.events[event.id].enabled
+
+    restarted = Rig(path, now="2026-10-11 12:01", playing=True)
+    restarted.schedule.start()
+    assert not restarted.schedule.events[event.id].enabled
+    assert [(run.event_id, run.result) for run in restarted.schedule.runs] == [(event.id, "missed")]
+
+
+def test_waiting_one_time_soft_event_disables_when_it_runs(tmp_path: Path) -> None:
+    rig = Rig(tmp_path / "schedule.json", now="2026-10-11 11:59", playing=True)
+    rig.schedule.start()
+    event = rig.add(repeat="once", date="2026-10-11", time="12:00")
+    rig.tick_at("2026-10-11 12:00")
+    rig.playing = False
+    rig.tick_at("2026-10-11 12:01")
+
+    assert rig.calls == ["action"]
+    assert not rig.schedule.events[event.id].enabled
+    assert [run.result for run in rig.schedule.runs] == ["ok"]
+
+
 def test_soft_event_runs_when_nothing_is_playing(tmp_path: Path) -> None:
     rig = Rig(tmp_path / "schedule.json", playing=True)
     rig.schedule.start()

@@ -1215,7 +1215,21 @@ class Player:
             entries = [e for e in self.playable_entries() if not e.is_silent]
             if not entries:
                 return None
-            if self._cfg.playback.pick_mode == "clock":
+            if self._cfg.playback.pick_mode == "clock" and self._clock is not None:
+                boundary = self._clock_next_boundary
+                now = self._now()
+                if boundary is not None and boundary <= now:
+                    from datetime import datetime
+
+                    from autodj.clockwheel import next_boundary
+
+                    following = next_boundary(
+                        datetime.fromtimestamp(now).astimezone(),
+                        self._clock.get("resync_minutes", [0]),
+                    )
+                    self._clock_next_boundary = boundary = (
+                        following.timestamp() if following else None
+                    )
                 context = dmca or self._pick_context()
                 # Taken before the pick, so a clockwheel selected meanwhile
                 # leaves the seed's place out rather than mislabelled.
@@ -1235,8 +1249,8 @@ class Player:
                             None,
                             picked.liner,
                             upcoming,
-                            self._now(),
-                            getattr(self, "_clock_next_boundary", None),
+                            now,
+                            boundary,
                         ):
                             self._seed_clock_cursor = picked.next_cursor
                             self._seed_clock_step = song_step
@@ -1344,6 +1358,7 @@ class Player:
             with self._clock_lock:
                 self._pending_clock_update = None
             self.configure_clock()
+        self.refresh_render_ahead()
 
     def _configure_clock(self) -> None:
         if self._library is None:
@@ -2313,7 +2328,7 @@ class Player:
                     ):
                         liners.append(picked.liner)
                 cursor = marked_cursor
-        elif self._cfg.playback.pick_mode == "clock":
+        elif self._cfg.playback.pick_mode == "clock" and self._clock is not None:
             if seed is not None:
                 self._chosen_clock_step = (
                     seed[3] if len(seed) > 3 else getattr(self, "_seed_clock_step", None)
@@ -2363,7 +2378,9 @@ class Player:
 
                     when = self._handoff_time(current, lead_s=lead_s)
                     track_start, track_segue = self._clock_music_span(picked.entry)
-                    duration_s = track_segue - track_start
+                    duration_s = (track_segue - track_start) / self.music_playback_rate(
+                        picked.entry
+                    )
                     if resync_due(when, duration_s, boundary):
                         restart = True
                 if restart:
@@ -2770,6 +2787,7 @@ class Player:
             station_mode = (
                 self._library is not None and self._cfg.playback.transition_mode == "saved_points"
             )
+            pick_signature = self._pick_signature()
             liners: tuple[tuple[IndexEntry, bool], ...] = ()
             next_cursor, liner_key = None, ""
             next_clock_step = None
@@ -2916,6 +2934,7 @@ class Player:
                     pick_mode=pick_mode,
                     from_queue=current_from_queue,
                     next_pick_mode=next_mode,
+                    next_pick_signature=pick_signature,
                     next_from_queue=next_mode == "queue",
                     set_generation=generation,
                     previous_entry=previous,
@@ -3492,13 +3511,13 @@ class Player:
         return cut_short
 
     def refresh_render_ahead(self) -> None:
-        """Re-check the rendered next track after a queue edit.
+        """Re-check the rendered next track after a queue or picking edit.
 
-        Only a render whose queue pick the edit changed is re-rendered
+        Only a render whose pick the edit changed is re-rendered
         (see :meth:`_queue_pick_is_stale`), and the old render stays
         playable until its replacement is ready, so an edit never causes
         dead air; if the bus needs it first, the edit lands a track later.
-        Call after editing the queue.
+        Call after editing the queue or song-picking settings.
         """
         with self._state.queue_lock:
             self._render_ahead.refresh()
@@ -3617,8 +3636,19 @@ class Player:
                     break
         return waiting[0] if waiting else None
 
+    def _pick_signature(self) -> tuple[str, str, bool, int | None, int | None, bool | None]:
+        clock_mode = self._cfg.playback.pick_mode == "clock"
+        return (
+            repr(self._cfg.playback),
+            repr(self._preset),
+            self._state.discovery_enabled,
+            self._discovery_every,
+            self._clock_revision if clock_mode else None,
+            self._clock is not None if clock_mode else None,
+        )
+
     def _queue_pick_is_stale(self, track: RenderedTrack) -> bool:
-        """Whether a queue edit changed what *track* should be followed by.
+        """Whether a queue or picking edit changed what follows *track*.
 
         A render that took its successor from the queue is stale when the
         queue head (skipping *track*'s own slot) is now something else or
@@ -3628,9 +3658,15 @@ class Player:
         """
         if track.next_pick_mode == "clock" and track.next_clock_revision != self._clock_revision:
             return True
-        # A booked break is committed to this handoff; defer speed until after it.
+        # A booked break has already committed its next track.
         if track.break_events or self._pinned_before(track):
             return False
+        if (
+            track.next_pick_signature is not None
+            and not track.next_from_queue
+            and track.next_pick_signature != self._pick_signature()
+        ):
+            return True
         if track.playback_rate != self.music_playback_rate(track.entry):
             return True
         if (
@@ -6200,6 +6236,15 @@ class Player:
         "halftime": 3.0,  # tempo halve, pitch preserved
     }
 
+    def _pick_effect(self, mode: Any, rng: Any = None) -> Any:
+        from autodj.transitions import TransitionFx, pick_effect
+
+        if mode == TransitionFx.ROTATE:
+            cursor = self.__dict__.get("_rotate_cursor", 0)
+            self._rotate_cursor = cursor + 1
+            return pick_effect(mode, rng, rotate_index=cursor)
+        return pick_effect(mode, rng)
+
     def planned_transition(
         self, current: IndexEntry, upcoming: IndexEntry, pick_mode: str = ""
     ) -> str:
@@ -6228,7 +6273,7 @@ class Player:
         """
         if self._cfg.playback.transition_mode == "saved_points":
             return "none"
-        from autodj.transitions import TransitionFx, choose_auto_effect, pick_effect
+        from autodj.transitions import TransitionFx, choose_auto_effect
 
         shift = self._key_shift(current, upcoming)
         setting = (str(self._cfg.transitions.effect).lower(), shift)
@@ -6242,7 +6287,7 @@ class Player:
                 if mode == TransitionFx.AUTO:
                     chosen = choose_auto_effect(current, upcoming, pick_mode, rng, key_shift=shift)
                 else:
-                    chosen = pick_effect(mode, rng)
+                    chosen = self._pick_effect(mode, rng)
                 planned = (setting, chosen.value)
             plans[key] = planned  # most recent last
             while len(plans) > self._FX_PLANS_KEPT:
@@ -6330,12 +6375,12 @@ class Player:
             ``(a_trimmed, b_head, extra_layer, effect_name)``.
         """
         from autodj.beat_sync import downbeat_offset
-        from autodj.transitions import TransitionFx, apply_transition, pick_effect
+        from autodj.transitions import TransitionFx, apply_transition
 
         extra_shape = (0,) if audio_a_trimmed.ndim == 1 else (0, 2)
         extra_layer = np.zeros(extra_shape, dtype=np.float32)
         if plan is None:
-            plan = _FxPlan(pick_effect(_effect_mode(self._cfg.transitions.effect)).value)
+            plan = _FxPlan(self._pick_effect(_effect_mode(self._cfg.transitions.effect)).value)
         chosen_fx = _effect_mode(plan.name)
         if chosen_fx == TransitionFx.NONE:
             return audio_a_trimmed, b_head, extra_layer, chosen_fx.value

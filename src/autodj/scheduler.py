@@ -863,13 +863,19 @@ class Scheduler:
             due = next_run(event, before, self.zone)
             if due is None or due > now:
                 continue
-            if event.repeat == "once":
+            waiting_soft = (
+                now - due <= MISSED_AFTER
+                and event.timing == "soft"
+                and self._waits(event)
+                and self._song_playing()
+            )
+            if event.repeat == "once" and not waiting_soft:
                 event.enabled = False
                 disabled = True
             if now - due > MISSED_AFTER:
                 logger.warning("Scheduled event %r due at %s was missed", event.name, due)
                 await self._record(event, "missed", "Missed while the computer slept or stalled")
-            elif event.timing == "soft" and self._waits(event) and self._song_playing():
+            elif waiting_soft:
                 if event.id not in self.pending:
                     self.pending.append(event.id)
             elif (
@@ -919,6 +925,10 @@ class Scheduler:
             event = self.events.get(event_id)
             no_skip = self._pending_hard_deadline.pop(event_id, None) is not None
             if event is not None:
+                if event.repeat == "once":
+                    event.enabled = False
+                    self._save_quietly()
+                    await self._publish({"type": "schedule_changed"})
                 await self.run(event, interrupt=not no_skip)
 
     def hard_events(self) -> tuple[ScheduledEvent, ...]:

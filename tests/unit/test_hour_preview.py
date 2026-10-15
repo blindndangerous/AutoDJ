@@ -378,6 +378,42 @@ def test_fixed_points_are_restarts_and_events_in_the_span() -> None:
     ]
 
 
+def test_hour_points_advance_across_lord_howe_clock_changes() -> None:
+    zone = ZoneInfo("Australia/Lord_Howe")
+    now = datetime(2026, 4, 5, 0, 30, tzinfo=zone).timestamp()
+    result: list[list[Point]] = []
+    worker = threading.Thread(
+        target=lambda: result.append(fixed_points(now, now + 3 * 3600, zone, hours=True)),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(3)
+    assert not worker.is_alive()
+    assert result
+    assert [clock_text(point.at, zone) for point in result[0]] == ["01:00", "02:00", "03:00"]
+
+    spring = datetime(2026, 10, 4, 0, 30, tzinfo=zone).timestamp()
+    points = fixed_points(spring, spring + 3 * 3600, zone, hours=True)
+    assert [clock_text(point.at, zone) for point in points] == ["01:00", "03:00", "04:00"]
+
+
+def test_hard_ad_break_preview_does_not_claim_to_cut_a_song() -> None:
+    event = _event("Ads", action="ad_break", time=clock_time(12, 30), timing="hard")
+    (point,) = fixed_points(
+        NOW, NOW + 3600, UTC_ZONE, events=[event], action_interrupts={"ad_break": "none"}
+    )
+    current = SimpleNamespace(artist="A", title="Long song", display_name="A - Long song")
+    following = SimpleNamespace(artist="B", title="Next", display_name="B - Next")
+    timeline = [
+        Item("song", NOW + 18 * 60, 300.0, "on_air", current),
+        Item("song", NOW + 23 * 60, 200.0, "predicted", following),
+    ]
+    landing = land(point, song_changes(timeline), NOW + 3600)
+    assert landing.cut == 0
+    short, sentence = landing_words(landing, UTC_ZONE)
+    assert "cuts" not in short + sentence
+
+
 # -- what is fixed, browser playback ---------------------------------------------
 
 

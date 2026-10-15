@@ -3376,7 +3376,8 @@ Backtiming goes to each fixed point in the span:
   it, whether that song is fixed or predicted, and how far it runs past the restart. Liners and
   breaks that run straight into a song start its song change.
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
-  late it runs; a hard event runs on time and the preview says how much of the song it cuts.
+  late it runs. A hard event runs on time; the preview reports a cut only when its action skips
+  the playing song. Ad breaks and stream changes leave the song playing.
 
 The card shows how many rows are fixed and predicted, such as "3 fixed items, 20 predicted,
 through 13:40.", with the backtiming lines under it. **Refresh preview** and **Shift+H** (from

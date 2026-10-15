@@ -494,19 +494,21 @@ def test_a_profile_switch_is_named_as_not_simulated(tmp_path: Path) -> None:
 # -- dead air ------------------------------------------------------------------
 
 
-def test_dead_air_is_found_when_the_clockwheel_cannot_play(tmp_path: Path) -> None:
+def test_no_clockwheel_falls_back_without_dead_air(tmp_path: Path) -> None:
     music = _songs(0, 10)
     source = make_station(tmp_path, music, playback={"pick_mode": "clock"})
     report = simulate(source, SimulationRequest(hours=2, start=NOON, seed=1))
     dead = report["dead_air"]
-    assert report["picks"] == 0
-    assert dead["silent_minutes"] == 120
-    assert dead["silences"][0]["reason"] == "No clockwheel is active"
-    text = report_text(report)
-    assert "Silence: about 120 minutes with nothing playable." in text
+    assert report["picks"] > 0
+    assert report["modes"].get("fallback", 0) > 0
+    assert report["modes"].get("clock", 0) == 0
+    assert dead["failed_picks"] == 0
+    assert dead["silent_minutes"] == 0
+    assert dead["silences"] == []
+    assert "No moment had nothing to play." in report_text(report)
 
 
-def test_dead_air_ends_when_the_schedule_brings_a_clockwheel_back(tmp_path: Path) -> None:
+def test_schedule_brings_clockwheel_back_without_dead_air(tmp_path: Path) -> None:
     music = _songs(0, 20)
     events = [
         _event(
@@ -527,8 +529,31 @@ def test_dead_air_ends_when_the_schedule_brings_a_clockwheel_back(tmp_path: Path
         events=events,
     )
     report = simulate(source, SimulationRequest(hours=3, start=NOON, seed=1))
-    assert report["dead_air"]["silent_minutes"] == 60
+    assert report["dead_air"]["silent_minutes"] == 0
+    assert report["dead_air"]["failed_picks"] == 0
+    assert report["modes"].get("fallback", 0) > 0
+    assert report["modes"].get("clock", 0) > 0
     assert report["picks"] > 20
+
+
+def test_loaded_clockwheel_without_a_playable_song_reports_dead_air(tmp_path: Path) -> None:
+    music = _songs(0, 10)
+    source = make_station(
+        tmp_path,
+        music,
+        clockwheels=[
+            {
+                "name": "Missing track",
+                "steps": [{"type": "track", "source": "music", "path": "missing.flac"}],
+            }
+        ],
+        active_clock="Missing track",
+        playback={"pick_mode": "clock"},
+    )
+    report = simulate(source, SimulationRequest(hours=1, start=NOON, seed=1))
+    assert report["picks"] == 0
+    assert report["dead_air"]["silent_minutes"] == 60
+    assert report["dead_air"]["silences"]
 
 
 # -- the report in words -------------------------------------------------------
