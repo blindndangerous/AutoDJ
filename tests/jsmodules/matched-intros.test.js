@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatchedIntros, introFormError, introText } from "../../src/autodj/static/modules/matched-intros.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-const section = html.match(/<section id="intros-editor"[\s\S]*?<\/section>/)[0];
+const section = new window.DOMParser().parseFromString(html, "text/html").getElementById("intros-editor").outerHTML;
 const dialog = html.match(/<dialog id="confirm-dialog"[\s\S]*?<\/dialog>/)[0];
 
 const RECORD = { id: "a".repeat(32), kind: "music", title: "New Single", artist: "Example Artist", path: "/music/new.flac" };

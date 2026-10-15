@@ -2678,7 +2678,8 @@ describe("static accessibility contracts", () => {
   it("gives Track info's tag editor labelled native fields, linkable errors and one status", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #tags-editor");
-    expect(section.getAttribute("aria-labelledby")).toBe("tags-heading");
+    // A collapsible card, its heading in the summary as on Now Playing (#297).
+    expect(section.querySelector(":scope > summary > h3").id).toBe("tags-heading");
     expect(document.getElementById("tags-heading").tagName).toBe("H3");
     const form = section.querySelector("form#tags-form");
     expect(form.hasAttribute("novalidate")).toBe(true);
@@ -2731,7 +2732,8 @@ describe("static accessibility contracts", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #intros-editor");
     expect(section.hidden).toBe(true);
-    expect(section.getAttribute("aria-labelledby")).toBe("intros-heading");
+    // A collapsible card, its heading in the summary as on Now Playing (#297).
+    expect(section.querySelector(":scope > summary > h3").id).toBe("intros-heading");
     expect(document.getElementById("intros-heading").tagName).toBe("H3");
     // Two lists, each named by its own heading, and still lists in Safari.
     for (const kind of ["song", "artist"]) {
@@ -2807,7 +2809,8 @@ describe("static accessibility contracts", () => {
     installDocument({ html: htmlSource });
     const section = document.querySelector("#panel-track-info #landmarks-section");
     expect(section.hidden).toBe(true);
-    expect(section.getAttribute("aria-labelledby")).toBe("landmarks-heading");
+    // A collapsible card, its heading in the summary as on Now Playing (#297).
+    expect(section.querySelector(":scope > summary > h3").id).toBe("landmarks-heading");
     expect(document.getElementById("landmarks-heading").tagName).toBe("H3");
     expect(document.getElementById("landmarks-heading").textContent).toBe("Song structure");
     // A real list, named by its heading, still a list in Safari.

@@ -525,7 +525,7 @@ describe("clock folder and points controls", () => {
 
   it("loads the tags with the track, saves unsaved tags before switching and updates the details", async () => {
     const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-    document.getElementById("panel-track-info").insertAdjacentHTML("beforeend", html.match(/<section id="tags-editor"[\s\S]*?<\/section>/)[0]);
+    document.getElementById("panel-track-info").insertAdjacentHTML("beforeend", new window.DOMParser().parseFromString(html, "text/html").getElementById("tags-editor").outerHTML);
     const tagsOf = (title) => ({ title, artist: "Artist", album: "", genre: "", year: "", bpm: "", key: "", isrc: "" });
     const request = vi.fn(async (url, options) => {
       if (url === "/api/library/tags") {

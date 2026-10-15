@@ -24,17 +24,19 @@ describe("playback controls grouping", () => {
 
 describe("card headings", () => {
   it("gives every card a level-two heading inside its disclosure summary", () => {
+    // Track info's cards sit under its own h2, so theirs are h3s (#297).
     installIndex();
     const summaries = [...document.querySelectorAll("details.card > summary")];
     expect(summaries.length).toBeGreaterThan(0);
     for (const summary of summaries) {
       const headings = summary.querySelectorAll("h1, h2, h3, h4, h5, h6");
       expect(headings, summary.textContent.trim()).toHaveLength(1);
-      expect(headings[0].tagName).toBe("H2");
+      expect(headings[0].tagName).toBe(summary.closest("#panel-track-info") ? "H3" : "H2");
       expect(headings[0].parentElement).toBe(summary);
     }
     // Library h3s and the voice-liner "Files" h3 now sit under an h2.
     for (const h3 of document.querySelectorAll("main h3")) {
+      if (h3.closest("#panel-track-info")) continue;
       const card = h3.closest("details.card");
       expect(card?.querySelector(":scope > summary > h2"), h3.textContent).not.toBeNull();
     }

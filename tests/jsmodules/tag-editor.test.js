@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installTagEditor, keyAccepted, tagFieldError } from "../../src/autodj/static/modules/tag-editor.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
-const section = html.match(/<section id="tags-editor"[\s\S]*?<\/section>/)[0];
+const section = new window.DOMParser().parseFromString(html, "text/html").getElementById("tags-editor").outerHTML;
 const keyCases = JSON.parse(readFileSync(join(process.cwd(), "tests", "jsmodules", "golden", "key-cases.json"), "utf8"));
 
 const RECORD = {
