@@ -420,10 +420,7 @@ function clearStationViews() {
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
-  _linerEls.lnFileList.replaceChildren();
-  _linerEls.lnFolderDisplay.textContent = "";
-  _linerEls.lnStatus.textContent = "";
-  _linerEls.lnBrowseStatus.textContent = "";
+  linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
   _lastWhyKey = "";
