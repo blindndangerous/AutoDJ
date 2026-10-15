@@ -878,5 +878,12 @@ describe("liner play dates", () => {
       .toBe("Do not play after: Input should be a valid date"));
     expect(document.activeElement).toBe(after);
     expect(form.hidden).toBe(false);
+
+    // A half-typed date gets a plain error, not the server's.
+    Object.defineProperty(before, "validity", { value: { badInput: true } });
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(document.getElementById("ln-dates-error").textContent)
+      .toBe("Enter Not before as a full date, or leave it empty.");
+    expect(document.activeElement).toBe(before);
   });
 });
