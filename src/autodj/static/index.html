@@ -714,6 +714,7 @@
     <button type="button" role="tab" id="stab-display" data-subview="display" data-panel="spanel-display" aria-selected="false" tabindex="-1">Display and keys</button>
     <button type="button" role="tab" id="stab-liners" data-subview="liners" data-panel="spanel-liners" aria-selected="false" tabindex="-1">Voice liners</button>
     <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
+    <button type="button" role="tab" id="stab-breaks" data-subview="breaks" data-panel="spanel-breaks" aria-selected="false" tabindex="-1">Breaks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
     <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
@@ -1777,6 +1778,70 @@
     </span>
   </div>
 
+  <div class="card" role="tabpanel" id="spanel-breaks" aria-labelledby="stab-breaks" hidden>
+    <h3>Breaks</h3>
+    <!-- breaks-settings.js fills this panel when it is seen.  The settings
+         are this station's, saved with Save break settings; the result is
+         said once through #brk-status.  The upload limits, quotas and
+         waiting times stay in config.toml.  #brk-reason is plain text,
+         not live: it says why breaks cannot be taken now, if they cannot. -->
+    <p class="card-desc">
+      DJ breaks, news and weather from an announcer program such as radiodj, and the voice tracks you record in the Voice tracks tab.  A break joins the song change after the next song.  An announcer program needs an announcer token from Settings, Analysis workers.
+    </p>
+    <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <p id="brk-reason" hidden></p>
+    <form id="brk-form" novalidate aria-labelledby="brk-form-heading">
+      <h4 id="brk-form-heading">Break settings</h4>
+      <div class="settings-check">
+        <input type="checkbox" id="brk-enabled" aria-describedby="brk-enabled-help">
+        <label for="brk-enabled">Take breaks on this station</label>
+      </div>
+      <span class="setting-desc" id="brk-enabled-help">
+        Off, the announcer program is told breaks are off, and new breaks and voice tracks are refused.  Turning breaks off drops the breaks still waiting for their song change; one already mixed into the next song change still plays.  Off by default.
+      </span>
+      <fieldset id="brk-placement" aria-describedby="brk-placement-help">
+        <legend>Where a DJ break goes</legend>
+        <div class="settings-check">
+          <input type="radio" name="brk-placement" id="brk-placement-auto" value="auto" checked aria-describedby="brk-placement-auto-help">
+          <label for="brk-placement-auto">Automatic</label>
+        </div>
+        <span class="setting-desc" id="brk-placement-auto-help">
+          Talks up the next song when its intro is at least as long as the shortest intro below, and otherwise plays the break between the songs.
+        </span>
+        <div class="settings-check">
+          <input type="radio" name="brk-placement" id="brk-placement-talk-up" value="talk_up" aria-describedby="brk-placement-talk-up-help">
+          <label for="brk-placement-talk-up">Talk up the next song</label>
+        </div>
+        <span class="setting-desc" id="brk-placement-talk-up-help">
+          Talks up any intro.  With no intro point the break still plays between the songs.
+        </span>
+        <div class="settings-check">
+          <input type="radio" name="brk-placement" id="brk-placement-standalone" value="standalone" aria-describedby="brk-placement-standalone-help">
+          <label for="brk-placement-standalone">Between the songs</label>
+        </div>
+        <span class="setting-desc" id="brk-placement-standalone-help">
+          Always plays the break between the songs.
+        </span>
+      </fieldset>
+      <span class="setting-desc" id="brk-placement-help">
+        For a DJ break that leaves its placement to the station.  News, weather and music news always play between the songs.
+      </span>
+      <div class="settings-row tag-field">
+        <label for="brk-min-intro">Shortest intro to talk up (seconds)</label>
+        <input type="text" id="brk-min-intro" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-min-intro-help">
+        <span class="setting-desc" id="brk-min-intro-help">From 0 to 60, 2 by default.  Automatic placement talks up an intro at least this long, from the song's Start to its Intro point.</span>
+        <p id="brk-min-intro-error" class="field-error" hidden></p>
+      </div>
+      <div class="settings-row tag-field">
+        <label for="brk-duck">Music under a break (decibels)</label>
+        <input type="text" id="brk-duck" inputmode="decimal" autocomplete="off" spellcheck="false" aria-describedby="brk-duck-help">
+        <span class="setting-desc" id="brk-duck-help">How far the music drops under a break's voice, from minus 30 to 0.  Leave it blank to use the voice liner duck depth<span id="brk-duck-liners"></span>.</span>
+        <p id="brk-duck-error" class="field-error" hidden></p>
+      </div>
+      <button type="submit" id="brk-save">Save break settings</button>
+    </form>
+  </div>
+
   <div class="card" role="tabpanel" id="spanel-schedule" aria-labelledby="stab-schedule" hidden>
     <h3>Schedule</h3>
     <!-- scheduler-panel.js fills this panel when it is seen, and again when
@@ -2485,7 +2550,7 @@
       A computer with a graphics card can analyse new songs for this server far faster than the server can.  Create a token below, then run <code>autodj worker</code> on that computer with this server's address and the token.  The worker downloads each song from this server, so it needs no copy of the music.  While a worker is connected, this server pauses its own analysis.
     </p>
     <p class="card-desc">
-      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Breaks also need <code>[breaks] enabled = true</code> in config.toml.
+      An announcer program on this computer, such as radiodj, sends a station DJ breaks, news and weather with an announcer token.  Turn breaks on for the station in Settings, Breaks.
     </p>
     <div id="workers-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <h4 id="workers-heading">Workers</h4>
@@ -2573,9 +2638,11 @@
     <button type="button" id="queue-clear" aria-describedby="station-context">Clear queue</button>
   </details>
 
-  <!-- Listener requests from the public request page; shown only when
-       [requests] is on.  The lists are plain text and refresh silently;
-       each button's result is said once in #requests-status. -->
+  <!-- Listener requests from the public request page, and the switch that
+       opens and closes that page.  The card shows once the station has
+       answered; the lists show only while requests are on.  The lists are
+       plain text and refresh silently; each button's result is said once
+       in #requests-status. -->
   <details class="card" id="requests-card" open hidden>
     <summary id="requests-heading"><h2>Listener requests</h2></summary>
     <p id="requests-summary">No requests waiting.</p>
@@ -2587,10 +2654,28 @@
     <ul id="requests-list" aria-label="Waiting requests" hidden></ul>
     <h3 id="requests-recent-heading" hidden>Recent decisions</h3>
     <ul id="requests-recent" aria-labelledby="requests-recent-heading" hidden></ul>
-    <!-- Bridge songs and the give-up rule (#49): saved for this station
-         with Save request settings; the result is said in #requests-status. -->
+    <!-- On or off, approval, bridge songs and the give-up rule (#49): saved
+         for this station with Save request settings; the result is said in
+         #requests-status. -->
     <form id="requests-settings" novalidate aria-labelledby="requests-settings-heading">
-      <h3 id="requests-settings-heading">Smooth transitions</h3>
+      <h3 id="requests-settings-heading">Request settings</h3>
+      <div class="settings-check">
+        <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
+        <label for="requests-enabled">Take listener requests</label>
+      </div>
+      <span class="setting-desc" id="requests-enabled-help">Opens this station's public request page.  Off, the page says requests are closed, and requests already waiting are kept for when you turn them on again.  Off by default.</span>
+      <fieldset id="requests-approval">
+        <legend>Approval</legend>
+        <div class="settings-check">
+          <input type="radio" name="requests-approval" id="requests-approval-manual" value="manual" checked>
+          <label for="requests-approval-manual">I approve each one</label>
+        </div>
+        <div class="settings-check">
+          <input type="radio" name="requests-approval" id="requests-approval-auto" value="auto">
+          <label for="requests-approval-auto">Automatic: a request that keeps the rules joins the queue at once</label>
+        </div>
+      </fieldset>
+      <h4 id="requests-smooth-heading">Smooth transitions</h4>
       <div class="settings-check">
         <input type="checkbox" id="requests-bridges" aria-describedby="requests-bridges-help">
         <label for="requests-bridges">Add bridge songs before a request that would sound abrupt</label>

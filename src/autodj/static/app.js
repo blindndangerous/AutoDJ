@@ -320,6 +320,7 @@ let cartWallControls = null;
 let voiceTrackerControls = null;
 let adsControls = null;
 let listenerRequestControls = null;
+let breakSettingsControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -420,6 +421,7 @@ function clearStationViews() {
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
+  breakSettingsControls?.clear();
   linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
@@ -1751,6 +1753,7 @@ function refreshStationPanels() {
   void hourPreviewControls?.refresh();
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
+  void breakSettingsControls?.refresh();
   void voiceTrackerControls?.refresh();
   void liveSettings?.refresh();
   void adsControls?.refresh();
@@ -3054,6 +3057,7 @@ hourPreviewControls = installHourPreview();
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
 import { installListenerRequests } from "./modules/listener-requests.js";
+import { installBreakSettings } from "./modules/breaks-settings.js";
 
 let timeCheckControls = null;
 let linerControls = null;
@@ -3186,6 +3190,7 @@ function startAuthenticatedApp(initialState) {
   };
   timeCheckControls = installTimeChecks(linerAudio);
   listenerRequestControls = installListenerRequests();
+  breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.
