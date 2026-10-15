@@ -3329,7 +3329,7 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 Now Playing > **Hour preview** lists what the station plays next, with the time each item is
 expected to start, and says how the hour lands: how early or late the song changes fall against
-the top of the hour, each clockwheel restart and each scheduled event. Choose the next 30
+each clockwheel restart and each scheduled event. Choose the next 30
 minutes, hour, 2 hours or 3 hours under **Show**.
 
 Each row says in its Status column whether it is fixed or predicted:
@@ -3361,19 +3361,17 @@ Each row says in its Status column whether it is fixed or predicted:
 
 Backtiming goes to each fixed point in the span:
 
-- **Top of the hour**: the nearer song change counts. "Top of the hour, 13:00: expected 0:35 early" means
-  the song change nearest the hour comes 35 seconds before it; the line names the song that
-  causes it, whether that song is fixed or predicted, and how far it runs past the hour. Liners and breaks that run straight into
-  a song start its song change.
 - **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it
-  does on the air, so the preview says how early or late that is.
+  does on the air. "Top of the hour, clockwheel restart, 13:00: expected 0:35 early" means the
+  song change nearest the restart comes 35 seconds before it; the line names the song that causes
+  it, whether that song is fixed or predicted, and how far it runs past the restart. Liners and
+  breaks that run straight into a song start its song change.
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
   late it runs; a hard event runs on time and the preview says how much of the song it cuts.
 
-The card's summary is the first top of the hour (or clockwheel restart) and how it lands, then
-how many rows are fixed and predicted, such as "Next top of the hour, 13:00: expected 0:35 early. 3 fixed
-items, 20 predicted, through 13:10." When that top of the hour does not restart the clockwheel, the summary also
-times the next clockwheel restart in the span. **Refresh preview** says
+The card's summary is the next clockwheel restart or scheduled event and how it lands, then
+how many rows are fixed and predicted, such as "Next clockwheel restart, 13:30: expected 0:35
+early. 3 fixed items, 20 predicted, through 13:40." **Refresh preview** says
 it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
