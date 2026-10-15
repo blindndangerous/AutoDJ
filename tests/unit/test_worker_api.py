@@ -190,6 +190,24 @@ def test_claims_lease_each_song_to_one_worker_and_expired_leases_return(server):
     assert len(again["songs"]) == 3
 
 
+def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypatch):
+    _worker, secret = server.token("Waiting worker")
+    queue = server.manager.analysis_queue
+    real_claim = queue.claim
+    raced = False
+
+    def claim_with_race(holder, songs, seconds):
+        nonlocal raced
+        if not raced:
+            raced = True
+            real_claim("Other worker", songs, seconds)
+            return []
+        return real_claim(holder, songs, seconds)
+
+    monkeypatch.setattr(queue, "claim", claim_with_race)
+    assert len(claim(server, secret, batch=2)["songs"]) == 1
+
+
 def test_audio_is_served_only_for_a_song_this_worker_claimed(server):
     _a, first = server.token("A")
     _b, second = server.token("B")

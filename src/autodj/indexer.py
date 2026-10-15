@@ -216,8 +216,7 @@ def file_fingerprint(path: str | Path) -> tuple[int, str]:
     The fingerprint is the SHA-256 hex digest of up to
     :data:`FINGERPRINT_BYTES` read from the middle of the file, so it costs
     one small read however long the track is, and a move or rename keeps it.
-    Retagging a file changes its size or the bytes at its middle, which makes
-    it a different file here.
+    A tag edit inside existing padding can leave this fingerprint unchanged.
 
     Args:
         path: Path to the source audio file.

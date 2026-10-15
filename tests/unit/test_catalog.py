@@ -687,3 +687,16 @@ def test_unembedded_count_matches_paths_and_tracks_external_changes(tmp_path: Pa
         assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
         other.put_entry(entry(nested / "new.flac"))
         assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
+
+
+def test_removing_entry_cascades_to_vector(tmp_path: Path) -> None:
+    song = tmp_path / "song.flac"
+    song.write_bytes(b"x" * 100)
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        catalog.put_entry(entry(song))
+        vector = np.zeros(FEATURE_DIM, np.float32)
+        vector[0] = 1
+        catalog.set_vector(song, vector)
+        assert catalog.remove_entries([str(song)]) == 1
+        assert catalog._db().execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert catalog._db().execute("SELECT COUNT(*) FROM catalog_vectors").fetchone()[0] == 0

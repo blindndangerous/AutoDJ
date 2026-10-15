@@ -697,10 +697,10 @@ def read_playlist(path: Path) -> list[str]:
 def _line_candidates(line: str, base: Path, music_dir: Path | None) -> list[str]:
     """Where a playlist line may point: as written, then from the playlist or music folder."""
     if line.casefold().startswith("file://"):
-        from urllib.parse import unquote, urlsplit
+        from urllib.parse import urlsplit
         from urllib.request import url2pathname
 
-        line = url2pathname(unquote(urlsplit(line).path))
+        line = url2pathname(urlsplit(line).path)
     spelled = line if os.sep == "\\" else line.replace("\\", "/")
     windows_absolute = len(spelled) >= 2 and spelled[1] == ":"
     if os.path.isabs(spelled) or (os.sep == "\\" and windows_absolute):

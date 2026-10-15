@@ -13,7 +13,7 @@ from autodj.config import (
     ModelConfig,
     PlaybackConfig,
 )
-from autodj.indexer import FEATURE_DIM, IndexEntry
+from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
 
 
@@ -80,6 +80,8 @@ def test_limit_and_workers_use_one_batch_and_force_reembeds_existing_vector(tmp_
         del wrapper, throttle_ms, report
         seen.update(paths=[t.path for t in tracks], workers=workers)
         entries = [_entry(t.path) for t in tracks]
+        for entry in entries:
+            entry.size, entry.fingerprint = file_fingerprint(entry.path)
         vectors = [np.full(FEATURE_DIM, i, dtype=np.float32) for i, _ in enumerate(tracks)]
         for i in range(len(entries)):
             checkpoint(entries[: i + 1], vectors[: i + 1])
@@ -143,6 +145,8 @@ def test_each_successful_result_is_checkpointed_durably(tmp_path):
     def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
         del wrapper, workers, throttle_ms, report
         entries = [_entry(track.path) for track in tracks]
+        for entry in entries:
+            entry.size, entry.fingerprint = file_fingerprint(entry.path)
         vectors = [np.full(FEATURE_DIM, i + 1, dtype=np.float32) for i in range(len(entries))]
         checkpoint(entries[:1], vectors[:1])
         checkpoint(entries, vectors)

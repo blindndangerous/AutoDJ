@@ -38,7 +38,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from autodj.analysis_queue import WORKER_LEASE_SECONDS
+from autodj.analysis_queue import WORKER_LEASE_SECONDS, Lease
 from autodj.indexer import FEATURE_DIM, file_fingerprint
 from autodj.machine_tokens import (
     KNOWN_SCOPES,
@@ -262,13 +262,24 @@ def install_worker_api(
         def claim() -> dict[str, Any]:
             queue = manager.analysis_queue
             queue.seen(token.token_id, token.name, body.device or None)
-            records = manager.catalog.unembedded_music(limit=body.batch, exclude=queue.held_paths())
-            by_path = {record["path"]: record for record in records}
-            leases = queue.claim(
-                token.token_id,
-                [(r["path"], r["size"], r["fingerprint"]) for r in records],
-                WORKER_LEASE_SECONDS,
-            )
+            by_path: dict[str, dict[str, Any]] = {}
+            leases: list[Lease] = []
+            attempted: set[str] = set()
+            while len(leases) < body.batch:
+                records = manager.catalog.unembedded_music(
+                    limit=body.batch - len(leases), exclude=queue.held_paths() | attempted
+                )
+                if not records:
+                    break
+                by_path.update((record["path"], record) for record in records)
+                attempted.update(record["path"] for record in records)
+                leases.extend(
+                    queue.claim(
+                        token.token_id,
+                        [(r["path"], r["size"], r["fingerprint"]) for r in records],
+                        WORKER_LEASE_SECONDS,
+                    )
+                )
             songs = []
             for lease in leases:
                 record = by_path[lease.path]

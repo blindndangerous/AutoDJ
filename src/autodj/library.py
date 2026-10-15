@@ -794,7 +794,11 @@ class LibraryManager:
     def _same_identity(self, record: dict[str, Any], path: Path) -> bool:
         size, fingerprint = file_fingerprint(path)
         return bool(
-            size and fingerprint and size == record["size"] and fingerprint == record["fingerprint"]
+            size
+            and fingerprint
+            and size == record["size"]
+            and fingerprint == record["fingerprint"]
+            and path.stat().st_mtime_ns == record["mtime_ns"]
         )
 
     def _walk_error(self, error: OSError) -> None:
@@ -987,7 +991,7 @@ class LibraryManager:
         """Read *path*'s tags, cue points and analysis as needed; ``False`` on failure."""
         try:
             old = self.catalog.record_for_path(path)
-            unchanged = old is not None and self._same_identity(old, path)
+            unchanged = old is not None and old["kind"] == kind and self._same_identity(old, path)
             if override_tags and unchanged and old is not None:
                 from autodj.audio_meta import read_file_tags
 
@@ -1378,10 +1382,21 @@ def analyse_library(
                 for source in manager.catalog.sources_for_path(entry.path, "music")
             ) or manager.catalog.sources_for_path(entry.path, "liner"):
                 return
-            manager.catalog.put_entry(entry)
-            manager.catalog.set_vector(entry.path, vectors[-1])
+            stored = manager.catalog.store_analysis(
+                entry.path,
+                entry.size,
+                entry.fingerprint,
+                {
+                    "energy": entry.energy,
+                    "key": entry.key,
+                    "mode": entry.mode,
+                    "bpm": entry.bpm,
+                    "tempo_confidence": entry.tempo_confidence,
+                },
+                vectors[-1],
+            )
             queue.release_path(SERVER_HOLDER, _path(entry.path))
-            completed += 1
+            completed += int(stored)
 
         if tracks:
             with report:
