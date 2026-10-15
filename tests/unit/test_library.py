@@ -96,6 +96,8 @@ def manager_factory(tmp_path):
 
     def create(liners=None, **kwargs):
         cfg = make_config(tmp_path, **kwargs)
+        # The station's own liners folder, registered on a new library.
+        (cfg.index.active_dir / "liners").mkdir(parents=True, exist_ok=True)
         manager = LibraryManager(cfg, Similarity())
         manager.catalog.add_source(cfg.library.music_dir)
         if liners is not None:
