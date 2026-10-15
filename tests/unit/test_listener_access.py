@@ -161,6 +161,33 @@ def test_auth_limiter_resets_after_one_minute() -> None:
     assert not limiter.blocked("192.0.2.4")
 
 
+def test_auth_limiter_counts_an_ipv6_64_as_one_address() -> None:
+    limiter = ListenerAuthLimiter(clock=lambda: 0.0)
+    for i in range(5):
+        limiter.failed(f"2001:db8:1:2::{i + 1:x}")
+    assert limiter.blocked("2001:db8:1:2::ffff")
+    assert limiter.blocked("2001:db8:1:2::/64")  # a caller's own /64 key
+    assert not limiter.blocked("2001:db8:1:3::1")
+    for _ in range(5):
+        limiter.failed("::ffff:192.0.2.4")
+    assert limiter.blocked("192.0.2.4")
+
+
+def test_auth_limiter_keeps_a_bounded_number_of_addresses() -> None:
+    """A flood from many addresses in one minute neither grows nor slows it."""
+    limiter = ListenerAuthLimiter(clock=lambda: 0.0, max_keys=100)
+    for _ in range(5):
+        limiter.failed("192.0.2.4")
+    for i in range(1000):
+        limiter.failed(f"2001:db8:{i:x}::1")
+        assert len(limiter._failures) <= 100
+    # The least recently failed address is the one forgotten.
+    assert not limiter.blocked("192.0.2.4")
+    for _ in range(4):
+        limiter.failed(f"2001:db8:{999:x}::2")
+    assert limiter.blocked(f"2001:db8:{999:x}::3")
+
+
 def test_mapped_ipv6_shares_ipv4_limit_and_ban(tmp_path: Path) -> None:
     assert proxy_allowlist(["::ffff:198.51.100.0/120"]) == proxy_allowlist(["198.51.100.0/24"])
     access = ListenerAccess(tmp_path / "bans.json", 1)

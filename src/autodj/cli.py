@@ -466,6 +466,23 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
 
 
+def _file_log_record(record: logging.LogRecord) -> logging.LogRecord:
+    """Return *record* as the log file should hold it.
+
+    A record that carries ``LOG_FILE_TEXT`` (the start-up pairing code) is
+    written to the file with that text instead, so the code stays on the
+    console only.  The console handlers still get the original record.
+    """
+    from autodj.lan import LOG_FILE_TEXT
+
+    text = getattr(record, LOG_FILE_TEXT, None)
+    if not isinstance(text, str):
+        return record
+    copy = logging.makeLogRecord(record.__dict__)
+    copy.msg, copy.args = text, None
+    return copy
+
+
 def _add_log_file(path: Path) -> None:
     """Also write the log to *path*: a new file each day, the last 7 kept."""
     from logging.handlers import TimedRotatingFileHandler
@@ -477,6 +494,7 @@ def _add_log_file(path: Path) -> None:
         logging.getLogger(__name__).warning("Could not open the log file %s: %s", path, exc)
         return
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.addFilter(_file_log_record)
     logging.getLogger().addHandler(handler)
 
 

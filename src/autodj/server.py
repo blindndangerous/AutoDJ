@@ -96,7 +96,13 @@ from autodj.categories_api import install_categories
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
-from autodj.lan import PAIRING_ON_REQUEST_HINT, format_lan_banner, lan_urls, running_in_container
+from autodj.lan import (
+    LOG_FILE_TEXT,
+    PAIRING_ON_REQUEST_HINT,
+    format_lan_banner,
+    lan_urls,
+    running_in_container,
+)
 from autodj.listener_access import (
     AddressLimitError,
     BannedAddressError,
@@ -2841,6 +2847,7 @@ def serve(
             in_container=in_container,
             configured_hosts=lan_configured_hosts or (),
         )
+        # The log file gets the banner without the code: see LOG_FILE_TEXT.
         logger.info(
             "%s",
             format_lan_banner(
@@ -2849,9 +2856,21 @@ def serve(
                 in_container=in_container,
                 code_on_request=startup_policy.authentication_required,
             ),
+            extra={
+                LOG_FILE_TEXT: format_lan_banner(
+                    urls,
+                    None,
+                    in_container=in_container,
+                    code_on_request=startup_policy.authentication_required,
+                )
+            },
         )
     elif pairing is not None:
-        logger.info("Pair this browser within five minutes using code: %s", pairing[0])
+        logger.info(
+            "Pair this browser within five minutes using code: %s",
+            pairing[0],
+            extra={LOG_FILE_TEXT: "A pairing code was shown on the console."},
+        )
     elif startup_policy.authentication_required:
         logger.info("%s", PAIRING_ON_REQUEST_HINT)
 

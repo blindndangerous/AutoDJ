@@ -1524,3 +1524,35 @@ def test_serve_log_file_is_written_and_kept_for_a_week(tmp_path: Path) -> None:
         for handler in added:
             root.removeHandler(handler)
             handler.close()
+
+
+def test_serve_log_file_gets_the_file_text_of_a_console_only_record(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A record with LOG_FILE_TEXT (the start-up pairing code) keeps its code off disk."""
+    import logging
+
+    from autodj.cli import _add_log_file
+    from autodj.lan import LOG_FILE_TEXT
+
+    path = tmp_path / "logs" / "autodj.log"
+    root = logging.getLogger()
+    before = list(root.handlers)
+    _add_log_file(path)
+    added = [handler for handler in root.handlers if handler not in before]
+    try:
+        with caplog.at_level(logging.INFO, logger="autodj.test"):
+            logging.getLogger("autodj.test").info(
+                "Pair this browser within five minutes using code: %s",
+                "12345678",
+                extra={LOG_FILE_TEXT: "A pairing code was shown on the console."},
+            )
+        added[0].flush()
+        text = path.read_text(encoding="utf-8")
+        assert "12345678" not in text
+        assert "A pairing code was shown on the console." in text
+        assert "using code: 12345678" in caplog.text  # the console still shows it
+    finally:
+        for handler in added:
+            root.removeHandler(handler)
+            handler.close()

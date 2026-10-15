@@ -1973,7 +1973,11 @@ def install_station_routes(router: StationRouter) -> None:
         blacklist = None
         try:
             body = await request.json()
-            blacklist = body.get("blacklist") if isinstance(body, dict) else None
+            if isinstance(body, dict) and isinstance(body.get("blacklist"), str):
+                # Only a path: any other JSON value would go into the
+                # no-repeat window, and an object or list there breaks
+                # every later pick (the picker builds a set from it).
+                blacklist = body["blacklist"]
         except (ValueError, TypeError):
             # No JSON body or malformed payload — endpoint accepts either.
             logger.debug("repick_next: no JSON body, blacklist not set")

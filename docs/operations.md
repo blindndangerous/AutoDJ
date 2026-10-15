@@ -442,7 +442,9 @@ when the AutoDJ account can read it.
 AutoDJ checks the two files every five minutes and loads a renewed certificate without a
 restart. New connections get it; open ones keep the old certificate until they reconnect. If
 AutoDJ finds the files half copied, or a certificate that does not match the key, it logs a
-warning, keeps serving the previous certificate, and tries again when the files change.
+warning, keeps serving the previous certificate, and tries again when the files change. If it
+cannot read the files at all (the renewal tool still has them open, or a share is away), it
+tries again at the next check.
 
 ### 3. Configure AutoDJ
 

@@ -132,27 +132,56 @@ def player_name(user_agent: str) -> str:
 
 
 class ListenerAuthLimiter:
-    """Bound Basic-auth guesses per address in one-minute windows."""
+    """Bound Basic-auth guesses per address in one-minute windows.
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    An IPv6 address counts with its whole /64, which one home can use any
+    address of, so rotating addresses inside it does not reset the count.
+    Only the current minute is kept, and at most ``max_keys`` addresses of
+    it: past that the one that failed least recently is forgotten, so a
+    flood from many addresses costs bounded memory and constant time.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic, max_keys: int = 4096) -> None:
         self._clock = clock
+        self._max_keys = max_keys
         self._lock = threading.Lock()
-        self._failures: dict[str, tuple[int, int]] = {}
+        self._window = -1
+        # key -> failures this window, least recently failed first
+        self._failures: dict[str, int] = {}
+
+    @staticmethod
+    def _key(address: str) -> str:
+        """*address* itself, or its /64 for IPv6; a key already a network is kept."""
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            return address
+        if isinstance(parsed, ipaddress.IPv6Address):
+            if parsed.ipv4_mapped is not None:
+                return str(parsed.ipv4_mapped)
+            return str(ipaddress.IPv6Network((parsed, 64), strict=False))
+        return address
+
+    def _roll(self) -> None:
+        """Start a new window, forgetting the last one's failures.  Holds the lock."""
+        window = int(self._clock() // 60)
+        if window != self._window:
+            self._window = window
+            self._failures.clear()
 
     def blocked(self, address: str) -> bool:
         with self._lock:
-            window, count = self._failures.get(address, (-1, 0))
-            return window == int(self._clock() // 60) and count >= 5
+            self._roll()
+            return self._failures.get(self._key(address), 0) >= 5
 
     def failed(self, address: str) -> None:
+        key = self._key(address)
         with self._lock:
-            window = int(self._clock() // 60)
-            if len(self._failures) > 4096:
-                self._failures = {
-                    key: value for key, value in self._failures.items() if value[0] == window
-                }
-            old_window, count = self._failures.get(address, (-1, 0))
-            self._failures[address] = (window, count + 1 if old_window == window else 1)
+            self._roll()
+            count = self._failures.pop(key, 0)
+            if not count and len(self._failures) >= self._max_keys:
+                del self._failures[next(iter(self._failures))]
+            self._failures[key] = count + 1
 
 
 class ListenerAccess:
