@@ -166,7 +166,9 @@ export function installHourPreview({
   function show(view) {
     lastView = view;
     lastAt = now();
-    const text = view.reason || view.summary || "";
+    // The first backtiming line below says the next landing, so the card's
+    // line holds only the counts.
+    const text = view.reason || view.counts_text || view.summary || "";
     if (summary.textContent !== text) summary.textContent = text;
     const stopText = view.stopped || "";
     if (stopped.textContent !== stopText) stopped.textContent = stopText;
@@ -259,7 +261,7 @@ export function installHourPreview({
   // Ask on the user's behalf and say the outcome once, even when it is the
   // same as before.  Only the newest ask is said: one overtaken by a later
   // one (another span chosen meanwhile) says nothing.
-  async function askAndSay(lead, { force = false } = {}) {
+  async function askAndSay(lead, { force = false, words = spokenSummary } = {}) {
     let view;
     try {
       view = await load({ force });
@@ -270,7 +272,7 @@ export function installHourPreview({
     }
     if (view) {
       quietError = null;
-      announceStatus(status, `${lead} ${spokenSummary(view)}`,
+      announceStatus(status, `${lead} ${words(view)}`.trim(),
         { force: true, dwellMs: 8000, mirror: false });
     }
     if (card.open) schedule();
@@ -282,10 +284,9 @@ export function installHourPreview({
     return askAndSay("Hour preview updated.", { force: true });
   }
 
-  // Show: a new span is said with its summary, once it has loaded.
+  // Show: a new span says only its counts, once it has loaded.
   function spanChanged() {
-    const chosen = span.options[span.selectedIndex]?.textContent || "the chosen span";
-    return askAndSay(`Showing the ${chosen.toLowerCase()}.`);
+    return askAndSay("", { words: (view) => view.reason || view.counts_text || spokenSummary(view) });
   }
 
   // Shift+H: a recent preview, or a fresh one, said through the page's

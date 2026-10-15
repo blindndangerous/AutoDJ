@@ -2668,7 +2668,7 @@ describe("static accessibility contracts", () => {
     expect([...history.querySelectorAll("thead th")].map((th) => [th.textContent.trim(), th.getAttribute("scope")]))
       .toEqual([["Played", "col"], ["Title", "col"], ["Artist", "col"], ["Duration", "col"], ["Track info", "col"]]);
     const backtiming = document.getElementById("hour-preview-backtiming");
-    expect(document.getElementById(backtiming.getAttribute("aria-labelledby")).tagName).toBe("H3");
+    expect(backtiming.querySelector("h3")).toBeNull();
     // Shift+H is in the shortcut list.
     expect(document.querySelector("#hotkey-help-modal").textContent).toContain("Shift+H");
     // Colours come from the theme tokens only, so both themes follow.

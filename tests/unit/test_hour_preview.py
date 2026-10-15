@@ -429,15 +429,13 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     last = datetime.fromisoformat(items[-1]["starts_at"]).timestamp()
     assert NOW + 3600 - 400 < last < NOW + 3600
     assert view["counts"] == {"fixed": 3, "predicted": len(predicted)}
-    assert view["summary"] == (
-        f"No top of the hour, clockwheel restart or scheduled event. 3 fixed items, {len(predicted)} predicted, "
-        "through 13:10."
-    )
+    assert view["summary"] == "No top of the hour, clockwheel restart or scheduled event."
     assert view["points"] == []
+    assert view["counts_text"] == f"3 fixed items, {len(predicted)} predicted, through 13:10."
     assert view["stopped"] is None
 
     later = build_preview(source, 60, now=NOW + 31)
-    assert later["summary"].endswith("through 13:10:31.")
+    assert later["counts_text"].endswith("through 13:10:31.")
 
 
 def test_the_summary_skips_a_plain_top_of_the_hour(tmp_path: Path) -> None:

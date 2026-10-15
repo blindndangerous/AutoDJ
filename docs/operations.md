@@ -3370,14 +3370,14 @@ Backtiming goes to each fixed point in the span:
 - **Scheduled events**: a soft event waits for the song playing to end, so the preview says how
   late it runs; a hard event runs on time and the preview says how much of the song it cuts.
 
-The card's summary is the next of these and how it lands, then
-how many rows are fixed and predicted, such as "Next clockwheel restart, 13:30: expected 0:35
-early. 3 fixed items, 20 predicted, through 13:40." **Refresh preview** says
-it once; **Shift+H** says it from any tab. While the card is open and Now Playing is showing, the
+The card shows how many rows are fixed and predicted, such as "3 fixed items, 20 predicted,
+through 13:40.", with the backtiming lines under it. **Refresh preview** and **Shift+H** (from
+any tab) say the next of these points and how it lands, such as "Next clockwheel restart, 13:30:
+expected 0:35 early." While the card is open and Now Playing is showing, the
 table refreshes every 30 seconds and shortly after the song changes, changing cells in place,
 saying nothing and leaving focus where it is; if those refreshes start failing, the failure is
-said once, and not again until one succeeds. Choosing another span under **Show** says the new
-summary once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
+said once, and not again until one succeeds. Choosing another span under **Show** says its
+counts once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
 says so. Timestamps and durations use the same compact text on screen and in speech, such as
 "14:04:30" and "3:45" (24 hour). Times are in the station
 time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
