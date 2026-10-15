@@ -320,6 +320,7 @@ let cartWallControls = null;
 let voiceTrackerControls = null;
 let adsControls = null;
 let listenerRequestControls = null;
+let breakSettingsControls = null;
 let reconnectGeneration = 0;
 let reconnectTimer = null;
 
@@ -420,6 +421,7 @@ function clearStationViews() {
   voiceTrackerControls?.clear();
   adsControls?.clear();
   listenerRequestControls?.clear();
+  breakSettingsControls?.clear();
   linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
@@ -591,7 +593,9 @@ function setAttributeIfChanged(element, name, value) {
   if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
-function applyState(s) {
+// announceTrack false: a station switch, whose "Now controlling ..." line
+// already names the song (#327).
+function applyState(s, { announceTrack = true } = {}) {
   // A push that left the server before it took this page's advance still
   // names the track the page has just faded out of.  Applied, it brought
   // that track back on the decks and said its name a second time; the
@@ -650,7 +654,8 @@ function applyState(s) {
     // the hidden Now Playing panel never spoke on another tab.  Other
     // tabs hear it only when Settings > Announcements asks for it.
     const announce = announceTrackChanges.value;
-    if (trackKey && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
+    if (announceTrack && trackKey
+      && (announce === "all" || (announce === "now" && !panelNow.hidden))) {
       announceStatus(trackAnnounce, trackLabel + trackChangeDetails(s),
         { mirror: false, dwellMs: 10000 });
     }
@@ -1389,10 +1394,16 @@ let authenticatedActivityActive = false;
 // link is lost and one when it comes back.  The retry cycle in between
 // -- "Connecting...", "Error", "Disconnected", once per attempt, forever
 // -- was three announcements every three seconds for the whole outage.
-function setConnStatus(state, label) {
+//
+// quiet: the new words are shown but not said.  A station switch says
+// "Now controlling ..." on its own, so its socket's "Live" must not follow
+// it (#327).  A transition that is said in between turns the region back
+// on first and its words go in a moment later (writeLive).
+function setConnStatus(state, label, { quiet = false } = {}) {
   if (connStatus.className !== state) connStatus.className = state;
-  if (connStatus.textContent === label) return;
-  connStatus.textContent = label;
+  if (shownText(connStatus) === label) return;
+  if (quiet) writeQuietly(connStatus, label);
+  else writeLive(connStatus, label);
 }
 
 // Progress within an outage: seen, never spoken.
@@ -1430,8 +1441,9 @@ function authenticatedInteractionEnabled() {
 }
 
 // quiet: a station switch, which is announced on its own; the pill only
-// changes colour until the new station's socket is live.
-function connectWS({ quiet = false } = {}) {
+// changes colour until the new station's socket is live.  switching: the
+// "Live" it then shows is not said either.
+function connectWS({ quiet = false, switching = false } = {}) {
   if (!authenticatedActivityActive) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}${stationWsPath()}`);
@@ -1452,7 +1464,7 @@ function connectWS({ quiet = false } = {}) {
       const recovered = transportDown;
       transportDown = false;
       reconnectDelayMs = RECONNECT_BASE_MS;
-      setConnStatus("connected", "Live");
+      setConnStatus("connected", "Live", { quiet: switching && !recovered });
       setOffAir(false);
       if (recovered) showVisibleStatus("Reconnected.");
       _unreachableProbes = 0;
@@ -1754,6 +1766,7 @@ function refreshStationPanels() {
   void hourPreviewControls?.refresh();
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
+  void breakSettingsControls?.refresh();
   void voiceTrackerControls?.refresh();
   void liveSettings?.refresh();
   void adsControls?.refresh();
@@ -1781,14 +1794,15 @@ async function loadStation({ announce = true } = {}) {
   if (station !== currentStation()) return null;
   if (state) {
     setOffAir(false);
-    applyState(state);
-    if (!_ws) connectWS({ quiet: true });
+    // The switch's own line below names the song: it is not said twice.
+    applyState(state, { announceTrack: !announce });
+    if (!_ws) connectWS({ quiet: true, switching: announce });
   } else if (failure) {
     // Only a 409 says the station is stopped.  Any other failure is
     // not "Off air": the socket brings the state when it opens, and its
     // retries cover a server that cannot be reached.
     setOffAir(false);
-    if (!_ws) connectWS({ quiet: true });
+    if (!_ws) connectWS({ quiet: true, switching: announce });
   } else {
     stationWentOffAir();
   }
@@ -2359,6 +2373,9 @@ import {
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
   showVisibleStatus,
+  shownText,
+  writeLive,
+  writeQuietly,
 } from "./modules/live-region.js";
 
 installVisibleStatusBehaviour();
@@ -3057,6 +3074,7 @@ hourPreviewControls = installHourPreview();
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
 import { installListenerRequests } from "./modules/listener-requests.js";
+import { installBreakSettings } from "./modules/breaks-settings.js";
 
 let timeCheckControls = null;
 let linerControls = null;
@@ -3189,6 +3207,7 @@ function startAuthenticatedApp(initialState) {
   };
   timeCheckControls = installTimeChecks(linerAudio);
   listenerRequestControls = installListenerRequests();
+  breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only
   // shows and announces it.

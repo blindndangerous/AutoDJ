@@ -1,11 +1,14 @@
 // Music and liner source folders plus the saved song-points editor.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { fmtTrack } from "./dom-helpers.js";
+import {
+  dialogReturnPlace, dialogStatusLine, fmtTrack, focusAfterDialog, focusSteadyPlace, placeRows,
+  releaseDialogFocus,
+} from "./dom-helpers.js";
 import { tableRow } from "./table-row.js";
 import { installTableNavigation } from "./table-navigation.js";
 import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
-import { NBSP, announceStatus } from "./live-region.js";
+import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
@@ -188,6 +191,26 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pointStatus.textContent = message;
     pointStatus.dataset.tone = error ? "error" : "info";
   }
+  function folderRow(folder) {
+    const recursive = doc.createElement("input");
+    recursive.type = "checkbox"; recursive.dataset.field = "recursive";
+    const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
+    let advanced = null;
+    let advancedLabel = "";
+    if (folder.kind === "music") {
+      advanced = doc.createElement("input");
+      advanced.type = "checkbox"; advanced.dataset.field = "advanced";
+      advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
+    }
+    const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
+    const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
+    row.dataset.id = folder.id;
+    return { key: JSON.stringify([folder.id, folder.kind, folder.path]), row, recursive, advanced };
+  }
+  // A folder's row is kept and its checkboxes set in place, as the relay
+  // table does.  The table drawn again after a save destroyed the focused
+  // checkbox, and NVDA went to browse mode (#330).
+  let folderRows = new Map();
   function renderFolders(data) {
     const folders = data.folders || [];
     const signature = JSON.stringify(folders.map(({ id, path, kind, recursive, advanced }) => ({ id, path, kind, recursive, advanced })));
@@ -196,25 +219,20 @@ export function installLibraryFolders({ document: doc = document, request = requ
         id: doc.activeElement.closest("tr")?.dataset.id,
         column: doc.activeElement.closest("td")?.cellIndex,
       } : null;
-      list.replaceChildren(...(folders.length ? folders.map((folder) => {
-        const recursive = doc.createElement("input");
-        recursive.type = "checkbox"; recursive.dataset.field = "recursive"; recursive.checked = !!folder.recursive;
-        const recursiveLabel = doc.createElement("label"); recursiveLabel.append(recursive, " Add subfolders");
-        let advancedLabel = "";
-        if (folder.kind === "music") {
-          const advanced = doc.createElement("input");
-          advanced.type = "checkbox"; advanced.dataset.field = "advanced"; advanced.checked = !!folder.advanced;
-          advancedLabel = doc.createElement("label"); advancedLabel.append(advanced, " Perform advanced analysis");
-        }
-        const remove = doc.createElement("button"); remove.type = "button"; remove.dataset.action = "remove"; remove.textContent = "Remove folder";
-        const row = tableRow(doc, [folder.kind === "liner" ? "Voice liner" : "Music", folder.path, recursiveLabel, advancedLabel, remove], { nameIndex: 1 });
-        row.dataset.id = folder.id;
-        return row;
-      }) : [tableRow(doc, ["No folders added yet."], { colspan: [5] })]));
+      const records = folders.map((folder) => {
+        const kept = folderRows.get(folder.id);
+        const record = kept?.key === JSON.stringify([folder.id, folder.kind, folder.path]) ? kept : folderRow(folder);
+        if (record.recursive.checked !== !!folder.recursive) record.recursive.checked = !!folder.recursive;
+        if (record.advanced && record.advanced.checked !== !!folder.advanced) record.advanced.checked = !!folder.advanced;
+        return record;
+      });
+      folderRows = new Map(records.map((record, index) => [folders[index].id, record]));
+      if (records.length) placeRows(list, records.map((record) => record.row));
+      else list.replaceChildren(tableRow(doc, ["No folders added yet."], { colspan: [5] }));
       folderSignature = signature;
       tableNavigation.refresh();
       onFolders?.(folders);
-      if (focused) {
+      if (focused && !list.contains(doc.activeElement)) {
         const cell = [...list.querySelectorAll("tr")].find((row) => row.dataset.id === focused.id)?.cells[focused.column];
         const replacement = cell?.querySelector("button:not(:disabled), input:not(:disabled)") || cell;
         (replacement || doc.getElementById("source-folder-add")).focus();
@@ -293,16 +311,18 @@ export function installLibraryFolders({ document: doc = document, request = requ
     // pendingFolderEdits holds off another toggle (see the click guard).
     // No aria-disabled: NVDA speaks the state change on the focused
     // control, so the press was heard as "unavailable" (#331).  aria-busy
-    // says it is busy instead.
+    // says it is busy instead, and a slow reply says "Saving…" (#384).
     pendingFolderEdits.add(input);
     input.classList.add("is-pending");
     input.setAttribute("aria-busy", "true");
+    const stopPending = sayIfStillPending(announceAction, "Saving folder settings…");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (requestCurrent(epoch, generation)) announceAction("Folder settings saved.");
     } catch (error) {
       if (requestCurrent(epoch, generation)) { input.checked = !body[input.dataset.field]; announceAction(`Could not save folder settings: ${error.message}`, true); }
     } finally {
+      stopPending();
       pendingFolderEdits.delete(input);
       input.classList.remove("is-pending");
       input.removeAttribute("aria-busy");
@@ -321,12 +341,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pendingFolderEdits.add(button);
     button.classList.add("is-pending");
     button.setAttribute("aria-busy", "true");
+    const stopPending = sayIfStillPending(announceAction, "Removing the folder…");
     try {
       await request(`/api/library/folders/${encodeURIComponent(row.dataset.id)}`, { method: "DELETE" });
       if (!requestCurrent(epoch, generation)) return;
       announceAction("Folder removed from the library.");
     } catch (error) { if (requestCurrent(epoch, generation)) announceAction(`Could not remove folder: ${error.message}`, true); }
     finally {
+      stopPending();
       pendingFolderEdits.delete(button);
       button.classList.remove("is-pending");
       button.removeAttribute("aria-busy");
@@ -430,7 +452,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
     doc.getElementById("track-info-heading").textContent = `Track info: ${currentName}`;
     doc.getElementById("track-info-empty").hidden = true;
   }
-  async function savePoints(errorTarget = null) {
+  // said, from the Save or Discard dialog, collects the result to be said
+  // once the other track has opened.
+  async function savePoints(errorTarget = null, said = null) {
     if (saving || !currentPath) return false;
     doc.getElementById("points-preview")?.pause();
     saving = true;
@@ -461,6 +485,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       // New cue points can move the intro, outro and segue landmarks.
       landmarks.refresh();
       pointSay(`Saved changes to ${currentName}.`);
+      said?.push(`Saved changes to ${currentName}.`);
       return true;
     } catch (error) {
       if (!requestCurrent(epoch, generation)) return false;
@@ -474,6 +499,13 @@ export function installLibraryFolders({ document: doc = document, request = requ
         editor.inert = wasInert;
       }
     }
+  }
+  // The Save or Discard dialog's save result, said after the switch (#332).
+  let savedBeforeSwitch = "";
+  function takeSavedBeforeSwitch() {
+    const text = savedBeforeSwitch;
+    savedBeforeSwitch = "";
+    return text;
   }
   function confirmTrackChange() {
     const dialog = doc.getElementById("track-info-dialog");
@@ -492,24 +524,53 @@ export function installLibraryFolders({ document: doc = document, request = requ
     doc.getElementById("track-info-dialog-title").textContent = `Save changes to ${currentName}?`;
     error.textContent = "";
     dialog.returnValue = "";
+    savedBeforeSwitch = "";
     return new Promise((resolve) => {
+      // While Save runs, no button is turned off: NVDA said the focused Save
+      // "unavailable" (#332).  pending refuses a second press, and aria-busy
+      // marks Save.
+      let pending = false;
       async function accept() {
-        if (saving) return;
-        save.disabled = discard.disabled = true;
-        if (keep) keep.disabled = true;
-        const saved = (savedFields === fieldSnapshot() || await savePoints(error))
-          && (!tags.dirty() || await tags.save(error));
-        save.disabled = discard.disabled = false;
-        if (keep) keep.disabled = false;
-        if (saved) dialog.close("save");
+        if (saving || pending) return;
+        pending = true;
+        save.setAttribute("aria-busy", "true");
+        // Its own status line: #track-info-error keeps the errors.
+        const progress = dialogStatusLine(dialog, "track-info-progress");
+        const stopPending = sayIfStillPending((text) => { progress.textContent = text; }, "Saving…");
+        const said = [];
+        try {
+          const saved = (savedFields === fieldSnapshot() || await savePoints(error, said))
+            && (!tags.dirty() || await tags.save(error, said));
+          if (!saved) return;
+          // The page behind the dialog is inert, so the result said there
+          // was never heard; it is said once the other track has opened.
+          savedBeforeSwitch = said.join(" ");
+          releaseDialogFocus(dialog);
+          dialog.close("save");
+        } finally {
+          stopPending();
+          progress.textContent = "";
+          pending = false;
+          save.removeAttribute("aria-busy");
+        }
       }
       function reject() {
-        if (saving) return;
+        if (saving || pending) return;
         doc.getElementById("points-preview")?.pause();
+        releaseDialogFocus(dialog);
         dialog.close("discard");
       }
-      function stay() { if (!saving) dialog.close("keep"); }
-      function cancel(event) { if (saving) event.preventDefault(); }
+      // Keep editing and Escape put focus back once the dialog has closed
+      // (#385).
+      function stay() {
+        if (saving || pending) return;
+        releaseDialogFocus(dialog);
+        dialog.close("keep");
+      }
+      function cancel(event) {
+        if (saving || pending) event.preventDefault();
+        else releaseDialogFocus(dialog);
+      }
       function closed() {
         save.removeEventListener("click", accept);
         discard.removeEventListener("click", reject);
@@ -517,7 +578,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
         dialog.removeEventListener("cancel", cancel);
         dialog.removeEventListener("close", closed);
         const switching = dialog.returnValue === "save" || dialog.returnValue === "discard";
-        if (!switching && returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus();
+        // Back on the control that asked, once the dialog has closed (#385).
+        // A switch keeps focus there while the other track loads, rather
+        // than on the page, until the track's heading takes it.
+        if (!focusAfterDialog(returnFocus)) focusSteadyPlace(doc, dialogReturnPlace(returnFocus));
         resolve(switching);
       }
       save.addEventListener("click", accept);
@@ -538,8 +602,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     opening = true;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
+    let switched = false;
     try {
-      if (currentPath && unsaved() && !await confirmTrackChange()) return;
+      if (currentPath && unsaved()) {
+        if (!await confirmTrackChange()) return;
+        switched = true;
+      }
       if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
       const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
@@ -563,11 +631,16 @@ export function installLibraryFolders({ document: doc = document, request = requ
       rememberReturn(opener);
       showTrackInfo();
       pointSay("");
+      // Said once, after focus has reached the other track: said before,
+      // the focus change would cut it off.
+      const saved = takeSavedBeforeSwitch();
+      if (saved) announceStatus(doc.getElementById("sr-status"), saved, { dwellMs: 6000, force: true });
     } catch (error) {
       if (requestCurrent(epoch, generation)) {
-        const message = error.status === 404
+        const saved = takeSavedBeforeSwitch();
+        const message = (saved ? `${saved} ` : "") + (error.status === 404
           ? "This recording is no longer in the library. Its current details and cue points are unavailable."
-          : `Could not load track info: ${error.message}`;
+          : `Could not load track info: ${error.message}`);
         if (error.status === 404 && opener) {
           if (opener.isConnected && !opener.disabled) opener.focus();
           else {
@@ -599,7 +672,19 @@ export function installLibraryFolders({ document: doc = document, request = requ
         announceStatus(pointStatus, message, { force: true, tone: "error" });
       }
     }
-    finally { if (generation === protectedGeneration) { editor.inert = false; opening = false; } }
+    finally {
+      if (generation === protectedGeneration) { editor.inert = false; opening = false; }
+      // A switch that stopped short (signed out, or the track went) leaves
+      // focus somewhere steady, never on the page.
+      if (switched) steadyAfterSwitch(opener);
+    }
+  }
+  function steadyAfterSwitch(opener) {
+    const active = doc.activeElement;
+    if (active && active !== doc.body) return;
+    const heading = doc.getElementById("track-info-heading");
+    if (heading && !heading.closest("[hidden]") && focusAfterDialog(heading)) return;
+    focusSteadyPlace(doc, dialogReturnPlace(opener));
   }
   doc.getElementById("edit-current-points").addEventListener("click", (event) => {
     const track = getCurrentTrack();

@@ -93,6 +93,13 @@ Manage liner files, including Delete and Play dates, under **Settings > Voice li
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
 back on the result that opened it.
 
+An uploaded voice liner must be audio AutoDJ can play, or the upload is refused with "<name> is
+not an audio file AutoDJ can play." AutoDJ reads the file's header: libsndfile reads MP3, WAV, FLAC
+and Ogg, and FFmpeg's ffprobe reads M4A and AAC, and any MP3, WAV, FLAC or Ogg file libsndfile
+cannot read. Without ffprobe, an M4A or AAC upload is checked by its first bytes only, so a damaged
+one is found only when it plays. When ffprobe cannot run or takes longer than 30 seconds, the upload
+is refused with "Could not check <name>, so it was not saved."
+
 With `[playback] import_external_cues` on (the default), intro and outro markers set in Mixxx,
 Rekordbox or Traktor take the place of the detected intro and outro, so the crossfade follows
 them. A track analysed before AutoDJ read those markers gets them the first time it plays while
@@ -792,7 +799,25 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** card, closed unt
 
 A station can take song requests from its listeners on a public page, `/requests` (and
 `/stations/<slug>/requests` for every station). It is off until you turn it on, for each station
-on its own; while it is off the page answers 404. The settings are read when AutoDJ starts:
+on its own: tick **Take listener requests** in the **Listener requests** card in Queue & Search
+and choose **Save request settings**. The page opens at once, with no restart. Turning it off
+closes the page at once too. While it is off the page answers 404 with a page that says
+"Requests are closed", and a request sent from a page opened earlier gets the same answer.
+Requests already waiting are kept, and come back when you turn requests on again (each still
+expires three hours after it was sent).
+
+**Approval** in the same card chooses **I approve each one** (`approval = "manual"`) or
+**Automatic** (`"auto"`): a request that keeps the rules joins the queue at once.
+
+Until you save **Take listener requests** and **Approval** with this card, `enabled` and
+`approval` under `[requests]` in config.toml are in charge for the station, and a change there
+takes effect at the next start; saving any other setting on the page (volume, EQ and the like)
+does not change that. Once you save the card, the station's `web_state.json` keeps both, and
+they take the place of the config.toml values at every start from then on. When a saved value
+differs from config.toml, the log says so once at start, for example "Listener requests on for
+icecold (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
+in `web_state.json` whenever the station's settings are saved, as before. The other keys are read
+from config.toml when AutoDJ starts:
 
 ```toml
 [requests]
@@ -904,8 +929,9 @@ when a listener's request is approved automatically; the lock covers the final v
 insertion, bridge markers and the existing queue refresh. The operator's list, which refreshes
 every 15 seconds, never runs the search: it says when approving would look for bridge songs.
 
-**What you do.** While requests are on, Queue & Search has a **Listener requests** card. It says
-how many requests are waiting and how many the station took today. Each waiting request shows who
+**What you do.** Queue & Search has a **Listener requests** card. While requests are off it says
+so, and its form holds the switch to turn them on. While they are on, it says how many requests
+are waiting and how many the station took today. Each waiting request shows who
 sent it (if they gave a name), when, and either where it would fit and why ("Fits after Song by
 Artist: same key, 2 BPM apart.") or what stops it. Each request has three buttons:
 
@@ -916,14 +942,17 @@ Artist: same key, 2 BPM apart.") or what stops it. Each request has three button
   and the queued songs after it.
 - **Turn down**.
 
-Below the decisions, **Smooth transitions** holds the same four settings as `[requests]`:
+Below the decisions, **Request settings** starts with **Take listener requests** and
+**Approval**, then **Smooth transitions** holds four more of the `[requests]` settings:
 **Add bridge songs before a request that would sound abrupt**, **Most bridge songs** (1 to 3),
 **Roughness limit** (0 to 10, the `bridge_cost_threshold`) and **When no smooth spot is found**
 (**Use the best spot that keeps the rules** or **Keep the request waiting for you to decide**).
-**Save request settings** saves them for this station at once (`POST /api/requests/settings`);
-they are kept in `web_state.json` and, like the other settings saved on the page, take the place
-of the config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the
-browser: the field is marked, its error shown under it and linked to it, and focus goes to it.
+**Save request settings** saves them all for this station at once (`POST
+/api/requests/settings`, which also takes `enabled` and `approval`), and says whether the request
+page opened or closed. While it saves, the button is marked busy. They are kept in
+`web_state.json` and, like the other settings saved on the page, take the place of the
+config.toml values from then on. A Roughness limit outside 0 to 10 is refused in the browser:
+the field is marked, its error shown under it and linked to it, and focus goes to it.
 
 Focus moves to the next request's Approve button (its first button when Approve is not offered),
 or to the card's title when none is left, and the result is said once just after that. Recent
@@ -2544,7 +2573,21 @@ that splices them in at once.
 ### Turning breaks on
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
-off by default. Turn them on for each station that takes them:
+off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
+**Take breaks on this station** and choose **Save break settings**. They work from then on, with
+no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
+up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
+liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
+saved-point playback. The result of a save is said once.
+
+Turning breaks off drops the breaks still waiting for their song change, from the announcer
+program and the Voice tracks tab; a break already mixed into the next song change still plays,
+and the ad schedule's spots stay. From then on the announcer's `GET context` answers
+`"accepting": false` with the reason "Breaks are off for this station: turn them on in
+Settings, Breaks", and an upload is refused with 409 and the same words.
+
+The `[breaks]` section in config.toml holds them, for another station under
+`[stations.<slug>.breaks]`:
 
 ```toml
 [breaks]
@@ -2552,9 +2595,16 @@ enabled = true
 dj_placement = "auto"
 ```
 
-For another station, the same keys go under `[stations.<slug>.breaks]`. With breaks off, AutoDJ
-picks songs exactly as before and the API says so. The other `[breaks]` keys, with their
-defaults, are in `config.toml.example`:
+Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
+`min_intro_seconds` and `duck_db` under `[breaks]` in config.toml are in charge, and a change
+there takes effect at the next start; saving any other setting on the page (volume, EQ and the
+like) does not change that. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
+under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
+and they take the place of the config.toml values at every start from then on. When the saved
+switch differs from config.toml, the log says so once at start, for example "Breaks on for
+icecold (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
+as before and the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
+`[breaks]` keys, with their defaults, are in `config.toml.example`:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
   upcoming song when its intro (Start to Intro) is at least `min_intro_seconds` long (2 seconds),
@@ -2780,7 +2830,7 @@ aired, dropped or expired, and why.
 
 The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
 change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
-It needs breaks turned on for the station (`[breaks] enabled = true`, with saved-point playback);
+It needs breaks turned on for the station (Settings, Breaks, with saved-point playback);
 otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
 signed-in browser.
 
@@ -2799,10 +2849,11 @@ read out on its own.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
    Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
-3. Choose the **Placement**: **Automatic** (follows `[breaks] dj_placement`; the description under
-   it says what it will do for this change), **Talk up the next song's intro** (your voice ends as
-   the vocal starts), or **Standalone, between the songs**. For a talk-up, **Start over the ending
-   song's outro** lets your voice begin while the ending song plays out.
+3. Choose the **Placement**: **Automatic** (follows **Where a DJ break goes** in Settings, Breaks;
+   the description under it says what it will do for this change), **Talk up the next song's
+   intro** (your voice ends as the vocal starts), or **Standalone, between the songs**. For a
+   talk-up, **Start over the ending song's outro** lets your voice begin while the ending song
+   plays out.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
@@ -3414,7 +3465,7 @@ a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 so
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
 says so.
 
-With `[breaks] enabled = true`, the station picks the song after the next one a song early so
+With breaks on, the station picks the song after the next one a song early so
 announcer breaks can name it (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)),
 and a booked break keeps that song whatever the queue does. The rotation tester does not model
 either: it picks each song when the one before it ends, as a station with breaks off does.

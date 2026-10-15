@@ -923,3 +923,154 @@ def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, c
     assert player._cfg.playback.repeat_rules == rules
     assert player._state.rules.artist_window == 12
     assert "Related artists file was not used" in caplog.text
+
+
+def _with_switches(player: SimpleNamespace) -> SimpleNamespace:
+    """Give *player* real ``[requests]`` and ``[breaks]`` sections, both off in config."""
+    from autodj.config import BreaksConfig, RequestsConfig
+
+    player._cfg.requests = RequestsConfig()
+    player._cfg.breaks = BreaksConfig()
+    return player
+
+
+def test_saved_request_and_break_settings_win_over_config(tmp_path) -> None:
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "requests_enabled": True,
+                "requests_approval": "auto",
+                "breaks_enabled": True,
+                "breaks_dj_placement": "standalone",
+                "breaks_min_intro_seconds": 4,
+                "breaks_duck_db": -9.5,
+            }
+        },
+    )
+    player = _with_switches(_make_player())
+    _load(player, tmp_path)
+    requests, breaks = player._cfg.requests, player._cfg.breaks
+    assert (requests.enabled, requests.approval) == (True, "auto")
+    assert (breaks.enabled, breaks.dj_placement) == (True, "standalone")
+    assert (breaks.min_intro_seconds, breaks.duck_db) == (4.0, -9.5)
+
+
+def test_a_saved_null_break_duck_follows_the_liners(tmp_path) -> None:
+    from autodj.config import BreaksConfig
+
+    _write_state(tmp_path, {"playback": {"breaks_duck_db": None}})
+    player = _with_switches(_make_player())
+    player._cfg.breaks = BreaksConfig(duck_db=-6.0)
+    _load(player, tmp_path)
+    assert player._cfg.breaks.duck_db is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("requests_enabled", "true"),
+        ("requests_enabled", 1),
+        ("requests_approval", "sometimes"),
+        ("breaks_enabled", "yes"),
+        ("breaks_dj_placement", "middle"),
+        ("breaks_min_intro_seconds", 61),
+        ("breaks_min_intro_seconds", True),
+        ("breaks_duck_db", 3),
+    ],
+)
+def test_bad_saved_switches_are_warned_and_config_kept(tmp_path, caplog, key, value) -> None:
+    _write_state(tmp_path, {"playback": {key: value, "requests_max_bridges": 2}})
+    player = _with_switches(_make_player())
+    _load(player, tmp_path)
+    assert _warnings(caplog, key) == 1
+    assert (player._cfg.requests.enabled, player._cfg.requests.approval) == (False, "manual")
+    breaks = player._cfg.breaks
+    assert (breaks.enabled, breaks.dj_placement, breaks.min_intro_seconds) == (False, "auto", 2.0)
+    assert breaks.duck_db is None
+    # The other saved settings still apply.
+    assert player._cfg.requests.max_bridges == 2
+
+
+def _saved_playback(tmp_path) -> dict:
+    return json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+
+
+def test_request_and_break_settings_round_trip(tmp_path) -> None:
+    player = _with_switches(_make_player())
+    player._cfg.requests.enabled = True
+    player._cfg.requests.approval = "auto"
+    player._cfg.breaks.enabled = True
+    player._cfg.breaks.dj_placement = "talk_up"
+    player._cfg.breaks.duck_db = -4.0
+    bridge = PlayerBridge(player, player._sim)
+    bridge.page_saved |= {"requests", "breaks"}  # as their own routes mark them
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
+    assert saved["requests_enabled"] is True and saved["breaks_duck_db"] == -4.0
+    again = _with_switches(_make_player())
+    _load(again, tmp_path)
+    assert (again._cfg.requests.enabled, again._cfg.requests.approval) == (True, "auto")
+    assert (again._cfg.breaks.enabled, again._cfg.breaks.dj_placement) == (True, "talk_up")
+    assert again._cfg.breaks.duck_db == -4.0
+
+
+def test_an_unrelated_save_leaves_the_switches_to_config(tmp_path) -> None:
+    """A volume or EQ save must not freeze [requests] and [breaks] from config.toml."""
+    player = _with_switches(_make_player())
+    player._cfg.requests.enabled = True
+    player._cfg.breaks.enabled = True
+    bridge = PlayerBridge(player, player._sim)
+    bridge.set_volume(0.5)
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
+    assert saved["volume"] == 0.5
+    for key in (
+        "requests_enabled",
+        "requests_approval",
+        "breaks_enabled",
+        "breaks_dj_placement",
+        "breaks_min_intro_seconds",
+        "breaks_duck_db",
+    ):
+        assert key not in saved, key
+    # config.toml changed later is still followed at the next start.
+    again = _with_switches(_make_player())
+    _load(again, tmp_path)
+    assert (again._cfg.requests.enabled, again._cfg.breaks.enabled) == (False, False)
+
+
+def test_saved_switches_are_kept_by_later_unrelated_saves(tmp_path) -> None:
+    _write_state(tmp_path, {"playback": {"requests_enabled": True, "breaks_enabled": True}})
+    player = _with_switches(_make_player())
+    bridge = PlayerBridge(player, player._sim)
+    load_into_bridge(bridge, tmp_path)
+    assert bridge.page_saved == {"requests", "breaks"}
+    bridge.set_volume(0.25)
+    save_from_player(bridge.get_settings(), tmp_path)
+    saved = _saved_playback(tmp_path)
+    assert (saved["requests_enabled"], saved["breaks_enabled"]) == (True, True)
+    assert saved["requests_approval"] == "manual" and saved["breaks_dj_placement"] == "auto"
+
+
+def test_a_saved_switch_that_differs_from_config_is_logged_once(tmp_path, caplog) -> None:
+    _write_state(
+        tmp_path,
+        {
+            "playback": {
+                "requests_enabled": True,
+                "requests_approval": "manual",
+                "breaks_enabled": True,
+            }
+        },
+    )
+    player = _with_switches(_make_player())
+    bridge = PlayerBridge(player, player._sim)
+    bridge.paths = SimpleNamespace(slug="icecold", state_dir=tmp_path)
+    caplog.set_level("INFO", logger="autodj.runtime_state")
+    load_into_bridge(bridge, tmp_path)
+    lines = [r.getMessage() for r in caplog.records if "saved in Settings" in r.getMessage()]
+    assert lines == [
+        "Listener requests on for icecold (saved in Settings; config.toml says off)",
+        "Breaks on for icecold (saved in Settings; config.toml says off)",
+    ]

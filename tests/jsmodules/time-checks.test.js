@@ -43,12 +43,12 @@ function server(overrides = {}) {
 beforeEach(installIndex);
 
 describe("Time checks panel markup", () => {
-  it("is a Settings subtab between Voice liners and Schedule, with no aria-controls", () => {
+  it("is a Settings subtab between Voice liners and Breaks, with no aria-controls", () => {
     const tab = byId("stab-time-checks");
     expect(tab.getAttribute("role")).toBe("tab");
     expect(tab.hasAttribute("aria-controls")).toBe(false);
     expect(tab.previousElementSibling.id).toBe("stab-liners");
-    expect(tab.nextElementSibling.id).toBe("stab-schedule");
+    expect(tab.nextElementSibling.id).toBe("stab-breaks");
     const panel = byId(tab.dataset.panel);
     expect(panel.id).toBe("spanel-time-checks");
     expect(panel.getAttribute("role")).toBe("tabpanel");

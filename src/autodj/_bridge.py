@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
 from autodj.identity_map import attached
+from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
@@ -211,6 +212,37 @@ def _request_settings(requests: Any) -> dict[str, Any]:
     }
 
 
+def _request_switches(requests: Any, page_saved: set[str]) -> dict[str, Any]:
+    """Whether the station takes requests and how they are approved, once the card saved them.
+
+    Until the Listener requests card has saved them for this station,
+    ``[requests]`` in config.toml stays in charge: no other save (volume,
+    EQ ...) writes them to ``web_state.json``.
+    """
+    if requests is None or PAGE_SAVED_REQUESTS not in page_saved:
+        return {}
+    return {
+        "requests_enabled": bool(requests.enabled),
+        "requests_approval": requests.approval,
+    }
+
+
+def _break_settings(breaks: Any, page_saved: set[str]) -> dict[str, Any]:
+    """The announcer break settings, once Settings, Breaks saved them for the station (#88).
+
+    Until then ``[breaks]`` in config.toml stays in charge, as for
+    :func:`_request_switches`.
+    """
+    if breaks is None or PAGE_SAVED_BREAKS not in page_saved:
+        return {}
+    return {
+        "breaks_enabled": bool(breaks.enabled),
+        "breaks_dj_placement": breaks.dj_placement,
+        "breaks_min_intro_seconds": float(breaks.min_intro_seconds),
+        "breaks_duck_db": None if breaks.duck_db is None else float(breaks.duck_db),
+    }
+
+
 @dataclass(frozen=True)
 class RequestInsert:
     """One request and its preceding bridge songs, committed together."""
@@ -261,6 +293,11 @@ class PlayerBridge:
     # Whether a queue entry is a show's own copy (#106): a remove or reorder
     # aimed by path at another entry of the same file never takes it.
     show_entry: Callable[[Any], bool] | None = None
+    # The setting groups whose own route has saved them for this station
+    # (PAGE_SAVED_REQUESTS, PAGE_SAVED_BREAKS), or that web_state.json held
+    # at start.  Only those are written to web_state.json; the others stay
+    # config.toml's.
+    page_saved: set[str] = field(default_factory=set)
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -2381,6 +2418,8 @@ class PlayerBridge:
                 "dmca_enabled": cfg.dmca.enabled,
                 "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
                 **_request_settings(getattr(cfg, "requests", None)),
+                **_request_switches(getattr(cfg, "requests", None), self.page_saved),
+                **_break_settings(getattr(cfg, "breaks", None), self.page_saved),
                 "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
                 "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
                 "stream_stats_days": int(cfg.stream.stats_days),

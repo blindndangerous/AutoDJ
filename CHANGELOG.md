@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Announcer breaks can be turned on and off for each station in the new Settings, Breaks tab,
+  without editing `config.toml` or restarting. The tab also sets where a DJ break goes
+  (automatic, talking up the next song, or between the songs), the shortest intro to talk up,
+  and how far the music drops under a break. Turning breaks off drops the breaks still waiting
+  for their song change, and the announcer program is told breaks are off.
+- Listener requests can be turned on and off, and their approval set (you approve each one, or
+  automatic), in the Listener requests card in Queue & Search, which now shows while requests
+  are off. The request page opens or closes at once. While closed it says "Requests are closed",
+  also to a listener whose page was open when requests were turned off.
+- `[breaks]` and `[requests]` in `config.toml` stay in charge of these settings until you save
+  them on the page for the station; saving another setting, such as the volume, does not change
+  that. Once saved there, the page's values are kept with the station's other settings and win at
+  every start, and the log says so once when they differ from `config.toml`. The break upload
+  limits and quotas, and the request limits, stay in `config.toml`.
 - Stereo Tool can be set up from Settings, Sound, with no configuration file. After you choose
   Stereo Tool and tick that you accept Thimeo's terms, **Download Stereo Tool** fetches Thimeo's
   Stereo Tool plugin (about 320 MB) straight from thimeo.com and keeps only the library the server
@@ -29,12 +43,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** `[playback] stereotool_path` now names Thimeo's Stereo Tool plugin library
+  (`libStereoTool_*.so` or `.dll`), not the command-line program `stereo_tool_cmd`. A
+  configuration that points it at `stereo_tool_cmd` stops processing with Stereo Tool after the
+  upgrade: the station plays on with its limited bypass and says the file "is not Thimeo's Stereo
+  Tool plugin library". To fix it, delete the `stereotool_path` line and press Download Stereo
+  Tool in Settings, Sound, or point the line at the library from Thimeo's plugin zip.
 - Stereo Tool now runs Thimeo's plugin library (`libStereoTool`, as AzuraCast and Liquidsoap do)
-  in a helper process of AutoDJ's own, instead of the command-line program `stereo_tool_cmd`. The
-  licence key reaches it over that process's input, never a command line, and a crash in Stereo
-  Tool ends only the helper. `[playback] stereotool_path` keeps its name but now names the library
-  (`libStereoTool_*.so` or `.dll`); a path to the old command-line program says it is not the
-  plugin library. Download the library in Settings, Sound, or point the setting at it.
+  in a helper process of AutoDJ's own, instead of the command-line program. The licence key
+  reaches it over that process's input, never a command line, and a crash in Stereo Tool ends only
+  the helper. Linux on 64-bit PCs has been tested with Thimeo's real plugin; Windows and 64-bit
+  ARM have not been tested with it yet.
 - A station set to Stereo Tool without the library now says "Stereo Tool is not installed.
   Download it in Settings, Sound, with the Download Stereo Tool button." A station whose own
   `stereotool_path` names a missing library says that path is missing instead.

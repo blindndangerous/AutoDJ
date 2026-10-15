@@ -199,3 +199,36 @@ def test_repeat_rules_reject_invalid_limits(rule, limits):
 def test_removed_repeat_api_fields_are_not_silently_accepted(field):
     with pytest.raises(ValidationError):
         PlaybackSettingsBody.model_validate({field: 3})
+
+
+def test_break_settings_body_takes_the_operator_settings_only() -> None:
+    from autodj.settings_bodies import BreakSettingsBody
+
+    body = BreakSettingsBody.model_validate(
+        {"enabled": False, "dj_placement": "talk_up", "min_intro_seconds": 3, "duck_db": None}
+    )
+    assert (body.enabled, body.dj_placement, body.min_intro_seconds) == (False, "talk_up", 3.0)
+    # An explicit null duck is told apart from one left out.
+    assert "duck_db" in body.model_fields_set
+    assert "duck_db" not in BreakSettingsBody.model_validate({}).model_fields_set
+    for bad in (
+        {"enabled": "false"},
+        {"dj_placement": "auto_talk"},
+        {"min_intro_seconds": -1},
+        {"min_intro_seconds": float("nan")},
+        {"duck_db": 0.5},
+        {"duck_db": True},
+        {"max_seconds": 60},
+    ):
+        with pytest.raises(ValidationError):
+            BreakSettingsBody.model_validate(bad)
+
+
+def test_request_settings_body_takes_the_switch_and_the_approval() -> None:
+    from autodj.settings_bodies import RequestSettingsBody
+
+    body = RequestSettingsBody.model_validate({"enabled": True, "approval": "auto"})
+    assert (body.enabled, body.approval) == (True, "auto")
+    for bad in ({"enabled": "on"}, {"approval": "automatic"}, {"daily_limit": 5}):
+        with pytest.raises(ValidationError):
+            RequestSettingsBody.model_validate(bad)
