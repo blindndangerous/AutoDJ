@@ -404,7 +404,13 @@ class PlaybackConfig(_Section):
     stereotool_agc_drive_db: float = 7.0
     stereotool_preset: str = "included"
     # Executable name or path used by Stereo Tool processing; installation setting.
+    # The default also finds a program in <index_dir>/tools/stereo-tool/ first.
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH
+    # A file holding this station's Stereo Tool licence key; installation
+    # setting.  Empty uses the key saved in Settings, Sound, or the
+    # environment's (autodj.stereotool_setup).  The key itself is never
+    # a configuration value.
+    stereotool_license_file: str = ""
     # Where the similarity engine seeds from after a user-built queue
     # empties.  "last_queued" (default) continues from the final queued
     # track -- the user steered the set, the auto-DJ follows.
@@ -584,6 +590,9 @@ class PlaybackConfig(_Section):
         validate_preset_name(self.stereotool_preset)
         if not isinstance(self.stereotool_path, str) or not self.stereotool_path.strip():
             raise ValueError("playback.stereotool_path must be a non-empty string")
+        if not isinstance(self.stereotool_license_file, str):
+            raise ValueError("playback.stereotool_license_file must be a string")
+        self.stereotool_license_file = self.stereotool_license_file.strip()
         self.skip_style = _validate_skip_style(str(self.skip_style))
         self.post_queue_seed = _validate_post_queue_seed(str(self.post_queue_seed))
         self.pick_top_k = int(self.pick_top_k)

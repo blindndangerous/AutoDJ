@@ -1291,6 +1291,9 @@ installMixSettings(_mixEls, {
 import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
 installStereoToolPresets({ status: settingsStatus });
 
+import { installStereoToolSetup } from "./modules/stereo-tool-setup.js";
+installStereoToolSetup({ status: settingsStatus });
+
 const _repeatEls = {
   artistTracks: document.getElementById("repeat-artist-tracks"),
   artistMinutes: document.getElementById("repeat-artist-minutes"),

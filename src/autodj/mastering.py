@@ -41,7 +41,11 @@ def _end_process(proc: subprocess.Popen[bytes]) -> bool:
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=2)
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        # Not with the exception: its text holds the command line, and
+        # Stereo Tool's holds the licence key.
+        logger.warning("A mastering process did not stop within 2 seconds")
+    except OSError:
         logger.warning("A mastering process could not be stopped", exc_info=True)
     return proc.poll() is not None
 
@@ -112,8 +116,12 @@ def _command(
     mode: str = "smooth",
     stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
     preset: Path | None = None,
+    license_key: str | None = None,
 ) -> list[str]:
     if mode == "stereotool":
+        # -k is the only way Thimeo documents to give the command-line build
+        # its key; THREAT_MODEL.md says who can read a command line.
+        licence = ["-k", license_key] if license_key else []
         return [
             stereotool_path,
             "-",
@@ -127,6 +135,7 @@ def _command(
             "-l",
             "1024",
             "-q",
+            *licence,
         ]
     return _ffmpeg_command(MASTER_FILTER)
 
@@ -166,6 +175,23 @@ def _ffmpeg_command(audio_filter: str) -> list[str]:
     ]
 
 
+def _unavailable(
+    mode: str, exc: Exception, license_key: str | None, *, missing: bool = False
+) -> str:
+    """Why the processor did not start, in words for the page; never the licence key.
+
+    *missing* says the error came from starting the processor itself, so a
+    missing file there is the program.
+    """
+    if mode == "stereotool" and missing and isinstance(exc, FileNotFoundError):
+        return (
+            "Stereo Tool is not installed. Download it in Settings, Sound, "
+            "with the Download Stereo Tool button."
+        )
+    text = str(exc)
+    return text.replace(license_key, "<licence key>") if license_key else text
+
+
 class ContinuousMaster:
     """A persistent raw-PCM processor; ``process`` never waits on I/O.
 
@@ -178,10 +204,12 @@ class ContinuousMaster:
         *,
         popen_factory: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
         mode: Callable[[], str] = lambda: "smooth",
-        stereotool_path: str = DEFAULT_STEREOTOOL_PATH,
+        stereotool_path: str | Callable[[], str] = DEFAULT_STEREOTOOL_PATH,
         preset: Callable[[], Path] | None = None,
         input_trim_db: Callable[[], float] = lambda: 0.0,
         agc_drive_db: Callable[[], float] = lambda: 7.0,
+        stereotool_license: Callable[[], str | None] = lambda: None,
+        setup_generation: Callable[[], int] = lambda: 0,
     ) -> None:
         self._popen = popen_factory
         # Taken around starting a process and around refusing new ones, so
@@ -194,7 +222,15 @@ class ContinuousMaster:
         _MASTERS.add(self)
         self._select_mode = mode
         self._mode = mode()
-        self._stereotool_path = stereotool_path
+        # Looked up each time Stereo Tool starts, so a program downloaded
+        # while the station runs is found without a restart.
+        self._stereotool_path: Callable[[], str] = (
+            stereotool_path if callable(stereotool_path) else lambda: stereotool_path
+        )
+        self._stereotool_license = stereotool_license
+        # Changes when a licence is saved or cleared or the program replaced;
+        # part of the Stereo Tool signature, so Stereo Tool restarts with it.
+        self._setup_generation = setup_generation
         self._select_preset = preset or (lambda: INCLUDED_PATH)
         self._select_agc_drive = agc_drive_db
         self._preset_temp = tempfile.TemporaryDirectory(prefix="autodj-stereo-tool-")
@@ -356,15 +392,15 @@ class ContinuousMaster:
         self._output_cond.notify_all()
         self._input_cond.notify_all()
 
-    def _stereotool_signature(self) -> tuple[Path, float]:
+    def _stereotool_signature(self) -> tuple[Path, float, int]:
         source = self._select_preset()
         drive_db = float(self._select_agc_drive())
         if not math.isfinite(drive_db) or not 0 <= drive_db <= 12:
             raise ValueError("playback.stereotool_agc_drive_db must be between 0 and 12")
-        return source, drive_db
+        return source, drive_db, self._setup_generation()
 
-    def _runtime_stereotool_preset(self, signature: tuple[Path, float]) -> Path:
-        source, drive_db = signature
+    def _runtime_stereotool_preset(self, signature: tuple[Path, float, int]) -> Path:
+        source, drive_db, _setup = signature
         try:
             data = source.read_bytes()
         except OSError as exc:
@@ -452,19 +488,29 @@ class ContinuousMaster:
             if proc is None or generation != active_generation:
                 if proc is not None:
                     self._stop_pipeline(proc, writer, reader, stop, post_proc)
+                license_key = None
+                # Set only while the processor itself starts: a file missing
+                # then is the program, not a preset.
+                starting_program = False
                 try:
                     command_preset = None
+                    executable = DEFAULT_STEREOTOOL_PATH
+                    if mode == "stereotool":
+                        executable = self._stereotool_path()
+                        license_key = self._stereotool_license()
                     if mode == "stereotool" and preset is not None:
                         # Build after stopping the old child so one temp file can be reused safely.
                         command_preset = self._runtime_stereotool_preset(preset)
+                    starting_program = True
                     proc = self._factory(  # nosec B603 -- configured executable, fixed argv, no shell
-                        _command(mode, self._stereotool_path, command_preset),
+                        _command(mode, executable, command_preset, license_key),
                         stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.DEVNULL,
                         bufsize=0,
                         creationflags=_creation_flags(),
                     )
+                    starting_program = False
                     if proc.stdin is None or proc.stdout is None:
                         raise OSError(f"{name} master pipes unavailable")
                     post_proc = None
@@ -492,7 +538,7 @@ class ContinuousMaster:
                         self._recovery_outputs = 0
                         self._input.clear()
                         self._output.clear()
-                        self._error = f"{name} master unavailable: {exc}"
+                        self._error = f"{name} master unavailable: {_unavailable(mode, exc, license_key, missing=starting_program)}"
                         self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()

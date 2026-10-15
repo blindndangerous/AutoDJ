@@ -46,6 +46,7 @@ SHARED = frozenset(
         "/api/stereo-tool-presets",
         "/api/stereo-tool-presets/upload",
         "/api/stereo-tool-presets/{name}",
+        "/api/stereo-tool/download",
         "/api/library/tracks",
         "/api/library/folders",
         "/api/library/folders/{source_id}",
@@ -225,6 +226,9 @@ STATION = frozenset(
         "/live/djs",
         "/live/djs/{username}",
         "/live/mic",
+        # Stereo Tool (Settings, Sound): which program and licence this station uses.
+        "/stereo-tool",
+        "/stereo-tool/license",
         "/ws",
     }
 )

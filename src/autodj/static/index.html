@@ -1360,7 +1360,7 @@
         </select>
       </div>
       <span class="setting-desc" id="pb-rg-desc">
-        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; its executable must be configured on the server. For stream and server audio playback.
+        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; get Stereo Tool with the Download Stereo Tool button below first. For stream and server audio playback.
       </span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
@@ -1386,6 +1386,36 @@
       <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
         ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
       </span>
+    </fieldset>
+
+    <fieldset id="stereo-setup" data-show-when="pb-replaygain=stereotool">
+      <legend>Stereo Tool program and licence</legend>
+      <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
+      <p class="setting-desc" id="stereo-install-desc">AutoDJ cannot include Thimeo's Stereo Tool. Download Stereo Tool fetches Thimeo's command-line Stereo Tool for this server straight from thimeo.com and keeps it in AutoDJ's index folder; press it again later to update. You can instead put a stereo_tool_cmd program you downloaded from thimeo.com yourself in the tools/stereo-tool folder of the index folder.</p>
+      <div class="settings-check">
+        <input type="checkbox" id="stereo-accept-terms" aria-describedby="stereo-terms-desc">
+        <label for="stereo-accept-terms">I accept Thimeo's terms for Stereo Tool</label>
+      </div>
+      <p class="setting-desc" id="stereo-terms-desc">Read <a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms and conditions (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">Stereo Tool licensing (opens in a new tab)</a> first. Thimeo requires a licence for each station that broadcasts with Stereo Tool.</p>
+      <div class="settings-row">
+        <button type="button" id="stereo-download" aria-describedby="stereo-install-status">Download Stereo Tool</button>
+      </div>
+      <p class="setting-desc" id="stereo-license-status">Checking the licence.</p>
+      <div class="settings-row">
+        <label for="stereo-license-key">Stereo Tool licence key</label>
+        <input type="password" id="stereo-license-key" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="4096" aria-describedby="stereo-license-status stereo-license-desc">
+      </div>
+      <span class="setting-desc" id="stereo-license-desc">Paste the key Thimeo sent you, then press Save licence key. The server keeps it where only AutoDJ can read it, leaves it out of backups, and never shows it again.</span>
+      <div class="settings-check" id="stereo-license-station-row" hidden>
+        <input type="checkbox" id="stereo-license-station-only" aria-describedby="stereo-license-station-desc">
+        <label for="stereo-license-station-only">For this station only</label>
+      </div>
+      <span class="setting-desc" id="stereo-license-station-desc" hidden>Unticked, the key is for every station that has no key of its own. Thimeo requires a separate licence for each station that runs Stereo Tool at the same time.</span>
+      <p class="field-error" id="stereo-license-error" hidden></p>
+      <div class="settings-row">
+        <button type="button" id="stereo-license-save">Save licence key</button>
+        <button type="button" id="stereo-license-clear">Clear licence</button>
+      </div>
     </fieldset>
 
     <fieldset data-show-when="pb-replaygain=stereotool">

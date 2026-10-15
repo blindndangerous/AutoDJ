@@ -471,3 +471,106 @@ def test_a_second_close_returns_at_once() -> None:
     master.close()  # a failed start's clean-up, then a stop
     assert time.monotonic() - start < 0.1
     assert not master._worker.is_alive()
+
+
+def test_stereotool_command_gives_the_licence_key_last() -> None:
+    command = _command("stereotool", "stereo_tool_cmd", None, "<KEY-1234>")
+    assert command[-2:] == ["-k", "<KEY-1234>"]
+    assert "-k" not in _command("stereotool", "stereo_tool_cmd")
+    assert "-k" not in _command("smooth", "stereo_tool_cmd", None, "<KEY-1234>")
+
+
+def test_stereotool_starts_with_the_current_program_and_licence() -> None:
+    commands: list[list[str]] = []
+    program = ["./first/stereo_tool_cmd"]
+    licence: list[str | None] = ["<KEY-ONE-1234>"]
+    generation = [0]
+
+    def factory(command, **_kwargs):
+        commands.append(command)
+        raise OSError("stop here")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_path=lambda: program[0],
+        stereotool_license=lambda: licence[0],
+        setup_generation=lambda: generation[0],
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while not commands and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert commands[0][0] == "./first/stereo_tool_cmd"
+        assert commands[0][-2:] == ["-k", "<KEY-ONE-1234>"]
+        # A saved key or a new program bumps the generation: Stereo Tool restarts.
+        program[0] = "/index/tools/stereo-tool/stereo_tool_cmd"
+        licence[0] = None
+        generation[0] = 1
+        master.process(_block())
+        deadline = time.monotonic() + 2
+        while commands[-1][0] != program[0] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert commands[-1][0] == "/index/tools/stereo-tool/stereo_tool_cmd"
+        assert "-k" not in commands[-1]
+    finally:
+        master.close()
+
+
+def test_a_missing_stereotool_points_to_the_download_button() -> None:
+    def factory(command, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_license=lambda: "<KEY-SECRET-1234>",
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error == (
+            "Stereo Tool master unavailable: Stereo Tool is not installed. Download it in "
+            "Settings, Sound, with the Download Stereo Tool button."
+        )
+    finally:
+        master.close()
+
+
+def test_a_stereotool_error_never_shows_the_licence_key() -> None:
+    def factory(command, **_kwargs):
+        raise OSError(f"cannot run {' '.join(command)}")
+
+    master = ContinuousMaster(
+        popen_factory=factory,
+        mode=lambda: "stereotool",
+        stereotool_license=lambda: "<KEY-SECRET-1234>",
+    )
+    try:
+        deadline = time.monotonic() + 2
+        while master.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert master.error and "-k <licence key>" in master.error
+        assert "KEY-SECRET" not in master.error
+    finally:
+        master.close()
+
+
+def test_a_stuck_process_is_logged_without_its_command_line(caplog) -> None:
+    import logging
+
+    from autodj.mastering import _end_process
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    proc.wait.side_effect = subprocess.TimeoutExpired(
+        ["stereo_tool_cmd", "-k", "<KEY-SECRET-1234>"], 2
+    )
+    with caplog.at_level(logging.WARNING, logger="autodj.mastering"):
+        assert _end_process(proc) is False
+    assert caplog.records
+    assert all(
+        "KEY-SECRET" not in record.getMessage() and record.exc_info is None
+        for record in caplog.records
+    )
