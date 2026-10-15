@@ -383,10 +383,14 @@ class LibraryCatalog:
             self._conn.executescript(_SCHEMA)
             self._add_missing_columns()
             self._conn.executescript(_CHANGE_TRACKING)
-            self._conn.execute(
-                "DELETE FROM catalog_vectors WHERE entry_id NOT IN (SELECT id FROM catalog_entries)"
-            )
-            self._conn.commit()
+            if self._conn.execute(
+                "SELECT 1 FROM catalog_vectors WHERE entry_id NOT IN "
+                "(SELECT id FROM catalog_entries) LIMIT 1"
+            ).fetchone():
+                self._conn.execute(
+                    "DELETE FROM catalog_vectors WHERE entry_id NOT IN (SELECT id FROM catalog_entries)"
+                )
+                self._conn.commit()
             _tune(self._conn)
         except BaseException:
             # Not a catalog (or unreadable): do not leave the file open.
@@ -1328,7 +1332,7 @@ class LibraryCatalog:
         """Save a song's advanced analysis if it is still the file it was made from.
 
         The record must still be music with this *size* and *fingerprint*,
-        and the file must still match those values and its recorded mtime.
+        and the file must still match those values.
         The analysed fields, the stale-check
         stamp and the vector change in one transaction, so the change
         counters show the server a complete result.
@@ -1364,17 +1368,11 @@ class LibraryCatalog:
                 row = db.execute(
                     "SELECT * FROM catalog_entries WHERE path=?", (normalized,)
                 ).fetchone()
-                try:
-                    current_mtime_ns = os.stat(normalized).st_mtime_ns
-                except OSError:
-                    db.rollback()
-                    return False
                 if (
                     row is None
                     or row["kind"] != "music"
                     or row["size"] != size
                     or row["fingerprint"] != fingerprint
-                    or row["mtime_ns"] != current_mtime_ns
                 ):
                     db.rollback()
                     return False
@@ -1569,7 +1567,7 @@ class LibraryCatalog:
         remembered in ``user_tags`` so a later analysis keeps it; clearing
         it hands it back to the analysis.  ``remember_manual=False`` is for
         imported embedded tags: manual BPM/key overrides stay untouched, and
-        unchanged tag values do not cause a database write.
+        unchanged tags and file identity do not cause a database write.
 
         Args:
             path: The recording, rewritten on disk or left as it was.
@@ -1597,7 +1595,7 @@ class LibraryCatalog:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
                     "SELECT id,size,fingerprint,embedded_at,loudness,user_tags,"
-                    "title,artist,album,genre,year,bpm,key,mode FROM catalog_entries WHERE path=?",
+                    "title,artist,album,genre,year,bpm,key,mode,mtime_ns FROM catalog_entries WHERE path=?",
                     (normalized,),
                 ).fetchone()
                 if row is None:
@@ -1611,7 +1609,11 @@ class LibraryCatalog:
                         for name, value in fields.items()
                         if name not in protected and value != row[name]
                     }
-                    if not fields:
+                    if not fields and (row["size"], row["fingerprint"], row["mtime_ns"]) == (
+                        size,
+                        fingerprint,
+                        stat.st_mtime_ns,
+                    ):
                         db.rollback()
                         return True
                 values: dict[str, Any] = {

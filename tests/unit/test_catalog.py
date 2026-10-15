@@ -3,10 +3,12 @@ import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
+from autodj import catalog as catalog_module
 from autodj.catalog import _SCHEMA, LibraryCatalog
 from autodj.indexer import FEATURE_DIM, IndexEntry
 
@@ -29,6 +31,29 @@ def test_seed_sources_migrates_once_and_keeps_explicit_empty(tmp_path: Path) -> 
         catalog.set_setting("sources_seeded", True)
         assert not catalog.seed_sources(music, liners)
         assert catalog.sources("music") == []
+
+
+def test_catalog_open_skips_orphan_purge_when_no_orphans(tmp_path: Path) -> None:
+    db = tmp_path / "catalog.db"
+    with LibraryCatalog(db):
+        pass
+    statements: list[str] = []
+    connect = catalog_module._connect
+
+    def traced_connect(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    with patch.object(catalog_module, "_connect", side_effect=traced_connect), LibraryCatalog(db):
+        pass
+    assert not any("DELETE FROM catalog_vectors" in sql for sql in statements)
+
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("INSERT INTO catalog_vectors VALUES (?, ?)", ("orphan", b"vector"))
+        conn.commit()
+    with LibraryCatalog(db) as catalog:
+        assert catalog._db().execute("SELECT 1 FROM catalog_vectors").fetchone() is None
 
 
 def test_remove_entries_rejects_stale_preview_versions(tmp_path: Path) -> None:

@@ -1138,13 +1138,17 @@ def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_f
         patch("autodj.indexer._extract_librosa_features", side_effect=decode),
         patch("autodj.indexer.finish_analysis", return_value=analysis),
     ):
-        assert analyse_library(cfg, wrapper=None) == (0 if change_file else 1)
+        # Size and fingerprint stand for the audio bytes; a change they do
+        # not see (same_fingerprint) still stores the analysis, but the tag
+        # edit and the user cue made during the decode are kept either way.
+        stored = change_file != "size"
+        assert analyse_library(cfg, wrapper=None) == (1 if stored else 0)
 
     with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
         record = catalog.record_for_path(song)
         assert record["title"] == "New title"
         assert record["points"]["intro"] == 12.5
-        assert catalog.has_vector(song) is (change_file is None)
+        assert catalog.has_vector(song) is stored
 
 
 def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
@@ -1168,7 +1172,11 @@ def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
     assert any(entry.path == _path(clip) for entry in manager.entries_snapshot("liner"))
 
 
-def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp_path):
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("migrated", [False, True])
+def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp_path, migrated):
+    from autodj.dj_meta import Cue, DjMeta
+
     song = tmp_path / "Music" / "song.flac"
     song.parent.mkdir()
     audio_samples = np.random.default_rng(1).uniform(-0.3, 0.3, (44100 * 5, 2))
@@ -1176,25 +1184,51 @@ def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp
     audio = FLAC(song)
     audio["title"] = "Old title"
     audio.save()
-    manager = manager_factory(music=song.parent)
-    with patch("autodj.library.analyze_loudness", return_value={}):
+    manager = manager_factory(music=song.parent, processing="smooth")
+    manager.set_dj_analysis_enabled(False)
+    with patch("autodj.library.analyze_loudness", side_effect=fake_loudness):
         manager.scan()
         assert manager.entry_for_path(song).title == "Old title"
         manager.catalog.set_points(song, {"intro": 0.2}, source="user")
+        manager.catalog.set_intro_lift(song, 2.0)
         vector = np.zeros(FEATURE_DIM, np.float32)
         vector[0] = 1
         manager.catalog.set_vector(song, vector)
+        cue = Cue(0.3, type="user", label="My cue", source="user")
+        cache = manager._dj_cache()
+        cache.set(str(song), DjMeta(analysed=True, beats=[0.3], cues=[cue]))
+        cache.flush(force=True)
         before = file_fingerprint(song)
         before_mtime = song.stat().st_mtime_ns
-        audio = FLAC(song)
-        audio["title"] = "Edited elsewhere"
-        audio.save()
-        os.utime(song, ns=(song.stat().st_atime_ns, before_mtime + 1_000_000_000))
+        if migrated:
+            manager.catalog._db().execute(
+                "UPDATE catalog_entries SET mtime_ns=0 WHERE path=?", (_path(song),)
+            )
+            manager.catalog._db().commit()
+        else:
+            audio = FLAC(song)
+            audio["title"] = "Edited elsewhere"
+            audio.save()
+            os.utime(song, ns=(song.stat().st_atime_ns, before_mtime + 1_000_000_000))
         assert file_fingerprint(song) == before
-        manager.scan()
-    assert manager.entry_for_path(song).title == "Edited elsewhere"
+        before_record = manager.catalog.record_for_path(song)
+        manager.set_dj_analysis_enabled(True)
+        with (
+            patch("autodj.library.analyze_basic", side_effect=AssertionError("basic analysis")),
+            patch("autodj.library.load_for_analysis", side_effect=AssertionError("DJ analysis")),
+            patch("autodj.library.analyze_loudness", side_effect=AssertionError("loudness")),
+        ):
+            manager.scan()
+    assert manager.entry_for_path(song).title == ("Old title" if migrated else "Edited elsewhere")
     assert manager.catalog.points(song)["intro"] == 0.2
     assert manager.catalog.has_vector(song)
+    after_record = manager.catalog.record_for_path(song)
+    assert after_record["mtime_ns"] == song.stat().st_mtime_ns
+    assert after_record["loudness"]["mtime_ns"] == song.stat().st_mtime_ns
+    assert after_record["intro_lift_db"] == before_record["intro_lift_db"]
+    assert after_record["energy"] == before_record["energy"]
+    assert cache.get(str(song)).cues == [cue]
+    assert cache.get(str(song)).beats == [0.3]
 
 
 def test_nonfinite_bpm_tags_do_not_drop_tracks_or_break_browse(manager_factory, tmp_path):

@@ -194,6 +194,15 @@ def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypat
     _worker, secret = server.token("Waiting worker")
     queue = server.manager.analysis_queue
     real_claim = queue.claim
+    catalog = server.manager.catalog
+    real_paths = catalog.unembedded_paths
+    queries = []
+
+    def counted_paths():
+        queries.append(1)
+        return real_paths()
+
+    monkeypatch.setattr(catalog, "unembedded_paths", counted_paths)
     raced = False
 
     def claim_with_race(holder, songs, seconds):
@@ -206,6 +215,7 @@ def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypat
 
     monkeypatch.setattr(queue, "claim", claim_with_race)
     assert len(claim(server, secret, batch=2)["songs"]) == 1
+    assert len(queries) == 1
 
 
 def test_audio_is_served_only_for_a_song_this_worker_claimed(server):
@@ -556,5 +566,10 @@ def test_store_analysis_checks_the_record_inside_its_transaction(server):
     with pytest.raises(KeyError):
         catalog.store_analysis(song, record["size"], record["fingerprint"], {}, vector)
     assert not catalog.has_vector(song)
+    with catalog._lock:
+        catalog._db().execute(
+            "UPDATE catalog_entries SET mtime_ns=0 WHERE path=?", (record["path"],)
+        )
+        catalog._db().commit()
     assert catalog.store_analysis(song, record["size"], record["fingerprint"], fields, vector)
     assert catalog.record_for_path(song)["key"] == 1

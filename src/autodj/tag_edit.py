@@ -462,10 +462,15 @@ def write_tags(
         )
     with _write_lock:
         original = _open(target)
-        if os.name == "nt" and not target.stat().st_mode & stat.S_IWRITE:
-            raise TagError(
-                "AutoDJ is not allowed to change this read-only file, so its tags were not changed."
-            )
+        if os.name == "nt":
+            try:
+                writable = bool(target.stat().st_mode & stat.S_IWRITE)
+            except OSError as exc:
+                raise TagError(_os_message(exc)) from exc
+            if not writable:
+                raise TagError(
+                    "AutoDJ is not allowed to change this read-only file, so its tags were not changed."
+                )
         family = _family(original)
         kind = type(original)
         id3_version = 3 if family == "id3" and original.tags.version[1] == 3 else 4

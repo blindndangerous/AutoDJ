@@ -198,6 +198,21 @@ def test_file_system_refusals_are_explained(tmp_path, monkeypatch, number, words
     assert path.read_bytes() == before
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only check")
+def test_disappearing_file_during_read_only_check_is_tag_error(tmp_path, monkeypatch) -> None:
+    path = make_audio(tmp_path, ".flac")
+    original_stat = Path.stat
+
+    def vanished(self, *args, **kwargs):
+        if self == path:
+            raise FileNotFoundError(errno.ENOENT, "No such file", str(path))
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", vanished)
+    with pytest.raises(TagError, match="could not be written"):
+        write_tags(path, validate_tags({"title": "Changed"}))
+
+
 def test_a_mutagen_failure_keeps_the_original(tmp_path: Path, monkeypatch) -> None:
     path = make_audio(tmp_path, ".mp3")
     before = path.read_bytes()

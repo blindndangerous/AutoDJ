@@ -264,15 +264,20 @@ def install_worker_api(
             queue.seen(token.token_id, token.name, body.device or None)
             by_path: dict[str, dict[str, Any]] = {}
             leases: list[Lease] = []
-            attempted: set[str] = set()
+            candidates = iter(manager.catalog.unembedded_paths())
+            held = queue.held_paths()
             while len(leases) < body.batch:
-                records = manager.catalog.unembedded_music(
-                    limit=body.batch - len(leases), exclude=queue.held_paths() | attempted
-                )
+                records = []
+                for path in candidates:
+                    if path not in held and Path(path).is_file():
+                        record = manager.catalog.record_for_path(path)
+                        if record is not None:
+                            records.append(record)
+                    if len(records) == body.batch - len(leases):
+                        break
                 if not records:
                     break
                 by_path.update((record["path"], record) for record in records)
-                attempted.update(record["path"] for record in records)
                 leases.extend(
                     queue.claim(
                         token.token_id,
