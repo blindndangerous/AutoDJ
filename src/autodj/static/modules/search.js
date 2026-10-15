@@ -14,6 +14,7 @@ import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
+  staleActionText,
   withDisabled,
 } from "./api-client.js";
 
@@ -233,6 +234,12 @@ export function installSearch({
           : `Added ${name} to queue${over}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
+      // Answered after a station switch: done, or not, on the old station.
+      const left = staleActionText(errorValue);
+      if (left) {
+        announce(left, errorValue.actionDone ? "info" : "error");
+        return;
+      }
       const failed = now ? `Could not play ${name} now.`
         : next ? `Could not play ${name} next.`
           : `Could not add ${name} to the queue.`;

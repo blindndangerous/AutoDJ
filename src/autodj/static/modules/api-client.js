@@ -1,4 +1,4 @@
-import { isStationUrl, stationApi, stationEpoch } from "./stations.js";
+import { isStationUrl, stationApi, stationEpoch, stationName } from "./stations.js";
 
 let authRequiredHandler = () => {};
 let authenticatedRequestEpoch = 0;
@@ -63,11 +63,23 @@ export function isStaleStationReply(errorValue) {
   return errorValue instanceof ApiError && errorValue.staleStation === true;
 }
 
+// An action (any request but GET or HEAD) answered after a switch was
+// still done, or refused, on the station the page left.  This says which,
+// for the caller to say in place of "Could not ...": the server may well
+// have done it.  Null for any other failure.
+export function staleActionText(errorValue) {
+  if (!isStaleStationReply(errorValue) || !errorValue.stationLeft) return null;
+  return errorValue.actionDone
+    ? `Done on ${errorValue.stationLeft}, the station this page has just left.`
+    : `${errorValue.stationLeft}, the station this page has just left, did not do that.`;
+}
+
 // Every request goes through here.  A route that acts on one station goes
 // to the station this page controls (modules/stations.js).
 async function rawRequest(url, options) {
   const routed = stationApi(url);
   const sentFor = isStationUrl(url) ? stationEpoch() : null;
+  const sentName = sentFor === null ? null : stationName();
   let response;
   try {
     response = await fetch(routed, options);
@@ -86,6 +98,11 @@ async function rawRequest(url, options) {
     }
     const error = new ApiError(STALE_STATION_TEXT, { status: response.status });
     error.staleStation = true;
+    const method = String(options?.method || "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
+      error.stationLeft = sentName;
+      error.actionDone = response.ok;
+    }
     throw error;
   }
   return response;

@@ -5,6 +5,7 @@ import {
   isStaleStationReply,
   requestJson,
   setAuthRequiredHandler,
+  staleActionText,
 } from "../../src/autodj/static/modules/api-client.js";
 import { confirmAction } from "../../src/autodj/static/modules/confirm-dialog.js";
 import {
@@ -190,6 +191,31 @@ describe("requests while switching", () => {
     selectStation(DEFAULT_STATION);
     answer(jsonResponse({ results: [] }));
     await expect(shared).resolves.toEqual({ results: [] });
+  });
+
+  it("says what an action answered after a switch did on the station left", async () => {
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const done = requestJson("/api/queue/remove", { method: "POST" });
+    selectStation("nightowl");
+    answer(jsonResponse({ ok: true }));
+    const doneFailure = await done.catch((error) => error);
+    expect(isStaleStationReply(doneFailure)).toBe(true);
+    expect(staleActionText(doneFailure))
+      .toBe(`Done on ${AUTODJ.name}, the station this page has just left.`);
+
+    const refused = requestJson("/api/skip", { method: "POST" });
+    selectStation(DEFAULT_STATION);
+    answer(jsonResponse({ detail: "No" }, { status: 409 }));
+    expect(staleActionText(await refused.catch((error) => error)))
+      .toBe(`${OWL.name}, the station this page has just left, did not do that.`);
+
+    // A load, not an action: nothing was done, so there is nothing to say.
+    const load = requestJson("/api/status");
+    selectStation("nightowl");
+    answer(jsonResponse({ queue: [] }));
+    expect(staleActionText(await load.catch((error) => error))).toBeNull();
+    expect(staleActionText(new Error("boom"))).toBeNull();
   });
 
   it("never joins a request made for the station before", async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { applyQueueState, installQueueButtons, installQueueClear, renderQueue, resetQueueState } from
   "../../src/autodj/static/modules/queue.js";
+import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
 
 describe("queue mutations", () => {
   it("uses one Tab stop and row and action shortcuts", () => {
@@ -233,6 +234,48 @@ describe("queue mutations", () => {
     expect(busyWhenFocusReturned).toBe("false");
     expect(els.queueList.getAttribute("aria-busy")).toBe("false");
     vi.unstubAllGlobals();
+  });
+
+  it("says what happened on the old station when the reply comes after a switch (#70)", async () => {
+    document.body.innerHTML = '<p id="announce"></p><ol id="queue" tabindex="-1"></ol>';
+    const els = {
+      queueList: document.querySelector("#queue"),
+      queueCount: document.createElement("span"),
+      queueAnnounce: document.querySelector("#announce"),
+    };
+    setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    installQueueButtons(els);
+    let answer;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
+    const reply = (body, status) => answer(new globalThis.Response(JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } }));
+    try {
+      renderQueue([{ path: "one.mp3", display_name: "One" }, { path: "two.mp3", display_name: "Two" }], els);
+      els.queueList.querySelector('li[data-path="one.mp3"] [data-action="remove"]').click();
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      // The switch clears the queue for the new station's.
+      selectStation("night");
+      resetQueueState(els);
+      reply({ ok: true }, 200);
+      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+        .toBe("Done on Main, the station this page has just left."));
+      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
+
+      answer = null;
+      renderQueue([{ path: "owl.mp3", display_name: "Owl" }], els);
+      els.queueList.querySelector('li[data-path="owl.mp3"] [data-action="remove"]').click();
+      await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+      selectStation("default");
+      resetQueueState(els);
+      reply({ detail: "No such entry" }, 409);
+      await vi.waitFor(() => expect(els.queueAnnounce.textContent)
+        .toBe("Night, the station this page has just left, did not do that."));
+      // The old station's queue is not drawn back under the new one's name.
+      expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(0);
+    } finally {
+      selectStation("default");
+      vi.unstubAllGlobals();
+    }
   });
 
   it("clears busy before focusing the queue list after final-row removal", async () => {

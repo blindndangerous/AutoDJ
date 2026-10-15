@@ -11,6 +11,7 @@ import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
   requestJson,
+  staleActionText,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 
@@ -293,18 +294,27 @@ export function installQueueButtons(els) {
       announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      if (_renderGeneration === optimisticGeneration) {
-        renderQueue(snapshot, els);
-        _lastKey = _queueKey(snapshot);
-        focusIndex = idx;
-        focusAction = action;
-        focusQueueList = false;
-      } else {
+      // Answered after a station switch: the queue on screen is the new
+      // station's, so only what happened on the old one is said (#70).
+      const left = staleActionText(errorValue);
+      if (left) {
         ownsRenderedQueue = false;
+        announceStatus(queueAnnounce, left,
+          { dwellMs: 6000, force: true, tone: errorValue.actionDone ? "info" : "error" });
+      } else {
+        if (_renderGeneration === optimisticGeneration) {
+          renderQueue(snapshot, els);
+          _lastKey = _queueKey(snapshot);
+          focusIndex = idx;
+          focusAction = action;
+          focusQueueList = false;
+        } else {
+          ownsRenderedQueue = false;
+        }
+        announceStatus(queueAnnounce,
+          `Could not update queue: ${errorValue.message}`,
+          { dwellMs: 6000, force: true, tone: "error" });
       }
-      announceStatus(queueAnnounce,
-        `Could not update queue: ${errorValue.message}`,
-        { dwellMs: 6000, force: true, tone: "error" });
     } finally {
       mutationPending = false;
       _pendingFromKey = null;
