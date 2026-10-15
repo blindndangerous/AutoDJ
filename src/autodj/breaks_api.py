@@ -70,6 +70,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from autodj.breaks import (
     ANNOUNCER,
+    BREAKS_OFF,
     EXTENSIONS,
     KINDS,
     VOICE_TRACK,
@@ -116,8 +117,6 @@ DECODE_WAIT_SECONDS = 20.0
 BODY_DEADLINE_SECONDS = 60.0
 MIN_BODY_BYTES_PER_SECOND = 256 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
-#: What the announcer and the voice tracker are told while breaks are off.
-BREAKS_OFF = "Breaks are off for this station: turn them on in Settings, Breaks"
 #: ... and while the station does not play from saved segue points.
 NEEDS_SAVED_POINTS = "Breaks need saved-point playback (transition mode: use saved segue points)"
 #: Why the waiting breaks were dropped when breaks were turned off.

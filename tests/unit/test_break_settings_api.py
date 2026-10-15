@@ -14,8 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj._bridge import PlayerBridge
-from autodj.breaks import DROPPED, QUEUED
-from autodj.breaks_api import BREAKS_OFF, NEEDS_SAVED_POINTS
+from autodj.breaks import BREAKS_OFF, DROPPED, QUEUED
+from autodj.breaks_api import NEEDS_SAVED_POINTS
 from autodj.config import BreaksConfig
 from autodj.machine_tokens import SCOPE_ANNOUNCER
 from autodj.runtime_state import load_into_bridge
@@ -133,6 +133,41 @@ def test_turning_breaks_off_tells_the_announcer_and_drops_what_waits(station):
     again = station.context()
     assert again["accepting"] is True and again["reason"] is None
     assert station.upload().json()["state"] == QUEUED
+
+
+def test_an_upload_in_flight_when_breaks_go_off_is_not_booked(station):
+    """An upload let in before breaks were turned off is refused at booking, not queued."""
+    book = station.player.book_break
+
+    def turned_off_first(item):
+        # Settings, Breaks saves "off" while this upload is being decoded.
+        station.player._cfg.breaks.enabled = False
+        station.desk.drop_waiting_breaks("breaks were turned off in Settings")
+        return book(item)
+
+    station.player.book_break = turned_off_first
+    reply = station.upload()
+    assert reply.status_code == 409, reply.text
+    assert reply.json()["detail"] == BREAKS_OFF
+    assert reply.json()["reason"] == "disabled"
+    assert [item for item in station.desk.listing() if item.state == QUEUED] == []
+    station.desk.maintain()
+    assert [path.name for path in station.desk.folder.iterdir()] == []
+
+
+def test_the_ad_schedule_still_books_while_breaks_are_off(station):
+    from dataclasses import replace
+
+    from autodj.breaks import AD_SCHEDULE
+    from tests.unit._break_station import make_break
+
+    station.player._cfg.breaks.enabled = False
+    station.desk.folder.mkdir(parents=True, exist_ok=True)
+    spot = replace(
+        make_break(station.desk, "s" * 32, kind="ad"), source=AD_SCHEDULE, keep_file=True
+    )
+    station.desk.add(spot)
+    assert station.desk.get(spot.break_id).state == QUEUED
 
 
 def test_the_settings_say_when_saved_point_playback_is_missing(station):
