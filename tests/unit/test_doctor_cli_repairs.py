@@ -208,8 +208,10 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
     config.write_text("")
     cfg = load_config(config, environ={})
     cfg.index.index_dir = tmp_path / "index"
-    cfg.index.active_dir.mkdir(parents=True)
-    state = cfg.index.active_dir / "web_state.json"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    state = (cfg.index.stations_dir / "default") / "web_state.json"
     original = json.dumps(
         {
             "schema_version": 2,
@@ -235,7 +237,7 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
         result = CliRunner().invoke(cli, ["doctor", *flags], input=answer)
     assert result.exit_code == 0, result.output
     assert (state.read_bytes() != original) is repaired
-    backups = list(cfg.index.active_dir.glob("*.bak"))
+    backups = list((cfg.index.stations_dir / "default").glob("*.bak"))
     if repaired:
         assert len(backups) == 1 and backups[0].read_bytes() == original
         expected = json.loads(original)
@@ -247,21 +249,6 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
         assert json.loads(result.stdout)["exit_code"] == 0
 
 
-def test_doctor_named_index(tmp_path):
-    from autodj.config import load_config
-
-    config = tmp_path / "config.toml"
-    config.write_text("")
-    cfg = load_config(config, environ={})
-    with (
-        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
-        patch("autodj.doctor.run_doctor", return_value=DoctorReport(())) as run,
-    ):
-        result = CliRunner().invoke(cli, ["doctor", "--name", "second", "--no-fix"])
-    assert result.exit_code == 0, result.output
-    assert run.call_args.args[0].index.name == "second"
-
-
 @pytest.mark.parametrize("failure_kind", ["custom-path", "backup-error"])
 def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kind):
     from autodj.config import load_config
@@ -271,8 +258,10 @@ def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kin
     config.write_text("")
     cfg = load_config(config, environ={})
     cfg.index.index_dir = tmp_path / "index"
-    cfg.index.active_dir.mkdir(parents=True)
-    state = cfg.index.active_dir / "web_state.json"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    state = (cfg.index.stations_dir / "default") / "web_state.json"
     original = json.dumps(
         {
             "schema_version": 2,
@@ -297,7 +286,7 @@ def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kin
         result = CliRunner().invoke(cli, ["doctor", "--fix"])
     assert result.exit_code == (0 if failure_kind == "custom-path" else 1), result.output
     assert state.read_bytes() == original
-    assert not list(cfg.index.active_dir.glob("*.bak"))
+    assert not list((cfg.index.stations_dir / "default").glob("*.bak"))
     if failure_kind == "custom-path":
         backup.assert_not_called()
         assert "No safe automatic edit" in result.output

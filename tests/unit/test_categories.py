@@ -23,6 +23,7 @@ from autodj.categories import (
     resolve_all,
     summary,
 )
+from tests._layout import layout_index
 
 
 def song(path: Path | str, **fields):
@@ -42,7 +43,7 @@ def song(path: Path | str, **fields):
 
 def config(tmp_path: Path, *, beets_db: Path | None = None, playlists: Path | None = None):
     return SimpleNamespace(
-        index=SimpleNamespace(active_dir=tmp_path / "index"),
+        index=layout_index(tmp_path / "index"),
         library=SimpleNamespace(
             beets_db=beets_db, music_dir=tmp_path / "music", playlists_folder=playlists
         ),

@@ -44,18 +44,22 @@ folder = "{(root / "recordings" / slug).as_posix()}"
     path = root / "config.toml"
     path.write_text(text + extra, encoding="utf-8")
     cfg = load_config(path, environ={})
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
-    with LibraryCatalog(cfg.index.active_dir / "library.db"):
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.library_dir / "library.db"):
         pass
     # The fixture only needs the main database; WAL sidecars are transient and
     # would make rollback assertions depend on SQLite's connection timing.
     for suffix in ("-shm", "-wal"):
-        (cfg.index.active_dir / f"library.db{suffix}").unlink(missing_ok=True)
+        (cfg.index.library_dir / f"library.db{suffix}").unlink(missing_ok=True)
     return cfg
 
 
 def _station_dir(cfg: AutoDJConfig, slug: str) -> Path:
-    return cfg.index.active_dir / "stations" / slug
+    return cfg.index.stations_dir / slug
 
 
 def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
@@ -67,7 +71,10 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
         path.write_bytes(data)
         written[path] = data
 
-    for base, who in ((cfg.index.active_dir, b"default"), (_station_dir(cfg, "nightowl"), b"owl")):
+    for base, who in (
+        ((cfg.index.stations_dir / "default"), b"default"),
+        (_station_dir(cfg, "nightowl"), b"owl"),
+    ):
         for name in STATION_FILES:
             if name == "station.json":
                 continue
@@ -87,10 +94,12 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
         written[base / "live_djs.json"] = strip_secrets(djs)
         put(base / "liners" / "id.mp3", who + b" liner")
         put(base / "carts" / "jingle.wav", who + b" cart")
-        put(base / "time_checks" / "03_05.wav", who + b" clip")
+        # The default station's clips are the shared time check packs.
+        clips = cfg.index.shared_dir if who == b"default" else base
+        put(clips / "time_checks" / "03_05.wav", who + b" clip")
         put(base / "clockwheels" / "Night.json", who + b" wheel")
         put(base / "intros" / "intro.wav", who + b" intro")
-    put(cfg.index.index_dir / "profiles" / "Party.json", b"default profile")
+    put(cfg.index.stations_dir / "default" / "profiles" / "Party.json", b"default profile")
     put(_station_dir(cfg, "nightowl") / "profiles" / "Party.json", b"owl profile")
     return written
 
@@ -129,7 +138,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     assert "stations/nightowl/index/relays.json" not in names
     assert b"relay-secret" not in contents
     assert "index/live_djs.json" in names
-    assert default_live_djs == written[cfg.index.active_dir / "live_djs.json"]
+    assert default_live_djs == written[cfg.index.stations_dir / "default" / "live_djs.json"]
     assert owl_live_djs == written[_station_dir(cfg, "nightowl") / "live_djs.json"]
     for djs in (default_live_djs, owl_live_djs):
         assert b"hash" not in djs and b"salt" not in djs and b'"dj"' in djs
@@ -145,7 +154,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     for path, data in written.items():
         assert path.read_bytes() == data, path
     # The live relay settings were left alone.
-    assert (cfg.index.active_dir / "relays.json").read_bytes() == (
+    assert ((cfg.index.stations_dir / "default") / "relays.json").read_bytes() == (
         b'{"password": "default-relay-secret"}'
     )
     assert (_station_dir(cfg, "nightowl") / "relays.json").read_bytes() == (
@@ -178,7 +187,10 @@ def test_restore_skips_relay_settings_in_an_archive_that_has_them(tmp_path: Path
     assert any("Relay settings" in warning for warning in warnings)
     for path, data in written.items():
         assert path.read_bytes() == data, path
-    assert b"default-relay-secret" in (cfg.index.active_dir / "relays.json").read_bytes()
+    assert (
+        b"default-relay-secret"
+        in ((cfg.index.stations_dir / "default") / "relays.json").read_bytes()
+    )
     assert b"owl-relay-secret" in (_station_dir(cfg, "nightowl") / "relays.json").read_bytes()
 
 
@@ -189,7 +201,7 @@ def test_restore_to_a_new_machine_creates_the_station_folder(tmp_path: Path) -> 
 
     fresh = _config(tmp_path / "new")
     # A new machine has configuration directories but has not indexed yet.
-    (fresh.index.active_dir / "library.db").unlink()
+    (fresh.index.library_dir / "library.db").unlink()
     restore_backup(fresh, archive, force=False)
 
     for path, data in written.items():
@@ -271,19 +283,19 @@ def test_folders_that_hold_each_other_are_refused_at_backup(
 
 
 def test_a_folder_holding_a_state_folder_is_refused_at_restore(tmp_path: Path) -> None:
-    # The default station's clip folder set to the index folder itself: a
-    # restore of clips would replace the whole index folder.
+    # The default station's clip folder set to its own station folder: a
+    # restore of clips would replace the whole station folder.
     cfg = _config(
         tmp_path,
         stations="",
-        extra=f'\n[time_checks]\nclips_folder = "{(tmp_path / "index" / "default").as_posix()}"\n',
+        extra=f'\n[time_checks]\nclips_folder = "{(tmp_path / "index" / "stations" / "default").as_posix()}"\n',
     )
     archive = _archive(tmp_path / "b.zip", {"time_checks/id.mp3": b"x"})
 
     with pytest.raises(BackupError, match="overlap"):
         restore_backup(cfg, archive, force=True)
-    assert (cfg.index.active_dir).is_dir()
-    assert not (cfg.index.active_dir / "id.mp3").exists()
+    assert (cfg.index.stations_dir / "default").is_dir()
+    assert not ((cfg.index.stations_dir / "default") / "id.mp3").exists()
 
 
 def test_backup_refuses_a_destination_inside_a_station_folder(tmp_path: Path) -> None:
@@ -305,8 +317,8 @@ def test_restore_refuses_a_station_the_config_does_not_define(tmp_path: Path) ->
         restore_backup(single, archive, force=True)
 
     # Nothing was unpacked, the default station's files included.
-    assert not (single.index.active_dir / "web_state.json").exists()
-    assert not (single.index.active_dir / "stations").exists()
+    assert not ((single.index.stations_dir / "default") / "web_state.json").exists()
+    assert not ((single.index.stations_dir / "default") / "stations").exists()
 
 
 def _archive(path: Path, files: dict[str, bytes], stations: list[str] | None = None) -> Path:
@@ -368,7 +380,7 @@ def test_backup_carries_web_station_definition(tmp_path: Path) -> None:
             "recording": {"folder": str(cfg.recording.folder / "web")},
         },
     }
-    path = cfg.index.active_dir / "stations" / "web" / "station.json"
+    path = cfg.index.stations_dir / "web" / "station.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(definition), encoding="utf-8")
     loaded = load_config(cfg.config_path, environ={})
@@ -393,7 +405,7 @@ def test_restore_refuses_unsafe_station_names(tmp_path: Path, name: str) -> None
     with pytest.raises(BackupError, match="unsafe"):
         restore_backup(cfg, archive, force=True)
 
-    assert not (cfg.index.active_dir / "web_state.json").exists()
+    assert not ((cfg.index.stations_dir / "default") / "web_state.json").exists()
 
 
 @pytest.mark.parametrize("slug", ["../x", "default", "UPPER", 7])
@@ -478,7 +490,9 @@ def test_an_archive_from_before_stations_restores_and_leaves_stations_alone(
 
     restore_backup(cfg, archive, force=True)
 
-    assert (cfg.index.active_dir / "schedule.json").read_bytes() == b"default schedule"
+    assert (
+        (cfg.index.stations_dir / "default") / "schedule.json"
+    ).read_bytes() == b"default schedule"
     assert owl.read_bytes() == b"owl schedule"
 
 
@@ -520,7 +534,10 @@ def test_a_failed_restore_puts_everything_back(tmp_path: Path, failing_put: int)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     # The live data now differs from the backup in every file.
     current: dict[Path, bytes] = {}
-    for path in [*cfg.index.active_dir.rglob("*"), *(cfg.index.index_dir / "profiles").rglob("*")]:
+    for path in [
+        *cfg.index.index_dir.rglob("*"),
+        *(cfg.index.stations_dir / "default" / "profiles").rglob("*"),
+    ]:
         if path.is_file() and path.suffix != ".lock" and path.name != "library.db":
             path.write_bytes(b"current " + path.name.encode())
             current[path] = path.read_bytes()
@@ -591,14 +608,17 @@ def test_state_files_are_copied_together_under_the_index_lock(tmp_path: Path) ->
 
     def write(self, filename, arcname=None, *args, **kwargs):
         owl.write_bytes(b"edited after the snapshot")
-        (cfg.index.active_dir / "schedule.json").write_bytes(b"edited too")
+        ((cfg.index.stations_dir / "default") / "schedule.json").write_bytes(b"edited too")
         return real_write(self, filename, arcname, *args, **kwargs)
 
     with patch.object(zipfile.ZipFile, "write", write):
         archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     with zipfile.ZipFile(archive) as opened:
         assert opened.read("stations/nightowl/index/web_state.json") == written[owl]
-        assert opened.read("index/schedule.json") == written[cfg.index.active_dir / "schedule.json"]
+        assert (
+            opened.read("index/schedule.json")
+            == written[cfg.index.stations_dir / "default" / "schedule.json"]
+        )
 
     held = {"lock": False, "copied_outside": []}
     real_lock = backup_module.im.publication_lock
@@ -656,7 +676,7 @@ def test_names_that_only_look_like_devices_are_fine(tmp_path: Path, name: str) -
     cfg = _config(tmp_path)
     archive = _archive(tmp_path / "ok.zip", {name: b"x"})
     restore_backup(cfg, archive, force=True)
-    assert (cfg.index.active_dir / name).read_bytes() == b"x"
+    assert ((cfg.index.stations_dir / "default") / name).read_bytes() == b"x"
 
 
 def test_restore_refuses_an_archive_bigger_than_the_cap(tmp_path: Path) -> None:
@@ -669,7 +689,7 @@ def test_restore_refuses_an_archive_bigger_than_the_cap(tmp_path: Path) -> None:
         pytest.raises(BackupError, match=r"more than the 0 GiB AutoDJ restores"),
     ):
         restore_backup(cfg, archive, force=True)
-    assert not (cfg.index.active_dir / "liners").exists()
+    assert not ((cfg.index.stations_dir / "default") / "liners").exists()
 
 
 def test_restore_refuses_an_archive_bigger_than_the_free_space(tmp_path: Path) -> None:
@@ -682,7 +702,7 @@ def test_restore_refuses_an_archive_bigger_than_the_free_space(tmp_path: Path) -
         pytest.raises(BackupError, match="not enough free space to restore"),
     ):
         restore_backup(cfg, archive, force=True)
-    assert not (cfg.index.active_dir / "liners").exists()
+    assert not ((cfg.index.stations_dir / "default") / "liners").exists()
 
 
 def test_a_shared_folder_restored_where_it_is_no_longer_shared_is_warned_about(
@@ -708,7 +728,7 @@ def test_a_shared_folder_restored_where_it_is_no_longer_shared_is_warned_about(
     warnings: list[str] = []
     restore_backup(apart, archive, force=True, warnings=warnings)
 
-    assert (apart.index.active_dir / "time_checks" / "id.mp3").read_bytes() == b"both"
+    assert (apart.index.shared_dir / "time_checks" / "id.mp3").read_bytes() == b"both"
     assert len(warnings) == 1
     assert "stations/nightowl/time_checks shared the time_checks folder" in warnings[0]
     assert str(_station_dir(apart, "nightowl") / "time_checks") in warnings[0]
@@ -765,7 +785,9 @@ def _junction(link: Path, target: Path) -> None:
 @pytest.mark.parametrize("station", ["default", "nightowl"])
 def test_backup_refuses_a_file_link_that_leaves_its_folder(tmp_path: Path, station: str) -> None:
     cfg = _config(tmp_path)
-    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    base = (
+        (cfg.index.stations_dir / "default") if station == "default" else _station_dir(cfg, station)
+    )
     liners = base / "liners"
     liners.mkdir(parents=True)
     (liners / "ordinary.wav").write_bytes(b"liner")
@@ -788,7 +810,7 @@ def test_backup_refuses_a_file_link_that_leaves_its_folder(tmp_path: Path, stati
 
 def test_backup_keeps_a_file_link_inside_its_folder(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    liners = cfg.index.active_dir / "liners"
+    liners = (cfg.index.stations_dir / "default") / "liners"
     liners.mkdir()
     original = liners / "original.wav"
     original.write_bytes(b"audio")
@@ -804,7 +826,9 @@ def test_backup_keeps_a_file_link_inside_its_folder(tmp_path: Path) -> None:
 @pytest.mark.parametrize("station", ["default", "nightowl"])
 def test_backup_refuses_a_linked_subfolder(tmp_path: Path, station: str, kind: str) -> None:
     cfg = _config(tmp_path)
-    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    base = (
+        (cfg.index.stations_dir / "default") if station == "default" else _station_dir(cfg, station)
+    )
     liners = base / "liners"
     liners.mkdir(parents=True)
     outside = tmp_path / "outside"
@@ -823,7 +847,9 @@ def test_backup_refuses_a_linked_subfolder(tmp_path: Path, station: str, kind: s
 @pytest.mark.parametrize("station", ["default", "nightowl"])
 def test_state_links_cannot_copy_or_restore_outside_data(tmp_path: Path, station: str) -> None:
     cfg = _config(tmp_path)
-    base = cfg.index.active_dir if station == "default" else _station_dir(cfg, station)
+    base = (
+        (cfg.index.stations_dir / "default") if station == "default" else _station_dir(cfg, station)
+    )
     base.mkdir(parents=True, exist_ok=True)
     state = base / "web_state.json"
     state.write_text("{}")
@@ -862,13 +888,13 @@ def test_a_junction_replaced_by_a_restore_is_removed_as_a_link(tmp_path: Path) -
     real = tmp_path / "real-liners"
     real.mkdir()
     (real / "keep.wav").write_bytes(b"keep")
-    _junction(cfg.index.active_dir / "liners", real)
+    _junction((cfg.index.stations_dir / "default") / "liners", real)
     archive = _archive(tmp_path / "b.zip", {"liners/new.wav": b"new"})
 
     restore_backup(cfg, archive, force=True)
 
-    assert (cfg.index.active_dir / "liners" / "new.wav").read_bytes() == b"new"
-    assert not (cfg.index.active_dir / "liners").is_junction()
+    assert ((cfg.index.stations_dir / "default") / "liners" / "new.wav").read_bytes() == b"new"
+    assert not ((cfg.index.stations_dir / "default") / "liners").is_junction()
     assert (real / "keep.wav").read_bytes() == b"keep"
     assert _leftovers(tmp_path / "index") == []
 
@@ -880,9 +906,9 @@ def test_backup_refuses_hard_linked_files(tmp_path: Path, kind: str) -> None:
     external.write_bytes(b"private")
     relative = {"liner": "liners/alias.wav", "state": "web_state.json"}
     path = (
-        cfg.index.active_dir / relative[kind]
+        (cfg.index.stations_dir / "default") / relative[kind]
         if kind != "preset"
-        else cfg.index.active_dir.parent / "stereo-tool-presets/alias.sts"
+        else cfg.index.shared_dir / "stereo-tool-presets/alias.sts"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -920,7 +946,10 @@ def _live_state(cfg: AutoDJConfig) -> dict[str, bytes]:
 
 
 def _changed_since_backup(cfg: AutoDJConfig) -> None:
-    for path in [*cfg.index.active_dir.rglob("*"), *(cfg.index.index_dir / "profiles").rglob("*")]:
+    for path in [
+        *cfg.index.index_dir.rglob("*"),
+        *(cfg.index.stations_dir / "default" / "profiles").rglob("*"),
+    ]:
         if (
             path.is_file()
             and path.suffix not in (".lock", ".db")
@@ -942,9 +971,14 @@ def test_failed_replacement_restores_the_data(tmp_path: Path, target_name: str) 
 
     real_put = backup_module._Swap.put
     target = (
-        cfg.index.active_dir / target_name
+        (
+            cfg.index.library_dir
+            if target_name == "library.db"
+            else cfg.index.stations_dir / "default"
+        )
+        / target_name
         if target_name in {"library.db", "web_state.json"}
-        else cfg.index.active_dir / "liners"
+        else (cfg.index.stations_dir / "default") / "liners"
     )
     raised = False
 
@@ -963,7 +997,7 @@ def test_failed_replacement_restores_the_data(tmp_path: Path, target_name: str) 
     assert raised
     assert _live_state(cfg) == before
     assert _leftovers(tmp_path / "index") == []
-    assert not (cfg.index.active_dir / ".autodj-restore.json").exists()
+    assert not (cfg.index.library_dir / ".autodj-restore.json").exists()
 
 
 class _Crash(BaseException):
@@ -982,9 +1016,14 @@ def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, target_name: 
     _changed_since_backup(cfg)
     before = _live_state(cfg)
     target = (
-        cfg.index.active_dir / target_name
+        (
+            cfg.index.library_dir
+            if target_name == "library.db"
+            else cfg.index.stations_dir / "default"
+        )
+        / target_name
         if target_name in {"library.db", "web_state.json"}
-        else cfg.index.active_dir / "liners"
+        else (cfg.index.stations_dir / "default") / "liners"
     )
     real_put = backup_module._Swap.put
 
@@ -1001,7 +1040,7 @@ def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, target_name: 
     ):
         restore_backup(cfg, archive, force=True)
 
-    assert pending_restore_state(cfg.index.active_dir) == "installing"
+    assert pending_restore_state(cfg.index.library_dir) == "installing"
     check = next(c for c in run_doctor(cfg, python_version=(3, 14)).checks if c.name == "restore")
     assert (check.status, check.repair) == (CheckStatus.FAIL, "recover-restore")
     with pytest.raises(BackupError, match="did not finish"):
@@ -1012,7 +1051,7 @@ def test_a_crash_part_way_is_rolled_back_by_doctor(tmp_path: Path, target_name: 
 
     assert any("rolled back" in line for line in done)
     assert _live_state(cfg) == before
-    assert pending_restore_state(cfg.index.active_dir) is None
+    assert pending_restore_state(cfg.index.library_dir) is None
     assert not restore_leftovers(cfg)
     # The rollback deleted nothing: what it moved is in the kept folder.
     assert keep.is_dir()
@@ -1037,14 +1076,14 @@ def test_a_crash_after_every_file_is_in_place_is_finished_by_doctor(tmp_path: Pa
     ):
         restore_backup(cfg, archive, force=True)
 
-    assert pending_restore_state(cfg.index.active_dir) == "installed"
+    assert pending_restore_state(cfg.index.library_dir) == "installed"
     for path, data in written.items():
         assert path.read_bytes() == data
     keep = tmp_path / "kept"
     done = recover_restore(cfg, keep)
     assert any("already complete" in line for line in done)
     assert _leftovers(tmp_path / "index") == []
-    assert pending_restore_state(cfg.index.active_dir) is None
+    assert pending_restore_state(cfg.index.library_dir) is None
     for path, data in written.items():
         assert path.read_bytes() == data
     assert any(".old-" in path.name or "old-" in path.name for path in keep.iterdir())
@@ -1067,12 +1106,12 @@ def test_old_copies_that_cannot_be_deleted_do_not_fail_a_finished_restore(tmp_pa
         assert path.read_bytes() == data
     assert len(warnings) == 1
     assert warnings[0].startswith("The restore is complete, but these old copies could not")
-    assert pending_restore_state(cfg.index.active_dir) == "installed"
+    assert pending_restore_state(cfg.index.library_dir) == "installed"
     check = next(c for c in run_doctor(cfg, python_version=(3, 14)).checks if c.name == "restore")
     assert check.status is CheckStatus.WARN
     recover_restore(cfg, tmp_path / "kept")
     assert _leftovers(tmp_path / "index") == []
-    assert pending_restore_state(cfg.index.active_dir) is None
+    assert pending_restore_state(cfg.index.library_dir) is None
 
 
 def test_a_failed_undo_names_where_each_old_file_is(tmp_path: Path) -> None:
@@ -1104,11 +1143,11 @@ def test_a_failed_undo_names_where_each_old_file_is(tmp_path: Path) -> None:
         restore_backup(cfg, archive, force=True)
 
     # The journal stays, so doctor finishes the rollback.
-    assert pending_restore_state(cfg.index.active_dir) == "installing"
+    assert pending_restore_state(cfg.index.library_dir) == "installing"
     recover_restore(cfg, tmp_path / "kept")
     assert _live_state(cfg) == before
-    assert pending_restore_state(cfg.index.active_dir) is None
-    assert backup_module._read_journal(cfg.index.active_dir) is None
+    assert pending_restore_state(cfg.index.library_dir) is None
+    assert backup_module._read_journal(cfg.index.library_dir) is None
 
 
 def test_stray_copies_without_a_journal_are_reported_and_moved_aside(tmp_path: Path) -> None:
@@ -1116,7 +1155,7 @@ def test_stray_copies_without_a_journal_are_reported_and_moved_aside(tmp_path: P
     from autodj.doctor import CheckStatus, run_doctor
 
     cfg = _config(tmp_path)
-    stray = cfg.index.active_dir / f".liners.old-{'a' * 32}"
+    stray = (cfg.index.stations_dir / "default") / f".liners.old-{'a' * 32}"
     stray.mkdir()
     (stray / "old.mp3").write_bytes(b"old")
     check = next(c for c in run_doctor(cfg, python_version=(3, 14)).checks if c.name == "restore")
@@ -1145,16 +1184,16 @@ def test_restore_refuses_while_autodj_serves_the_index(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _fill(cfg)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
-    lock = hold_serve_lock(cfg.index.active_dir)
+    lock = hold_serve_lock(cfg.index.library_dir)
     try:
-        assert server_running(cfg.index.active_dir)
+        assert server_running(cfg.index.library_dir)
         with pytest.raises(BackupError, match=r"AutoDJ is serving .*; stop it before restoring"):
             restore_backup(cfg, archive, force=True)
         with pytest.raises(BackupError, match="already serving"):
-            hold_serve_lock(cfg.index.active_dir)
+            hold_serve_lock(cfg.index.library_dir)
     finally:
         lock.release()
-    assert not server_running(cfg.index.active_dir)
+    assert not server_running(cfg.index.library_dir)
     restore_backup(cfg, archive, force=True)
 
 
@@ -1163,7 +1202,7 @@ def test_sqlite_journals_are_never_left_beside_a_restored_database(tmp_path: Pat
     from contextlib import closing
 
     cfg = _config(tmp_path, stations="")
-    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as db:
+    with closing(sqlite3.connect(cfg.index.library_dir / "library.db")) as db:
         db.execute("CREATE TABLE t(x)")
         db.execute("INSERT INTO t VALUES (1)")
         db.commit()
@@ -1172,13 +1211,13 @@ def test_sqlite_journals_are_never_left_beside_a_restored_database(tmp_path: Pat
         assert not [
             name for name in opened.namelist() if name.endswith(("-journal", "-wal", "-shm"))
         ]
-    hot = cfg.index.active_dir / "library.db-journal"
+    hot = cfg.index.library_dir / "library.db-journal"
     hot.write_bytes(b"a stale hot journal")
 
     restore_backup(cfg, archive, force=True)
 
     assert not hot.exists()
-    with closing(sqlite3.connect(cfg.index.active_dir / "library.db")) as db:
+    with closing(sqlite3.connect(cfg.index.library_dir / "library.db")) as db:
         assert db.execute("SELECT x FROM t").fetchall() == [(1,)]
 
 
@@ -1206,7 +1245,7 @@ def test_restore_refuses_more_names_windows_cannot_hold(tmp_path: Path, name: st
 def test_autodjs_own_temporary_files_stay_out_of_a_backup(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _fill(cfg)
-    liners = cfg.index.active_dir / "liners"
+    liners = (cfg.index.stations_dir / "default") / "liners"
     (liners / f".id.mp3.{'b' * 32}.tmp").write_bytes(b"half written")
     aside = liners / f".sub.old-{'c' * 32}"
     aside.mkdir()
@@ -1260,7 +1299,10 @@ def test_each_stations_shows_are_backed_up_and_restored(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     assert "shows.json" in STATION_FILES
     shows = {
-        cfg.index.active_dir / "shows.json": {"schema_version": 1, "shows": {"a" * 32: "day"}},
+        (cfg.index.stations_dir / "default") / "shows.json": {
+            "schema_version": 1,
+            "shows": {"a" * 32: "day"},
+        },
         _station_dir(cfg, "nightowl") / "shows.json": {
             "schema_version": 1,
             "shows": {"b" * 32: "night"},
@@ -1284,7 +1326,7 @@ def test_a_restore_forgets_every_stations_show_on_the_air(tmp_path: Path) -> Non
     """show_on_air.json (#106) is runtime state: never backed up, cleared by a restore."""
     cfg = _config(tmp_path)
     marks = [
-        cfg.index.active_dir / "show_on_air.json",
+        (cfg.index.stations_dir / "default") / "show_on_air.json",
         _station_dir(cfg, "nightowl") / "show_on_air.json",
     ]
     for mark in marks:
@@ -1304,7 +1346,7 @@ def test_stereo_tool_keys_and_program_stay_out_of_backups(tmp_path: Path) -> Non
     _fill(cfg)
     key = "<STEREO-TOOL-BACKUP-SECRET-1234>"
     setup.save_license(setup.install_license_path(cfg.index.index_dir), key)
-    setup.save_license(setup.station_license_path(cfg.index.active_dir), key)
+    setup.save_license(setup.station_license_path((cfg.index.stations_dir / "default")), key)
     setup.save_license(setup.station_license_path(_station_dir(cfg, "nightowl")), key)
     program = setup.managed_path(cfg.index.index_dir)
     program.parent.mkdir(parents=True)

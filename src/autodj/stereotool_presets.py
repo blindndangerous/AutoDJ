@@ -1,4 +1,4 @@
-"""Validated Stereo Tool preset files stored beside the active index."""
+"""Validated Stereo Tool preset files stored in the shared folder."""
 
 from __future__ import annotations
 
@@ -39,8 +39,9 @@ def validate_preset_name(name: str) -> str:
     return name
 
 
-def preset_folder(active_index: Path | str) -> Path:
-    return Path(active_index).parent / "stereo-tool-presets"
+def preset_folder(shared: Path | str) -> Path:
+    """The uploaded presets every station can choose from."""
+    return Path(shared) / "stereo-tool-presets"
 
 
 def preset_path(active_index: Path | str, name: str, *, require_existing: bool = True) -> Path:
@@ -165,7 +166,7 @@ def delete_preset(active_index: Path, name: str, *, active: str | Iterable[str] 
     """Remove one upload unless a station uses it (whatever its letter case).
 
     Args:
-        active_index: The active index folder, which holds the presets.
+        active_index: The shared folder, which holds the presets.
         name: The preset to delete.
         active: The preset each station is set to use.
 

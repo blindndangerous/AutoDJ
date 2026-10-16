@@ -367,7 +367,7 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             )
         cfg = station_config(spec.cfg, root)
         paths = StationPaths.for_station(cfg, station)
-    active = Path(root.index.active_dir)
+    active = Path(root.index.library_dir)
     if not (active / "library.db").is_file():
         raise SimulationError(
             f"No music library in {active}. Start autodj serve or run autodj index first."

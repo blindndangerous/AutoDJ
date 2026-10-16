@@ -10,6 +10,7 @@ from autodj.dj_meta import Cue, DjMeta
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.settings_bodies import PlaybackSettingsBody
+from tests._layout import point_index
 
 
 def _entry(**over) -> IndexEntry:
@@ -319,7 +320,7 @@ def test_repeat_windows_resize_the_running_history(bridge, tmp_path) -> None:
     from autodj.player import PlayerState
 
     state = PlayerState(no_repeat_window=10, artist_repeat_window=3)
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     for i in range(5):
         state.record_played(_entry(path=f"/m/{i}.mp3", artist=f"Artist {i}"))
     bridge.player._state = state

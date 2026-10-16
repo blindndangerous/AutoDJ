@@ -360,7 +360,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         from autodj.stereotool_presets import preset_path
 
         try:
-            preset_path(player._cfg.index.active_dir, values["stereotool_preset"])
+            preset_path(player._cfg.index.shared_dir, values["stereotool_preset"])
         except (ValueError, FileNotFoundError):
             _warn("stereotool_preset", values.pop("stereotool_preset"))
     bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)

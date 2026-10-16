@@ -272,7 +272,7 @@ def test_doctor_reports_missing_minutes_and_fallback(tmp_path: Path) -> None:
 def test_doctor_reads_the_switches_saved_from_settings(tmp_path: Path) -> None:
     cfg = load_config(environ={})
     cfg.index.index_dir = tmp_path
-    state = Path(cfg.index.active_dir) / "time_checks.json"
+    state = Path((cfg.index.stations_dir / "default")) / "time_checks.json"
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
         '{"version":1,"settings":{"enabled":true,"hour_format":"12","rule":"off"}}',
@@ -504,7 +504,7 @@ def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: P
     assert checks[2].summary == "enabled; Folder not found."
     # The full pack says every minute, so no TTS fallback is needed.
     assert _time_checks_check(cfg).status is CheckStatus.PASS
-    state = Path(cfg.index.active_dir) / "time_checks.json"
+    state = Path((cfg.index.stations_dir / "default")) / "time_checks.json"
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
         '{"version":1,"settings":{"enabled":true,"hour_format":"12","rule":"off",'

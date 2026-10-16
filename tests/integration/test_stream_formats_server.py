@@ -14,6 +14,7 @@ from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import StreamFormat
 from autodj.stream_mounts import StreamMounts
+from tests._layout import point_index
 
 
 def _output(first: bytes, bitrate: int = 320) -> MagicMock:
@@ -43,7 +44,7 @@ class Rig:
             self.main, self.make, lambda _o: None, lambda _o: None, probe=self.probe
         )
         cfg = bridge.player._cfg
-        cfg.index.active_dir = tmp_path
+        point_index(cfg.index, tmp_path)
         cfg.stream.enabled = True
         bridge.attach_stream(stream=self.main, station=MagicMock(state="idle"), mounts=self.mounts)
         bridge.save_persistent_state = MagicMock()
@@ -227,7 +228,9 @@ def test_a_stream_without_mounts_refuses_format_changes(bridge, tmp_path: Path) 
 
 
 def test_keeping_fewer_days_deletes_the_older_ones_now(rig: Rig) -> None:
-    stats_path = Path(rig.bridge.player._cfg.index.active_dir) / "listener_stats.json"
+    stats_path = (
+        Path((rig.bridge.player._cfg.index.stations_dir / "default")) / "listener_stats.json"
+    )
     with rig.client.stream("GET", "/stream.mp3") as response:
         next(response.iter_bytes())
     assert rig.client.post("/api/stream/settings", json={"stats_days": 0}).status_code == 200

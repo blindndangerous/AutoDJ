@@ -228,9 +228,7 @@ def test_create_station_registers_stopped_and_persists(rig: Any) -> None:
     assert client.get("/api/stations/new/status").status_code == 409
     assert client.get("/stations/new/status").status_code == 503
     assert library.catalog.last_played("new") == {}
-    assert {path.name for path in (cfg.index.active_dir / "stations" / "new").iterdir()} == {
-        "station.json"
-    }
+    assert {path.name for path in (cfg.index.stations_dir / "new").iterdir()} == {"station.json"}
     loaded = load_config(cfg.config_path, environ={})
     assert loaded.stations[-1].slug == "new"
     assert loaded.stations[-1].autostart is False
@@ -281,7 +279,7 @@ def test_create_station_rejects_conflicts_and_bad_flags(rig: Any) -> None:
     assert post("nightowl", "Other").status_code == 409
     assert post("new", " NIGHT OWL RADIO ").status_code == 409
     assert post("new", "Other", source="missing").status_code == 404
-    (cfg.index.active_dir / "stations" / "leftover").mkdir(parents=True)
+    (cfg.index.stations_dir / "leftover").mkdir(parents=True)
     assert post("leftover", "Other").status_code == 409
     library.catalog.remember_play("old-song.flac", station="history")
     assert post("history", "Other").status_code == 409
@@ -310,7 +308,7 @@ def test_create_rolls_back_after_registration_fails(
         headers={"Origin": "http://testserver"},
     )
     assert response.status_code == 409
-    assert not (cfg.index.active_dir / "stations" / "new").exists()
+    assert not (cfg.index.stations_dir / "new").exists()
     assert library.catalog.get_setting("clock:new") is None
     assert "new" not in client.app.state.stations.slugs()
 
@@ -358,7 +356,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
     assert default.player.bus is not owl.player.bus
     assert default.bridge.stream is not owl.bridge.stream
     assert default.player._continuous_master is not owl.player._continuous_master
-    assert owl.paths.state_dir == cfg.index.active_dir / "stations" / "nightowl"
+    assert owl.paths.state_dir == cfg.index.stations_dir / "nightowl"
     assert owl.player.station_paths is owl.paths
     assert owl.ledger is library.station_ledger("nightowl")
     assert default.ledger is library.ledger
@@ -416,7 +414,7 @@ def test_queue_pause_and_settings_stay_in_their_station(rig: Any) -> None:
     assert cfg.transitions.effect == "none"
     saved = json.loads((owl.paths.state_dir / "web_state.json").read_text(encoding="utf-8"))
     assert saved["transition"] == "echo_out"
-    assert not (cfg.index.active_dir / "web_state.json").exists()
+    assert not ((cfg.index.stations_dir / "default") / "web_state.json").exists()
 
 
 def test_listeners_bans_and_recording_are_per_station(
@@ -459,7 +457,7 @@ def test_listeners_bans_and_recording_are_per_station(
     assert client.get("/nightowl.mp3").status_code == 403
     assert client.head("/stream.mp3").status_code == 200
     assert (owl.paths.state_dir / "listener_bans.json").is_file()
-    assert not (cfg.index.active_dir / "listener_bans.json").exists()
+    assert not ((cfg.index.stations_dir / "default") / "listener_bans.json").exists()
 
     assert client.post(f"{OWL}/recording/start").status_code == 200
     assert client.get(f"{OWL}/recording").json()["running"] is True

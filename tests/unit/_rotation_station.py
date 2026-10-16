@@ -210,19 +210,22 @@ def make_station(
     config_file = root / "config.toml"
     config_file.write_text(text, encoding="utf-8")
     cfg = load_config(config_file, environ={})
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
     if related_tracks is not None:
         groups = [f"{json.dumps(name)} = {json.dumps(to)}" for name, to in related_tracks.items()]
-        (cfg.index.active_dir / "related-tracks.toml").write_text(
+        (cfg.index.library_dir / "related-tracks.toml").write_text(
             "\n".join(["[related]", *groups, ""]), encoding="utf-8"
         )
     if related is not None:
         links = [f"{json.dumps(name)} = {json.dumps(to)}" for name, to in related.items()]
-        (cfg.index.active_dir / "related-artists.toml").write_text(
+        (cfg.index.library_dir / "related-artists.toml").write_text(
             "\n".join(["single_acts = []", "[related]", *links, ""]), encoding="utf-8"
         )
     saved = []
-    playlists = cfg.index.active_dir / "playlists"
+    playlists = cfg.index.shared_dir / "playlists"
     playlists.mkdir(exist_ok=True)
     for spec in categories:
         spec = dict(spec)

@@ -169,13 +169,16 @@ class LibraryManager:
         # Rotation categories for clockwheel steps, worked out from these entries.
         self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
         self.clock_beets = BeetsConditions(cfg)
-        catalog_path = cfg.index.active_dir / "library.db"
+        catalog_path = cfg.index.library_dir / "library.db"
         require_current_library(
-            cfg.index.active_dir,
-            (
-                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-                for spec in cfg.stations
-            ),
+            cfg.index.library_dir,
+            [
+                StationPaths.default(cfg).web_state,
+                *(
+                    StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                    for spec in cfg.stations
+                ),
+            ],
         )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
@@ -850,12 +853,12 @@ class LibraryManager:
                     continue
                 moved = True
                 try:
-                    if not (self.cfg.index.active_dir / "dj_meta.db").is_file():
+                    if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
                         continue
                     from autodj.dj_meta import get_cache
 
                     cache = get_cache(
-                        self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir
+                        self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir
                     )
                     if cache is not None:
                         cache.rekey_many([(source, str(track.path))])
@@ -883,12 +886,12 @@ class LibraryManager:
         return fresh
 
     def _legacy_point_suggestions(self, path: Path) -> dict[str, float]:
-        if not (self.cfg.index.active_dir / "dj_meta.db").is_file():
+        if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
             return {}
         try:
             from autodj.dj_meta import get_cache
 
-            cache = get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
+            cache = get_cache(self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir)
             meta = cache.get(str(path)) if cache is not None else None
         except ValueError:
             # Invalid legacy cache paths must not prevent library scanning.
@@ -1167,7 +1170,7 @@ class LibraryManager:
         from autodj.dj_meta import get_cache
 
         try:
-            return get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
+            return get_cache(self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir)
         except (OSError, ValueError) as exc:
             logger.warning("DJ analysis unavailable: %s", exc)
             return None
@@ -1292,7 +1295,6 @@ class LibraryManager:
         manager.configure(
             config_path=self.cfg.config_path,
             index_dir=self.cfg.index.index_dir,
-            index_name=self.cfg.index.name,
         )
         if not manager.start("analyse-library"):
             return False
@@ -1408,7 +1410,7 @@ def analyse_library(
                     report=report,
                     gate=gate,
                 )
-        _finish_decode_report(report, cfg.index.active_dir / LIBRARY_DECODE_LOG)
+        _finish_decode_report(report, cfg.index.library_dir / LIBRARY_DECODE_LOG)
         return completed
     finally:
         manager.close()

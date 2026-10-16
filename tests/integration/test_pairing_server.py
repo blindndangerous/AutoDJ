@@ -6,13 +6,14 @@ from fastapi.testclient import TestClient
 
 from autodj.pairing import DeviceRegistry
 from autodj.server import _version_info, create_app
+from tests._layout import point_index
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 
 
 def _paired_client(bridge, tmp_path) -> tuple[TestClient, DeviceRegistry]:
     bridge.player._cfg.server.access_token = _SECRET
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     app = create_app(bridge)
     app.state.security_policy.now = lambda: 1_000

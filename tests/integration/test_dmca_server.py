@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from autodj.config import DmcaConfig
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
 from autodj.server import create_app
+from tests._layout import point_index
 
 from ._helpers import _make_entry
 
@@ -129,7 +130,7 @@ def test_public_pages_never_show_the_next_song(dmca_bridge) -> None:
 
 
 def test_show_next_cannot_be_turned_on_in_dmca_mode(dmca_bridge, tmp_path) -> None:
-    dmca_bridge.player._cfg.index.active_dir = tmp_path
+    point_index(dmca_bridge.player._cfg.index, tmp_path)
     dmca_bridge.player._cfg.stream.enabled = True
     dmca_bridge.attach_stream(stream=MagicMock(listener_count=0), station=MagicMock(state="idle"))
     dmca_bridge.save_persistent_state = MagicMock()

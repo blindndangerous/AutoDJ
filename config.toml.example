@@ -54,22 +54,18 @@ supported_formats = ["mp3", "flac", "m4a"]
 
 # Folder of M3U and M3U8 files that rotation categories (Library tools,
 # Categories) read, such as rotation playlists an update script writes.
-# Default: <index_dir>/<name>/playlists.  The files are not backed up.
+# Default: <index_dir>/shared/playlists.  The files are not backed up.
 # playlists_folder = "/srv/autodj/playlists"
 
 [index]
-# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
-# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# <index_dir> holds the library (library.db, dj_meta.db) in libraries/main/, what
+# stations share in shared/, and each station's state and liners in stations/<slug>/.
 # Keep a separate catalog per machine and register folders using that machine's paths.
 # Do not share this directory between an indexing machine and a playout machine.
 index_dir = "index"
 
 # Directory where the MuQ model checkpoint is cached after download
 model_dir = "models"
-
-# The named index to use, kept in <index_dir>/<name>/.  `--name` on index,
-# prune, enrich, analyse, serve and stats replaces it for that command.
-# name = "default"
 
 # Pause before each track that `autodj index` embeds and that `autodj index` and
 # `autodj analyse` analyse, in milliseconds, to give network drives a rest on
@@ -218,7 +214,7 @@ crossfade_seconds = 3.0
 music_speed_percent = 0.0
 
 # Repeat rules are edited in Settings > Picking > Repeats and saved in
-# index/<name>/web_state.json. Each artist, related artist, album, track, title and
+# index/stations/<slug>/web_state.json. Each artist, related artist, album, track, title and
 # related track rule has a track count and a minute limit; 0 disables that limit.
 # Both can be set.
 # Older repeat keys are rejected. Remove them by hand and re-enter limits in
@@ -228,8 +224,8 @@ music_speed_percent = 0.0
 # before; start_hours are where the dayparts start, in station hours. hourpart.plays (0 to 3)
 # holds back a song from the quarter of the hour its last plays started in. 0 turns each off.
 # Track counts other than the track rule's are capped at 5000. The related-artist file is
-# fixed at index/<name>/related-artists.toml and the related-track file at
-# index/<name>/related-tracks.toml; each is read only when enabled.
+# fixed at index/libraries/main/related-artists.toml and the related-track file at
+# index/libraries/main/related-tracks.toml; each is read only when enabled.
 # AutoDJ copies the shipped sample only if that file does not exist.
 
 # When false, AutoDJ loads no lyrics and the web UI hides the lyric card.
@@ -400,7 +396,7 @@ server_max_track_minutes = 15.0
 enabled = false
 # The station's time checks folder: minute clips, intro and outro clips and
 # one folder per voice pack.
-# clips_folder = "~/.autodj/time_checks"  # default: <index_dir>/<name>/time_checks
+# clips_folder = "~/.autodj/time_checks"  # default: <index_dir>/shared/time_checks
 hour_format = "12"                       # "12" or "24"
 rule = "off"                             # "off" or "after_hour_song"
 # Used until Settings chooses an intro or outro clip (or None).
@@ -488,7 +484,7 @@ max_clip_safe_gain = 1.0
 # (--server-audio, --stream), and the browser ignores them.  Track
 # analysis (intro/outro times + beat grid) comes from `autodj index` /
 # `autodj analyse`, or is done on first play, and is cached in
-# <index_dir>/<name>/dj_meta.db.
+# <index_dir>/libraries/main/dj_meta.db.
 # ---------------------------------------------------------------------------
 [djmix]
 # Restrict next-track candidates to harmonically-compatible keys.  Tracks
@@ -705,7 +701,7 @@ embed_origins = []
 # The sections above are the default station.  Each [stations.<slug>] table
 # adds another station that plays from the same library, with its own player,
 # stream, recordings, schedule, carts, clockwheels and saved settings under
-# <index_dir>/<name>/stations/<slug>/.  The slug uses lower-case letters,
+# <index_dir>/stations/<slug>/.  The slug uses lower-case letters,
 # digits and inner hyphens (at most 32 characters); "default" is reserved.
 # At most 8 such stations.  See "Several stations" in docs/operations.md.
 #

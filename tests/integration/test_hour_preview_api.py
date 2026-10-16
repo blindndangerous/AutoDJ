@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from autodj import hour_preview
 from autodj.repeat_rules import PlayRecord
 from autodj.server import create_app
+from tests._layout import point_index
 from tests.unit._rotation_station import category_step, make_station, song
 
 
@@ -34,7 +35,7 @@ def source(tmp_path: Path):
 
 @pytest.fixture
 def client(bridge, tmp_path, monkeypatch, source) -> TestClient:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     monkeypatch.setattr(hour_preview, "_source", lambda _station: source)
     return TestClient(create_app(bridge))
@@ -75,7 +76,7 @@ def test_no_preview_starts_once_shutdown_has_begun(client: TestClient) -> None:
 
 
 def test_a_station_without_a_library_is_refused(bridge, tmp_path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.library = None
     answer = TestClient(create_app(bridge)).get("/api/hour-preview")

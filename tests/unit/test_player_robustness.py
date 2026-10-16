@@ -16,6 +16,7 @@ from autodj.indexer import IndexEntry
 from autodj.mixbus import RenderedTrack
 from autodj.player import Player, PlayerState
 from autodj.similarity import SimilarityError, SimilarityIndex
+from tests._layout import point_index
 from tests.unit._fakes import make_cfg_mock, make_entry, make_sim_index
 
 WAIT = 5.0
@@ -458,7 +459,7 @@ class TestShutdownWaitsForTheRenderWorker:
 class TestEnsureDjCache:
     def _player(self) -> Player:
         player = _player()
-        player._cfg.index.active_dir = Path("index")
+        point_index(player._cfg.index, Path("index"))
         return player
 
     def test_a_caller_arriving_while_the_cache_opens_waits_for_it(self) -> None:

@@ -66,12 +66,13 @@ def test_empty_similarity_index_loads_catalog_vectors(tmp_path: Path) -> None:
 
 def test_serve_loader_refuses_index_without_manifest(tmp_path: Path) -> None:
     cfg = load_config(None, environ={})
-    index_dir = tmp_path / "old-index"
-    index_dir.mkdir()
+    cfg.index.index_dir = tmp_path
+    index_dir = cfg.index.library_dir
+    index_dir.mkdir(parents=True)
     (index_dir / "tracks.db").touch()
 
     with pytest.raises(IndexConsistencyError, match="migrate-index"):
-        _load_index_for_serve(cfg, active_dir=index_dir)
+        _load_index_for_serve(cfg)
 
 
 def test_serve_loader_refuses_a_manifest_whose_file_is_missing(tmp_path: Path) -> None:
@@ -90,13 +91,16 @@ def test_serve_loader_refuses_a_manifest_whose_file_is_missing(tmp_path: Path) -
         mode=-1,
         tempo_confidence=0.0,
     )
-    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), tmp_path, base_generation=0)
-    manifest = read_manifest(tmp_path)
+    cfg.index.index_dir = tmp_path
+    library = cfg.index.library_dir
+    library.mkdir(parents=True)
+    save_index([entry], np.zeros((1, FEATURE_DIM), dtype=np.float32), library, base_generation=0)
+    manifest = read_manifest(library)
     assert manifest is not None
-    (tmp_path / manifest.vectors_file).unlink()
+    (library / manifest.vectors_file).unlink()
 
     with pytest.raises(IndexConsistencyError, match="migrate-index"):
-        _load_index_for_serve(cfg, active_dir=tmp_path)
+        _load_index_for_serve(cfg)
 
 
 @pytest.mark.parametrize(
@@ -109,10 +113,12 @@ def test_serve_loader_names_generation_files_without_manifest(
 ) -> None:
     """A lost manifest is not an empty index: say so and name the rebuild."""
     cfg = load_config(None, environ={})
-    (tmp_path / orphan_name).touch()
+    cfg.index.index_dir = tmp_path
+    cfg.index.library_dir.mkdir(parents=True)
+    (cfg.index.library_dir / orphan_name).touch()
 
     with pytest.raises(IndexConsistencyError, match="migrate-index"):
-        _load_index_for_serve(cfg, active_dir=tmp_path)
+        _load_index_for_serve(cfg)
 
 
 def test_player_waits_safely_for_first_index_generation() -> None:

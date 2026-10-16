@@ -65,10 +65,9 @@ def make_config(
 ):
     music = root / "Music" if music is None else music
     music.mkdir(parents=True, exist_ok=True)
-    index = root / "index" / "default"
     return AutoDJConfig(
         library=LibraryConfig(music_dir=music, supported_formats=["flac"]),
-        index=IndexConfig(index_dir=index.parent, model_dir=root / "models"),
+        index=IndexConfig(index_dir=root / "index", model_dir=root / "models"),
         playback=PlaybackConfig(loudness_processing=processing),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(),
@@ -100,7 +99,7 @@ def manager_factory(tmp_path):
     def create(liners=None, **kwargs):
         cfg = make_config(tmp_path, **kwargs)
         # The station's own liners folder, registered on a new library.
-        (cfg.index.active_dir / "liners").mkdir(parents=True, exist_ok=True)
+        ((cfg.index.stations_dir / "default") / "liners").mkdir(parents=True, exist_ok=True)
         manager = LibraryManager(cfg, Similarity())
         manager.catalog.add_source(cfg.library.music_dir)
         if liners is not None:
@@ -146,10 +145,10 @@ def test_new_library_does_not_register_legacy_music_root(tmp_path: Path) -> None
     try:
         # Only the station's own liners folder is registered.
         assert {row["path"] for row in manager.catalog.sources()} == {
-            os.path.normcase(str(cfg.index.active_dir / "liners")),
+            os.path.normcase(str((cfg.index.stations_dir / "default") / "liners")),
         }
         assert sim.replaced[1].shape == (0, FEATURE_DIM)
-        assert not (cfg.index.active_dir / "index-manifest.json").exists()
+        assert not (cfg.index.library_dir / "index-manifest.json").exists()
     finally:
         manager.close()
 
@@ -197,7 +196,7 @@ def test_constructor_refuses_legacy_settings_in_another_station(tmp_path):
     state.write_text(original, encoding="utf-8")
     with pytest.raises(IndexConsistencyError, match="needs migration"):
         LibraryManager(cfg, Similarity())
-    assert not (cfg.index.active_dir / "library.db").exists()
+    assert not (cfg.index.library_dir / "library.db").exists()
     assert state.read_text(encoding="utf-8") == original
 
 
@@ -468,7 +467,7 @@ def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
         manager._thread.join(timeout=3)
         assert not manager._thread.is_alive()
     assert captured["index_dir"] == manager.cfg.index.index_dir
-    assert captured["index_dir"] != manager.cfg.index.active_dir
+    assert captured["index_dir"] != (manager.cfg.index.stations_dir / "default")
 
 
 def test_queued_folder_is_scanned_before_remaining_loudness(manager_factory, tmp_path):
@@ -839,8 +838,10 @@ def test_basic_suggestions_include_legacy_intro_outro_without_overwriting_manual
     song = music / "song.flac"
     song.write_bytes(b"music")
     manager = manager_factory(music=music)
-    manager.cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
-    (manager.cfg.index.active_dir / "dj_meta.db").write_bytes(b"placeholder")
+    manager.cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    manager.cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (manager.cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    (manager.cfg.index.library_dir / "dj_meta.db").write_bytes(b"placeholder")
 
     class Cache:
         def get(self, path):
@@ -902,7 +903,7 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
     assert len(manager.catalog.recent_history()) == 1
     manager.close()
 
-    reopened = LibraryCatalog(manager.cfg.index.active_dir / "library.db")
+    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
     try:
         assert [row["event_id"] for row in reopened.recent_history()] == ["play-1"]
         rows = (
@@ -999,7 +1000,7 @@ def test_runtime_settings_are_buffered_until_tick_and_close(manager_factory, tmp
 
     manager.ledger.remember_setting("clock", {"cursor": 4, "enabled": True})
     manager.close()
-    reopened = LibraryCatalog(manager.cfg.index.active_dir / "library.db")
+    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
     try:
         assert reopened.get_setting("clock") == {"cursor": 4, "enabled": True}
     finally:
@@ -1101,7 +1102,7 @@ def test_advanced_worker_adds_vector_without_publishing_legacy_index(tmp_path: P
         assert check.catalog.has_vector(song)
         assert check.entry_for_path(song).bpm == 120
         assert check.entry_for_path(song).key == 7
-        assert not (cfg.index.active_dir / "index-manifest.json").exists()
+        assert not (cfg.index.library_dir / "index-manifest.json").exists()
     finally:
         check.close()
 
@@ -1111,13 +1112,13 @@ def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_f
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"x" * (FINGERPRINT_BYTES * 2))
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir, advanced=True)
         catalog.put_entry(make_entry(song, title="Old title"), points={"start": 0, "end": 180})
         catalog.set_points(song, {"intro": 12.5}, source="user")
 
     def decode(path):
-        with LibraryCatalog(cfg.index.active_dir / "library.db") as other:
+        with LibraryCatalog(cfg.index.library_dir / "library.db") as other:
             assert other.retag(path, {"title": "New title"})
         if change_file == "size":
             song.write_bytes(b"y" * 4100)
@@ -1144,7 +1145,7 @@ def test_analysis_keeps_tag_edits_and_user_cues_during_decode(tmp_path, change_f
         stored = change_file != "size"
         assert analyse_library(cfg, wrapper=None) == (1 if stored else 0)
 
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         record = catalog.record_for_path(song)
         assert record["title"] == "New title"
         assert record["points"]["intro"] == 12.5
@@ -1289,7 +1290,7 @@ def test_scan_does_not_create_prepared_audio(manager_factory, tmp_path):
     music.mkdir()
     song.write_bytes(b"music")
     manager = manager_factory(music=music)
-    cache = manager.cfg.index.active_dir / "prepared"
+    cache = (manager.cfg.index.stations_dir / "default") / "prepared"
     cache.mkdir(parents=True)
     prepared = cache / "legacy.wav"
     prepared.write_bytes(b"existing prepared audio")
@@ -1658,7 +1659,7 @@ def test_catalog_vectors_replace_stale_similarity_without_seeding(tmp_path, monk
         song.write_bytes(song.name.encode())
     entries = [make_entry(song) for song in songs]
     vectors = np.eye(2, FEATURE_DIM, dtype=np.float32)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir)
         catalog.seed_entries(entries)
         catalog.seed_vectors(entries, vectors)

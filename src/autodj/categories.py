@@ -11,7 +11,7 @@ A category such as A, B, "2000s" or "Rock gold" has a name and one source:
   one an update-playlists script writes.  Each line is matched to a library
   track; the lines that match none are reported as missing.
 
-The categories are kept in ``categories.json`` in the active index folder
+The categories are kept in ``categories.json`` in the shared folder
 (versioned, written atomically; a file that cannot be read is set aside
 and the station starts with none).  :class:`CategoryIndex` works out which
 library songs each category holds and keeps the answer until the
@@ -538,13 +538,13 @@ class CategoryStore:
 
 def store_path(cfg: AutoDJConfig) -> Path:
     """Where this configuration keeps its categories."""
-    return Path(cfg.index.active_dir) / FILE_NAME
+    return Path(cfg.index.shared_dir) / FILE_NAME
 
 
 def playlists_folder(cfg: AutoDJConfig) -> Path:
     """The folder M3U categories read from."""
     configured = cfg.library.playlists_folder
-    return Path(configured) if configured else Path(cfg.index.active_dir) / "playlists"
+    return Path(configured) if configured else Path(cfg.index.shared_dir) / "playlists"
 
 
 def list_playlists(folder: Path) -> list[str]:

@@ -14,6 +14,7 @@ from autodj.config import ServerConfig
 from autodj.security import station_relative
 from autodj.server import PlayerBridge, create_app
 from autodj.station_routes import STATION_PREFIX
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -246,8 +247,7 @@ def _default_path(route: str) -> str:
 def _app(tmp_path: Path | None = None, **server: object) -> tuple[TestClient, PlayerBridge]:
     player = _make_player_mock()
     if tmp_path is not None:
-        player._cfg.index.index_dir = tmp_path
-        player._cfg.index.active_dir = tmp_path / "main"
+        point_index(player._cfg.index, tmp_path)
         player._cfg.server.station_timezone = "UTC"
     if server:
         player._cfg.server = ServerConfig(
@@ -339,7 +339,7 @@ def test_a_named_station_route_acts_on_that_station(tmp_path: Path) -> None:
     assert created.status_code == 201, created.text
     listed = client.get("/api/schedule").json()["events"]
     assert [event["id"] for event in listed] == [created.json()["id"]]
-    assert (tmp_path / "main" / "schedule.json").is_file()
+    assert (tmp_path / "stations" / "default" / "schedule.json").is_file()
 
 
 def test_an_unknown_station_is_404_and_a_stopped_one_409() -> None:

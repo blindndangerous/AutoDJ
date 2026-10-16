@@ -192,13 +192,13 @@ def _station_cfg(tmp_path: Path):
 
 def test_another_station_skips_the_default_stations_minute_clips(tmp_path: Path) -> None:
     cfg = _station_cfg(tmp_path)
-    shared = tmp_path / "default" / "time_checks"
+    shared = tmp_path / "shared" / "time_checks"
     _write_pack(shared / "Studio", [3], [5])
     for folder in ("Clips", "Chosen"):
         (shared / folder).mkdir()
         (shared / folder / "15_05.wav").write_bytes(_wav())
     (shared / "Chosen" / "intro.wav").write_bytes(_wav())
-    (shared / "time_checks.json").parent.mkdir(exist_ok=True)
+    StationPaths.default(cfg).time_checks.parent.mkdir(parents=True, exist_ok=True)
     StationPaths.default(cfg).time_checks.write_text(
         json.dumps({"version": 1, "settings": {"recorded_folder": "Chosen"}}), encoding="utf-8"
     )
@@ -225,7 +225,7 @@ def test_a_pack_the_default_station_shares_says_so_when_there_are_stations(
 
 def test_a_linked_folder_and_its_target_are_one_pack(tmp_path: Path) -> None:
     cfg = _station_cfg(tmp_path)
-    shared = tmp_path / "default" / "time_checks"
+    shared = tmp_path / "shared" / "time_checks"
     real = _write_pack(shared / "Studio", [3], [5])
     link = tmp_path / "voices" / "Studio"
     link.parent.mkdir()

@@ -16,10 +16,10 @@ Invalid values for supported settings still need fixing.
 ## Diagnose before serving
 
 If `autodj serve` exits with an error in an interactive terminal, it offers to run
-`autodj doctor` with the same Python environment, configuration and named index.
+`autodj doctor` with the same Python environment and configuration.
 Doctor still asks before repairs. After resolving the checks, run your serve command again.
 In scripts, serve prints the suggestion without prompting. To run Doctor yourself, use the
-same `--config` and `--name` options as serve.
+same `--config` option as serve.
 
 Run `uv run autodj doctor`. Use `uv run autodj doctor --json` for automation. A required failed
 check returns exit 1. In an interactive terminal, doctor offers to remove unsupported config
@@ -45,7 +45,7 @@ remain read-only, except that the index check takes the index lock, as `serve` d
 failures still return exit 1. Doctor also offers to run its recommended AutoDJ recovery commands:
 indexing (including `index --force` for an outdated or inconsistent index), downloading missing
 models through indexing, DJ metadata analysis, and `serve --lan` for network streaming.
-These commands use the same Python environment, configuration, and named index. Doctor explains
+These commands use the same Python environment and configuration. Doctor explains
 the work before asking; indexing and analysis can take a long time. `--fix` approves these commands
 too. Dependency installation remains manual.
 
@@ -1658,11 +1658,24 @@ The rules:
 - **Errors name the station**, for example
   `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
 
-A station keeps its state in `<index_dir>/<name>/stations/<slug>/`, with the same file names as
-the default station: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
+A station keeps its state in `<index_dir>/stations/<slug>/`, the default station in
+`stations/default/`, all with the same file names: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
 `liners/` and `profiles/`. Its plays are kept in the
-shared `library.db`. The default station's files stay where they always were.
+shared `library.db`.
+
+The index folder holds:
+
+- `libraries/main/`: the library, `library.db` and `dj_meta.db`, with the related artists and
+  tracks files.
+- `shared/`: what every station shares, the categories, playlists, uploaded Stereo Tool presets
+  and time check packs.
+- `stations/<slug>/`: each station's own files.
+- `logs/`, `tools/` and the pairing files, for the whole server.
+
+`autodj serve`, or any other command that uses the library, moves an index folder from an older
+release into these folders once, inside the index folder. Named indexes (`[index] name`,
+`--name`) are gone; a second named index found there is left as it is.
 
 ### Creating a station from the web page
 
@@ -1686,7 +1699,7 @@ intros, profiles, liners, time-check clips, announcements, or caches. Relays sta
 configured for the new station. Music files, library records, analysis, song cue points, and
 Stereo Tool preset files remain shared.
 
-AutoDJ stores the definition at `<index_dir>/<name>/stations/<slug>/station.json` alongside
+AutoDJ stores the definition at `<index_dir>/stations/<slug>/station.json` alongside
 that station's state. A station's secrets (its stream relays, listener user and password, and
 webhooks) never go in `station.json`. They go beside it in `relays.json` and `secrets.json`,
 which only your account can read and backups leave out. When `autodj serve` finds a
@@ -1843,7 +1856,7 @@ its folder; doctor names such a folder, and backups leave it out.
 lines look as before; another station's start with its slug:
 
 ```text
-[PASS] Station nightowl, station-folder: /srv/autodj/index/default/stations/nightowl
+[PASS] Station nightowl, station-folder: /srv/autodj/index/stations/nightowl
 [PASS] Station nightowl, saved-settings: saved settings valid
 [PASS] Station nightowl, stream: stream mode on at 192 kbps
 [WARN] Station nightowl, relay-main: Icecast at radio.example.net:8000/owl: cannot reach the server
@@ -2156,11 +2169,11 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    tables in both files under `stations.nightowl.stream.relays`. The full list of keys and rules
    is in [Configuration](#configuration).
 4. **Liners and time checks.** Night Owl plays the liners in every registered liner folder,
-   and liners uploaded for it go in `<index_dir>/<name>/stations/nightowl/liners/`. Its time
-   checks folder is `<index_dir>/<name>/stations/nightowl/time_checks/` unless you set
+   and liners uploaded for it go in `<index_dir>/stations/nightowl/liners/`. Its time
+   checks folder is `<index_dir>/stations/nightowl/time_checks/` unless you set
    `[stations.nightowl.time_checks] clips_folder`; add voice packs and clips to it from
    **Settings**, **Time checks** while Night Owl is the station the page controls. It also finds
-   the packs in the shared `<index_dir>/<name>/time_checks/` folder.
+   the packs in the shared `<index_dir>/shared/time_checks/` folder.
 5. **Containers only:** make sure the new recording folder, and any liner folder outside the
    index, is mounted and writable. The station's own folder is inside the `/index` volume.
 6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
@@ -2173,8 +2186,8 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
 8. **Set it up in the web page.** Choose Night Owl Radio with the Station button in the banner
    (see [The station switcher](#the-station-switcher)), then choose its clockwheel, DMCA mode
    and processing, and build its schedule, carts and liners. To start from the default
-   station's clockwheels or profiles, copy files from `<index_dir>/<name>/clockwheels/` or
-   `<index_dir>/profiles/` into `stations/nightowl/clockwheels/` or `stations/nightowl/profiles/`
+   station's clockwheels or profiles, copy files from `stations/default/clockwheels/` or
+   `stations/default/profiles/` into `stations/nightowl/clockwheels/` or `stations/nightowl/profiles/`
    while AutoDJ is stopped.
 9. **Move the listeners.** Publish `https://<your host>/nightowl.mp3`. If listeners
    already use an address on a hosted Icecast or Shoutcast server, add a relay from Night Owl to
@@ -2303,7 +2316,7 @@ configured liner folder and an explicitly supplied legacy music folder, if any.
 You can run it when the index itself is current but only saved settings, history, or folder
 registration still needs upgrading. The preview lists the work and writes nothing.
 
-Run it with the same configuration and named index as your server:
+Run it with the same configuration as your server:
 
 ```bash
 # Current catalog: upgrade old settings/history without a music root
@@ -2311,8 +2324,8 @@ uv run autodj migrate-index
 uv run autodj migrate-index --apply
 # Old published index: supply the base for its relative paths
 uv run autodj migrate-index --music-dir /path/to/music --apply
-# With another configuration or named index:
-uv run autodj --config station.toml migrate-index --name gold --apply
+# With another configuration:
+uv run autodj --config station.toml migrate-index --apply
 ```
 
 Applying saves a recovery copy of the index generation, `dj_meta.db`, `library.db`, and saved web
@@ -2364,13 +2377,13 @@ that machine; do not copy a populated `library.db` expecting it to adapt to a di
 ### Importing a legacy index on another machine
 
 Older published indexes store paths relative to `music_dir` and can be imported on the destination
-without re-embedding. Place the legacy index files in its named index directory, then run
+without re-embedding. Place the legacy index files in `index/libraries/main/`, then run
 `autodj migrate-index --music-dir /path/to/old/music --apply` using the destination
 folder that contains the old relative paths. The catalog stores the
 destination's absolute paths and the command keeps a recovery copy.
 
 For this one-time legacy import, stop AutoDJ and any `index` or `analyse` run on both machines.
-Copy only the files needed by the old format from `index/<name>/`:
+Copy only the files needed by the old format from the old index folder:
 
 - The generation files named in `index-manifest.json`: `tracks.g<number>.db` and
   `vectors.g<number>.index`. The number is the manifest's `generation` written with 20 digits.
@@ -2380,9 +2393,9 @@ Copy only the files needed by the old format from `index/<name>/`:
 
 Do not copy machine-specific data:
 
-- `index/<name>/web_state.json`, the settings chosen in the web page.
-- `index/<name>/liners/`, the voice liners uploaded on that machine.
-- `index/profiles/`, the saved profiles.
+- `web_state.json`, the settings chosen in the web page.
+- `liners/`, the voice liners uploaded on that machine.
+- `profiles/`, the saved profiles.
 - `index/.access-token`, the LAN pairing secret. Copying it would let every browser paired with
   one machine use the other.
 - `index/.paired-devices.sqlite3`, the paired browsers and their sessions.
@@ -2795,8 +2808,8 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
 
 ### What happens to the files
 
-Uploads go to the station's `announcements` folder (`<index_dir>/<name>/announcements`, or
-`stations/<slug>/announcements` beneath it for another station) under a name AutoDJ makes up. That
+Uploads go to the station's `announcements` folder (`<index_dir>/stations/<slug>/announcements`)
+under a name AutoDJ makes up. That
 folder is never part of liner rotation. A break's file is deleted once it has aired, been dropped
 or expired, and any file left by a previous run is deleted when the station starts (an upload
 still arriving is left alone). Room for an upload (its place in `max_queued` and `max_per_slot`
@@ -3281,7 +3294,7 @@ many plays were exported, how many songs lack an ISRC, label or other reporting 
 warning when some songs have neither an ISRC nor both an album and a label, because SoundExchange
 may not be able to match those. Add `--missing` to get the songs that lack a field instead of the
 plays, one row each, with the fields they lack, how often they played, and a `matchable` column
-that says `no` for the songs SoundExchange may not be able to match. Add `--name` for a named index. Dates are in the server's time zone; an ISO
+that says `no` for the songs SoundExchange may not be able to match. Dates are in the server's time zone; an ISO
 8601 date and time also works, for example `--from 2026-09-01T06:00`. Each station keeps its own
 play log: `--station NAME` exports another station's plays, and without it you get the default
 station's, which are all the plays logged before AutoDJ ran more than one station.
@@ -3415,9 +3428,9 @@ the rules and the collecting societies are different.
 Repeat limits are edited in Settings > Picking > Repeats and stored in
 `web_state.json`. Old repeat keys in `config.toml` or `web_state.json` are
 ignored with a warning; re-enter any limits that still use those keys in that panel. The related
-artists file is `index/<name>/related-artists.toml` and is read only when
+artists file is `index/libraries/main/related-artists.toml` and is read only when
 **Use related artists** is enabled. The related tracks file is
-`index/<name>/related-tracks.toml` and is read only when **Use related tracks** is enabled.
+`index/libraries/main/related-tracks.toml` and is read only when **Use related tracks** is enabled.
 Each must be at most 1 MiB.
 
 The daypart and quarter-hour rules (both off to start with) keep a song from playing at the same
@@ -3607,8 +3620,8 @@ window and prefers a song whose estimated handoff lands closest to it. See
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
   complete play history, and matching vectors.
-- Every file in the station's liners folder (`index/<name>/liners`) and in
-  `index/profiles`, plus uploaded presets in `index/stereo-tool-presets`.
+- Every file in the station's liners and profiles folders (`index/stations/default/liners`
+  and `profiles`), plus uploaded presets in `index/shared/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
   time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
 - `categories.json`, the rotation categories. Their playlist files are not included; the script
@@ -4473,7 +4486,7 @@ liner due at the same song change, so the two can overlap. The **Play a time che
 audio or stream mode, and in this browser otherwise.
 
 Each station has a **time checks folder**: the `time_checks` folder in the station's folder (for
-the default station, `<index_dir>/<name>/time_checks`), or `[time_checks] clips_folder` when it
+the default station, the shared `<index_dir>/shared/time_checks`), or `[time_checks] clips_folder` when it
 is set. It holds the recorded minute clips, the intro and outro clips, and one folder per voice
 pack. Everything in it is managed from **Settings**, **Time checks**; only the text-to-speech
 command is set in `config.toml`, because it runs a program on the server.
@@ -4511,7 +4524,7 @@ RadioBOSS does, so its packs work as they are: an hour file says "it's 5", a min
 in Settings.
 
 AutoDJ finds packs by itself: every folder in the station's time checks folder is a pack, and so
-is every folder in the library's own `<index_dir>/<name>/time_checks` folder, which every station
+is every folder in the shared `<index_dir>/shared/time_checks` folder, which every station
 shares (for the default station without a `clips_folder`, the two are the same folder). Some
 folders are not packs: those whose names start with a dot, which AutoDJ uses while it unpacks
 an upload; a folder whose audio files are all minute clips (`15_05.wav`); the station's chosen

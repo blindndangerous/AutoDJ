@@ -202,7 +202,7 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check registered music folders; an empty library needs no configured root."""
-    catalog_path = cfg.index.active_dir / "library.db"
+    catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
         return DoctorCheck("music-path", CheckStatus.PASS, "no music folders registered")
     try:
@@ -303,15 +303,16 @@ def _saved_settings_check(cfg: AutoDJConfig, paths: StationPaths | None = None) 
 
 def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check the current catalog without reading old generation files."""
-    index_dir = cfg.index.active_dir
+    index_dir = cfg.index.library_dir
     catalog_path = index_dir / "library.db"
     if catalog_path.is_file():
         from autodj.catalog import catalog_counts
 
         try:
             from autodj.index_migration import migration_required
+            from autodj.stations import StationPaths
 
-            needed, reason = migration_required(index_dir)
+            needed, reason = migration_required(index_dir, (StationPaths.default(cfg).web_state,))
             if needed:
                 return DoctorCheck(
                     "index", CheckStatus.FAIL, "library migration needed", reason, "migrate-index"
@@ -348,7 +349,7 @@ def _index_check(cfg: AutoDJConfig) -> DoctorCheck:
 
 def _dj_meta_database_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check the active DJ metadata cache read-only, without creating it."""
-    path = cfg.index.active_dir / "dj_meta.db"
+    path = cfg.index.library_dir / "dj_meta.db"
     if not path.is_file():
         return DoctorCheck(
             "dj-meta-db",
@@ -629,7 +630,7 @@ def _related_tracks_check(cfg: AutoDJConfig) -> DoctorCheck:
     from autodj.related_artist_file import DEFAULT_RELATED_TRACKS_FILE
     from autodj.repeat_rules import load_related_tracks
 
-    path = cfg.index.active_dir / DEFAULT_RELATED_TRACKS_FILE
+    path = cfg.index.library_dir / DEFAULT_RELATED_TRACKS_FILE
     if not path.exists():
         return DoctorCheck(
             "related-tracks",
@@ -657,7 +658,7 @@ def _related_artists_check(cfg: AutoDJConfig) -> DoctorCheck:
     from autodj.related_artist_file import DEFAULT_RELATED_ARTISTS_FILE
     from autodj.repeat_rules import load_related_artists
 
-    path = cfg.index.active_dir / DEFAULT_RELATED_ARTISTS_FILE
+    path = cfg.index.library_dir / DEFAULT_RELATED_ARTISTS_FILE
     if not path.exists():
         return DoctorCheck(
             "related-artists",
@@ -918,12 +919,12 @@ def _station_folders_check(cfg: AutoDJConfig) -> tuple[DoctorCheck, ...]:
     They are never deleted: their settings, schedule and carts may still be
     wanted.  No check is made when there is no ``stations`` folder.
     """
-    from autodj.stations import StationPaths
+    from autodj.stations import DEFAULT_SLUG, StationPaths
 
     folder = StationPaths.default(cfg).stations_dir
     if not folder.is_dir():
         return ()
-    configured = {spec.slug for spec in cfg.stations}
+    configured = {DEFAULT_SLUG, *(spec.slug for spec in cfg.stations)}
     try:
         unused = sorted(
             child.name
@@ -962,7 +963,7 @@ class _CatalogSong:
 
 def _catalog_songs(cfg: AutoDJConfig) -> list[_CatalogSong]:
     """The catalog's music entries, read-only (an empty list without a catalog)."""
-    path = cfg.index.active_dir / "library.db"
+    path = cfg.index.library_dir / "library.db"
     if not path.is_file():
         return []
     with closing(_connect(readonly_uri(path), uri=True)) as db:

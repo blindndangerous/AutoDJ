@@ -121,13 +121,13 @@ def missing_minutes(folder: Path) -> list[str]:
 
 
 def shared_folder(cfg: AutoDJConfig) -> Path:
-    """The library's own time checks folder, ``<index_dir>/<name>/time_checks``.
+    """The shared time checks folder, ``<index_dir>/shared/time_checks``.
 
     Every station finds the voice packs in it, as well as those in its own
     time checks folder; for the default station without a ``clips_folder``
     the two are the same folder.
     """
-    return Path(cfg.index.active_dir) / "time_checks"
+    return Path(cfg.index.shared_dir) / "time_checks"
 
 
 @dataclass(frozen=True)

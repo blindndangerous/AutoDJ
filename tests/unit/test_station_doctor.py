@@ -50,13 +50,15 @@ folder = "{(root / "recordings" / "nightowl").as_posix()}"
         encoding="utf-8",
     )
     cfg = load_config(path, environ={})
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
     cfg.index.model_dir.mkdir(parents=True, exist_ok=True)
     return cfg
 
 
 def _owl(cfg: AutoDJConfig) -> Path:
-    return cfg.index.active_dir / "stations" / "nightowl"
+    return cfg.index.stations_dir / "nightowl"
 
 
 def _checks(report: DoctorReport, station: str | None) -> dict[str, DoctorCheck]:
@@ -80,8 +82,9 @@ def test_each_station_gets_its_own_checks(tmp_path: Path) -> None:
     # The default station's checks keep their names and carry no station.
     default = _checks(report, None)
     assert {"saved-settings", "stream", "time-checks", "recording", "liners"} <= set(default)
-    # No stations folder yet, so nothing to say about unused ones.
-    assert "station-folders" not in default
+    # The default station's own folder is never an unused one.
+    assert (cfg.index.stations_dir / "default").is_dir()
+    assert default["station-folders"].status is CheckStatus.PASS
     _owl(cfg).mkdir(parents=True)
     last = run_doctor(cfg, python_version=(3, 14)).checks[-1]
     assert (last.name, last.status) == ("station-folders", CheckStatus.PASS)
@@ -235,11 +238,11 @@ def test_a_folder_of_a_station_no_longer_configured_is_reported_not_removed(
     tmp_path: Path,
 ) -> None:
     cfg = _config(tmp_path)
-    old = cfg.index.active_dir / "stations" / "oldies"
+    old = cfg.index.stations_dir / "oldies"
     old.mkdir(parents=True)
     (old / "schedule.json").write_text("{}", encoding="utf-8")
     # A leftover restore stage is hidden and not a station.
-    (cfg.index.active_dir / "stations" / ".nightowl.restore-1").mkdir()
+    (cfg.index.stations_dir / ".nightowl.restore-1").mkdir()
 
     check = run_doctor(cfg, python_version=(3, 14)).checks[-1]
 
@@ -310,7 +313,7 @@ def test_cli_repairs_a_station_saved_settings_with_consent_and_a_backup(
     state = _owl(cfg) / "web_state.json"
     original = json.dumps(OBSOLETE).encode()
     state.write_bytes(original)
-    default_state = cfg.index.active_dir / "web_state.json"
+    default_state = (cfg.index.stations_dir / "default") / "web_state.json"
     default_state.write_bytes(original)
 
     result = _cli(cfg, [*args, "--station", "nightowl"], answer=answer, tty=True)
@@ -331,7 +334,7 @@ def test_cli_repairs_a_station_saved_settings_with_consent_and_a_backup(
 
 def test_station_filter_runs_no_server_wide_repairs(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    stray = cfg.index.active_dir / f".liners.old-{'d' * 32}"
+    stray = (cfg.index.stations_dir / "default") / f".liners.old-{'d' * 32}"
     stray.mkdir()
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
@@ -353,8 +356,8 @@ def test_station_filter_runs_no_server_wide_repairs(tmp_path: Path) -> None:
 
 def _interrupted_restore(cfg: AutoDJConfig) -> Path:
     """A journal for a restore that moved web_state.json aside and stopped."""
-    state = cfg.index.active_dir / "web_state.json"
-    aside = cfg.index.active_dir / f".web_state.json.old-{'e' * 32}"
+    state = (cfg.index.stations_dir / "default") / "web_state.json"
+    aside = (cfg.index.stations_dir / "default") / f".web_state.json.old-{'e' * 32}"
     aside.write_text('{"old": true}', encoding="utf-8")
     journal = {
         "version": 1,
@@ -363,7 +366,8 @@ def _interrupted_restore(cfg: AutoDJConfig) -> Path:
         "steps": [{"op": "aside", "path": str(state), "aside": str(aside)}],
         "leftovers": [],
     }
-    (cfg.index.active_dir / ".autodj-restore.json").write_text(
+    (cfg.index.library_dir / ".autodj-restore.json").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.index.library_dir / ".autodj-restore.json").write_text(
         json.dumps(journal), encoding="utf-8"
     )
     return state
@@ -381,7 +385,7 @@ def test_doctor_rolls_back_an_interrupted_restore_only_when_asked(
     assert state.exists() is rolled_back
     if rolled_back:
         assert json.loads(state.read_text(encoding="utf-8")) == {"old": True}
-        assert not (cfg.index.active_dir / ".autodj-restore.json").exists()
+        assert not (cfg.index.library_dir / ".autodj-restore.json").exists()
 
 
 def test_doctor_never_rolls_back_unasked_outside_a_terminal(tmp_path: Path) -> None:

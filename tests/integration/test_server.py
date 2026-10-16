@@ -31,6 +31,7 @@ from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.server import PlayerBridge, create_app
 from autodj.settings_bodies import PlaybackSettingsBody
+from tests._layout import layout_index, point_index
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock, wav_bytes
 
@@ -48,7 +49,7 @@ def _set_repeat_settings(cfg_mock, active_dir: Path) -> None:
     cfg_mock.playback.repeat_rules = RepeatSettings(
         track=RepeatRule(tracks=50), artist=RepeatRule(tracks=3)
     )
-    cfg_mock.index.active_dir = active_dir
+    point_index(cfg_mock.index, active_dir)
 
 
 def _register_index_entry(bridge, entry) -> None:
@@ -341,7 +342,7 @@ class TestLiners:
                 return ()
 
         bridge.library = Library()
-        bridge.player._cfg.index.active_dir = str(Path(tmp_path / "empty-flat").parent)
+        point_index(bridge.player._cfg.index, str(Path(tmp_path / "empty-flat").parent))
         tc = TestClient(create_app(bridge))
         listing = tc.get("/api/liners").json()
         assert listing["items"] == [
@@ -432,11 +433,11 @@ class TestLiners:
     def test_liners_lists_files(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "intro.mp3").write_bytes(b"\x00")
         (folder / "outro.wav").write_bytes(b"\x00")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         body = tc.get("/api/liners").json()
@@ -446,11 +447,11 @@ class TestLiners:
     def test_liner_play_dates_are_listed_set_refused_and_forgotten(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "active" / "liners"
+        folder = tmp_path / "active" / "stations" / "default" / "liners"
         folder.mkdir(parents=True)
         (folder / "promo.mp3").write_bytes(b"\x00")
         (folder / "id.wav").write_bytes(b"\x00")
-        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        point_index(bridge.player._cfg.index, str(tmp_path / "active"))
         bridge.player._cfg.server.station_timezone = "UTC"
 
         tc = TestClient(create_app(bridge))
@@ -485,10 +486,10 @@ class TestLiners:
     def test_liner_file_endpoint(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "test.mp3").write_bytes(b"raw-mp3-bytes")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/test.mp3")
@@ -499,10 +500,10 @@ class TestLiners:
     def test_liner_file_range(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "test.mp3").write_bytes(b"0123456789")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=2-5"})
@@ -514,10 +515,10 @@ class TestLiners:
     def test_liner_file_suffix_range_and_unsatisfiable_range(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "test.mp3").write_bytes(b"0123456789")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         suffix = tc.get("/api/liners/file/test.mp3", headers={"Range": "bytes=-3"})
@@ -532,10 +533,10 @@ class TestLiners:
     def test_liner_file_path_traversal_blocked(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (tmp_path / "secret.txt").write_bytes(b"do-not-read")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.get("/api/liners/file/..%2Fsecret.txt")
@@ -546,10 +547,10 @@ class TestLiners:
         """A plain name in the liner root is still refused unless it is a liner clip."""
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / name).write_bytes(b"secret")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         assert tc.get(f"/api/liners/file/{name}").status_code == 400
@@ -614,9 +615,9 @@ class TestLiners:
     def test_liner_upload_and_list(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         audio = wav_bytes()
@@ -633,9 +634,9 @@ class TestLiners:
     def test_a_file_that_is_not_audio_is_refused_at_upload(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
-        bridge.player._cfg.index.active_dir = str(folder.parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
 
         # Nine bytes of text named .mp3 (#323): refused with the reason in words.
@@ -666,9 +667,9 @@ class TestLiners:
 
         from autodj import break_audio
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
-        bridge.player._cfg.index.active_dir = str(folder.parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
+        point_index(bridge.player._cfg.index, tmp_path)
         monkeypatch.setattr(break_audio.shutil, "which", lambda _name: "ffprobe")
 
         def hangs(*_args: object, **_kwargs: object) -> None:
@@ -694,9 +695,9 @@ class TestLiners:
 
         from autodj.clip_dates import ClipDates, LinerDates
 
-        folder = tmp_path / "active" / "liners"
+        folder = tmp_path / "active" / "stations" / "default" / "liners"
         folder.mkdir(parents=True)
-        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        point_index(bridge.player._cfg.index, str(tmp_path / "active"))
         tc = TestClient(create_app(bridge))
         store = LinerDates(tc.app.state.stations.default.paths.liner_dates)
         # promo.wav was deleted outside AutoDJ; its dates stayed behind.
@@ -723,10 +724,10 @@ class TestLiners:
 
         from autodj.clip_dates import ClipDates, LinerDates
 
-        folder = tmp_path / "active" / "liners"
+        folder = tmp_path / "active" / "stations" / "default" / "liners"
         folder.mkdir(parents=True)
         (folder / "id.wav").write_bytes(b"\x00")
-        bridge.player._cfg.index.active_dir = str(tmp_path / "active")
+        point_index(bridge.player._cfg.index, str(tmp_path / "active"))
         tc = TestClient(create_app(bridge))
         store = tc.app.state.stations.default.liner_gate.store
         store.set("promo.mp3", ClipDates(not_after="2000-01-01"))
@@ -750,8 +751,8 @@ class TestLiners:
     def test_liner_upload_enforces_configured_limit(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
@@ -765,8 +766,8 @@ class TestLiners:
     def test_liner_body_cap_rejects_before_creating_staging(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.server.liner_upload_max_bytes = 50
 
         tc = TestClient(create_app(bridge))
@@ -780,11 +781,11 @@ class TestLiners:
     def test_liner_upload_conflict_and_explicit_replace(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         target = folder / "clip.wav"
         target.write_bytes(b"old")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         audio = wav_bytes()
@@ -800,9 +801,9 @@ class TestLiners:
     def test_liner_upload_rejects_unknown_extension(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
@@ -814,11 +815,11 @@ class TestLiners:
     def test_liner_delete(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         target = folder / "remove_me.wav"
         target.write_bytes(b"x")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/remove_me.wav")
@@ -828,11 +829,11 @@ class TestLiners:
     def test_liner_delete_path_traversal_blocked(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         outside = tmp_path / "secret.txt"
         outside.write_bytes(b"safe")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/liners/file/..%2Fsecret.txt")
@@ -864,13 +865,13 @@ class TestRepeatSettings:
 
         active_dir = tmp_path / "index"
         active_dir.mkdir()
-        bridge.player._cfg.index.active_dir = active_dir
+        point_index(bridge.player._cfg.index, active_dir)
         bridge.save_persistent_state = MagicMock()
         return TestClient(create_app(bridge))
 
     def test_nested_repeat_settings_round_trip_and_file_reload(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
         payload = self._payload()
 
@@ -944,7 +945,7 @@ class TestRepeatSettings:
 
     def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text('[related]\n"Alpha" = ["Beta"]\n', encoding="utf-8")
         payload = self._payload()
         assert client.post("/api/playback-settings", json=payload).status_code == 200
@@ -967,7 +968,7 @@ class TestRepeatSettings:
 
     def test_related_tracks_load_on_save_with_their_own_limits(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path = bridge.player._cfg.index.library_dir / "related-tracks.toml"
         path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
         payload = self._payload()
         payload["repeat_rules"]["related_track"] = {"tracks": 7, "minutes": 15}
@@ -986,7 +987,7 @@ class TestRepeatSettings:
 
     def test_invalid_related_tracks_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-tracks.toml"
+        path = bridge.player._cfg.index.library_dir / "related-tracks.toml"
         path.write_text('[related]\n"Alpha - One" = ["Beta - Two"]\n', encoding="utf-8")
         payload = self._payload()
         payload["repeat_rules"]["use_related_tracks"] = True
@@ -1020,7 +1021,7 @@ class TestRepeatSettings:
 
     def test_broken_file_does_not_block_save_when_disabled(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text("[related\n", encoding="utf-8")
         payload = self._payload()
         payload["repeat_rules"]["use_related_artists"] = False
@@ -1030,7 +1031,7 @@ class TestRepeatSettings:
 
     def test_invalid_file_error_does_not_echo_file_keys(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
-        path = bridge.player._cfg.index.active_dir / "related-artists.toml"
+        path = bridge.player._cfg.index.library_dir / "related-artists.toml"
         path.write_text('secret_api_token = "private"\n', encoding="utf-8")
         response = client.post("/api/playback-settings", json=self._payload())
         assert response.status_code == 400
@@ -1055,7 +1056,7 @@ class TestProfiles:
         from fastapi.testclient import TestClient
 
         # Re-anchor profile root to tmp_path so the test is hermetic.
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
 
         tc = TestClient(create_app(bridge))
@@ -1070,7 +1071,7 @@ class TestProfiles:
     def test_profile_invalid_name_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles", json={"name": "../escape"})
@@ -1079,7 +1080,7 @@ class TestProfiles:
     def test_profile_delete(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         tc.post("/api/profiles", json={"name": "Tmp"})
@@ -1091,7 +1092,7 @@ class TestProfiles:
     def test_profile_apply_pushes_settings(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         tc.post(
@@ -1120,13 +1121,15 @@ class TestProfiles:
 
         idx = tmp_path / "idx"
         idx.mkdir()
-        bridge.player._cfg.index.active_dir = idx
+        point_index(bridge.player._cfg.index, idx)
         tc = TestClient(create_app(bridge))
         tc.post("/api/profiles", json={"name": "Loud", "crossfade_seconds": 7.5})
 
         assert tc.post("/api/profiles/Loud/apply").status_code == 200
 
-        saved = json.loads((idx / "web_state.json").read_text(encoding="utf-8"))
+        saved = json.loads(
+            (idx / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+        )
         assert saved["playback"]["crossfade_seconds"] == pytest.approx(7.5)
 
     @pytest.mark.parametrize(
@@ -1153,7 +1156,7 @@ class TestProfiles:
     def test_profile_save_rejects_bad_choice(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
 
@@ -1165,7 +1168,7 @@ class TestProfiles:
     def test_profile_save_rejects_unknown_keys(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
 
@@ -1178,10 +1181,10 @@ class TestProfiles:
     def test_stored_profile_with_unknown_key_is_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
-        (tmp_path / "profiles").mkdir()
-        (tmp_path / "profiles" / "Old.json").write_text(
+        (tmp_path / "idx" / "stations" / "default" / "profiles").mkdir(parents=True)
+        (tmp_path / "idx" / "stations" / "default" / "profiles" / "Old.json").write_text(
             '{"name": "Old", "crossfade_seconds": 9.0, "extra": {}}', encoding="utf-8"
         )
         bridge.save_persistent_state = MagicMock()
@@ -1201,9 +1204,9 @@ class TestProfiles:
 
         from autodj.profiles import ProfileSnapshot, ProfileStore
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
-        ProfileStore(tmp_path / "profiles").save(
+        ProfileStore(tmp_path / "idx" / "stations" / "default" / "profiles").save(
             ProfileSnapshot(name="Broken", crossfade_seconds=9.0, transition_mode="bogus")
         )
         pb = bridge.player._cfg.playback
@@ -1220,7 +1223,7 @@ class TestProfiles:
     def test_profile_delete_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/profiles/..%2Fescape")
@@ -1229,7 +1232,7 @@ class TestProfiles:
     def test_profile_delete_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.delete("/api/profiles/Nope")
@@ -1238,7 +1241,7 @@ class TestProfiles:
     def test_profile_apply_bad_name_400(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles/..%2Fescape/apply")
@@ -1256,12 +1259,12 @@ class TestProfiles:
             offloaded.append(getattr(function, "__name__", repr(function)))
             return await real_to_thread(function, *args, **kwargs)
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "a.mp3").write_bytes(b"x")
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.save_persistent_state = MagicMock()
         monkeypatch.setattr("autodj.server.asyncio.to_thread", recording_to_thread)
         tc = TestClient(create_app(bridge))
@@ -1288,7 +1291,7 @@ class TestProfiles:
     def test_profile_apply_missing_404(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path / "idx"
+        point_index(bridge.player._cfg.index, tmp_path / "idx")
         (tmp_path / "idx").mkdir()
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/profiles/Nope/apply")
@@ -1594,11 +1597,13 @@ class TestDiscoveryToggle:
     def test_toggle_route_saves_the_button_state(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         client = TestClient(create_app(bridge))
         client.post("/api/discovery", json={"every": 7})
         client.post("/api/discovery/toggle")
-        saved = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))
+        saved = json.loads(
+            (tmp_path / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+        )
         assert saved["discovery_every"] == 7
         assert saved["discovery_enabled"] is False
 
@@ -2102,7 +2107,7 @@ class TestServeFunction:
             autostart=False,
             defined_in="config",
             cfg=SimpleNamespace(
-                index=SimpleNamespace(active_dir=tmp_path / "main"),
+                index=layout_index(tmp_path / "main"),
                 playback=SimpleNamespace(stereotool_preset="included"),
                 requests=RequestsConfig(enabled=True),
                 player_page=PlayerPageConfig(enabled=True),
@@ -2483,7 +2488,7 @@ class TestSettingsEndpoints:
     def test_post_transition_valid(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/transition", json={"effect": "echo_out"})
         assert resp.status_code == 200
@@ -2492,7 +2497,7 @@ class TestSettingsEndpoints:
     def test_post_transition_invalid_rejected(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.transitions.effect = "echo_out"
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/transition", json={"effect": "BOGUS_FX"})
@@ -2502,11 +2507,11 @@ class TestSettingsEndpoints:
     def test_post_transition_persists(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/transition", json={"effect": "tape_stop"})
         # File written under tmp_path/web_state.json
-        f = tmp_path / "web_state.json"
+        f = tmp_path / "stations" / "default" / "web_state.json"
         assert f.exists()
         import json as _json
 
@@ -2520,7 +2525,7 @@ class TestSettingsEndpoints:
         from autodj.player import PlayerState
 
         quiet = 10 ** (-57 / 20)
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/volume", json={"volume": quiet})
         tc.post("/api/mute")
@@ -2535,7 +2540,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_flags(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/djmix", json={"beatmatch": True, "harmonic_mode": "strict"})
         assert bridge.player._cfg.djmix.beatmatch is True
@@ -2544,7 +2549,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_drop_mix_and_key_shift(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         settings = tc.post("/api/djmix", json={"drop_mix": True, "key_shift": True}).json()
         assert bridge.player._cfg.djmix.drop_mix is True
@@ -2556,7 +2561,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_skips_none_fields(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.djmix.beatmatch = True
         tc = TestClient(create_app(bridge))
         tc.post("/api/djmix", json={"harmonic_mode": "strict"})  # beatmatch absent
@@ -2565,7 +2570,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_rejects_removed_harmonic_mixing(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         response = tc.post("/api/djmix", json={"harmonic_mixing": True})
         assert response.status_code == 422
@@ -2574,7 +2579,7 @@ class TestSettingsEndpoints:
     def test_post_playback_settings(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post(
             "/api/playback-settings",
@@ -2593,7 +2598,7 @@ class TestSettingsEndpoints:
     def test_post_playback_settings_transition_mode(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.playback.transition_mode = "fixed"
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"transition_mode": "full_intro_outro"})
@@ -2604,7 +2609,7 @@ class TestSettingsEndpoints:
 
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         # Invalid mode: handler raises ValueError -> 500.  We just want to
         # confirm the config is not mutated by an unknown value.
@@ -2616,7 +2621,7 @@ class TestSettingsEndpoints:
     def test_post_playback_settings_rejects_negative(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.playback.crossfade_seconds = 3.0
         tc = TestClient(create_app(bridge))
         resp = tc.post("/api/playback-settings", json={"crossfade_seconds": -3.0})
@@ -2626,7 +2631,7 @@ class TestSettingsEndpoints:
     def test_post_playback_settings_fade_in(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"fade_in_seconds": 1.5})
         assert bridge.player._cfg.playback.fade_in_seconds == pytest.approx(1.5)
@@ -2641,7 +2646,7 @@ class TestSettingsEndpoints:
         # The 0.19.0 sample saved 99 seconds from a field whose maximum is 20.
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         setattr(bridge.player._cfg.playback, name, 3.0)
         tc = TestClient(create_app(bridge))
         assert tc.post("/api/playback-settings", json={name: 99}).status_code == 422
@@ -2653,7 +2658,7 @@ class TestSettingsEndpoints:
     def test_post_playback_pure_shuffle(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"pure_shuffle": True})
         assert bridge.player._pure_shuffle is True
@@ -2663,7 +2668,7 @@ class TestSettingsEndpoints:
 
         from autodj.audio_meta import LyricLine
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._current_lyrics = [LyricLine(0.0, "x")]
         bridge.player._current_lyrics_plain = "stuff"
         tc = TestClient(create_app(bridge))
@@ -2675,7 +2680,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_harmonic_mode(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/djmix", json={"harmonic_mode": "strict"})
         assert bridge.player._cfg.djmix.harmonic_mode == "strict"
@@ -2685,7 +2690,7 @@ class TestSettingsEndpoints:
     def test_post_djmix_invalid_harmonic_mode_ignored(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.djmix.harmonic_mode = "compatible"
         tc = TestClient(create_app(bridge))
         tc.post("/api/djmix", json={"harmonic_mode": "bogus_mode"})
@@ -2705,7 +2710,7 @@ class TestSettingsEndpoints:
     def test_post_playback_anchor_to_seed(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         # No prior seed_path — bridge should pin the current track as seed
         # the moment anchored mode is enabled.
         bridge.player._seed_path = None
@@ -2717,7 +2722,7 @@ class TestSettingsEndpoints:
     def test_post_playback_anchor_to_seed_off(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._anchor_to_seed = True
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"anchor_to_seed": False})
@@ -2774,7 +2779,7 @@ class TestLibraryEndpoints:
     def test_post_bpm_range_sets(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/bpm-range", json={"lo": 100, "hi": 140})
         assert bridge.player._bpm_range == (100.0, 140.0)
@@ -2782,7 +2787,7 @@ class TestLibraryEndpoints:
     def test_post_bpm_range_clears_on_null(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._bpm_range = (100.0, 140.0)
         tc = TestClient(create_app(bridge))
         tc.post("/api/bpm-range", json={"lo": None, "hi": None})
@@ -2791,7 +2796,7 @@ class TestLibraryEndpoints:
     def test_post_bpm_range_clears_when_lo_ge_hi(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/bpm-range", json={"lo": 140, "hi": 100})
         assert bridge.player._bpm_range is None
@@ -2810,7 +2815,6 @@ class TestLibraryEndpoints:
 
         bridge.player._cfg.config_path = Path(tmp_path / "autodj.toml")
         bridge.player._cfg.index.index_dir = Path(tmp_path / "indexes")
-        bridge.player._cfg.index.name = "party"
         manager = get_manager()
         captured = {}
 
@@ -2835,14 +2839,13 @@ class TestLibraryEndpoints:
         assert argv[2] == "autodj"
         assert argv[3:5] == ["--config", str(tmp_path / "autodj.toml")]
         assert argv[5] == "stats"
-        assert argv[6:8] == ["--name", "party"]
         assert captured["env"]["AUTODJ_INDEX_DIR"] == str(tmp_path / "indexes")
-        manager.configure(config_path=None, index_dir=None, index_name=None)
+        manager.configure(config_path=None, index_dir=None)
 
     def test_post_discovery(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/discovery", json={"every": 25})
         assert bridge.player._discovery_every == 25
@@ -2854,7 +2857,7 @@ class TestLibraryEndpoints:
     def test_post_discovery_zero_disables(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._discovery_every = 20
         tc = TestClient(create_app(bridge))
         tc.post("/api/discovery", json={"every": 0})
@@ -2865,7 +2868,7 @@ class TestLibraryEndpoints:
     def test_post_preset_clears_on_null(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         # mock a preset
         bridge.player._preset = MagicMock(name="energetic")
         tc = TestClient(create_app(bridge))
@@ -2875,7 +2878,7 @@ class TestLibraryEndpoints:
     def test_post_preset_unknown_name_silent(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._preset = None
         tc = TestClient(create_app(bridge))
         tc.post("/api/preset", json={"name": "totally_made_up_preset_xyz"})
@@ -2887,7 +2890,7 @@ class TestLibraryEndpoints:
 
         from autodj.presets import Preset, constant_curve
 
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._discovery_every = None
         bridge.player._cfg.presets = {
             "test": Preset(
@@ -4493,7 +4496,7 @@ class TestCoverArt:
 
 class TestPersistenceHelpers:
     def test_save_and_load_round_trip(self, bridge, tmp_path) -> None:
-        bridge.player._cfg.index.active_dir = tmp_path
+        point_index(bridge.player._cfg.index, tmp_path)
         bridge.player._cfg.transitions.effect = "tape_stop"
         bridge.save_persistent_state()
         # Reset and reload

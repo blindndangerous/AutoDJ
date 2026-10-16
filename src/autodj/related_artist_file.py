@@ -41,7 +41,7 @@ def unused_related_artists_message(exc: OSError | ValueError, kind: str = "artis
 
 
 def _ensure_file(active_dir: Path, name: str) -> Path:
-    """Return the active index file *name*, installing the bundled sample if absent."""
+    """Return the library folder's file *name*, installing the bundled sample if absent."""
     destination = Path(active_dir) / name
     destination.parent.mkdir(parents=True, exist_ok=True)
     sample = importlib.resources.files("autodj").joinpath("data", name)
@@ -57,12 +57,12 @@ def _ensure_file(active_dir: Path, name: str) -> Path:
 
 
 def ensure_related_artists_file(active_dir: Path) -> Path:
-    """Return the active index file, installing the bundled sample if absent."""
+    """Return the library folder's file, installing the bundled sample if absent."""
     return _ensure_file(active_dir, DEFAULT_RELATED_ARTISTS_FILE)
 
 
 def ensure_related_tracks_file(active_dir: Path) -> Path:
-    """Return the active index's related tracks file, installing the bundled sample if absent."""
+    """Return the library folder's related tracks file, installing the bundled sample if absent."""
     return _ensure_file(active_dir, DEFAULT_RELATED_TRACKS_FILE)
 
 

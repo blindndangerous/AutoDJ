@@ -33,8 +33,7 @@ def test_offer_doctor(interactive, answer, guard, run):
     failure = RuntimeError("startup failed")
 
     @click.command(cls=_ServeCommand)
-    @click.option("--name", "index_name")
-    def command(index_name):
+    def command():
         raise failure
 
     with (
@@ -43,7 +42,7 @@ def test_offer_doctor(interactive, answer, guard, run):
         patch("subprocess.run") as subprocess_run,
     ):
         result = CliRunner().invoke(
-            command, ["--name", "station"], obj={"config_path": "custom config.toml"}, input=answer
+            command, [], obj={"config_path": "custom config.toml"}, input=answer
         )
     assert result.exception is failure
     assert subprocess_run.called is run
@@ -55,8 +54,6 @@ def test_offer_doctor(interactive, answer, guard, run):
             "--config",
             "custom config.toml",
             "doctor",
-            "--name",
-            "station",
         ]
         environment = subprocess_run.call_args.kwargs["env"]
         assert environment["AUTODJ_RUNTIME"] == "current"

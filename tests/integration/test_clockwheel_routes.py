@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from autodj.ads import Spot, new_id, spot_file_name
 from autodj.catalog import LibraryCatalog
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -16,7 +17,7 @@ _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
     player = _make_player_mock()
     player._cfg.server.access_token = _SECRET
-    player._cfg.index.active_dir = tmp_path
+    point_index(player._cfg.index, tmp_path)
     player._cfg.index.index_dir = tmp_path
     player._cfg.presets = {}
     with LibraryCatalog(tmp_path / "library.sqlite") as catalog:

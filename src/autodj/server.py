@@ -1993,7 +1993,7 @@ def create_app(
         from autodj.stereotool_presets import INCLUDED, list_presets
 
         cfg = bridge.player._cfg
-        presets = await asyncio.to_thread(list_presets, cfg.index.active_dir)
+        presets = await asyncio.to_thread(list_presets, cfg.index.shared_dir)
         active = cfg.playback.stereotool_preset
         # A preset removed outside AutoDJ is replaced by the included one when
         # Stereo Tool starts, so report that instead of a name not listed.
@@ -2008,7 +2008,7 @@ def create_app(
 
         name = file.filename or ""
         try:
-            path = await store_preset(bridge.player._cfg.index.active_dir, name, file)
+            path = await store_preset(bridge.player._cfg.index.shared_dir, name, file)
         except FileExistsError as exc:
             raise HTTPException(
                 status_code=409, detail=f"a preset named {name} already exists"
@@ -2034,7 +2034,7 @@ def create_app(
         try:
             await asyncio.to_thread(
                 delete_preset,
-                cfg.index.active_dir,
+                cfg.index.shared_dir,
                 name,
                 active=[preset for _station, preset in in_use],
             )
@@ -2284,13 +2284,12 @@ def create_app(
 
         mgr = get_manager()
         # Point the child at the same configuration this server is running
-        # on, every time: --name and settings can change under a live server,
+        # on, every time: settings can change under a live server,
         # so reading it at app-creation time would go stale.
         cfg = bridge.player._cfg
         mgr.configure(
             config_path=cfg.config_path,
             index_dir=cfg.index.index_dir,
-            index_name=cfg.index.name,
         )
         # start() may wait up to a second for the previous job's output reader
         # and spawns a process, so keep it off the event loop.
@@ -2620,7 +2619,7 @@ def _attach_master(player: Any, cfg: AutoDJConfig) -> None:
         mode=processing_mode,
         stereotool_path=lambda: stereotool_setup.library_path(cfg.index.index_dir),
         preset=lambda: preset_path(
-            cfg.index.active_dir, cfg.playback.stereotool_preset, require_existing=False
+            cfg.index.shared_dir, cfg.playback.stereotool_preset, require_existing=False
         ),
         input_trim_db=lambda: cfg.playback.stereotool_input_trim_db,
         agc_drive_db=lambda: cfg.playback.stereotool_agc_drive_db,

@@ -21,6 +21,7 @@ from autodj.runtime_state import (
     save_from_player,
     state_file_for,
 )
+from tests._layout import layout_index, point_index
 
 
 def _make_player() -> SimpleNamespace:
@@ -62,7 +63,7 @@ def _make_player() -> SimpleNamespace:
         hour_fit_window_minutes=10,
     )
     cfg = SimpleNamespace(
-        index=SimpleNamespace(active_dir=None),
+        index=layout_index(None),
         transitions=SimpleNamespace(effect="none", wet_mix=1.0),
         djmix=SimpleNamespace(
             harmonic_mode="off",
@@ -917,7 +918,7 @@ def test_missing_related_file_does_not_discard_restored_repeat_rules(tmp_path, c
     )
     _write_state(tmp_path, {"playback": {"repeat_rules": rules.model_dump()}})
     player = _make_player()
-    player._cfg.index.active_dir = tmp_path
+    point_index(player._cfg.index, tmp_path)
     (tmp_path / "related-artists.toml").write_text("[related\n", encoding="utf-8")
     _load(player, tmp_path)
     assert player._cfg.playback.repeat_rules == rules

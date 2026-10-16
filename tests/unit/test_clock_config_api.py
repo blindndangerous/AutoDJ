@@ -16,6 +16,7 @@ from autodj.config import AdsConfig, RequestsConfig, ServerConfig, StreamConfig,
 from autodj.server import create_app
 from autodj.station_ledger import StationLedger
 from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
+from tests._layout import layout_index
 
 PAL = """Queue.Clear;
 Dir['{music}/top'].QueueBottom(smLRP, EnforceRules);
@@ -31,7 +32,7 @@ def app_for(catalog, root):
         time_checks=TimeChecksConfig(),
         requests=RequestsConfig(),
         ads=AdsConfig(),
-        index=SimpleNamespace(active_dir=root),
+        index=layout_index(root),
         presets={},
     )
     player = SimpleNamespace(_cfg=cfg, _clock_status="Idle", _clock=None)
@@ -96,7 +97,9 @@ def test_pal_import_maps_nested_folders_to_their_source(tmp_path):
             ("liner", liners["id"], "drops", False),
             ("music", music["id"], "", True),
         ]
-        saved = json.loads((tmp_path / "clockwheels" / "Morning.json").read_text("utf-8"))
+        saved = json.loads(
+            (tmp_path / "stations" / "default" / "clockwheels" / "Morning.json").read_text("utf-8")
+        )
         assert saved == imported
         assert call(routes, "GET", "/api/library/clock/{name}", "Morning") == imported
         with pytest.raises(HTTPException, match="already exists"):

@@ -20,6 +20,7 @@ from autodj.clockwheel_store import (
 )
 from autodj.player import Player
 from autodj.profiles import ProfileSnapshot, ProfileStore
+from tests._layout import layout_index
 
 MUSIC = {"type": "music", "source": "src1"}
 
@@ -29,7 +30,7 @@ def clock(steps, name="Morning"):
 
 
 def test_store_round_trip_and_strict_loading(tmp_path):
-    store = ClockwheelStore(tmp_path / "clockwheels")
+    store = ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels")
     assert store.list_names() == []
     saved = store.save(clock([{**MUSIC, "folder": "Rock"}, {"type": "settings", "preset": "x"}]))
     assert saved["steps"][0] == {
@@ -66,7 +67,7 @@ def test_store_round_trip_and_strict_loading(tmp_path):
 
 
 def test_ad_break_step_normalizes_round_trips_and_keeps_old_wheels_unchanged(tmp_path):
-    store = ClockwheelStore(tmp_path / "clockwheels")
+    store = ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels")
     old = store.save(clock([MUSIC]))
     before = (store.root / "Morning.json").read_bytes()
     store.save(old)
@@ -162,7 +163,7 @@ def test_liner_require_following_is_strict_and_omitted_when_false(tmp_path):
     assert "require_following" not in normalized["steps"][0]
     flagged = validate_clockwheel(clock([{**base, "require_following": True}, MUSIC]))
     assert flagged["steps"][0]["require_following"] is True
-    store = ClockwheelStore(tmp_path / "clockwheels")
+    store = ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels")
     store.save(clock([base, MUSIC]))
     assert b"require_following" not in (store.root / "Morning.json").read_bytes()
     for invalid in (1, "true", None):
@@ -235,7 +236,7 @@ def test_source_folder_joins_in_the_source_style():
 
 
 def test_profile_keeps_the_clockwheel_name(tmp_path):
-    store = ProfileStore(tmp_path / "profiles")
+    store = ProfileStore(tmp_path / "stations" / "default" / "profiles")
     store.save(ProfileSnapshot(name="Morning", pick_mode="clock", clockwheel="Morning"))
     assert store.load("Morning").clockwheel == "Morning"
 
@@ -258,7 +259,7 @@ def test_settings_steps_pass_their_preset_to_the_next_pick():
 def _player(tmp_path, setting, sources):
     catalog = SimpleNamespace(get_setting=lambda _key, _default: setting, sources=lambda: sources)
     player = SimpleNamespace(
-        _cfg=SimpleNamespace(index=SimpleNamespace(active_dir=tmp_path), presets={}),
+        _cfg=SimpleNamespace(index=layout_index(tmp_path), presets={}),
         _library=SimpleNamespace(catalog=catalog),
     )
     player._clock_lock = threading.RLock()
@@ -280,7 +281,7 @@ def test_player_loads_the_active_clockwheel_from_its_sources(tmp_path):
         {"id": "src1", "kind": "music", "path": str(music), "recursive": True},
         {"id": "voice", "kind": "liner", "path": str(voice), "recursive": True},
     ]
-    ClockwheelStore(tmp_path / "clockwheels").save(
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(
         clock(
             [
                 {**MUSIC, "folder": "Rock/Live", "recursive": True},
@@ -305,7 +306,7 @@ def test_player_loads_the_active_clockwheel_from_its_sources(tmp_path):
 def test_reloading_the_clockwheel_keeps_a_place_not_yet_written(tmp_path):
     # Saving an edit to the active clockwheel reloads it; the player's place
     # still waiting in the ledger is newer than the saved one.
-    ClockwheelStore(tmp_path / "clockwheels").save(clock([MUSIC]))
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(clock([MUSIC]))
     player = _player(
         tmp_path,
         {"name": "Morning", "cursor": 1},
@@ -319,7 +320,7 @@ def test_reloading_the_clockwheel_keeps_a_place_not_yet_written(tmp_path):
 
 
 def test_a_clockwheel_that_cannot_load_leaves_the_clock_off_and_says_why(tmp_path, caplog):
-    ClockwheelStore(tmp_path / "clockwheels").save(clock([MUSIC]))
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(clock([MUSIC]))
     player = _player(tmp_path, {"name": "Morning", "cursor": 0}, [])
     Player.configure_clock(player)
     assert player._clock is None
@@ -346,7 +347,7 @@ def test_a_clockwheel_that_cannot_load_leaves_the_clock_off_and_says_why(tmp_pat
 
 def test_a_missing_preset_or_unplayable_type_stops_loading(tmp_path):
     sources = [{"id": "src1", "kind": "music", "path": str(tmp_path), "recursive": True}]
-    ClockwheelStore(tmp_path / "clockwheels").save(
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(
         clock([MUSIC, {"type": "settings", "preset": "nope"}])
     )
     player = _player(tmp_path, {"name": "Morning"}, sources)
@@ -354,7 +355,7 @@ def test_a_missing_preset_or_unplayable_type_stops_loading(tmp_path):
     assert player._clock is None
     assert "nope" in player._clock_status
     register_step_type("test_unplayable", lambda value: {"type": "test_unplayable"})
-    ClockwheelStore(tmp_path / "clockwheels").save(
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(
         clock([MUSIC, {"type": "test_unplayable"}], name="Other")
     )
     player = _player(tmp_path, {"name": "Other"}, sources)
@@ -410,7 +411,7 @@ def test_category_slots_pick_their_songs_and_skip_an_empty_or_missing_category()
 
 def test_player_loads_category_steps_even_for_a_category_deleted_since(tmp_path):
     sources = [{"id": "src1", "kind": "music", "path": str(tmp_path), "recursive": True}]
-    ClockwheelStore(tmp_path / "clockwheels").save(
+    ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(
         clock([{**CATEGORY, "selection": "random", "enforce_rules": False}, MUSIC])
     )
     player = _player(tmp_path, {"name": "Morning"}, sources)

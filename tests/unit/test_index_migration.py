@@ -41,7 +41,7 @@ def _config(root: Path) -> AutoDJConfig:
     active.mkdir(parents=True)
     return AutoDJConfig(
         library=LibraryConfig(music, None, ["flac"]),
-        index=IndexConfig(index, root / "models", "default"),
+        index=IndexConfig(index, root / "models"),
         playback=PlaybackConfig(),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig(None),
@@ -289,7 +289,7 @@ def test_manifest_fsync_failure_keeps_cues_with_published_generation(tmp_path: P
 def test_cli_migrate_default_is_dry_run(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     index_dir, music_dir = _fixture(
-        tmp_path, index_dir=cfg.index.active_dir, music_dir=cfg.library.music_dir
+        tmp_path, index_dir=(cfg.index.stations_dir / "default"), music_dir=cfg.library.music_dir
     )
     (music_dir / "old.flac").write_bytes(b"audio")
     before = _tree(index_dir)
@@ -301,11 +301,11 @@ def test_cli_migrate_default_is_dry_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("interactive", [True, False])
-def test_startup_requires_explicit_migration_without_modifying_named_library(
+def test_startup_requires_explicit_migration_without_modifying_the_library(
     tmp_path: Path, interactive: bool
 ) -> None:
     cfg = _config(tmp_path)
-    named_dir = cfg.index.index_dir / "gold"
+    named_dir = cfg.index.library_dir
     _fixture(tmp_path, index_dir=named_dir, music_dir=cfg.library.music_dir)
     before = _tree(named_dir)
     with (
@@ -313,7 +313,7 @@ def test_startup_requires_explicit_migration_without_modifying_named_library(
         patch("autodj.cli.click.confirm") as confirm,
         pytest.raises(IndexConsistencyError, match="migrate-index"),
     ):
-        _load_index_for_serve(cfg, active_dir=named_dir)
+        _load_index_for_serve(cfg)
     confirm.assert_not_called()
     assert _tree(named_dir) == before
     assert not (named_dir / "library.db").exists()
@@ -324,7 +324,7 @@ def test_migrate_imports_schema3_vectors_and_catalog_state_without_analysis(tmp_
     index_dir, music_dir = _fixture(
         tmp_path,
         paths=("old.flac",),
-        index_dir=cfg.index.active_dir,
+        index_dir=(cfg.index.stations_dir / "default"),
         music_dir=cfg.library.music_dir,
     )
     audio = music_dir / "old.flac"
@@ -566,7 +566,7 @@ def test_migrate_index_cli_accepts_music_root_override_when_config_has_none(
     cfg.library.music_dir = None
     legacy_music = tmp_path / "legacy-music"
     legacy_music.mkdir()
-    index_dir, _ = _fixture(tmp_path, paths=("old.flac",), index_dir=cfg.index.active_dir)
+    index_dir, _ = _fixture(tmp_path, paths=("old.flac",), index_dir=cfg.index.library_dir)
 
     with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
         result = CliRunner().invoke(cli, ["migrate-index", "--music-dir", str(legacy_music)])

@@ -51,7 +51,7 @@ def _config(tmp_path: Path, *, host: str = "127.0.0.2") -> AutoDJConfig:
     models.mkdir(parents=True, exist_ok=True)
     return AutoDJConfig(
         library=LibraryConfig(music, None, ["flac"]),
-        index=IndexConfig(index, models, "default"),
+        index=IndexConfig(index, models),
         playback=PlaybackConfig(),
         model=ModelConfig(),
         huggingface=HuggingFaceConfig("hf_secret_value"),
@@ -62,7 +62,9 @@ def _config(tmp_path: Path, *, host: str = "127.0.0.2") -> AutoDJConfig:
 
 
 def _write_index(cfg: AutoDJConfig) -> None:
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
     track = cfg.library.music_dir / "song.flac"
     track.write_bytes(b"audio")
     entry = IndexEntry(
@@ -81,8 +83,8 @@ def _write_index(cfg: AutoDJConfig) -> None:
     )
     vector = np.ones((1, FEATURE_DIM), dtype=np.float32)
     vector /= np.linalg.norm(vector, axis=1, keepdims=True)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, (cfg.index.stations_dir / "default") / "liners")
         catalog.seed_entries([entry])
         catalog.seed_vectors([entry], vector)
 
@@ -122,7 +124,7 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
 def test_healthy_report_is_read_only_and_redacts_tokens(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     _write_index(cfg)
-    _write_dj_meta(cfg.index.active_dir / "dj_meta.db")
+    _write_dj_meta(cfg.index.library_dir / "dj_meta.db")
     before = _tree_snapshot(tmp_path)
 
     report = doctor.run_doctor(cfg, python_version=(3, 14))
@@ -167,8 +169,10 @@ def test_import_and_empty_index_check_do_not_import_heavy_runtimes(tmp_path: Pat
 @pytest.mark.parametrize("remaining", ["tracks.db", "vectors.index"])
 def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    (cfg.index.active_dir / remaining).write_bytes(b"partial")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    (cfg.index.library_dir / remaining).write_bytes(b"partial")
 
     check = doctor._index_check(cfg)
 
@@ -179,8 +183,10 @@ def test_index_without_manifest_fails_actionably(tmp_path: Path, remaining: str)
 
 def test_corrupt_catalog_fails_without_rebuild_offer(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    (cfg.index.active_dir / "library.db").write_bytes(b"corrupt")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    (cfg.index.library_dir / "library.db").write_bytes(b"corrupt")
     check = doctor._index_check(cfg)
     assert check.status is doctor.CheckStatus.FAIL
     assert check.repair is None
@@ -189,8 +195,10 @@ def test_corrupt_catalog_fails_without_rebuild_offer(tmp_path: Path) -> None:
 @pytest.mark.parametrize("schema", [2, 3, 4])
 def test_legacy_library_requires_explicit_migration(tmp_path: Path, schema: int) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    path = cfg.index.active_dir / "index-manifest.json"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    path = cfg.index.library_dir / "index-manifest.json"
     path.write_text(json.dumps({"schema_version": schema}))
     check = doctor._index_check(cfg)
     assert check.status is doctor.CheckStatus.FAIL
@@ -200,8 +208,10 @@ def test_legacy_library_requires_explicit_migration(tmp_path: Path, schema: int)
 
 def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    db = cfg.index.library_dir / "dj_meta.db"
     db.write_bytes(b"not sqlite")
     before = db.stat().st_mtime_ns
 
@@ -216,8 +226,10 @@ def test_corrupt_dj_meta_fails_without_touching_file(tmp_path: Path) -> None:
 def test_dj_meta_with_absolute_key_is_valid(tmp_path: Path) -> None:
     """Absolute keys are the current canonical format and pass Doctor checks."""
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    db = cfg.index.active_dir / "dj_meta.db"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    db = cfg.index.library_dir / "dj_meta.db"
     _write_dj_meta(db)
     with closing(sqlite3.connect(db)) as conn:
         conn.execute("INSERT INTO dj_meta (path) VALUES ('\\\\nas\\music\\song.flac')")
@@ -237,8 +249,10 @@ def test_music_path_check_uses_registered_roots_when_catalog_exists(tmp_path: Pa
     cfg.library.music_dir.rmdir()  # configured fallback is unused after sources were saved
     registered = tmp_path / "registered music"
     registered.mkdir()
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(registered, kind="music")
 
     check = doctor._music_paths_check(cfg)
@@ -253,8 +267,10 @@ def test_music_path_check_reports_missing_registered_root(tmp_path: Path) -> Non
     cfg = _config(tmp_path)
     registered = tmp_path / "registered music"
     registered.mkdir()
-    cfg.index.active_dir.mkdir(parents=True, exist_ok=True)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(registered, kind="music")
     registered.rmdir()
 
@@ -267,8 +283,10 @@ def test_music_path_check_reports_missing_registered_root(tmp_path: Path) -> Non
 
 def test_sqlite_checks_close_read_only_connections(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    _write_dj_meta(cfg.index.active_dir / "dj_meta.db")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    _write_dj_meta(cfg.index.library_dir / "dj_meta.db")
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", ResourceWarning)
@@ -282,8 +300,10 @@ def test_dj_meta_failed_integrity_check_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    _write_dj_meta(cfg.index.active_dir / "dj_meta.db")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    _write_dj_meta(cfg.index.library_dir / "dj_meta.db")
     real_connect = sqlite3.connect
 
     class FailedIntegrityConnection:
@@ -539,7 +559,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
 )
 def test_saved_settings_check(tmp_path: Path, content: str | None, status: CheckStatus) -> None:
     cfg = _config(tmp_path)
-    path = cfg.index.active_dir / "web_state.json"
+    path = (cfg.index.stations_dir / "default") / "web_state.json"
     if content is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -603,15 +623,18 @@ def test_missing_path_with_unwritable_parent_fails(
 
 def test_index_path_that_is_a_file_fails(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.write_text("not a directory", encoding="utf-8")
+    cfg.index.library_dir.parent.mkdir(parents=True, exist_ok=True)
+    cfg.index.library_dir.write_text("not a directory", encoding="utf-8")
 
     assert doctor._index_check(cfg).status is doctor.CheckStatus.FAIL
 
 
 def test_generation_artifacts_without_manifest_fail(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    (cfg.index.active_dir / "tracks.g00000000000000000001.db").write_bytes(b"stale")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    (cfg.index.library_dir / "tracks.g00000000000000000001.db").write_bytes(b"stale")
 
     check = doctor._index_check(cfg)
 
@@ -934,7 +957,7 @@ def test_configuration_check_shows_lan_setting(
 
 def test_empty_catalog_warns_instead_of_passing(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.set_setting("sources_seeded", True)
     check = doctor._index_check(cfg)
     assert check.status is doctor.CheckStatus.WARN
@@ -943,8 +966,10 @@ def test_empty_catalog_warns_instead_of_passing(tmp_path: Path) -> None:
 
 def test_locked_metadata_is_not_offered_a_destructive_rebuild(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    cfg.index.active_dir.mkdir()
-    (cfg.index.active_dir / "dj_meta.db").write_bytes(b"cache")
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    (cfg.index.library_dir / "dj_meta.db").write_bytes(b"cache")
     error = sqlite3.OperationalError("database is locked")
     error.sqlite_errorcode = sqlite3.SQLITE_BUSY
     with patch("autodj.doctor._connect", side_effect=error):
@@ -984,6 +1009,7 @@ def test_relay_checks_probe_without_credentials_and_show_last_state(tmp_path: Pa
         sc={"type": "shoutcast1", "host": "127.0.0.1", "port": port - 1, "password": secret},
         off={"type": "shoutcast2", "host": "h", "password": secret, "enabled": False},
     )
+    relay_status_path(cfg).parent.mkdir(parents=True, exist_ok=True)
     relay_status_path(cfg).write_bytes(
         json.dumps(
             {
@@ -1038,7 +1064,7 @@ def test_related_artists_check(tmp_path: Path) -> None:
     assert check.status == doctor.CheckStatus.PASS
     assert "Sample will be copied" in check.summary
 
-    path = cfg.index.active_dir / "related-artists.toml"
+    path = cfg.index.library_dir / "related-artists.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b'[related]\n"Bruno Mars" = ["The Hooligans"]\n')
     check = doctor._related_artists_check(cfg)
@@ -1052,7 +1078,7 @@ def test_related_tracks_check(tmp_path: Path) -> None:
     assert check.status is doctor.CheckStatus.PASS
     assert "Sample will be copied" in check.summary
 
-    path = cfg.index.active_dir / "related-tracks.toml"
+    path = cfg.index.library_dir / "related-tracks.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b'[related]\n"Snow - Informer" = ["Daddy Yankee - Con Calma"]\n')
     check = doctor._related_tracks_check(cfg)
@@ -1068,7 +1094,7 @@ def test_related_tracks_check(tmp_path: Path) -> None:
 @pytest.mark.parametrize("content", [b"[related\n", b"related = 3\n", None])
 def test_related_artists_check_warns_about_a_bad_file(tmp_path: Path, content) -> None:
     cfg = _config(tmp_path)
-    path = cfg.index.active_dir / "related-artists.toml"
+    path = cfg.index.library_dir / "related-artists.toml"
     path.parent.mkdir(parents=True, exist_ok=True)
     if content is not None:
         path.write_bytes(content)
@@ -1089,10 +1115,10 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert (check.status, check.summary) == (CheckStatus.PASS, "no categories saved")
 
-    active = cfg.index.active_dir
+    active = cfg.index.stations_dir / "default"
     active.mkdir(parents=True, exist_ok=True)
     music = cfg.library.music_dir
-    with LibraryCatalog(active / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         for name, year in (("one", 2004), ("two", 1990)):
             entry = IndexEntry(
                 str(music / f"{name}.flac"),
@@ -1109,10 +1135,10 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
                 0.0,
             )
             catalog.put_entry(entry, points={"start": 0, "end": 180})
-    playlists = active / "playlists"
-    playlists.mkdir()
+    playlists = cfg.index.shared_dir / "playlists"
+    playlists.mkdir(parents=True)
     (playlists / "A.m3u").write_text(f"{music / 'one.flac'}\nlost.flac\n", encoding="utf-8")
-    store = CategoryStore(active / "categories.json")
+    store = CategoryStore(cfg.index.shared_dir / "categories.json")
     store.save(
         [
             Category(id="a", name="2000s", source="query", query="original_year:2000..2009"),
@@ -1134,10 +1160,11 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert (check.status, check.summary) == (CheckStatus.PASS, "1 saved, 2 songs in all")
 
-    (active / "categories.json").write_text("{", encoding="utf-8")
+    (cfg.index.shared_dir / "categories.json").parent.mkdir(parents=True, exist_ok=True)
+    (cfg.index.shared_dir / "categories.json").write_text("{", encoding="utf-8")
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
-    assert (active / "categories.json").exists()  # doctor never sets the file aside
+    assert (cfg.index.shared_dir / "categories.json").exists()  # doctor never sets the file aside
 
 
 def test_new_library_needs_no_music_root(tmp_path: Path) -> None:

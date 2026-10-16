@@ -1017,7 +1017,7 @@ class Player:
 
         try:
             self._related_artists = (
-                load_configured_related_artists(cfg.index.active_dir)
+                load_configured_related_artists(cfg.index.library_dir)
                 if cfg.playback.repeat_rules.use_related_artists
                 else RelatedArtists()
             )
@@ -1028,7 +1028,7 @@ class Player:
             logger.warning("Related artists file was not used: %s", exc)
         try:
             self._related_tracks = (
-                load_configured_related_tracks(cfg.index.active_dir)
+                load_configured_related_tracks(cfg.index.library_dir)
                 if cfg.playback.repeat_rules.use_related_tracks
                 else RelatedTracks()
             )
@@ -5423,9 +5423,9 @@ class Player:
             try:
                 from autodj.dj_meta import get_cache
 
-                if isinstance(self._cfg.index.active_dir, Path):
+                if isinstance(self._cfg.index.library_dir, Path):
                     self._dj_cache = get_cache(
-                        self._cfg.index.active_dir,
+                        self._cfg.index.library_dir,
                         music_dir=self._cfg.library.music_dir
                         if isinstance(self._cfg.library.music_dir, Path)
                         else None,

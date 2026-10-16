@@ -21,6 +21,7 @@ from autodj.carts import CartError, CartSlot, StationCarts, install_carts
 from autodj.scheduler import Action
 from autodj.server import PlayerBridge, create_app
 from autodj.station_routes import StationRouter, current_station
+from tests._layout import layout_index, point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -42,7 +43,7 @@ class Rig:
         self.root = root
         self.events: list[dict[str, Any]] = []
         cfg = SimpleNamespace(
-            index=SimpleNamespace(active_dir=str(root)),
+            index=layout_index(str(root)),
             playback=SimpleNamespace(liners_duck_db=-12.0),
             server=SimpleNamespace(liner_upload_max_bytes=1024 * 1024),
         )
@@ -358,7 +359,7 @@ def test_play_cart_action_needs_the_server_mix(tmp_path: Path) -> None:
 @pytest.fixture
 def app_client(tmp_path: Path) -> Iterator[TestClient]:
     player = _make_player_mock()
-    player._cfg.index.active_dir = str(tmp_path / "active")
+    point_index(player._cfg.index, str(tmp_path / "active"))
     player._cfg.server.liner_upload_max_bytes = 1024 * 1024
     with TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock()))) as client:
         yield client
