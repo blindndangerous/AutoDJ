@@ -128,6 +128,36 @@ with remaining songs. `--force` replaces vectors for eligible songs without dele
 history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
 audio prefetch. `--no-enrich` skips the optional beets refresh.
 
+### Long tracks
+
+Tracks of any length are imported and play, including hour-long DJ mixes and full-album files.
+Memory stays bounded however long a track is:
+
+- **Basic analysis.** A track longer than 15 minutes is decoded once as it streams. AutoDJ keeps
+  its first and last 5 minutes and measures its length and energy over the whole file. Start and
+  Intro come from the first minutes; End, Segue and Outro come from the last.
+- **Beats and song structure.** A long track's beat grid and cues come from the same first and
+  last 5 minutes, the parts a transition uses. The grid has a gap in the middle.
+- **Advanced analysis.** By default, songs longer than 15 minutes are left out of the advanced
+  analysis, which decodes the whole song and can need several gigabytes for a long mix. Set the
+  cutoff in Library tools under **Advanced analysis length**; 0 analyses every length. Songs left
+  out are not errors and are not retried. The import summary counts them, and they are analysed
+  as soon as the cutoff allows. They still play in rotation, in clock categories and as queue or
+  request picks. Similarity picks need the advanced analysis, so a song without it is never
+  chosen as "similar" to another. When it plays in similarity mode, the next pick falls back to a
+  random playable song.
+- **Server playback.** A decoded track longer than 10 minutes, about 21 MB per minute, is kept
+  in a temporary file mapped into memory instead of in ordinary memory. The file is in the
+  system temporary folder (`TMPDIR` or `TEMP`), so a three-hour mix needs about 4 GB of free disk
+  there while it plays. The file is removed when the track is done. FFmpeg may take as long as
+  the track to decode it, or at least 10 minutes.
+
+The old `[playback] server_max_track_minutes` setting is gone. AutoDJ ignores it with a warning,
+and `autodj doctor` offers to remove it from `config.toml`.
+
+The import status in Library tools gives counts. Files that could not be read or decoded are
+errors; open **Import errors** below the summary for the list.
+
 The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
 and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
 data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
@@ -2094,7 +2124,8 @@ Each running station is a complete playout chain in the same process:
 - **Subprocesses, 2 to 4:** the ffmpeg MP3 encoder (plus one per relay bitrate that differs) and
   either the ffmpeg master filter (`smooth`) or Stereo Tool with an ffmpeg limiter.
 - **Memory:** about 21 MB per minute of decoded audio, so roughly 150 to 250 MB per station for
-  the playing song, the next render and the overlap. The similarity index is shared, so another
+  the playing song, the next render and the overlap. Audio longer than 10 minutes goes to a
+  temporary file instead (see [Long tracks](#long-tracks)). The similarity index is shared, so another
   station adds no index memory.
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.

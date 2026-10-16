@@ -37,6 +37,7 @@ from autodj.indexer import (
     file_fingerprint,
 )
 from autodj.processing import (
+    TrackWindows,
     analyze_basic,
     analyze_loudness,
     load_for_analysis,
@@ -490,6 +491,23 @@ class LibraryManager:
     def set_dj_analysis_enabled(self, enabled: bool) -> None:
         self.catalog.set_setting("dj_analysis", enabled)
 
+    def advanced_max_minutes(self) -> int:
+        """Longest song the advanced analysis takes, in minutes; ``0`` takes every length."""
+        return self.catalog.advanced_max_minutes()
+
+    def set_advanced_max_minutes(self, minutes: int) -> None:
+        """Save the advanced analysis length cutoff and look for work again.
+
+        Songs it now admits are analysed without waiting for a scan; songs it
+        now leaves out are simply not started.
+        """
+        from autodj.catalog import ADVANCED_MAX_MINUTES_KEY
+
+        self.catalog.set_setting(ADVANCED_MAX_MINUTES_KEY, minutes)
+        with self._lock:
+            self._scan_generation += 1
+            self._analysis_idle = None
+
     def tick(self) -> None:
         self._flush_ledgers()
         with self._lock:
@@ -518,6 +536,9 @@ class LibraryManager:
             "import": state,
             "tracks_ready": ready,
             "tracks_indexed": indexed,
+            # Left out of the advanced analysis for their length: not errors.
+            "too_long_for_analysis": self.catalog.too_long_for_analysis_count(),
+            "advanced_max_minutes": self.catalog.advanced_max_minutes(),
         }
 
     def missing_removal_preview(
@@ -807,14 +828,6 @@ class LibraryManager:
                     found.setdefault(normalized, (source["kind"], path))
         return list(found.values())
 
-    def _max_analysis_seconds(self) -> float:
-        """Longest track the scan analyses: the playout limit, ``server_max_track_minutes``.
-
-        Server playout refuses longer tracks, and analysing one holds it in
-        memory several times over, so the scan refuses it too.
-        """
-        return float(self.cfg.playback.server_max_track_minutes) * 60.0
-
     def _same_identity(self, record: dict[str, Any], path: Path) -> bool:
         size, fingerprint = file_fingerprint(path)
         return bool(
@@ -982,7 +995,7 @@ class LibraryManager:
         try:
             tags = read_file_tags(path)
             length = float(tags.length)
-            if not 0 < length <= self._max_analysis_seconds():
+            if not length > 0:
                 return False
             entry = IndexEntry(
                 str(path),
@@ -1060,20 +1073,17 @@ class LibraryManager:
                 and old is not None
                 and not mtime_changed
             ):
-                _, liner_points = analyze_basic(
-                    path, kind="liner", max_seconds=self._max_analysis_seconds()
-                )
+                _, liner_points = analyze_basic(path, kind="liner")
                 segue = liner_points.get("segue")
                 if segue is not None:
                     segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
                 self.catalog.set_points(path, {"segue": segue}, source="analysis")
             elif not valid_existing_points and not mtime_changed:
-                # One decode serves the cue points and the beats and cues.
+                # One decode serves the cue points and the beats and cues.  A
+                # long track's decode keeps only its start and end.
                 dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
-                audio = load_for_analysis(path, self._max_analysis_seconds()) if dj else None
-                fresh, points = analyze_basic(
-                    path, kind=kind, max_seconds=self._max_analysis_seconds(), audio=audio
-                )
+                audio = load_for_analysis(path) if dj else None
+                fresh, points = analyze_basic(path, kind=kind, audio=audio)
                 fresh = self._basic_entry(fresh, old, path)
                 suggestions = self._legacy_point_suggestions(path)
                 for name, value in suggestions.items():
@@ -1086,7 +1096,7 @@ class LibraryManager:
                 # failed or stale analysis.
                 self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
                 if audio is not None:
-                    self._dj_analyse(path, audio.mean(axis=1), force=True)
+                    self._dj_analyse(path, audio, force=True)
                     del audio
             if kind == "music":
                 record = self.catalog.record_for_path(path)
@@ -1200,12 +1210,17 @@ class LibraryManager:
             logger.warning("DJ analysis unavailable: %s", exc)
             return None
 
-    def _dj_analyse(self, path: Path, mono: np.ndarray | None = None, force: bool = False) -> None:
+    def _dj_analyse(
+        self, path: Path, audio: np.ndarray | TrackWindows | None = None, force: bool = False
+    ) -> None:
         """Store *path*'s beat grid and cues, placed from its saved Intro and Outro.
 
-        *mono* is the song already decoded at ``SAMPLE_RATE``; it is decoded
-        here when ``None``.  Without *force* a song already analysed is left
-        alone.  A failure is logged and the scan goes on.
+        *audio* is the song already decoded at ``SAMPLE_RATE`` by
+        :func:`~autodj.processing.load_for_analysis`: all of it, or a long
+        song's start and end, which are analysed on their own
+        (:func:`~autodj.dj_meta.analyse_windows`).  It is decoded here when
+        ``None``.  Without *force* a song already analysed is left alone.  A
+        failure is logged and the scan goes on.
         """
         if not self.dj_analysis_enabled():
             return
@@ -1215,14 +1230,14 @@ class LibraryManager:
         try:
             if not force and cache.get(str(path)).analysed:
                 return
-            if mono is None:
-                mono = load_for_analysis(path, self._max_analysis_seconds()).mean(axis=1)
-            from autodj.dj_meta import analyse_audio
+            if audio is None:
+                audio = load_for_analysis(path)
+            from autodj.dj_meta import analyse_decoded
 
             points = self.catalog.points(path)
-            length = len(mono) / SAMPLE_RATE
-            meta = analyse_audio(
-                mono,
+            length = audio.seconds if isinstance(audio, TrackWindows) else len(audio) / SAMPLE_RATE
+            meta = analyse_decoded(
+                audio,
                 SAMPLE_RATE,
                 intro_end_s=points.get("intro") or 0.0,
                 outro_start_s=points.get("outro") or length,
@@ -1272,8 +1287,12 @@ class LibraryManager:
         if not force:
             return self.catalog.unembedded_music()
         # Force re-embeds songs that already have a vector, so it lists every eligible song.
+        # Songs over the length cutoff stay out, as they do without force.
+        limit = self.catalog.advanced_max_minutes() * 60.0
         pending = []
         for record in self.catalog.all_entries("music"):
+            if limit and record["length"] > limit:
+                continue
             if not Path(record["path"]).is_file():
                 continue
             if any(

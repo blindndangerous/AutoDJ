@@ -140,6 +140,35 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("counts import errors in the summary and lists them in a details list that stays open (#391)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let errors = ["C:/music/a.flac: could not decode", "C:/music/b.mp3: could not decode"];
+    const request = vi.fn(async (url) => url === "/api/library/folders" ? {
+      folders: [], import: { running: false, errors }, tracks_ready: 1204, tracks_indexed: 1100,
+    } : {});
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const progress = document.getElementById("source-folders-progress");
+    const list = document.getElementById("source-folders-errors");
+    expect(progress.textContent).toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 indexed.");
+    expect(progress.textContent).not.toContain("a.flac");
+    expect(list.tagName).toBe("DETAILS");
+    expect(list.hidden).toBe(false);
+    expect(list.querySelector("summary").textContent).toBe("Import errors (2)");
+    expect([...list.querySelectorAll("li")].map((item) => item.textContent)).toEqual(errors);
+    list.open = true;
+    const first = list.querySelector("li");
+    await controls.refresh();
+    expect(list.open).toBe(true);
+    expect(list.querySelector("li")).toBe(first);
+    errors = [];
+    await controls.refresh();
+    expect(list.hidden).toBe(true);
+    expect(list.open).toBe(false);
+    expect(progress.textContent).toBe("1,204 tracks ready; 1,100 indexed.");
+    controls.destroy();
+  });
+
   it("removes surrounding quotes from pasted Windows paths and preserves literal Unix quotes", async () => {
     const request = vi.fn(async () => ({}));
     installLibraryFolders({ document, request });

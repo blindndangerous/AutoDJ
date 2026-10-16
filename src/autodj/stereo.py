@@ -13,17 +13,137 @@ helpers let that code run on each channel without rewriting it.
 from __future__ import annotations
 
 import logging
+import mmap
+import os
 import shutil
 import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import IO
 
 import numpy as np
 import soundfile as sf
 
 SAMPLE_RATE = 44_100
 logger = logging.getLogger(__name__)
+
+#: Decoded stereo audio longer than this (ten minutes, about 210 MB) is kept
+#: in a temporary file mapped into memory instead of in ordinary memory, so
+#: an hour-long mix costs disk space while it plays, not gigabytes of RAM.
+#: The operating system reads it in as it is played and can drop it again.
+SPILL_FRAMES = 10 * 60 * SAMPLE_RATE
+_SPILL_BYTES = SPILL_FRAMES * 2 * 4
+#: A track longer than this is analysed from its start and end only (its
+#: first and last :data:`ANALYSIS_WINDOW_SECONDS`), so cue, beat and
+#: structure analysis never holds more than a few minutes of it.
+LONG_TRACK_SECONDS = 15 * 60
+ANALYSIS_WINDOW_SECONDS = 5 * 60
+
+
+def _mapped(nbytes: int) -> mmap.mmap:
+    """A writable, zeroed mapping of a new temporary file of *nbytes*.
+
+    The file has no name once it is open (POSIX) or is deleted when the
+    mapping closes (Windows), so nothing is left behind.
+    """
+    with tempfile.TemporaryFile(prefix="autodj-audio-") as handle:
+        handle.truncate(nbytes)
+        return mmap.mmap(handle.fileno(), nbytes)
+
+
+def audio_buffer(frames: int, channels: int = 2) -> np.ndarray:
+    """Return a zeroed ``(frames, channels)`` float32 array.
+
+    Up to :data:`SPILL_FRAMES` frames it is an ordinary array; a longer one
+    is a plain ndarray over a temporary file mapped into memory.
+    """
+    if frames <= SPILL_FRAMES:
+        return np.zeros((frames, channels), dtype=np.float32)
+    return np.frombuffer(_mapped(frames * channels * 4), dtype=np.float32).reshape(frames, channels)
+
+
+def join_audio(parts: Sequence[np.ndarray]) -> np.ndarray:
+    """``np.concatenate(parts).astype(np.float32)``, spilled when long and 2-D.
+
+    Joining a whole track to a transition copies it; a long one goes to
+    :func:`audio_buffer` instead of ordinary memory.
+    """
+    total = sum(len(part) for part in parts)
+    if total <= SPILL_FRAMES or parts[0].ndim != 2:
+        return np.concatenate(parts, axis=0).astype(np.float32, copy=False)
+    out = audio_buffer(total, parts[0].shape[1])
+    at = 0
+    for part in parts:
+        out[at : at + len(part)] = part
+        at += len(part)
+    return out
+
+
+class AudioSpool:
+    """Collect raw float32 samples from a pipe, in memory or, once long, on disk.
+
+    Up to :data:`SPILL_FRAMES` of stereo audio stays in a growing bytearray;
+    past that the bytes so far and the rest go to a temporary file, which
+    :meth:`buffer` maps into memory.
+    """
+
+    def __init__(self) -> None:
+        """Start empty, in memory."""
+        self._memory = bytearray()
+        self._file: IO[bytes] | None = None
+        self._size = 0
+
+    def write(self, data: bytes) -> None:
+        """Append *data*."""
+        if self._file is None and len(self._memory) + len(data) > _SPILL_BYTES:
+            self._file = tempfile.TemporaryFile(prefix="autodj-audio-")  # noqa: SIM115
+            self._file.write(self._memory)
+            self._memory = bytearray()
+        if self._file is not None:
+            self._file.write(data)
+        else:
+            self._memory += data
+        self._size += len(data)
+
+    def buffer(self, frame_bytes: int = 8) -> bytearray | mmap.mmap:
+        """The samples as a writable buffer for :func:`numpy.frombuffer`.
+
+        A mapped file is cut to whole frames of *frame_bytes*.
+        """
+        if self._file is None:
+            return self._memory
+        handle, self._file = self._file, None
+        with handle:
+            handle.flush()
+            usable = self._size - self._size % frame_bytes
+            if usable == 0:
+                return bytearray()
+            return mmap.mmap(handle.fileno(), usable)
+
+    def close(self) -> None:
+        """Drop a temporary file :meth:`buffer` did not take."""
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
+def all_finite_and_audible(audio: np.ndarray, block: int = SAMPLE_RATE * 60) -> bool:
+    """Whether *audio* is non-empty, all finite and not all zero.
+
+    Checked a minute at a time, so a long track needs no full-size
+    temporary arrays.
+    """
+    if not len(audio):
+        return False
+    audible = False
+    for start in range(0, len(audio), block):
+        piece = audio[start : start + block]
+        if not np.isfinite(piece).all():
+            return False
+        audible = audible or bool(np.any(piece))
+    return audible
+
 
 # FFmpeg decodes MP4-container audio (ALAC, AAC), which libsndfile cannot
 # open, and MP3, where it recovers frames libsndfile rejects and keeps
@@ -49,6 +169,15 @@ def to_stereo(audio: np.ndarray) -> np.ndarray:
         beyond the first two are dropped.
     """
     arr = np.asarray(audio, dtype=np.float32)
+    if arr.ndim == 2 and arr.shape[1] == 2 and arr.flags.c_contiguous:
+        return arr
+    if len(arr) > SPILL_FRAMES:
+        # A long track's copy goes to a mapped file, not ordinary memory.
+        out = audio_buffer(len(arr))
+        left = arr if arr.ndim == 1 else arr[:, 0]
+        out[:, 0] = left
+        out[:, 1] = left if arr.ndim == 1 or arr.shape[1] == 1 else arr[:, 1]
+        return out
     if arr.ndim == 1:
         arr = np.stack([arr, arr], axis=1)
     elif arr.shape[1] == 1:
@@ -185,9 +314,25 @@ def load_with_ffmpeg(
             logger.warning(
                 "Decoded %s with warnings:\n%s", path, detail, extra={"track": str(path)}
             )
+        size = decoded.seek(0, os.SEEK_END)
         decoded.seek(0)
-        audio, sr = sf.read(decoded, dtype="float32", always_2d=channels > 1)
+        if size <= _SPILL_BYTES:
+            audio, sr = sf.read(decoded, dtype="float32", always_2d=channels > 1)
+        else:
+            audio, sr = _read_spilled(decoded, size)
+            if channels == 1:
+                audio = audio.reshape(-1)
     return audio, int(sr)
+
+
+def _read_spilled(source_file: IO[bytes], size: int) -> tuple[np.ndarray, int]:
+    """Read a long decoded WAV into :func:`audio_buffer` instead of ordinary memory."""
+    with sf.SoundFile(source_file) as source:
+        # A WAV written to a pipe may claim more frames than the file holds.
+        frames = min(source.frames, size // (4 * source.channels))
+        out = audio_buffer(frames, source.channels)
+        read = len(source.read(frames, dtype="float32", always_2d=True, out=out))
+        return out[:read], int(source.samplerate)
 
 
 def _decode(
@@ -220,7 +365,16 @@ def _decode(
                 seconds = source.frames / source.samplerate
                 if max_seconds is not None and seconds > max_seconds:
                     raise TrackTooLongError(str(path), seconds)
-                return source.read(dtype="float32", always_2d=True), int(source.samplerate)
+                rate = int(source.samplerate)
+                if source.frames <= SPILL_FRAMES:
+                    return source.read(dtype="float32", always_2d=True), rate
+                if sample_rate is None or rate == sample_rate:
+                    # A long track goes to a mapped file, not ordinary memory.
+                    out = audio_buffer(source.frames, source.channels)
+                    read = len(source.read(dtype="float32", always_2d=True, out=out))
+                    return out[:read], rate
+                # Resampling a long track at once copies it several times;
+                # FFmpeg resamples it as it decodes.
         except (RuntimeError, OSError) as exc:
             logger.debug("soundfile could not read %s, trying FFmpeg: %s", path, exc)
     duration = None if max_seconds is None else max_seconds + 1.0

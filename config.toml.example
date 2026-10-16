@@ -366,11 +366,9 @@ liners_duck_db = -3.0                  # how far the music ducks under a liner, 
 # track starts, as with this off.
 liners_talk_up = false
 
-# Longest track the server mixes with --server-audio or --stream, in
-# minutes (1 to 600).  The server decodes each track whole, at about 21 MB
-# per minute, and holds a few at once, so longer tracks (hour-long DJ mixes)
-# are skipped with a log line.  Browser playback has no limit.
-server_max_track_minutes = 15.0
+# Tracks of any length play.  A decoded track longer than ten minutes is
+# kept in a temporary file in the system temporary folder (TMPDIR or TEMP)
+# while the server mixes it, about 21 MB per minute, instead of in memory.
 
 # Spoken time checks. The time comes from a voice pack, then a recorded
 # minute clip, then text to speech, whichever first has the minute.

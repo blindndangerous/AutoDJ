@@ -401,17 +401,11 @@ class TestPlaybackConfig:
             is True
         )
 
-    def test_server_max_track_minutes_accepts_an_integer(self) -> None:
-        pb = PlaybackConfig.from_dict({"server_max_track_minutes": 30})
-        assert pb.server_max_track_minutes == 30.0
-
-    @pytest.mark.parametrize(
-        ("value", "error"),
-        [(0, ValueError), (601, ValueError), (True, TypeError), ("15", TypeError)],
-    )
-    def test_server_max_track_minutes_rejects_bad_values(self, value, error) -> None:
-        with pytest.raises(error, match="server_max_track_minutes"):
-            PlaybackConfig.from_dict({"server_max_track_minutes": value})
+    def test_the_old_track_length_limit_is_ignored(self, caplog) -> None:
+        """Tracks of any length play now; an old config only gets a warning."""
+        pb = PlaybackConfig.from_dict({"server_max_track_minutes": 15.0})
+        assert not hasattr(pb, "server_max_track_minutes")
+        assert "server_max_track_minutes" in caplog.text
 
     @pytest.mark.parametrize(
         "key",

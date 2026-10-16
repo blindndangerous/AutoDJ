@@ -93,6 +93,7 @@ from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
 from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
+from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
@@ -658,6 +659,13 @@ class LibraryDjAnalysisBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
+
+
+class LibraryAdvancedLengthBody(BaseModel):
+    """Longest song the advanced analysis takes, in minutes; 0 takes every length."""
+
+    model_config = ConfigDict(extra="forbid")
+    minutes: StrictInt = Field(ge=0, le=ADVANCED_MAX_MINUTES_LIMIT)
 
 
 class LibraryRemoveMissingBody(BaseModel):
@@ -2182,6 +2190,16 @@ def create_app(
     async def api_library_set_dj_analysis(body: LibraryDjAnalysisBody) -> dict[str, bool]:
         await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
         return {"enabled": body.enabled}
+
+    @app.get("/api/library/advanced-length")
+    async def api_library_advanced_length() -> dict[str, int]:
+        """The advanced analysis length cutoff in minutes; 0 analyses every length."""
+        return {"minutes": await asyncio.to_thread(_catalog_library().advanced_max_minutes)}
+
+    @app.put("/api/library/advanced-length")
+    async def api_library_set_advanced_length(body: LibraryAdvancedLengthBody) -> dict[str, int]:
+        await asyncio.to_thread(_catalog_library().set_advanced_max_minutes, body.minutes)
+        return {"minutes": body.minutes}
 
     @app.get("/api/library/missing")
     async def api_library_missing_preview() -> dict:

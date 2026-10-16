@@ -84,7 +84,6 @@ def make_cfg_mock() -> MagicMock:
     cfg.playback.stereotool_input_trim_db = 0.0
     cfg.playback.stereotool_preset = "included"
     cfg.playback.pick_temperature = 0.0
-    cfg.playback.server_max_track_minutes = 15.0
     cfg.playback.import_external_cues = False
     cfg.playback.skip_style = "fade"
     cfg.playback.liners_talk_up = False

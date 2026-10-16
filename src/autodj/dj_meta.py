@@ -49,14 +49,16 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from collections.abc import Set as AbstractSet
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
+from typing import Any
 
 import numpy as np
 
 from autodj.fsutil import is_absolute_storage, relative_storage_path
 from autodj.sqlite_utils import immediate_transaction
+from autodj.stereo import ANALYSIS_WINDOW_SECONDS, LONG_TRACK_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -1374,7 +1376,8 @@ def confident_drop(audio: np.ndarray, sr: int, at_s: float, beats: list[float]) 
     :data:`_DROP_HOLD_S` more (a single loud hit is not a drop).
 
     Args:
-        audio: The track, mono.
+        audio: The track, mono or ``(frames, channels)``; only the seconds
+            around *at_s* are read, so a long track is not copied.
         sr: Its sample rate.
         at_s: The detected drop.
         beats: The track's beat grid in seconds.
@@ -1385,6 +1388,8 @@ def confident_drop(audio: np.ndarray, sr: int, at_s: float, beats: list[float]) 
 
     def level(lo_s: float, hi_s: float) -> float:
         part = audio[max(0, round(lo_s * sr)) : max(0, round(hi_s * sr))]
+        if part.ndim == 2:
+            part = part.mean(axis=1)
         return float(np.sqrt(np.mean(part**2))) if len(part) else 0.0
 
     def jump(beat: float) -> float:
@@ -1410,7 +1415,7 @@ def mix_drops(cues: list[Cue], audio: np.ndarray, sr: int, beats: list[float]) -
 
     Args:
         cues: The track's cues.
-        audio: The track, mono, for checking a detected drop.
+        audio: The track, mono or stereo, for checking a detected drop.
         sr: Its sample rate.
         beats: Its beat grid in seconds.
 
@@ -1472,3 +1477,101 @@ def analyse_audio(
         analysed=True,
         cues=cues,
     )
+
+
+def _mono_part(audio: np.ndarray) -> np.ndarray:
+    return audio.mean(axis=1).astype(np.float32) if audio.ndim == 2 else audio
+
+
+def analyse_windows(
+    head: np.ndarray,
+    tail: np.ndarray,
+    tail_start_s: float,
+    sr: int,
+    intro_end_s: float | None = None,
+    outro_start_s: float | None = None,
+) -> DjMeta:
+    """Analyse a long track from its first and last minutes.
+
+    The beat tracker over a whole hour-long mix needs gigabytes, and only
+    the start and end of a track take part in a transition.  Each window
+    is analysed on its own: the start for the intro, its beats and cues,
+    the end for the outro, its beats and cues, moved to the whole track's
+    timeline.  The beat grid has a gap between them.
+
+    Args:
+        head: The track's start, mono or stereo.
+        tail: The track's end, mono or stereo.
+        tail_start_s: Where *tail* begins in the whole track.
+        sr: Sample rate in Hz.
+        intro_end_s: The song's saved Intro, when it has one.
+        outro_start_s: The song's saved Outro, when it has one.
+
+    Returns:
+        A populated :class:`DjMeta` (always ``analysed=True``).
+    """
+    head, tail = _mono_part(head), _mono_part(tail)
+    head_s, tail_s = len(head) / sr, len(tail) / sr
+    if intro_end_s is None or not 0 <= intro_end_s < head_s:
+        intro_end_s = detect_intro_outro(head, sr)[0]
+    outro_in_tail = None if outro_start_s is None else outro_start_s - tail_start_s
+    if outro_in_tail is None or not 0 < outro_in_tail <= tail_s:
+        outro_in_tail = detect_intro_outro(tail, sr)[1]
+    first = analyse_audio(head, sr, intro_end_s, head_s)
+    last = analyse_audio(tail, sr, 0.0, outro_in_tail)
+    cues = [cue for cue in first.cues if cue.type != "outro_downbeat"] + [
+        replace(cue, time_s=cue.time_s + tail_start_s)
+        for cue in last.cues
+        if cue.type != "first_downbeat"
+    ]
+    return DjMeta(
+        intro_start_s=first.intro_start_s,
+        intro_end_s=first.intro_end_s,
+        outro_start_s=tail_start_s + last.outro_start_s,
+        beats=first.beats + [b + tail_start_s for b in last.beats if b + tail_start_s > head_s],
+        analysed=True,
+        cues=sorted(cues, key=lambda cue: cue.time_s),
+    )
+
+
+def analyse_track_audio(
+    audio: np.ndarray,
+    sr: int,
+    intro_end_s: float | None = None,
+    outro_start_s: float | None = None,
+) -> DjMeta:
+    """:func:`analyse_audio` for a whole decoded track, mono or stereo.
+
+    A track longer than :data:`~autodj.stereo.LONG_TRACK_SECONDS` is
+    analysed from its first and last
+    :data:`~autodj.stereo.ANALYSIS_WINDOW_SECONDS` (:func:`analyse_windows`),
+    so neither a mono copy of it nor the beat tracker's work grows with
+    its length.
+    """
+    if len(audio) <= LONG_TRACK_SECONDS * sr:
+        return analyse_audio(_mono_part(audio), sr, intro_end_s, outro_start_s)
+    window = round(ANALYSIS_WINDOW_SECONDS * sr)
+    return analyse_windows(
+        audio[:window], audio[-window:], (len(audio) - window) / sr, sr, intro_end_s, outro_start_s
+    )
+
+
+def analyse_decoded(
+    audio: Any,
+    sr: int,
+    intro_end_s: float | None = None,
+    outro_start_s: float | None = None,
+) -> DjMeta:
+    """Analyse a whole decoded track, or a long one's start and end.
+
+    *audio* is an array (mono or stereo, :func:`analyse_track_audio`) or
+    a :class:`~autodj.processing.TrackWindows` at *sr*
+    (:func:`analyse_windows`).
+    """
+    from autodj.processing import TrackWindows
+
+    if isinstance(audio, TrackWindows):
+        return analyse_windows(
+            audio.head, audio.tail, audio.tail_start_s, sr, intro_end_s, outro_start_s
+        )
+    return analyse_track_audio(audio, sr, intro_end_s, outro_start_s)

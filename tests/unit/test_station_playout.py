@@ -461,7 +461,7 @@ def test_master_processing_uses_originals_and_cached_measurements(
     monkeypatch.setattr("autodj.processing.load_processed_audio", load)
     monkeypatch.setattr(player, "_lift_intro", MagicMock(side_effect=AssertionError("double lift")))
     assert Player._load_playout_audio(player, entry) is audio
-    load.assert_called_once_with(Path(entry.path), measurement, kind, player._max_render_seconds())
+    load.assert_called_once_with(Path(entry.path), measurement, kind)
     measure.assert_not_called()
     assert prepared.read_bytes() == b"reference"
     result = player._render_track(entry, None, 0)
@@ -489,7 +489,7 @@ def test_missing_or_stale_measurement_is_measured_in_the_decode(
     load = MagicMock(side_effect=AssertionError("second decode"))
     monkeypatch.setattr("autodj.processing.load_processed_audio", load)
     assert Player._load_playout_audio(player, entry) is audio
-    measure.assert_called_once_with(Path(entry.path), "music", player._max_render_seconds())
+    measure.assert_called_once_with(Path(entry.path), "music")
     if record_exists:
         update.assert_called_once_with(Path(entry.path), measurement)
     else:
@@ -1407,21 +1407,6 @@ def test_saved_render_is_built_in_one_buffer(decoded):
     assert result.audio[-1, 0] == pytest.approx(2 / 8)  # the incoming head, in place
 
 
-@pytest.mark.parametrize("known", [True, False])
-def test_play_path_refuses_a_long_track_before_decoding(station, tmp_path, monkeypatch, known):
-    """A reliable source header refuses it regardless of the catalog length."""
-    from autodj.stereo import TrackTooLongError
-
-    player, (entry, *_), _points = station
-    player._cfg.playback.loudness_processing = "smooth"
-    entry.length = 3 * 3600.0 if known else 0.0
-    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: 3 * 3600.0)
-    for name in ("load_and_measure_audio", "load_processed_audio", "analyze_loudness"):
-        monkeypatch.setattr(f"autodj.processing.{name}", MagicMock(side_effect=AssertionError))
-    with pytest.raises(TrackTooLongError):
-        Player._load_playout_audio(player, entry)
-
-
 @pytest.mark.parametrize("change", ["processing", "source"])
 def test_prefetch_does_not_stamp_old_audio_with_changes_during_decode(decoded, monkeypatch, change):
     player, (entry, *_), _loads = decoded
@@ -1500,12 +1485,11 @@ def test_catalog_length_estimate_does_not_reject_a_playable_track(station, monke
     player, (entry, *_), _points = station
     entry.length = 3 * 3600
     player._cfg.playback.loudness_processing = "off"
-    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
     audio = np.full((100, 2), 0.3, np.float32)
     decode = MagicMock(return_value=audio)
     monkeypatch.setattr("autodj.player.load_stereo", decode)
     assert Player._load_playout_audio(player, entry) is audio
-    decode.assert_called_once_with(entry.path, SR, player._max_render_seconds())
+    decode.assert_called_once_with(entry.path, SR)
 
 
 def test_prefetch_rejects_changes_to_an_existing_loudness_measurement(decoded, monkeypatch):

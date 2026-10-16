@@ -129,6 +129,26 @@ def test_dj_analysis_route_saves_the_library_setting(library_api):
     assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
 
 
+def test_advanced_length_route_saves_the_cutoff(library_api):
+    """#391: the page sets how long a song the advanced analysis takes; 0 takes all."""
+    from autodj.server import LibraryAdvancedLengthBody
+
+    manager, call, app = library_api
+    assert call("GET", "/api/library/advanced-length") == {"minutes": 15}
+    body = LibraryAdvancedLengthBody(minutes=0)
+    assert call("PUT", "/api/library/advanced-length", body) == {"minutes": 0}
+    assert manager.advanced_max_minutes() == 0
+    assert call("GET", "/api/library/advanced-length") == {"minutes": 0}
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    headers = {"host": urlsplit(origin).netloc, "origin": origin}
+    for bad in (-1, 601, 1.5, "15", True):
+        response = TestClient(app).put(
+            "/api/library/advanced-length", json={"minutes": bad}, headers=headers
+        )
+        assert response.status_code == 422, bad
+    assert manager.advanced_max_minutes() == 0
+
+
 def test_time_settings_are_saved_and_the_zone_applies_at_the_next_start(library_api, monkeypatch):
     from autodj import timefmt
 
