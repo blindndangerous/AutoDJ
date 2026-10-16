@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from autodj.config import StreamConfig, load_config, parse_env_bool
+from autodj.config import StreamConfig, load_config, move_station_tables, parse_env_bool
 
 
 def test_defaults() -> None:
@@ -14,14 +14,12 @@ def test_defaults() -> None:
     assert cfg.max_listeners_per_address == 0
     assert "listener_password" not in repr(cfg)
     assert (
-        cfg.enabled,
         cfg.continuous,
         cfg.bitrate,
         cfg.idle_grace_seconds,
         cfg.max_listeners,
         cfg.station_name,
     ) == (
-        False,
         False,
         320,
         30.0,
@@ -46,12 +44,10 @@ def test_valid_bitrates(bitrate: int) -> None:
         {"max_listeners": "eight"},
         {"max_listeners_per_address": -1},
         {"max_listeners_per_address": True},
-        {"trusted_proxies": ["not-an-address"]},
         {"listener_password": "secret"},
         {"listener_user": "radio"},
         {"listener_user": "ra:dio", "listener_password": "secret"},
         {"station_name": ""},
-        {"enabled": "yes"},
         {"continuous": "true"},
     ],
 )
@@ -62,33 +58,48 @@ def test_invalid_values_rejected(data: dict) -> None:
 
 def test_toml_and_environment(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
-    path.write_text("[stream]\nenabled = true\nbitrate = 192\n", encoding="utf-8")
-    cfg = load_config(
-        path, environ={"AUTODJ_STREAM_BITRATE": "256", "AUTODJ_STREAM_ENABLED": "off"}
+    path.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
+        "[stream]\nenabled = true\nbitrate = 192\n",
+        encoding="utf-8",
     )
-    assert cfg.stream.bitrate == 256
+    env = {"AUTODJ_STREAM_BITRATE": "256", "AUTODJ_STREAM_ENABLED": "off"}
+    cfg = load_config(path, environ=env)
+    assert cfg.stream.bitrate == 320  # legacy root settings are migration input, never fallback
     assert cfg.station.output == "browser"
+    assert move_station_tables(cfg)
+    migrated = load_config(path, environ={})
+    assert migrated.stream.bitrate == 256
+    assert migrated.station.output == "browser"
 
 
 def test_private_listener_credentials_and_proxy_config(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
         '[stream]\nmax_listeners_per_address = 0\ntrusted_proxies = ["192.0.2.0/24"]\n',
         encoding="utf-8",
     )
     (tmp_path / "config.local.toml").write_text(
         '[stream]\nlistener_user = "radio"\nlistener_password = "secret"\n', encoding="utf-8"
     )
-    stream = load_config(path).stream
+    cfg = load_config(path, environ={})
+    assert move_station_tables(cfg)
+    cfg = load_config(path, environ={})
+    stream = cfg.stream
     assert stream.max_listeners_per_address == 0
-    assert stream.trusted_proxies == ["192.0.2.0/24"]
+    assert cfg.server.trusted_proxies == ["192.0.2.0/24"]
     assert (stream.listener_user, stream.listener_password) == ("radio", "secret")
 
 
 def test_continuous_config_and_environment(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[stream]\ncontinuous = true\n", encoding="utf-8")
-    cfg = load_config(path, environ={"AUTODJ_STREAM_CONTINUOUS": "off"})
+    path.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n[stream]\ncontinuous = true\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path, environ={"AUTODJ_STATION_DEFAULT_STREAM_CONTINUOUS": "off"})
     assert cfg.stream.continuous is False
 
 
@@ -116,8 +127,8 @@ def test_station_name_keeps_printable_unicode() -> None:
 
 
 def test_unknown_stream_keys_warn_without_discarding_supported_settings(caplog):
-    cfg = StreamConfig.from_dict({"unknown": 1, "bitrate": 192, "enabled": True})
-    assert cfg.bitrate == 192 and cfg.enabled is True
+    cfg = StreamConfig.from_dict({"unknown": 1, "bitrate": 192})
+    assert cfg.bitrate == 192
     assert "Ignoring unknown config keys in [stream]: ['unknown']" in caplog.text
 
 

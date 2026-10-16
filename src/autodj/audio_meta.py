@@ -825,4 +825,3 @@ def read_library_lyrics(path: str, cfg: Any) -> tuple[list, str]:
     # mentions a time.  parse_embedded_lyrics requires a clear majority
     # of leading stamps, and cleans the plain branch instead.
     return parse_embedded_lyrics(plain)
-

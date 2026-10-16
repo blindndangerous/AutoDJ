@@ -73,7 +73,7 @@ def test_only_a_paired_browser_can_add_or_remove_packs_and_clips(bridge, tmp_pat
     bearer = {"Authorization": "Bearer not-a-browser"}
     assert client.post("/api/time-checks/packs", files=files, headers=bearer).status_code == 401
     assert client.delete("/api/time-checks/packs/Studio", headers=bearer).status_code == 401
-    assert not (tmp_path / "time_checks").exists()
+    assert not (tmp_path / "stations" / "default" / "time_checks").exists()
 
 
 def test_a_pack_is_added_from_a_zip_listed_at_once_and_removed(bridge, tmp_path) -> None:
@@ -87,7 +87,7 @@ def test_a_pack_is_added_from_a_zip_listed_at_once_and_removed(bridge, tmp_path)
     assert [(pack["name"], pack["removable"], pack["enabled"]) for pack in body["packs"]] == [
         ("Studio", True, True)
     ]
-    assert (tmp_path / "time_checks" / "Studio" / "hr_03.wav").is_file()
+    assert (tmp_path / "stations" / "default" / "time_checks" / "Studio" / "hr_03.wav").is_file()
     assert str(tmp_path) not in json.dumps(body)
     # The name is taken: refused until replacing is asked for.
     again = _upload_pack(client, _zip({"m_06.wav": _wav()}), "Other.zip", name="Studio")
@@ -100,7 +100,9 @@ def test_a_pack_is_added_from_a_zip_listed_at_once_and_removed(bridge, tmp_path)
         client, _zip({"m_06.wav": _wav()}), "Other.zip", name="Studio", replace="true"
     )
     assert replaced.status_code == 200
-    assert sorted(p.name for p in (tmp_path / "time_checks" / "Studio").iterdir()) == ["m_06.wav"]
+    assert sorted(
+        p.name for p in (tmp_path / "stations" / "default" / "time_checks" / "Studio").iterdir()
+    ) == ["m_06.wav"]
     # Named after the zip when it has no one folder and no name is given.
     night = _upload_pack(client, _zip({"hr_03.wav": _wav()}), "Night.zip")
     assert night.json()["added"] == "Night"
@@ -109,7 +111,11 @@ def test_a_pack_is_added_from_a_zip_listed_at_once_and_removed(bridge, tmp_path)
     assert removed.json()["removed"] == "Studio"
     assert [pack["name"] for pack in removed.json()["packs"]] == ["Night"]
     assert client.delete("/api/time-checks/packs/Studio").status_code == 404
-    leftovers = [p.name for p in (tmp_path / "time_checks").iterdir() if p.name.startswith(".")]
+    leftovers = [
+        p.name
+        for p in (tmp_path / "stations" / "default" / "time_checks").iterdir()
+        if p.name.startswith(".")
+    ]
     assert leftovers == []
 
 
@@ -128,7 +134,7 @@ def test_unsafe_zips_are_refused_and_leave_nothing(bridge, tmp_path) -> None:
     bad_name = _upload_pack(client, _zip({"hr_03.wav": _wav()}), name="../x")
     assert bad_name.status_code == 400
     assert not (tmp_path / "evil.wav").exists()
-    assert [p.name for p in (tmp_path / "time_checks").iterdir()] == []
+    assert [p.name for p in (tmp_path / "stations" / "default" / "time_checks").iterdir()] == []
 
 
 def test_a_zip_over_the_upload_cap_is_refused_before_it_is_read(
@@ -141,7 +147,7 @@ def test_a_zip_over_the_upload_cap_is_refused_before_it_is_read(
     big = _zip({f"m_{minute:02d}.wav": _wav() for minute in range(10)})
     refused = _upload_pack(client, big)
     assert refused.status_code == 413
-    assert not (tmp_path / "time_checks" / "Studio").exists()
+    assert not (tmp_path / "stations" / "default" / "time_checks" / "Studio").exists()
 
 
 def test_a_configured_pack_is_not_removed_or_replaced_from_the_page(bridge, tmp_path) -> None:
@@ -181,7 +187,7 @@ def test_clips_are_uploaded_chosen_and_kept_by_name(bridge, tmp_path) -> None:
     for name, data in (("notes.txt", b"x"), ("../x.wav", _wav()), ("bad.wav", b"not audio")):
         refused = client.post("/api/time-checks/clips", files={"file": (name, data, "audio/wav")})
         assert refused.status_code == 400, name
-    (tmp_path / "time_checks" / "Clips").mkdir()
+    (tmp_path / "stations" / "default" / "time_checks" / "Clips").mkdir()
     body = {
         "enabled": True,
         "hour_format": "12",
@@ -209,5 +215,9 @@ def test_clips_are_uploaded_chosen_and_kept_by_name(bridge, tmp_path) -> None:
         assert refused.status_code == 400
         assert words in refused.json()["detail"]
     assert client.put("/api/time-checks", json={**body, "intro": "C:/x.wav"}).status_code == 422
-    leftovers = [p.name for p in (tmp_path / "time_checks").iterdir() if p.name.startswith(".")]
+    leftovers = [
+        p.name
+        for p in (tmp_path / "stations" / "default" / "time_checks").iterdir()
+        if p.name.startswith(".")
+    ]
     assert leftovers == []

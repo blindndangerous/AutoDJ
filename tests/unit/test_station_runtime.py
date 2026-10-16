@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from autodj._bridge import PlayerBridge
-from autodj.config import load_config, station_config
+from autodj.config import load_config, move_station_tables, station_config
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_log import (
     CURRENT_STATION,
@@ -53,6 +53,8 @@ stereotool_preset = "Day.sts"
 def cfg(tmp_path: Path) -> Any:
     path = tmp_path / "config.toml"
     path.write_text(CONFIG.format(root=tmp_path.as_posix()), encoding="utf-8")
+    initial = load_config(path, environ={})
+    move_station_tables(initial)
     return load_config(path, environ={})
 
 
@@ -202,7 +204,9 @@ class _Runtime:
 
 def _extra(slug: str, build: Any, tmp_path: Path, autostart: bool = True) -> ExtraStation:
     paths = SimpleNamespace(
-        liners=tmp_path / slug / "liners", web_state=tmp_path / slug / "web_state.json"
+        liners=tmp_path / slug / "liners",
+        web_state=tmp_path / slug / "web_state.json",
+        _cfg=SimpleNamespace(station=SimpleNamespace(output="stream")),
     )
     return ExtraStation(
         slug=slug,
@@ -409,13 +413,9 @@ def test_a_failed_factory_default_start_is_torn_down_and_remains_stopped(
     registry = StationRegistry(factory)
     registry.prepare = lambda _station: None
 
-    async def scenario() -> None:
-        with pytest.raises(StationControlError, match="could not start"):
-            await registry.start_all()
-        assert isinstance(registry.default, StoppedStation)
-        assert registry.all() == ()
-
-    asyncio.run(scenario())
+    asyncio.run(registry.start_all())
+    assert isinstance(registry.default, StoppedStation)
+    assert registry.all() == ()
     assert log == ["default started", "default stopped", "default closed"]
 
 
@@ -494,7 +494,7 @@ def _bridge(tmp_path: Path, **kwargs: Any) -> PlayerBridge:
 
 def test_another_stations_settings_are_saved_in_its_folder(tmp_path: Path, cfg: Any) -> None:
     paths = StationPaths.for_station(_spec(cfg, "nightowl").cfg, "nightowl")
-    paths.state_dir.mkdir(parents=True)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
     bridge = _bridge(tmp_path, paths=paths, stream_path="/nightowl.mp3")
     bridge.save_persistent_state()
     assert paths.web_state.is_file()

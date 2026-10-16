@@ -11,7 +11,13 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from autodj.config import DmcaConfig, NowPlayingConfig, WebhookConfig, load_config
+from autodj.config import (
+    DmcaConfig,
+    NowPlayingConfig,
+    WebhookConfig,
+    load_config,
+    move_station_tables,
+)
 from autodj.nowplaying import NowPlaying
 from autodj.webhooks import (
     MAX_RETRY_AFTER_S,
@@ -90,14 +96,23 @@ def test_snapshot_exposes_metadata_without_paths() -> None:
 
 def test_webhook_urls_are_local_only_and_redacted(tmp_path) -> None:
     shared = tmp_path / "config.toml"
-    shared.write_text('[[webhooks]]\nurl = "https://example.com/token"\n', encoding="utf-8")
+    index_dir = (tmp_path / "index").as_posix()
+    shared.write_text(
+        f'[index]\nindex_dir = "{index_dir}"\n'
+        '[[webhooks]]\nurl = "https://example.com/token"\n',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match=r"config\.local\.toml"):
-        load_config(shared)
-    shared.write_text("", encoding="utf-8")
+        load_config(shared, environ={})
+    shared.write_text(f'[index]\nindex_dir = "{index_dir}"\n', encoding="utf-8")
     (tmp_path / "config.local.toml").write_text(
         '[[webhooks]]\nurl = "https://example.com/token"\nformat = "discord"\n', encoding="utf-8"
     )
-    config = load_config(shared).webhooks[0]
+    legacy = load_config(shared, environ={})
+    assert move_station_tables(legacy)
+    cfg = load_config(shared, environ={})
+    assert cfg.default_station is not None
+    config = cfg.default_station.cfg.webhooks[0]
     assert "token" not in repr(config)
     assert WebhookWorker((config,)).status()[0] == {
         "index": 0,

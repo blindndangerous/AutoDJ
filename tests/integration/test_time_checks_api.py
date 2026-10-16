@@ -156,8 +156,10 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
     bridge.liner_scheduler = MagicMock()
     assert run()["message"] == "No voice pack, recorded clip or working TTS command for this minute"
     bridge.skip.assert_not_called()
-    (tmp_path / "time_checks").mkdir()
-    sf.write(tmp_path / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100)
+    (tmp_path / "stations" / "default" / "time_checks").mkdir()
+    sf.write(
+        tmp_path / "stations" / "default" / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100
+    )
     assert run()["result"] == "ok"
     bridge.liner_scheduler.play_audio.assert_called_once()
     assert bridge.skip.call_count == (1 if timing == "hard" else 0)
@@ -223,8 +225,10 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     # Studio is not ticked, but a test can still choose it.
     played = client.post("/api/time-checks/test", json={"pack": "Studio"})
     assert played.json() == {"message": "Time check played from the voice pack Studio"}
-    (tmp_path / "time_checks").mkdir()
-    sf.write(tmp_path / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100)
+    (tmp_path / "stations" / "default" / "time_checks").mkdir()
+    sf.write(
+        tmp_path / "stations" / "default" / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100
+    )
     fallback = client.post("/api/time-checks/test", json={"pack": "Night"})
     assert fallback.json() == {
         "message": "Voice pack Night cannot say this minute; played the recorded clip"

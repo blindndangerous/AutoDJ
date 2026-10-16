@@ -95,7 +95,7 @@ def test_hours_are_station_wall_clock_times_across_daylight_saving() -> None:
 
 
 def test_station_now_reads_the_station_time_zone() -> None:
-    cfg = SimpleNamespace(server=SimpleNamespace(station_timezone="Pacific/Auckland"))
+    cfg = SimpleNamespace(station=SimpleNamespace(timezone="Pacific/Auckland"))
     expected = datetime.now(ZoneInfo("Pacific/Auckland")).replace(tzinfo=None)
     assert abs((station_now(cfg) - expected).total_seconds()) < 5
 

@@ -202,7 +202,11 @@ def test_config_is_off_by_default_and_must_be_a_boolean(tmp_path) -> None:
     assert DmcaConfig().enabled is False
     config = tmp_path / "config.toml"
     config.write_text("[dmca]\nenabled = true\n", encoding="utf-8")
-    assert load_config(config).dmca.enabled is True
+    from autodj.config import move_station_tables
+
+    environment = {"AUTODJ_INDEX_DIR": str(tmp_path / "index")}
+    move_station_tables(load_config(config, environ=environment))
+    assert load_config(config, environ=environment).dmca.enabled is True
     with pytest.raises(TypeError, match=r"dmca\.enabled"):
         DmcaConfig(enabled="yes")  # type: ignore[arg-type]
 

@@ -1289,7 +1289,9 @@ def install_time_checks(router: StationRouter) -> None:
             return _file_error(exc)
         upload = hidden_name(checks.root, "clip-upload", Path(filename).suffix.lower())
         try:
-            await receive_upload(file, upload, (station.cfg.station.liner_upload_max_mib * 1024 * 1024))
+            await receive_upload(
+                file, upload, (station.cfg.station.liner_upload_max_mib * 1024 * 1024)
+            )
             await asyncio.to_thread(checks.add_clip, filename, upload, replace=replace)
         except (PackError, OSError) as exc:
             return _file_error(exc)

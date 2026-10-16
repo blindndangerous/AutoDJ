@@ -1898,6 +1898,7 @@ class AutoDJConfig:
     stations: tuple[StationSpec, ...] = ()
     default_station: StationSpec | None = None
     legacy_station_environment: dict[str, Any] = field(default_factory=dict, repr=False)
+    legacy_relay_environment: dict[str, str] = field(default_factory=dict, repr=False)
     config_sources: tuple[str, ...] = ("defaults",)
     skipped_definitions: tuple[tuple[str, str], ...] = ()
 
@@ -2029,7 +2030,10 @@ def _legacy_station_environment(environ: Mapping[str, str]) -> dict[str, Any]:
             output = "stream" if value else "browser"
         else:
             stream[key] = value
-    return {**({"stream": stream} if stream else {}), **({"station": {"output": output}} if output else {})}
+    return {
+        **({"stream": stream} if stream else {}),
+        **({"station": {"output": output}} if output else {}),
+    }
 
 
 def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
@@ -2237,7 +2241,6 @@ def _build_config(
     *,
     config_path: Path | None,
     sources: list[str],
-    local_only: Iterable[str] = (),
     legacy_station_environment: Mapping[str, Any] | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> AutoDJConfig:
@@ -2264,6 +2267,7 @@ def _build_config(
         config_sources=tuple(sources),
         legacy_station_environment=dict(legacy_station_environment or {}),
     )
+    cfg.legacy_relay_environment = _legacy_relay_environment(environment or {}, cfg)
     _load_web_stations(cfg, environment=environment)
     return cfg
 
@@ -2315,6 +2319,70 @@ def _toml_document(path: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
+def _legacy_relay_environment(environ: Mapping[str, str], cfg: AutoDJConfig) -> dict[str, str]:
+    """Capture old default-only relay password variables for startup migration."""
+    from autodj.stations import StationPaths
+
+    if not environ:
+        return {}
+    tables: list[Mapping[str, Any]] = []
+    if cfg.config_path is not None:
+        shared = _toml_document(cfg.config_path)
+        local = _toml_document(cfg.config_path.parent / "config.local.toml")
+        for document in (shared, local):
+            stream = document.get("stream")
+            relays = stream.get("relays") if isinstance(stream, Mapping) else None
+            if isinstance(relays, Mapping):
+                tables.append(relays)
+            stations = document.get("stations")
+            default = stations.get("default") if isinstance(stations, Mapping) else None
+            stream = default.get("stream") if isinstance(default, Mapping) else None
+            relays = stream.get("relays") if isinstance(stream, Mapping) else None
+            if isinstance(relays, Mapping):
+                tables.append(relays)
+
+    paths = StationPaths.default(cfg)
+    try:
+        definition = json.loads(paths.definition.read_text(encoding="utf-8"))
+        stream = (
+            definition.get("station", {}).get("stream") if isinstance(definition, dict) else None
+        )
+        relays = stream.get("relays") if isinstance(stream, Mapping) else None
+        if isinstance(relays, Mapping):
+            tables.append(relays)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    try:
+        saved = json.loads(paths.relays.read_text(encoding="utf-8"))
+        relays = saved.get("relays") if isinstance(saved, dict) else None
+        if isinstance(relays, list):
+            tables.append(
+                {
+                    item["name"]: item
+                    for item in relays
+                    if isinstance(item, dict) and isinstance(item.get("name"), str)
+                }
+            )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+
+    names = {name for table in tables for name in table if isinstance(name, str)}
+    owners: dict[str, str] = {}
+    found: dict[str, str] = {}
+    for name in sorted(names):
+        variable = f"AUTODJ_STREAM_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
+        previous = owners.get(variable)
+        if previous is not None and previous != name and variable in environ:
+            raise ValueError(
+                f"[stream.relays.{name}] and [stream.relays.{previous}] would both read "
+                f"{variable}, which is set; rename one of them"
+            )
+        owners[variable] = name
+        if variable in environ:
+            found[name] = environ[variable]
+    return found
+
+
 def _upsert_toml_key(path: Path, section: str, key: str, value: object) -> bool:
     """Insert one missing TOML key in place, keeping all existing text intact."""
     text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -2329,7 +2397,9 @@ def _upsert_toml_key(path: Path, section: str, key: str, value: object) -> bool:
         suffix = "" if not text or text.endswith("\n") else "\n"
         updated = f"{text}{suffix}\n[{section}]\n{key} = {rendered}\n"
     else:
-        next_header = re.search(r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$", text[match.end() :], re.MULTILINE)
+        next_header = re.search(
+            r"^\s*\[\[?[^\]]+\]\]?\s*(?:#.*)?$", text[match.end() :], re.MULTILINE
+        )
         insert_at = match.end() + next_header.start() if next_header else len(text)
         before, after = text[:insert_at], text[insert_at:]
         suffix = "" if not before or before.endswith("\n") else "\n"
@@ -2343,8 +2413,8 @@ def _upsert_toml_key(path: Path, section: str, key: str, value: object) -> bool:
 
 def _saved_catalog_timezone(cfg: AutoDJConfig) -> str | None:
     """Read the legacy catalog-wide station time zone without opening it for writes."""
-    from contextlib import closing
     import sqlite3
+    from contextlib import closing
 
     path = Path(cfg.index.library_dir) / "library.db"
     if not path.is_file():
@@ -2398,9 +2468,7 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
     if not isinstance(local_tables, Mapping):
         raise TypeError("stations must be named tables such as [stations.nightowl]")
     for slug, table in (*tables.items(), *local_tables.items()):
-        if slug != DEFAULT_SLUG and (
-            not isinstance(slug, str) or not SLUG_PATTERN.fullmatch(slug)
-        ):
+        if slug != DEFAULT_SLUG and (not isinstance(slug, str) or not SLUG_PATTERN.fullmatch(slug)):
             raise ValueError(
                 f"[stations.{slug}]: a station name uses lower-case letters, digits and "
                 "inner hyphens, at most 32 characters, such as nightowl"
@@ -2446,12 +2514,18 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
     base_stream = shared.get("stream", {})
     local_stream = local.get("stream", {})
     changed = False
-    if local_path is not None and isinstance(local_stream, Mapping) and "trusted_proxies" in local_stream and not (
-        isinstance(local_server, Mapping) and "trusted_proxies" in local_server
+    if (
+        local_path is not None
+        and isinstance(local_stream, Mapping)
+        and "trusted_proxies" in local_stream
+        and not (isinstance(local_server, Mapping) and "trusted_proxies" in local_server)
     ):
-        changed = _upsert_toml_key(
-            local_path, "server", "trusted_proxies", local_stream["trusted_proxies"]
-        ) or changed
+        changed = (
+            _upsert_toml_key(
+                local_path, "server", "trusted_proxies", local_stream["trusted_proxies"]
+            )
+            or changed
+        )
     elif (
         config_path is not None
         and isinstance(base_stream, Mapping)
@@ -2459,18 +2533,19 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
         and not (isinstance(base_server, Mapping) and "trusted_proxies" in base_server)
         and not (isinstance(local_server, Mapping) and "trusted_proxies" in local_server)
     ):
-        changed = _upsert_toml_key(
-            config_path, "server", "trusted_proxies", base_stream["trusted_proxies"]
-        ) or changed
+        changed = (
+            _upsert_toml_key(
+                config_path, "server", "trusted_proxies", base_stream["trusted_proxies"]
+            )
+            or changed
+        )
 
     saved_timezone = _saved_catalog_timezone(cfg)
     old_timezone = base_server.get("station_timezone") if isinstance(base_server, Mapping) else None
     if isinstance(local_server, Mapping) and "station_timezone" in local_server:
         old_timezone = local_server["station_timezone"]
     old_liner_mib = (
-        local_server.get("liner_upload_max_mib")
-        if isinstance(local_server, Mapping)
-        else None
+        local_server.get("liner_upload_max_mib") if isinstance(local_server, Mapping) else None
     )
     if old_liner_mib is None and isinstance(base_server, Mapping):
         old_liner_mib = base_server.get("liner_upload_max_mib")
@@ -2509,7 +2584,11 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
                 local_table = local_tables.get(slug, {})
                 legacy_tables[slug] = dict(local_table) if isinstance(local_table, Mapping) else {}
     for index, slug in enumerate(slugs):
-        paths = StationPaths.default(cfg) if slug == DEFAULT_SLUG else StationPaths.for_station(cfg, slug)
+        paths = (
+            StationPaths.default(cfg)
+            if slug == DEFAULT_SLUG
+            else StationPaths.for_station(cfg, slug)
+        )
         path = paths.definition
         if path.is_symlink():
             raise ValueError(f"station definition must not be a symlink: {path}")
@@ -2571,9 +2650,7 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
             candidate = deepcopy(table)
             candidate_stream = candidate.get("stream")
             candidate_relays = (
-                candidate_stream.get("relays")
-                if isinstance(candidate_stream, dict)
-                else None
+                candidate_stream.get("relays") if isinstance(candidate_stream, dict) else None
             )
             if isinstance(candidate_relays, dict):
                 for relay in candidate_relays.values():
@@ -2605,9 +2682,16 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
             relays = secret_stream.pop("relays", None) if isinstance(secret_stream, dict) else None
             if relays and not paths.relays.exists():
                 entries = [{"name": name, **relay} for name, relay in relays.items()]
+                if slug == DEFAULT_SLUG:
+                    for item in entries:
+                        if item["name"] in cfg.legacy_relay_environment:
+                            item["password"] = cfg.legacy_relay_environment[item["name"]]
+                relay_document: dict[str, Any] = {"version": 1, "relays": entries}
+                if slug == DEFAULT_SLUG and cfg.legacy_relay_environment:
+                    relay_document["legacy_environment_migrated"] = True
                 write_private_file(
                     paths.relays,
-                    json.dumps({"version": 1, "relays": entries}, indent=2) + "\n",
+                    json.dumps(relay_document, indent=2) + "\n",
                 )
                 changed = True
             if isinstance(secret_stream, dict) and not secret_stream:
@@ -2616,6 +2700,26 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
                 write_private_file(
                     paths.secrets, json.dumps({"version": 1, **secrets}, indent=2) + "\n"
                 )
+                changed = True
+        if slug == DEFAULT_SLUG and cfg.legacy_relay_environment and paths.relays.exists():
+            try:
+                relay_document = json.loads(paths.relays.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"cannot safely migrate old relay environment: {paths.relays}"
+                ) from exc
+            if (
+                not isinstance(relay_document, dict)
+                or relay_document.get("version") != 1
+                or not isinstance(relay_document.get("relays"), list)
+            ):
+                raise ValueError(f"cannot safely migrate old relay environment: {paths.relays}")
+            if relay_document.get("legacy_environment_migrated") is not True:
+                for item in relay_document["relays"]:
+                    if isinstance(item, dict) and item.get("name") in cfg.legacy_relay_environment:
+                        item["password"] = cfg.legacy_relay_environment[item["name"]]
+                relay_document["legacy_environment_migrated"] = True
+                write_private_file(paths.relays, json.dumps(relay_document, indent=2) + "\n")
                 changed = True
     if DEFAULT_SLUG in migrated_specs:
         _check_station_conflicts(
@@ -2710,7 +2814,8 @@ def _load_web_stations(
             document = json.loads(default_path.read_text(encoding="utf-8"))
             if isinstance(document, dict) and isinstance(document.get("station"), dict):
                 document["station"] = _deep_merge(
-                    document["station"], _station_environment_overlay(DEFAULT_SLUG, environment or {})
+                    document["station"],
+                    _station_environment_overlay(DEFAULT_SLUG, environment or {}),
                 )
             cfg.default_station = _definition_spec(
                 default_path,
@@ -2810,7 +2915,9 @@ def _validate_relay_environment(cfg: AutoDJConfig, environment: Mapping[str, str
 
     owners: dict[str, str] = {}
     for slug in ("default", *(spec.slug for spec in cfg.stations)):
-        paths = StationPaths.default(cfg) if slug == "default" else StationPaths.for_station(cfg, slug)
+        paths = (
+            StationPaths.default(cfg) if slug == "default" else StationPaths.for_station(cfg, slug)
+        )
         try:
             document = json.loads(paths.relays.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -2929,9 +3036,10 @@ def _build_station(slug: str, table: Mapping[str, Any], root: AutoDJConfig) -> S
         for t in STATION_SECTION_TYPES
     }
     sections["station"] = StationConfig.from_dict(station_raw)
-    if not isinstance(stream_raw, Mapping) or "station_name" not in stream_raw:
-        if slug != "default":
-            sections["stream"].station_name = slug
+    if (
+        not isinstance(stream_raw, Mapping) or "station_name" not in stream_raw
+    ) and slug != "default":
+        sections["stream"].station_name = slug
     cfg = AutoDJConfig(
         **sections,
         **{name: getattr(root, name) for name in SHARED_SECTIONS},
@@ -3071,7 +3179,9 @@ def load_config(
             shared = tomllib.load(fh)
             if "webhooks" in shared:
                 raise ValueError("webhooks belong only in config.local.toml")
-            raw = _deep_merge(raw, {key: value for key, value in shared.items() if key in shared_names})
+            raw = _deep_merge(
+                raw, {key: value for key, value in shared.items() if key in shared_names}
+            )
         loaded_path = candidate
         sources.append(str(candidate))
     elif explicit:
@@ -3082,14 +3192,21 @@ def load_config(
         if local_path.exists():
             with local_path.open("rb") as fh:
                 local = tomllib.load(fh)
-            raw = _deep_merge(raw, {key: value for key, value in local.items() if key in shared_names})
+            raw = _deep_merge(
+                raw, {key: value for key, value in local.items() if key in shared_names}
+            )
             sources.append(str(local_path))
 
     env_raw = _environment_overlay(environment)
     env_shared = {key: value for key, value in env_raw.items() if key in shared_names}
     legacy_station_environment = _legacy_station_environment(environment)
-    if env_shared or legacy_station_environment or any(
-        key.startswith("AUTODJ_STATION_") for key in environment
+    if (
+        env_shared
+        or legacy_station_environment
+        or any(
+            key.startswith("AUTODJ_STATION_") or key.startswith("AUTODJ_STREAM_RELAY_")
+            for key in environment
+        )
     ):
         raw = _deep_merge(raw, env_shared)
         sources.append("environment")

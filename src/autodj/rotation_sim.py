@@ -304,6 +304,16 @@ class LibrarySnapshot:
         from autodj.indexer import FEATURE_DIM
         from autodj.similarity import SimilarityIndex
         from autodj.station_ledger import StationLedger
+        from autodj.station_store import StationStore
+        from autodj.stations import DEFAULT_SLUG, StationPaths
+
+        paths = (
+            StationPaths.default(cfg)
+            if station == DEFAULT_SLUG
+            else StationPaths.for_station(cfg, station)
+        )
+        store = StationStore(paths.state_dir / "station.db", station)
+        played = store.last_played()
 
         self.catalog = catalog
         self._normalize = normalize_path
@@ -316,27 +326,25 @@ class LibrarySnapshot:
             index = faiss.IndexFlatIP(FEATURE_DIM)
             for chunk in reader.vectors(set(vector_paths)):
                 index.add(chunk)
-            played = reader.last_played(station)
         self.sim = SimilarityIndex.empty()
         self.sim.replace_catalog_faiss([by_path[path] for path in vector_paths], index)
         self._by_path = {
             normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
         }
+        liner_paths = {normalize_path(entry.path) for entry in self._liners}
         from autodj.categories import store_path
-        from autodj.stations import DEFAULT_SLUG, StationPaths
 
-        paths = (
-            StationPaths.default(cfg)
-            if station == DEFAULT_SLUG
-            else StationPaths.for_station(cfg, station)
-        )
         # The station's own categories, only read.
         self.categories = CategoryIndex(
             cfg, self.entries_snapshot, lambda: self.catalog.sources(), path=store_path(cfg, paths)
         )
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
         self.clock_beets = BeetsConditions(cfg)
-        self.ledger = StationLedger(catalog, station, self.entry_for_path)
+        self.ledger = StationLedger(
+            store,
+            self.entry_for_path,
+            lambda path: "liner" if normalize_path(path) in liner_paths else "music",
+        )
         self.ledger.loaded(played)
 
     def entries_snapshot(self, kind: str = "music") -> tuple[Any, ...]:
@@ -415,6 +423,7 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
     except sqlite3.Error as exc:
         raise SimulationError(_unreadable(database, exc)) from exc
     try:
+        library = None
         try:
             library = LibrarySnapshot(cfg, catalog, station)
         except sqlite3.Error as exc:
@@ -439,6 +448,8 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             liner_dates=paths.liner_dates,
         )
     finally:
+        if library is not None:
+            library.ledger.store.close()
         catalog.close()
 
 

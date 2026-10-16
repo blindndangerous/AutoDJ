@@ -254,7 +254,9 @@ def test_start_with_the_server_is_saved_for_a_station_made_in_the_page(rig: Any)
     assert default_update.json()["autostart"] is False
     assert load_config(cfg.config_path, environ={}).default_station.autostart is False
     assert _stations(client)["nightowl"]["autostart_locked"] is False
-    editable = client.put("/api/stations/nightowl/autostart", json={"enabled": False}, headers=origin)
+    editable = client.put(
+        "/api/stations/nightowl/autostart", json={"enabled": False}, headers=origin
+    )
     assert editable.status_code == 200
     assert editable.json()["autostart"] is False
     missing = client.put("/api/stations/nobody/autostart", json={"enabled": True}, headers=origin)
@@ -288,7 +290,7 @@ def test_create_rolls_back_after_registration_fails(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
 
     def fail(_extra: Any) -> None:
         raise RuntimeError("injected failure")
@@ -306,7 +308,7 @@ def test_create_rolls_back_after_registration_fails(
     )
     assert response.status_code == 409
     assert not (cfg.index.stations_dir / "new").exists()
-    assert library.catalog.get_setting("clock:new") is None
+    assert library.station_ledger("new").get_setting("clock") is None
     assert "new" not in client.app.state.stations.slugs()
 
 
@@ -327,7 +329,7 @@ def test_create_checks_recording_conflict_and_station_limit(rig: Any) -> None:
 
 def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
     response = client.post(
         "/api/stations",
         json={
@@ -339,7 +341,7 @@ def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
         headers={"Origin": "http://testserver"},
     )
     assert response.status_code == 201, response.text
-    assert library.catalog.get_setting("clock:new") == "Evening"
+    assert library.station_ledger("new").get_setting("clock") == "Evening"
     assert load_config(cfg.config_path, environ={}).stations[-1].defined_in == "web"
 
 

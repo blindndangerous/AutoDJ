@@ -80,7 +80,6 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
-from autodj.station_ledger import StationLedger, setting_key
 from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
@@ -675,7 +674,14 @@ def _clock_store(station: StationRuntime) -> ClockwheelStore:
 
 
 def _clock_setting(station: StationRuntime, library: Any) -> dict:
-    setting = library.catalog.get_setting(setting_key(station.slug, "clock"), {})
+    ledger = getattr(station, "ledger", None)
+    if ledger is None:
+        ledger = (
+            library.ledger
+            if station.slug == DEFAULT_SLUG and hasattr(library, "ledger")
+            else library.station_ledger(station.slug)
+        )
+    setting = ledger.get_setting("clock", {})
     return setting if isinstance(setting, dict) else {}
 
 
@@ -855,7 +861,7 @@ async def select_clock(
                 )
     # Through the station's ledger when it has one: its buffered cursor is
     # the latest place, and the old clockwheel's must not flush over this choice.
-    ledger = station.ledger or StationLedger(library.catalog, station.slug)
+    ledger = station.ledger or library.station_ledger(station.slug)
     await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
     if station.player is not None:
         await asyncio.to_thread(station.player.configure_clock_after_selection)
