@@ -663,6 +663,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/tags"),
         ("post", "/api/library/remove-missing"),
         ("put", "/api/library/auto-rescan"),
+        ("put", "/api/library/advanced-length"),
         ("put", "/api/time-settings"),
         ("put", "/api/public-settings"),
     ],

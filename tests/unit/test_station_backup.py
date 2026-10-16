@@ -1351,8 +1351,10 @@ def test_stereo_tool_keys_and_program_stay_out_of_backups(tmp_path: Path) -> Non
     _fill(cfg)
     key = "<STEREO-TOOL-BACKUP-SECRET-1234>"
     setup.save_license(setup.install_license_path(cfg.index.index_dir), key)
-    setup.save_license(setup.station_license_path((cfg.index.stations_dir / "default")), key)
-    setup.save_license(setup.station_license_path(_station_dir(cfg, "nightowl")), key)
+    setup.save_station_license(cfg.index.stations_dir / "default", key)
+    # An install not yet upgraded still has the old file beside its secrets.json.
+    setup.save_station_license(_station_dir(cfg, "nightowl"), key)
+    setup.old_station_license_path(_station_dir(cfg, "nightowl")).write_text(key, "ascii")
     program = setup.managed_path(cfg.index.index_dir)
     program.parent.mkdir(parents=True)
     program.write_bytes(b"\x7fELF stereo tool program bytes")
@@ -1362,7 +1364,11 @@ def test_stereo_tool_keys_and_program_stay_out_of_backups(tmp_path: Path) -> Non
     with zipfile.ZipFile(archive) as opened:
         names = opened.namelist()
         contents = b"".join(opened.read(name) for name in names)
-    assert not [name for name in names if ".stereo-tool-license" in name or "tools/" in name]
+    assert not [
+        name
+        for name in names
+        if ".stereo-tool-license" in name or "secrets.json" in name or "tools/" in name
+    ]
     assert key.encode() not in contents
     assert b"stereo tool program bytes" not in contents
 

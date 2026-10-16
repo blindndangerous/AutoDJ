@@ -29,13 +29,10 @@ def renderer(monkeypatch: pytest.MonkeyPatch) -> player_mod.Player:
         "short": np.full((100, 2), 0.3, np.float32),
         "empty": np.zeros((0, 2), np.float32),
     }
-    monkeypatch.setattr(
-        player_mod, "load_stereo", lambda path, _sr, _max_seconds: audio[Path(path).stem]
-    )
+    monkeypatch.setattr(player_mod, "load_stereo", lambda path, _sr: audio[Path(path).stem])
     p = player_mod.Player.__new__(player_mod.Player)
     p._cfg = MagicMock()
     p._cfg.playback.crossfade_seconds = 2.0
-    p._cfg.playback.server_max_track_minutes = 15.0
     p._cfg.playback.loudness_processing = "off"
     p._apply_replaygain = lambda audio_in, _path: audio_in
     p._ensure_dj_cache = lambda: None

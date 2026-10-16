@@ -30,6 +30,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
+import { showStaticText } from "./modules/beets-paths.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
 import { installShowsPanel } from "./modules/shows-panel.js";
@@ -814,6 +815,9 @@ function applyState(s, { announceTrack = true } = {}) {
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
   }
+  // Beets' songs matching none of the library's (#386): static text under
+  // Up Next, so a problem that lasts is found there and never announced.
+  showStaticText(document.getElementById("library-problem"), s.library_problem || "", true);
   // Shown under the Stereo Tool preset in Settings; the preset still plays.
   const presetWarning = document.getElementById("stereo-preset-warning");
   if (presetWarning) {

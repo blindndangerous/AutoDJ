@@ -237,6 +237,11 @@ def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
     return value
 
 
+#: The song length limit for server playout, gone since tracks of any length
+#: play (#391).  Station migration drops it from saved station settings.
+RETIRED_PLAYBACK_KEY = "server_max_track_minutes"
+
+
 def _warn_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[str]) -> None:
     """Warn about config keys this version does not recognize.
 
@@ -450,23 +455,16 @@ class PlaybackConfig(_Section):
     # Server mix only: time a liner due at a track start to end just
     # before the incoming vocal ("hitting the post").
     liners_talk_up: bool = False
-    # Server-side mixing (--server-audio and --stream) decodes each track
-    # whole, at about 21 MB per minute, and holds a few such buffers at
-    # once (the playing track, the next one, and the render in progress).
-    # Longer tracks are skipped with a log line so a one-hour mix cannot
-    # exhaust a small machine's memory.  Browser playback has no limit.
-    server_max_track_minutes: float = 15.0
 
     def __post_init__(self) -> None:
         """Coerce the TOML values and range-check them.
 
         Raises:
-            TypeError: If ``server_max_track_minutes`` is not a number.
+            TypeError: If ``music_speed_percent`` is not a number.
             ValueError: If ``crossfade_seconds`` or ``fade_in_seconds`` is
                 outside 0-20, ``pick_temperature`` or a liner trigger is
-                negative, ``pick_top_k`` is below 1, a choice
-                is not one of its options, or ``server_max_track_minutes``
-                is outside 1-600.
+                negative, ``pick_top_k`` is below 1, or a choice
+                is not one of its options.
         """
         for name in ("crossfade_seconds", "fade_in_seconds"):
             seconds = float(getattr(self, name))
@@ -487,14 +485,6 @@ class PlaybackConfig(_Section):
         self.repeat_rules = RepeatSettings.model_validate(
             ignore_unknown_repeat_keys(self.repeat_rules)
         )
-        max_minutes = self.server_max_track_minutes
-        if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
-            raise TypeError("playback.server_max_track_minutes must be a number")
-        if not 1 <= max_minutes <= 600:
-            raise ValueError(
-                f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
-            )
-        self.server_max_track_minutes = float(max_minutes)
         self.discovery_every = _optional(int, self.discovery_every)
         if self.discovery_every is not None and self.discovery_every < 1:
             # Every pick divides the track number by it once Discovery is on.
@@ -2455,7 +2445,7 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
         again.
     """
     from autodj.fsutil import atomic_write
-    from autodj.secret_files import write_private_file
+    from autodj.secret_files import update_private_json, write_private_file
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
 
     config_path = Path(cfg.config_path) if cfg.config_path is not None else None
@@ -2640,6 +2630,10 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
         if "liner_upload_max_mib" not in station and old_liner_mib is not None:
             station["liner_upload_max_mib"] = old_liner_mib
         table["station"] = station
+        playback = table.get("playback")
+        if isinstance(playback, Mapping) and RETIRED_PLAYBACK_KEY in playback:
+            # Tracks of any length play now (#391): the old limit is dropped.
+            table["playback"] = {k: v for k, v in playback.items() if k != RETIRED_PLAYBACK_KEY}
         if slug == DEFAULT_SLUG:
             time_checks = table.get("time_checks", {})
             if isinstance(time_checks, Mapping) and not time_checks.get("clips_folder"):
@@ -2697,11 +2691,19 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
                 changed = True
             if isinstance(secret_stream, dict) and not secret_stream:
                 secrets.pop("stream", None)
-            if secrets and not paths.secrets.exists():
-                write_private_file(
-                    paths.secrets, json.dumps({"version": 1, **secrets}, indent=2) + "\n"
-                )
-                changed = True
+            if secrets:
+
+                def add(document: dict[str, Any], secrets: dict[str, Any] = secrets) -> bool:
+                    # A secrets.json holding only a Stereo Tool key has none of these yet.
+                    if any(key in document for key in ("stream", "webhooks")):
+                        return False
+                    document.update(secrets)
+                    return True
+
+                try:
+                    changed = update_private_json(paths.secrets, add) or changed
+                except ValueError as exc:
+                    logger.error("Did not move the secrets of [stations.%s]: %s", slug, exc)
         if slug == DEFAULT_SLUG and cfg.legacy_relay_environment and paths.relays.exists():
             try:
                 relay_document = json.loads(paths.relays.read_text(encoding="utf-8"))
@@ -2731,18 +2733,25 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
 
 
 def _read_secrets(path: Path) -> dict[str, Any]:
-    """A station's secrets.json, without its version; empty when it has none."""
+    """A station's secrets.json, without its version; empty when it has none.
+
+    Its Stereo Tool key (``stereo_tool``) is not a station setting and is left
+    out: :mod:`autodj.stereotool_setup` reads it.
+    """
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     if not isinstance(document, dict) or document.pop("version", None) != 1:
         raise ValueError(f"{path.name} needs version 1")
+    document.pop("stereo_tool", None)
     stream = document.get("stream", {})
     if set(document) - {"stream", "webhooks"} or (
         not isinstance(stream, dict) or set(stream) - {"listener_user", "listener_password"}
     ):
-        raise ValueError(f"{path.name} holds only listener_user, listener_password and webhooks")
+        raise ValueError(
+            f"{path.name} holds only listener_user, listener_password, webhooks and stereo_tool"
+        )
     return document
 
 

@@ -45,6 +45,13 @@ _POINT_SOURCES = {"auto", "lyrics", "analysis", "user", "imported"}
 # far over is moved onto its limit instead of rejected; the epsilon absorbs
 # float error in the rounded values.
 _CUE_SLACK = 0.01 + 1e-6
+#: Songs longer than this many minutes are left out of the advanced analysis
+#: (slow, and memory-heavy for an hour-long mix) until the Library tools page
+#: saves another value; 0 analyses every length.
+ADVANCED_MAX_MINUTES = 15
+ADVANCED_MAX_MINUTES_KEY = "advanced_max_minutes"
+#: The largest value the page accepts: ten hours.
+ADVANCED_MAX_MINUTES_LIMIT = 600
 # The columns a tag edit from Track info may change (LibraryCatalog.retag).
 _RETAG_FIELDS = frozenset({"title", "artist", "album", "genre", "year", "bpm", "key", "mode"})
 # Fields set by hand in Track info that analysis keeps (catalog_entries.user_tags).
@@ -1272,8 +1279,23 @@ class LibraryCatalog:
             )
             return [(row[0], IndexEntry(*tuple(row)[1:])) for row in rows]
 
-    def _unembedded_paths(self, *, ordered: bool) -> Iterator[str]:
-        """Yield music paths with no vector under an advanced, non-liner source."""
+    def advanced_max_minutes(self) -> int:
+        """Longest song, in minutes, the advanced analysis takes; ``0`` takes every length.
+
+        Saved from the Library tools page; :data:`ADVANCED_MAX_MINUTES`
+        until it is.
+        """
+        value = self.get_setting(ADVANCED_MAX_MINUTES_KEY, ADVANCED_MAX_MINUTES)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return ADVANCED_MAX_MINUTES
+        return value
+
+    def _unembedded_paths(self, *, ordered: bool, too_long: bool = False) -> Iterator[str]:
+        """Yield music paths with no vector under an advanced, non-liner source.
+
+        Songs longer than :meth:`advanced_max_minutes` are left out, or,
+        with *too_long*, are the only ones yielded.
+        """
         with self._lock:
             db = self._db()
             sources = db.execute("SELECT path,kind,recursive,advanced FROM catalog_sources")
@@ -1285,21 +1307,40 @@ class LibraryCatalog:
                     advanced.append((_prefix(root), bool(recursive)))
             if not advanced:
                 return
+            limit = self.advanced_max_minutes() * 60.0
+            if too_long and not limit:
+                return
+            # A song of unknown length (0) is not known to be too long.
+            length = (
+                ""
+                if not limit
+                else " AND e.length>?"
+                if too_long
+                else " AND (e.length<=? OR e.length<=0)"
+            )
             order = " ORDER BY e.path" if ordered else ""
             for (path,) in db.execute(
-                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed ordering fragment
-                "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + order
+                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed fragments
+                "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + length + order,
+                (limit,) if limit else (),
             ):
                 if _covered_by(path, advanced) and not _covered_by(path, liner):
                     yield path
 
     def unembedded_paths(self) -> list[str]:
-        """Paths of music records with no vector under an advanced, non-liner source."""
+        """Paths of music records with no vector under an advanced, non-liner source.
+
+        Songs longer than :meth:`advanced_max_minutes` are left out.
+        """
         return list(self._unembedded_paths(ordered=True))
 
     def unembedded_count(self) -> int:
         """Count pending music without sorting or materializing its paths."""
         return sum(1 for _ in self._unembedded_paths(ordered=False))
+
+    def too_long_for_analysis_count(self) -> int:
+        """Count songs left out of the advanced analysis for their length."""
+        return sum(1 for _ in self._unembedded_paths(ordered=False, too_long=True))
 
     def unembedded_music(
         self, *, limit: int | None = None, exclude: Collection[str] = ()
