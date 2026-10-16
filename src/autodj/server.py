@@ -93,7 +93,8 @@ from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
 from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
-from autodj.config import AdsConfig, BreaksConfig
+from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
+from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import (
@@ -659,6 +660,13 @@ class LibraryDjAnalysisBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     enabled: StrictBool
+
+
+class LibraryAdvancedLengthBody(BaseModel):
+    """Longest song the advanced analysis takes, in minutes; 0 takes every length."""
+
+    model_config = ConfigDict(extra="forbid")
+    minutes: StrictInt = Field(ge=0, le=ADVANCED_MAX_MINUTES_LIMIT)
 
 
 class LibraryRemoveMissingBody(BaseModel):
@@ -1228,6 +1236,12 @@ def create_app(
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
@@ -2208,6 +2222,36 @@ def create_app(
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @station_router.get("/public-settings")
+    async def api_public_settings(request: Request) -> dict[str, Any]:
+        return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
+
+    @station_router.put("/public-settings")
+    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> Any:
+        try:
+            return await asyncio.to_thread(
+                stations.save_public_settings, _settings_slug(request), body
+            )
+        except (TypeError, ValueError) as exc:
+            detail = str(exc)
+            if detail.startswith("player_page.embed_origins"):
+                if detail.startswith("player_page.embed_origins entry "):
+                    site = detail.removeprefix("player_page.embed_origins entry ").rsplit(
+                        " must be an HTTP(S) origin", 1
+                    )[0]
+                    detail = (
+                        f"Sites allowed to embed: {site} is not an http:// or https:// site "
+                        "address, such as https://radio.example.net."
+                    )
+                elif "allows at most" in detail:
+                    detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
+                else:
+                    detail = "Sites allowed to embed: enter one site per line."
+                return JSONResponse(
+                    status_code=400, content={"detail": detail, "field": "embed_origins"}
+                )
+            raise HTTPException(status_code=400, detail=detail) from exc
+
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
         library = _catalog_library()
@@ -2227,6 +2271,16 @@ def create_app(
     async def api_library_set_dj_analysis(body: LibraryDjAnalysisBody) -> dict[str, bool]:
         await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
         return {"enabled": body.enabled}
+
+    @app.get("/api/library/advanced-length")
+    async def api_library_advanced_length() -> dict[str, int]:
+        """The advanced analysis length cutoff in minutes; 0 analyses every length."""
+        return {"minutes": await asyncio.to_thread(_catalog_library().advanced_max_minutes)}
+
+    @app.put("/api/library/advanced-length")
+    async def api_library_set_advanced_length(body: LibraryAdvancedLengthBody) -> dict[str, int]:
+        await asyncio.to_thread(_catalog_library().set_advanced_max_minutes, body.minutes)
+        return {"minutes": body.minutes}
 
     @app.get("/api/library/missing")
     async def api_library_missing_preview() -> dict:
@@ -2935,6 +2989,9 @@ def serve(
     import faiss
 
     from autodj.config import StationSpec, validate_server_exposure
+    from autodj.stereo import configure_spill_dir
+
+    configure_spill_dir(cfg.index.index_dir)
 
     # One exact search per pick: OpenMP's thread pool makes it slower (27 ms
     # on one thread against 41 ms on four, measured on 77k tracks) and

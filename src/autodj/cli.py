@@ -144,6 +144,9 @@ def _load_cfg_or_exit(
             cfg = load_config(config_path)
         if move_station_tables(cfg):
             cfg = load_config(config_path)
+        from autodj.stereo import configure_spill_dir
+
+        configure_spill_dir(cfg.index.index_dir)
         if early is not None and isinstance(cfg.index.index_dir, Path):
             handler = _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
             if handler is not None:

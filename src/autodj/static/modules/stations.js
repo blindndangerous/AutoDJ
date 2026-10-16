@@ -29,6 +29,7 @@ export const STATION_ROUTES = Object.freeze([
   "/stereo-tool-presets",
   "/time-settings",
   "/station-settings",
+  "/public-settings",
   "/nowplaying",
   "/history",
   "/history/export",

@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from .stereo import SAMPLE_RATE
+from .stereo import SAMPLE_RATE, audio_buffer
 
 
 @dataclass(frozen=True)
@@ -261,7 +261,8 @@ def render_handoff(
     chunk_start = min(max(start_offset, start_frame), incoming_frame)
 
     def outgoing_segment(first: int, last: int) -> np.ndarray:
-        result = np.zeros((max(0, last - first), 2), dtype=np.float32)
+        # A long track's chunk goes to a mapped file, not ordinary memory.
+        result = audio_buffer(max(0, last - first))
         source_end = min(last, end_frame)
         copy_end = min(source_end, fade_start)
         if copy_end > first:

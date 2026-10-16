@@ -2,17 +2,20 @@
 
 Holds the paths of the paired-devices database, the machine-token database
 and the saved access token,
-and the private-file helpers :mod:`autodj.lan` uses for the token.
+and the private-file helpers :mod:`autodj.lan` uses for the token and
+:mod:`autodj.stereotool_setup` uses for a station's ``secrets.json``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sys
 import tempfile
+import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -199,3 +202,58 @@ def load_or_create_secret(
         value = secrets.token_urlsafe(32)
         write_secret(path, value, error=error, what=what)
     return value
+
+
+#: Held while a private JSON file is read, changed and written again, so two
+#: changes to one station's secrets.json in this process never undo each other.
+private_json_lock = threading.RLock()
+
+
+def read_private_json(path: Path) -> dict[str, Any]:
+    """The version 1 JSON object at *path*, without ``version``; empty when there is no file.
+
+    Raises:
+        OSError: The file is there but cannot be read.
+        ValueError: The file does not hold a version 1 JSON object.  The
+            message names the file only, never what it holds.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except UnicodeDecodeError:
+        raise ValueError(f"{path.name} is not text") from None
+    try:
+        document = json.loads(text)
+    except ValueError:
+        raise ValueError(f"{path.name} is not valid JSON") from None
+    if not isinstance(document, dict) or document.pop("version", None) != 1:
+        raise ValueError(f"{path.name} needs version 1")
+    return document
+
+
+def update_private_json(path: Path, change: Callable[[dict[str, Any]], bool]) -> bool:
+    """Read the version 1 JSON object at *path*, let *change* edit it, and write it back.
+
+    *change* returns whether it changed anything; only then is the file
+    written, with :func:`write_private_file`, so everything else in it is
+    kept.  A file left with nothing but its version is deleted.  The whole
+    read, change and write happens under :data:`private_json_lock` in this process.
+
+    Returns:
+        Whether the file changed.
+
+    Raises:
+        OSError: The file cannot be read, written or deleted.
+        ValueError: The file is there but does not hold a version 1 JSON
+            object; it is left as it is.
+    """
+    with private_json_lock:
+        document = read_private_json(path)
+        if not change(document):
+            return False
+        if document:
+            write_private_file(path, json.dumps({"version": 1, **document}, indent=2) + "\n")
+        else:
+            path.unlink(missing_ok=True)
+        return True

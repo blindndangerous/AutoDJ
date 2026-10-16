@@ -140,6 +140,62 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("announces import completion once after running", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let running = true;
+    const request = vi.fn(async () => ({ folders: [], import: { running }, tracks_ready: 2, tracks_indexed: 1 }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const status = document.getElementById("source-folders-status");
+    expect(status.textContent).toBe("");
+    running = false;
+    await controls.refresh();
+    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 indexed."));
+    const changes = [];
+    const observer = new window.MutationObserver((records) => changes.push(...records));
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+    await controls.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    observer.disconnect();
+    expect(changes).toHaveLength(0);
+  });
+
+  it("reads a point in an hour-long mix typed as hours:minutes:seconds (#391)", () => {
+    expect(parsePointTime("1:02:05.5")).toBe(3725.5);
+    expect(parsePointTime("75:30")).toBe(4530);
+    expect(parsePointTime(formatPointTime(4530))).toBe(4530);
+    expect(() => parsePointTime("1:60:00")).toThrow("Enter seconds, minutes:seconds or hours:minutes:seconds, for example 1:05:00");
+  });
+
+  it("counts import errors in the summary and lists them in a details list that stays open (#391)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let errors = ["C:/music/a.flac: could not decode", "C:/music/b.mp3: could not decode"];
+    const request = vi.fn(async (url) => url === "/api/library/folders" ? {
+      folders: [], import: { running: false, errors }, tracks_ready: 1204, tracks_indexed: 1100,
+    } : {});
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const progress = document.getElementById("source-folders-progress");
+    const list = document.getElementById("source-folders-errors");
+    expect(progress.textContent).toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 indexed.");
+    expect(progress.textContent).not.toContain("a.flac");
+    expect(list.tagName).toBe("DETAILS");
+    expect(list.hidden).toBe(false);
+    expect(list.querySelector("summary").textContent).toBe("Import errors (2)");
+    expect([...list.querySelectorAll("li")].map((item) => item.textContent)).toEqual(errors);
+    list.open = true;
+    const first = list.querySelector("li");
+    await controls.refresh();
+    expect(list.open).toBe(true);
+    expect(list.querySelector("li")).toBe(first);
+    errors = [];
+    await controls.refresh();
+    expect(list.hidden).toBe(true);
+    expect(list.open).toBe(false);
+    expect(progress.textContent).toBe("1,204 tracks ready; 1,100 indexed.");
+    controls.destroy();
+  });
+
   it("removes surrounding quotes from pasted Windows paths and preserves literal Unix quotes", async () => {
     const request = vi.fn(async () => ({}));
     installLibraryFolders({ document, request });
@@ -515,7 +571,7 @@ describe("clock folder and points controls", () => {
     expect(document.querySelector('[data-point="overlap_start"]').value).toBe("0:03.75");
     document.querySelector('[data-point="start"]').value = "invalid";
     document.querySelector('[data-set-current="overlap_start"]').click();
-    expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
+    expect(document.getElementById("points-status").textContent).toContain("Enter seconds, minutes:seconds or hours:minutes:seconds");
   });
 
   it("saves negative liner overlap as a song-relative delay and disables track preview controls", async () => {

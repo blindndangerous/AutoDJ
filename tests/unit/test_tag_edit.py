@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import mutagen
+import mutagen.mp3
 import numpy as np
 import pytest
 
