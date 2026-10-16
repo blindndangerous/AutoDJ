@@ -861,6 +861,7 @@
     #ln-file-list { list-style: none; }
     #ln-file-list li {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 0.5rem;
       padding: 0.3rem 0;
