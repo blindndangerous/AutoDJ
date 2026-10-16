@@ -1669,8 +1669,18 @@ The rules:
 A station keeps its state in `<index_dir>/stations/<slug>/`, the default station in
 `stations/default/`, all with the same file names: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
-`categories.json`, `liners/` and `profiles/`. Its plays are kept in the
-shared `library.db`.
+`categories.json`, `liners/` and `profiles/`. Each station's `station.db` holds its history,
+last-played values and clock setting independently of the library catalog.
+
+Startup imports existing station history and settings from `library.db`, including records for
+stations no longer configured. Each import commits with a completion marker, so interrupted imports
+can be retried without duplicating history or replacing newer station values. The legacy source is
+preserved. Track metadata, analysis and shared cue points stay in the library.
+
+Whole-installation backups snapshot station databases through SQLite, including committed WAL data.
+Restoring an older backup stages the station-data migration before replacing live files; a failed
+installation rolls back the database changes with the other restored files. Ledger-only folders
+for removed stations are included. This does not add an individual-station backup command.
 
 The index folder holds:
 
