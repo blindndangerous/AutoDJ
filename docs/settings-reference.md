@@ -1,8 +1,18 @@
 # Settings reference
 
-These defaults follow the configuration dataclasses in `src/autodj/config.py`. Values saved in the page override the same TOML settings for that station. Open **Settings** for daily changes; use `config.toml` for server and file settings that have no page control. Keep passwords and tokens in `config.local.toml` or the station's secrets file. Restart after changing a file unless a section says otherwise.
+These defaults follow the configuration dataclasses in `src/autodj/config.py`. Shared settings
+live in `config.toml`, with private shared values in `config.local.toml`. Each station's settings
+live under the `station` object in `index/stations/<slug>/station.json`. Settings saved in the
+page take precedence over that station's file values. Use **Settings** for controls the page
+provides. Restart AutoDJ after editing a station file unless a section says otherwise.
 
-The first station is `default`. Every station, including it, has a `stations/<slug>/station.json` definition. The library catalog is shared at `libraries/main/`; station settings and history live under `stations/<slug>/`, shared assets under `shared/`, and logs under `logs/`. Paths are relative to `index.index_dir` unless stated otherwise.
+The first station is `default`. Every station, including it, has a
+`stations/<slug>/station.json` definition. AutoDJ migrates old station tables from `config.toml`
+and `config.local.toml` once at startup, then ignores them. The library catalog is shared at
+`libraries/main/`. Station settings and history live under `stations/<slug>/`, shared assets
+under `shared/`, and logs under `logs/`. Paths are relative to `index.index_dir` unless stated
+otherwise. Each station's private `relays.json` holds its relays and passwords. Its private
+`secrets.json` holds listener credentials and webhooks.
 
 Each entry gives the accepted kind of value, its code default, and what it changes. A page label is shown in **bold**. A blank default means the setting is unset. For an optional value, blank generally lets AutoDJ use its fallback.
 
@@ -25,7 +35,7 @@ TOML section: `[index]`.
 
 ## Playback
 
-TOML section: `[playback]`.
+Station section: `playback` in `station.json`.
 
 - `crossfade_seconds`. Values: 0 to 20 seconds. Default: 3.0. Sets overlap for fixed transitions; cue based modes can choose their own fade length. **Crossfade seconds**.
 - `fade_in_seconds`. Values: 0 to 20 seconds. Default: 3.0. Fades in when playback starts. **Fade-in seconds**.
@@ -70,7 +80,7 @@ TOML section: `[playback]`.
 
 ## Djmix
 
-TOML section: `[djmix]`.
+Station section: `djmix` in `station.json`.
 
 - `beatmatch`. Values: true or false. Default: false. Matches tempo across song transitions. **Beatmatch**.
 - `beatmatch_max_stretch`. Values: 0 to 0.5 as a fraction. Default: 0.08. Limits tempo stretch; 0.08 is 8 percent. **Beatmatch stretch limit (percent)**.
@@ -87,14 +97,14 @@ TOML section: `[djmix]`.
 
 ## Transitions
 
-TOML section: `[transitions]`.
+Station section: `transitions` in `station.json`.
 
 - `effect`. Values: one of the Transition effect menu choices listed below. Default: `none`. Adds an effect to a crossfade; saved segue points do not use it. **Transition effect**.
 - `wet_mix`. Values: number from 0 to 1. Default: 1.0. Sets the effect level; 0 leaves a plain crossfade. **Transition effect level (percent)**.
 
 ## Replaygain
 
-TOML section: `[replaygain]`.
+Station section: `replaygain` in `station.json`.
 
 - `enabled`. Values: true or false. Default: false. Selects the older ReplayGain switch when loudness_processing is blank.
 - `target_db`. Values: number of decibels; the page accepts -30 to 0. Default: -14.0. Sets the target loudness for ReplayGain processing. **ReplayGain target loudness (decibels)**.
@@ -127,7 +137,7 @@ TOML section: `[server]`.
 
 ## Station
 
-TOML section: `[station]`.
+Station section: `station` in `station.json`.
 
 - `timezone`. Values: IANA time zone or blank. Default: blank. Sets this station's schedule time zone; blank uses the system time zone. **Time zone**.
 - `liner_upload_max_mib`. Values: whole number from 1 to 1024 MiB. Default: 50. Limits voice liner and cart uploads. **Maximum liner upload size (MiB)**.
@@ -142,27 +152,27 @@ TOML section: `[huggingface]`.
 
 ## Stream
 
-TOML section: `[stream]`.
+Station section: `stream` in `station.json`, except for listener credentials and relays.
 
 - `continuous`. Values: true or false. Default: false. Keeps the stream playing without listeners. **Keep playing without listeners**.
 - `bitrate`. Values: 128, 192, 256, or 320 kbps. Default: 320. Sets MP3 quality. **Quality**.
 - `idle_grace_seconds`. Values: 0 to 3600 seconds. Default: 30.0. Sets how long playback waits after the last listener leaves.
 - `max_listeners`. Values: whole number from 1 to 100. Default: 8. Limits listeners across all formats.
 - `max_listeners_per_address`. Values: whole number from 0 to 100. Default: 0. Limits connections from one address; 0 means unlimited. **Connections per address (0 for unlimited)**.
-- `listener_user`. Values: user name or empty string. Default: empty string. Sets an optional listener login with listener_password.
-- `listener_password`. Values: password or empty string. Default: empty string. Protects the stream when set with listener_user; store it as a secret.
+- `listener_user`. Values: user name or empty string. Default: empty string. Sets an optional listener login with listener_password. Stored under `stream` in this station's private `secrets.json`.
+- `listener_password`. Values: password or empty string. Default: empty string. Protects the stream when set with listener_user. Stored under `stream` in this station's private `secrets.json`.
 - `station_name`. Values: printable name up to 100 characters. Default: `AutoDJ`. Names the station in players and feeds. **Station name**.
 - `genre`. Values: printable text up to 255 characters. Default: empty string. Sets the genre sent to players. **Genre**.
 - `description`. Values: printable text up to 255 characters. Default: empty string. Sets the station description. **Description**.
 - `url`. Values: website URL up to 2048 characters. Default: empty string. Sets the station website sent to players. **Website URL**.
-- `relays`. Values: named relay definitions, up to 8. Default: empty set. Pushes the stream to external servers; relay fields follow below.
+- `relays`. Values: up to 8 relay definitions. Default: empty set. Pushes the stream to external servers. Stored in this station's private `relays.json`; fields follow below.
 - `aac_bitrate`. Values: 0, 64, 96, 128, 192, or 256 kbps. Default: 0. Adds an AAC stream; 0 turns it off. **AAC quality**.
 - `opus_bitrate`. Values: 0, 48, 64, 96, 128, or 192 kbps. Default: 0. Adds an Opus stream; 0 turns it off. **Opus quality**.
 - `stats_days`. Values: whole number from 0 to 3650. Default: 90. Keeps this many days of listener counts; 0 keeps none. **Days to keep statistics**.
 
 ## Recording
 
-TOML section: `[recording]`.
+Station section: `recording` in `station.json`.
 
 - `folder`. Values: folder path. Default: `recordings`. Stores broadcast MP3 recordings; recordings are outside normal backups.
 - `split`. Values: hour or show. Default: `hour`. Starts a new recording every clock hour or at show boundaries. **Start a new file**.
@@ -171,14 +181,14 @@ TOML section: `[recording]`.
 
 ## Nowplaying
 
-TOML section: `[nowplaying]`.
+Station section: `nowplaying` in `station.json`.
 
 - `show_next`. Values: true or false. Default: false. Shows the next song on public pages unless DMCA mode hides it. **Show the next song publicly**.
 - `history_limit`. Values: whole number from 0 to 20. Default: 5. Limits recent songs in the public feed.
 
 ## Requests
 
-TOML section: `[requests]`.
+Station section: `requests` in `station.json`. **Take listener requests** and the other controls in **Listener requests**, **Request settings** save changes for the selected station.
 
 - `enabled`. Values: true or false. Default: false. Opens the public listener request page. **Take listener requests**.
 - `approval`. Values: manual or auto. Default: `manual`. Requires an operator to approve requests or accepts eligible ones automatically. **Approval**.
@@ -197,7 +207,7 @@ TOML section: `[requests]`.
 
 ## Player Page
 
-TOML section: `[player_page]`.
+Station section: `player_page` in `station.json`. The current page has no control for these values.
 
 - `enabled`. Values: true or false. Default: false. Opens the public listening page.
 - `embed`. Values: true or false. Default: false. Opens an embeddable public player.
@@ -205,13 +215,13 @@ TOML section: `[player_page]`.
 
 ## Dmca
 
-TOML section: `[dmca]`.
+Station section: `dmca` in `station.json`. The current page shows DMCA status but has no switch for this value.
 
 - `enabled`. Values: true or false. Default: false. Applies US webcasting performance complement limits to picks and public next song display.
 
 ## Breaks
 
-TOML section: `[breaks]`.
+Station section: `breaks` in `station.json`.
 
 - `enabled`. Values: true or false. Default: false. Accepts DJ breaks on this station. **Take breaks on this station**.
 - `dj_placement`. Values: auto, talk_up, or standalone. Default: `auto`. Places DJ breaks over an intro or between songs. **Where a DJ break goes**.
@@ -228,7 +238,7 @@ TOML section: `[breaks]`.
 
 ## Ads
 
-TOML section: `[ads]`.
+Station section: `ads` in `station.json`.
 
 - `enabled`. Values: true or false. Default: false. Enables ad scheduling.
 - `max_upload_mb`. Values: whole number from 1 to 200 MB. Default: 20. Limits each uploaded ad spot.
@@ -237,14 +247,14 @@ TOML section: `[ads]`.
 
 ## Time Checks
 
-TOML section: `[time_checks]`.
+Station section: `time_checks` in `station.json`.
 
 - `enabled`. Values: true or false. Default: false. Lets the rule and schedule play spoken times. **Enable time checks**.
 - `clips_folder`. Values: folder path or blank. Default: blank. Chooses the recorded minute clip folder. **Recorded minute clips folder**.
 - `hour_format`. Values: 12 or 24. Default: `12`. Chooses spoken hour format. **Hour format**.
 - `intro_clip`. Values: clip name or blank. Default: blank. Plays before each time check. **Intro clip**.
 - `outro_clip`. Values: clip name or blank. Default: blank. Plays after each time check. **Outro clip**.
-- `tts_command`. Values: list of program arguments. Default: empty list. Runs an external text to speech command; configure it in TOML.
+- `tts_command`. Values: list of program arguments. Default: empty list. Runs an external text to speech command; configure it in `station.json`.
 - `rule`. Values: off or after_hour_song. Default: `off`. Plays only on demand or after the song crossing the hour. **When to play**.
 - `voice_packs`. Values: list of pack names. Default: empty list. Selects the packs used to speak time. **Voice packs**.
 - `pack_order`. Values: rotate or random. Default: `rotate`. Chooses among selected voice packs. **When several packs are ticked**.
@@ -261,11 +271,11 @@ In **Settings**, **Song picking**, each Tracks value counts intervening songs an
 
 ## Relays
 
-Each `[stream.relays.NAME]` table names one relay. Names use 1 to 32 letters, digits, hyphens, or underscores. The page controls are in **Settings**, **Stream**, **Relays**. A page saved relay list takes precedence over TOML.
+Each entry in the station's private `relays.json` names one relay. Names use 1 to 32 letters, digits, hyphens, or underscores. Change relays in **Settings**, **Stream**, **Relays**. Old TOML relay tables are migrated once at startup, then ignored.
 
 - `type`: Icecast, Shoutcast 1, or Shoutcast 2; required. **Server type**.
 - `host`: host name or IP address without a scheme or port; required. **Host**.
-- `password`: nonempty source password; required. Store it in `config.local.toml` or a station secret. **Source password**.
+- `password`: nonempty source password; required. Stored with the relay in private `relays.json`. **Source password**.
 - `port`: 1 to 65535 for Icecast, or 1 to 65534 for Shoutcast; default 8000. **Listener port**.
 - `mount`: Icecast path such as `/live`; default `/live` for Icecast. **Mount point**.
 - `stream_id`: positive whole number; default 1 for Shoutcast 2. **Stream ID**.
@@ -291,7 +301,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Stream**: on or off; default off. Saves the server mix as MP3 files.
 - **Approval** in **Listener requests**: manual or automatic; default manual. The request page is off until **Take listener requests** is on.
-- **Station name**, **Quality**, and other stream page controls map to the `[stream]` entries above.
+- **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
 
 ## Transition effect choices
 
@@ -299,11 +309,17 @@ The **Transition effect** choices are none, echo out, reverb tail, high-pass swe
 
 ## Station definitions
 
-The page creates `stations/<slug>/station.json` for every station, including `default`. A new named station starts stopped. The **Start from** choice is AutoDJ defaults or a saved station; copied settings exclude secrets, history, relays, and requests. **Also copy** can include Clockwheels, Schedule, and Carts. **Start with the server** defaults off for a new named station. Station IDs use up to 32 lower-case letters, digits, and hyphens. A named station can be edited while stopped.
+AutoDJ creates `stations/default/station.json` at startup. The page creates
+`stations/<slug>/station.json` for each new named station, which starts stopped. The **Start from**
+choice is AutoDJ defaults or a saved station; copied settings exclude secrets, history, relays,
+and requests. **Also copy** can include Clockwheels, Schedule, and Carts. **Start with the server**
+defaults off for a new named station. Station IDs use up to 32 lower-case letters, digits, and
+hyphens. A named station's saved settings and content can be edited while it is stopped. The
+default streams at `/stream.mp3` when streaming; named stations use `/<slug>.mp3`.
 
 ## Webhooks
 
-A `[[webhooks]]` entry sends a station event to another service. The default is no webhooks. Up to 10 entries are accepted; keep their URLs in the station's secret settings when they contain credentials.
+Each entry in the station's private `secrets.json` `webhooks` list sends a station event to another service. The default is no webhooks. Up to 10 entries are accepted. Legacy webhook entries in `config.local.toml` are migrated once at startup, then ignored.
 
 - `url`: required HTTP or HTTPS URL without user information. Names the receiver.
 - `format`: `generic` or `discord`; default `generic`. Chooses the payload format.
@@ -311,7 +327,7 @@ A `[[webhooks]]` entry sends a station event to another service. The default is 
 
 ## Presets
 
-`[presets.NAME]` defines a named tempo preset. The default is no custom presets. Choose one with **Preset** in **Settings**, **Song picking**. A preset needs a target BPM, both start and end BPM, or a slide curve.
+`presets.NAME` in `station.json` defines a named tempo preset. The default is no custom presets. Choose one with **Preset** in **Settings**, **Song picking**. A preset needs a target BPM, both start and end BPM, or a slide curve.
 
 - `bpm_target`: number or blank; default blank. Keeps the preset near one BPM. A slide uses it as the peak if `bpm_end` is blank.
 - `bpm_start`: number or blank; default blank. Sets the starting BPM of a linear or slide curve; a slide uses 80 when blank.

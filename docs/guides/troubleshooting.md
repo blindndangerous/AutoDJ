@@ -18,7 +18,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **Advanced analysis is slow.** This is normal for a large library on a processor. Check **Library jobs** and **Output** for progress. You can limit a first command-line run with `autodj index --limit 50`. A separate analysis worker can use another computer's GPU; see [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
-**A file moved or vanished.** Run **Rescan**. If the drive is missing, reconnect it first. After a clean scan, **Remove missing tracks** can remove records for files that are truly gone. The library retains play history separately from its catalog.
+**A file moved or vanished.** Run **Rescan**. If the drive is missing, reconnect it first. After a clean scan, **Remove missing tracks** can remove records for files that are truly gone. Each station keeps its play history apart from the shared catalog.
 
 ## Playback and sound
 
@@ -30,7 +30,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Streaming
 
-**The stream is missing.** Start AutoDJ with `serve --stream` or set `[station] output = "stream"` in `config.toml`, then restart. FFmpeg must be installed. Other named stations have their own streams at `/<station-id>.mp3`; the default station also uses `/stream.mp3`.
+**The stream is missing.** In **Settings**, **Stations**, set **Playback output** to **Radio stream** and press **Save station options**, then start the station. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
 
 **A player cannot connect.** Copy **Stream address** from **Settings**, **Stream** while the page is open through a network address. An address containing `127.0.0.1` works only on the AutoDJ computer. Check the firewall, the listener limit, any password, and address bans. A stopped station has no active stream.
 

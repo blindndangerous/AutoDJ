@@ -13,26 +13,18 @@ and macOS, install it yourself (see [Install AutoDJ](install.md)).
 
 ## Turn on the stream
 
-Choose one of these:
+For the selected station, open **Settings**, **Stations**. Under **Output for the selected station**,
+set **Playback output** to **Radio stream**, then press **Save station options**. The change takes
+effect when that station next starts. You can edit a named station while it is stopped.
 
-- Start AutoDJ with `--stream`, for example `./autodj serve --lan --stream` (on Windows,
-  `.\autodj.cmd serve --lan --stream`).
-- To make it permanent for the default station, add these lines to `config.toml` beside the launcher, then restart
-  AutoDJ:
-
-  ```toml
-  [station]
-  output = "stream"
-  ```
-
-- In Docker, put the same lines in the `config.toml` beside `compose.yaml`, then run
-  `docker compose up -d` again.
+For a one-time default stream, start AutoDJ with `--stream`, for example
+`./autodj serve --lan --stream` (on Windows, `.\autodj.cmd serve --lan --stream`).
 
 `--lan` lets other devices on your network reach AutoDJ. Without it, AutoDJ answers only on the
 computer it runs on, so nobody else can listen. The [Install guide](install.md#use-autodj-from-other-devices)
 explains LAN mode and pairing.
 
-Each running named station streams. The default station can use browser playback. See
+New named stations use stream output by default. The default station can use browser playback. See
 [Run several stations](several-stations.md).
 
 ## Find the stream address
@@ -40,11 +32,10 @@ Each running named station streams. The default station can use browser playback
 1. Open the web page and go to Settings, Stream.
 2. **Stream address** shows the address. Press **Copy address** to copy it.
 3. **Download playlist file (.m3u)** saves a small playlist file that holds the same address.
-   Some players prefer it.
 
-The default station's usual address ends in `/stream.mp3`, for example
+The default station's address ends in `/stream.mp3`, for example
 `http://radio.example.com:8080/stream.mp3`. A second station with the ID `nightowl` streams at
-`/nightowl.mp3`. The default station also has `/default.mp3`.
+`/nightowl.mp3`.
 
 An address with `localhost` or `127.0.0.1` works only on the AutoDJ computer. To share the
 stream, open the page through a network address and copy it again.
@@ -92,28 +83,31 @@ Anyone who can reach the AutoDJ address can listen. These controls limit that:
   The **Bans** list shows each ban, and you can remove it there.
 - The Listeners list shows who is connected now. Each listener has **Disconnect** and **Ban**
   buttons.
-- The total number of listeners, across every format, is limited to 8 by default. Change it with
-  `max_listeners` in the `[stream]` section of `config.toml` (from 1 to 100). Above the limit, a
-  new listener is turned away.
+- The total number of listeners, across every format, is limited to 8 by default. Set
+  `station.stream.max_listeners` in this station's `station.json` (from 1 to 100), then restart
+  AutoDJ. Above the limit, a new listener is turned away.
 
 ### Listener password
 
-You can make listeners type a user name and password. This is set in a file, not in the page,
-because it is a secret:
+You can make listeners type a user name and password. This is set in the selected station's
+private `secrets.json`, including for the default station:
 
-1. Open `config.local.toml` beside `config.toml` (create it if it is missing).
-2. Add:
+1. Open `index/stations/<station-id>/secrets.json` (create it if it is missing).
+2. Add the `stream` values to the version 1 document. Keep any `webhooks` list. For a new file,
+   use this JSON with your own password:
 
-   ```toml
-   [stream]
-   listener_user = "listener"
-   listener_password = "a long password you choose"
+   ```json
+   {
+     "version": 1,
+     "stream": {
+       "listener_user": "listener",
+       "listener_password": "a long password you choose"
+     }
+   }
    ```
 
-3. Restart AutoDJ.
+3. Keep the file readable only by the AutoDJ process owner. Restart AutoDJ.
 
-For a named station, put the same two keys in that station's `secrets.json`
-instead (see [Run several stations](several-stations.md#where-a-station-keeps-its-files)).
 Some players cannot send a password. Over plain HTTP, the password travels unencrypted.
 
 ## Relay to Icecast or Shoutcast
@@ -150,12 +144,10 @@ under the stream address. A relay that loses its connection keeps trying again o
 the station keeps playing. A station can have up to 8 relays. Two relays, on any stations, may
 not push to the same server and mount.
 
-### Relays in configuration files
-
-You can also describe relays in `config.toml`, with each password in `config.local.toml`, as
-`[stream.relays.<name>]` tables. The [Settings reference](../settings-reference.md#relays) lists
-every key. Once you save a relay in the page, AutoDJ keeps the whole relay list in the station's
-`relays.json` file and stops reading the relay tables in `config.toml`.
+AutoDJ saves each station's relays and source passwords in its private
+`index/stations/<station-id>/relays.json`. Use **Settings**, **Stream**, **Relays** to change them.
+Old relay tables are migrated once at startup, then ignored.
+The [Settings reference](../settings-reference.md#relays) lists the relay fields.
 
 ## Record the broadcast
 
@@ -187,8 +179,8 @@ feed** section of Settings, Stream.
 
 A public request page and a listening page are also available. Both are off by default. The
 request page is switched on in the **Listener requests** card in Queue & Search. The listening
-page and its embeddable version are switched on in `config.toml`; see `[player_page]` in the
-[Settings reference](../settings-reference.md#player-page).
+page and its embeddable version use the selected station's `player_page` settings in
+`station.json`; see the [Settings reference](../settings-reference.md#player-page).
 
 ## Related pages
 

@@ -117,14 +117,14 @@ back without analysing them again.
 ## Keep the library up to date
 
 - **Rescan** looks for new, changed and moved files in every folder. Files you moved inside your
-  registered folders keep their analysis, cue points and history.
+  registered folders keep their analysis and cue points. Each station keeps its own play history.
 - **Override with ID3 tags**, ticked before **Rescan**, reads the tags of every file again, not
   only files that changed. BPM and key values you set by hand, and your cue points, are kept.
 - **Automatic rescan every** runs Rescan on a timer, counted from the end of the last scan. Set
   **Hours** and **Minutes**, then press **Save**. The shortest interval is 5 minutes, and 0 hours
   and 0 minutes turns it off. It is off by default.
 - **Remove missing tracks** lists songs whose files are gone and removes them after you confirm.
-  Play history is kept. It works only after a clean scan, so a disconnected drive is not mistaken
+  Each station's play history is kept. It works only after a clean scan, so a disconnected drive is not mistaken
   for deleted music.
 
 If a whole folder is missing, for example because a network share is not mounted, AutoDJ simply

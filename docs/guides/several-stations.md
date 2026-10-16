@@ -23,11 +23,12 @@ Each station has its own:
 - live DJ accounts.
 
 The station AutoDJ starts with is the **default station**. Its configuration lives in
-`index/stations/default/station.json`; the main sections of `config.toml` supply its initial
-values. Every running named station streams, so the server needs FFmpeg once you start one.
+`index/stations/default/station.json`. Old station sections in `config.toml` are moved there
+once at startup, then ignored. New named stations use stream output by default. Stream output
+needs FFmpeg.
 
-You can add up to 8 stations besides the default one. Each running station mixes and encodes its
-own audio, so each one adds to the work the computer does.
+You can add up to 8 stations besides the default one. Each running stream station mixes and
+encodes its own audio, so each one adds to the work the computer does.
 
 ## Add a station
 
@@ -62,8 +63,8 @@ playing and how many people are listening. For a named station:
 - **Start or stop** starts or stops it now.
 
 The default station starts with the server. You can stop a named station and still select it
-to edit its saved settings. Its stream and public pages then say that it is off air. The default
-station cannot be stopped separately from the server.
+to edit its saved settings and content. Its stream is unavailable. Enabled public pages report
+that it is off air. The default station cannot be stopped separately from the server.
 
 ## Switch which station the page controls
 
@@ -89,7 +90,7 @@ Switch to the new station, then work through its settings as you did for the fir
 
 Replace `nightowl` with the station's ID. The default station uses the shorter form shown second.
 
-- Stream: `/nightowl.mp3` (default station: `/stream.mp3`, also `/default.mp3`). AAC and Opus end in `.aac` and
+- Stream: `/nightowl.mp3` (default station: `/stream.mp3`). AAC and Opus end in `.aac` and
   `.opus` when they are on.
 - Playlist file: `/nightowl.m3u` (default: `/stream.m3u`).
 - Status page: `/stations/nightowl/status` (default: `/status`).
@@ -140,12 +141,13 @@ A `secrets.json` that sets a listener password looks like this:
 }
 ```
 
-Restart AutoDJ after changing it. For the default station, the listener password goes in
-`config.local.toml` instead; see [Streaming and relays](streaming-and-relays.md#listener-password).
+Restart AutoDJ after changing the file. The default station uses its own `secrets.json` too; see
+[Streaming and relays](streaming-and-relays.md#listener-password).
 
 Stations from older versions that were written as `[stations.<id>]` tables in `config.toml` are
-moved into their own `station.json` the first time a newer AutoDJ starts. Their passwords move
-into `relays.json` and `secrets.json`. AutoDJ then asks you to remove the old tables.
+moved into their own `station.json` the first time a newer AutoDJ starts. Relay definitions and
+passwords move into `relays.json`; listener credentials and webhooks move into `secrets.json`.
+The old tables are then ignored. Remove them after checking the migrated files.
 
 ## Remove a station
 

@@ -146,10 +146,10 @@ the addresses are the server's own names and addresses.
 
 Some things to know:
 
-- Settings that live in files, such as `[station] output` or HTTPS certificates, go in
-  `config.toml` and `config.local.toml` beside `compose.yaml`. Give paths inside that folder
-  as relative paths, such as `ssl_certfile = "certs/fullchain.pem"`. Restart with
-  `docker compose up -d` after a change.
+- Shared server settings, such as HTTPS certificates, go in `config.toml` or
+  `config.local.toml` beside `compose.yaml`. Give paths inside that folder as relative paths,
+  such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose up -d` after a change.
+  Set a station's **Playback output** in **Settings**, **Stations**.
 - The image includes FFmpeg, and its analysis runs on the processor.
 - The music folder is mounted read-only, so AutoDJ cannot write tag edits into your files.
 - To use a [beets](https://beets.io/) library, set `AUTODJ_BEETS_PATH` to the folder that holds
