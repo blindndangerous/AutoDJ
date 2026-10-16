@@ -3293,6 +3293,17 @@
         <p id="source-folder-override-tags-help">Rescan refreshes populated file tags. Hand-edited BPM and key values and cue points are retained.</p>
         <button type="button" id="source-folder-rescan">Rescan</button>
         <label><input id="dj-analysis" type="checkbox" checked> Find beats and song structure</label>
+        <fieldset id="advanced-length-group">
+          <legend>Advanced analysis length</legend>
+          <div class="settings-row">
+            <label for="advanced-length">Longest song, in minutes</label>
+            <input type="number" id="advanced-length" min="0" max="600" step="1" value="15" inputmode="numeric" aria-describedby="advanced-length-help">
+          </div>
+          <p class="setting-desc" id="advanced-length-help">Longer songs play and get basic analysis only. 0 analyses every length.</p>
+          <!-- A refused value's message, linked to the field while it shows. -->
+          <p class="field-error" id="advanced-length-error" hidden></p>
+          <button type="button" id="advanced-length-save">Save</button>
+        </fieldset>
         <fieldset id="auto-rescan">
           <legend>Automatic rescan every</legend>
           <p class="setting-desc">Runs Rescan, without the ID3 tag override, this long after the last scan ends. 0 hours and 0 minutes turns it off; the shortest is 5 minutes.</p>

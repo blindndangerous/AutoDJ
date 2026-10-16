@@ -237,6 +237,11 @@ def _one_of(value: str, options: tuple[str, ...], field_name: str) -> str:
     return value
 
 
+#: The song length limit for server playout, gone since tracks of any length
+#: play (#391).  Station migration drops it from saved station settings.
+RETIRED_PLAYBACK_KEY = "server_max_track_minutes"
+
+
 def _warn_unknown_keys(section: str, data: Mapping[str, Any], known: Iterable[str]) -> None:
     """Warn about config keys this version does not recognize.
 
@@ -450,23 +455,16 @@ class PlaybackConfig(_Section):
     # Server mix only: time a liner due at a track start to end just
     # before the incoming vocal ("hitting the post").
     liners_talk_up: bool = False
-    # Server-side mixing (--server-audio and --stream) decodes each track
-    # whole, at about 21 MB per minute, and holds a few such buffers at
-    # once (the playing track, the next one, and the render in progress).
-    # Longer tracks are skipped with a log line so a one-hour mix cannot
-    # exhaust a small machine's memory.  Browser playback has no limit.
-    server_max_track_minutes: float = 15.0
 
     def __post_init__(self) -> None:
         """Coerce the TOML values and range-check them.
 
         Raises:
-            TypeError: If ``server_max_track_minutes`` is not a number.
+            TypeError: If ``music_speed_percent`` is not a number.
             ValueError: If ``crossfade_seconds`` or ``fade_in_seconds`` is
                 outside 0-20, ``pick_temperature`` or a liner trigger is
-                negative, ``pick_top_k`` is below 1, a choice
-                is not one of its options, or ``server_max_track_minutes``
-                is outside 1-600.
+                negative, ``pick_top_k`` is below 1, or a choice
+                is not one of its options.
         """
         for name in ("crossfade_seconds", "fade_in_seconds"):
             seconds = float(getattr(self, name))
@@ -487,14 +485,6 @@ class PlaybackConfig(_Section):
         self.repeat_rules = RepeatSettings.model_validate(
             ignore_unknown_repeat_keys(self.repeat_rules)
         )
-        max_minutes = self.server_max_track_minutes
-        if isinstance(max_minutes, bool) or not isinstance(max_minutes, int | float):
-            raise TypeError("playback.server_max_track_minutes must be a number")
-        if not 1 <= max_minutes <= 600:
-            raise ValueError(
-                f"playback.server_max_track_minutes must be between 1 and 600, got {max_minutes}"
-            )
-        self.server_max_track_minutes = float(max_minutes)
         self.discovery_every = _optional(int, self.discovery_every)
         if self.discovery_every is not None and self.discovery_every < 1:
             # Every pick divides the track number by it once Discovery is on.
@@ -2640,6 +2630,10 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
         if "liner_upload_max_mib" not in station and old_liner_mib is not None:
             station["liner_upload_max_mib"] = old_liner_mib
         table["station"] = station
+        playback = table.get("playback")
+        if isinstance(playback, Mapping) and RETIRED_PLAYBACK_KEY in playback:
+            # Tracks of any length play now (#391): the old limit is dropped.
+            table["playback"] = {k: v for k, v in playback.items() if k != RETIRED_PLAYBACK_KEY}
         if slug == DEFAULT_SLUG:
             time_checks = table.get("time_checks", {})
             if isinstance(time_checks, Mapping) and not time_checks.get("clips_folder"):

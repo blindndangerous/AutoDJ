@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -12,6 +13,54 @@ import pytest
 import soundfile as sf
 
 from autodj import eq, player, stereo
+
+
+def test_spill_uses_index_cache_and_cleans_stale_files(tmp_path, monkeypatch) -> None:
+    spill = tmp_path / "cache" / "spill"
+    spill.mkdir(parents=True)
+    stale = spill / "autodj-audio-stale"
+    stale.write_bytes(b"old")
+    monkeypatch.setattr(stereo, "_spill_dir", tmp_path / "old")
+    stereo.configure_spill_dir(tmp_path)
+    assert not stale.exists()
+    assert stereo._spill_dir == spill
+    with stereo._temporary_file() as handle:
+        assert handle.writable()
+    fresh = tmp_path / "fresh"
+    stereo.configure_spill_dir(fresh)
+    assert not (fresh / "cache" / "spill").exists()
+    with stereo._temporary_file():
+        assert (fresh / "cache" / "spill").is_dir()
+
+
+def test_spill_falls_back_only_when_index_cache_is_unwritable(tmp_path, monkeypatch) -> None:
+    blocked = tmp_path / "blocked"
+    blocked.write_bytes(b"file")
+    monkeypatch.setattr(stereo, "_spill_dir", blocked / "cache")
+    assert stereo._spill_location() is None
+    with stereo._temporary_file() as handle:
+        assert handle.writable()
+
+
+def test_non_windows_mapping_allocates_before_mmap(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(stereo, "_spill_dir", tmp_path / "spill")
+    monkeypatch.setattr(stereo, "os", SimpleNamespace(name="posix"))
+    with stereo._mapped(32) as mapping:
+        assert mapping[:] == bytes(32)
+
+    class FullDisk:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def write(self, _data):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(stereo, "_temporary_file", FullDisk)
+    with pytest.raises(OSError, match="disk full"):
+        stereo._mapped(32)
 
 
 def _tone(n: int = 4410, hz: float = 440.0, sr: int = 44100) -> np.ndarray:

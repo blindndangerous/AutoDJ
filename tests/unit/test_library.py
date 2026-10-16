@@ -114,8 +114,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
-    del kind, max_seconds, audio
+def fake_basic(path: Path, kind: str = "music", audio=None):
+    del kind, audio
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -337,7 +337,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music", max_seconds=None, audio=None):
+    def analyze(path, kind="music", audio=None):
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -526,12 +526,12 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     manager = manager_factory(music=music, processing="smooth")
     events = []
 
-    def basic(path, kind="music", max_seconds=None, audio=None):
+    def basic(path, kind="music", audio=None):
         events.append(("basic", path.name))
         if path == old_song:
             source_id = manager.catalog.add_source(new_folder)["id"]
             assert manager.start_scan({source_id})
-        return fake_basic(path, kind, max_seconds)
+        return fake_basic(path, kind)
 
     def measure(path, kind="music"):
         events.append(("loudness", path.name))
@@ -656,8 +656,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
-        del kind, max_seconds, audio
+    def short_track(path: Path, kind: str = "music", audio=None):
+        del kind, audio
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -738,7 +738,7 @@ def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
+    analyzed.assert_called_once_with(liner, kind="liner")
     points = manager.catalog.points(liner)
     assert points["segue"] == 160.0
     assert points["end"] == 180.0
@@ -775,7 +775,7 @@ def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
+    analyzed.assert_called_once_with(liner, kind="liner")
     assert manager.catalog.points(liner) == {
         "start": 20.0,
         "intro": 30.0,
@@ -1275,7 +1275,7 @@ def test_dj_backlog_finds_imported_cues_for_case_folded_catalog_path(manager_fac
             patch("autodj.dj_cues_import._default_search_paths", return_value=[]),
             patch("autodj.dj_meta.analyse_audio", return_value=DjMeta(analysed=True)),
         ):
-            manager._dj_analyse(Path(catalog_path), mono=np.zeros(22050 * 5, np.float32))
+            manager._dj_analyse(Path(catalog_path), np.zeros(22050 * 5, np.float32))
         meta = manager._dj_cache().get(catalog_path)
         assert any(abs(cue.time_s - 42.0) < 0.01 for cue in meta.cues)
     finally:
@@ -1505,6 +1505,8 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
     assert preview["ready"] is True
     assert preview["count"] == 1
     assert [item["title"] for item in preview["tracks"]] == ["gone"]
+    manager.set_advanced_max_minutes(0)
+    assert manager.missing_removal_preview()["token"] == preview["token"]
     with pytest.raises(ValueError, match="confirmation"):
         manager.remove_missing(preview["token"], confirmed=False)
     gone.write_bytes(b"returned")
@@ -1990,14 +1992,14 @@ def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_fa
     manager = manager_factory(music=music)
     listed = {}
 
-    def basic(path, kind="music", max_seconds=None, audio=None):
+    def basic(path, kind="music", audio=None):
         # Both songs are already listed, silent, when the first is decoded.
         for song in (good, bad):
             entry = manager.entry_for_path(song)
             listed[song.name] = entry is not None and entry.is_silent
         if path.name == "bad.flac":
             raise ValueError("not audio")
-        return fake_basic(path, kind, max_seconds)
+        return fake_basic(path, kind)
 
     with (
         patch(
@@ -2015,6 +2017,81 @@ def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_fa
     assert [error for error in errors if "Music" in error or "music" in error] == [
         next(error for error in errors if "bad.flac" in error)
     ]
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="FFmpeg is unavailable")
+def test_a_song_longer_than_the_old_limit_is_imported_without_errors(
+    manager_factory, tmp_path, monkeypatch
+):
+    """#391: a long mix is listed and analysed from its start and end, never refused."""
+    from autodj import processing
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    mix = music / "mix.flac"
+    t = np.arange(44100 * 4, dtype=np.float32) / 44100
+    tone = 0.2 * np.sin(2 * np.pi * 440 * t)
+    sf.write(mix, np.column_stack((tone, tone)), 44100)
+    # Four seconds count as a long track here.
+    monkeypatch.setattr(processing, "LONG_TRACK_SECONDS", 1.0)
+    monkeypatch.setattr(processing, "ANALYSIS_WINDOW_SECONDS", 0.5)
+    windows = []
+    real_read = processing.read_windows
+    monkeypatch.setattr(
+        processing, "read_windows", lambda *a, **k: windows.append(a) or real_read(*a, **k)
+    )
+    manager = manager_factory(music=music)
+    with (
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+    ):
+        manager.scan()
+    snapshot = manager.snapshot()
+    assert snapshot["import"]["errors"] == []
+    assert windows, "the long song was read for its ends, not decoded whole"
+    entry = manager.entry_for_path(mix)
+    assert entry is not None and not entry.is_silent
+    assert entry.length == pytest.approx(4.0, abs=0.01)
+    assert manager.catalog.points(mix)["end"] == pytest.approx(4.0, abs=0.01)
+
+
+def test_advanced_analysis_leaves_out_songs_over_the_length_cutoff(manager_factory, tmp_path):
+    """Long songs are not queued, not errors, and come back when the cutoff allows."""
+    music = tmp_path / "Music"
+    music.mkdir()
+    short, long = music / "song.flac", music / "mix.flac"
+    short.write_bytes(b"song")
+    long.write_bytes(b"mix")
+    manager = manager_factory(music=music)
+    for path, length in ((short, 180.0), (long, 62 * 60.0)):
+        entry = make_entry(path)
+        entry.length = length
+        manager.catalog.put_entry(entry)
+    catalog = manager.catalog
+    assert catalog.advanced_max_minutes() == 15
+    assert catalog.unembedded_paths() == [_path(short)]
+    assert [r["path"] for r in manager.analysis_pending()] == [_path(short)]
+    assert [r["path"] for r in manager.analysis_pending(force=True)] == [_path(short)]
+    snapshot = manager.snapshot()
+    assert snapshot["too_long_for_analysis"] == 1
+    assert snapshot["advanced_max_minutes"] == 15
+    assert snapshot["import"]["errors"] == []
+
+    manager._analysis_idle = ("remembered",)
+    generation = manager._scan_generation
+    manager.set_advanced_max_minutes(0)
+    # Looked for again at once, without waiting for a scan.
+    assert manager._analysis_idle is None and manager._scan_generation == generation
+    assert manager._analysis_started_generation is None
+    assert sorted(catalog.unembedded_paths()) == sorted([_path(short), _path(long)])
+    assert catalog.too_long_for_analysis_count() == 0
+    manager.set_advanced_max_minutes(90)
+    assert catalog.unembedded_count() == 2
+    manager.set_advanced_max_minutes(60)
+    assert catalog.unembedded_paths() == [_path(short)]
+    # A bad stored value falls back to the default.
+    catalog.set_setting("advanced_max_minutes", "lots")
+    assert catalog.advanced_max_minutes() == 15
 
 
 def test_library_snapshot_says_when_beets_songs_match_no_library_song(manager_factory, tmp_path):

@@ -747,6 +747,21 @@ class TestAnalyseOneTrack:
         ):
             assert _analyse_one_track(str(tmp_path / "x.flac")) is None
 
+    def test_short_decode_from_windows_is_reused(self, tmp_path: Path) -> None:
+        from autodj.indexer import _analyse_one_track
+
+        audio = np.ones((20, 2), np.float32)
+        expected = object()
+        with (
+            patch("autodj.processing.estimated_seconds", return_value=1000.0),
+            patch("autodj.processing.read_windows", return_value=audio),
+            patch("autodj.indexer._load_audio", side_effect=AssertionError("decoded twice")),
+            patch("autodj.dj_meta.analyse_audio", return_value=expected) as analyse,
+        ):
+            assert _analyse_one_track(str(tmp_path / "short.wav")) is expected
+        analyse.assert_called_once()
+        np.testing.assert_array_equal(analyse.call_args.args[0], audio)
+
 
 def _backfill_cfg(tmp_path: Path, *, throttle_ms: float = 0.0, import_cues: bool = False):
     from autodj.config import (
