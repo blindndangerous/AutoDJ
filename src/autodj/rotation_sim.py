@@ -187,6 +187,8 @@ class SimulationSource:
     clockwheel: tuple[Mapping[str, Any], Sequence[Any]] | None = None
     shows: Any = None
     action_interrupts: Mapping[str, str] | None = None
+    carts: Any = None
+    time_checks: Any = None
 
 
 #: The picker settings a run copies from the live player.

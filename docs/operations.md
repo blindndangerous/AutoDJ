@@ -3546,6 +3546,21 @@ Each row says in its Status column whether it is fixed or predicted:
 - Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
   would play, the row has length 0 and says why.
 
+Predicted songs also include song/artist intros and Matched intros rules, using the selected
+station's categories, play dates, cooldowns and liner precedence. Automatic liners use the
+same trigger rules as playback. Talk-ups overlap the song; clips that play before it move
+its start later. These predictions use isolated selection state, so opening the preview
+cannot consume an intro or liner reservation.
+
+Scheduled liners, carts and time checks appear as audio rows, alongside their timing markers.
+Carts overlay the music. Hard events that interrupt playback cut the predicted song; an event
+that waits within its configured allowance leaves the song intact. Automatic after-hour time
+checks appear at the next eligible song start. If a time check needs newly synthesized speech,
+its duration is unknown and the prediction stops with an explanation. Random choices and
+chance-based rules remain estimates; the live station may choose differently. A scheduled
+stream stop or return to listener-dependent automatic mode ends the prediction there.
+Unbooked voice tracks, live DJs and manual playback changes cannot be predicted.
+
 Backtiming goes to each fixed point in the span:
 
 - **Clockwheel restart**: the station restarts the clockwheel at the nearer song change, as it

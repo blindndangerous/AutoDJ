@@ -571,14 +571,14 @@ class PlayerBridge(LibraryAccess):
         """
         self.liner_scheduler = scheduler
         self.player.liner_scheduler = scheduler
-        from autodj.station_log import CURRENT_STATION, enter_station, thread_name
+        from autodj.station_log import CURRENT_STATION, enter_station, station_scope, thread_name
 
         # Its thread works for this station, so its log lines name it.
         self._liner_worker = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=thread_name("autodj-liner"),
             initializer=enter_station,
-            initargs=(CURRENT_STATION.get(),),
+            initargs=(CURRENT_STATION.get(), station_scope(CURRENT_STATION.get())),
         )
 
     def shutdown_liner_worker(self) -> None:

@@ -46,12 +46,15 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import lru_cache
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, Query, Request
 
 from autodj import timefmt
+from autodj.fsutil import file_signature
 from autodj.identity_map import attached
 from autodj.rotation_sim import (
     _PICKING_ACTIONS,
@@ -119,7 +122,9 @@ STATUS_WORDS = {
 }
 
 # The schedule's actions the dry run follows: the picking changes, and shows.
-_PREVIEW_ACTIONS = _PICKING_ACTIONS | _UNSIMULATED_ACTIONS | {"show"}
+_PREVIEW_ACTIONS = (
+    _PICKING_ACTIONS | _UNSIMULATED_ACTIONS | {"show", "liner", "play_cart", "time_check", "stream"}
+)
 
 BREAK_KINDS = {
     "dj": "DJ",
@@ -131,7 +136,8 @@ BREAK_KINDS = {
 
 NOTES = (
     "Predicted rows come from a dry run of the picker and change as real picks are made. "
-    "All times are estimates.",
+    "All times are estimates. Chance-based rules and random clip choices may differ on air. "
+    "Unbooked voice tracks, live DJs and manual playback changes cannot be predicted.",
 )
 
 NOTHING_PLAYING = "Nothing is playing, so there is nothing to time. Start playback first."
@@ -203,12 +209,13 @@ class Decided:
     last_rate: float = 1.0
     speed_signature: str = ""
     ad_heard: tuple[Any, ...] = ()
+    waiting: tuple[Item, ...] = ()
 
     def signature(self) -> str:
         """What is fixed, without the times: the same while nothing new is decided."""
         parts = [
             f"{item.kind}:{item.status}:{item.entry.path if item.entry is not None else item.label}"
-            for item in self.items
+            for item in (*self.items, *self.waiting)
         ]
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
         parts.append(f"speed:{self.speed_signature}")
@@ -241,6 +248,7 @@ def _preview_liner_group(
     *,
     outgoing_rate: float | None = None,
     incoming_rate: float | None = None,
+    voice: tuple[Any, dict[str, Any]] | None = None,
 ) -> tuple[list[tuple[Any, float, float]], float]:
     """Place cue-trimmed liner rows and return the incoming song's extra delay."""
     from autodj.playout import liner_chain_placement, liner_release_frames
@@ -259,8 +267,8 @@ def _preview_liner_group(
     frames = main_frames = fit_main_frames = 0
     release = 0.0
     ordinary = False
-    for entry in liners:
-        cues = player.saved_points(entry)
+    for entry in (*liners, *((voice[0],) if voice else ())):
+        cues = voice[1] if voice and entry is voice[0] else player.saved_points(entry)
         start = max(0.0, float(cues.get("start") or 0.0))
         end = min(float(entry.length or 0.0), float(cues.get("end") or entry.length or 0.0))
         first, last = round(start * sr), round(end * sr)
@@ -288,7 +296,9 @@ def _preview_liner_group(
         if cue == 0:
             fit_main_frames = max(fit_main_frames, main_frames)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
-        allow_outro = bool(record and record.get("allow_outro", False))
+        allow_outro = bool(record and record.get("allow_outro", False)) and not (
+            voice and entry is voice[0]
+        )
         chain.append((entry, offset, clip_frames, allow_outro))
         frames += clip_frames
 
@@ -1179,6 +1189,91 @@ def predict(
         )
 
 
+def _interrupt_at(source: SimulationSource, event: Any, at: float, handoff: float) -> float:
+    if event.action == "stream":
+        if event.params.get("state") == "start":
+            return handoff
+        return at if event.timing == "hard" else handoff
+    interrupts = (source.action_interrupts or {}).get(
+        event.action, "none" if event.action == "play_cart" else "before"
+    )
+    if event.timing == "hard" and interrupts != "none" and handoff - at > event.wait_seconds:
+        return at
+    return handoff
+
+
+def _scheduled_audio(
+    source: SimulationSource, player: Any, checks: Any, event: Any, at: float
+) -> Item | None:
+    """Read the same clip and play dates as the action, without running it."""
+    seconds = 0.0
+    label = event.name
+    if event.action == "liner":
+        worker = player.liner_scheduler
+        if worker is None or worker.refusal(event.params["name"], at) is not None:
+            return None
+        seconds = len(worker.decode(event.params["name"])) / SAMPLE_RATE
+        label = f"Scheduled liner: {label}"
+    elif event.action == "play_cart":
+        if source.carts is None:
+            return None
+        cart = source.carts.store.slot(int(event.params["page"]), int(event.params["slot"]))
+        if cart.dates().refusal(datetime.fromtimestamp(at, ZoneInfo(source.timezone)).date()):
+            return None
+        seconds = (
+            float(cart.duration)
+            if cart.duration is not None
+            else len(source.carts.decode(cart)) / SAMPLE_RATE
+        )
+        label = f"Cart: {cart.name}"
+    elif event.action == "time_check":
+        if checks is None:
+            return None
+        duration = checks.forecast_seconds(datetime.fromtimestamp(at, UTC), scheduled=True)
+        if duration is None:
+            raise PreviewError(f"the duration of time check {label} is not known yet")
+        seconds = duration
+        label = f"Time check: {label}"
+    if (
+        seconds > 0
+        and event.action in {"liner", "time_check"}
+        and player.liner_scheduler is not None
+    ):
+        with player.liner_scheduler._state():
+            player.liner_scheduler._fired_locked(at=at)
+    return Item("break", at, seconds, "predicted", label=label) if seconds > 0 else None
+
+
+def _before_interrupt(source: SimulationSource, decided: Decided, end: float) -> Decided:
+    """A hard event invalidates render-ahead after the song it interrupts."""
+    schedule = _Schedule(source.events, source.timezone, decided.now, _PREVIEW_ACTIONS)
+    for at, event in schedule.due(min(end, decided.handoff)):
+        song = next(
+            (
+                row
+                for row in decided.items
+                if row.kind == "song" and row.starts <= at < row.starts + row.seconds
+            ),
+            None,
+        )
+        if song is None or _interrupt_at(source, event, at, song.starts + song.seconds) != at:
+            continue
+        items = tuple(
+            replace(row, seconds=min(row.seconds, at - row.starts))
+            for row in decided.items
+            if row.starts < at
+        )
+        return replace(
+            decided,
+            items=items,
+            unplayed=tuple((entry, starts) for entry, starts in decided.unplayed if starts < at),
+            last=song.entry,
+            last_rate=song.playback_rate,
+            handoff=at,
+        )
+    return decided
+
+
 def _predict(
     source: SimulationSource,
     snapshot: PlayerSnapshot,
@@ -1201,6 +1296,17 @@ def _predict(
         return [], handoff, None
     current_rate = max(0.01, float(decided.last_rate or music_rate(source.player, current)))
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
+    live_intros = getattr(source.player, "matched_intros", None)
+    if live_intros is not None and getattr(source.player, "bus", None) is not None:
+        player.matched_intros = live_intros.snapshot()
+    # Decode each voice clip once per prediction, never render music or touch live caches.
+    player._load_voice_audio = lru_cache(maxsize=8)(player._load_voice_audio)  # type: ignore[method-assign]
+    live_liners = getattr(source.player, "liner_scheduler", None)
+    if live_liners is not None:
+        player.liner_scheduler = live_liners.snapshot(
+            clock=lambda: player._sim_now, wall_clock=lambda: player._sim_now, cfg=player._cfg
+        )
+    checks = source.time_checks.snapshot() if source.time_checks is not None else None
     heard = list(decided.ad_heard) or (
         getattr(source.ads, "heard_snapshot", lambda: [])() if source.ads is not None else []
     )
@@ -1212,13 +1318,20 @@ def _predict(
     state = player._state
     ledger = player._ledger
 
-    def record(entry: Any, at: float) -> None:
+    def record(entry: Any, at: float, *, track_start: bool = True) -> None:
         player._sim_now = at
         ledger.remember_play(entry.path, at)
         if entry.path in liners:
+            scheduler = player.liner_scheduler
+            if scheduler is not None and scheduler._planned_key:
+                planned = source.library.record_for_id(scheduler._planned_name)
+                if planned and planned["path"] == entry.path:
+                    scheduler.mark_planned_fired(scheduler._planned_key)
             return
         state.record_played(entry)
         state.track_number += 1
+        if track_start and player.liner_scheduler is not None:
+            player.liner_scheduler.on_track_start()
         player._previous_track = state.current_track
         state.current_track = entry
 
@@ -1235,9 +1348,11 @@ def _predict(
     schedule = _Schedule(source.events, source.timezone, decided.now, _PREVIEW_ACTIONS)
     shows = getattr(source, "shows", None)
     scheduled = getattr(shows, "scheduled", None) or {}
+    pending_events: list[tuple[float, Any]] = []
     # The songs of a scheduled show that has started, still to play.
     show_name = ""
     show_songs: list[Any] = []
+    waiting = deque(decided.waiting)
     found: list[Item] = []
     stopped: str | None = None
     songs = 0
@@ -1252,50 +1367,86 @@ def _predict(
         # As the station does: the pick reads the clock at the playing song's
         # start, and dayparting the hours at the next song's.
         player._sim_now = handoff - song_seconds(player, current, average) / current_rate
-        for _at, event in schedule.due(handoff):
+        pending_events.extend(schedule.due(handoff))
+        cut = min(
+            (_interrupt_at(source, event, at, handoff) for at, event in pending_events),
+            default=handoff,
+        )
+        if cut < handoff:
+            found = [
+                replace(row, seconds=min(row.seconds, cut - row.starts))
+                if row.starts < cut < row.starts + row.seconds
+                else row
+                for row in found
+                if row.starts < cut
+            ]
+            handoff = cut
+        due_events = [(at, event) for at, event in pending_events if at <= handoff]
+        pending_events = [(at, event) for at, event in pending_events if at > handoff]
+        for at, event in due_events:
+            if event.action == "stream":
+                state = event.params.get("state")
+                if state != "start":
+                    stopped = f"scheduled stream {state} changes whether the station is on air"
+                    break
+                continue
+            if event.action in {"liner", "play_cart", "time_check"}:
+                airs = at if event.timing == "hard" and event.action == "play_cart" else handoff
+                try:
+                    audio = _scheduled_audio(source, player, checks, event, airs)
+                except Exception as exc:
+                    stopped = f"scheduled audio {event.name} could not be predicted: {exc}"
+                    break
+                if audio is not None:
+                    found.append(audio)
+                continue
             if event.action == "show":
                 # As on the air: a show replaces the one before it.
                 show_name, entries = scheduled.get(str(event.params.get("show", "")), ("", ()))
                 show_songs = list(entries)
             else:
-                _apply_event(player, bridge, event)
-        if show_songs:
+                refusal = _apply_event(player, bridge, event)
+                if refusal and event.action in _UNSIMULATED_ACTIONS:
+                    stopped = f"scheduled event {event.name} cannot be predicted: {refusal}"
+                    break
+        if stopped:
+            break
+        added: tuple[tuple[Any, bool], ...] = ()
+        queued_row = None
+        while waiting and waiting[0].kind == "liner":
+            added += ((waiting.popleft().entry, True),)
+        if waiting:
+            queued_row = waiting.popleft()
+        from_show = queued_row is None and bool(show_songs)
+        if queued_row is not None:
+            entry = queued_row.entry
+        elif show_songs:
             entry = show_songs.pop(0)
             # As on the air: a song that would break a DMCA limit is skipped.
             limits = player._pick_context(at=handoff).complement
             if limits is not None and limits.broken(entry):
                 found.append(Item("skipped", handoff, 0.0, "skipped", entry, show_name))
                 continue
-            # An ad break due by now joins this song change too (#51).
-            while ads and ads[0].at <= handoff:
-                run = ads.popleft()
-                if run.seconds > 0:
-                    found.append(Item("break", handoff, run.seconds, "predicted", label=run.label))
-                    handoff += run.seconds
-            record(entry, handoff)
-            seconds = song_seconds(player, entry, average)
-            found.append(Item("song", handoff, seconds, "show", entry, show_name))
-            current, handoff = entry, handoff + seconds
-            songs += 1
-            continue
-        context = player._pick_context(at=handoff)
-        choice_base = _choice_key(player, current)
-        occurrence = choice_occurrences.get(choice_base, 0)
-        choice_occurrences[choice_base] = occurrence + 1
-        choice_key = f"{choice_base}:{occurrence}"
-        player._preview_preferred_path = preferred_choices.get(choice_key)  # type: ignore[attr-defined]
-        added: tuple[tuple[Any, bool], ...] = ()
-        try:
-            if player._cfg.playback.transition_mode == "saved_points":
-                entry, _mode, added, cursor, _key = player._choose_station_next(current, context)
-                player._pending_clock_cursor = cursor
-            else:
-                entry, _mode = player._choose_next(current, context)
-        except Exception as exc:
-            stopped = f"no song could be picked after {current.display_name}: {exc}"
-            break
-        if on_choice is not None:
-            on_choice(choice_key, entry.path)
+        else:
+            context = player._pick_context(at=handoff)
+            choice_base = _choice_key(player, current)
+            occurrence = choice_occurrences.get(choice_base, 0)
+            choice_occurrences[choice_base] = occurrence + 1
+            choice_key = f"{choice_base}:{occurrence}"
+            player._preview_preferred_path = preferred_choices.get(choice_key)  # type: ignore[attr-defined]
+            try:
+                if player._cfg.playback.transition_mode == "saved_points":
+                    entry, _mode, added, cursor, _key = player._choose_station_next(
+                        current, context, auto_liner=False
+                    )
+                    player._pending_clock_cursor = cursor
+                else:
+                    entry, _mode = player._choose_next(current, context)
+            except Exception as exc:
+                stopped = f"no song could be picked after {current.display_name}: {exc}"
+                break
+            if on_choice is not None:
+                on_choice(choice_key, entry.path)
         moment = handoff
         while ads and ads[0].at <= handoff:
             run = ads.popleft()
@@ -1315,8 +1466,39 @@ def _predict(
                         Item("break", moment, forecast.seconds, "predicted", label=forecast.label)
                     )
                     moment += forecast.seconds
+        intro = None
+        liner_key = ""
+        if player._cfg.playback.transition_mode == "saved_points":
+            breaks = (SimpleNamespace(kind="ad"),) if moment > handoff else ()
+            added, liner_key, intro = player._transition_voice(
+                current, entry, added, breaks, handoff
+            )
+        voice: tuple[Any, dict[str, Any]] | None = None
+        intro_label = intro.label if intro is not None else ""
+        if intro is not None:
+
+            def capture_voice(
+                _audio: Any,
+                cues: dict[str, Any],
+                length: float,
+                _allow_outro: bool,
+                chosen: Any = intro,
+            ) -> tuple[int, int]:
+                nonlocal voice
+                clip = SimpleNamespace(path=str(chosen.path), length=length)
+                voice = (clip, cues)
+                return 0, round((float(cues["segue"]) - float(cues["start"])) * SAMPLE_RATE)
+
+            points = player.saved_points(entry)
+            from autodj.player import _music_output_points
+
+            player._add_intro(
+                intro, _music_output_points(points, music_rate(player, entry)), capture_voice
+            )
+            if voice is None:
+                player.matched_intros.release((intro.intro_id,))
         next_rate = music_rate(player, entry)
-        if added and player._cfg.playback.transition_mode == "saved_points":
+        if (added or voice) and player._cfg.playback.transition_mode == "saved_points":
             rows, delay = _preview_liner_group(
                 player,
                 current,
@@ -1325,10 +1507,23 @@ def _predict(
                 moment,
                 outgoing_rate=current_rate,
                 incoming_rate=next_rate,
+                voice=voice,
             )
             for liner, starts, length in rows:
-                found.append(Item("liner", starts, length, "predicted", liner))
-                record(liner, starts)
+                if voice and liner is voice[0]:
+                    speech = float(voice[1]["segue"]) - float(voice[1]["start"])
+                    found.append(
+                        Item(
+                            "intro",
+                            starts,
+                            speech,
+                            "predicted",
+                            label=f"Matched intro: {intro_label}",
+                        )
+                    )
+                else:
+                    found.append(Item("liner", starts, length, "predicted", liner))
+                    record(liner, starts)
             moment += delay
         else:
             for liner, _queued in added:
@@ -1336,10 +1531,71 @@ def _predict(
                 found.append(Item("liner", moment, length, "predicted", liner))
                 record(liner, moment)
                 moment += length
-        record(entry, moment)
+        player._sim_now = moment
+        if liner_key and added and player.liner_scheduler is not None:
+            player.liner_scheduler.mark_planned_fired(liner_key)
+        scheduler = player.liner_scheduler
+        automatic = scheduler is not None and not scheduler._planner_mode()
+        points = player.saved_points(entry)
+        track = SimpleNamespace(
+            entry=entry,
+            start_offset=float(points.get("start", 0) or 0) * SAMPLE_RATE,
+            glide_in=None,
+            next_entry=None,
+            overlap_frames=0,
+        )
+        time_check = 0.0
+        if checks is not None and scheduler is not None:
+            now = datetime.fromtimestamp(moment, UTC)
+            checks.tick(now, True)
+            # A planned talk-up already on air leaves the announcement pending.
+            if not (liner_key and added):
+                duration = checks.forecast_seconds(now)
+                if duration is None:
+                    stopped = "the duration of the automatic time check is not known yet"
+                    break
+                time_check = duration
+                if duration > 0:
+                    cue = scheduler._intro_cue(track, round(duration * SAMPLE_RATE))
+                    starts = moment + (cue.frame / SAMPLE_RATE if cue is not None else 0)
+                    found.append(Item("break", starts, duration, "predicted", label="Time check"))
+        record(entry, moment, track_start=not automatic or time_check > 0)
+        if time_check > 0:
+            with scheduler._state():
+                scheduler._fired_locked(at=moment)
         current_rate = next_rate
         seconds = song_seconds(player, entry, average) / current_rate
-        found.append(Item("song", moment, seconds, "predicted", entry, playback_rate=current_rate))
+        if automatic:
+            until = min(moment + seconds, end)
+            upcoming_events = _Schedule(source.events, source.timezone, moment, _PREVIEW_ACTIONS)
+            until = min(
+                (
+                    _interrupt_at(source, event, at, until)
+                    for at, event in upcoming_events.due(until)
+                ),
+                default=until,
+            )
+            for at, name, length in scheduler.forecast(
+                moment, until, track=track, track_start=time_check <= 0
+            ):
+                found.append(
+                    Item("break", at, length, "predicted", label=f"Automatic liner: {name}")
+                )
+        found.append(
+            Item(
+                "song",
+                moment,
+                seconds,
+                queued_row.status
+                if queued_row is not None
+                else "show"
+                if from_show
+                else "predicted",
+                entry,
+                queued_row.label if queued_row is not None else show_name if from_show else "",
+                playback_rate=current_rate,
+            )
+        )
         current, handoff = entry, moment + seconds
         songs += 1
         time.sleep(_PICK_PAUSE_S)
@@ -1715,6 +1971,38 @@ def build_preview(
         decided = read_station(source.player, desk, now=now, show=_on_air_show(source))
     now = decided.now
     end = now + minutes * 60
+    # Queued songs are fixed choices, but their voice clips have not been rendered yet.
+    if (
+        getattr(source.player, "matched_intros", None) is not None
+        or getattr(source.player, "liner_scheduler", None) is not None
+    ):
+        first = next(
+            (i for i, row in enumerate(decided.items) if row.status in {"queued", "show"}), None
+        )
+        if first is not None:
+            tail = decided.items[first:]
+            previous = next(
+                (row for row in reversed(decided.items[:first]) if row.kind == "song"), None
+            )
+            if (
+                previous is not None
+                and all(row.status in {"queued", "show"} for row in tail)
+                and tail[-1].kind == "song"
+            ):
+                fixed = decided.items[:first]
+                keep = {(id(row.entry), row.starts) for row in fixed}
+                decided = replace(
+                    decided,
+                    items=fixed,
+                    waiting=tail,
+                    unplayed=tuple(
+                        (entry, at) for entry, at in decided.unplayed if (id(entry), at) in keep
+                    ),
+                    last=previous.entry,
+                    last_rate=previous.playback_rate,
+                    handoff=previous.starts + previous.seconds,
+                )
+    decided = _before_interrupt(source, decided, end)
     view: dict[str, Any] = {
         "station": source.station,
         "minutes": minutes,
@@ -1751,7 +2039,7 @@ def build_preview(
     )
     if on_prediction is not None:
         on_prediction(tuple(choices))
-    timeline = [*decided.items, *predicted]
+    timeline = sorted([*decided.items, *predicted], key=lambda item: item.starts)
     songs = [item for item in timeline if item.kind == "song"]
     # A skipped show song takes no time and opens no song change.
     changes = song_changes([item for item in timeline if item.kind != "skipped"])
@@ -2066,7 +2354,20 @@ class HourPreviews:
         catalog = getattr(getattr(player, "_library", None), "catalog", None)
         version_reader = getattr(catalog, "change_versions", None)
         versions = version_reader() if version_reader else None
-        categories = getattr(getattr(player, "_library", None), "categories", None)
+        library = getattr(player, "_library", None)
+        categories = (
+            library.categories_for(getattr(player, "station_paths", None))
+            if library is not None and hasattr(library, "categories_for")
+            else getattr(library, "categories", None)
+        )
+        intros = getattr(player, "matched_intros", None)
+        voice_files = []
+        for store in (intros, getattr(intros, "rules", None)):
+            if store is not None:
+                try:
+                    voice_files.append(file_signature(store.path))
+                except OSError:
+                    voice_files.append(None)
         category_signature = categories.cache_signature() if categories else None
         # The wall-clock handoff stays steady during playback but moves after a seek.
         signature = hashlib.sha256(
@@ -2083,6 +2384,7 @@ class HourPreviews:
                     source.events,
                     versions,
                     category_signature,
+                    voice_files,
                     getattr(source.ads, "revision", None),
                     source.shows.signature() if source.shows is not None else None,
                 )
@@ -2154,6 +2456,8 @@ def _source(station: Any) -> SimulationSource:
         timezone=station.timezone,
         liner_dates=station.paths.liner_dates,
         ads=getattr(station, "ads", None),
+        carts=getattr(station, "carts", None),
+        time_checks=getattr(station, "time_checks", None),
     )
 
 

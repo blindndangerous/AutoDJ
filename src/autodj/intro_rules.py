@@ -31,6 +31,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from datetime import date as Date
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -119,16 +120,20 @@ class IntroRules:
         day_at: Any,
         rng: random.Random,
         library: Callable[[], Any] | None = None,
+        paths: Any = None,
     ) -> None:
         self.path = path
         # The station's library, so the tick can warm folder pools.
         self.library = library
+        self.paths = paths
         # Unknown until the file is read: the first tick reads it.
         self._has_folders = True
         self._warmed_at = float("-inf")
         self._day_at = day_at
         self._rng = rng
         self._lock = threading.Lock()
+        self._frozen = False
+        self._snapshot_loading = False
         self._stamp: tuple[int, int, int] | None = None
         self._seen = False
         self._rules: dict[str, IntroRule] = {}
@@ -151,6 +156,8 @@ class IntroRules:
         return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
     def _load(self) -> dict[str, IntroRule]:
+        if self._frozen and not self._snapshot_loading:
+            return dict(self._rules)
         stamp = self._stat()
         if stamp is not None:
             self._seen = True
@@ -170,15 +177,20 @@ class IntroRules:
                 ):
                     raise ValueError("invalid intro rules document")
             except (ValueError, UnicodeError) as exc:
-                bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
-                try:
-                    self.path.replace(bad)
-                except OSError:
-                    logger.exception("Could not set aside invalid intro rules file %s", self.path)
-                    raise
-                logger.error(
-                    "Intro rules file %s was invalid (%s); saved as %s", self.path, exc, bad
-                )
+                if self._frozen:
+                    logger.warning("Intro rules file %s is invalid (%s)", self.path, exc)
+                else:
+                    bad = self.path.with_name(f"{self.path.name}.bad-{uuid.uuid4().hex[:8]}")
+                    try:
+                        self.path.replace(bad)
+                    except OSError:
+                        logger.exception(
+                            "Could not set aside invalid intro rules file %s", self.path
+                        )
+                        raise
+                    logger.error(
+                        "Intro rules file %s was invalid (%s); saved as %s", self.path, exc, bad
+                    )
                 stamp = None
             else:
                 for key, value in document["rules"].items():
@@ -212,6 +224,40 @@ class IntroRules:
                 logger.warning("Could not read intro rules file %s: %s", self.path, exc)
                 return dict(self._rules)
 
+    def snapshot(self, *, rng: random.Random | None = None) -> Self:
+        """An independent, read-only choice state for a preview."""
+        copy_rng = rng is None
+        rng = rng or random.Random()
+        clone = type(self)(self.path, self._day_at, rng, self.library, self.paths)
+        with self._lock:
+            if copy_rng:
+                clone._rng.setstate(self._rng.getstate())
+            clone._frozen = True
+            clone._aired = dict(self._aired)
+            clone._reserved = dict(self._reserved)
+            clone._heard = deque(self._heard)
+            clone._released = deque(self._released)
+            clone._unwritten = False
+            has_cache = self._stamp is not None or self._seen or self._rules or self._skipped
+            if has_cache:
+                clone._stamp = self._stamp
+                clone._seen = self._seen
+                clone._rules = {
+                    key: rule.model_copy(deep=True) for key, rule in self._rules.items()
+                }
+                clone._skipped = dict(self._skipped)
+                clone._compiled = {key: list(tests) for key, tests in self._compiled.items()}
+                clone._has_folders = self._has_folders
+                clone._warmed_at = self._warmed_at
+                clone._liner_snapshot = self._liner_snapshot
+                clone._folder_pools = dict(self._folder_pools)
+        if not has_cache:
+            clone._snapshot_loading = True
+            with clone._lock, suppress(OSError):
+                clone._load()
+            clone._snapshot_loading = False
+        return clone
+
     def priorities(self) -> set[str]:
         return {rule.priority for rule in self.all().values()}
 
@@ -224,6 +270,8 @@ class IntroRules:
             )
 
     def _write(self, rules: dict[str, IntroRule]) -> None:
+        if self._frozen:
+            raise RuntimeError("cannot save an intro-rules snapshot")
         entries = {
             key: value.model_dump(mode="json", exclude_none=True) for key, value in rules.items()
         }
@@ -296,6 +344,8 @@ class IntroRules:
 
     def upkeep(self) -> None:
         """Write when rules aired and warm folder pools (the station's tick, off the render path)."""
+        if self._frozen:
+            return
         with self._lock:
             self._drain()
             if self._unwritten:
@@ -420,7 +470,11 @@ class IntroRules:
                 beets = items.get(normalize_path(entry.path))
         categories = None
         if any(c["field"] == "category" for c in conditions):
-            index = getattr(library, "categories", None)
+            if self.paths is None:
+                index = getattr(library, "categories", None)
+            else:
+                categories_for = getattr(library, "categories_for", None)
+                index = categories_for(self.paths) if categories_for is not None else None
             if index is not None:
                 try:
                     categories = index.members()
