@@ -297,7 +297,18 @@ class LibrarySnapshot:
         self._by_path = {
             normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
         }
-        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
+        from autodj.categories import store_path
+        from autodj.stations import DEFAULT_SLUG, StationPaths
+
+        paths = (
+            StationPaths.default(cfg)
+            if station == DEFAULT_SLUG
+            else StationPaths.for_station(cfg, station)
+        )
+        # The station's own categories, only read.
+        self.categories = CategoryIndex(
+            cfg, self.entries_snapshot, lambda: self.catalog.sources(), path=store_path(cfg, paths)
+        )
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
         self.clock_beets = BeetsConditions(cfg)
         self.ledger = StationLedger(catalog, station, self.entry_for_path)

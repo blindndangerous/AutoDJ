@@ -8,9 +8,10 @@ up, in ``<index_dir>``.  Now:
 
 - ``libraries/main/`` holds the library (``library.db``, ``dj_meta.db``,
   their logs, the related artists and tracks files, and an older index's files for ``autodj migrate-index``);
-- ``shared/`` what every station shares (categories, playlists, Stereo
-  Tool presets, time check packs);
-- ``stations/<slug>/`` each station, the default station's too;
+- ``shared/`` what every station shares (playlists, Stereo Tool presets,
+  time check packs);
+- ``stations/<slug>/`` each station, the default station's too, with its
+  own categories (each starts with a copy of the ones every station shared);
 - ``logs/`` the server's log.
 
 :func:`move_old_layout` renames each file once, inside the index folder, so
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import shutil
 import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: What every station shares; everything else unknown is the default station's.
-_SHARED = frozenset({"categories.json", "playlists", "time_checks"})
+_SHARED = frozenset({"playlists", "time_checks"})
 _LIBRARY = frozenset(
     {
         "library.db",
@@ -112,12 +114,16 @@ def move_old_layout(cfg: AutoDJConfig) -> bool:
     library, shared, stations = cfg.index.library_dir, cfg.index.shared_dir, cfg.index.stations_dir
     default = stations / "default"
     moves: list[tuple[Path, Path]] = []
+    moved_stations: list[Path] = []
     for item in sorted(old.iterdir()):
         name = item.name
         if name == ".autodj-serve.lock":
             continue
         if name == "stations" and item.is_dir():
-            moves += [(child, stations / child.name) for child in sorted(item.iterdir())]
+            for child in sorted(item.iterdir()):
+                moves.append((child, stations / child.name))
+                if child.is_dir():
+                    moved_stations.append(stations / child.name)
         elif name == "logs":
             moves.append((item, root / "logs"))
         elif name in _SHARED:
@@ -143,6 +149,16 @@ def move_old_layout(cfg: AutoDJConfig) -> bool:
                 f"Could not move {source} to {target} ({exc.strerror or exc}). Stop any other "
                 "AutoDJ that uses this index folder, then start this one again."
             ) from exc
+    # Every station used the shared categories: each now has its own copy.
+    categories = default / "categories.json"
+    for station in moved_stations:
+        if categories.is_file() and not (station / "categories.json").exists():
+            try:
+                shutil.copyfile(categories, station / "categories.json")
+            except OSError as exc:
+                raise LayoutError(
+                    f"Could not copy {categories} to {station} ({exc.strerror or exc})."
+                ) from exc
     for leftover in (old / ".autodj-serve.lock", old / "stations"):
         with contextlib.suppress(OSError):
             if leftover.is_file():

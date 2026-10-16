@@ -93,7 +93,6 @@ from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
 from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
-from autodj.categories_api import install_categories
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
@@ -2496,9 +2495,6 @@ def create_app(
 
     stations.prepare = prepare
     stations.disconnect = disconnect
-    install_categories(
-        app, bridge, clock_roots=lambda: [paths.clockwheels for paths in stations.paths()]
-    )
     return app
 
 

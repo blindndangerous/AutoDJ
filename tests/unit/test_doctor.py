@@ -1138,7 +1138,7 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     playlists = cfg.index.shared_dir / "playlists"
     playlists.mkdir(parents=True)
     (playlists / "A.m3u").write_text(f"{music / 'one.flac'}\nlost.flac\n", encoding="utf-8")
-    store = CategoryStore(cfg.index.shared_dir / "categories.json")
+    store = CategoryStore(cfg.index.stations_dir / "default" / "categories.json")
     store.save(
         [
             Category(id="a", name="2000s", source="query", query="original_year:2000..2009"),
@@ -1160,11 +1160,15 @@ def test_doctor_names_empty_categories_and_missing_playlist_tracks(tmp_path: Pat
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert (check.status, check.summary) == (CheckStatus.PASS, "1 saved, 2 songs in all")
 
-    (cfg.index.shared_dir / "categories.json").parent.mkdir(parents=True, exist_ok=True)
-    (cfg.index.shared_dir / "categories.json").write_text("{", encoding="utf-8")
+    (cfg.index.stations_dir / "default" / "categories.json").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (cfg.index.stations_dir / "default" / "categories.json").write_text("{", encoding="utf-8")
     check = {c.name: c for c in run_doctor(cfg).checks}["categories"]
     assert check.status is CheckStatus.WARN and "cannot be read" in check.summary
-    assert (cfg.index.shared_dir / "categories.json").exists()  # doctor never sets the file aside
+    assert (
+        cfg.index.stations_dir / "default" / "categories.json"
+    ).exists()  # doctor never sets the file aside
 
 
 def test_new_library_needs_no_music_root(tmp_path: Path) -> None:

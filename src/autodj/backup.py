@@ -107,7 +107,7 @@ _FOLDERS = (
     "ad_plays",
     "stereo-tool-presets",
 )
-# The default station's state files (categories.json is the shared folder's).
+# The default station's state files.
 _STATE_FILES = (
     "web_state.json",
     "schedule.json",
@@ -124,9 +124,8 @@ _STATE_FILES = (
     "shows.json",
     "live_djs.json",
 )
-# Another station's state files, in ``stations/<slug>/``.  The categories
-# are shared, so they are only in the default station's list.
-STATION_FILES = ("station.json", *(name for name in _STATE_FILES if name != "categories.json"))
+# Another station's state files, in ``stations/<slug>/``.
+STATION_FILES = ("station.json", *_STATE_FILES)
 STATION_FOLDERS = (
     "liners",
     "carts",
@@ -153,7 +152,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     The default station's prefixes are the top-level names (``index``,
     ``liners``...); another station's are ``stations/<slug>/index`` and
     ``stations/<slug>/<folder>``.  An ``index/`` member is the default
-    station's, or the library's or the shared folder's by its name
+    station's, or the library's by its name
     (:func:`_split`), so archives keep the names they always had.
     """
     from autodj.config import station_config
@@ -163,7 +162,6 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     roots = {
         "index": station.state_dir,
         "library": cfg.index.library_dir,
-        "shared": cfg.index.shared_dir,
         "liners": station.liners,
         "carts": station.cart_uploads,
         "time_checks": station.time_check_clips,
@@ -191,14 +189,13 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
 def _is_files(key: str) -> bool:
     """Whether archive prefix *key* holds single state files, not a whole folder."""
-    return key in {"index", "library", "shared"} or key.endswith("/index")
+    return key in {"index", "library"} or key.endswith("/index")
 
 
-#: ``index/`` members kept in the library folder and in the shared folder.
+#: ``index/`` members kept in the library folder.
 _LIBRARY_MEMBERS = frozenset(
     {"dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml", im.MANIFEST_NAME}
 )
-_SHARED_MEMBERS = frozenset({"categories.json"})
 
 
 def _split(name: str) -> tuple[str, tuple[str, ...]]:
@@ -206,11 +203,12 @@ def _split(name: str) -> tuple[str, tuple[str, ...]]:
     parts = PurePosixPath(name).parts
     if parts[0] == "stations" and len(parts) > 3:
         return "/".join(parts[:3]), parts[3:]
-    if parts[0] == "index" and len(parts) == 2:
-        if parts[1] in _LIBRARY_MEMBERS or im.GENERATION_FILE_RE.match(parts[1]):
-            return "library", parts[1:]
-        if parts[1] in _SHARED_MEMBERS:
-            return "shared", parts[1:]
+    if (
+        parts[0] == "index"
+        and len(parts) == 2
+        and (parts[1] in _LIBRARY_MEMBERS or im.GENERATION_FILE_RE.match(parts[1]))
+    ):
+        return "library", parts[1:]
     return parts[0], parts[1:]
 
 
@@ -513,7 +511,7 @@ def _check_backup_space(
         for suffix in _SQLITE_SIDECARS
     )
     for key, root in roots.items():
-        if key not in {"index", "library", "shared"} and _is_files(key) and root.is_dir():
+        if key not in {"index", "library"} and _is_files(key) and root.is_dir():
             snapshot += sum(_file_size(root / name) for name in STATION_FILES)
     total = snapshot + sum(_file_size(path) for path in folder_files)
     for place, size, what in (
@@ -683,7 +681,7 @@ def _target(roots: dict[str, Path], name: str) -> Path:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
     key, rest = _split(name)
-    if key in {"index", "library", "shared"}:
+    if key in {"index", "library"}:
         if len(rest) == 1 and (
             rest[0] in INDEX_FILES
             or rest[0] in _LEGACY_INDEX_FILES

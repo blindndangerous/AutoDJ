@@ -167,7 +167,9 @@ class LibraryManager:
         self._tracks_ready = 0
         self._tracks_indexed = 0
         # Rotation categories for clockwheel steps, worked out from these entries.
-        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
+        # Each station's rotation categories, by its folder (see categories_for).
+        self._category_indexes: dict[Path, CategoryIndex] = {}
+        self._category_lock = threading.Lock()
         self.clock_beets = BeetsConditions(cfg)
         catalog_path = cfg.index.library_dir / "library.db"
         require_current_library(
@@ -207,6 +209,29 @@ class LibraryManager:
             self.analysis_queue.close()
             self.catalog.close()
             raise
+
+    def categories_for(self, paths: Any = None) -> CategoryIndex:
+        """One station's rotation categories; the default station's without *paths*."""
+        from autodj.categories import FILE_NAME
+        from autodj.stations import StationPaths
+
+        state = Path((paths or StationPaths.default(self.cfg)).state_dir)
+        with self._category_lock:
+            found = self._category_indexes.get(state)
+            if found is None:
+                found = CategoryIndex(
+                    self.cfg,
+                    self.entries_snapshot,
+                    lambda: self.catalog.sources(),
+                    path=state / FILE_NAME,
+                )
+                self._category_indexes[state] = found
+        return found
+
+    @property
+    def categories(self) -> CategoryIndex:
+        """The default station's rotation categories."""
+        return self.categories_for()
 
     def _changed(self) -> bool:
         """Whether records, vectors or sources changed since the last load."""

@@ -1060,7 +1060,7 @@ Settings, Stream lists each direct listener's address, player name and connectio
 **Disconnect** to end one connection, or **Ban** to block an address or CIDR for one hour, one day,
 seven days or until removal. The form accepts an optional note. A ban disconnects matching
 listeners immediately; blocked stream and playlist requests return 403. The **Bans** list removes
-blocks. Bans survive restarts in the active index's `listener_bans.json` and are included in
+blocks. Bans survive restarts in the station's `listener_bans.json` and are included in
 AutoDJ backups. Relayed listeners remain under the relay host's own controls.
 
 ### Adding the station to Sonos
@@ -1114,8 +1114,8 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   saved per station as `[playback] music_speed_percent` and creates no audio files.
 - **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
   when its processor starts; changing the preset restarts it. The bundled Included preset is
-  read-only. Uploads (up to 2 MB) live in `index/stereo-tool-presets` beside the active index
-  folder and survive restarts. Deleting the active upload in Settings switches to Included
+  read-only. Uploads (up to 2 MB) live in `index/shared/stereo-tool-presets`, for every station, and
+  survive restarts. Deleting the active upload in Settings switches to Included
   first; a preset file removed by hand is replaced by Included when Stereo Tool next starts. Stereo Tool's
   settings use preset files; AutoDJ applies the drive boost to a temporary copy, leaving your saved preset unchanged.
   An uploaded preset without a single `Drive` line under `[Pre Compressor]` plays unchanged,
@@ -1131,7 +1131,7 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   (liners and voice breaks) use an 18 dB cap when they need more boost. Liners also pass through
   voice compression, and server-mixed playback holds decoded track audio in memory while
   it is mixed.
-  Earlier versions wrote processed copies to a `prepared` folder inside the active index
+  Earlier versions wrote processed copies to a `prepared` folder inside the old index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After
   upgrading, a library scan measures loudness in the background; a song played before it is
@@ -1661,20 +1661,21 @@ The rules:
 A station keeps its state in `<index_dir>/stations/<slug>/`, the default station in
 `stations/default/`, all with the same file names: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
-`liners/` and `profiles/`. Its plays are kept in the
+`categories.json`, `liners/` and `profiles/`. Its plays are kept in the
 shared `library.db`.
 
 The index folder holds:
 
 - `libraries/main/`: the library, `library.db` and `dj_meta.db`, with the related artists and
   tracks files.
-- `shared/`: what every station shares, the categories, playlists, uploaded Stereo Tool presets
-  and time check packs.
+- `shared/`: what every station shares, the playlists, uploaded Stereo Tool presets and time
+  check packs.
 - `stations/<slug>/`: each station's own files.
 - `logs/`, `tools/` and the pairing files, for the whole server.
 
 `autodj serve`, or any other command that uses the library, moves an index folder from an older
-release into these folders once, inside the index folder. Named indexes (`[index] name`,
+release into these folders once, inside the index folder. The categories every station used to
+share go to the default station, and each other station starts with a copy of them. Named indexes (`[index] name`,
 `--name`) are gone; a second named index found there is left as it is.
 
 ### Creating a station from the web page
@@ -3095,8 +3096,7 @@ session and the page's `Origin`. The body is a JSON object of at most 64 KiB:
 
 ### Where they are kept
 
-Each station keeps its own: `matched_intros.json` in the station's state folder (the active index
-folder for the default station) and the audio in its `intros` folder, under names AutoDJ makes up.
+Each station keeps its own: `matched_intros.json` in the station's folder and the audio in its `intros` folder, under names AutoDJ makes up.
 Backups include both for the default station. A song intro follows the song's library ID, so a tag
 edit or a move the scan recognises keeps it. A library scan that read every folder and found a
 song's file gone removes that song's intros and their audio; a share that is not mounted, or a scan
@@ -3250,8 +3250,7 @@ and the campaign as the album; the SoundExchange report leaves them out.
 
 ### Where they are kept
 
-Each station keeps its own: `ads.json` in the station's state folder (the active index folder for
-the default station) with the spots, the breaks and the rules, the audio in its `ads` folder under
+Each station keeps its own: `ads.json` in the station's folder with the spots, the breaks and the rules, the audio in its `ads` folder under
 names AutoDJ makes up, and the play log in its `ad_plays` folder, one file a month
 (`2026-10.jsonl`). Backups include all three. Every change to `ads.json` is written to a new file
 that replaces the old one; a spot or break in it that is not valid (edited by hand, say) is skipped
@@ -3615,7 +3614,7 @@ window and prefers a song whose estimated handoff lands closest to it. See
 
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
 - `web_state.json`, the settings chosen in the web page.
-- `related-artists.toml` and `related-tracks.toml` in the active index folder.
+- `related-artists.toml` and `related-tracks.toml` in the library folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
 - `library.db`, the station's registered folders, track data and cues, last-played times and
@@ -3623,8 +3622,8 @@ window and prefers a song whose estimated handoff lands closest to it. See
 - Every file in the station's liners and profiles folders (`index/stations/default/liners`
   and `profiles`), plus uploaded presets in `index/shared/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
-  time_checks folder under the active index). Generated TTS cache files are rebuilt when needed.
-- `categories.json`, the rotation categories. Their playlist files are not included; the script
+  shared `time_checks` folder). Generated TTS cache files are rebuilt when needed.
+- Each station's `categories.json`, its rotation categories. Their playlist files are not included; the script
   that writes them can write them again.
 - `liner_dates.json`, the voice liners' play dates.
 - `ads.json`, the ad spots, ad breaks and their rules, with the spots' audio in the `ads`
@@ -3818,7 +3817,7 @@ Carts play through the voice liner path. In server audio and stream mode the ser
 in, and they need playback running: a cart is refused while the stream is idle or paused. In
 browser playback the page that plays the cart plays it, as the voice liner Test button does.
 
-The server keeps the wall in `carts.json` in the active index folder and the uploads in its
+The server keeps the wall in `carts.json` in the station's folder and the uploads in its
 `carts/` folder. The file is versioned; one that cannot be read is moved aside as
 `carts.json.bad-<id>` and an empty wall loads. Backups include the wall and the uploads. Saving
 a profile records the name of the cart page shown, and applying the profile shows that page; a
@@ -3867,7 +3866,7 @@ yet", in place. Only the words change, so focus stays where it is and nothing is
 refused date in the cart editor is shown under the editor and linked to its field, whether the
 page or the server refused it.
 
-Liner dates are kept in `liner_dates.json` in the active index folder, by the ID Browse voice
+Liner dates are kept in `liner_dates.json` in the station's folder, by the ID Browse voice
 liners uses (the library ID of a registered liner, or the file name of one in the liner folder),
 and are included in backups. Deleting a liner forgets its dates. So does a library scan for a
 liner deleted outside AutoDJ: a registered liner whose file the scan found gone from a folder
@@ -3971,7 +3970,7 @@ refused by an older version, which keeps a copy of the file.
 **Run now** runs an event's action at once, to test it. Each run, failure and missed event goes
 to the server log and to **Recent runs**, which keeps the last 200.
 
-Schedules live in `schedule.json` in the active index folder, next to `web_state.json`. AutoDJ
+Schedules live in `schedule.json` in the station's folder, next to `web_state.json`. AutoDJ
 writes the file atomically and includes it in `autodj backup`. A damaged schedule file is copied
 to `schedule.json.bad-<id>` and left out, so the server still starts. An event whose action this
 version does not have (one a newer AutoDJ added) never runs and is not listed, but it is logged
@@ -4093,7 +4092,7 @@ past the next reset. The check uses their saved cue points and overlap, through 
 next handoff. The song still follows the usual clock and repeat rules; skipping the liner does
 not count it as played. With no reset times set, this checkbox has no effect.
 
-Each clockwheel is one JSON file in `clockwheels/` in the active index folder, named after the
+Each clockwheel is one JSON file in the station's `clockwheels/` folder, named after the
 clockwheel and included in `autodj backup`. Names allow letters, digits, spaces, dashes and
 underscores, up to 64. The format is versioned and checked strictly; an unknown field, step type
 or version stops that clockwheel from loading, says why in the editor and the server log, and
@@ -4202,7 +4201,7 @@ A category's songs come from one of three sources:
     with a message that names the term; make a category per alternative and combine them with
     Match any in the clockwheel step.
 - **An M3U or M3U8 file** in the playlists folder (`[library] playlists_folder`, by default
-  `playlists/` in the active index folder). Each line that is not a comment is matched to a
+  `shared/playlists/` in the index folder). Each line that is not a comment is matched to a
   library song by its full path, or by a path from the playlist's own folder or from
   `[library] music_dir` (where beets keeps relative paths); `file://` addresses work too. Lines
   that match no song, web addresses included, are counted and the first few are named, so a
@@ -4276,7 +4275,9 @@ dates". Dates combine with days and hours: a Friday
 list says the season in words, such as "Plays only between 1 December 2026 and 26 December
 2026", and "Outside its dates now." A category without dates is saved without the two fields.
 
-The categories are kept in `categories.json` in the active index folder, written atomically and
+Each station has its own categories, like its clockwheels: Library tools, Categories shows the
+ones of the station the page controls. They are kept in the station's `categories.json`
+(`<index_dir>/stations/<slug>/categories.json`), written atomically and
 included in `autodj backup`; a damaged file is set aside as `categories.json.bad-<id>` and the
 station starts with no categories. The playlist files are not backed up: they come from a script
 or a music folder, like the music. `autodj doctor` lists categories with no songs, missing
@@ -4436,7 +4437,7 @@ the show's name, taking no time, as on the air.
 
 ### Where they are kept
 
-`shows.json` in the station's state folder (the active index folder for the default station),
+`shows.json` in the station's folder,
 written atomically and included in `autodj backup` for every station (another station's under
 `stations/<slug>/index/shows.json`). A show in the file
 that is not valid (edited by hand, say) is skipped and logged, and the card says which; every

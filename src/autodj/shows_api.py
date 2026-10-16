@@ -117,10 +117,10 @@ def _iso(stamp: float | None, timezone: str) -> str | None:
 
 def _source_names(station: StationRuntime) -> tuple[dict[str, str], list[str]]:
     """Category names by ID, and clockwheel names (blocking: reads files)."""
-    from autodj.station_routes import _clock_store
+    from autodj.station_routes import _clock_store, _station_categories
 
     library = station.bridge.library
-    index = getattr(library, "categories", None) if library is not None else None
+    index = _station_categories(station, library) if library is not None else None
     categories: dict[str, str] = {}
     if index is not None:
         try:

@@ -21,7 +21,7 @@ from ._helpers import _make_player_mock, _make_sim_mock
 _TOKEN = "station-routes-test-token-is-32-bytes"
 
 # Routes every station shares: the page, pairing, the library, search,
-# audio files, Stereo Tool presets, categories and the analysis workers.
+# audio files, Stereo Tool presets and the analysis workers.
 SHARED = frozenset(
     {
         "/",
@@ -63,9 +63,6 @@ SHARED = frozenset(
         "/api/library/stats",
         "/api/library/missing",
         "/api/library/remove-missing",
-        "/api/categories",
-        "/api/categories/check",
-        "/api/categories/{category_id}",
         "/api/machine-tokens",
         "/api/machine-tokens/{token_id}",
         "/api/analysis/workers",
@@ -151,6 +148,9 @@ STATION = frozenset(
         "/profiles",
         "/profiles/{name}",
         "/profiles/{name}/apply",
+        "/categories",
+        "/categories/check",
+        "/categories/{category_id}",
         "/liners",
         "/liners/upload",
         "/liners/file/{name}",

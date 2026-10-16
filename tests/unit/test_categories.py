@@ -531,3 +531,14 @@ def test_an_empty_category_is_logged_and_check_counts_an_unsaved_one(tmp_path, c
     assert "Category Jazz has no songs in the library" in caplog.text
     checked = index.check(parse_spec({"name": "Rock", "source": "query", "query": "rock"}))
     assert checked.count == 1
+
+
+def test_each_station_keeps_its_own_categories(tmp_path: Path) -> None:
+    from autodj.categories import store_path
+    from autodj.config import IndexConfig
+    from autodj.stations import StationPaths
+
+    cfg = SimpleNamespace(index=IndexConfig(index_dir=tmp_path))
+    assert store_path(cfg) == tmp_path / "stations" / "default" / "categories.json"
+    owl = StationPaths.for_station(cfg, "owl")
+    assert store_path(cfg, owl) == tmp_path / "stations" / "owl" / "categories.json"

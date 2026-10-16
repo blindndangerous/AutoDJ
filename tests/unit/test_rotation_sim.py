@@ -809,8 +809,10 @@ def test_simulate_beside_a_live_server_leaves_the_library_untouched(tmp_path: Pa
     active = cfg.index.library_dir
     active.mkdir(parents=True)
     # A categories file that cannot be read stays where it is.
-    (cfg.index.shared_dir / "categories.json").parent.mkdir(parents=True, exist_ok=True)
-    (cfg.index.shared_dir / "categories.json").write_text("{broken", encoding="utf-8")
+    (cfg.index.stations_dir / "default" / "categories.json").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (cfg.index.stations_dir / "default" / "categories.json").write_text("{broken", encoding="utf-8")
     live = LibraryCatalog(cfg.index.library_dir / "library.db")
     try:
         live.seed_sources(music, tmp_path / "liners")

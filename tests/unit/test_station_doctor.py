@@ -20,6 +20,7 @@ STATION_CHECKS = [
     "dmca",
     "stream",
     "time-checks",
+    "categories",
     "recording",
     "liners",
 ]

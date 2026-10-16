@@ -143,8 +143,7 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     for djs in (default_live_djs, owl_live_djs):
         assert b"hash" not in djs and b"salt" not in djs and b'"dj"' in djs
     assert "relay-secret" not in caplog.text
-    # A station never holds the shared categories, and nothing is stored twice.
-    assert "stations/nightowl/index/categories.json" not in names
+    # Nothing is stored twice.
     assert not any(name.startswith("stations/nightowl/stations/") for name in names)
 
     for path in written:
@@ -420,7 +419,6 @@ def test_restore_refuses_unsafe_names_in_the_station_list(tmp_path: Path, slug: 
 @pytest.mark.parametrize(
     "name",
     [
-        "stations/nightowl/index/categories.json",
         "stations/nightowl/index/library.db",
         "stations/nightowl/index/sub/web_state.json",
         "stations/nightowl/stereo-tool-presets/x.sts",

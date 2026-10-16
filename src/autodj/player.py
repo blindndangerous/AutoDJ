@@ -1932,7 +1932,7 @@ class Player:
             for condition in step.get("conditions", ())
             if condition.get("field") == "category"
         )
-        category_index = getattr(self._library, "categories", None)
+        category_index = self._category_index()
         try:
             categories = (
                 [
@@ -2006,9 +2006,19 @@ class Player:
         parts.append(base[begin:])
         return tuple(chain.from_iterable(parts))
 
+    def _category_index(self) -> Any:
+        """This station's rotation categories, or ``None`` without a library."""
+        library = self._library
+        if library is None:
+            return None
+        pick = getattr(library, "categories_for", None)
+        if not callable(pick):
+            return getattr(library, "categories", None)
+        return pick(getattr(self, "station_paths", None))
+
     def _category_members(self) -> dict[str, tuple[str, frozenset[str]]] | None:
         """Return category membership, or None when the index cannot be read."""
-        index = getattr(self._library, "categories", None)
+        index = self._category_index()
         if index is None:
             return {}
         try:
@@ -4082,7 +4092,7 @@ class Player:
         Read now, or at *at* (the expected start of the song being picked).
         Categories that cannot be read limit nothing; the failure is logged.
         """
-        index = getattr(self._library, "categories", None)
+        index = self._category_index()
         if index is None:
             return frozenset(), {}
         try:

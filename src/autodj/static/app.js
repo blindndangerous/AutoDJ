@@ -1740,6 +1740,9 @@ function refreshStationPanels() {
   void nowPlayingSettings?.load();
   clockwheelPanelControls?.resume();
   void clockwheelPanelControls?.refresh();
+  // Each station has its own categories, like its clockwheels.
+  categoriesPanelControls?.resume();
+  void categoriesPanelControls?.refresh();
   showsPanelControls?.resume();
   void schedulerPanelControls?.refresh();
   void rotationTestControls?.refresh();

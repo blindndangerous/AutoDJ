@@ -794,6 +794,7 @@ def _station_checks(cfg: AutoDJConfig, spec: StationSpec) -> list[DoctorCheck]:
         *_relay_checks(own, paths=paths),
         _time_checks_check(own, paths),
         *_voice_pack_checks(own, paths),
+        _categories_check(own, paths),
         _recording_check(own, paths),
         _liners_check(own, paths),
     ]
@@ -974,7 +975,7 @@ def _catalog_songs(cfg: AutoDJConfig) -> list[_CatalogSong]:
     return [_CatalogSong(*row) for row in rows]
 
 
-def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
+def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> DoctorCheck:
     """Name the rotation categories with no songs, missing playlist tracks or errors.
 
     The categories file is read, never set aside, and the catalog and the
@@ -991,7 +992,7 @@ def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
         store_path,
     )
 
-    path = store_path(cfg)
+    path = store_path(cfg, paths)
     if not path.exists():
         return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")
     try:
@@ -1002,8 +1003,7 @@ def _categories_check(cfg: AutoDJConfig) -> DoctorCheck:
             CheckStatus.WARN,
             "the categories file cannot be read; AutoDJ sets it aside when it starts",
             str(exc).splitlines()[0],
-            "Fix or remove categories.json in the index folder, then add the categories again "
-            "in Library tools, Categories.",
+            f"Fix or remove {path}, then add the categories again in Library tools, Categories.",
         )
     if not categories:
         return DoctorCheck("categories", CheckStatus.PASS, "no categories saved")

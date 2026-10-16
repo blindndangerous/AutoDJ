@@ -443,7 +443,7 @@ def test_backup_refuses_valid_sqlite_that_is_not_a_catalog(tmp_path: Path) -> No
 def test_categories_are_backed_up_but_their_playlists_are_not(tmp_path: Path) -> None:
     """Playlist files come from a script or a music folder, so they stay out like the music."""
     cfg = _config(tmp_path)
-    state = cfg.index.shared_dir / "categories.json"
+    state = cfg.index.stations_dir / "default" / "categories.json"
     state.write_text('{"schema_version": 1, "categories": []}', encoding="utf-8")
     playlists = cfg.index.shared_dir / "playlists"
     playlists.mkdir()

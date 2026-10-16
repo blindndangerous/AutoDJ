@@ -193,7 +193,7 @@ The liner *root directory* comes only from configuration. `/api/playback-setting
 `web_state.json` keeps only fields a settings route accepts, and on restart each saved value
 must pass that route's field rule, so the file can neither store nor restore `liners_folder`.
 `repeat_rules.related_artists_file` is also rejected by the API and saved state. The only
-related-artists file the browser can enable is `related-artists.toml` in the active index folder.
+related-artists file the browser can enable is `related-artists.toml` in the library folder.
 AutoDJ checks its size before reading and refuses files larger than 1 MiB. Browser errors do
 not include artist names or unexpected top-level keys from that file.
 Treat a paired browser as trusted.
@@ -201,7 +201,7 @@ Treat a paired browser as trusted.
 The cart wall routes under `/api/carts` require a paired browser like every other `/api` route.
 A slot names a voice liner by catalog ID or liner-folder file name, or an uploaded clip by file
 name, never a path; the names pass the same checks as `/api/liners/file`. Uploaded clips go to
-the `carts` folder in the active index folder, with the voice liner size cap and extension list,
+the station's `carts` folder, with the voice liner size cap and extension list,
 are never overwritten, and are deleted again if they do not decode. `carts.json` is validated
 when the server starts, and a file that fails is set aside. Backups include the wall and the
 uploads. A paired browser can play carts into the server audio or stream output.
@@ -251,7 +251,7 @@ because results are cached; one synthesis runs at a time.
 
 `/api/stereo-tool-presets` lists, uploads (`/upload`) and deletes (`DELETE /{name}`) Stereo Tool
 presets, under the same session, Host and Origin policy as every other `/api` route. Uploads go
-only to the `stereo-tool-presets` folder beside the active index folder. A name must be one plain
+only to the `shared/stereo-tool-presets` folder in the index folder. A name must be one plain
 filename ending in `.sts`, at most 100 characters of letters, digits, spaces, dots, hyphens and
 underscores, starting with a letter or digit, so it carries no separator, drive, colon or `..`;
 Windows device names such as `CON.sts` or `COM0.sts` are refused. The body is capped at 2 MB
