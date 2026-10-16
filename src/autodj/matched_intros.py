@@ -40,6 +40,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date as Date
 from pathlib import Path
@@ -268,6 +269,8 @@ class MatchedIntros:
         # Its own random source: the picker's must not move (see the module notes).
         self._rng = rng or random.Random()
         self._lock = threading.Lock()
+        self._frozen = False
+        self._snapshot_loading = False
         self._stamp: tuple[int, int, int] | None = None
         self._intros: dict[str, Intro] = {}
         # Entries of the file that are not valid intros, kept as they are: they
@@ -310,6 +313,8 @@ class MatchedIntros:
         Raises:
             OSError: The file could not be looked at or read.
         """
+        if self._frozen and not self._snapshot_loading:
+            return dict(self._intros)
         stamp = self._stat()
         if stamp is not None:
             self._seen = True
@@ -323,7 +328,8 @@ class MatchedIntros:
                 document = _IntrosFile.model_validate_json(data)
             except ValueError as exc:
                 # Not a file of intros at all: set aside whole.
-                self._keep_bad_copy(str(exc).splitlines()[0])
+                if not self._frozen:
+                    self._keep_bad_copy(str(exc).splitlines()[0])
                 stamp = None
             else:
                 # One bad intro never silences the others: it is skipped.
@@ -364,6 +370,8 @@ class MatchedIntros:
         Raises:
             OSError: The file could not be written.
         """
+        if self._frozen:
+            raise RuntimeError("cannot save a matched-intros snapshot")
         # Skipped entries go back as they were read, never dropped.
         entries: dict[str, Any] = {
             intro_id: intro.model_dump(mode="json", exclude_none=True)
@@ -398,6 +406,35 @@ class MatchedIntros:
             except OSError as exc:
                 logger.warning("Could not read the matched intros file %s: %s", self.path, exc)
                 return dict(self._intros)
+
+    def snapshot(self) -> Self:
+        """An independent, read-only choice state for a preview."""
+        rng = random.Random()
+        clone = type(self)(self.path, self.folder, self._day_at, rng)
+        with self._lock:
+            clone._rng.setstate(self._rng.getstate())
+            clone._frozen = True
+            clone._aired = dict(self._aired)
+            clone._reserved = dict(self._reserved)
+            clone._unwritten = False
+            clone._heard = deque(self._heard)
+            clone._released = deque(self._released)
+            has_cache = self._stamp is not None or self._seen or self._intros or self._skipped
+            if has_cache:
+                clone._stamp = self._stamp
+                clone._intros = {
+                    key: intro.model_copy(deep=True) for key, intro in self._intros.items()
+                }
+                clone._skipped = dict(self._skipped)
+                clone._seen = self._seen
+        if not has_cache:
+            clone._snapshot_loading = True
+            with clone._lock, suppress(OSError):
+                clone._load_locked()
+            clone._snapshot_loading = False
+        if self.rules is not None:
+            clone.rules = self.rules.snapshot(rng=clone._rng)
+        return clone
 
     def add(self, intro_id: str, intro: Intro) -> None:
         """Save a new intro.
@@ -607,6 +644,8 @@ class MatchedIntros:
         A file that cannot be read or written just now is left for the next
         tick; the aired times stay in memory meanwhile.
         """
+        if self._frozen:
+            return
         with self._lock:
             self._apply_heard_locked()
             doomed, self._doomed = self._doomed, set()

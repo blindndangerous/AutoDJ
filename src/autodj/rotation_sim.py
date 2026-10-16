@@ -187,6 +187,8 @@ class SimulationSource:
     clockwheel: tuple[Mapping[str, Any], Sequence[Any]] | None = None
     shows: Any = None
     action_interrupts: Mapping[str, str] | None = None
+    carts: Any = None
+    time_checks: Any = None
 
 
 #: The picker settings a run copies from the live player.
@@ -339,7 +341,7 @@ class LibrarySnapshot:
             cfg, self.entries_snapshot, lambda: self.catalog.sources(), path=store_path(cfg, paths)
         )
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
-        self.clock_beets = BeetsConditions(cfg)
+        self.clock_beets = BeetsConditions(cfg, self.entries_snapshot)
         self.ledger = StationLedger(
             store,
             self.entry_for_path,

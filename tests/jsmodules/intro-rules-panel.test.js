@@ -52,11 +52,20 @@ class FieldError extends Error {
 
 // A stand-in for the intro rule routes.
 function fakeServer() {
-  const server = { rules: [copy(EIGHTIES), copy(ROCK)], calls: [], refuse: null };
+  const server = { rules: [copy(EIGHTIES), copy(ROCK)], calls: [], refuse: null, testRefuse: null, testResult: null, testDeferred: null };
   server.request = vi.fn(async (url, options = {}) => {
     const method = options.method || "GET";
     const body = options.body ? JSON.parse(options.body) : undefined;
     server.calls.push({ method, url, body });
+    if (url.startsWith("/api/search?")) return { results: [{ path: "D:\\Music\\song.flac", artist: "Artist", title: "Song" }] };
+    if (url.startsWith("/api/intros/rules/test?")) {
+      if (server.testRefuse) throw server.testRefuse;
+      if (server.testDeferred) return server.testDeferred;
+      return server.testResult || { expanded_pattern: "Artist - Song.wav", missing_fields: ["year"], matches: [
+        { id: "liner-1", label: "Artist - Song.wav", eligible: true, reason: null },
+        { id: "liner-2", label: "other.wav", eligible: false, reason: "Filename does not match." },
+      ], note: "One liner matches." };
+    }
     if (method === "GET") return { rules: copy(server.rules), problem: null, max_rules: 2000, ...copy(CHOICES) };
     if (server.refuse) throw server.refuse;
     if (method === "POST") {
@@ -134,6 +143,8 @@ describe("intro rules in words", () => {
     expect(describeRule(ROCK, 1, CHOICES)).toMatch(/^Rule 2: when the next song matches .*Rock.* or .*Gold.*\. Plays any liner in D:\\Liners\\Rock\. 100% chance, with no wait between plays, before the song’s and the artist’s own intros\. Plays from 1 December 2026 until 26 December 2026\.$/);
     expect(describeRule({ ...EIGHTIES, clip_ids: ["gone", "l2"] }, 0, CHOICES))
       .toContain("Plays one of a liner that is no longer registered, rock.wav.");
+    expect(describeRule({ ...EIGHTIES, clip_ids: [], filename_pattern: "{artist} - *.wav", liner_folder: "D:\\Liners" }, 0, CHOICES))
+      .toContain('Plays liners matching filename pattern "{artist} - *.wav" in D:\\Liners.');
   });
 
   it("checks the form's values before sending", () => {
@@ -183,7 +194,7 @@ describe("intro rules list and form", () => {
     const sent = server.calls.find((call) => call.method === "POST").body;
     expect(sent).toEqual({
       label: "Name drop", match: "all", priority: "before_artist", chance: 75, cooldown_minutes: 60,
-      conditions: [{ field: "artist", operator: "is", value: "Example" }], clip_ids: ["l2"],
+      conditions: [{ field: "artist", operator: "is", value: "Example" }], clip_ids: ["l2"], filename_pattern: null,
     });
     expect(byId("intro-rules-form").hidden).toBe(true);
     expect(document.activeElement).toBe(button(2, "edit"));
@@ -254,9 +265,77 @@ describe("intro rules list and form", () => {
     expect(put.body).toMatchObject({
       liner_folder: "D:\\Liners\\Rock", cooldown_minutes: 15, match: "any",
       not_before: "2026-12-01", not_after: "2026-12-26",
+      filename_pattern: null,
       conditions: [{ field: "genre", operator: "is", value: "Rock" }, { field: "category", category: "c1" }],
     });
     expect(document.activeElement).toBe(button(1, "edit"));
+  });
+
+  it("saves filename patterns, inserts a token at the caret, and tests a chosen song", async () => {
+    const server = await open();
+    byId("intro-rules-add").click();
+    const row = byId("intro-rules-conditions").firstElementChild;
+    row.querySelector("select").value = "artist";
+    row.querySelector("select").dispatchEvent(new Event("change"));
+    row.querySelectorAll('input[type="text"]')[1].value = "Artist";
+    byId("intro-rules-selection-mode").value = "pattern";
+    byId("intro-rules-selection-mode").dispatchEvent(new Event("change"));
+    const pattern = byId("intro-rules-pattern");
+    pattern.value = "prefix suffix";
+    pattern.setSelectionRange(7, 7);
+    byId("intro-rules-pattern-field").value = "artist";
+    byId("intro-rules-pattern-insert").click();
+    expect(pattern.value).toBe("prefix {artist}suffix");
+    pattern.value = "{artist} - {title}.wav";
+    byId("intro-rules-pattern-folder").value = "D:\\Liners";
+    byId("intro-rules-test-query").value = "Song";
+    byId("intro-rules-test-query").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(byId("intro-rules-test-results").querySelectorAll("button")).toHaveLength(1));
+    byId("intro-rules-test-results").querySelector("button").click();
+    server.testRefuse = new FieldError("Track not found", "path");
+    byId("intro-rules-test").click();
+    await vi.waitFor(() => expect(byId("intro-rules-test-song-error").hidden).toBe(false));
+    expect(document.activeElement).toBe(byId("intro-rules-test-query"));
+    server.testRefuse = null;
+    byId("intro-rules-test").click();
+    await vi.waitFor(() => expect(status()).toBe("Pattern test complete: 1 eligible, 1 excluded; 1 missing song fields."));
+    expect(byId("intro-rules-test-output").hidden).toBe(false);
+    expect(byId("intro-rules-test-output").textContent).toContain("Missing song fields: year.");
+    expect(byId("intro-rules-test-output").textContent).toContain("other.wav: Filename does not match.");
+    expect(status()).not.toContain("other.wav");
+    server.testResult = { expanded_pattern: "Artist - Song.wav", missing_fields: [], matches: [], note: "Folder is empty." };
+    byId("intro-rules-test").click();
+    await vi.waitFor(() => expect(byId("intro-rules-test-output").textContent).toContain("No matching liners."));
+    let resolveTest;
+    server.testDeferred = new Promise((resolve) => { resolveTest = resolve; });
+    byId("intro-rules-test").click();
+    await vi.waitFor(() => expect(byId("intro-rules-test").disabled).toBe(true));
+    pattern.value += "!";
+    pattern.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(byId("intro-rules-test").disabled).toBe(false);
+    resolveTest({ expanded_pattern: "stale", missing_fields: [], matches: [], note: "Stale." });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(byId("intro-rules-test-output").hidden).toBe(true);
+    server.testDeferred = null;
+    pattern.value = "{artist} - {title}.wav";
+    server.refuse = new FieldError("Folder unavailable", "liner_folder");
+    byId("intro-rules-save").click();
+    await vi.waitFor(() => expect(byId("intro-rules-pattern-folder-error").hidden).toBe(false));
+    expect(document.activeElement).toBe(byId("intro-rules-pattern-folder"));
+    server.refuse = null;
+    const tested = server.calls.find((call) => call.url.startsWith("/api/intros/rules/test?"));
+    expect(tested.url).toBe("/api/intros/rules/test?path=D%3A%5CMusic%5Csong.flac");
+    expect(tested.body).toMatchObject({ clip_ids: [], filename_pattern: "{artist} - {title}.wav", liner_folder: "D:\\Liners" });
+    byId("intro-rules-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "POST" && call.url === "/api/intros/rules")).toBe(true));
+    const saved = server.calls.find((call) => call.method === "POST" && call.url === "/api/intros/rules");
+    expect(saved.body).toMatchObject({ clip_ids: [], filename_pattern: "{artist} - {title}.wav", liner_folder: "D:\\Liners" });
+    await vi.waitFor(() => expect(byId("intro-rules-form").hidden).toBe(true));
+    button(2, "edit").click();
+    expect(byId("intro-rules-selection-mode").value).toBe("pattern");
+    expect(byId("intro-rules-pattern").value).toBe("{artist} - {title}.wav");
+    expect(byId("intro-rules-test-selected").dataset.trackPath).toBeUndefined();
+    byId("intro-rules-cancel").click();
   });
 
   it("deletes after confirming, moves focus to the next Delete, and says so once", async () => {

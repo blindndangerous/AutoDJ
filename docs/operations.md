@@ -1,5 +1,7 @@
 # AutoDJ operations
 
+For everyday tasks, start with the [README guide list](../README.md#build-your-station): music, sound, schedules, live work, streaming, several stations, backups, keyboard access, and troubleshooting. Use the [settings reference](settings-reference.md) for values and defaults. This page keeps detailed commands and migration notes.
+
 For architectural constraints and implementation/test links, consult the
 [ADR index](adr/README.md), especially the current amendments to
 [playout](adr/0004-server-mix-bus-and-stream-mode.md) and
@@ -73,7 +75,10 @@ The `index` check reads the current catalog. It reports catalog counts, warns wh
 is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
-basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
+basic song records, but optional beets enrichment cannot run. The `beets-paths` check, shown
+when the beets database exists, counts the library songs that have a beets entry and warns when
+not one does (see [Beets paths and `music_dir`](#beets-paths-and-music_dir)), naming the folder
+to set. The `dependencies` check warns when
 FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp4` and `.aac`
 files, and stream mode cannot start. The `categories` check warns about rotation categories with no
 songs, playlist lines that match no library track (naming the first few), and a query or playlist
@@ -141,6 +146,41 @@ with remaining songs. `--force` replaces vectors for eligible songs without dele
 history or settings; a failed embedding leaves the previous vector in place. `--workers` controls
 audio prefetch. `--no-enrich` skips the optional beets refresh.
 
+### Long tracks
+
+Tracks of any length are imported and play, including hour-long DJ mixes and full-album files.
+Memory stays bounded however long a track is:
+
+- **Basic analysis.** A track longer than 15 minutes is decoded once as it streams. AutoDJ keeps
+  its first and last 5 minutes and measures its length, energy, and first and last audible frames
+  over the whole file. Intro comes from the first window; Segue and Outro come from the last.
+  Start and End use whole-track audible positions when their windows contain only silence.
+- **Beats and song structure.** A long track's beat grid and cues come from the same first and
+  last 5 minutes, the parts a transition uses. The grid has a gap in the middle.
+- **Advanced analysis.** By default, songs longer than 15 minutes are left out of the advanced
+  analysis, which decodes the whole song and can need several gigabytes for a long mix. Set the
+  cutoff in Library tools under **Advanced analysis length**; 0 analyses every length. Songs left
+  out are not errors and are not retried. The import summary counts them, and they are analysed
+  as soon as the cutoff allows. They still play in rotation, in clock categories and as queue or
+  request picks. Similarity picks need the advanced analysis, so a song without it is never
+  chosen as "similar" to another. When it plays in similarity mode, the next pick falls back to a
+  random playable song.
+- **Server playback.** A decoded track longer than 10 minutes, about 21 MB per minute, is kept
+  in a temporary file mapped into memory instead of in ordinary memory. Spill files use
+  `<index_dir>/cache/spill/`, created when needed; startup clears files left by a crash.
+  AutoDJ uses the system temporary folder (`TMPDIR` or `TEMP`) only when that directory is not
+  writable. A three-hour mix needs about 4 GB of free disk there while it plays. Files are
+  removed when the track is done. During a transition, peak disk use can reach about three times
+  the decoded track size per station: the decode, resampled output at music speed other than 1,
+  crossfade join, handoff chunk, and prefetched next track can coexist. FFmpeg may take as long
+  as the track to decode it, or at least 10 minutes.
+
+The old `server_max_track_minutes` playback setting is gone. AutoDJ removes it from saved
+station settings when it starts.
+
+The import status in Library tools gives counts. Files that could not be read or decoded are
+errors; open **Import errors** below the summary for the list.
+
 The old published-index format, including `index-manifest.json`, is deprecated. Stop AutoDJ
 and run `autodj migrate-index` to preview the upgrade, then add `--apply` to import the old
 data with a recovery copy. Startup and indexing use the catalog only; `index --force` does
@@ -152,7 +192,8 @@ beets metadata without re-embedding, and Stats prints the detailed catalog repor
 all registered folders. New DJ-meta cache entries use full track paths; existing
 relative cache entries remain readable with the old `music_dir` setting. That setting does not
 limit which registered folders can be analysed. It is optional and kept only to resolve older
-relative cache or beets paths; leave it out of new setups. For a legacy index import, pass
+relative cache or beets paths (see [Beets paths and `music_dir`](#beets-paths-and-music_dir));
+leave it out of new setups. For a legacy index import, pass
 `migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
 
 The Library panel's **Remove missing tracks** action is
@@ -329,7 +370,9 @@ Settings come from three places beside `compose.yaml`:
   mounts this folder read-only and starts in it, so relative paths in them, such as
   `ssl_certfile = "certs/fullchain.pem"`, are read from here.
 - `AUTODJ_BEETS_PATH` in `.env` mounts the folder holding beets' `library.db` read-only at `/beets`;
-  set `beets_db = "/beets/library.db"` in `config.local.toml` to use it.
+  set `beets_db = "/beets/library.db"` in `config.local.toml` to use it. If beets stores paths
+  relative to its music folder, leave `music_dir` unset or set it to `/music`, where the
+  container sees the music (see [Beets paths and `music_dir`](#beets-paths-and-music_dir)).
 
 ```dotenv
 AUTODJ_MUSIC_DIR=/path/to/music
@@ -561,7 +604,7 @@ of the US statutory webcasting licence (section 114, reported to
 SoundExchange). This is general information, not legal advice: you remain
 responsible for your licence and your reports.
 
-Turn it on in the selected station's Settings > DMCA controls. The choice is station-specific.
+Turn it on with **DMCA mode** in **Settings**, **Song picking**. The choice belongs to the selected station.
 
 ### The limits
 
@@ -632,6 +675,9 @@ estimate.
 
 ### Public pages
 
+Turn DMCA mode on or off in Settings > Song picking for the selected station. Saving it changes
+the next song pick and public feed immediately. From the moment it turns on, the limits count
+the last three hours of saved plays. Songs already picked or queued are not rechecked.
 The public now-playing feed (`/api/nowplaying`), the `/status` page and the
 track-change webhooks never include the next song in DMCA mode, whatever
 `[nowplaying] show_next` says. In Settings, Stream, the "Show the next song
@@ -732,24 +778,26 @@ same address (`/modules/theme-init.js` reads that choice before the page is draw
 
 ### Player page and embeddable player
 
-A station can also have a public page where listeners press Play to hear it in the browser, and
-a compact version of it to put on another website. Both are off until you turn them on, for each
-station on its own:
+A station can have a public page where listeners press Play to hear it in the browser, and
+a compact version for another website. Both are off by default. Use **Settings**, **Stream**
+to turn on the **Public player page** or **Embeddable player** and set **Allowed embed sites**.
+You can change them while the station is stopped, and saving takes effect immediately.
+The settings belong to the selected station and are saved in `station.json`:
 
 ```json
 {
   "player_page": {
     "enabled": true,
     "embed": true,
-    "embed_origins": ["https://nightowlradio.example"]
+    "embed_origins": ["https://example.com"]
   }
 }
 ```
 
-For another station, select it in Settings > Stations and change the same settings; its pages are at
+For another station, select it in Settings > Stations and change the same controls; its pages are at
 `/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
 `/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
-settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
+settings also load when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
 `embed_path`, or `null` while that page is off.
 
 **The player page** (`/player`) has the station's name, a **Play** button, a **Volume** slider,
@@ -1013,7 +1061,7 @@ Choose **Stream** as the station's output in Settings > Stations. Existing insta
 migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
 definition at startup; the old TOML key and environment variable are migration inputs only.
 For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
-In Docker, change the default station's output in Settings and restart with `docker compose up -d`
+In Docker, change the default station's output in Settings and restart with `docker compose restart autodj`
 when changing the process-level stream setup.
 
 `uv run autodj doctor` warns, without failing, if stream mode is on but the server only listens
@@ -1596,9 +1644,9 @@ client for a running server.
 
 ## Several stations
 
-One AutoDJ server can play several stations, or keep the interface available with no stations
-playing. Every station, including `default`, uses the same construction and Start/Stop controls.
-Stop releases that station's audio resources; Start begins fresh playback. Pause holds playback
+One AutoDJ server can play several stations. Named stations have Start/Stop controls; the
+default station starts with AutoDJ and cannot be stopped separately. Stop releases a named
+station's audio resources; Start begins fresh playback. Pause holds playback
 position. Stopping one station does not stop another. Scheduled events missed while stopped are
 skipped when the station next starts.
 
@@ -1708,14 +1756,15 @@ remain in the shared library. The liner file itself is not copied.
 The new station starts with an empty queue and play history. AutoDJ does not copy active
 playback, pending listener requests, listener sessions, bans or statistics, running jobs,
 recording state, relays or their passwords, liner play dates, ads and reports, shows, matched
-intros, profiles, liners, time-check clips, announcements, or caches. Relays stay off until
+intros, profiles, liners, time-check clips, announcements, the source station's own Stereo Tool
+licence key, or caches. Relays stay off until
 configured for the new station. Music files, library records, analysis, song cue points, and
 Stereo Tool preset files remain shared.
 
 AutoDJ stores the definition at `<index_dir>/stations/<slug>/station.json` alongside
-that station's state. A station's secrets (its stream relays, listener user and password, and
-webhooks) never go in `station.json`. They go beside it in `relays.json` and `secrets.json`,
-which only your account can read and backups leave out. Startup migration reads legacy root
+that station's state. A station's secrets (its stream relays, listener user and password,
+webhooks, and its own Stereo Tool licence key) never go in `station.json`. They go beside it in
+`relays.json` and `secrets.json`, which only your account can read and backups leave out. Startup migration reads legacy root
 station sections and `[stations.<slug>]` tables from `config.toml` and `config.local.toml`, and writes
 the canonical station files. The
 legacy sections remain in the TOML file but normal loading ignores them; remove them after
@@ -1999,11 +2048,17 @@ does not license several stations running at the same time. Check Thimeo's
 [licensing terms](https://www.thimeo.com/stereo-tool/licenses/). AutoDJ does not claim that
 unrestricted broadcast use is free.
 
-Saved keys are files readable only by the user AutoDJ runs as (mode 0600 on Linux and macOS, a
-protected access list on Windows): `<index_dir>/.stereo-tool-license` for every station and
-`.stereo-tool-license` in a station's own folder for that station. Backups never include them, so
-save the key again after restoring on another machine. A saved key that cannot be read is
+Saved keys are kept in files readable only by the user AutoDJ runs as (mode 0600 on Linux and
+macOS, a protected access list on Windows): `<index_dir>/.stereo-tool-license` for every station,
+and the station's `secrets.json` in its own folder for that station, beside its other secrets.
+Saving or clearing a station's key leaves the rest of `secrets.json` as it is. Backups never
+include them, and duplicating a station does not copy its key, so save the key again after
+restoring on another machine. Older versions kept a station's own key in `.stereo-tool-license`
+in the station's folder; AutoDJ moves it into `secrets.json` the first time it reads it, deletes
+the old file, and logs one line saying so, without the key. A saved key that cannot be read is
 reported on the page ("No licence. This station's saved licence cannot be read ...").
+An older AutoDJ version cannot read a station's `secrets.json` after it holds that key. If you go
+back to an older version after this move, save each station's own key again in that version.
 
 For an install without a browser, give the key in `AUTODJ_STEREOTOOL_LICENSE_KEY` instead. It
 is read when Stereo Tool starts and overrides the key saved for every station, which the page
@@ -2096,7 +2151,8 @@ Each running station is a complete playout chain in the same process:
 - **Subprocesses, 2 to 4:** the ffmpeg MP3 encoder (plus one per relay bitrate that differs) and
   either the ffmpeg master filter (`smooth`) or Stereo Tool with an ffmpeg limiter.
 - **Memory:** about 21 MB per minute of decoded audio, so roughly 150 to 250 MB per station for
-  the playing song, the next render and the overlap. The similarity index is shared, so another
+  the playing song, the next render and the overlap. Audio longer than 10 minutes goes to a
+  temporary file instead (see [Long tracks](#long-tracks)). The similarity index is shared, so another
   station adds no index memory.
 - **An idle station still runs** its mix bus, mastering and encoder on silence. Stopping a
   station is the real saving.
@@ -2275,7 +2331,7 @@ without changing it.
 When `[library] beets_db` names a beets database, the Tags section also has **Also update the
 beets library**, ticked by default. With it ticked, AutoDJ copies the changed fields into the
 song's beets entry (ISRC only when your beets database has an `isrc` field) and sets its
-modification time, so `beet update` has nothing new to read. The file is always written first.
+modification time, so `beet update` has nothing new to read. When file saving is selected, the file is written first.
 If beets has no entry for the file, or its database cannot be written (for example while beets
 itself holds it), the file and AutoDJ's library keep the new tags, beets keeps the old ones,
 and the page says so; run `beet update` to read the new tags into beets. When beets has no field
@@ -2286,8 +2342,9 @@ If the file is saved but AutoDJ's own library cannot be updated, the page says t
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
 analysed again. Rescans also detect external tag edits that fit inside existing file padding.
 
-In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
-that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
+In Docker, the music folder is mounted read-only by default. **Save tags** can still change
+AutoDJ's library; writing the file fails if **Also save the tags to the file** is ticked.
+Remove `:ro` from the music volume in
 `compose.yaml` to allow it, and from the beets volume to let AutoDJ update beets.
 
 ## Moved files
@@ -3030,15 +3087,37 @@ before songs first released in the 1980s. Each station keeps its own rules. Mana
   BPM, duration, any Beets field (`original_year` is the first release, with the release year
   standing in when Beets has none), a registered music folder, or a saved music category. A song
   with no value for a field, or a category that no longer exists, never matches a condition on it.
-- **Voice liners to choose from**: check any of the station's registered voice liners, choose a
-  registered **Liner folder** (every registered liner in it and its subfolders), or both. One clip
-  is picked at random each time. A clip whose file is missing, that is outside its liner play
-  dates, or that belongs to another station's liner folder is passed over.
+- **Voice liners to choose from**: **Choose specific liners** keeps the checkboxes and optional
+  registered **Liner folder** (every registered liner in it and its subfolders). **Match filenames**
+  instead filters that folder using a pattern, such as `year-{year}-*.wav`. One matching clip is
+  picked at random. Missing files and clips outside the selected station's liner play dates
+  are passed over.
 - **Priority**: where the rule stands next to the song's own matched intros and its artist's.
   By default rules come after both; a rule can come after the song's own intros and before the
   artist's, or before both.
 - **Chance (percent)**, **Wait between plays (minutes)**, **Not before** and **Do not play after**:
   as for a matched intro. The wait holds across restarts.
+
+Filename patterns support `{year}`, `{artist}`, `{title}`, `{album}`, `{genre}` and `{bpm}` from
+that upcoming song's indexed metadata. **Insert song field** adds a placeholder at the cursor.
+BPM is rounded to the nearest whole number (119.5 becomes 120). Matching ignores letter case;
+`*` matches any text and `?` one character, including in the extension. For example,
+`year-{year}-*.wav` can choose `year-1988-a.wav` or `year-1988-b.wav` for a 1988 song.
+
+Only wildcards typed in the pattern are active: punctuation in a song field is literal.
+Patterns match filenames, not folder paths; brackets are literal, and doubled braces (`{{` and
+`}}`) match a literal brace. Unknown placeholders or malformed patterns are refused on save.
+Missing metadata or no eligible filename match makes the rule ineligible for that song.
+There is no automatic punctuation cleanup or fuzzy matching. Year comes from the song's year
+field, independently of any year or Beets condition used by the rule.
+
+**Test with a song** lets you search for a song and inspect the expanded pattern, matching files
+and exclusions. It checks filename matches and current liner eligibility, not the rule's song
+conditions, chance or cooldown. It does not play audio, save the rule or consume any reservation.
+The **Wait between plays** applies to the whole rule: airing a 1982 clip also delays the next
+1988 clip selected by that rule. Newly indexed matching liners join the folder pool normally.
+Playback and hour preview use the same filename resolver. Clockwheel liner steps do not yet
+support these placeholders.
 
 Choose **Save intro rule**. A field the page or the server refuses is marked, its error is shown
 under it and it takes focus; any other result is said once.
@@ -3060,7 +3139,9 @@ clips are gathered by the station's upkeep, which looks every 5 seconds, off the
 for 50,000 registered liners, once each time the liner library changes; until then the clips
 gathered before serve, less any no longer registered. A song change then took 0.3 ms median
 and 1.3 ms at the 95th percentile with that folder. For one song change at most 256 clips of a
-large folder are looked at, so a folder of missing files cannot hold up the render.
+large folder are looked at, so a folder of missing files cannot hold up the render. Filename
+patterns first filter the in-memory names; a bounded cache reuses recently expanded patterns
+until the folder pool changes. The timings above do not include a pattern's first filtering pass.
 
 `intro_rules.json` in the station's state folder holds the rules and when each last aired; backups
 include it. When it cannot be read just now, the rules last read are used and saves are refused,
@@ -3089,7 +3170,12 @@ session and the page's `Origin`. The body is a JSON object of at most 64 KiB:
 
 `clip_ids`, `liner_folder` or both are required; `priority` is `after_artist` (the default),
 `before_artist` or `before_song`. A refused rule answers 422 with `detail` and the `field` at fault.
-`GET` also lists the liners, liner folders and condition choices the page offers.
+`GET` also lists the liners, liner folders and condition choices the page offers. For pattern
+selection, send `filename_pattern`, a `liner_folder`, and an empty `clip_ids` list. Omitting
+`filename_pattern` or sending `null` keeps the existing specific-clip/folder selection.
+`POST /api/intros/rules/test?path=<indexed song path>` accepts the same unsaved rule body and
+returns `expanded_pattern`, `missing_fields`, `matches` and an explanatory `note`. The named
+station route is available too, including while the station is stopped.
 
 ### Where they are kept
 
@@ -3556,6 +3642,21 @@ Each row says in its Status column whether it is fixed or predicted:
   a fixed point below, as "Ad break" and its name.
 - Clockwheel ad steps appear as **Predicted** ad breaks with their expected length. When no spot
   would play, the row has length 0 and says why.
+
+Predicted songs also include song/artist intros and Matched intros rules, using the selected
+station's categories, play dates, cooldowns and liner precedence. Automatic liners use the
+same trigger rules as playback. Talk-ups overlap the song; clips that play before it move
+its start later. These predictions use isolated selection state, so opening the preview
+cannot consume an intro or liner reservation.
+
+Scheduled liners, carts and time checks appear as audio rows, alongside their timing markers.
+Carts overlay the music. Hard events that interrupt playback cut the predicted song; an event
+that waits within its configured allowance leaves the song intact. Automatic after-hour time
+checks appear at the next eligible song start. If a time check needs newly synthesized speech,
+its duration is unknown and the prediction stops with an explanation. Random choices and
+chance-based rules remain estimates; the live station may choose differently. A scheduled
+stream stop or return to listener-dependent automatic mode ends the prediction there.
+Unbooked voice tracks, live DJs and manual playback changes cannot be predicted.
 
 Backtiming goes to each fixed point in the span:
 
@@ -4291,6 +4392,39 @@ station starts with no categories. The playlist files are not backed up: they co
 or a music folder, like the music. `autodj doctor` lists categories with no songs, missing
 playlist tracks, or a query or playlist that cannot be read.
 
+### Beets paths and `music_dir`
+
+AutoDJ finds a song's beets values by its file path. Beets stores full paths, or paths relative
+to its music folder (its `directory` setting); Beets queries and Beets conditions read relative
+paths from `[library] music_dir`. When `music_dir` names the wrong folder, such as an example
+value left in a container's configuration, no beets entry matches a library song: every beets query and Beets
+field condition finds nothing, and clockwheel steps for those categories are skipped, so other
+songs play.
+
+AutoDJ reports this in four places, naming the setting and the folder that probably holds beets'
+paths where useful.
+
+- The server log, once each time it changes: `Beets paths: No song in the beets database
+  matches a song in AutoDJ's library...`, and each empty category that reads beets says
+  `has no songs in the library: no beets song path matches the library; check [library]
+  music_dir`.
+- `autodj doctor`: the `beets-paths` check, and the fix in the `categories` check.
+- Library tools: under the music folders (with the count of songs that have a beets entry when
+  all is well) and above the saved categories.
+- Under **Up Next**, while the problem lasts.
+
+These are static text, not announcements; read them when the station plays the wrong songs.
+
+When `music_dir` is not set, or names a folder that does not exist on this machine, AutoDJ looks
+up a sample of beets' relative paths in the library. If at least three sampled paths match under
+one registered music folder, such as `/music` in the container, and none match under another,
+Beets queries and Beets conditions read relative paths from that folder and say so. If paths
+match under more than one folder, or `music_dir` names a folder that
+exists, nothing is guessed. Set `music_dir` to the named folder in `config.toml` or
+`config.local.toml` (or `AUTODJ_LIBRARY_MUSIC_DIR`) and restart AutoDJ. When beets stores full
+paths that are not the library's, mount the music where beets keeps it, or register it in
+Library tools by that path.
+
 ### Example: rotations A to D from playlists
 
 If a script builds rotation playlists from beets (to import them into AzuraCast, for example),
@@ -4861,3 +4995,5 @@ external generation/import and the studio, recording completion time, repeated
 entry, synthesis calls and recovery from one provider failure. Include keyboard
 and screen-reader use and listen to provider output. No comparative usability or
 live-provider result is claimed by the implementation tests.
+
+AutoDJ and this page were developed with AI assistance.

@@ -21,11 +21,13 @@ a program on the server.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import io
 import json
 import logging
 import os
+import random
 import secrets
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
@@ -568,6 +570,8 @@ class TimeChecks:
             )
         self._joined = JoinCache()
         self._rotation = 0
+        self._forecast_rng: random.Random | None = None
+        self._forecast_only = False
         self._lock = threading.Lock()
         self._tts_lock = threading.Lock()
         # One pack or clip added or removed at a time.
@@ -1005,11 +1009,70 @@ class TimeChecks:
             if not enabled:
                 return []
             if self.settings.pack_order == "random":
-                start = secrets.randbelow(len(enabled))
+                forecast_rng = getattr(self, "_forecast_rng", None)
+                start = (
+                    forecast_rng.randrange(len(enabled))
+                    if forecast_rng is not None
+                    else secrets.randbelow(len(enabled))
+                )
             else:
                 start = self._rotation % len(enabled)
                 self._rotation += 1
         return enabled[start:] + enabled[:start]
+
+    def snapshot(self) -> TimeChecks:
+        """An isolated, read-only copy for forecasting time-check audio."""
+        clone = copy.copy(self)
+        clone.cfg = copy.deepcopy(self.cfg)
+        clone.config = clone.cfg.time_checks
+        clone.settings = self.settings.model_copy(deep=True)
+        with self._lock:
+            clone.packs = dict(self.packs)
+            clone._rotation = self._rotation
+            clone._hour = self._hour
+            clone._aired_hour = self._aired_hour
+            clone._pending = self._pending
+            clone._warned_unavailable = self._warned_unavailable
+        clone.pack_dates = dict(self.pack_dates)
+        clone._packs_chosen = self._packs_chosen
+        clone._unread_pack_dates = copy.deepcopy(self._unread_pack_dates)
+        clone._extra_state = copy.deepcopy(self._extra_state)
+        clone._clashes_logged = set(self._clashes_logged)
+        clone._lock = threading.Lock()
+        clone._save_lock = threading.Lock()
+        clone._tts_lock = threading.Lock()
+        clone._files_lock = threading.Lock()
+        clone._joined = JoinCache()
+        clone._forecast_rng = random.Random(0)
+        clone._forecast_only = True
+        return clone
+
+    def forecast_seconds(
+        self, now: datetime | None = None, *, scheduled: bool = False
+    ) -> float | None:
+        """Duration of an automatic or scheduled check without changing live state or using TTS.
+
+        ``None`` means no configured audio is available, or TTS would be
+        needed to know the duration.
+        """
+        if not getattr(self, "_forecast_only", False):
+            return self.snapshot().forecast_seconds(now, scheduled=scheduled)
+        now = (now or datetime.now(self.zone)).astimezone(self.zone)
+        if not self.settings.enabled:
+            return 0.0
+        if not scheduled:
+            self.tick(now, True)
+            with self._lock:
+                pending = self._pending
+                self._pending = False
+                aired = self._aired_hour == _hour_key(now)
+            if not pending or aired:
+                return 0.0
+        rendered = self.render(now)
+        if rendered is not None:
+            with self._lock:
+                self._aired_hour = _hour_key(now)
+        return None if rendered is None else len(rendered.audio) / SAMPLE_RATE
 
     def _pack_voice(self, name: str, local: datetime) -> np.ndarray | None:
         """Join *name*'s files for this minute, from the cache when unchanged.
@@ -1074,6 +1137,8 @@ class TimeChecks:
 
     def _synthesize(self, text: str) -> Path | None:
         """Render *text* with the configured command, cached per command and text."""
+        if self._forecast_only:
+            return None
         command = self.config.tts_command
         if not command:
             return None

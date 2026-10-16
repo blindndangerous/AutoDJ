@@ -969,9 +969,30 @@ def _analyse_one_track(path: str, points: dict | None = None) -> Any | None:
     *points* are the song's saved cue points; its Intro and Outro place the
     cues when it has them.
     """
-    from autodj.dj_meta import analyse_audio
+    from autodj.dj_meta import analyse_audio, analyse_windows
+    from autodj.processing import TrackWindows, estimated_seconds, read_windows
+    from autodj.stereo import LONG_TRACK_SECONDS, SAMPLE_RATE
 
-    audio, sr = _load_audio(Path(path))
+    seconds = estimated_seconds(Path(path))
+    audio: np.ndarray | None = None
+    if seconds is not None and seconds > LONG_TRACK_SECONDS:
+        # A long track is analysed from its start and end, read as it streams.
+        windows = read_windows(Path(path))
+        if isinstance(windows, TrackWindows):
+            points = points or {}
+            return analyse_windows(
+                windows.head,
+                windows.tail,
+                windows.tail_start_s,
+                SAMPLE_RATE,
+                points.get("intro"),
+                points.get("outro"),
+            )
+        audio = windows
+    if audio is None:
+        audio, sr = _load_audio(Path(path))
+    else:
+        sr = SAMPLE_RATE
     if len(audio) == 0:
         return None
     if points is None:

@@ -30,6 +30,11 @@ _TEST_ACCESS_TOKEN = "task10-test-access-token-is-32-bytes"
 _TEST_DEVICE_ID = "d" * 32
 
 
+@pytest.fixture(autouse=True)
+def isolate_mock_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tests.integration._helpers.NO_INDEX_DIR", tmp_path / "no-index")
+
+
 def _pair(client: TestClient, *, name: str = "Test browser"):
     """Pair client through public API using current short-lived code."""
     code = client.app.state.request_pairing_code()[0]
@@ -67,6 +72,13 @@ def test_create_station_needs_session_origin_and_small_body() -> None:
     )
     assert client.post("/api/stations", content=b" " * 4097).status_code == 413
     assert client.post("/api/stations", json=body).status_code == 503
+
+
+def test_settings_request_bodies_are_capped() -> None:
+    client = _security_client()
+    assert _pair(client).status_code == 200
+    for path in ("/api/time-settings", "/api/station-settings", "/api/public-settings"):
+        assert client.put(path, content=b" " * (8 * 1024 + 1)).status_code == 413
 
 
 def _security_app():
@@ -341,6 +353,7 @@ def test_post_start_exception_audits_actual_status_without_second_response(
         "/api/library/missing",
         "/api/library/auto-rescan",
         "/api/time-settings",
+        "/api/public-settings",
         "/api/profiles",
         "/api/liners",
     ],
@@ -368,6 +381,7 @@ def test_secured_route_categories_require_session(path: str) -> None:
         ("post", "/api/library/remove-missing", {"json": {}}),
         ("put", "/api/library/auto-rescan", {"json": {}}),
         ("put", "/api/time-settings", {"json": {}}),
+        ("put", "/api/public-settings", {"json": {}}),
     ],
 )
 def test_unsafe_route_categories_reject_before_parsing_body(
@@ -649,7 +663,9 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/tags"),
         ("post", "/api/library/remove-missing"),
         ("put", "/api/library/auto-rescan"),
+        ("put", "/api/library/advanced-length"),
         ("put", "/api/time-settings"),
+        ("put", "/api/public-settings"),
     ],
 )
 def test_every_mutation_route_requires_session_before_body_validation(
@@ -991,6 +1007,8 @@ class TestArt:
             resp = tc.get("/api/art", params={"path": "Z:/Music/song_0.flac"})
 
         assert resp.status_code == 200
+        # The lookup itself went through to_thread; shutting the app down may
+        # use to_thread again afterwards.
         lookup = called.index("Z:/Music/song_0.flac")
         assert called[lookup - 1] == "to_thread"
 

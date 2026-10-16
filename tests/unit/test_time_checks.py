@@ -56,6 +56,30 @@ def test_generated_mode_never_calls_legacy_tts_when_audio_is_missing(tmp_path, m
     assert checks.render(datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)) is None
 
 
+def test_generated_set_forecast_reads_local_audio_without_synthesis(tmp_path, monkeypatch):
+    """ADR-0013-07: upstream forecasts reuse generated audio without running commands."""
+    from autodj.speech import _empty
+
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True)
+    root = checks.paths.speech
+    folder = root / "sets" / "generated"
+    folder.mkdir(parents=True)
+    key = "a" * 64
+    sf.write(folder / f"{key}.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    data = _empty()
+    data["active_set"] = "generated"
+    data["sets"]["generated"] = {"state": "complete", "minutes": {"03_05": key}}
+    manifest = root / "speech.json"
+    manifest.write_text(json.dumps(data))
+    before = manifest.read_bytes()
+    monkeypatch.setattr(checks, "_synthesize", lambda text: pytest.fail("Unexpected synthesis"))
+    when = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    assert checks.forecast_seconds(when, scheduled=True) == pytest.approx(0.01)
+    assert manifest.read_bytes() == before
+    assert not checks.cache.exists()
+
+
 def test_natural_speech_and_recording_names(tmp_path: Path) -> None:
     denver = ZoneInfo("America/Denver")
     at = datetime(2026, 10, 11, 3, 5, tzinfo=denver)
@@ -85,6 +109,70 @@ def test_recording_wraps_intro_and_outro_as_one_clip(tmp_path: Path) -> None:
     rendered = checks.render(local)
     assert rendered is not None and rendered.audio.shape == (1323, 2)
     assert rendered.source == "recorded clip"
+
+
+def test_forecast_seconds_is_read_only_and_keeps_hour_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    checks._pending = True
+    checks._aired_hour = (2026, 10, 11, 2, 0)
+    before = (checks._pending, checks._aired_hour, checks._rotation)
+    file_before = (checks.folder / "03_05.wav").read_bytes()
+
+    assert checks.forecast_seconds(local) == pytest.approx(0.01)
+    assert (checks._pending, checks._aired_hour, checks._rotation) == before
+    assert (checks.folder / "03_05.wav").read_bytes() == file_before
+
+
+def test_hour_forecast_fires_once_from_pending_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local) == pytest.approx(0.01)
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_scheduled_forecast_marks_hour_and_suppresses_hour_rule(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local, scheduled=True) == pytest.approx(0.01)
+    assert forecast._aired_hour == (2026, 10, 11, 3, int(local.utcoffset().total_seconds()))
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_forecast_seconds_does_not_run_or_cache_tts(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    marker = tmp_path / "tts-ran.txt"
+    checks.config.tts_command = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+        "{out}",
+    ]
+    when = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+
+    assert checks.forecast_seconds(when) is None
+    assert not marker.exists()
+    assert not checks.cache.exists()
 
 
 _TTS_SCRIPT = (

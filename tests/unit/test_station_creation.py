@@ -11,6 +11,7 @@ from autodj.config import _build_station, load_config, move_station_tables
 from autodj.doctor import CheckStatus, run_doctor
 from autodj.station_creation import CreationConflict, duplicate_table, stage_station
 from autodj.stations import StationPaths
+from autodj.stereotool_setup import old_station_license_path, save_station_license
 
 
 def _root(tmp_path: Path, extra: str = ""):
@@ -85,6 +86,9 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
     old.clockwheels.mkdir()
     (old.clockwheels / "mix.json").write_text("{}", encoding="utf-8")
     old.relays.write_text('{"password": "secret"}', encoding="utf-8")
+    # The station's own Stereo Tool key, in secrets.json and in the old file.
+    save_station_license(old.state_dir, "STEREO-TOOL-SECRET-1")
+    old_station_license_path(old.state_dir).write_text("STEREO-TOOL-SECRET-2", "ascii")
     table = duplicate_table(cfg, "owl", "new", "New", False)
     assert "listener_user" not in table["stream"]
     assert Path(table["recording"]["folder"]) == Path("recordings/new")
@@ -102,6 +106,10 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
         "settings": {"enabled": True, "outro": ""},
     }
     assert not (folder / "relays.json").exists()
+    assert not (folder / "secrets.json").exists()
+    assert not old_station_license_path(folder).exists()
+    copied_text = b"".join(item.read_bytes() for item in folder.rglob("*") if item.is_file())
+    assert b"STEREO-TOOL-SECRET" not in copied_text
     (folder / "carts" / "id.wav").write_bytes(b"changed")
     assert (old.cart_uploads / "id.wav").read_bytes() == b"cart"
 
@@ -205,6 +213,36 @@ def test_serve_moves_a_config_station_into_its_own_file(tmp_path: Path) -> None:
     )
     again = load_config(cfg.config_path, environ={}).stations[0]
     assert again.cfg.stream.listener_password == "secret"
+
+
+def test_a_stereo_tool_key_in_secrets_json_is_kept_apart_from_the_station(
+    tmp_path: Path,
+) -> None:
+    from autodj.config import move_station_tables
+
+    extra = (
+        '\n[stations.owl.stream]\nstation_name = "Owl"\n'
+        'listener_user = "dj"\nlistener_password = "secret"\n'
+        '[stations.owl.recording]\nfolder = "recordings/owl"\n'
+    )
+    cfg = _root(tmp_path, extra)
+    paths = StationPaths.for_station(cfg, "owl")
+    _definition(
+        cfg, "owl", {"stream": {"station_name": "Owl"}, "recording": {"folder": "recordings/owl"}}
+    )
+    # A key saved before the listener login moved: the login still moves in.
+    save_station_license(paths.state_dir, "STEREO-TOOL-KEY-1")
+    assert move_station_tables(cfg) is True
+    assert json.loads(paths.secrets.read_text("utf-8")) == {
+        "version": 1,
+        "stereo_tool": {"license_key": "STEREO-TOOL-KEY-1"},
+        "stream": {"listener_user": "dj", "listener_password": "secret"},
+    }
+    assert move_station_tables(cfg) is False
+    owl = load_config(cfg.config_path, environ={}).stations[0]
+    assert (owl.slug, owl.defined_in) == ("owl", "web")
+    assert owl.cfg.stream.listener_password == "secret"
+    assert "STEREO-TOOL-KEY-1" not in repr(owl)
 
 
 def test_stream_is_not_a_station_id() -> None:

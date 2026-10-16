@@ -96,13 +96,15 @@ describe("initSubtabs", () => {
     expect(byId("spanel-djmix").hidden).toBe(false);
     expect(byId("spanel-transitions").hidden).toBe(true);
 
-    // Stream is hidden outside stream mode, so End lands on the last one shown.
+    // Public player settings keep Stream available outside stream mode.
     press(document.activeElement, "End");
     expect(document.activeElement).toBe(byId("stab-workers"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-access"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stations"));
+    press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));
     press(document.activeElement, "Home");

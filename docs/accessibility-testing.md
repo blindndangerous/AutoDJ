@@ -168,7 +168,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   their captions and column headers (table navigation reads each cell with its column and row),
   the session lengths as a list, Refresh statistics, Show and Days to keep each said once, and
   nothing said while the tables are being read.
-- DMCA mode (`[dmca] enabled = true`): the "DMCA mode is on" line under the feed links read as
+- DMCA mode (on in Settings > Song picking): the "DMCA mode is on" line under the feed links read as
   plain text; Show the next song publicly read as unavailable with its reason, pressing it saying
   the reason once and leaving it unticked; and queueing a song over a limit from Search or
   Library opening the confirm dialog with the limit in words and focus on Cancel, Queue anyway

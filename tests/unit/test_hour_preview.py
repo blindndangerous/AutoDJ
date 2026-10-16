@@ -1647,3 +1647,298 @@ def test_browser_forecast_uses_live_position_after_seek(tmp_path: Path, percent:
     assert found is not None
     remaining = _remaining(player, current, 150, 180)
     assert found[4] == pytest.approx(NOW + remaining)
+
+
+@pytest.mark.parametrize("filename_pattern", [None, "year-{year}.wav"])
+@pytest.mark.parametrize("talk_up", [False, True])
+def test_year_intro_rules_are_predicted_without_consuming_live_state(
+    tmp_path, monkeypatch, talk_up, filename_pattern
+):
+    from autodj.intro_rules import IntroRule, IntroRules
+    from autodj.matched_intros import MatchedIntros
+    from tests.unit._break_station import write_voice
+
+    source, _power, gold = _station(
+        tmp_path,
+        liners=[],
+        clockwheels=[{"name": "Main", "resync_minutes": [], "steps": [category_step("gold")]}],
+    )
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    decided = read_station(player, now=NOW)
+    player.bus = SimpleNamespace()
+    clip_path = write_voice(tmp_path / "year-2000.wav", 2)
+    clip = SimpleNamespace(path=str(clip_path), length=2)
+    catalog = source.library.catalog
+    catalog.record_for_path = lambda path: (
+        {"id": "song", "kind": "music"} if path != clip.path else {"kind": "liner"}
+    )
+    source.library.record_for_id = lambda key: (
+        {"path": clip.path, "kind": "liner"} if key == "year" else None
+    )
+    lookup = source.library.entry_for_path
+    source.library.entry_for_path = lambda path: clip if path == clip.path else lookup(path)
+    entries_snapshot = source.library.entries_snapshot
+    source.library.entries_snapshot = lambda kind="music": (
+        (clip,) if kind == "liner" else entries_snapshot(kind)
+    )
+    player.matched_intros = store = MatchedIntros(tmp_path / "matched_intros.json", tmp_path)
+    store.rules = IntroRules(tmp_path / "intro_rules.json", date.fromtimestamp, store._rng)
+    store.rules.save(
+        "a" * 32,
+        IntroRule(
+            conditions=[{"field": "year", "operator": "eq", "value": 2000}],
+            clip_ids=[] if filename_pattern else ["year"],
+            liner_folder=str(tmp_path) if filename_pattern else None,
+            filename_pattern=filename_pattern,
+            label="Year 2000",
+            cooldown_minutes=60,
+        ),
+        create=True,
+    )
+    points = {"start": 0, "intro": 5 if talk_up else 0, "segue": 200, "end": 200}
+    catalog.points = lambda path: points if path != clip.path else {}
+    before = store.rules.path.read_bytes()
+    rng = store._rng.getstate()
+    items, _, stopped = hour_preview.predict(
+        source, snapshot_player(player), decided, NOW + 900, seed=1, budget=30
+    )
+    assert stopped is None
+    [intro] = [item for item in items if item.kind == "intro"]
+    following = next(item for item in items if item.kind == "song")
+    assert intro.label == "Matched intro: Year 2000"
+    if talk_up:
+        assert intro.starts == pytest.approx(following.starts)
+    else:
+        assert intro.starts + intro.seconds <= following.starts + 0.02
+    assert store.rules.path.read_bytes() == before
+    assert store._rng.getstate() == rng
+    assert not store.rules._reserved
+    assert not store.rules._aired
+
+    queued = Item("song", decided.handoff, 200, "queued", gold[1])
+    with_queue = replace(
+        decided,
+        items=(*decided.items, queued),
+        unplayed=(*decided.unplayed, (gold[1], queued.starts)),
+        last=gold[1],
+        handoff=queued.starts + queued.seconds,
+    )
+    view = build_preview(source, 15, decided=with_queue, budget=30)
+    [queued_row] = [row for row in view["items"] if row["status"] == "queued"]
+    [voice_row] = [row for row in view["items"] if row["kind"] == "intro"]
+    assert queued_row["path"] == gold[1].path
+    assert datetime.fromisoformat(voice_row["starts_at"]) <= datetime.fromisoformat(
+        queued_row["starts_at"]
+    )
+    assert not store.rules._reserved
+
+
+@pytest.mark.parametrize("talk_up", [False, True])
+def test_automatic_liners_are_predicted_with_isolated_trigger_counts(tmp_path, talk_up):
+    from autodj.liner_scheduler import LinerScheduler
+    from tests.unit._break_station import write_voice
+
+    clip = replace(liner(1), path=str(write_voice(tmp_path / "liner.wav", 2)), length=2)
+    source, _, gold = _station(
+        tmp_path,
+        liners=[clip],
+        playback={
+            "pick_mode": "random",
+            "liners_enabled": True,
+            "liners_every_n_songs": 2,
+            "liners_talk_up": talk_up,
+        },
+    )
+    player = source.player
+    _playing(source, gold[0], NOW - 50)
+    source.library.record_for_id = lambda key: (
+        {"path": clip.path, "kind": "liner"} if key == "id" else None
+    )
+    player.liner_scheduler = scheduler = LinerScheduler(
+        player._cfg.playback,
+        tmp_path,
+        None,
+        clock=lambda: NOW,
+        registered_liners=lambda: [("id", Path(clip.path))],
+        vocal_start=lambda path: 0.0,
+    )
+    scheduler.on_track_start()
+    before = (scheduler._tracks_since, scheduler._last_fire, scheduler._rng.getstate())
+    decided = read_station(player, now=NOW)
+    items, _, stopped = hour_preview.predict(
+        source, snapshot_player(player), decided, NOW + 1000, seed=1
+    )
+    assert stopped is None
+    assert (
+        sum(item.kind == "liner" or item.label.startswith("Automatic liner:") for item in items)
+        >= 2
+    )
+    assert (scheduler._tracks_since, scheduler._last_fire, scheduler._rng.getstate()) == before
+    assert scheduler._planned_key is None
+
+
+@pytest.mark.parametrize(
+    "timing,wait,offset", [("soft", 0, 150), ("hard", 0, 60), ("hard", 100, 150)]
+)
+def test_scheduled_liner_audio_and_hard_cut(tmp_path, timing, wait, offset):
+    from autodj.liner_scheduler import LinerScheduler
+
+    source, _, gold = _station(tmp_path, liners=[])
+    _playing(source, gold[0], NOW - 50)
+    source.player.liner_scheduler = LinerScheduler(
+        source.player._cfg.playback,
+        tmp_path,
+        None,
+        decoder=lambda *_: np.zeros((2 * SR, 2), dtype=np.float32),
+    )
+    source.events = [_event("News", time=clock_time(12, 11), timing=timing, wait_seconds=wait)]
+    decided = read_station(source.player, now=NOW)
+    decided = replace(
+        decided, handoff=NOW + 150, items=(Item("song", NOW - 50, 200, "on_air", gold[0]),)
+    )
+    view = build_preview(source, 15, decided=decided, budget=30)
+    news = next(row for row in view["items"] if row["title"] == "Scheduled liner: News")
+    assert news["seconds"] == 2
+    assert datetime.fromisoformat(news["starts_at"]).timestamp() == NOW + offset
+    assert source.player.liner_scheduler._fires == 0
+
+
+@pytest.mark.parametrize("timing,offset", [("hard", 60), ("soft", 150)])
+def test_scheduled_cart_is_an_overlay(tmp_path, timing, offset):
+    source, _, gold = _station(tmp_path, liners=[])
+    _playing(source, gold[0], NOW - 50)
+    cart = SimpleNamespace(
+        name="Weather", duration=12, dates=lambda: SimpleNamespace(refusal=lambda _: None)
+    )
+    source.carts = SimpleNamespace(store=SimpleNamespace(slot=lambda page, slot: cart))
+    source.events = [
+        _event(
+            "Cart",
+            action="play_cart",
+            params={"page": "1", "slot": "1"},
+            time=clock_time(12, 11),
+            timing=timing,
+        )
+    ]
+    decided = replace(read_station(source.player, now=NOW), handoff=NOW + 150)
+    items, _, stopped = hour_preview.predict(
+        source, snapshot_player(source.player), decided, NOW + 500, seed=1, budget=30
+    )
+    assert stopped is None
+    [row] = [row for row in items if row.label == "Cart: Weather"]
+    assert (row.starts, row.seconds) == (NOW + offset, 12)
+    assert next(row for row in items if row.kind == "song").starts == NOW + 150
+
+
+def test_unknown_time_check_duration_stops_prediction(tmp_path):
+    from autodj.liner_scheduler import LinerScheduler
+
+    source, _, gold = _station(tmp_path, liners=[])
+    _playing(source, gold[0], NOW - 50)
+    source.player.liner_scheduler = LinerScheduler(source.player._cfg.playback, tmp_path, None)
+    source.time_checks = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            forecast_seconds=lambda *a, **kw: None, tick=lambda *a: None
+        )
+    )
+    source.events = [_event("Time", action="time_check", params={}, time=clock_time(12, 11))]
+    _, _, stopped = hour_preview.predict(
+        source,
+        snapshot_player(source.player),
+        read_station(source.player, now=NOW),
+        NOW + 500,
+        seed=1,
+        budget=30,
+    )
+    assert "duration" in stopped
+
+
+@pytest.mark.parametrize("state", ["stop", "auto"])
+def test_prediction_stops_at_scheduled_off_air_or_listener_dependent_state(tmp_path, state):
+    source, _, gold = _station(tmp_path, liners=[])
+    _playing(source, gold[0], NOW - 50)
+    source.events = [
+        _event(
+            "Off air",
+            action="stream",
+            params={"state": state},
+            time=clock_time(12, 11),
+            timing="hard",
+        )
+    ]
+    view = build_preview(source, 15, now=NOW, budget=30)
+    assert f"scheduled stream {state}" in view["stopped"]
+    assert all(
+        datetime.fromisoformat(row["starts_at"]).timestamp() < NOW + 60 for row in view["items"]
+    )
+
+
+def test_hard_stream_stop_trims_a_predicted_liner_overlay(tmp_path):
+    from autodj.liner_scheduler import LinerScheduler
+
+    source, _, gold = _station(
+        tmp_path,
+        liners=[],
+        playback={
+            "pick_mode": "random",
+            "liners_enabled": True,
+            "liners_every_n_songs": 1,
+            "liners_talk_up": False,
+        },
+    )
+    _playing(source, gold[0], NOW - 50)
+    (tmp_path / "station.wav").write_bytes(b"decoded by the test")
+    source.player.liner_scheduler = LinerScheduler(
+        source.player._cfg.playback, tmp_path, None, decoder=lambda *_: _frames(200)
+    )
+    source.events = [
+        _event(
+            "Off air",
+            action="stream",
+            params={"state": "stop"},
+            time=clock_time(12, 14),
+            timing="hard",
+        )
+    ]
+    view = build_preview(source, 15, now=NOW, budget=30)
+    [row] = [row for row in view["items"] if row["title"].startswith("Automatic liner:")]
+    assert datetime.fromisoformat(row["starts_at"]).timestamp() + row["seconds"] == NOW + 240
+
+
+def test_pending_time_check_replaces_automatic_liner_without_consuming_live_state(tmp_path):
+    from autodj.liner_scheduler import LinerScheduler
+    from autodj.time_checks import TimeChecks
+    from tests.unit._break_station import write_voice
+
+    source, _, gold = _station(
+        tmp_path,
+        liners=[],
+        playback={
+            "pick_mode": "random",
+            "liners_enabled": True,
+            "liners_every_n_songs": 1,
+            "liners_talk_up": False,
+        },
+    )
+    _playing(source, gold[0], NOW - 50)
+    write_voice(tmp_path / "automatic.wav", 2)
+    source.player.liner_scheduler = LinerScheduler(source.player._cfg.playback, tmp_path, None)
+    checks = source.time_checks = TimeChecks(source.player._cfg, "UTC", source.player.station_paths)
+    checks.settings = checks.settings.model_copy(
+        update={"enabled": True, "rule": "after_hour_song"}
+    )
+    checks.folder.mkdir(parents=True, exist_ok=True)
+    write_voice(checks.folder / "12_12.wav", 2)
+    checks.tick(datetime.fromtimestamp(NOW, UTC), True)
+    checks._pending = True
+    view = build_preview(source, 15, now=NOW, budget=30)
+    assert view["stopped"] is None
+    [row] = [row for row in view["items"] if row["title"] == "Time check"]
+    assert row["seconds"] == 3  # The recorded clip includes its one-second tail.
+    assert not any(
+        other["title"].startswith("Automatic liner:") and other["starts_at"] == row["starts_at"]
+        for other in view["items"]
+    )
+    assert checks._pending
+    assert checks._aired_hour is None
