@@ -1551,6 +1551,8 @@ def analyse_track_audio(
     its length.
     """
     if len(audio) <= LONG_TRACK_SECONDS * sr:
+        if intro_end_s is None and outro_start_s is None:
+            return analyse_audio(_mono_part(audio), sr)
         return analyse_audio(_mono_part(audio), sr, intro_end_s, outro_start_s)
     window = round(ANALYSIS_WINDOW_SECONDS * sr)
     return analyse_windows(

@@ -5684,17 +5684,16 @@ class Player:
     def _background_audio(path: str) -> tuple[np.ndarray | TrackWindows, int]:
         """*path* decoded for background analysis: mono, or a long track's ends.
 
-        A track the header says is short is decoded whole, mono, at its own
-        rate.  A longer one, or one of unknown length, is read once as it
-        streams, keeping only its start and end
-        (:func:`~autodj.processing.read_windows`).
+        A track the header says is long is read once as it streams, keeping
+        only its start and end (:func:`~autodj.processing.read_windows`);
+        any other is decoded whole, mono, at its own rate, as before.
         """
         from autodj.processing import estimated_seconds, read_windows
 
         seconds = estimated_seconds(Path(path))
-        if seconds is not None and seconds <= LONG_TRACK_SECONDS:
-            return load_mono(path)
-        return read_windows(Path(path)), SAMPLE_RATE
+        if seconds is not None and seconds > LONG_TRACK_SECONDS:
+            return read_windows(Path(path)), SAMPLE_RATE
+        return load_mono(path)
 
     def _record_intro_start(self, path: str, audio: np.ndarray, sr: int) -> None:
         """Store the first-sound time of an already analysed track.

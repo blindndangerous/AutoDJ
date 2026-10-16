@@ -4,7 +4,7 @@
 // analyses every length.
 import { sayIfStillPending } from "./live-region.js";
 
-export const MAX_ADVANCED_MINUTES = 600;
+const MAX_ADVANCED_MINUTES = 600;
 
 // The message for a value the server would refuse, or null.
 export function advancedLengthProblem(text) {
