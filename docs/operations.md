@@ -1,5 +1,7 @@
 # AutoDJ operations
 
+For everyday station tasks, start with the [operator guides](guides/build-your-sound.md) and the [settings reference](settings-reference.md). This page keeps detailed commands and migration notes.
+
 Commands labeled Bash require a Linux host or WSL2. Native Windows operators should use the
 PowerShell equivalents below. Run Linux container commands inside WSL2 with the repository on a
 WSL filesystem so user IDs and POSIX modes have their documented meaning.
