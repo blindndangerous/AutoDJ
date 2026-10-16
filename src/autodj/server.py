@@ -2021,19 +2021,6 @@ def create_app(
                 return transcoded
         return FileResponse(audio_path, media_type=_audio_mime(audio_path), stat_result=metadata)
 
-    @app.get("/api/stereo-tool-presets")
-    async def api_stereo_tool_presets() -> dict:
-        """List the included and uploaded processor presets."""
-        from autodj.stereotool_presets import INCLUDED, list_presets
-
-        presets = await asyncio.to_thread(list_presets, cfg.index.shared_dir)
-        active = cfg.playback.stereotool_preset
-        # A preset removed outside AutoDJ is replaced by the included one when
-        # Stereo Tool starts, so report that instead of a name not listed.
-        if active not in {preset["name"] for preset in presets}:
-            active = INCLUDED
-        return {"active": active, "presets": presets}
-
     @app.post("/api/stereo-tool-presets/upload")
     async def api_stereo_tool_preset_upload(file: UploadFile = File(...)) -> dict:
         """Store one size-bounded text preset under the station data folder."""
@@ -2548,6 +2535,16 @@ def create_app(
         for client in clients:
             await _close_and_cancel_websocket(client, 1.0, 4409, "station stopped")
 
+    def build_content(extra: ExtraStation) -> Any:
+        from autodj.config import station_config
+        from autodj.station_content import StationContent
+
+        saved_cfg = station_config(extra.paths._cfg, cfg)
+        return StationContent(
+            saved_cfg, StationPaths.for_station(saved_cfg, extra.slug), shared.library, shared.sim
+        )
+
+    stations.build_content = build_content
     stations.prepare = prepare
     stations.disconnect = disconnect
     return app

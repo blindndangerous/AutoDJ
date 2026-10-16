@@ -28,6 +28,54 @@ _QUEUE_CHUNKS = 512
 _RETRY_SECONDS = 5
 
 
+def load_saved_state(
+    state_path: Path, folder: Path, fallback: RecordingConfig
+) -> tuple[bool, RecordingConfig]:
+    """Load the durable recorder choice and settings shared by live/offline editors."""
+    if not state_path.exists():
+        return False, fallback
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"version", "running", "split", "retention_days", "free_space_mb"}
+            or state["version"] != 1
+            or not isinstance(state["running"], bool)
+        ):
+            raise ValueError("unsupported recording state")
+        config = RecordingConfig(
+            folder, state["split"], state["retention_days"], state["free_space_mb"]
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        logger.error(
+            "Cannot load recording state from %s: %s; recording starts stopped",
+            state_path,
+            exc,
+        )
+        with suppress(OSError):
+            state_path.replace(state_path.with_name(f"{state_path.name}.{time.time_ns()}.bad"))
+        return False, fallback
+    return state["running"], config
+
+
+def save_state(state_path: Path, running: bool, config: RecordingConfig) -> None:
+    """Persist validated recorder state for the live recorder and saved editor."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(
+        state_path,
+        json.dumps(
+            {
+                "version": 1,
+                "running": running,
+                "split": config.split,
+                "retention_days": config.retention_days,
+                "free_space_mb": config.free_space_mb,
+            }
+        )
+        + "\n",
+    )
+
+
 def _hour(wall: datetime) -> tuple[int, int, int, int, int]:
     """The clock hour of *wall*; ``fold`` tells a repeated DST hour apart."""
     return (wall.year, wall.month, wall.day, wall.hour, wall.fold)
@@ -83,50 +131,21 @@ class Recorder:
         A damaged file must not keep the station off the air: it is moved
         aside and recording starts stopped with the config.toml settings.
         """
-        if not self.state_path.exists():
-            return
-        try:
-            state = json.loads(self.state_path.read_text(encoding="utf-8"))
-            if (
-                not isinstance(state, dict)
-                or set(state) != {"version", "running", "split", "retention_days", "free_space_mb"}
-                or state["version"] != 1
-                or not isinstance(state["running"], bool)
-            ):
-                raise ValueError("unsupported recording state")
-            config = RecordingConfig(
-                self.folder, state["split"], state["retention_days"], state["free_space_mb"]
-            )
-        except (OSError, ValueError) as exc:
-            logger.error(
-                "Cannot load recording state from %s: %s; recording starts stopped",
-                self.state_path,
-                exc,
-            )
-            with suppress(OSError):
-                self.state_path.replace(
-                    self.state_path.with_name(f"{self.state_path.name}.{time.time_ns()}.bad")
-                )
-            return
+        running, config = load_saved_state(
+            self.state_path,
+            self.folder,
+            RecordingConfig(self.folder, self.split_mode, self.retention_days, self.free_space_mb),
+        )
         self.split_mode = config.split
         self.retention_days = config.retention_days
         self.free_space_mb = config.free_space_mb
-        self._desired = state["running"]
+        self._desired = running
 
     def _save(self, running: bool, split: str, retention_days: int, free_space_mb: int) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(
+        save_state(
             self.state_path,
-            json.dumps(
-                {
-                    "version": 1,
-                    "running": running,
-                    "split": split,
-                    "retention_days": retention_days,
-                    "free_space_mb": free_space_mb,
-                }
-            )
-            + "\n",
+            running,
+            RecordingConfig(self.folder, split, retention_days, free_space_mb),
         )
 
     @property

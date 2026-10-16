@@ -450,14 +450,17 @@ def test_encoder_cooldown_is_503(stream_app) -> None:
     assert "stream encoder failed" in response.text
 
 
-def test_stream_routes_are_404_in_browser_mode(client) -> None:
+def test_stream_transport_routes_are_404_and_settings_are_saved_in_browser_mode(client) -> None:
     assert client.get("/stream/" + "x" * 43 + ".mp3").status_code == 404
     assert client.get("/stream.mp3").status_code == 404
     assert client.get("/stream.m3u").status_code == 404
     assert client.head("/stream.mp3").status_code == 404
-    assert client.get("/api/stream").status_code == 404
+    info = client.get("/api/stream")
+    assert info.status_code == 200, info.text
+    assert info.json()["state"] == "stopped"
     assert client.post("/api/stream/rotate").status_code in (404, 405)
-    assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 404
+    settings = client.post("/api/stream/settings", json={"bitrate": 192})
+    assert settings.status_code == 200, settings.text
 
 
 # -- the authenticated stream API --------------------------------------------

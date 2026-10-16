@@ -219,6 +219,31 @@ class PlayerSnapshot:
     related_tracks: Any = None
 
 
+def snapshot_settings(settings: Any, ledger: Any) -> PlayerSnapshot:
+    """Copy saved picker settings for a stopped station without an audio engine."""
+    from autodj.repeat_rules import HISTORY_LIMIT, records_from_plays
+
+    with settings._lock:
+        cfg = copy.deepcopy(settings.cfg)
+        values = {name: getattr(settings, name) for name in _COPIED if hasattr(settings, name)}
+        discovery = settings._discovery_enabled
+    rows = ledger.recent_plays(HISTORY_LIMIT) + ledger.pending_history()
+    history = tuple(records_from_plays(rows, time.time()))
+    return PlayerSnapshot(
+        cfg=cfg,
+        sim=settings.sim,
+        related_artists=None,
+        settings=values,
+        discovery_enabled=discovery,
+        history=history,
+        recent=tuple(row.path for row in history),
+        clock=ledger.get_setting("clock", None),
+        clock_status=None,
+        liner_filter=None,
+        station_paths=settings.paths,
+    )
+
+
 def snapshot_player(player: Any) -> PlayerSnapshot:
     """Copy what a run needs from *player*, holding the locks its writers hold.
 

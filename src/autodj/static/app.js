@@ -861,19 +861,21 @@ function applyState(s, { announceTrack = true } = {}) {
   // Settings checkbox and the Now Playing Discovery button have to answer
   // for the same flag or they contradict each other.
   if (s.settings) {
-    applySettingsState(
-      { ...s.settings, discovery_enabled: s.discovery_enabled },
-      _settingsEls(),
-    );
-    if (document.activeElement !== _musicSpeedNumber && !musicSpeedSliderBusy(_musicSpeedSlider)) {
-      syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
-    }
-    applyMixSettings(s.settings, _mixEls);
-    applyRepeatSettings(s.settings, _repeatEls);
+    applySavedSettings({ ...s.settings, discovery_enabled: s.discovery_enabled });
   }
 
   // Last, so Play / Pause already has its enabled state for this push.
   if (losesFocus) (btnPause.disabled ? btnSkip : btnPause).focus();
+}
+
+function applySavedSettings(settings) {
+  if (!settings) return;
+  applySettingsState(settings, _settingsEls());
+  if (document.activeElement !== _musicSpeedNumber && !musicSpeedSliderBusy(_musicSpeedSlider)) {
+    syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
+  }
+  applyMixSettings(settings, _mixEls);
+  applyRepeatSettings(settings, _repeatEls);
 }
 
 function renderMute(isMuted) {
@@ -1660,6 +1662,9 @@ function renderListenContext() {
 
 function setOffAir(offAir) {
   stationOffAir = offAir;
+  setStoppedPlaybackControls(offAir);
+  if (offAir) stoppedActionsObserver.observe(document.body, { childList: true, subtree: true });
+  else stoppedActionsObserver.disconnect();
   if (offAirBox && offAirBox.hidden === offAir) offAirBox.hidden = !offAir;
   if (offAir) setTextIfChanged(offAirText, `${stationName()} is off air.`);
   if (!offAir && offAirTimer !== null) {
@@ -1667,6 +1672,37 @@ function setOffAir(offAir) {
     offAirTimer = null;
   }
 }
+
+// Saved settings remain usable when a station is stopped. Disable actions
+// that start playback or mutate its live queue; leave editor inputs alone.
+function setStoppedPlaybackControls(stopped) {
+  const controls = [
+    btnPause, btnSkip, btnShuffle, btnDiscovery,
+    ...document.querySelectorAll("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']"),
+  ].filter(Boolean);
+  for (const control of controls) control.disabled = stopped;
+}
+
+document.addEventListener("click", (event) => {
+  if (!stationOffAir) return;
+  const action = event.target?.closest?.("#queue-clear, #recording-toggle, #ln-test, #shows-play-now, .result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']");
+  if (!action) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+
+const stoppedActionsObserver = new document.defaultView.MutationObserver((records) => {
+  if (!stationOffAir) return;
+  for (const record of records) {
+    for (const node of record.addedNodes) {
+      if (node.nodeType !== 1) continue;
+      const actions = [];
+      if (node.matches?.(".result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']")) actions.push(node);
+      actions.push(...node.querySelectorAll?.(".result-btn, .queue-btn, #cart-wall [data-slot], #schedule-events [data-role='run'], #ads-breaks button[aria-label^='Run now, ad break']") || []);
+      for (const action of actions) action.disabled = true;
+    }
+  }
+});
 
 // Whether the list loaded; a failure keeps the list the page had.
 async function refreshStationList() {
@@ -1707,9 +1743,13 @@ function lastStation() {
 // one transport announcement, says "Off air" once; Now Playing shows
 // Start; the page looks every 10 seconds whether it is back.
 function stationWentOffAir() {
+  const station = currentStation();
   clearStationViews();
   setOffAir(true);
   setConnStatus("error", "Off air");
+  void requestJson("/api/settings").then((settings) => {
+    if (station === currentStation() && stationOffAir) applySavedSettings(settings);
+  }).catch(reportBackgroundRequestError);
   scheduleOffAirCheck();
 }
 
@@ -1793,6 +1833,13 @@ async function loadStation({ announce = true } = {}) {
     if (!_ws) connectWS({ quiet: true, switching: announce });
   } else {
     stationWentOffAir();
+    try {
+      const settings = await requestJson("/api/settings");
+      if (station !== currentStation()) return null;
+      applySavedSettings(settings);
+    } catch (errorValue) {
+      if (station === currentStation()) reportBackgroundRequestError(errorValue);
+    }
   }
   refreshStationPanels();
   if (announce) {

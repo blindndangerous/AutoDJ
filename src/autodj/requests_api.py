@@ -19,7 +19,7 @@ from fastapi import HTTPException
 
 from autodj.listener_requests import RequestDesk, request_settings
 from autodj.settings_bodies import PAGE_SAVED_REQUESTS, RequestSettingsBody
-from autodj.station_routes import StationDep, StationRouter, request_desk
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter, request_desk
 from autodj.stations import StationRuntime
 
 logger = logging.getLogger(__name__)
@@ -71,13 +71,13 @@ def install_requests(router: StationRouter) -> None:
     """Register the paired listener request routes."""
 
     @router.get("/requests")
-    async def list_requests(station: StationDep) -> dict[str, Any]:
+    async def list_requests(station: SavedStationDep) -> dict[str, Any]:
         """The settings, the waiting requests with where each would fit, and the recent decisions."""
         return await asyncio.to_thread(_view, station)
 
     @router.post("/requests/settings")
     async def save_request_settings(
-        station: StationDep, body: RequestSettingsBody
+        station: SavedStationDep, body: RequestSettingsBody
     ) -> dict[str, Any]:
         """Turn requests on or off and change how they are approved and placed; saved at once.
 
@@ -97,7 +97,7 @@ def install_requests(router: StationRouter) -> None:
 
         for field, value in changes.items():
             setattr(cfg, field, float(value) if field == "bridge_cost_threshold" else value)
-        if cfg.enabled is True and station.requests is None:
+        if not station.stopped and cfg.enabled is True and station.requests is None:
             try:
                 desk = await asyncio.to_thread(request_desk, station)
             except Exception:

@@ -1667,6 +1667,18 @@ supported. This does not add an individual-station backup command.
 
 
 
+### Editing a stopped station
+
+Select a stopped station to inspect and edit its saved settings, schedules, clockwheels,
+relays, carts, shows, ads, liners, matched intros, requests configuration, and DJ accounts.
+History and exports remain available. These editors use the same validation and saving logic
+as a running station; opening an editor does not create an audio engine. Rotation tests and
+show generation can run explicitly without broadcasting.
+
+Commands that require playback, such as Skip, queue changes, firing a cart, and recording a
+live voice transition, remain unavailable. Start builds a fresh player from the saved settings.
+Edits are briefly unavailable while a station is starting or stopping.
+
 ### Creating a station from the web page
 
 Use **New station** in the station switcher to create a station with AutoDJ defaults. Enter a
@@ -1764,7 +1776,8 @@ need a paired browser, like the default station's.
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
-  no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
+  no playback resources. Playback commands then answer 409 and its stream answers 503, "off air".
+  Saved configuration and content remain available while stopped.
   This starts as soon as the stop is asked for: while the player finishes its work, which can
   take several seconds, the station is listed as `stopping`, its routes already answer 409, a
   start request is refused at once with 409, and a second stop request returns at once. Its
