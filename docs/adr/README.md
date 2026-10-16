@@ -16,7 +16,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 
 | ADR | Status | Governs |
 | --- | --- | --- |
-| [1: Record decisions](0001-record-architecture-decisions.md) | Accepted; process amendment 2026-10-16 | Requirements, lifecycle, evidence, agent discovery, GitHub/Beads boundary |
+| [1: Record decisions](0001-record-architecture-decisions.md) | Accepted; proposed process amendments 2026-10-16 | Requirements, lifecycle, evidence, agent discovery, GitHub/Beads boundary |
 | [2: FAISS](0002-faiss-for-vector-search.md) | Accepted search choice; storage description historical | Exact similarity search; see Proposed ADR 6 for current storage |
 | [3: Browser playback](0003-browser-driven-playback.md) | Accepted default; partially superseded by ADR 4 | Browser audio ownership and device-local controls |
 | [4: Server mix bus](0004-server-mix-bus-and-stream-mode.md) | Accepted; amendments apply | Server audio, stream fan-out, mastering, live input, recordings |
@@ -28,12 +28,6 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [10: State recovery](0010-preserve-state-through-atomic-writes-and-recovery.md) | Proposed; retrospective | Saved-state validation, secrets, backup/restore and recovery |
 | [11: Accessible browser UI](0011-verify-accessibility-with-browser-and-speech-evidence.md) | Proposed; retrospective | Native controls, announcements, keyboard access, release evidence |
 | [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release |
-
-Family-specific speech generation and an automated Showcraft integration are
-not existing AutoDJ architecture. The existing announcer/liner boundary is
-covered by ADRs 7 and 9; an automatic producer handoff would need a separate
-decision. No public-hosting, multi-user-role, or alternate embedding-model
-capability is implied by these records.
 
 ## Maintaining records
 
@@ -106,6 +100,10 @@ local inline/reference-definition links and Markdown heading anchors, ADR number
 statuses and index entries, constraint IDs, native test selectors, and reciprocal
 annotations. Fenced examples and inline code are excluded. External links are not
 fetched; ordinary bracketed prose and undefined reference syntax are not links.
+In Git checkouts, discovery uses tracked files (including staged additions), so
+untracked drafts do not fail the gate. Outside Git, all files in the documented
+paths are scanned. Local directory links are valid; Markdown heading anchors are
+cached per resolved path for each check and refreshed on the next invocation.
 The ADR's `Status:` line is canonical; the index mirrors it. Status suffixes may
 explain historical scope. The checker never accepts an ADR or executes tests.
 
@@ -122,15 +120,10 @@ Every PR records one manual disposition with rationale and affected IDs:
 and deferred evidence as applicable. There is no heuristic drift detector or
 automatic issue/ADR mutation; reviewers decide whether code, tests, and intent
 agree. See the [process amendment](0001-record-architecture-decisions.md#amendment-2026-10-16-local-contract-enforcement)
-for adoption and attribution.
+for the proposed process.
 
 ## Verification evidence
 
-Per-record verification sections identify the relevant tests and limits.
-[The audit evidence](verification-2026-10-16.md) records what was actually run
-for this reconciliation. Future changes need fresh evidence for their scope;
-this audit does not replace CI or the documented screen-reader release sample.
-
-The subsequent [contract-enforcement evidence](contract-verification-2026-10-16.md)
-records validator and behavioral checks, the missing-Torch full-suite limitation,
-and pending platform/manual verification for the enforcement changes.
+Record checks actually run, their results, and environment/platform limits in the
+relevant PR. Test references identify verification entrypoints; they do not
+establish execution or replace CI and the documented screen-reader release sample.

@@ -141,7 +141,7 @@ Independent station authorization and extra library owners remain outside this
 decision. Revisit if either becomes required. Resource figures in the original
 record remain estimates requiring load evidence, not admission guarantees.
 The new storage/access records are Proposed, not silently accepted replacements.
-Actual checks are in [audit evidence](verification-2026-10-16.md).
+Record actual checks and their limits in the relevant PR.
 
 ## Current contracts
 

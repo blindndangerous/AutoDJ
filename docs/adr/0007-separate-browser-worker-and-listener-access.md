@@ -84,19 +84,19 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify browser session/origin/body-limit policy with
+- [ ] Verify browser session/origin/body-limit policy with
   [security tests](../../tests/integration/test_server_security.py) and
   [pairing tests](../../tests/integration/test_pairing_server.py).
-- [x] Verify worker-only authority and station-bound tokens with
+- [ ] Verify worker-only authority and station-bound tokens with
   [worker API tests](../../tests/unit/test_worker_api.py) and
   [token tests](../../tests/unit/test_machine_tokens.py).
-- [x] Verify security parity for route aliases with
+- [ ] Verify security parity for route aliases with
   [station route tests](../../tests/integration/test_station_routes.py).
-- [x] Verify listener and live-source boundaries with
+- [ ] Verify listener and live-source boundaries with
   [request-page tests](../../tests/integration/test_request_page_server.py) and
   [live-source tests](../../tests/integration/test_live_source.py).
 

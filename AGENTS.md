@@ -66,8 +66,7 @@ before changing policy or runtime behavior. No sibling checkout is required.
 - Existing test links establish where to verify a claim, not that the test
   has passed. Report commands actually run, outcomes, and limits, including
   untested hardware, browsers, platforms, and performance guarantees.
-- Run one heavy test/build command at a time. Use non-interactive file
-  operations (`cp -f`, `mv -f`, `rm -f`) and preserve installed hooks.
+- Run one heavy test/build command at a time and preserve installed hooks.
 - Commit, push, remote tracker sync, and publication require explicit operator
   authority. At handoff, report changed files, verification, unresolved
   decisions or defects, and exact pending commands.

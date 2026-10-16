@@ -38,8 +38,9 @@ content.
 
 ## Amendment, 2026-10-16: discovery, requirements, and evidence
 
-Decision authority: Operator approval during the ADR/documentation scope review.
-This amendment extends the accepted process; the original text above is retained.
+Amendment status: Proposed; pending maintainer acceptance.
+Decision authority: Project maintainer; explicit acceptance pending.
+This amendment proposes extending the accepted process; the original text above is retained.
 
 GitHub issues and PRs own shared requirements and contributor-visible status.
 Beads is optional agent execution tracking, linked to the shared issue when used;
@@ -69,14 +70,15 @@ required by this process amendment. Revisit if shared project tracking changes.
 
 Alternatives: requiring Beads for all contributors would hide shared context from
 non-users; duplicating policy in each agent file would create competing guidance.
-The adopted boundary keeps shared decisions in Git/GitHub with thin tool pointers.
+The proposed boundary keeps shared decisions in Git/GitHub with thin tool pointers.
 
 Verification: check entrypoint links, index coverage, template acceptance/ADR
 fields, and the absence of a mandatory Beads workflow in contributor instructions.
-Actual audit checks are recorded in [verification evidence](verification-2026-10-16.md).
+Record actual checks and their limits in the relevant PR.
 
 ## Current contracts
 
+The following contracts belong to the proposed amendments.
 IDs are stable and are never recycled. Automated means an existing regression
 test is mapped; structural validation does not execute it, prove platform
 coverage, or accept this ADR. Manual and gap rows remain explicit obligations
@@ -90,9 +92,10 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Amendment, 2026-10-16: local contract enforcement
 
-Decision authority: Operator approval after review of ADR/test traceability and
-selected Polyrepo contracts. The local rules in the [index](README.md#constraint-traceability-and-local-checks)
-are complete and apply without a coordination checkout. This amendment does not
+Amendment status: Proposed; pending maintainer acceptance.
+Decision authority: Project maintainer; explicit acceptance pending.
+The proposed local rules in the [index](README.md#constraint-traceability-and-local-checks)
+are complete and require no external checkout. This amendment does not
 accept the retrospective Proposed ADRs or add aspirational runtime guarantees.
 
 Adopt stable constraint IDs, reciprocal native test mappings, deterministic
@@ -101,13 +104,6 @@ Reuse behavioral tests; add coverage only for demonstrated gaps. Keep manual
 verification and missing evidence visible. Report the actual candidate, commands,
 results, environment, and coverage limits; focused, staged, and full-suite checks
 are distinct. Never infer acceptance or platform coverage from a valid table.
-
-Adapted sources: `mine/polyrepo_coordination`, reviewed revision `a332e7b`,
-`docs/adr/` records 0003 (reviewed canon/fixture promotion), 0028 (manual ADR
-drift disposition), 0053 (source-classified documentation checks), and 0067
-(truthful verification and locally complete guidance; supersedes 0061).
-These references provide attribution, not runtime imports or a requirement to
-install Polyrepo, enroll AutoDJ, copy its schemas, or adopt its Beads workflow.
 
 Alternatives: a coordination framework or heuristic semantic drift detector adds
 maintenance without establishing intent. Text-only ADRs leave dangling evidence

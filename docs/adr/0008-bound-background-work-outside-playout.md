@@ -82,19 +82,19 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify allowlists, one job slot, bounded logs, and stop behavior with
+- [ ] Verify allowlists, one job slot, bounded logs, and stop behavior with
   [job tests](../../tests/unit/test_jobs.py).
-- [x] Verify exclusive leases, expiration, renewal, and failed-work holds with
+- [ ] Verify exclusive leases, expiration, renewal, and failed-work holds with
   [analysis queue tests](../../tests/unit/test_analysis_queue.py).
-- [x] Verify soft-refresh fallback and reset races with
+- [ ] Verify soft-refresh fallback and reset races with
   [render-ahead tests](../../tests/unit/test_render_ahead.py).
-- [x] Verify lifecycle failure and cleanup ownership with
+- [ ] Verify lifecycle failure and cleanup ownership with
   [station runtime tests](../../tests/unit/test_station_runtime.py).
-- [x] Verify isolated/bounded previews with
+- [ ] Verify isolated/bounded previews with
   [preview tests](../../tests/unit/test_hour_preview.py).
 
 ## Evidence gaps
