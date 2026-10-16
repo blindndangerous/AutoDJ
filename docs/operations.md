@@ -621,6 +621,8 @@ estimate.
 
 ### Public pages
 
+Turn DMCA mode on or off in Settings > Song picking for the selected station. Saving it changes
+the next song pick and public feed immediately. Songs already picked or queued are not rechecked.
 The public now-playing feed (`/api/nowplaying`), the `/status` page and the
 track-change webhooks never include the next song in DMCA mode, whatever
 `[nowplaying] show_next` says. In Settings, Stream, the "Show the next song
@@ -722,8 +724,9 @@ same address (`/modules/theme-init.js` reads that choice before the page is draw
 ### Player page and embeddable player
 
 A station can also have a public page where listeners press Play to hear it in the browser, and
-a compact version of it to put on another website. Both are off until you turn them on, for each
-station on its own:
+a compact version of it to put on another website. Both are off until you turn them on in
+Settings > Stream for the selected station, including while it is stopped. Saving takes effect
+immediately. The settings are stored in that station's `station.json`:
 
 ```json
 {
@@ -735,10 +738,10 @@ station on its own:
 }
 ```
 
-For another station, select it in Settings > Stations and change the same settings; its pages are at
+For another station, select it in Settings > Stations and change the same controls; its pages are at
 `/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
 `/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
-settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
+settings also load when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
 `embed_path`, or `null` while that page is off.
 
 **The player page** (`/player`) has the station's name, a **Play** button, a **Volume** slider,

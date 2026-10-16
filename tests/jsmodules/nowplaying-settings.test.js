@@ -202,7 +202,7 @@ describe("now-playing settings", () => {
       dmca_enabled: true, nowplaying_show_next: true,
     } } });
     expect(status.hidden).toBe(false);
-    expect(status.textContent).toMatch(/^DMCA mode is on: /);
+    expect(status.textContent).toBe("DMCA mode is on. Change it in Settings, Song picking.");
     expect(status.getAttribute("role")).toBeNull();
     expect(box.getAttribute("aria-disabled")).toBe("true");
     expect(box.disabled).toBe(false);

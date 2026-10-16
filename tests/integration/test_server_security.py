@@ -346,6 +346,7 @@ def test_post_start_exception_audits_actual_status_without_second_response(
         "/api/library/missing",
         "/api/library/auto-rescan",
         "/api/time-settings",
+        "/api/public-settings",
         "/api/profiles",
         "/api/liners",
     ],
@@ -373,6 +374,7 @@ def test_secured_route_categories_require_session(path: str) -> None:
         ("post", "/api/library/remove-missing", {"json": {}}),
         ("put", "/api/library/auto-rescan", {"json": {}}),
         ("put", "/api/time-settings", {"json": {}}),
+        ("put", "/api/public-settings", {"json": {}}),
     ],
 )
 def test_unsafe_route_categories_reject_before_parsing_body(
@@ -655,6 +657,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/remove-missing"),
         ("put", "/api/library/auto-rescan"),
         ("put", "/api/time-settings"),
+        ("put", "/api/public-settings"),
     ],
 )
 def test_every_mutation_route_requires_session_before_body_validation(

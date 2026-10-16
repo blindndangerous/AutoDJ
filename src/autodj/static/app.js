@@ -50,6 +50,7 @@ import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { installStreamFormats } from "./modules/stream-formats.js";
 import { installListenerStats } from "./modules/listener-stats.js";
+import { installPublicSettings } from "./modules/public-settings.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installCardState } from "./modules/card-state.js";
 import { installThemeSetting } from "./modules/theme.js";
@@ -246,7 +247,6 @@ const streamSettings = createStreamSettings({
   saveStationName: (value, control) =>
     postSettings("/api/stream/settings", { station_name: value }, control),
   setAvailable: (available) => {
-    settingsTabs.setTabHidden("stream", !available);
     relaySettings.setAvailable(available);
   },
   onRelays: (relays) => relaySettings.applyStatuses(relays),
@@ -263,6 +263,7 @@ const nowPlayingSettings = installNowPlayingSettings({
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
+const publicSettings = installPublicSettings();
 const listenerControls = createListenerControls(
   document, settingsStatus,
   (value, control) => postSettings(
@@ -424,6 +425,7 @@ function clearStationViews() {
   adsControls?.clear();
   listenerRequestControls?.clear();
   breakSettingsControls?.clear();
+  publicSettings.clear();
   linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
@@ -1795,6 +1797,7 @@ function refreshStationPanels() {
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void breakSettingsControls?.refresh();
+  void publicSettings.refresh();
   void voiceTrackerControls?.refresh();
   void liveSettings?.refresh();
   void adsControls?.refresh();

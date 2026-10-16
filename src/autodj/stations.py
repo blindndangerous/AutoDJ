@@ -1813,6 +1813,50 @@ class StationRegistry:
                 running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
             return asdict(proposed)
 
+    def public_settings(self, slug: str) -> dict[str, Any]:
+        """Configuration shared by the public pages and the live picker."""
+        cfg = self.configuration(slug)
+        return {
+            "dmca_enabled": cfg.dmca.enabled,
+            "player_page_enabled": cfg.player_page.enabled,
+            "embed_enabled": cfg.player_page.embed,
+            "embed_origins": cfg.player_page.embed_origins,
+        }
+
+    def save_public_settings(self, slug: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Save one station's public settings and apply them to a running station."""
+        from autodj.config import DmcaConfig, PlayerPageConfig
+        from autodj.fsutil import atomic_write
+
+        allowed = {"dmca_enabled", "player_page_enabled", "embed_enabled", "embed_origins"}
+        if not changes or changes.keys() - allowed:
+            raise ValueError("Choose a public setting to change")
+        with self.configuration_lock:
+            cfg = self.configuration(slug)
+            dmca = DmcaConfig(changes.get("dmca_enabled", cfg.dmca.enabled))
+            page = PlayerPageConfig(
+                enabled=changes.get("player_page_enabled", cfg.player_page.enabled),
+                embed=changes.get("embed_enabled", cfg.player_page.embed),
+                embed_origins=changes.get("embed_origins", cfg.player_page.embed_origins),
+            )
+            paths = self._extras[slug].paths
+            document = json.loads(paths.definition.read_text(encoding="utf-8"))
+            station = document["station"]
+            station["dmca"] = asdict(dmca)
+            station["player_page"] = asdict(page)
+            atomic_write(paths.definition, json.dumps(document, indent=2) + "\n")
+            cfg.dmca = dmca
+            cfg.player_page = page
+            self._extras[slug] = replace(self._extras[slug], player_page=page)
+            self._content.pop(slug, None)
+            running = self._running.get(slug)
+            if running is not None:
+                running.cfg.dmca = dmca
+                running.cfg.player_page = page
+                running.player._cfg.dmca = dmca
+                running.player._state.dmca_enabled = dmca.enabled
+            return self.public_settings(slug)
+
     def set_autostart(self, slug: str, enabled: bool) -> None:
         """Save whether station *slug* starts with the server.
 

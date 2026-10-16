@@ -695,14 +695,13 @@
   <section data-view="settings" id="panel-settings" role="tabpanel" hidden aria-labelledby="tab-settings">
   <h2>Settings</h2>
 
-  <!-- Single shared status region for failures (success is silent — checkbox
-       state already announced by the AT). -->
+  <!-- Shared polite status region for Settings saves and failures. -->
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
   <!-- Like the section tabs, these carry no aria-controls: that relation
        made NVDA speak the focused tab twice.  data-panel names the panel,
        and each panel's aria-labelledby names it after its tab.  The
-       Stream tab shows only in stream mode. -->
+       Stream controls appear in stream mode; public page settings stay available. -->
   <div role="tablist" class="subtabs" id="settings-tabs" aria-label="Settings groups" aria-orientation="horizontal">
     <button type="button" role="tab" id="stab-transitions" data-subview="transitions" data-panel="spanel-transitions" aria-selected="false" tabindex="-1">Transitions</button>
     <button type="button" role="tab" id="stab-djmix" data-subview="djmix" data-panel="spanel-djmix" aria-selected="false" tabindex="-1">DJ mixing</button>
@@ -713,7 +712,7 @@
     <button type="button" role="tab" id="stab-time-checks" data-subview="time-checks" data-panel="spanel-time-checks" aria-selected="false" tabindex="-1">Time checks</button>
     <button type="button" role="tab" id="stab-breaks" data-subview="breaks" data-panel="spanel-breaks" aria-selected="false" tabindex="-1">Breaks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
-    <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1" hidden>Stream</button>
+    <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Stream</button>
     <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
     <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
@@ -1023,6 +1022,17 @@
 
   <div class="card" role="tabpanel" id="spanel-picking" aria-labelledby="stab-picking" hidden>
     <h3>Song picking</h3>
+    <form id="public-dmca-form">
+      <fieldset>
+        <legend>DMCA mode</legend>
+        <div class="settings-check">
+          <input type="checkbox" id="public-dmca" aria-describedby="public-dmca-help">
+          <label for="public-dmca">Use DMCA mode</label>
+        </div>
+        <p class="setting-desc" id="public-dmca-help">Limits album, artist and box set picks, asks before queuing a song over a limit, and hides the next song publicly.</p>
+        <button type="submit" id="public-dmca-save">Save DMCA mode</button>
+      </fieldset>
+    </form>
     <fieldset>
       <legend>Picking</legend>
       <div class="settings-row">
@@ -2054,9 +2064,21 @@
 
   <div class="card" role="tabpanel" id="spanel-stream" aria-labelledby="stab-stream" hidden>
     <h3>Stream</h3>
-    <!-- Stream mode only (autodj serve --stream); stream-mode.js shows it
-         and its subtab.  The listener count is plain text, not a live
-         region. -->
+    <form id="public-page-form" novalidate>
+      <fieldset>
+        <legend>Public player pages</legend>
+        <div class="settings-check"><input type="checkbox" id="public-page" aria-describedby="public-page-help"><label for="public-page">Public player page</label></div>
+        <p class="setting-desc" id="public-page-help">Publish a listening page; audio is available when this station streams.</p>
+        <div class="settings-check"><input type="checkbox" id="public-embed" aria-describedby="public-embed-help"><label for="public-embed">Embeddable player</label></div>
+        <p class="setting-desc" id="public-embed-help">Let other websites show a compact player.</p>
+        <div class="settings-row"><label for="public-origins">Sites allowed to embed</label><textarea id="public-origins" rows="3" aria-describedby="public-origins-help"></textarea></div>
+        <p class="setting-desc" id="public-origins-help">One HTTP(S) site per line, or * for any site; blank allows only this server.</p>
+        <p class="field-error" id="public-origins-error" hidden></p>
+        <button type="submit" id="public-page-save">Save player pages</button>
+      </fieldset>
+    </form>
+    <!-- Live stream controls appear only in stream mode. The listener count
+         is plain text, not a live region. -->
     <fieldset id="stream-settings" hidden>
       <legend>Stream</legend>
       <div class="settings-row">
@@ -2257,12 +2279,9 @@
         </span>
         <p class="stream-detail"><a id="np-status-open" href="/status" target="_blank" rel="noopener">Open the status page (new tab)</a></p>
         <p class="stream-detail" id="np-loopback-note" hidden>These links only work on this computer. Open AutoDJ using its network address (see the start-up message) to copy links other devices can reach.</p>
-        <!-- DMCA mode ([dmca] enabled in config.toml, read at start-up).
-             Plain text, not live: it only changes on a restart.  While it
-             is on, nowplaying-settings.js shows both notes, marks the
-             show-next box aria-disabled (still focusable, so NVDA reads
-             it and why) and adds the reason to its description. -->
-        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on: song picks keep to the album, artist and box set limits, songs that would break them are queued only after you confirm, and the next song is never shown publicly.</p>
+        <!-- In DMCA mode, nowplaying-settings.js shows both notes and leaves
+             show-next focusable with aria-disabled and its reason linked. -->
+        <p class="stream-detail" id="dmca-status" hidden>DMCA mode is on. Change it in Settings, Song picking.</p>
         <div class="settings-check">
           <input type="checkbox" id="np-show-next" aria-describedby="np-show-next-desc">
           <label for="np-show-next">Show the next song publicly</label>
@@ -2270,7 +2289,7 @@
         <span class="setting-desc" id="np-show-next-desc">
           Add the upcoming song to the now-playing feed. Off by default, because some webcasting licences, such as the US statutory licence, do not allow announcing songs in advance.
         </span>
-        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode is on, so the next song is never shown publicly. Turn DMCA mode off in config.toml to use it.</span>
+        <span class="setting-desc" id="np-show-next-dmca" hidden>Not available: DMCA mode hides the next song publicly. Turn it off in Settings, Song picking to use this.</span>
         <p class="stream-detail" id="np-webhooks-intro">Track-change webhooks</p>
         <ul class="stream-detail" id="np-webhooks-list" aria-labelledby="np-webhooks-intro" hidden></ul>
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>

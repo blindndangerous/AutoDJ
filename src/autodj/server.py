@@ -2208,6 +2208,19 @@ def create_app(
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @station_router.get("/public-settings")
+    async def api_public_settings(request: Request) -> dict[str, Any]:
+        return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
+
+    @station_router.put("/public-settings")
+    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(
+                stations.save_public_settings, _settings_slug(request), body
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
         library = _catalog_library()

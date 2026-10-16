@@ -656,6 +656,77 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
     timefmt.time_format = original_format
 
 
+def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
+    client, _library, cfg, *_ = rig
+    registry = client.app.state.stations
+    path = f"{OWL}/public-settings"
+    definition = registry._extras["nightowl"].paths.definition
+    headers = {"Origin": "http://testserver"}
+    default_before = client.get("/api/public-settings").json()
+
+    enabled = client.put(path, json={"dmca_enabled": True}, headers=headers)
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["dmca_enabled"] is True
+    assert registry.get("nightowl").player._state.dmca_enabled is True
+    assert client.get("/stations/nightowl/player").status_code == 200
+
+    origin = client.put(path, json={"embed_origins": ["https://example.org"]}, headers=headers)
+    assert origin.status_code == 200, origin.text
+    assert (
+        client.get("/stations/nightowl/embed")
+        .headers["content-security-policy"]
+        .endswith("frame-ancestors 'self' https://example.org")
+    )
+
+    changed = client.put(
+        path,
+        json={
+            "player_page_enabled": False,
+            "embed_enabled": False,
+            "embed_origins": ["https://example.org"],
+        },
+        headers=headers,
+    )
+    assert changed.status_code == 200, changed.text
+    assert client.get("/stations/nightowl/player").status_code == 404
+    assert client.get("/stations/nightowl/embed").status_code == 404
+    assert client.get("/api/public-settings").json() == default_before
+    saved = json.loads(definition.read_text(encoding="utf-8"))["station"]
+    assert saved["dmca"] == {"enabled": True}
+    assert saved["player_page"] == {
+        "enabled": False,
+        "embed": False,
+        "embed_origins": ["https://example.org"],
+    }
+
+    unchanged = definition.read_bytes()
+    for body in (
+        {"dmca_enabled": "true"},
+        {"embed_origins": ["ftp://example.org"]},
+        {"embed_enabled": 1},
+        {"unknown": True},
+        {},
+    ):
+        invalid = client.put(path, json=body, headers=headers)
+        assert invalid.status_code == 400, invalid.text
+        assert definition.read_bytes() == unchanged
+
+    assert client.post(f"{OWL}/stop").status_code == 200
+    stopped = client.put(path, json={"player_page_enabled": True}, headers=headers)
+    assert stopped.status_code == 200, stopped.text
+    assert client.get("/stations/nightowl/player").status_code == 503
+    assert client.get("/stations/nightowl/embed").status_code == 404
+    assert client.post(f"{OWL}/start").status_code == 200
+    assert registry.get("nightowl").player._state.dmca_enabled is True
+    assert client.get("/stations/nightowl/player").status_code == 200
+
+    reloaded = load_config(cfg.config_path, environ={})
+    nightowl = next(station for station in reloaded.stations if station.slug == "nightowl")
+    assert nightowl.cfg.dmca.enabled is True
+    assert nightowl.cfg.player_page.enabled is True
+    assert nightowl.cfg.player_page.embed is False
+
+
 def test_a_restarted_station_runs_the_same_threads_each_once(rig: Any) -> None:
     client, *_ = rig
     running = _without_liner_workers(_running_threads("nightowl"))
