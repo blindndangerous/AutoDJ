@@ -572,7 +572,9 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.put("/ads/breaks/{break_id}")
-    async def break_update(station: SavedStationDep, request: Request, break_id: str) -> JSONResponse:
+    async def break_update(
+        station: SavedStationDep, request: Request, break_id: str
+    ) -> JSONResponse:
         """Change an ad break."""
         desk = _desk(station)
         fields = await break_fields(request)

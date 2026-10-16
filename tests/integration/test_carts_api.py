@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from autodj.carts import CartError, CartSlot, StationCarts, install_carts
 from autodj.scheduler import Action
 from autodj.server import PlayerBridge, create_app
-from autodj.station_routes import StationRouter, current_station
+from autodj.station_routes import StationRouter, current_station, editable_station
 from tests._layout import layout_index, point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -67,7 +67,9 @@ class Rig:
         self.store, self.action = carts.store, carts.action
         app = FastAPI()
         install_carts(StationRouter(app.router, ("/api",)))
-        app.dependency_overrides[current_station] = lambda: SimpleNamespace(carts=carts, cfg=cfg)
+        fake_station = SimpleNamespace(carts=carts, cfg=cfg)
+        app.dependency_overrides[current_station] = lambda: fake_station
+        app.dependency_overrides[editable_station] = lambda: fake_station
         self.client = TestClient(app)
 
     def upload(self, name: str = "id.wav", content: bytes | None = None) -> Any:

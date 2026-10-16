@@ -2366,10 +2366,7 @@ class PlayerBridge(LibraryAccess):
 
     def _set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
         """Retain the established hook for callers that serialize settings swaps."""
-        from autodj.player import settings_lock
-
-        with settings_lock(self.player):
-            self.settings.set_playback_settings(body, restoring=restoring)
+        self.settings.set_playback_settings(body, restoring=restoring)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""

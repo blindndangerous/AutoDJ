@@ -272,65 +272,71 @@ class StationSettings:
             preset_path(self.cfg.index.shared_dir, values["stereotool_preset"])
         related_artists = self._read_related_artists(body, restoring=restoring)
         related_tracks = self._read_related_tracks(body, restoring=restoring)
-        if related_artists is not None:
-            self._related_artists, self.related_artists_problem = related_artists
-        if related_tracks is not None:
-            self._related_tracks, self.related_tracks_problem = related_tracks
-        targets = {
-            "pure_shuffle": (self, "_pure_shuffle"),
-            "anchor_to_seed": (self, "_anchor_to_seed"),
-            "replaygain_enabled": (self.cfg.replaygain, "enabled"),
-            "replaygain_target_db": (self.cfg.replaygain, "target_db"),
-            "replaygain_max_clip_safe_gain": (self.cfg.replaygain, "max_clip_safe_gain"),
-            "transition_wet_mix": (self.cfg.transitions, "wet_mix"),
-        }
-        for key, value in values.items():
-            target, attr = targets.get(key, (self.cfg.playback, key))
-            setattr(target, attr, value)
-        if "pick_mode" in values:
-            self._pure_shuffle = values["pick_mode"] == "random"
-            if values["pick_mode"] == "clock":
-                self.cfg.playback.transition_mode = "saved_points"
-        elif "pure_shuffle" in values:
-            self.cfg.playback.pick_mode = "random" if values["pure_shuffle"] else "similarity"
-        if "loudness_processing" in values:
-            self.cfg.replaygain.enabled = values["loudness_processing"] == "replaygain"
-        elif "replaygain_enabled" in values:
-            self.cfg.playback.loudness_processing = (
-                "replaygain" if values["replaygain_enabled"] else "off"
-            )
-        for key in (
-            "liners_every_n_songs",
-            "liners_every_minutes",
-            "liners_random_min_minutes",
-            "liners_random_max_minutes",
-        ):
-            if values.get(key) == 0:
-                setattr(self.cfg.playback, key, None)
-        player = self.player
-        if player is not None:
-            if related_tracks is not None:
-                player._related_tracks = related_tracks[0]
-            if related_artists is not None:
-                player._related_artists = related_artists[0]
-                if hasattr(player, "_key_cache_lock"):
-                    with player._key_cache_lock:
-                        player._key_cache = None
-            if (
-                values.get("anchor_to_seed")
-                and not getattr(player, "_seed_path", None)
-                and player._state.current_track
-            ):
-                player._seed_path = player._state.current_track.path
-            if "post_queue_seed" in values and self.cfg.playback.post_queue_seed != "pre_queue":
-                player._state.pre_queue_seed = None
-            if values.get("show_lyrics") is False:
-                player._current_lyrics = []
-                player._current_lyrics_plain = ""
-            if "repeat_rules" in values:
-                from autodj.player import apply_repeat_windows
+        from autodj.player import settings_lock
 
-                apply_repeat_windows(player)
+        player = self.player
+        # File and history reads must not block the audio settings lock.
+        with settings_lock(player) if player is not None else self._lock:
+            if related_artists is not None:
+                self._related_artists, self.related_artists_problem = related_artists
+            if related_tracks is not None:
+                self._related_tracks, self.related_tracks_problem = related_tracks
+            targets = {
+                "pure_shuffle": (self, "_pure_shuffle"),
+                "anchor_to_seed": (self, "_anchor_to_seed"),
+                "replaygain_enabled": (self.cfg.replaygain, "enabled"),
+                "replaygain_target_db": (self.cfg.replaygain, "target_db"),
+                "replaygain_max_clip_safe_gain": (self.cfg.replaygain, "max_clip_safe_gain"),
+                "transition_wet_mix": (self.cfg.transitions, "wet_mix"),
+            }
+            for key, value in values.items():
+                target, attr = targets.get(key, (self.cfg.playback, key))
+                setattr(target, attr, value)
+            if "pick_mode" in values:
+                self._pure_shuffle = values["pick_mode"] == "random"
+                if values["pick_mode"] == "clock":
+                    self.cfg.playback.transition_mode = "saved_points"
+            elif "pure_shuffle" in values:
+                self.cfg.playback.pick_mode = "random" if values["pure_shuffle"] else "similarity"
+            if "loudness_processing" in values:
+                self.cfg.replaygain.enabled = values["loudness_processing"] == "replaygain"
+            elif "replaygain_enabled" in values:
+                self.cfg.playback.loudness_processing = (
+                    "replaygain" if values["replaygain_enabled"] else "off"
+                )
+            for key in (
+                "liners_every_n_songs",
+                "liners_every_minutes",
+                "liners_random_min_minutes",
+                "liners_random_max_minutes",
+            ):
+                if values.get(key) == 0:
+                    setattr(self.cfg.playback, key, None)
+            if player is not None:
+                if related_tracks is not None:
+                    player._related_tracks = related_tracks[0]
+                if related_artists is not None:
+                    player._related_artists = related_artists[0]
+                    if hasattr(player, "_key_cache_lock"):
+                        with player._key_cache_lock:
+                            player._key_cache = None
+                if (
+                    values.get("anchor_to_seed")
+                    and not getattr(player, "_seed_path", None)
+                    and player._state.current_track
+                ):
+                    player._seed_path = player._state.current_track.path
+                if "post_queue_seed" in values and self.cfg.playback.post_queue_seed != "pre_queue":
+                    player._state.pre_queue_seed = None
+                if values.get("show_lyrics") is False:
+                    player._current_lyrics = []
+                    player._current_lyrics_plain = ""
+                if "repeat_rules" in values:
+                    from autodj.player import apply_repeat_windows
+
+                    apply_repeat_windows(player)
+            self.sync_to_player()
+        if player is not None:
             picking_changed = any(hasattr(self.cfg.playback, key) for key in values) or bool(
                 {"pure_shuffle", "anchor_to_seed"} & values.keys()
             )
@@ -346,7 +352,6 @@ class StationSettings:
                 and hasattr(ledger, "recent_plays")
             ):
                 player.restore_repeat_history(ledger, refresh=True)
-        self.sync_to_player()
 
     def _read_related_artists(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
         if body.repeat_rules is None:

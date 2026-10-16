@@ -506,7 +506,9 @@ def install_carts(router: StationRouter) -> None:
         }
 
     @router.put("/carts/pages/{page}/slots/{slot}")
-    async def set_slot(station: SavedStationDep, page: int, slot: int, body: CartSlot) -> dict[str, Any]:
+    async def set_slot(
+        station: SavedStationDep, page: int, slot: int, body: CartSlot
+    ) -> dict[str, Any]:
         """Assign a clip to a slot; the clip must decode."""
         carts = station.carts
         try:

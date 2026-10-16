@@ -1216,7 +1216,7 @@ def test_the_copy_keeps_the_dry_run_defaults_for_settings_the_player_lacks(
     from autodj.rotation_sim import snapshot_player
 
     source = _rotation(tmp_path)
-    del source.player._anchor_to_seed
+    del source.player._settings._anchor_to_seed
     snapshot = snapshot_player(source.player)
     assert "_anchor_to_seed" not in snapshot.settings
     source.snapshot = snapshot

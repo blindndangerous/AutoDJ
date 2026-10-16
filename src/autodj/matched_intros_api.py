@@ -452,7 +452,9 @@ def install_matched_intros(router: StationRouter) -> None:
         return _saved(key, rule, 201)
 
     @router.put("/intros/rules/{rule_id}")
-    async def intro_rule_edit(station: SavedStationDep, rule_id: str, request: Request) -> JSONResponse:
+    async def intro_rule_edit(
+        station: SavedStationDep, rule_id: str, request: Request
+    ) -> JSONResponse:
         store = _rules(station)
         if not valid_id(rule_id):
             raise HTTPException(status_code=404, detail="No intro rule has that ID")
