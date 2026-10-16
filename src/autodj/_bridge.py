@@ -93,10 +93,14 @@ def _library_problem(cfg: Any) -> str | None:
     check = latest(cfg)
     if check is None or not check.mismatch:
         return None
-    return (
-        f"{check.problem} Clockwheel steps that need those songs are skipped and other "
-        f"songs play instead. {check.fix}"
-    )
+    if check.relative:
+        setting = (
+            f'Set music_dir = "{check.found.as_posix()}" under [library].'
+            if check.found is not None
+            else "Set [library] music_dir to the folder holding beets' music."
+        )
+        return f"{check.problem} {setting}"
+    return check.problem
 
 
 def _library_job_snapshot() -> dict:

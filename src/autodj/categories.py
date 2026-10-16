@@ -665,7 +665,7 @@ class BeetsSource:
         }
 
     def checked_items(
-        self, fields: Iterable[str], library: Sequence[str]
+        self, fields: Iterable[str], library: Sequence[str], *, remember_check: bool = True
     ) -> tuple[dict[str, dict[str, Any]], PathCheck]:
         """Like :meth:`items`, matched against the *library* paths and checked.
 
@@ -679,7 +679,8 @@ class BeetsSource:
 
         rows = [(str(path), values) for path, values in read_items(self.db_path, fields)]
         found, check = match(rows, library, self.music_dir)
-        remember(self.db_path, self.music_dir, check, len(library))
+        if remember_check:
+            remember(self.db_path, self.music_dir, check, len(library))
         return found, check
 
 
@@ -805,6 +806,7 @@ class _Sources:
     beets_error: str | None = None
     beets_items: dict[str, dict[str, Any]] = field(default_factory=dict)
     beets_check: PathCheck | None = None
+    remember_check: bool = True
 
     def lookup(self) -> dict[str, Any]:
         if self.by_path is None:
@@ -825,7 +827,9 @@ class _Sources:
                 library = [
                     entry.path for entry in self.entries if not getattr(entry, "is_silent", False)
                 ]
-                overlay, self.beets_check = self.beets.checked_items(fields, library)
+                overlay, self.beets_check = self.beets.checked_items(
+                    fields, library, remember_check=self.remember_check
+                )
             except (OSError, sqlite3.Error) as exc:
                 self.beets_error = f"The beets database could not be read: {exc}"
         self.known = frozenset(known)
@@ -877,12 +881,13 @@ def resolve_checked(
     music_dir: Path | None,
     folder: Path,
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+    remember_check: bool = True,
 ) -> tuple[list[Resolution], PathCheck | None]:
     """Like :func:`resolve_all`, with how beets' paths matched the library.
 
     The check is ``None`` when no category read beets.
     """
-    sources = _Sources(entries, beets, music_dir, folder)
+    sources = _Sources(entries, beets, music_dir, folder, remember_check=remember_check)
     queries = [spec.parsed_query() if spec.source == "query" else None for spec in categories]
     fields: set[str] = set()
     for query in queries:

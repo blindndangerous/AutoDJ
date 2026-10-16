@@ -25,6 +25,7 @@ class BeetsConditions:
         self._entries = entries
         self._lock = threading.RLock()
         self._key: tuple[Any, ...] | None = None
+        self._cached_entries: Sequence[Any] | None = None
         self._fields: frozenset[str] = frozenset()
         self._discovered = False
         self._loaded: set[str] = set()
@@ -49,6 +50,7 @@ class BeetsConditions:
             db = getattr(library, "beets_db", None) if library is not None else None
             if not db:
                 self._key = None
+                self._cached_entries = None
                 self._fields, self._loaded, self._items = frozenset(), set(), {}
                 self._discovered = False
                 return self._fields, {}, _NO_BEETS
@@ -60,10 +62,10 @@ class BeetsConditions:
                 str(db_path),
                 str(music_dir) if music_dir is not None else None,
                 *self._fingerprint(db_path),
-                id(entries),
             )
-            if key != self._key:
+            if key != self._key or entries is not self._cached_entries:
                 self._key = key
+                self._cached_entries = entries
                 self._fields, self._loaded, self._items = frozenset(), set(), {}
                 self._discovered = False
 

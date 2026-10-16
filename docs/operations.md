@@ -4292,14 +4292,14 @@ playlist tracks, or a query or playlist that cannot be read.
 ### Beets paths and `music_dir`
 
 AutoDJ finds a song's beets values by its file path. Beets stores full paths, or paths relative
-to its music folder (its `directory` setting); AutoDJ reads relative paths from
-`[library] music_dir`. When `music_dir` names the wrong folder, such as an example value left in
-a container's configuration, no beets entry matches a library song: every beets query and Beets
+to its music folder (its `directory` setting); Beets queries and Beets conditions read relative
+paths from `[library] music_dir`. When `music_dir` names the wrong folder, such as an example
+value left in a container's configuration, no beets entry matches a library song: every beets query and Beets
 field condition finds nothing, and clockwheel steps for those categories are skipped, so other
 songs play.
 
-AutoDJ says so in four places, in the same words: what is wrong, the setting, and the folder that
-probably holds beets' paths.
+AutoDJ reports this in four places, naming the setting and the folder that probably holds beets'
+paths where useful.
 
 - The server log, once each time it changes: `Beets paths: No song in the beets database
   matches a song in AutoDJ's library...`, and each empty category that reads beets says
@@ -4313,9 +4313,10 @@ probably holds beets' paths.
 These are static text, not announcements; read them when the station plays the wrong songs.
 
 When `music_dir` is not set, or names a folder that does not exist on this machine, AutoDJ looks
-up a sample of beets' relative paths in the library. If they all sit under one folder of the
-registered music folders, such as `/music` in the container, it reads beets' paths from that
-folder and says so. If they sit under more than one folder, or `music_dir` names a folder that
+up a sample of beets' relative paths in the library. If at least three sampled paths match under
+one registered music folder, such as `/music` in the container, and none match under another,
+Beets queries and Beets conditions read relative paths from that folder and say so. If paths
+match under more than one folder, or `music_dir` names a folder that
 exists, nothing is guessed. Set `music_dir` to the named folder in `config.toml` or
 `config.local.toml` (or `AUTODJ_LIBRARY_MUSIC_DIR`) and restart AutoDJ. When beets stores full
 paths that are not the library's, mount the music where beets keeps it, or register it in

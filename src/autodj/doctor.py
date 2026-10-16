@@ -1078,6 +1078,7 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         beets=beets_source(cfg),
         music_dir=cfg.library.music_dir,
         folder=playlists_folder(cfg),
+        remember_check=False,
     )
     cause = check.cause if check is not None else None
     problems: list[str] = []

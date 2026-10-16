@@ -98,7 +98,10 @@ def test_an_unset_or_missing_music_dir_uses_the_one_folder_found(tmp_path, missi
     assert check.matched == 3 and check.root == music and check.detected
     assert set(items) == {beets_paths.library_key(p, music) for p in RELATIVE}
     assert check.note is not None
-    assert f"Beets' relative paths are read from {music.as_posix()}" in check.note
+    assert (
+        f"Beets queries and Beets conditions read relative paths from {music.as_posix()}"
+        in check.note
+    )
     setting = "a folder that does not exist here" if missing else "is not set"
     assert setting in check.note
 
@@ -120,6 +123,13 @@ def test_too_few_agreeing_paths_are_not_used(tmp_path):
     _, check = match(rows(RELATIVE), library, None)
 
     # One of three sampled paths found: suggested, never used.
+    assert check.mismatch and check.found == music and check.root is None
+
+
+def test_fewer_than_three_beets_paths_are_not_enough_to_choose_a_folder(tmp_path):
+    music = tmp_path / "music"
+    _, check = match(rows(RELATIVE[:2]), library_under(music)[:2], None)
+
     assert check.mismatch and check.found == music and check.root is None
 
 
@@ -205,6 +215,26 @@ def test_check_library_reads_beets_again_only_when_something_changed(tmp_path, m
     assert check_library(SimpleNamespace(library=SimpleNamespace(beets_db=None)), songs) is None
 
 
+def test_check_library_rechecks_when_missing_music_dir_appears(tmp_path, monkeypatch):
+    music = tmp_path / "music"
+    configured = tmp_path / "mounted"
+    db = make_beets(tmp_path / "library.db", RELATIVE)
+    cfg = SimpleNamespace(library=SimpleNamespace(beets_db=db, music_dir=configured))
+    songs = [song(Path(path)) for path in library_under(music)]
+    import autodj.beets as beets
+
+    reads = []
+    real = beets.read_items
+    monkeypatch.setattr(beets, "read_items", lambda *a: reads.append(1) or real(*a))
+    first = check_library(cfg, songs)
+    assert first is not None and first.detected
+
+    configured.mkdir()
+    second = check_library(cfg, songs)
+    assert second is not None and second.mismatch and not second.detected
+    assert len(reads) == 2
+
+
 def test_the_station_state_names_a_mismatch_and_its_fix(tmp_path):
     db = tmp_path / "library.db"
     wrong = tmp_path / "wrong"
@@ -216,8 +246,8 @@ def test_the_station_state_names_a_mismatch_and_its_fix(tmp_path):
 
     text = _library_problem(cfg)
     assert text is not None
-    assert "Clockwheel steps that need those songs are skipped" in text
     assert 'Set music_dir = "' in text
+    assert "Clockwheel steps that need those songs are skipped" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +318,7 @@ def make_catalog(cfg, paths: list[str]) -> None:
     conn.close()
 
 
-def test_doctor_reports_a_mismatch_with_its_fix(tmp_path):
+def test_doctor_reports_a_mismatch_with_its_fix(tmp_path, caplog):
     music = tmp_path / "music"
     wrong = tmp_path / "wrong"
     wrong.mkdir()
@@ -313,6 +343,8 @@ def test_doctor_reports_a_mismatch_with_its_fix(tmp_path):
     assert report.status is CheckStatus.WARN
     assert "Gold: no songs match (no beets song path matches the library" in report.summary
     assert report.repair is not None and report.repair.startswith("Set music_dir = ")
+    assert not any("Beets paths:" in record.getMessage() for record in caplog.records)
+    assert latest(cfg) is None
 
 
 def test_doctor_passes_a_found_folder_when_music_dir_is_unset(tmp_path):
@@ -323,7 +355,7 @@ def test_doctor_passes_a_found_folder_when_music_dir_is_unset(tmp_path):
     [check] = doctor._beets_paths_check(cfg)
 
     assert check.status is CheckStatus.PASS
-    assert f"read from {music.as_posix()}" in check.summary
+    assert f"read relative paths from {music.as_posix()}" in check.summary
 
 
 def test_doctor_has_no_beets_paths_check_without_a_beets_database(tmp_path):

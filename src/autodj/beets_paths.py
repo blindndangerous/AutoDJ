@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 #: Relative beets paths looked up in the library to find their folder.
 SAMPLE = 200
-#: Matches needed before a found folder is used (fewer when beets has fewer items).
+#: Matches needed before a found folder is used.
 MIN_AGREEING = 3
 
 
@@ -159,7 +159,8 @@ class PathCheck:
             return None
         root = self.found.as_posix()
         return (
-            f"Beets' relative paths are read from {root}, found from the library, because "
+            f"Beets queries and Beets conditions read relative paths from {root}, "
+            "found from the library, because "
             f'[library] music_dir {self._setting()}. Set music_dir = "{root}" under [library] '
             "to choose the folder yourself."
         )
@@ -235,8 +236,7 @@ def match(
         if roots:
             best, count = roots.most_common(1)[0]
             found = Path(best)
-            needed = min(MIN_AGREEING, len(relative))
-            if len(roots) == 1 and count >= needed and not exists:
+            if len(roots) == 1 and count >= MIN_AGREEING and not exists:
                 trial = keyed(found)
                 tried = len(keys & trial.keys())
                 if tried:
@@ -276,8 +276,13 @@ def _stat(path: Path) -> tuple[int, int] | None:
     return found.st_mtime_ns, found.st_size
 
 
-def _stamp(db_path: Path, songs: int) -> tuple[Any, ...]:
-    return _stat(db_path), _stat(Path(f"{db_path}-wal")), songs
+def _stamp(db_path: Path, music_dir: Path | None, songs: int) -> tuple[Any, ...]:
+    return (
+        _stat(db_path),
+        _stat(Path(f"{db_path}-wal")),
+        music_dir is not None and Path(music_dir).is_dir(),
+        songs,
+    )
 
 
 def remember(db_path: Path, music_dir: Path | None, check: PathCheck, songs: int) -> None:
@@ -290,7 +295,7 @@ def remember(db_path: Path, music_dir: Path | None, check: PathCheck, songs: int
     said = check.message()
     with _lock:
         before = _latest.get(key)
-        _latest[key] = (_stamp(db_path, songs), check, said)
+        _latest[key] = (_stamp(db_path, music_dir, songs), check, said)
     if before is not None and before[2] == said:
         return
     if check.problem:
@@ -328,7 +333,7 @@ def check_library(cfg: Any, entries: Sequence[Any]) -> PathCheck | None:
     paths = [entry.path for entry in entries if not getattr(entry, "is_silent", False)]
     with _lock:
         found = _latest.get(_key(db_path, music_dir))
-    if found is not None and found[0] == _stamp(db_path, len(paths)):
+    if found is not None and found[0] == _stamp(db_path, music_dir, len(paths)):
         return found[1]
     from autodj.beets import read_items
 
