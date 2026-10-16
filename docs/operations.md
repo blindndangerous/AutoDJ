@@ -1738,14 +1738,15 @@ remain in the shared library. The liner file itself is not copied.
 The new station starts with an empty queue and play history. AutoDJ does not copy active
 playback, pending listener requests, listener sessions, bans or statistics, running jobs,
 recording state, relays or their passwords, liner play dates, ads and reports, shows, matched
-intros, profiles, liners, time-check clips, announcements, or caches. Relays stay off until
+intros, profiles, liners, time-check clips, announcements, the source station's own Stereo Tool
+licence key, or caches. Relays stay off until
 configured for the new station. Music files, library records, analysis, song cue points, and
 Stereo Tool preset files remain shared.
 
 AutoDJ stores the definition at `<index_dir>/stations/<slug>/station.json` alongside
-that station's state. A station's secrets (its stream relays, listener user and password, and
-webhooks) never go in `station.json`. They go beside it in `relays.json` and `secrets.json`,
-which only your account can read and backups leave out. Startup migration reads legacy root
+that station's state. A station's secrets (its stream relays, listener user and password,
+webhooks, and its own Stereo Tool licence key) never go in `station.json`. They go beside it in
+`relays.json` and `secrets.json`, which only your account can read and backups leave out. Startup migration reads legacy root
 station sections and `[stations.<slug>]` tables from `config.toml` and `config.local.toml`, and writes
 the canonical station files. The
 legacy sections remain in the TOML file but normal loading ignores them; remove them after
@@ -2029,11 +2030,17 @@ does not license several stations running at the same time. Check Thimeo's
 [licensing terms](https://www.thimeo.com/stereo-tool/licenses/). AutoDJ does not claim that
 unrestricted broadcast use is free.
 
-Saved keys are files readable only by the user AutoDJ runs as (mode 0600 on Linux and macOS, a
-protected access list on Windows): `<index_dir>/.stereo-tool-license` for every station and
-`.stereo-tool-license` in a station's own folder for that station. Backups never include them, so
-save the key again after restoring on another machine. A saved key that cannot be read is
+Saved keys are kept in files readable only by the user AutoDJ runs as (mode 0600 on Linux and
+macOS, a protected access list on Windows): `<index_dir>/.stereo-tool-license` for every station,
+and the station's `secrets.json` in its own folder for that station, beside its other secrets.
+Saving or clearing a station's key leaves the rest of `secrets.json` as it is. Backups never
+include them, and duplicating a station does not copy its key, so save the key again after
+restoring on another machine. Older versions kept a station's own key in `.stereo-tool-license`
+in the station's folder; AutoDJ moves it into `secrets.json` the first time it reads it, deletes
+the old file, and logs one line saying so, without the key. A saved key that cannot be read is
 reported on the page ("No licence. This station's saved licence cannot be read ...").
+An older AutoDJ version cannot read a station's `secrets.json` after it holds that key. If you go
+back to an older version after this move, save each station's own key again in that version.
 
 For an install without a browser, give the key in `AUTODJ_STEREOTOOL_LICENSE_KEY` instead. It
 is read when Stereo Tool starts and overrides the key saved for every station, which the page

@@ -60,7 +60,6 @@ def duplicate_table(
     for section, keys in {
         "stream": ("relays", "listener_user", "listener_password", "enabled", "trusted_proxies"),
         "recording": ("folder",),
-        # A station's own Stereo Tool key file: one licence per instance.
         "time_checks": ("clips_folder",),
     }.items():
         value = table.get(section)
@@ -148,6 +147,8 @@ def stage_station(
             ):
                 raise CreationConflict(f"Cannot copy {old.state_dir}: it is not a plain folder")
             # Only these files carry settings or chosen assets. New state files stay out.
+            # relays.json and secrets.json, with the passwords, webhooks and the
+            # station's own Stereo Tool key (one licence per instance), never come.
             if old.web_state.exists() or old.web_state.is_symlink() or old.web_state.is_junction():
                 if not _regular(old.web_state):
                     raise CreationConflict(f"Cannot copy {old.web_state}: it is not a regular file")

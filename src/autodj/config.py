@@ -2445,7 +2445,7 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
         again.
     """
     from autodj.fsutil import atomic_write
-    from autodj.secret_files import write_private_file
+    from autodj.secret_files import update_private_json, write_private_file
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
 
     config_path = Path(cfg.config_path) if cfg.config_path is not None else None
@@ -2691,11 +2691,19 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
                 changed = True
             if isinstance(secret_stream, dict) and not secret_stream:
                 secrets.pop("stream", None)
-            if secrets and not paths.secrets.exists():
-                write_private_file(
-                    paths.secrets, json.dumps({"version": 1, **secrets}, indent=2) + "\n"
-                )
-                changed = True
+            if secrets:
+
+                def add(document: dict[str, Any], secrets: dict[str, Any] = secrets) -> bool:
+                    # A secrets.json holding only a Stereo Tool key has none of these yet.
+                    if any(key in document for key in ("stream", "webhooks")):
+                        return False
+                    document.update(secrets)
+                    return True
+
+                try:
+                    changed = update_private_json(paths.secrets, add) or changed
+                except ValueError as exc:
+                    logger.error("Did not move the secrets of [stations.%s]: %s", slug, exc)
         if slug == DEFAULT_SLUG and cfg.legacy_relay_environment and paths.relays.exists():
             try:
                 relay_document = json.loads(paths.relays.read_text(encoding="utf-8"))
@@ -2725,18 +2733,25 @@ def move_station_tables(cfg: AutoDJConfig) -> bool:
 
 
 def _read_secrets(path: Path) -> dict[str, Any]:
-    """A station's secrets.json, without its version; empty when it has none."""
+    """A station's secrets.json, without its version; empty when it has none.
+
+    Its Stereo Tool key (``stereo_tool``) is not a station setting and is left
+    out: :mod:`autodj.stereotool_setup` reads it.
+    """
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     if not isinstance(document, dict) or document.pop("version", None) != 1:
         raise ValueError(f"{path.name} needs version 1")
+    document.pop("stereo_tool", None)
     stream = document.get("stream", {})
     if set(document) - {"stream", "webhooks"} or (
         not isinstance(stream, dict) or set(stream) - {"listener_user", "listener_password"}
     ):
-        raise ValueError(f"{path.name} holds only listener_user, listener_password and webhooks")
+        raise ValueError(
+            f"{path.name} holds only listener_user, listener_password, webhooks and stereo_tool"
+        )
     return document
 
 
