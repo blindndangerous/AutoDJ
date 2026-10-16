@@ -2108,7 +2108,7 @@ def create_app(
 
     @app.get("/api/library/folders")
     async def api_library_folders() -> dict:
-        return _catalog_library().snapshot()
+        return await asyncio.to_thread(_catalog_library().snapshot)
 
     @app.post("/api/library/folders")
     async def api_library_add_folder(body: LibraryFolderBody) -> dict:
@@ -2124,7 +2124,7 @@ def create_app(
         except (OSError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         library.start_scan({source["id"]})
-        return library.snapshot()
+        return await asyncio.to_thread(library.snapshot)
 
     @app.patch("/api/library/folders/{source_id}")
     async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
@@ -2141,7 +2141,7 @@ def create_app(
             advanced if source["kind"] == "music" else False,
         )
         library.start_scan({source_id})
-        return library.snapshot()
+        return await asyncio.to_thread(library.snapshot)
 
     @app.delete("/api/library/folders/{source_id}")
     async def api_library_remove_folder(source_id: str) -> dict:
@@ -2149,14 +2149,14 @@ def create_app(
         if not await asyncio.to_thread(library.catalog.remove_source, source_id):
             raise HTTPException(status_code=404, detail="Folder not registered")
         await asyncio.to_thread(library.refresh)
-        return library.snapshot()
+        return await asyncio.to_thread(library.snapshot)
 
     @app.post("/api/library/rescan")
     async def api_library_rescan(body: LibraryRescanBody | None = None) -> dict:
         library = _catalog_library()
         if not library.start_scan(override_tags=body.override_tags if body else False):
             raise HTTPException(status_code=409, detail="Library cleanup is running")
-        return library.snapshot()
+        return await asyncio.to_thread(library.snapshot)
 
     @app.get("/api/library/auto-rescan")
     async def api_library_auto_rescan() -> dict[str, int]:
@@ -2266,7 +2266,10 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"removed": removed, "remaining": library.snapshot()["tracks_ready"]}
+        return {
+            "removed": removed,
+            "remaining": (await asyncio.to_thread(library.snapshot))["tracks_ready"],
+        }
 
     def library_station(slug: str) -> str:
         if slug not in app.state.stations.slugs():

@@ -11,6 +11,7 @@ import { formatPlayedAt } from "./history-format.js";
 import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installAdvancedLength } from "./advanced-length.js";
+import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
@@ -104,6 +105,15 @@ export function installLibraryFolders({ document: doc = document, request = requ
   }
   let errorSignature = "";
   let importRunning = false;
+  // Whether beets' songs match the library's: static text, not a live region,
+  // so the 3-second poll never repeats a problem that lasts.
+  let beetsPaths = doc.getElementById("source-folders-beets");
+  if (!beetsPaths) {
+    beetsPaths = doc.createElement("p");
+    beetsPaths.id = "source-folders-beets";
+    beetsPaths.hidden = true;
+    progress.insertAdjacentElement("afterend", beetsPaths);
+  }
   const pathInput = doc.getElementById("source-folder-path");
   const kindInput = doc.getElementById("source-folder-kind");
   const recursiveInput = doc.getElementById("source-folder-recursive");
@@ -285,6 +295,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (importRunning && !data.import?.running) announceAction(summary);
     importRunning = !!data.import?.running;
     renderErrors(data.import?.errors || []);
+    showBeetsPaths(beetsPaths, data.beets_paths, { full: true });
   }
   // The real failures (unreadable or undecodable files, folders that could
   // not be read), as a list that keeps its open state while polling.

@@ -2092,3 +2092,46 @@ def test_advanced_analysis_leaves_out_songs_over_the_length_cutoff(manager_facto
     # A bad stored value falls back to the default.
     catalog.set_setting("advanced_max_minutes", "lots")
     assert catalog.advanced_max_minutes() == 15
+
+
+def test_library_snapshot_says_when_beets_songs_match_no_library_song(manager_factory, tmp_path):
+    import sqlite3
+
+    import autodj.beets_paths as beets_paths
+
+    beets_paths._latest.clear()
+    music = tmp_path / "Music"
+    music.mkdir()
+    manager = manager_factory(music=music)
+    for name in ("one.flac", "two.flac", "three.flac"):
+        song = music / "Artist" / name
+        song.parent.mkdir(exist_ok=True)
+        song.write_bytes(name.encode())
+        manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    db = tmp_path / "beets.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB)")
+    conn.executemany(
+        "INSERT INTO items (path) VALUES (?)",
+        [(f"Artist/{name}".encode(),) for name in ("one.flac", "two.flac", "three.flac")],
+    )
+    conn.commit()
+    conn.close()
+    wrong = tmp_path / "Wrong"
+    wrong.mkdir()
+    manager.cfg.library.beets_db = db
+    manager.cfg.library.music_dir = wrong
+    try:
+        view = manager.snapshot()["beets_paths"]
+        assert view["mismatch"] is True
+        assert f"[library] music_dir, which is {wrong}." in view["problem"]
+        # The catalog keeps Windows paths case-folded, and so does the suggestion.
+        assert f'set music_dir = "{music.as_posix()}"'.casefold() in view["fix"].casefold()
+
+        manager.cfg.library.music_dir = music
+        view = manager.snapshot()["beets_paths"]
+        assert view["mismatch"] is False and view["problem"] is None
+        assert view["summary"] == "3 of 3 library songs have a beets entry"
+    finally:
+        beets_paths._latest.clear()

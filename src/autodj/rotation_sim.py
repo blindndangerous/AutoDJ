@@ -341,7 +341,7 @@ class LibrarySnapshot:
             cfg, self.entries_snapshot, lambda: self.catalog.sources(), path=store_path(cfg, paths)
         )
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
-        self.clock_beets = BeetsConditions(cfg)
+        self.clock_beets = BeetsConditions(cfg, self.entries_snapshot)
         self.ledger = StationLedger(
             store,
             self.entry_for_path,

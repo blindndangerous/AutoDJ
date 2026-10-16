@@ -702,7 +702,9 @@ def _clock_beets(station: StationRuntime, library: Any) -> Any:
     from autodj.clock_condition_data import BeetsConditions
 
     if not hasattr(library, "clock_beets"):
-        library.clock_beets = BeetsConditions(station.cfg)
+        library.clock_beets = BeetsConditions(
+            station.cfg, getattr(library, "entries_snapshot", None)
+        )
     return library.clock_beets
 
 

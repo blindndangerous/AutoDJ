@@ -1007,3 +1007,24 @@ describe("clock folder and points controls", () => {
     expect(document.getElementById("points-status").textContent).toContain("Save your changes");
   });
 });
+
+describe("beets paths in Library tools", () => {
+  it("shows a beets path mismatch as static text after the progress line", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const request = vi.fn(async () => ({
+      folders: [], import: {}, tracks_ready: 3, tracks_indexed: 0,
+      beets_paths: { summary: "0 of 3 library songs have a beets entry", problem: "No song in the beets database matches a song in AutoDJ's library.", fix: 'Set music_dir = "/music" under [library].', note: null, mismatch: true },
+    }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const beets = document.getElementById("source-folders-beets");
+    expect(beets.previousElementSibling.id).toBe("source-folders-progress");
+    expect(beets.hidden).toBe(false);
+    expect(beets.textContent).toBe(`Beets: No song in the beets database matches a song in AutoDJ's library. Set music_dir = "/music" under [library].`);
+    expect(beets.hasAttribute("aria-live")).toBe(false);
+    expect(document.getElementById("source-folders-status").textContent).toBe("");
+    request.mockResolvedValue({ folders: [], import: {}, tracks_ready: 3, tracks_indexed: 0, beets_paths: null });
+    await controls.refresh();
+    expect(beets.hidden).toBe(true);
+  });
+});
