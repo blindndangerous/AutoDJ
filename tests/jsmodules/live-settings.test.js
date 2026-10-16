@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 import { installLiveSettings, sourceFacts, transportNote } from "../../src/autodj/static/modules/live-settings.js";
 import { requestJson } from "../../src/autodj/static/modules/api-client.js";
@@ -24,11 +24,7 @@ async function answeredAfterSwitch(body, status = 200) {
 const byId = (id) => document.getElementById(id);
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   byId("spanel-live").hidden = false;
   const dialog = byId("confirm-dialog");
   dialog.showModal = () => dialog.setAttribute("open", "");

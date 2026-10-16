@@ -31,6 +31,8 @@
 // Every change of device runs in order on one queue, so a slow refresh
 // can never land after the user's newer choice.  Nothing here moves focus.
 
+import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
+
 export const PREVIEW_SINK_KEY = "autodj.previewSinkId";
 export const PREVIEW_LABEL_KEY = "autodj.previewSinkLabel";
 
@@ -72,35 +74,18 @@ const FOCUS_WAIT_MS = 3000;
 const DEFAULT_LABEL = "the system default output";
 const NOTES = new Set([MISSING_TEXT, UNAVAILABLE_TEXT]);
 
-// Reading localStorage itself throws where site data is blocked.
-function defaultStorage() {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 function readSaved(storage) {
-  try {
-    return {
-      id: storage?.getItem(PREVIEW_SINK_KEY) || "",
-      label: storage?.getItem(PREVIEW_LABEL_KEY) || "",
-    };
-  } catch {
-    return { id: "", label: "" };
-  }
+  return {
+    id: readStorage(storage, PREVIEW_SINK_KEY) || "",
+    label: readStorage(storage, PREVIEW_LABEL_KEY) || "",
+  };
 }
 
 function writeSaved(storage, id, label = "") {
-  try {
-    if (id) storage?.setItem(PREVIEW_SINK_KEY, id);
-    else storage?.removeItem(PREVIEW_SINK_KEY);
-    if (id && label) storage?.setItem(PREVIEW_LABEL_KEY, label);
-    else storage?.removeItem(PREVIEW_LABEL_KEY);
-  } catch {
-    // Private windows and blocked storage: the choice is not remembered.
-  }
+  if (id) writeStorage(storage, PREVIEW_SINK_KEY, id);
+  else removeStorage(storage, PREVIEW_SINK_KEY);
+  if (id && label) writeStorage(storage, PREVIEW_LABEL_KEY, label);
+  else removeStorage(storage, PREVIEW_LABEL_KEY);
 }
 
 export function previewOutputSupport({ mediaDevices, mediaElementPrototype }) {

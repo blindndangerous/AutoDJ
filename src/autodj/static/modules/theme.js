@@ -9,26 +9,15 @@
 // Changing the theme announces nothing beyond the radio button's own
 // checked state.
 
+import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
+
 export const THEME_STORAGE_KEY = "autodj.theme";
 const PINNED = new Set(["light", "dark"]);
 
-// Reading localStorage itself throws where site data is blocked.
-function defaultStorage() {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 // "system", "light" or "dark".  Anything unreadable or unknown is System.
 export function readThemeChoice(storage = defaultStorage()) {
-  try {
-    const stored = storage?.getItem(THEME_STORAGE_KEY);
-    return PINNED.has(stored) ? stored : "system";
-  } catch {
-    return "system";
-  }
+  const stored = readStorage(storage, THEME_STORAGE_KEY);
+  return PINNED.has(stored) ? stored : "system";
 }
 
 export function applyThemeChoice(choice, root = globalThis.document?.documentElement) {
@@ -38,11 +27,7 @@ export function applyThemeChoice(choice, root = globalThis.document?.documentEle
 }
 
 function writeThemeChoice(storage, choice) {
-  try {
-    storage?.setItem(THEME_STORAGE_KEY, choice);
-  } catch {
-    // Private windows and blocked storage: used until the page reloads.
-  }
+  writeStorage(storage, THEME_STORAGE_KEY, choice);
 }
 
 export function installThemeSetting(doc = globalThis.document, storage = defaultStorage()) {

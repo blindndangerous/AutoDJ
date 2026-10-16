@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 import {
   breakText,
@@ -19,11 +19,7 @@ const status = () => byId("ads-status").textContent;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   byId("panel-ads").hidden = false;
   const dialog = byId("confirm-dialog");
   dialog.showModal = () => { dialog.open = true; };

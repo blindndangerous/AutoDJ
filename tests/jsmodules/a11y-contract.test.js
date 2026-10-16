@@ -1976,8 +1976,9 @@ describe("static accessibility contracts", () => {
     expect(count.hasAttribute("role")).toBe(false);
     expect(count.closest("[aria-live], [role=status], [role=alert], [role=log]")).toBeNull();
     expect(fieldset.contains(count)).toBe(true);
-    expect(count.closest("section").getAttribute("aria-labelledby"))
-      .toBe("listener-control-title");
+    const listenerSection = count.closest("section");
+    expect(listenerSection.hasAttribute("aria-labelledby")).toBe(false);
+    expect(listenerSection.querySelector("#listener-control-title").textContent).toBe("Listeners");
     expect(labelText("stream-per-address")).toContain("Connections per address");
     expect(document.getElementById("listener-ban-new").textContent.trim()).toBe("Add address ban");
     for (const id of ["listener-ban-address", "listener-ban-duration", "listener-ban-note"]) {
@@ -2037,6 +2038,8 @@ describe("static accessibility contracts", () => {
       ["#ads-rules-form", "#panel-ads", "H3", "Rules for every break"],
       ["#ads-report-form", "#panel-ads", "H3", "Ad report"],
       ["#cart-upload-file", "#panel-carts", "H3", "Uploaded clips"],
+      ["#cart-save", "#panel-carts", "H3", "Edit a cart"],
+      ["#cart-rename", "#panel-carts", "H3", "Rename this page"],
     ];
     for (const [inside, panel, level, title] of folded) {
       const card = document.querySelector(inside).closest("details");
@@ -2058,7 +2061,7 @@ describe("static accessibility contracts", () => {
     }
     // The groups people use often stay as they were: plain sections and
     // fieldsets, always shown.
-    for (const id of ["ads-spot-add", "ads-break-add", "cart-save", "cart-rename",
+    for (const id of ["ads-spot-add", "ads-break-add",
       "recording-toggle", "listener-ban-new", "stream-bitrate"]) {
       expect(document.getElementById(id).closest("details"), id).toBeNull();
     }
@@ -2620,12 +2623,13 @@ describe("static accessibility contracts", () => {
     const bar = document.getElementById("rotation-progress");
     expect(bar.tagName).toBe("PROGRESS");
     expect(document.querySelector('label[for="rotation-progress"]').textContent.trim()).toBe("Progress");
-    // Results: a section named by its heading, hidden until a run ends, no table.
+    // Results retain their heading without repeating it as a region name.
     const results = document.getElementById("rotation-results");
     expect(results.tagName).toBe("SECTION");
     expect(results.hidden).toBe(true);
     // Under the card's h4 title, so h5, its sections h6.
-    expect(document.getElementById(results.getAttribute("aria-labelledby")).tagName).toBe("H5");
+    expect(results.hasAttribute("aria-labelledby")).toBe(false);
+    expect(results.querySelector("#rotation-results-heading").tagName).toBe("H5");
     expect(results.querySelector("table")).toBeNull();
     // Colours come from the theme tokens only, so the light theme follows.
     const rules = stripCssComments(cssSource).match(/#rotation-[^{]*\{[^}]*\}/g);
@@ -3435,7 +3439,7 @@ describe("listener request contracts", () => {
   it("labels every smooth-transition setting, groups the give-up choice and links its help and error", () => {
     const start = htmlSource.indexOf('<form id="requests-settings"');
     const form = htmlSource.slice(start, htmlSource.indexOf("</form>", start));
-    expect(form).toMatch(/aria-labelledby="requests-settings-heading"/);
+    expect(form).not.toMatch(/aria-labelledby="requests-settings-heading"/);
     expect(form).toMatch(/<h3 id="requests-settings-heading">/);
     for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",
       "requests-no-smooth-best", "requests-no-smooth-wait"]) {

@@ -1,15 +1,8 @@
 // Queue & Search holds one library results table; liner file maintenance stays in Settings.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
+import { installIndexMarkup as installIndex } from "./helpers.js";
+
 const byId = (id) => document.getElementById(id);
 function tabOrder(root) {
   return [...root.querySelectorAll("a[href], button, input, select, textarea, summary, [tabindex]")]

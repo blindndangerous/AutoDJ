@@ -25,6 +25,7 @@
 //   - Focus never moves.
 
 import { startStatusPage, trackText } from "./status-page.js";
+import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 export const CONNECTING_TEXT = "Connecting to the stream.";
 export const PLAYING_TEXT = "Playing.";
@@ -57,20 +58,9 @@ export function streamUrl(doc) {
 }
 
 function storedVolume(storage) {
-  let stored = null;
-  try {
-    stored = storage?.getItem(VOLUME_KEY) ?? null;
-  } catch { /* storage blocked: the default */ }
+  const stored = readStorage(storage, VOLUME_KEY);
   const value = Number(stored);
   return stored !== null && stored !== "" && Number.isFinite(value) ? value : 100;
-}
-
-function defaultStorage() {
-  try {
-    return globalThis.localStorage ?? null;
-  } catch {
-    return null;
-  }
 }
 
 // Whether this browser lets a page change an element's volume: iOS keeps
@@ -193,9 +183,7 @@ export function startPlayer({
   }
   volume?.addEventListener("input", () => {
     const level = applyVolume(volume.value);
-    try {
-      storage?.setItem(VOLUME_KEY, String(level));
-    } catch { /* storage blocked: this visit only */ }
+    writeStorage(storage, VOLUME_KEY, String(level));
   });
 
   toggle.addEventListener("click", () => {

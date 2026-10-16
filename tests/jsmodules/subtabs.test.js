@@ -3,25 +3,11 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { installIndexMarkup as installIndex, memoryStorage } from "./helpers.js";
+
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
 import { tabForKey } from "../../src/autodj/static/modules/tablist.js";
 
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
-
-function memoryStorage(initial = {}) {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (key) => (data.has(key) ? data.get(key) : null),
-    setItem: (key, value) => data.set(key, String(value)),
-    data,
-  };
-}
 
 const byId = (id) => document.getElementById(id);
 const press = (el, key) => el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));

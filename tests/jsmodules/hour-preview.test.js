@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
   installHourPreview,
@@ -40,14 +40,6 @@ function view(overrides = {}) {
     stopped: null,
     ...overrides,
   };
-}
-
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
 }
 
 function harness(answers) {

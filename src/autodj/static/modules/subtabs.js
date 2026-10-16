@@ -13,32 +13,16 @@
 // view is showing -- and a "toggle" event fires on it when that changes.
 
 import { markSelected, tabForKey } from "./tablist.js";
+import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const STORAGE_KEY = "autodj.settingsSubtab";
 
-// Reading localStorage itself throws where site data is blocked.
-function defaultStorage() {
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 function readStored(storage) {
-  try {
-    return storage?.getItem(STORAGE_KEY) ?? null;
-  } catch {
-    return null;
-  }
+  return readStorage(storage, STORAGE_KEY);
 }
 
 function writeStored(storage, value) {
-  try {
-    storage?.setItem(STORAGE_KEY, value);
-  } catch {
-    // Private windows and blocked storage: the choice is not remembered.
-  }
+  writeStorage(storage, STORAGE_KEY, value);
 }
 
 function focusHeading(panel) {

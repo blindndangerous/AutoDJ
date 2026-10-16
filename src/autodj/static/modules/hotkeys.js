@@ -74,6 +74,7 @@
 // simply means "on" and an unsaved choice.
 
 import { fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
+import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
   "button",
@@ -152,22 +153,14 @@ let _shortcutsOn = null;
 // what dom-helpers.js avoids too.
 export function shortcutsEnabled() {
   if (_shortcutsOn === null) {
-    try {
-      _shortcutsOn = globalThis.localStorage?.getItem(SHORTCUTS_STORAGE_KEY) !== "off";
-    } catch (_) {
-      _shortcutsOn = true;
-    }
+    _shortcutsOn = readStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY) !== "off";
   }
   return _shortcutsOn;
 }
 
 function setShortcutsEnabled(on) {
   _shortcutsOn = Boolean(on);
-  try {
-    globalThis.localStorage?.setItem(SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
-  } catch (_) {
-    // Still honoured for this page load; it just will not be remembered.
-  }
+  writeStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
 }
 
 function installShortcutToggle(checkbox) {
@@ -183,11 +176,7 @@ let _bracketSeekOn = null;
 
 export function bracketSeekEnabled() {
   if (_bracketSeekOn === null) {
-    try {
-      _bracketSeekOn = globalThis.localStorage?.getItem(BRACKET_SEEK_STORAGE_KEY) === "on";
-    } catch (_) {
-      _bracketSeekOn = false;
-    }
+    _bracketSeekOn = readStorage(defaultStorage(), BRACKET_SEEK_STORAGE_KEY) === "on";
   }
   return _bracketSeekOn;
 }
@@ -197,11 +186,7 @@ function installBracketSeekToggle(checkbox) {
   checkbox.checked = bracketSeekEnabled();
   checkbox.addEventListener("change", () => {
     _bracketSeekOn = checkbox.checked;
-    try {
-      globalThis.localStorage?.setItem(BRACKET_SEEK_STORAGE_KEY, checkbox.checked ? "on" : "off");
-    } catch (_) {
-      // Still honoured for this page load; it just will not be remembered.
-    }
+    writeStorage(defaultStorage(), BRACKET_SEEK_STORAGE_KEY, checkbox.checked ? "on" : "off");
   });
 }
 

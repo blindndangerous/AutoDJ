@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 import {
   endMessage,
@@ -25,11 +25,7 @@ const SECTIONS = [
 ];
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   byId("settings-tabs").closest("section").hidden = false;
   byId("spanel-picking").hidden = false;
 }

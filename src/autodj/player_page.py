@@ -176,7 +176,7 @@ def render_player_page(
 <p>Listen live</p>
 </header>
 <main>
-<section aria-labelledby="player-listen-heading">
+<section>
 <h2 id="player-listen-heading">Listen</h2>
 {_listen(station, addresses, links=True)}
 </section>

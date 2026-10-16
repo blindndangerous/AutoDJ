@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 import { describeOnAir, describeShow, installShowsPanel, summaryText } from "../../src/autodj/static/modules/shows-panel.js";
 import { fmtTime } from "../../src/autodj/static/modules/dom-helpers.js";
@@ -28,11 +28,7 @@ const SHOW = {
 };
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   byId("panel-library").hidden = false;
   const dialog = byId("confirm-dialog");
   dialog.showModal = () => { dialog.open = true; };
