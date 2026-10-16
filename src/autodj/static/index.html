@@ -345,6 +345,9 @@
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
     <p id="handoff-status" class="setting-desc"></p>
+    <!-- Not live: a problem that lasts (beets' songs matching none of the
+         library's, #386) is found here, not repeated on every update. -->
+    <p id="library-problem" hidden></p>
   </details>
 
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
@@ -486,37 +489,37 @@
       <div id="points-fields">
         <div class="cue-point-row">
           <label>Start (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="start" aria-label="Start time"><span data-point-source="start"></span></label>
-          <button type="button" data-set-current="start" aria-label="Set Start to preview position">Use preview position</button>
+          <button type="button" data-set-current="start" aria-label="Use preview position for Start">Use preview position</button>
           <button type="button" data-preview="start">Preview Start</button>
         </div>
         <p class="setting-desc" id="points-help-start">When the track starts playing.</p>
         <div class="cue-point-row">
           <label>Intro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="intro" aria-label="Intro time"><span data-point-source="intro"></span></label>
-          <button type="button" data-set-current="intro" aria-label="Set Intro to preview position">Use preview position</button>
+          <button type="button" data-set-current="intro" aria-label="Use preview position for Intro">Use preview position</button>
           <button type="button" data-preview="intro">Preview Intro</button>
         </div>
         <p class="setting-desc" id="points-help-intro">The end of the instrumental opening.</p>
         <div class="cue-point-row">
           <label>Outro (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="outro" aria-label="Outro time"><span data-point-source="outro"></span></label>
-          <button type="button" data-set-current="outro" aria-label="Set Outro to preview position">Use preview position</button>
+          <button type="button" data-set-current="outro" aria-label="Use preview position for Outro">Use preview position</button>
           <button type="button" data-preview="outro">Preview Outro</button>
         </div>
         <p class="setting-desc" id="points-help-outro">For liners and voice tracks: the earliest one can come in over this track.</p>
         <div class="cue-point-row">
           <label>Segue (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="segue" aria-label="Segue time"><span data-point-source="segue"></span></label>
-          <button type="button" data-set-current="segue" aria-label="Set Segue to preview position">Use preview position</button>
+          <button type="button" data-set-current="segue" aria-label="Use preview position for Segue">Use preview position</button>
           <button type="button" data-preview="segue">Preview Segue</button>
         </div>
         <p class="setting-desc" id="points-help-segue">Where the track fades into the next one.</p>
         <div class="cue-point-row">
           <label>End (seconds or MM:SS) <input type="text" inputmode="decimal" data-point="end" aria-label="End time"><span data-point-source="end"></span></label>
-          <button type="button" data-set-current="end" aria-label="Set End to preview position">Use preview position</button>
+          <button type="button" data-set-current="end" aria-label="Use preview position for End">Use preview position</button>
           <button type="button" data-preview="end">Preview End</button>
         </div>
         <p class="setting-desc" id="points-help-end">Where the track stops if it has not faded into the next one.</p>
         <div class="cue-point-row">
           <label>Overlap start (seconds or MM:SS; minimum -15) <input type="text" inputmode="decimal" data-point="overlap_start"><span data-point-source="overlap_start"></span></label>
-          <button type="button" data-set-current="overlap_start" aria-label="Set Overlap start to preview position">Use preview position</button>
+          <button type="button" data-set-current="overlap_start" aria-label="Use preview position for Overlap start">Use preview position</button>
           <button type="button" data-preview="overlap_start">Preview Overlap start</button>
         </div>
         <p class="setting-desc" id="points-help-overlap-start">For liners: when the next song may come in, counted from Start.</p>
@@ -3307,6 +3310,7 @@
           <button type="button" id="auto-rescan-save">Save</button>
         </fieldset>
         <p id="source-folders-status">Loading folders…</p>
+        <p id="source-folders-beets" hidden></p>
         <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
 
@@ -3378,6 +3382,7 @@
            #categories-status. -->
       <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file.</p>
       <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <p id="categories-beets-paths" hidden></p>
       <h3 id="categories-list-heading">Saved categories</h3>
       <ul id="categories-list" aria-labelledby="categories-list-heading"><li>No categories loaded.</li></ul>
       <button type="button" id="categories-add">Add category</button>

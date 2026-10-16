@@ -66,7 +66,10 @@ The `index` check reads the current catalog. It reports catalog counts, warns wh
 is empty, and directs older libraries to `migrate-index`. It does not load old generations. The `dj-meta-db`
 check runs SQLite's integrity check on `dj_meta.db` without changing it. The `beets-db` check
 warns when `[library] beets_db` names a file that does not exist: folder scanning still imports
-basic song records, but optional beets enrichment cannot run. The `dependencies` check warns when
+basic song records, but optional beets enrichment cannot run. The `beets-paths` check, shown
+when the beets database exists, counts the library songs that have a beets entry and warns when
+not one does (see [Beets paths and `music_dir`](#beets-paths-and-music_dir)), naming the folder
+to set. The `dependencies` check warns when
 FFmpeg is not on the PATH: advanced analysis cannot process `.mp3`, `.m4a`, `.mp4` and `.aac`
 files, and stream mode cannot start. The `categories` check warns about rotation categories with no
 songs, playlist lines that match no library track (naming the first few), and a query or playlist
@@ -145,7 +148,8 @@ beets metadata without re-embedding, and Stats prints the detailed catalog repor
 all registered folders. New DJ-meta cache entries use full track paths; existing
 relative cache entries remain readable with the old `music_dir` setting. That setting does not
 limit which registered folders can be analysed. It is optional and kept only to resolve older
-relative cache or beets paths; leave it out of new setups. For a legacy index import, pass
+relative cache or beets paths (see [Beets paths and `music_dir`](#beets-paths-and-music_dir));
+leave it out of new setups. For a legacy index import, pass
 `migrate-index --music-dir PATH` instead. Current-library settings/history upgrades need no root.
 
 The Library panel's **Remove missing tracks** action is
@@ -320,7 +324,9 @@ Settings come from three places beside `compose.yaml`:
   mounts this folder read-only and starts in it, so relative paths in them, such as
   `ssl_certfile = "certs/fullchain.pem"`, are read from here.
 - `AUTODJ_BEETS_PATH` in `.env` mounts the folder holding beets' `library.db` read-only at `/beets`;
-  set `beets_db = "/beets/library.db"` in `config.local.toml` to use it.
+  set `beets_db = "/beets/library.db"` in `config.local.toml` to use it. If beets stores paths
+  relative to its music folder, leave `music_dir` unset or set it to `/music`, where the
+  container sees the music (see [Beets paths and `music_dir`](#beets-paths-and-music_dir)).
 
 ```dotenv
 AUTODJ_MUSIC_DIR=/path/to/music
@@ -4284,6 +4290,39 @@ included in `autodj backup`; a damaged file is set aside as `categories.json.bad
 station starts with no categories. The playlist files are not backed up: they come from a script
 or a music folder, like the music. `autodj doctor` lists categories with no songs, missing
 playlist tracks, or a query or playlist that cannot be read.
+
+### Beets paths and `music_dir`
+
+AutoDJ finds a song's beets values by its file path. Beets stores full paths, or paths relative
+to its music folder (its `directory` setting); Beets queries and Beets conditions read relative
+paths from `[library] music_dir`. When `music_dir` names the wrong folder, such as an example
+value left in a container's configuration, no beets entry matches a library song: every beets query and Beets
+field condition finds nothing, and clockwheel steps for those categories are skipped, so other
+songs play.
+
+AutoDJ reports this in four places, naming the setting and the folder that probably holds beets'
+paths where useful.
+
+- The server log, once each time it changes: `Beets paths: No song in the beets database
+  matches a song in AutoDJ's library...`, and each empty category that reads beets says
+  `has no songs in the library: no beets song path matches the library; check [library]
+  music_dir`.
+- `autodj doctor`: the `beets-paths` check, and the fix in the `categories` check.
+- Library tools: under the music folders (with the count of songs that have a beets entry when
+  all is well) and above the saved categories.
+- Under **Up Next**, while the problem lasts.
+
+These are static text, not announcements; read them when the station plays the wrong songs.
+
+When `music_dir` is not set, or names a folder that does not exist on this machine, AutoDJ looks
+up a sample of beets' relative paths in the library. If at least three sampled paths match under
+one registered music folder, such as `/music` in the container, and none match under another,
+Beets queries and Beets conditions read relative paths from that folder and say so. If paths
+match under more than one folder, or `music_dir` names a folder that
+exists, nothing is guessed. Set `music_dir` to the named folder in `config.toml` or
+`config.local.toml` (or `AUTODJ_LIBRARY_MUSIC_DIR`) and restart AutoDJ. When beets stores full
+paths that are not the library's, mount the music where beets keeps it, or register it in
+Library tools by that path.
 
 ### Example: rotations A to D from playlists
 

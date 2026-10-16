@@ -108,6 +108,7 @@ def install_categories(router: StationRouter) -> None:
         uses = clockwheel_uses(station.paths.clockwheels)
         folder = categories.folder
         library = station.bridge.library
+        from autodj.beets_paths import check_library, page_view
         from autodj.clock_conditions import genres
 
         source = getattr(library, "clock_beets", None)
@@ -137,6 +138,7 @@ def install_categories(router: StationRouter) -> None:
             "beets_fields": sorted(known),
             "beets_error": beets_error,
             "beets": station.cfg.library.beets_db is not None,
+            "beets_paths": page_view(check_library(station.cfg, entries)),
         }
 
     def checked(categories: CategoryIndex, spec: CategorySpec) -> Resolution:

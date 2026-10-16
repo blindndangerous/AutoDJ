@@ -11,7 +11,7 @@ cd autodj
 
 # 2. Install with dev tools (Node.js is only needed for the JS tests, lint and audits)
 uv sync --frozen --all-extras
-npm ci
+npm ci --ignore-scripts
 
 # 3. Wire pre-commit (installs the pre-commit, commit-msg and pre-push hooks)
 uv run pre-commit install
@@ -20,11 +20,30 @@ uv run pre-commit install
 uv run python scripts/ci_pytest.py
 npm run lint
 npm test
+npm run deadcode
 ```
 
 Full suite must remain green. `scripts/ci_pytest.py` fails below 90% line coverage (`fail_under` in
 `pyproject.toml`); there is no branch floor. Add a test only for a defect it would catch, not to
 raise the number. New behavior needs focused tests. Only add regression tests if they test a meaningful outcome.
+
+## Checks before a push
+
+`uv run pre-commit install` installs a pre-push hook as well as the commit hooks. When a push changes web
+UI files (`src/autodj/static/`), the frontend tests (`tests/jsmodules/`), or the npm, Vitest or ESLint
+configuration, the hook runs two checks from CI's frontend job:
+
+- `knip`, the unused-code scan, over the whole project.
+- The Vitest tests related to the pushed files: tests that import a changed file, and tests
+  that read it or mention it by name. A configuration-only change may have no related tests.
+
+Pushes that change only Python or documentation skip both. The hook needs `node_modules`; if it
+is missing, the hook stops and asks you to run `npm ci --ignore-scripts`. CI uses Node.js 26, as `engines` in package.json says.
+CI still runs the full Vitest suite. Run `npm test` yourself after a large frontend change.
+To run every pre-push check by hand, use
+`uv run pre-commit run --all-files --hook-stage pre-push`.
+
+If a pre-push check fails, fix the cause and push again rather than bypassing the hook.
 
 ## Branching + commits
 
