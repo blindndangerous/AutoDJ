@@ -23,7 +23,7 @@ from autodj.scheduler import (
     field_error,
 )
 from autodj.settings_bodies import PlaybackSettingsBody
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 
 # Runs the Schedule panel lists, newest first.
 RUNS_SHOWN = 50
@@ -53,7 +53,7 @@ def _builtin_actions(
     Profile, song-picking preset, Stereo Tool preset, picking, liner, stream
     and discovery.
     """
-    cfg = bridge.player._cfg
+    cfg = bridge.cfg if bridge.player is None else bridge.player._cfg
 
     def preset_names() -> list[str]:
         from autodj.presets import BUILTIN_PRESETS
@@ -235,8 +235,9 @@ def build_scheduler(
         song_playing=lambda: bridge.player._state.current_track is not None,
         song_remaining=lambda: bridge.player._current_song_remaining_s(),
     )
-    bridge.player._hour_fit_events = scheduler.hard_events
-    bridge.player._hour_fit_timezone = timezone
+    if bridge.player is not None:
+        bridge.player._hour_fit_events = scheduler.hard_events
+        bridge.player._hour_fit_timezone = timezone
     for action in _builtin_actions(
         bridge, apply_profile, profile_names, liner_names, clock_names, select_clock
     ):
@@ -282,7 +283,7 @@ def install_scheduler(router: StationRouter) -> None:
     """Add the paired schedule routes; each acts on the station its URL names."""
 
     @router.get("/schedule")
-    async def schedule_list(station: StationDep) -> dict[str, Any]:
+    async def schedule_list(station: SavedStationDep) -> dict[str, Any]:
         """Return the actions, events, next runs and recent runs."""
         scheduler = station.schedule
         actions = await asyncio.to_thread(
@@ -298,7 +299,7 @@ def install_scheduler(router: StationRouter) -> None:
 
     @router.get("/schedule/upcoming")
     async def schedule_upcoming(
-        station: StationDep, count: int = Query(default=5, ge=1, le=50)
+        station: SavedStationDep, count: int = Query(default=5, ge=1, le=50)
     ) -> dict[str, Any]:
         """Return the next *count* runs, soonest first."""
         scheduler = station.schedule
@@ -306,7 +307,7 @@ def install_scheduler(router: StationRouter) -> None:
 
     @router.post("/schedule", status_code=201, response_model=None)
     async def schedule_create(
-        station: StationDep, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Add an event."""
         scheduler = station.schedule
@@ -318,7 +319,7 @@ def install_scheduler(router: StationRouter) -> None:
 
     @router.put("/schedule/{event_id}", response_model=None)
     async def schedule_update(
-        station: StationDep, event_id: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, event_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Replace an event."""
         scheduler = station.schedule
@@ -331,7 +332,7 @@ def install_scheduler(router: StationRouter) -> None:
         return _event_view(scheduler, event)
 
     @router.delete("/schedule/{event_id}")
-    async def schedule_delete(station: StationDep, event_id: str) -> dict[str, str]:
+    async def schedule_delete(station: SavedStationDep, event_id: str) -> dict[str, str]:
         """Delete an event."""
         scheduler = station.schedule
         try:
@@ -342,7 +343,7 @@ def install_scheduler(router: StationRouter) -> None:
 
     @router.post("/schedule/{event_id}/enable", response_model=None)
     async def schedule_enable(
-        station: StationDep, event_id: str, body: EnableBody
+        station: SavedStationDep, event_id: str, body: EnableBody
     ) -> dict[str, Any] | JSONResponse:
         """Enable or disable an event."""
         scheduler = station.schedule

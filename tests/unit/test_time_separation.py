@@ -439,15 +439,18 @@ def test_unknown_keys_in_the_new_tables_are_warned_about_and_ignored(caplog) -> 
 
 
 def test_config_toml_reads_the_new_tables(tmp_path: Path, caplog) -> None:
-    from autodj.config import load_config
+    from autodj.config import load_config, move_station_tables
 
     config = tmp_path / "config.toml"
     config.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
         "[playback.repeat_rules.daypart]\ndays = 1\nstart_hours = [0, 12]\nextra = 1\n"
         "[playback.repeat_rules.hourpart]\nplays = 2\n",
         encoding="utf-8",
     )
     with caplog.at_level(logging.WARNING):
+        cfg = load_config(config, environ={})
+        move_station_tables(cfg)
         cfg = load_config(config, environ={})
     rules = cfg.playback.repeat_rules
     assert (rules.daypart.days, rules.daypart.start_hours, rules.hourpart.plays) == (1, [0, 12], 2)

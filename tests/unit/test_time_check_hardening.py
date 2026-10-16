@@ -184,8 +184,9 @@ def test_old_leftovers_are_swept_and_a_set_aside_pack_is_only_reported(
 
 
 def _station_cfg(tmp_path: Path):
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    config = tmp_path / "config.toml"
+    config.write_text(f'[index]\nindex_dir = "{tmp_path.as_posix()}"\n', encoding="utf-8")
+    cfg = load_config(config, environ={})
     cfg.time_checks = TimeChecksConfig()
     return cfg
 
@@ -211,6 +212,7 @@ def test_a_pack_the_default_station_shares_says_so_when_there_are_stations(
     tmp_path: Path,
 ) -> None:
     cfg = _station_cfg(tmp_path)
+    cfg.time_checks.clips_folder = str(tmp_path / "shared" / "time_checks")
     checks = TimeChecks(cfg, "UTC")
     _write_pack(checks.root / "Studio", [3], [5])
     assert checks.status()["packs"][0]["shared_with_stations"] is False

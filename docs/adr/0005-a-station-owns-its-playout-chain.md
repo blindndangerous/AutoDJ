@@ -1,7 +1,13 @@
 # 5. A station owns its playout chain; the library is shared
 
 Date: 2026-10-13
-Status: Accepted. Builds on [ADR 4](0004-server-mix-bus-and-stream-mode.md).
+Status: Accepted; construction and configuration details updated by #366 and #415. Builds on [ADR 4](0004-server-mix-bus-and-stream-mode.md).
+
+The original decision below describes the first multi-station release. Current behavior uses
+`stations/<slug>/station.json` for every station, including the default, and migrates legacy TOML
+settings at startup. Every station can stop/restart and use browser, sound-card or stream output.
+Categories and scheduling timezone are station-owned; trusted proxies remain server-owned.
+See [Several stations](../operations.md#several-stations) for the current configuration.
 
 ## Context
 

@@ -247,33 +247,31 @@ def _section(data: dict, name: str) -> dict[str, Any]:
     return section
 
 
-def _restore_preset(bridge: PlayerBridge, value: object) -> None:
+def _restore_preset(settings: Any, value: object) -> None:
     """Restore the saved preset, or none; an unknown preset name is skipped."""
     name = _checked(PresetBody, "name", value, "preset")
     if name is _INVALID:
         return
-    player = bridge.player
     if not name:
-        player._preset = None
+        settings._preset = None
         return
     from autodj.presets import get_preset
 
     try:
-        player._preset = get_preset(name, player._cfg.presets)
+        settings._preset = get_preset(name, settings.cfg.presets)
     except ValueError:
         _warn("preset", value)
 
 
-def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
+def _restore_playback(settings: Any, playback: dict[str, Any]) -> None:
     """Restore the playback section through the playback-settings route's setter."""
-    player = bridge.player
     if "volume" in playback:
         volume = _checked(VolumeBody, "volume", playback["volume"])
         if volume is not _INVALID:
-            bridge.set_volume(volume)
+            settings.set_volume(volume)
     if "is_muted" in playback:
         try:
-            player._state.is_muted = _STRICT_BOOL.validate_python(playback["is_muted"], strict=True)
+            settings.set_muted(_STRICT_BOOL.validate_python(playback["is_muted"], strict=True))
         except ValidationError:
             _warn("is_muted", playback["is_muted"])
     if "stream_bitrate" in playback:
@@ -282,13 +280,13 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             StreamSettingsBody, "bitrate", playback["stream_bitrate"], "stream_bitrate"
         )
         if bitrate is not _INVALID:
-            player._cfg.stream.bitrate = bitrate
+            settings.cfg.stream.bitrate = bitrate
     if "stream_continuous" in playback:
         continuous = _checked(
             StreamSettingsBody, "continuous", playback["stream_continuous"], "stream_continuous"
         )
         if continuous is not _INVALID:
-            player._cfg.stream.continuous = continuous
+            settings.cfg.stream.continuous = continuous
     if "stream_station_name" in playback:
         name = _checked(
             StreamSettingsBody,
@@ -297,7 +295,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             "stream_station_name",
         )
         if name is not _INVALID and name is not None:
-            player._cfg.stream.station_name = name
+            settings.cfg.stream.station_name = name
     for field, key in (
         ("genre", "stream_genre"),
         ("description", "stream_description"),
@@ -306,7 +304,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         if key in playback:
             value = _checked(StreamSettingsBody, field, playback[key], key)
             if value is not _INVALID and value is not None:
-                setattr(player._cfg.stream, field, value)
+                setattr(settings.cfg.stream, field, value)
     if "nowplaying_show_next" in playback:
         show_next = _checked(
             StreamSettingsBody,
@@ -315,7 +313,7 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             "nowplaying_show_next",
         )
         if show_next is not _INVALID:
-            player._cfg.nowplaying.show_next = show_next
+            settings.cfg.nowplaying.show_next = show_next
     if "stream_max_listeners_per_address" in playback:
         limit = _checked(
             StreamSettingsBody,
@@ -324,14 +322,14 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             "stream_max_listeners_per_address",
         )
         if limit is not _INVALID and limit is not None:
-            player._cfg.stream.max_listeners_per_address = limit
+            settings.cfg.stream.max_listeners_per_address = limit
     for field in ("aac_bitrate", "opus_bitrate", "stats_days"):
         key = f"stream_{field}"
         if key in playback:
             # The stream is not running yet, so only the configured value changes.
             value = _checked(StreamSettingsBody, field, playback[key], key)
             if value is not _INVALID and value is not None:
-                setattr(player._cfg.stream, field, value)
+                setattr(settings.cfg.stream, field, value)
 
     for key in REQUEST_SETTING_KEYS:
         if key in playback:
@@ -340,10 +338,10 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
             if value is not _INVALID and value is not None:
                 if key in _REQUEST_SWITCH_KEYS:
                     # Saved by the Listener requests card: kept on later saves.
-                    bridge.page_saved.add(PAGE_SAVED_REQUESTS)
-                    _note_switch(bridge, key, getattr(player._cfg.requests, field), value)
-                setattr(player._cfg.requests, field, value)
-    _restore_breaks(bridge, getattr(player._cfg, "breaks", None), playback)
+                    settings.page_saved.add(PAGE_SAVED_REQUESTS)
+                    _note_switch(settings, key, getattr(settings.cfg.requests, field), value)
+                setattr(settings.cfg.requests, field, value)
+    _restore_breaks(settings, getattr(settings.cfg, "breaks", None), playback)
 
     values: dict[str, Any] = {}
     for field, saved in playback.items():
@@ -360,10 +358,10 @@ def _restore_playback(bridge: PlayerBridge, playback: dict[str, Any]) -> None:
         from autodj.stereotool_presets import preset_path
 
         try:
-            preset_path(player._cfg.index.shared_dir, values["stereotool_preset"])
+            preset_path(settings.cfg.index.shared_dir, values["stereotool_preset"])
         except (ValueError, FileNotFoundError):
             _warn("stereotool_preset", values.pop("stereotool_preset"))
-    bridge.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
+    settings.set_playback_settings(PlaybackSettingsBody.model_validate(values), restoring=True)
 
 
 #: How the log names each saved switch and its values.
@@ -377,7 +375,7 @@ _SWITCH_WORDS: dict[str, tuple[str, dict[object, str]]] = {
 }
 
 
-def _note_switch(bridge: PlayerBridge, key: str, configured: object, saved: object) -> None:
+def _note_switch(bridge: Any, key: str, configured: object, saved: object) -> None:
     """Log, once at start, a saved switch that differs from config.toml's."""
     words = _SWITCH_WORDS.get(key)
     if words is None or configured == saved:
@@ -393,7 +391,7 @@ def _note_switch(bridge: PlayerBridge, key: str, configured: object, saved: obje
     )
 
 
-def _restore_breaks(bridge: PlayerBridge, breaks: Any, playback: dict[str, Any]) -> None:
+def _restore_breaks(settings: Any, breaks: Any, playback: dict[str, Any]) -> None:
     """Restore the saved announcer break settings over the ``[breaks]`` ones.
 
     Any of them saved marks the group as Settings, Breaks', so later saves
@@ -409,16 +407,16 @@ def _restore_breaks(bridge: PlayerBridge, breaks: Any, playback: dict[str, Any])
         if field == "duck_db" and saved is None:
             # Null: the voice liner duck depth, as an unset [breaks] duck_db.
             breaks.duck_db = None
-            bridge.page_saved.add(PAGE_SAVED_BREAKS)
+            settings.page_saved.add(PAGE_SAVED_BREAKS)
             continue
         value = _checked(BreakSettingsBody, field, saved, key)
         if value is not _INVALID and value is not None:
-            bridge.page_saved.add(PAGE_SAVED_BREAKS)
-            _note_switch(bridge, key, getattr(breaks, field), value)
+            settings.page_saved.add(PAGE_SAVED_BREAKS)
+            _note_switch(settings, key, getattr(breaks, field), value)
             setattr(breaks, field, value)
 
 
-def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
+def _restore_eq(settings: Any, eq: dict[str, Any]) -> None:
     """Restore valid EQ multipliers; omitted or invalid bands keep their defaults."""
     values: dict[str, float] = {}
     for band in ("low", "mid", "high"):
@@ -429,17 +427,17 @@ def _restore_eq(bridge: PlayerBridge, eq: dict[str, Any]) -> None:
         if checked is not _INVALID and checked is not None:
             values[band] = checked
     if values:
-        bridge.set_eq(**values)
+        settings.set_eq(**values)
 
 
-def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
-    """Restore previously-saved settings through *bridge*.
+def load_into_settings(settings: Any, index_dir: Path | None) -> None:
+    """Restore saved settings through a Player-independent settings owner.
 
     Version 1 state needs explicit migration. Unsupported versions are ignored;
     current fields continue to be validated individually.
 
     Args:
-        bridge: The :class:`~autodj._bridge.PlayerBridge` of a live player.
+        settings: The station's :class:`~autodj.station_settings.StationSettings`.
         index_dir: Directory housing ``web_state.json``.
     """
     path = state_file_for(index_dir)
@@ -468,12 +466,12 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         logger.warning("ignoring unknown %s in web_state.json", field)
 
     if "preset" in data:
-        _restore_preset(bridge, data["preset"])
+        _restore_preset(settings, data["preset"])
     if "transition" in data:
         effect = _checked(TransitionBody, "effect", data["transition"], "transition")
         if effect is not _INVALID:
             try:
-                bridge.set_transition(effect)
+                settings.set_transition(effect)
             except ValueError:
                 _warn("transition", effect)
     djmix: dict[str, Any] = {}
@@ -481,21 +479,21 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         checked = _checked(DjMixBody, field, value)
         if checked is not _INVALID:
             djmix[field] = checked
-    bridge.set_djmix(**djmix)
-    _restore_playback(bridge, _section(data, "playback"))
+    settings.set_djmix(**djmix)
+    _restore_playback(settings, _section(data, "playback"))
     if "bpm_range" in data:
         try:
             bpm = BpmRangeBody.model_validate(data["bpm_range"], strict=True)
         except ValidationError:
             _warn("bpm_range", data["bpm_range"])
         else:
-            bridge.set_bpm_range(bpm.lo, bpm.hi)
+            settings.set_bpm_range(bpm.lo, bpm.hi)
     if "discovery_every" in data:
         every = _checked(DiscoveryBody, "every", data["discovery_every"], "discovery_every")
         if every is not _INVALID:
             # The same setter as the route, so a saved rate also turns the
             # Discovery button on and the rate fires after a restart.
-            bridge.set_discovery_every(every, restoring=True)
+            settings.set_discovery_every(every, restoring=True)
     if "discovery_enabled" in data:
         # The Discovery button has no request body, so like ``is_muted`` the
         # saved value only has to be a real Boolean.  It stays off without a rate.
@@ -504,9 +502,17 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
         except ValidationError:
             _warn("discovery_enabled", data["discovery_enabled"])
         else:
-            player = bridge.player
-            player._state.discovery_enabled = enabled and player._discovery_every is not None
-    _restore_eq(bridge, _section(data, "eq"))
+            settings._discovery_enabled = enabled and settings._discovery_every is not None
+            if settings.player is not None:
+                settings.player._state.discovery_enabled = settings._discovery_enabled
+    _restore_eq(settings, _section(data, "eq"))
+
+
+def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
+    """Compatibility wrapper for callers that still hold a PlayerBridge."""
+    bridge.settings.paths = bridge.paths or bridge.settings.paths
+    load_into_settings(bridge.settings, index_dir)
+    bridge.settings.sync_to_player()
 
 
 def save_from_player(settings: dict, index_dir: Path | None) -> None:

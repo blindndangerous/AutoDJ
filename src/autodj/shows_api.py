@@ -57,7 +57,7 @@ from autodj.shows import (
     with_songs,
     with_spec,
 )
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -248,13 +248,13 @@ def install_shows(router: StationRouter) -> None:
     """Add the paired shows routes; each acts on the station its URL names."""
 
     @router.get("/shows")
-    async def shows_list(station: StationDep) -> dict[str, Any]:
+    async def shows_list(station: SavedStationDep) -> dict[str, Any]:
         """Every show without its songs, the sources, and the show on the air."""
         return await asyncio.to_thread(_list_view, station)
 
     @router.post("/shows", status_code=201, response_model=None)
     async def shows_create(
-        station: StationDep, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Add a show with an empty list."""
         store = _store(station)
@@ -288,14 +288,14 @@ def install_shows(router: StationRouter) -> None:
         return {"stopped": stopped["name"], "done": stopped["done"]}
 
     @router.get("/shows/{show_id}")
-    async def shows_get(station: StationDep, show_id: str) -> dict[str, Any]:
+    async def shows_get(station: SavedStationDep, show_id: str) -> dict[str, Any]:
         """One show with its songs."""
         _check_id(show_id)
         return await asyncio.to_thread(_one_view, station, show_id)
 
     @router.put("/shows/{show_id}", response_model=None)
     async def shows_update(
-        station: StationDep, show_id: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, show_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Change a show's name, source or target; its list stays."""
         _check_id(show_id)
@@ -328,7 +328,7 @@ def install_shows(router: StationRouter) -> None:
 
     @router.put("/shows/{show_id}/songs", response_model=None)
     async def shows_songs(
-        station: StationDep, request: Request, show_id: str, body: SongsBody
+        station: SavedStationDep, request: Request, show_id: str, body: SongsBody
     ) -> dict[str, Any] | JSONResponse:
         """Save a show's list, in order; 409 while the list is being generated."""
         _check_id(show_id)
@@ -366,7 +366,7 @@ def install_shows(router: StationRouter) -> None:
 
     @router.post("/shows/{show_id}/generate", response_model=None)
     async def shows_generate(
-        station: StationDep, request: Request, show_id: str, body: GenerateBody
+        station: SavedStationDep, request: Request, show_id: str, body: GenerateBody
     ) -> dict[str, Any] | JSONResponse:
         """Generate the list again with a dry run of the station's picker."""
         from autodj.rotation_api import station_source
@@ -384,7 +384,7 @@ def install_shows(router: StationRouter) -> None:
         source = station_source(station)
 
         def work(cancelled: Any) -> Any:
-            snapshot = snapshot_player(source.player)
+            snapshot = source.snapshot or snapshot_player(source.player)
             return generate(
                 replace(source, snapshot=snapshot),
                 show_id,
@@ -436,7 +436,7 @@ def install_shows(router: StationRouter) -> None:
         return {"message": message}
 
     @router.delete("/shows/{show_id}")
-    async def shows_delete(station: StationDep, show_id: str) -> dict[str, Any]:
+    async def shows_delete(station: SavedStationDep, show_id: str) -> dict[str, Any]:
         """Remove a show; events that play it fail until changed."""
         _check_id(show_id)
         store = _store(station)

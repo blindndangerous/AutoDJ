@@ -17,7 +17,7 @@ import numpy as np
 
 from autodj.categories import Category, CategoryIndex, CategoryStore, store_path
 from autodj.clockwheel_store import ClockwheelStore
-from autodj.config import load_config
+from autodj.config import load_config, move_station_tables
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.player import Player
 from autodj.rotation_sim import SimulationSource
@@ -198,7 +198,9 @@ def make_station(
             "[index]",
             f'index_dir = "{root.as_posix()}"',
             "[server]",
-            f'station_timezone = "{timezone}"',
+            "",
+            "[station]",
+            f'timezone = "{timezone}"',
             "[playback]",
             *(f"{key} = {_toml(value)}" for key, value in playback.items()),
             "[dmca]",
@@ -210,6 +212,8 @@ def make_station(
     config_file = root / "config.toml"
     config_file.write_text(text, encoding="utf-8")
     cfg = load_config(config_file, environ={})
+    if move_station_tables(cfg):
+        cfg = load_config(config_file, environ={})
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
     (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)

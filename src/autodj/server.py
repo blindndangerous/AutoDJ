@@ -87,7 +87,7 @@ from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Receive, Scope, Send
 
 # PlayerBridge lives in autodj._bridge; it is re-exported here.
-from autodj._bridge import PlayerBridge
+from autodj._bridge import LibraryServices, PlayerBridge
 from autodj.ads_api import BREAKS_PATH as AD_BREAKS_PATH
 from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
@@ -676,6 +676,7 @@ class SongPointsBody(BaseModel):
     path: str
     points: dict[str, Any]
     allow_outro: StrictBool | None = None
+    station: str = DEFAULT_SLUG
 
 
 class PairBody(BaseModel):
@@ -966,7 +967,7 @@ SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
 
 def create_app(
-    bridge: PlayerBridge,
+    bridge: PlayerBridge | None = None,
     player_thread: threading.Thread | None = None,
     *,
     secure_cookie: bool = False,
@@ -974,6 +975,8 @@ def create_app(
     stream_first_track: IndexEntry | None = None,
     server_audio: bool = False,
     extra_stations: Sequence[ExtraStation] = (),
+    services: LibraryServices | None = None,
+    default_station: ExtraStation | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application.
 
@@ -994,30 +997,38 @@ def create_app(
         A configured :class:`fastapi.FastAPI` instance.
     """
     _lyrics_read_gate = asyncio.Semaphore(1)
-    # The station time zone: scheduled events and the feed's daily peak.
-    station_timezone = bridge.player._cfg.server.station_timezone or system_timezone()
-    # Station log lines say which station they are from.
     install_log_prefix()
-    # The default station; its state lives in StationPaths.default.
-    runtime = StationRuntime(
-        bridge,
-        timezone=station_timezone,
-        player_thread=player_thread,
-        stream_mode=stream_mode,
-        server_audio=server_audio,
-        first_track=stream_first_track,
-    )
-    stations = StationRegistry(runtime, extra_stations)
+    shared: PlayerBridge | LibraryServices
+    if bridge is not None:
+        cfg = bridge.player._cfg
+        shared = bridge
+        runtime = StationRuntime(
+            bridge,
+            timezone=cfg.station.timezone or system_timezone(),
+            player_thread=player_thread,
+            stream_mode=stream_mode,
+            server_audio=server_audio,
+            first_track=stream_first_track,
+        )
+        stations = StationRegistry(runtime, extra_stations)
+    else:
+        if services is None or default_station is None:
+            raise ValueError("Library services and a default station factory are required")
+        cfg = services.cfg
+        shared = services
+        runtime = None
+        stations = StationRegistry(default_station, extra_stations)
+    station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
-    listener_access = runtime.listener_access
+    listener_access = runtime.listener_access if runtime is not None else None
     listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
         """Run one path read at a time without cancellation leaking capacity."""
         await _lyrics_read_gate.acquire()
         try:
-            worker = asyncio.create_task(asyncio.to_thread(bridge.lyrics_for, path))
+            worker = asyncio.create_task(asyncio.to_thread(shared.lyrics_for, path))
         except BaseException:
             _lyrics_read_gate.release()
             raise
@@ -1038,7 +1049,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """FastAPI lifespan: start and stop the station and the shared library."""
-        library = SharedLibrary(bridge.library, stations)
+        library = SharedLibrary(shared.library, stations)
         await stations.start_all()
         await library.start()
         STARTUP_COMPLETE.set()
@@ -1151,20 +1162,28 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": detail})
 
     def _liner_upload_max_bytes() -> int:
-        return bridge.player._cfg.server.liner_upload_max_bytes
+        return (
+            max(
+                stations.configuration(slug).station.liner_upload_max_mib
+                for slug in stations.slugs()
+            )
+            * 1024
+            * 1024
+        )
 
-    server_config = bridge.player._cfg.server
+    server_config = cfg.server
     device_registry: DeviceRegistry | None = None
     if isinstance(server_config.access_token, str):
-        device_registry = DeviceRegistry(paired_devices_path(bridge.player._cfg))
+        device_registry = DeviceRegistry(paired_devices_path(cfg))
     policy = SecurityPolicy(
         server_config,
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
-    bridge.public_state_changed = runtime.public_state_changed
-    bridge.track_started_callback = runtime.track_started
-    _share_station(stations, runtime)
+    if runtime is not None:
+        runtime.bridge.public_state_changed = runtime.public_state_changed
+        runtime.bridge.track_started_callback = runtime.track_started
+        _share_station(stations, runtime)
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1233,9 +1252,7 @@ def create_app(
     def machine_tokens() -> MachineTokenStore:
         with machine_token_lock:
             if not machine_token_store:
-                machine_token_store.append(
-                    MachineTokenStore(machine_tokens_path(bridge.player._cfg))
-                )
+                machine_token_store.append(MachineTokenStore(machine_tokens_path(cfg)))
             return machine_token_store[0]
 
     app.state.machine_tokens = machine_tokens
@@ -1247,12 +1264,12 @@ def create_app(
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
         station_slugs=stations.slugs,
     )
-    model_commit = CachedModelCommit(lambda: (bridge.player._cfg.model, bridge.player._cfg.index))
+    model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))
     install_worker_api(
         app,
         tokens=machine_tokens,
-        library=lambda: getattr(bridge, "library", None),
-        identity=lambda: analysis_identity(bridge.player._cfg.model.name, model_commit()),
+        library=lambda: getattr(shared, "library", None),
+        identity=lambda: analysis_identity(cfg.model.name, model_commit()),
         stations=lambda: _station_names(stations),
     )
     # Compresses the page, scripts and JSON; audio, cover art and Range
@@ -1526,7 +1543,7 @@ def create_app(
         """
         if not await _has_session(request):
             return {"status": "ok"}
-        return {"status": "ok", "tracks": bridge.sim.ntotal}
+        return {"status": "ok", "tracks": shared.sim.ntotal}
 
     def status_page(station: StationRuntime | StoppedStation, *, by_name: bool) -> HTMLResponse:
         """A station's public status page; a stopped station's says it is off air (503)."""
@@ -1589,13 +1606,17 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    async def _serve_listener(station: StationRuntime, ext: str, request: Request) -> Response:
+    async def _serve_listener(
+        station: StationRuntime | StoppedStation, ext: str, request: Request
+    ) -> Response:
         """Serve *station*'s stream in a format (``mp3``, ``aac``, ``opus``) or its playlist (``m3u``).
 
         ``HEAD`` answers with the same checks and headers but no body and
         without becoming a listener.  404 unless the station streams, and
         for a format that is off.
         """
+        if isinstance(station, StoppedStation):
+            raise HTTPException(status_code=503, detail="That station is off air")
         sbridge = station.bridge
         access = station.listener_access
         if not sbridge.stream_mode or access is None:
@@ -1790,12 +1811,12 @@ def create_app(
         """Publish a validated definition and register a stopped station."""
         from autodj.config import MAX_STATIONS, _build_station, _check_station_conflicts
         from autodj.station_creation import CreationConflict, duplicate_table, stage_station
-        from autodj.station_ledger import setting_key
+        from autodj.station_store import StationStore, migrate_legacy
         from autodj.stations import StationPaths
 
-        root = bridge.player._cfg
-        library = bridge.library
-        if library is None or not hasattr(library, "catalog") or bridge.sim is None:
+        root = cfg
+        library = shared.library
+        if library is None or not hasattr(library, "catalog") or shared.sim is None:
             raise HTTPException(status_code=503, detail="This server cannot host another station")
         async with station_create_lock:
             if stations._closing:
@@ -1856,20 +1877,35 @@ def create_app(
             try:
                 if clock is not None:
                     clock_written = True
-                    await asyncio.to_thread(
-                        library.catalog.set_setting, setting_key(body.slug, "clock"), clock
-                    )
+
+                    def save_clock() -> None:
+                        paths = StationPaths.for_station(root, body.slug)
+                        store = StationStore(paths.state_dir / "station.db", body.slug)
+                        try:
+                            migrate_legacy(library.catalog, store)
+                            store.set_setting("clock", clock)
+                        finally:
+                            store.close()
+
+                    await asyncio.to_thread(save_clock)
                 if stations._closing:
                     raise StationControlError("The server is shutting down")
-                extra = _extra_station(root, spec, bridge.sim, library, station_timezone)
+                extra = _extra_station(root, spec, shared.sim, library, station_timezone)
                 stations.add(extra)
                 root.stations += (spec,)
             except Exception as exc:
                 try:
                     if clock_written:
-                        await asyncio.to_thread(
-                            library.catalog.delete_setting, setting_key(body.slug, "clock")
-                        )
+
+                        def delete_clock() -> None:
+                            paths = StationPaths.for_station(root, body.slug)
+                            store = StationStore(paths.state_dir / "station.db", body.slug)
+                            try:
+                                store.delete_setting("clock")
+                            finally:
+                                store.close()
+
+                        await asyncio.to_thread(delete_clock)
                 finally:
                     await asyncio.to_thread(shutil.rmtree, destination)
                 raise HTTPException(
@@ -1932,7 +1968,7 @@ def create_app(
     @app.get("/api/search")
     async def api_search(q: str = "", limit: int = 100) -> dict[str, list]:
         """Search the indexed library by title / artist / album."""
-        results = await asyncio.to_thread(bridge.search, q, max(1, min(500, int(limit))))
+        results = await asyncio.to_thread(shared.search, q, max(1, min(500, int(limit))))
         return {"results": results}
 
     # ------------------------------------------------------------------
@@ -1944,10 +1980,10 @@ def create_app(
         """Return the embedded album art for a track (304 if unchanged)."""
         # Only serve art for tracks that exist in the index — prevents
         # arbitrary file access through the path parameter.
-        known = bridge.entry_for_path(path) is not None
+        known = shared.entry_for_path(path) is not None
         if not known:
             raise HTTPException(status_code=404, detail="Track not in index")
-        result = await asyncio.to_thread(bridge.cover_art_for, path)
+        result = await asyncio.to_thread(shared.cover_art_for, path)
         if result is None:
             raise HTTPException(status_code=404, detail="No embedded cover art")
         data, mime = result
@@ -1956,11 +1992,11 @@ def create_app(
     @app.get("/api/lyrics")
     async def api_lyrics(path: str) -> dict[str, object]:
         """Return timed lyric lines for one exact indexed track path."""
-        authorized_entry = bridge.entry_for_path(path)
+        authorized_entry = shared.entry_for_path(path)
         if authorized_entry is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         lyrics = await _read_lyrics_owned(path)
-        if bridge.entry_for_path(path) != authorized_entry:
+        if shared.entry_for_path(path) != authorized_entry:
             raise HTTPException(status_code=409, detail="Track index changed")
         return {"path": path, "lyrics": lyrics}
 
@@ -1971,7 +2007,7 @@ def create_app(
     @app.api_route("/api/audio", methods=["GET", "HEAD"])
     async def api_audio(path: str, request: Request) -> Response:
         """Serve indexed audio with byte ranges; ALAC is transcoded to MP3."""
-        if bridge.entry_for_path(path) is None:
+        if shared.entry_for_path(path) is None:
             raise HTTPException(status_code=404, detail="Track not in index")
         audio_path = Path(path)
         try:
@@ -1986,20 +2022,6 @@ def create_app(
                 return transcoded
         return FileResponse(audio_path, media_type=_audio_mime(audio_path), stat_result=metadata)
 
-    @app.get("/api/stereo-tool-presets")
-    async def api_stereo_tool_presets() -> dict:
-        """List the included and uploaded processor presets."""
-        from autodj.stereotool_presets import INCLUDED, list_presets
-
-        cfg = bridge.player._cfg
-        presets = await asyncio.to_thread(list_presets, cfg.index.shared_dir)
-        active = cfg.playback.stereotool_preset
-        # A preset removed outside AutoDJ is replaced by the included one when
-        # Stereo Tool starts, so report that instead of a name not listed.
-        if active not in {preset["name"] for preset in presets}:
-            active = INCLUDED
-        return {"active": active, "presets": presets}
-
     @app.post("/api/stereo-tool-presets/upload")
     async def api_stereo_tool_preset_upload(file: UploadFile = File(...)) -> dict:
         """Store one size-bounded text preset under the station data folder."""
@@ -2007,7 +2029,7 @@ def create_app(
 
         name = file.filename or ""
         try:
-            path = await store_preset(bridge.player._cfg.index.shared_dir, name, file)
+            path = await store_preset(cfg.index.shared_dir, name, file)
         except FileExistsError as exc:
             raise HTTPException(
                 status_code=409, detail=f"a preset named {name} already exists"
@@ -2019,14 +2041,13 @@ def create_app(
     from autodj.stereotool_api import install_download as install_stereo_tool_download
 
     # Settings, Sound, Download Stereo Tool: shared, into the index folder.
-    install_stereo_tool_download(app, lambda: bridge.player._cfg.index.index_dir)
+    install_stereo_tool_download(app, lambda: cfg.index.index_dir)
 
     @app.delete("/api/stereo-tool-presets/{name}")
     async def api_stereo_tool_preset_delete(name: str) -> dict:
         """Delete an uploaded preset other than the one currently selected."""
         from autodj.stereotool_presets import PresetInUseError, delete_preset
 
-        cfg = bridge.player._cfg
         # Every station's preset: the running ones' and the stopped ones' saved
         # choice, read off the event loop (web_state.json may be on a NAS).
         in_use = await asyncio.to_thread(stations.stereo_tool_presets)
@@ -2054,9 +2075,9 @@ def create_app(
     # ------------------------------------------------------------------
 
     def _catalog_library() -> Any:
-        if bridge.library is None:
+        if shared.library is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
-        return bridge.library
+        return shared.library
 
     @app.get("/api/library/tracks")
     async def api_library_tracks(
@@ -2131,37 +2152,58 @@ def create_app(
         hours, minutes = divmod(_catalog_library().auto_rescan_minutes(), 60)
         return {"hours": hours, "minutes": minutes}
 
-    def _time_settings() -> dict[str, Any]:
+    station_router = StationRouter(app.router)
+
+    def _settings_slug(request: Request) -> str:
+        slug = request.path_params.get("slug", DEFAULT_SLUG)
+        if slug not in stations.slugs():
+            raise HTTPException(status_code=404, detail="Station not found")
+        return slug
+
+    def _time_settings(slug: str) -> dict[str, Any]:
         from zoneinfo import available_timezones
 
         from autodj import timefmt
 
-        saved = _catalog_library().catalog.get_setting("station_timezone")
+        station_cfg = stations.configuration(slug)
+        current = stations.get(slug)
         return {
-            "timezone": saved or station_timezone,
-            "running_timezone": station_timezone,
+            "timezone": station_cfg.station.timezone or system_timezone(),
+            "running_timezone": getattr(current, "timezone", None),
             "time_format": timefmt.time_format,
             "timezones": sorted(available_timezones()),
         }
 
-    @app.get("/api/time-settings")
-    async def api_time_settings() -> dict[str, Any]:
-        """The station time zone and time format; a saved zone applies at the next start."""
-        return await asyncio.to_thread(_time_settings)
+    @station_router.get("/time-settings")
+    async def api_time_settings(request: Request) -> dict[str, Any]:
+        return await asyncio.to_thread(_time_settings, _settings_slug(request))
 
-    @app.put("/api/time-settings")
-    async def api_set_time_settings(body: TimeSettingsBody) -> dict[str, Any]:
-        from zoneinfo import available_timezones
-
+    @station_router.put("/time-settings")
+    async def api_set_time_settings(request: Request, body: TimeSettingsBody) -> dict[str, Any]:
         from autodj import timefmt
 
-        if body.timezone not in available_timezones():
-            raise HTTPException(status_code=400, detail="Choose a time zone from the list")
+        slug = _settings_slug(request)
+        try:
+            await asyncio.to_thread(stations.save_options, slug, {"timezone": body.timezone})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         catalog = _catalog_library().catalog
-        await asyncio.to_thread(catalog.set_setting, "station_timezone", body.timezone)
         await asyncio.to_thread(catalog.set_setting, "time_format", body.time_format)
         timefmt.time_format = body.time_format
-        return await asyncio.to_thread(_time_settings)
+        return await asyncio.to_thread(_time_settings, slug)
+
+    @station_router.get("/station-settings")
+    async def api_station_settings(request: Request) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        return asdict(stations.configuration(_settings_slug(request)).station)
+
+    @station_router.put("/station-settings")
+    async def api_set_station_settings(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(stations.save_options, _settings_slug(request), body)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:
@@ -2205,19 +2247,26 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"removed": removed, "remaining": library.snapshot()["tracks_ready"]}
 
+    def library_station(slug: str) -> str:
+        if slug not in app.state.stations.slugs():
+            raise HTTPException(status_code=404, detail="Station not found")
+        return slug
+
     @app.get("/api/library/points")
-    async def api_library_points(path: str) -> dict:
+    async def api_library_points(path: str, station: str = DEFAULT_SLUG) -> dict:
+        station = library_station(station)
         library = _catalog_library()
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
-        return await _track_info(library, path)
+        return await _track_info(library, path, station)
 
-    async def _track_info(library: Any, path: str) -> dict:
+    async def _track_info(library: Any, path: str, station: str = DEFAULT_SLUG) -> dict:
         """The Track info record of *path*: details, cue points and tag form."""
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
+        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
         record["playable"] = True
         from autodj.processing import loudness_matches
 
@@ -2241,10 +2290,11 @@ def create_app(
         record.update(await asyncio.to_thread(tag_form, library, record))
         return record
 
-    install_tag_editor(app, bridge, _track_info)
+    install_tag_editor(app, shared, _track_info)
 
     @app.post("/api/library/points")
     async def api_library_save_points(body: SongPointsBody) -> dict:
+        station = library_station(body.station)
         library = _catalog_library()
         entry = library.entry_for_path(body.path)
         if entry is None:
@@ -2267,7 +2317,9 @@ def create_app(
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return await asyncio.to_thread(library.catalog.record_for_path, body.path)
+        record = await asyncio.to_thread(library.catalog.record_for_path, body.path)
+        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
+        return record
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:
@@ -2285,7 +2337,6 @@ def create_app(
         # Point the child at the same configuration this server is running
         # on, every time: settings can change under a live server,
         # so reading it at app-creation time would go stale.
-        cfg = bridge.player._cfg
         mgr.configure(
             config_path=cfg.config_path,
             index_dir=cfg.index.index_dir,
@@ -2314,10 +2365,10 @@ def create_app(
         Single pass over ``entries`` so the cost stays O(N) instead of
         4×O(N).  Negligible at 1 k tracks; measurable at 70 k.
         """
-        similarity = bridge.sim
+        similarity = shared.sim
         entries = (
-            bridge.library.entries_snapshot()
-            if bridge.library is not None
+            shared.library.entries_snapshot()
+            if shared.library is not None
             else similarity.entries_snapshot()
         )
         n = len(entries)
@@ -2351,7 +2402,7 @@ def create_app(
     # /api/stations/<slug>/<route> for any station by name
     # ------------------------------------------------------------------
 
-    install_station_routes(StationRouter(app.router))
+    install_station_routes(station_router)
 
     # ------------------------------------------------------------------
     # WebSocket broadcast: one socket per station
@@ -2473,7 +2524,7 @@ def create_app(
     install_live_routes(
         app,
         policy,
-        allow_lan_plain_http=bool(getattr(bridge.player._cfg.server, "live_plain_http_lan", False)),
+        allow_lan_plain_http=bool(getattr(cfg.server, "live_plain_http_lan", False)),
     )
 
     for station in stations.all():
@@ -2483,6 +2534,8 @@ def create_app(
         """Wire a station that is about to start to this app."""
         station.bridge.public_state_changed = station.public_state_changed
         station.bridge.track_started_callback = station.track_started
+        if station.slug == DEFAULT_SLUG:
+            app.state.listener_access = station.listener_access
         _share_station(stations, station)
         _equip_station(station)
 
@@ -2493,6 +2546,16 @@ def create_app(
         for client in clients:
             await _close_and_cancel_websocket(client, 1.0, 4409, "station stopped")
 
+    def build_content(extra: ExtraStation) -> Any:
+        from autodj.config import station_config
+        from autodj.station_content import StationContent
+
+        saved_cfg = station_config(extra.paths._cfg, cfg)
+        return StationContent(
+            saved_cfg, StationPaths.for_station(saved_cfg, extra.slug), shared.library, shared.sim
+        )
+
+    stations.build_content = build_content
     stations.prepare = prepare
     stations.disconnect = disconnect
     return app
@@ -2638,8 +2701,12 @@ def _extra_station(
     sim: SimilarityIndex,
     library: LibraryManager,
     timezone: str,
+    *,
+    stream_mode: bool | None = None,
+    no_playback: bool | None = None,
+    seed_entry: IndexEntry | None = None,
 ) -> ExtraStation:
-    """How to build station *spec*: its own player, mix bus, master and stream.
+    """Build any station afresh, with its own player and optional audio outputs.
 
     Each start builds everything afresh from the spec and the station's
     saved settings, so a stopped station holds nothing in memory.
@@ -2650,14 +2717,33 @@ def _extra_station(
         from autodj.config import station_config
         from autodj.player import Player
 
+        nonlocal seed_entry
         cfg = station_config(spec.cfg, root)
+        streams = cfg.station.output == "stream" if stream_mode is None else stream_mode
+        speakers = (
+            cfg.station.output == "server" or cfg.station.server_audio_too
+            if no_playback is None
+            else not no_playback
+        )
+        if speakers and _missing_audio_modules():
+            raise RuntimeError("Server audio requires soundfile and sounddevice.")
+        if streams:
+            import shutil
+
+            if shutil.which("ffmpeg") is None:
+                raise RuntimeError("Streaming requires ffmpeg on PATH.")
+        first_track = seed_entry
         paths = StationPaths.for_station(cfg, slug)
         paths.state_dir.mkdir(parents=True, exist_ok=True)
         # Its liner folder joins the library's liner sources the first time.
         library.seed_station_liners(slug, paths.liners)
-        # Another station always streams, mixing on the server; it never
-        # opens the sound card.
-        player = Player(cfg, sim, stream_mode=True, server_audio_too=False)
+        player = Player(
+            cfg,
+            sim,
+            dry_run=not speakers and not streams,
+            stream_mode=streams,
+            server_audio_too=streams and speakers,
+        )
         player._library = library
         ledger = library.station_ledger(slug)
         player._ledger = ledger
@@ -2668,7 +2754,7 @@ def _extra_station(
             library=library,
             ledger=ledger,
             paths=paths,
-            stream_path=f"/{slug}.mp3",
+            stream_path="/stream.mp3" if slug == DEFAULT_SLUG else f"/{slug}.mp3",
         )
         player.on_track_started = bridge.on_track_started
         bridge.load_persistent_state()
@@ -2678,22 +2764,28 @@ def _extra_station(
         # failure after that stops them again before it is raised.
         player_thread: threading.Thread | None = None
         try:
-            _attach_master(player, cfg)
+            if player.bus is not None:
+                _attach_master(player, cfg)
             if cfg.playback.import_external_cues:
                 station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
             player_thread = station_thread(
-                target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
+                target=player.run, kwargs={"seed_entry": first_track}, name="autodj-player"
             )
             player_thread.start()
             runtime = StationRuntime(
                 bridge,
-                timezone=timezone,
+                timezone=cfg.station.timezone or system_timezone(),
                 player_thread=player_thread,
-                stream_mode=True,
+                stream_mode=streams,
+                server_audio=speakers and not streams,
+                first_track=first_track if streams else None,
                 slug=slug,
                 paths=paths,
             )
+            if not speakers and not streams:
+                bridge.record_seed(first_track)
             runtime.defined_in = spec.defined_in
+            seed_entry = None
             return runtime
         except BaseException:
             thread = player_thread
@@ -2788,18 +2880,11 @@ def _missing_audio_modules() -> list[str]:
 
 def _apply_time_settings(cfg: AutoDJConfig, library: Any) -> None:
     """Use the time zone and time format saved in Settings over config.toml (#282, #286)."""
-    from zoneinfo import available_timezones
-
     from autodj import timefmt
 
     catalog = getattr(library, "catalog", None)
     if catalog is None:
         return
-    zone = catalog.get_setting("station_timezone")
-    if zone in available_timezones():
-        cfg.server.station_timezone = zone
-    elif zone is not None:
-        logger.warning("Ignoring the saved time zone %r: it is not a known time zone", zone)
     timefmt.time_format = "12" if catalog.get_setting("time_format") == "12" else "24"
 
 
@@ -2809,8 +2894,8 @@ def serve(
     seed_entry: IndexEntry | None,
     host: str | None = None,
     port: int | None = None,
-    no_playback: bool = False,
-    stream: bool = False,
+    no_playback: bool | None = None,
+    stream: bool | None = None,
     lan_configured_hosts: list[str] | None = None,
     library: LibraryManager | None = None,
 ) -> None:
@@ -2843,7 +2928,7 @@ def serve(
 
     import faiss
 
-    from autodj.config import validate_server_exposure
+    from autodj.config import StationSpec, validate_server_exposure
 
     # One exact search per pick: OpenMP's thread pool makes it slower (27 ms
     # on one thread against 41 ms on four, measured on 77k tracks) and
@@ -2866,71 +2951,28 @@ def serve(
 
     import uvicorn
 
-    from autodj.player import Player
-
-    # Auto-detect missing audio deps and flip to no-playback so headless
-    # hosts (NAS, server) don't spam "module not found" per track.
-    if not no_playback and _missing_audio_modules():
-        if stream:
-            print(
-                "[AutoDJ] Audio libraries are missing, so nothing plays on this "
-                "machine's speakers. The radio stream still works.",
-            )
-        else:
-            print(
-                "[AutoDJ] Headless mode — browser handles audio output. "
-                "Open the web UI from any device on your network.",
-            )
-        no_playback = True
-
-    player = Player(
-        cfg,
-        sim,
-        dry_run=no_playback and not stream,
-        stream_mode=stream,
-        server_audio_too=stream and not no_playback,
-    )
     from autodj.library import LibraryManager
 
     if library is None:
         library = LibraryManager(cfg, sim)
-    player._library = library
     _apply_time_settings(cfg, library)
-    bridge = PlayerBridge(player=player, sim=sim, library=library)
-    # The mix bus announces every track it starts: play history, the
-    # stream title and liner counting all hang off this hook.
-    player.on_track_started = bridge.on_track_started
-
-    # Restore the settings saved from the web page, so the user doesn't
-    # re-tick everything on restart.
-    bridge.load_persistent_state()
-    player.configure_clock()
-    if player.bus is not None:
-        _attach_master(player, cfg)
-
-    if cfg.playback.import_external_cues:
-        # Read the DJ-software libraries once, off the playback thread.
-        station_thread(target=player.load_library_cues, name="autodj-library-cues").start()
-
-    # Start Player in a daemon thread — it blocks internally on playback
-    player_thread = station_thread(
-        target=player.run, kwargs={"seed_entry": seed_entry}, name="autodj-player"
+    timezone = cfg.station.timezone or system_timezone()
+    default = cfg.default_station or StationSpec(slug=DEFAULT_SLUG, autostart=True, cfg=cfg)
+    default_station = _extra_station(
+        cfg,
+        default,
+        sim,
+        library,
+        timezone,
+        stream_mode=stream,
+        no_playback=no_playback,
+        seed_entry=seed_entry,
     )
-    player_thread.start()
-    if no_playback and not stream:
-        # Browser mode; with a mix bus the seed is recorded as it starts.
-        bridge.record_seed(seed_entry)
-
-    # The other stations ([stations.<slug>]) share the library and the time zone.
-    timezone = cfg.server.station_timezone or system_timezone()
     extra_stations = [_extra_station(cfg, spec, sim, library, timezone) for spec in cfg.stations]
     app = create_app(
-        bridge,
-        player_thread=player_thread,
+        services=LibraryServices(cfg, sim, library),
+        default_station=default_station,
         secure_cookie=secure_cookie,
-        stream_mode=stream,
-        stream_first_track=seed_entry if stream else None,
-        server_audio=not no_playback and not stream,
         extra_stations=extra_stations,
     )
 
@@ -3030,7 +3072,7 @@ def serve(
     # ones get 503.  Room for every station's stream listeners, plus the
     # pages, their sockets, live DJs and talkers (#48).
     uvicorn_kwargs["limit_concurrency"] = _connection_limit(cfg)
-    allow, proxy_warnings = trusted_proxy_setting(cfg.stream.trusted_proxies, os.environ)
+    allow, proxy_warnings = trusted_proxy_setting(cfg.server.trusted_proxies, os.environ)
     uvicorn_kwargs["forwarded_allow_ips"] = allow
     for warning in proxy_warnings:
         logger.warning("%s", warning)

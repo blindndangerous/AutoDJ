@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from autodj.config import ServerConfig
+from autodj.config import StationConfig
 from autodj.scheduler import (
     MAX_EVENTS,
     Action,
@@ -319,10 +319,10 @@ def test_station_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "tzlocal", zone_named("Mars/Base"))
     assert system_timezone() == "UTC"
     system_timezone.cache_clear()
-    assert ServerConfig(station_timezone="America/Denver").station_timezone == "America/Denver"
+    assert StationConfig(timezone="America/Denver").timezone == "America/Denver"
     for bad in ("Mars/Base", "", "../etc/passwd", 5):
         with pytest.raises(ValueError, match="IANA time zone"):
-            ServerConfig(station_timezone=bad)  # type: ignore[arg-type]
+            StationConfig(timezone=bad)  # type: ignore[arg-type]
 
 
 # -- the scheduler --------------------------------------------------------------

@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from autodj.ads import Spot, new_id, spot_file_name
 from autodj.catalog import LibraryCatalog
 from autodj.server import PlayerBridge, create_app
+from autodj.station_ledger import StationLedger
+from autodj.station_store import StationStore
 from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -26,6 +28,9 @@ def test_clockwheel_routes_need_pairing_and_strict_bodies(tmp_path):
             catalog=catalog,
             entry_for_path=lambda _path: None,
             entries_snapshot=lambda _kind="music": (),
+        )
+        bridge.ledger = StationLedger(
+            StationStore(player._cfg.index.stations_dir / "default" / "station.db", "default")
         )
         app = create_app(bridge)
         app.state.security_policy.now = lambda: 1_000
