@@ -113,7 +113,7 @@ def test_each_station_has_its_own_player_page_settings(tmp_path: Path) -> None:
     path.write_text(
         f"""
 [index]
-index_dir = "{(tmp_path / 'index').as_posix()}"
+index_dir = "{(tmp_path / "index").as_posix()}"
 
 [library]
 music_dir = "music"
