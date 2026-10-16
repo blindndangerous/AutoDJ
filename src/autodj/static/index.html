@@ -1592,6 +1592,47 @@
 
   <div class="card" role="tabpanel" id="spanel-liners" aria-labelledby="stab-liners" hidden>
     <h3>Voice liners</h3>
+    <details id="speech-studio">
+      <summary>Speech studio</summary>
+      <p>Compare voices, save liners, or prepare spoken time checks.</p>
+      <p id="speech-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      <details><summary>Speech connections for all stations</summary>
+        <ul id="speech-connections" aria-label="Configured speech connections"></ul>
+        <form id="speech-provider-form">
+          <div class="settings-row"><label for="speech-provider-id">Connection ID</label><input id="speech-provider-id" required pattern="[a-z0-9][a-z0-9-]{0,63}" maxlength="64"></div>
+          <div class="settings-row"><label for="speech-provider-name">Connection name</label><input id="speech-provider-name" maxlength="100" required></div>
+          <div class="settings-row"><label for="speech-provider-engine">Engine</label><select id="speech-provider-engine"><option value="openai">OpenAI</option><option value="speechify">Speechify</option><option value="fish">Fish</option><option value="chatterbox">Chatterbox</option><option value="gpt-sovits">GPT-SoVITS</option></select></div>
+          <div class="settings-row"><label for="speech-provider-url">Speech endpoint URL</label><input id="speech-provider-url" type="url" required></div>
+          <div class="settings-row"><label for="speech-provider-key">API key</label><input id="speech-provider-key" type="password" autocomplete="new-password"></div>
+          <p>Leave the key blank to keep a saved key. Saved keys are never displayed.</p>
+          <div class="settings-check"><input id="speech-provider-local" type="checkbox"><label for="speech-provider-local">Allow trusted local network access and HTTP</label></div>
+          <button type="submit">Save connection</button>
+        </form>
+      </details>
+      <form id="speech-compare-form">
+        <div class="settings-row"><label for="speech-text">Script</label><textarea id="speech-text" required maxlength="5000" rows="4"></textarea></div>
+        <div class="settings-row"><label for="speech-preset">Voice preset</label><select id="speech-preset"></select><button type="button" id="speech-load-preset">Load preset</button><button type="button" id="speech-default">Use as station voice</button></div>
+        <p id="speech-default-name"></p>
+        <div id="speech-candidates"></div>
+        <button type="button" id="speech-add">Add comparison voice</button>
+        <div class="settings-check"><input id="speech-fresh" type="checkbox"><label for="speech-fresh">Generate fresh audio instead of reusing matching samples</label></div>
+        <button type="button" id="speech-preflight">Check comparison</button>
+        <p id="speech-preflight-result"></p>
+        <button type="submit">Generate selected samples</button>
+        <button type="button" id="speech-cancel">Cancel generation</button>
+      </form>
+      <h4>Comparison results</h4><ul id="speech-results" aria-label="Comparison results"></ul>
+      <h4>Saved speech liners</h4><ul id="speech-saved" aria-label="Saved speech liners"></ul>
+      <details><summary>Generate time checks</summary>
+        <div class="settings-row"><label for="speech-time-format">Hour format</label><select id="speech-time-format"><option value="12">12-hour</option><option value="24">24-hour</option></select></div>
+        <p>Uses the selected voice preset. Check all 1440 minutes before generating; provider charges may apply.</p>
+        <button type="button" id="speech-time-check">Check time-check set</button><p id="speech-time-inventory"></p>
+        <button type="button" id="speech-time-generate" disabled>Generate time-check set</button>
+        <div class="settings-check"><input type="checkbox" id="speech-time-reviewed"><label for="speech-time-reviewed">I listened to samples and approve the completed set</label></div>
+        <ul id="speech-time-sets" aria-label="Generated time-check sets"></ul>
+        <button type="button" id="speech-time-legacy">Use existing recorded time-check sources</button>
+      </details>
+    </details>
     <p class="card-desc">
       IDs, jingles and voice tracks. Add liner folders in Library tools or upload a file below. Use Track info beside a liner in Queue &amp; Search to edit its Segue and Overlap start.
     </p>

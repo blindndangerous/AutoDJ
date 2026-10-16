@@ -704,7 +704,7 @@ def run_doctor(
     from autodj.stations import DEFAULT_SLUG
 
     default = station in (None, DEFAULT_SLUG)
-    checks: list[DoctorCheck] = [_configuration_check(cfg)]
+    checks: list[DoctorCheck] = [_configuration_check(cfg), _speech_check(cfg)]
     if default:
         checks.append(_dmca_check(cfg))
     checks += [
@@ -1099,6 +1099,15 @@ def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> 
     coverage = f"{len(missing)} of 1440 minute clips missing"
     if not enabled:
         return DoctorCheck("time-checks", CheckStatus.PASS, f"disabled; {coverage}", detail)
+    from autodj.speech import load_state
+    from autodj.stations import StationPaths
+
+    try:
+        speech = load_state((paths or StationPaths.default(cfg)).speech)
+    except (OSError, ValueError, KeyError, TypeError):
+        return DoctorCheck("time-checks", CheckStatus.FAIL, "Saved speech state could not be read")
+    if speech.get("active_set"):
+        return _speech_check(cfg, paths, name="time-checks")
     problems = []
     if tc.clips_folder and not folder.is_dir():
         problems.append("clips_folder is not a folder")
@@ -1134,6 +1143,42 @@ def _time_checks_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> 
     return DoctorCheck(
         "time-checks", CheckStatus.WARN if problems else CheckStatus.PASS, summary, detail
     )
+
+
+def _speech_check(
+    cfg: AutoDJConfig, paths: StationPaths | None = None, *, name: str = "speech"
+) -> DoctorCheck:
+    """Inspect local speech state without provider requests, repairs or heavy imports."""
+    from autodj.speech import backup_files, load_state
+    from autodj.speech_providers import ProviderStore
+    from autodj.stations import StationPaths
+
+    try:
+        providers = ProviderStore(Path(cfg.index.index_dir) / "speech_providers.json").public()
+        root = (paths or StationPaths.default(cfg)).speech
+        data = load_state(root)
+        missing = sum(not path.is_file() for path in backup_files(root))
+        if missing:
+            return DoctorCheck(name, CheckStatus.WARN, f"{missing} saved speech files missing")
+        if data.get("active_set"):
+            item = data["sets"].get(data["active_set"], {})
+            if item.get("state") != "complete" or len(item.get("minutes", {})) != 1440:
+                return DoctorCheck(
+                    name, CheckStatus.FAIL, "Active generated time-check set is incomplete"
+                )
+            return DoctorCheck(
+                name, CheckStatus.PASS, "Generated time checks use local audio; no live TTS"
+            )
+        return DoctorCheck(
+            name,
+            CheckStatus.PASS,
+            f"{len(providers)} speech connections; no generated time-check set active",
+            "Configured connections are not proof of live service readiness.",
+        )
+    except (ValueError, OSError, KeyError, TypeError):
+        return DoctorCheck(
+            name, CheckStatus.FAIL, "Speech configuration or saved state could not be read"
+        )
 
 
 def _voice_pack_checks(

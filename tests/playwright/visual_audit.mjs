@@ -1208,6 +1208,56 @@ async function adsProblems(page) {
   return problems;
 }
 
+// A focused liner-name field must survive refresh, and moving to Save must
+// deliver the click before any deferred result rendering. All writes are stood in.
+async function speechStudioProblems(page) {
+  let saved = false;
+  const writes = [];
+  const data = () => ({
+    batches: { "audit-comparison": { text: "Audit station ID", candidates: [
+      { state: "succeeded", duration: 0.1, connection: "audit", plan: { settings: { voice: "good" }, controls: {} } },
+    ] } },
+    saved: saved ? { "audit-liner": { label: "Morning station ID", published: false } } : {},
+    presets: {}, sets: {}, default_preset: null, active_set: null, busy: false,
+  });
+  const stateRoute = (route) => route.fulfill(jsonReply(data()));
+  const otherRoute = async (route) => {
+    const request = route.request();
+    if (request.url().endsWith("/providers") && request.method() === "GET") {
+      return route.fulfill(jsonReply({ connections: [], engines: [] }));
+    }
+    if (request.method() !== "GET") {
+      writes.push({ path: new URL(request.url()).pathname, body: request.postDataJSON() });
+      saved = request.url().endsWith("/audit-comparison/save");
+      return route.fulfill(jsonReply(saved ? { id: "audit-liner" } : { detail: "Unexpected speech write" }, saved ? 200 : 400));
+    }
+    return route.fulfill({ status: 204, body: "" });
+  };
+  await page.route("**/api/speech", stateRoute);
+  await page.route("**/api/speech/**", otherRoute);
+  try {
+    await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
+    await page.locator("#tab-settings").click();
+    await page.locator("#stab-liners").click();
+    await page.locator("#speech-studio").evaluate((element) => { element.open = true; });
+    const name = page.locator("#speech-results").getByLabel("Liner name");
+    await name.fill("Morning station ID");
+    await page.locator("#speech-text").focus();
+    await page.waitForTimeout(50);
+    if (await name.inputValue() !== "Morning station ID") return ["draft liner name lost on focus change"];
+    await name.focus();
+    await page.locator("#speech-results").getByRole("button", { name: "Save liner", exact: true }).click({ delay: 100 });
+    await page.locator("#speech-saved li").waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+    if (writes.length !== 1 || !writes[0].path.endsWith("/audit-comparison/save")
+      || writes[0].body.label !== "Morning station ID") return [`Save sent ${JSON.stringify(writes)}`];
+    if (!await page.locator("#speech-saved").textContent().then((text) => text.includes("not assigned"))) return ["saving did not show an unassigned liner"];
+    return [];
+  } finally {
+    await page.unroute("**/api/speech", stateRoute);
+    await page.unroute("**/api/speech/**", otherRoute);
+  }
+}
+
 // The switcher shows only with two stations.  A server with one gets a
 // stopped stand-in in this page's /api/stations, which is measured but
 // never chosen.
@@ -2675,6 +2725,8 @@ export async function audit(name, launcher) {
     if (liveDj.length) out.behaviour.liveDj = liveDj;
     const ads = await adsProblems(page);
     if (ads.length) out.behaviour.ads = ads;
+    const speech = await speechStudioProblems(page);
+    if (speech.length) out.behaviour.speechStudio = speech;
     const stationCreate = await stationCreateProblems(page);
     if (stationCreate.length) out.behaviour.stationCreate = stationCreate;
     const switcher = await stationSwitcherProblems(page);

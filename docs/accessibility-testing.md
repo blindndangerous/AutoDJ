@@ -1,5 +1,14 @@
 # Accessibility testing
 
+Speech studio checks must include keyboard-only connection setup, adding and
+comparing voices, one failed provider beside a playable sample, explicit retry,
+saving versus assigning a liner, station switching during generation and preview,
+and reviewing/activating generated time checks. Opening or refreshing the studio
+must never submit synthesis. Preview audio must remain browser-local and stop on
+station change or authentication expiry. Preserve focus and typed names while
+results update; announce outcomes once. Functional browser tests are separate from
+manual screen-reader and listening evidence; record both and their limits.
+
 The [Proposed accessibility ADR](adr/0011-verify-accessibility-with-browser-and-speech-evidence.md)
 connects these existing contracts to implementation and tests. Its acceptance
 is pending; the detailed interaction and release-sampling rules remain here.

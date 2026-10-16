@@ -522,6 +522,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
 
     assert [check.name for check in report.checks] == [
         "configuration",
+        "speech",
         "dmca",
         "python",
         "music-path",
@@ -543,6 +544,18 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "recording",
         "liners",
     ]
+
+
+def test_malformed_speech_state_is_reported_by_time_checks(tmp_path: Path) -> None:
+    from autodj.stations import StationPaths
+
+    cfg = _config(tmp_path)
+    cfg.time_checks.enabled = True
+    root = StationPaths.default(cfg).speech
+    root.mkdir(parents=True)
+    (root / "speech.json").write_text("{broken")
+    assert doctor._speech_check(cfg).status is doctor.CheckStatus.FAIL
+    assert doctor._time_checks_check(cfg).status is doctor.CheckStatus.FAIL
 
 
 @pytest.mark.parametrize(

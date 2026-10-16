@@ -991,7 +991,8 @@ class TestArt:
             resp = tc.get("/api/art", params={"path": "Z:/Music/song_0.flac"})
 
         assert resp.status_code == 200
-        assert called[-2:] == ["to_thread", "Z:/Music/song_0.flac"]
+        lookup = called.index("Z:/Music/song_0.flac")
+        assert called[lookup - 1] == "to_thread"
 
 
 # ---------------------------------------------------------------------------

@@ -28,11 +28,14 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [10: State recovery](0010-preserve-state-through-atomic-writes-and-recovery.md) | Proposed; retrospective | Saved-state validation, secrets, backup/restore and recovery |
 | [11: Accessible browser UI](0011-verify-accessibility-with-browser-and-speech-evidence.md) | Proposed; retrospective | Native controls, announcements, keyboard access, release evidence |
 | [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release |
+| [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
 
-Family-specific speech generation and an automated Showcraft integration are
-not existing AutoDJ architecture. The existing announcer/liner boundary is
-covered by ADRs 7 and 9; an automatic producer handoff would need a separate
-decision. No public-hosting, multi-user-role, or alternate embedding-model
+[ADR 13](0013-produce-speech-outside-playout.md) describes selected
+Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records
+automated checks and the remaining live-service, listening and workflow evidence.
+Family-specific speech production and an automated Showcraft handoff remain
+outside existing architecture. The current announcer/liner boundary is covered
+by ADRs 7 and 9. No public-hosting, multi-user-role, or alternate embedding-model
 capability is implied by these records.
 
 ## Maintaining records
