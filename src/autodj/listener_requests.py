@@ -62,6 +62,7 @@ from autodj._bridge import QueueChanged, QueueView, RequestInsert
 from autodj.dj_meta import harmonic_compatible
 from autodj.fsutil import atomic_write
 from autodj.repeat_rules import ArtistSplitter, artist_key
+from autodj.station_log import track_station_thread
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge, RequestSlot
@@ -776,6 +777,7 @@ class RequestDesk:
         self._tidier = threading.Thread(
             target=self._tidy_now_and_then, name=f"autodj-requests-{slug}", daemon=True
         )
+        track_station_thread(self._tidier, slug)
         self._tidier.start()
         self._lock = threading.Lock()
         self._monotonic = monotonic

@@ -17,6 +17,8 @@ from __future__ import annotations
 import contextvars
 import logging
 import threading
+import time
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -33,6 +35,58 @@ _UNPREFIXED = frozenset({"autodj.audit"})
 
 _install_lock = threading.Lock()
 _installed = False
+_threads_lock = threading.Lock()
+
+
+class StationThreadScope:
+    """Threads belonging to one run of a station."""
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+        self.threads: weakref.WeakSet[threading.Thread] = weakref.WeakSet()
+
+
+CURRENT_STATION_SCOPE: contextvars.ContextVar[StationThreadScope | None] = contextvars.ContextVar(
+    "autodj_station_scope", default=None
+)
+_station_scopes: dict[str, StationThreadScope] = {}
+_thread_scopes: weakref.WeakKeyDictionary[threading.Thread, StationThreadScope] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def new_station_scope(slug: str) -> StationThreadScope:
+    """Start tracking a new run of *slug*."""
+    scope = StationThreadScope(slug)
+    with _threads_lock:
+        for previous in set(_thread_scopes.values()):
+            _prune_threads(previous)
+        _station_scopes[slug] = scope
+    return scope
+
+
+def station_scope(slug: str | None) -> StationThreadScope | None:
+    """Find the run owning work in this context or thread."""
+    if slug is None:
+        return None
+    scope = CURRENT_STATION_SCOPE.get()
+    if scope is not None and scope.slug == slug:
+        return scope
+    with _threads_lock:
+        scope = _thread_scopes.get(threading.current_thread())
+        if scope is not None and scope.slug == slug:
+            return scope
+        scope = _station_scopes.get(slug)
+        if scope is None:
+            scope = _station_scopes[slug] = StationThreadScope(slug)
+        return scope
+
+
+def _prune_threads(scope: StationThreadScope) -> None:
+    for thread in tuple(scope.threads):
+        if thread.ident is not None and not thread.is_alive():
+            scope.threads.discard(thread)
+            _thread_scopes.pop(thread, None)
 
 
 def _labelled(slug: str | None) -> bool:
@@ -54,19 +108,62 @@ def station_thread(
     daemon: bool = True,
 ) -> threading.Thread:
     """A thread named for, and running as, the current station (not started)."""
-    return threading.Thread(
+    slug = CURRENT_STATION.get()
+    scope = station_scope(slug)
+    context = contextvars.copy_context()
+    context.run(CURRENT_STATION_SCOPE.set, scope)
+    thread = threading.Thread(
         target=target,
         name=thread_name(name),
         args=args,
         kwargs=dict(kwargs or {}),
         daemon=daemon,
-        context=contextvars.copy_context(),
+        context=context,
     )
+    track_station_thread(thread, slug)
+    return thread
 
 
-def enter_station(slug: str | None) -> None:
+def track_station_thread(thread: threading.Thread, slug: str | None) -> None:
+    """Track a station-owned thread without changing its existing name."""
+    if (scope := station_scope(slug)) is not None:
+        with _threads_lock:
+            _prune_threads(scope)
+            previous = _thread_scopes.get(thread)
+            if previous is not None and previous is not scope:
+                previous.threads.discard(thread)
+            _thread_scopes[thread] = scope
+            scope.threads.add(thread)
+
+
+def wait_for_station_threads(scope: StationThreadScope, timeout: float) -> list[str]:
+    """Join one run's threads against one deadline; return names still running."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _threads_lock:
+            _prune_threads(scope)
+            threads = tuple(scope.threads)
+        running = [
+            thread
+            for thread in threads
+            if thread is not threading.current_thread() and thread.is_alive()
+        ]
+        if not running:
+            return []
+        for thread in running:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            with _threads_lock:
+                _prune_threads(scope)
+                threads = tuple(scope.threads)
+            return sorted(thread.name for thread in threads if thread.is_alive())
+
+
+def enter_station(slug: str | None, scope: StationThreadScope | None = None) -> None:
     """Make the calling thread work for *slug*; a thread pool's ``initializer``."""
     CURRENT_STATION.set(slug)
+    CURRENT_STATION_SCOPE.set(scope or station_scope(slug))
+    track_station_thread(threading.current_thread(), slug)
 
 
 def install_log_prefix() -> None:
