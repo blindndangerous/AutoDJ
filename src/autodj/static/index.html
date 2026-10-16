@@ -221,7 +221,7 @@
   </details>
 
   <!-- Controls -->
-  <details class="card" open>
+  <details class="card" id="controls-card" open>
     <summary><h2>Controls</h2></summary>
 
     <!-- A labelled group, not a toolbar: a toolbar promises arrow-key
@@ -295,7 +295,7 @@
   </details>
 
   <!-- 3-band EQ -->
-  <details class="card">
+  <details class="card" id="eq-card">
     <summary id="eq-heading"><h2>EQ</h2></summary>
     <div role="group" aria-labelledby="eq-heading">
       <div class="eq-row">
@@ -327,7 +327,7 @@
   </details>
 
   <!-- Why this track? — plain-English explanation of the picker's choice -->
-  <details class="card">
+  <details class="card" id="why-track-card">
     <summary><h2>Why this track?</h2></summary>
     <!-- Read on demand, not live: it is rebuilt on every track change,
          which is already announced once. -->
@@ -339,7 +339,7 @@
   </details>
 
   <!-- Up Next -->
-  <details class="card" open>
+  <details class="card" id="up-next-card" open>
     <summary><h2>Up Next</h2></summary>
     <!-- Not live: it changes in the same tick as the track title, which
          is the one track-change announcement.  Shift+N speaks it. -->
@@ -479,7 +479,7 @@
       </form>
       <p id="tags-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </details>
-    <details class="card" id="points-editor" open hidden>
+    <details class="card" id="points-editor" hidden>
       <summary><h3 id="points-heading">Cue points</h3></summary>
       <label id="points-allow-outro-label" hidden><input type="checkbox" id="points-allow-outro"> Allow start over outro</label>
       <input id="points-path" type="hidden">
@@ -530,7 +530,7 @@
          play as this song starts.  The lists change in place; a refused
          field is marked invalid with its error linked to it and focused;
          any other result is said once in #intros-status. -->
-    <details class="card" id="intros-editor" open hidden>
+    <details class="card" id="intros-editor" hidden>
       <summary><h3 id="intros-heading">Matched intros</h3></summary>
       <p class="setting-desc" id="intros-help">Short voice clips that introduce this song or its artist.</p>
       <p class="setting-desc" id="intros-inactive" hidden></p>
@@ -606,7 +606,7 @@
          a list of text in time order, times numeric (1:35) as the UI
          wording guidance asks.  Never live: it is drawn when a song opens, and the bracket
          keys say where they land through #sr-status instead. -->
-    <details class="card" id="landmarks-section" open hidden>
+    <details class="card" id="landmarks-section" hidden>
       <summary><h3 id="landmarks-heading">Song structure</h3></summary>
       <p class="setting-desc" id="landmarks-help">The intro, singing, drops, breakdowns and outro, from analysis, synced lyrics and cue points. The bracket keys move the preview to the previous or next one.</p>
       <p id="landmarks-empty" hidden></p>
@@ -657,8 +657,9 @@
     </nav>
     <!-- Saves the whole play log between two dates, not just the 500 rows
          above.  The outcome is announced through #sr-status. -->
+    <details class="card" id="history-export-card">
+      <summary><h3 id="hist-export-heading">Export play log</h3></summary>
     <form id="hist-export" aria-labelledby="hist-export-heading" novalidate>
-      <h3 id="hist-export-heading">Export play log</h3>
       <p id="hist-export-help">Saves the tracks played between two dates.</p>
       <label for="hist-export-from">From</label>
       <input type="date" id="hist-export-from" required aria-describedby="hist-export-help">
@@ -682,6 +683,7 @@
       </fieldset>
       <button type="submit" id="hist-export-button">Export</button>
     </form>
+    </details>
   </section>
 
   <!-- ============================================================
@@ -1123,7 +1125,7 @@
          the twelve boxes, so Tab never repeats it on every box.
          Repeats is set once and left, and is the longest group here, so
          it is a card closed by default; its heading names the fieldset. -->
-    <details class="card">
+    <details class="card" id="repeats-card">
     <summary><h4 id="repeat-heading">Repeats</h4></summary>
     <fieldset aria-labelledby="repeat-heading">
       <p class="setting-desc" id="repeat-rules-desc">Keep songs, artists and albums apart. 0 turns a limit off. If no song passes, the rules give way for that pick so music can continue.</p>
@@ -1303,7 +1305,7 @@
       <progress id="rotation-progress" max="100" value="0" aria-describedby="rotation-progress-text"></progress>
       <span id="rotation-progress-text"></span>
     </div>
-    <details class="card">
+    <details class="card" id="test-rotation-card">
     <summary><h4 id="rotation-test-heading">Test rotation</h4></summary>
     <fieldset id="rotation-test" aria-labelledby="rotation-test-heading">
       <p class="setting-desc" id="rotation-test-desc">Simulate song picking with current rules, then see how often each song, category and artist would play, which rules had to give way and whether anything would leave the station silent.</p>
@@ -1335,7 +1337,7 @@
         <button type="button" id="rotation-cancel">Cancel test</button>
       </div>
     </fieldset>
-    <section id="rotation-results" aria-labelledby="rotation-results-heading" hidden>
+    <section id="rotation-results" hidden>
       <h5 id="rotation-results-heading">Rotation test results</h5>
       <div id="rotation-results-body"></div>
     </section>
@@ -1876,7 +1878,7 @@
     </p>
     <div id="brk-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="brk-reason" hidden></p>
-    <form id="brk-form" novalidate aria-labelledby="brk-form-heading">
+    <form id="brk-form" novalidate>
       <h4 id="brk-form-heading">Break settings</h4>
       <div class="settings-check">
         <input type="checkbox" id="brk-enabled" aria-describedby="brk-enabled-help">
@@ -2190,7 +2192,7 @@
            stream-formats.js.  The address list is plain text, rebuilt
            only when it changes; saves and Copy speak through the status
            regions. -->
-      <details class="card">
+      <details class="card" id="stream-formats-card">
       <summary><h4 id="stream-formats-heading">More formats</h4></summary>
       <fieldset id="stream-formats" aria-labelledby="stream-formats-heading">
         <p class="setting-desc" id="stream-formats-desc">
@@ -2234,7 +2236,7 @@
            The webhook list and its empty note are plain text, not live:
            results of Copy, the show-next save and Send test go to the
            status regions. -->
-      <details class="card">
+      <details class="card" id="nowplaying-feed-card">
       <summary><h4 id="np-settings-heading">Now-playing feed</h4></summary>
       <fieldset id="np-settings" aria-labelledby="np-settings-heading">
         <div class="settings-row">
@@ -2274,7 +2276,7 @@
         <p class="stream-detail" id="np-webhooks-empty" hidden></p>
       </fieldset>
       </details>
-      <section aria-labelledby="listener-control-title">
+      <section>
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
         <p id="listener-password-state">Listener password status not loaded.</p>
@@ -2305,7 +2307,7 @@
           </fieldset>
         </form>
       </section>
-      <section aria-labelledby="listener-bans-title">
+      <section>
         <h4 id="listener-bans-title" tabindex="-1">Bans</h4>
         <ul id="listener-ban-list" aria-label="Banned addresses"></ul>
         <p id="listener-ban-empty" hidden>No bans.</p>
@@ -2691,7 +2693,7 @@
   <section data-view="queue" id="panel-queue" role="tabpanel" hidden aria-labelledby="tab-queue">
 
   <!-- Queue -->
-  <details class="card" open>
+  <details class="card" id="queue-card" open>
     <summary><h2>
       Queue
       <span id="queue-count" aria-hidden="true" style="color:var(--text-dim);font-weight:normal"></span>
@@ -2713,12 +2715,29 @@
     <button type="button" id="queue-clear">Clear queue</button>
   </details>
 
+  <!-- Search and browse share one paginated result list. -->
+  <details class="card" id="search-library-card" open>
+    <summary><h2 id="search-library-heading">Search &amp; browse library</h2></summary>
+    <div class="flow-form">
+    <label for="library-kind">Type</label>
+    <select id="library-kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
+    <label for="library-folder">Folder</label>
+    <select id="library-folder"><option value="all">All folders</option></select>
+    <label for="search-input">Search text (optional)</label>
+    <div class="search-row"><input type="search" id="search-input" placeholder="Artist or title…" autocomplete="off"><button id="btn-search" type="button">Search</button></div>
+    <div id="search-count" aria-live="polite" aria-atomic="true"></div>
+    <table id="library-results-table" role="grid"><caption class="visually-hidden">Library tracks</caption><thead><tr><th scope="col">Track</th><th scope="col">Play now</th><th scope="col">Play next</th><th scope="col">Add to queue</th><th scope="col">Track info</th></tr></thead><tbody id="search-results"></tbody></table>
+    <button type="button" id="library-browse-previous" disabled>Previous</button>
+    <button type="button" id="library-browse-next" disabled>Next</button>
+    </div>
+  </details>
+
   <!-- Listener requests from the public request page, and the switch that
        opens and closes that page.  The card shows once the station has
        answered; the lists show only while requests are on.  The lists are
        plain text and refresh silently; each button's result is said once
        in #requests-status. -->
-  <details class="card" id="requests-card" open hidden>
+  <details class="card" id="requests-card" hidden>
     <summary id="requests-heading"><h2>Listener requests</h2></summary>
     <p id="requests-summary">No requests waiting.</p>
     <div id="requests-status"
@@ -2732,7 +2751,7 @@
     <!-- On or off, approval, bridge songs and the give-up rule (#49): saved
          for this station with Save request settings; the result is said in
          #requests-status. -->
-    <form id="requests-settings" novalidate aria-labelledby="requests-settings-heading">
+    <form id="requests-settings" novalidate>
       <h3 id="requests-settings-heading">Request settings</h3>
       <div class="settings-check">
         <input type="checkbox" id="requests-enabled" aria-describedby="requests-enabled-help">
@@ -2786,21 +2805,6 @@
     </form>
   </details>
 
-  <!-- Search and browse share one paginated result list. -->
-  <section class="card flow-form" aria-labelledby="search-library-heading">
-    <h2 id="search-library-heading">Search &amp; browse library</h2>
-    <label for="library-kind">Type</label>
-    <select id="library-kind"><option value="music">Music</option><option value="liner">Voice liners</option></select>
-    <label for="library-folder">Folder</label>
-    <select id="library-folder"><option value="all">All folders</option></select>
-    <label for="search-input">Search text (optional)</label>
-    <div class="search-row"><input type="search" id="search-input" placeholder="Artist or title…" autocomplete="off"><button id="btn-search" type="button">Search</button></div>
-    <div id="search-count" aria-live="polite" aria-atomic="true"></div>
-    <table id="library-results-table" role="grid"><caption class="visually-hidden">Library tracks</caption><thead><tr><th scope="col">Track</th><th scope="col">Play now</th><th scope="col">Play next</th><th scope="col">Add to queue</th><th scope="col">Track info</th></tr></thead><tbody id="search-results"></tbody></table>
-    <button type="button" id="library-browse-previous" disabled>Previous</button>
-    <button type="button" id="library-browse-next" disabled>Next</button>
-  </section>
-
   </section>
   <!-- ============================================================
        View: Carts — the cart wall: twelve numbered carts per page for
@@ -2826,8 +2830,8 @@
            #sr-status, so they are heard on every tab. -->
       <div id="cart-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
-      <section class="card" aria-labelledby="cart-editor-heading">
-        <h3 id="cart-editor-heading">Edit a cart</h3>
+      <details class="card" id="cart-editor-card">
+        <summary><h3 id="cart-editor-heading">Edit a cart</h3></summary>
         <!-- A refused field is named here, linked to the field and focused. -->
         <p id="cart-edit-error" class="field-error" hidden></p>
         <div class="settings-row">
@@ -2876,11 +2880,11 @@
           <button type="button" id="cart-save">Save cart</button>
           <button type="button" id="cart-clear">Clear cart</button>
         </div>
-      </section>
+      </details>
 
       <!-- Clips are uploaded now and then, so this is a card closed by
            default; the editor above stays open. -->
-      <details class="card">
+      <details class="card" id="cart-uploads-card">
         <summary><h3 id="cart-upload-heading">Uploaded clips</h3></summary>
         <div class="settings-row">
           <label for="cart-upload-file">Audio clip</label>
@@ -2897,14 +2901,14 @@
         </span>
       </details>
 
-      <section class="card" aria-labelledby="cart-page-heading">
-        <h3 id="cart-page-heading">Rename this page</h3>
+      <details class="card" id="cart-page-card">
+        <summary><h3 id="cart-page-heading">Rename this page</h3></summary>
         <div class="settings-row">
           <label for="cart-page-name">Page name</label>
           <input type="text" id="cart-page-name" maxlength="80" autocomplete="off">
           <button type="button" id="cart-rename">Rename page</button>
         </div>
-      </section>
+      </details>
     </div>
   </section>
   <!-- ============================================================
@@ -2924,7 +2928,7 @@
         Alt+R starts and stops recording.
       </p>
 
-      <section class="card" aria-labelledby="vt-slot-heading">
+      <section class="card">
         <h3 id="vt-slot-heading">Open song change</h3>
         <p id="vt-unavailable">Loading the open song change.</p>
         <dl id="vt-slot" class="vt-facts" hidden>
@@ -2936,7 +2940,7 @@
         </dl>
       </section>
 
-      <section class="card" aria-labelledby="vt-record-heading">
+      <section class="card">
         <h3 id="vt-record-heading">Record</h3>
         <!-- A refusal in words, linked to the control it is about. -->
         <p id="vt-error" class="field-error" hidden></p>
@@ -2975,7 +2979,7 @@
         <div id="vt-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
       </section>
 
-      <section class="card" aria-labelledby="vt-booked-heading">
+      <section class="card">
         <h3 id="vt-booked-heading">Booked voice tracks</h3>
         <p id="vt-none">No voice tracks yet.</p>
         <!-- role="list": list-style none drops the list role in Safari. -->
@@ -3003,7 +3007,7 @@
       <p id="ads-problem" class="ads-notice" hidden></p>
       <div id="ads-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
-      <section class="card" aria-labelledby="ads-spots-heading">
+      <section class="card">
         <h3 id="ads-spots-heading">Spots</h3>
         <!-- role="list": list-style none drops the list role in Safari. -->
         <ul id="ads-spots" class="ads-list" role="list" aria-labelledby="ads-spots-heading"></ul>
@@ -3074,7 +3078,7 @@
         </form>
       </section>
 
-      <section class="card" aria-labelledby="ads-breaks-heading">
+      <section class="card">
         <h3 id="ads-breaks-heading">Ad breaks</h3>
         <ul id="ads-breaks" class="ads-list" role="list" aria-labelledby="ads-breaks-heading"></ul>
         <button type="button" id="ads-break-add">Add ad break</button>
@@ -3151,7 +3155,7 @@
 
       <!-- The rules and the report are set once or read now and then, so
            each is a card closed by default; Spots and Ad breaks stay open. -->
-      <details class="card">
+      <details class="card" id="break-rules-card">
         <summary><h3 id="ads-rules-heading">Rules for every break</h3></summary>
         <form id="ads-rules-form" novalidate>
           <p id="ads-rules-error" class="field-error" hidden></p>
@@ -3176,7 +3180,7 @@
         </form>
       </details>
 
-      <details class="card">
+      <details class="card" id="ad-report-card">
         <summary><h3 id="ads-report-heading">Ad report</h3></summary>
         <form id="ads-report-form" novalidate>
           <p class="setting-desc" id="ads-report-desc">
@@ -3248,7 +3252,7 @@
        the web UI.  Browsing is in Queue & Search.
        ============================================================ -->
   <section data-view="library" id="panel-library" role="tabpanel" hidden aria-labelledby="tab-library">
-    <details class="card" open>
+    <details class="card" id="library-tools-card">
       <summary><h2>Library tools</h2></summary>
 
       <p>Browse your library and voice liners in Queue &amp; Search.</p>
@@ -3258,7 +3262,7 @@
         advanced analysis finishes. One advanced analysis job runs at a time.
       </p>
 
-      <section class="flow-form" aria-labelledby="source-folders-heading">
+      <section class="flow-form">
         <h3 id="source-folders-heading">Music folders and Voice liner folders</h3>
         <p>Enter a folder path on the machine running AutoDJ. Music folders include advanced analysis by default. Liners get automatic Start, Segue and End suggestions without the music-matching job.</p>
         <label for="source-folder-path">Folder path</label>
@@ -3352,7 +3356,7 @@
            aria-labelledby="library-log-heading"><p class="lib-log-empty">No job has run yet.</p></div>
     </details>
 
-    <details class="card" open>
+    <details class="card" id="categories-card">
       <summary><h2 id="categories-heading">Categories</h2></summary>
       <!-- categories-panel.js fills this section.  The list and the match
            count are plain text, not live regions: each result of a button
@@ -3454,7 +3458,7 @@
       </form>
     </details>
 
-    <details class="card" open>
+    <details class="card" id="clockwheels-card">
       <summary><h2 id="clockwheel-heading">Clockwheels</h2></summary>
       <div class="flow-form">
       <!-- clockwheel-panel.js fills this section.  Each result of a button
@@ -3499,7 +3503,7 @@
     </div>
     </details>
 
-    <details class="card" id="shows-card" open>
+    <details class="card" id="shows-card">
       <summary><h2 id="shows-heading">Shows</h2></summary>
       <!-- shows-panel.js fills this section.  The lists, the on-air line and
            the totals are plain text, not live regions: each result of a
@@ -3553,7 +3557,7 @@
         </fieldset>
       </form>
 
-      <section id="shows-editor" class="flow-form" aria-labelledby="shows-editor-heading" hidden>
+      <section id="shows-editor" class="flow-form" hidden>
         <h3 id="shows-editor-heading" tabindex="-1">Songs of <span id="shows-editor-name"></span></h3>
         <p id="shows-summary"></p>
         <p id="shows-note" hidden></p>
@@ -3575,7 +3579,7 @@
       </section>
     </details>
 
-    <details class="card" id="intro-rules" open>
+    <details class="card" id="intro-rules">
       <summary><h2 id="intro-rules-heading">Intro rules</h2></summary>
       <!-- intro-rules-panel.js fills this section.  The list is plain text;
            each result of a button is said once through #intro-rules-status.

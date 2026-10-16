@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
   LATCHED_NOTE,
@@ -14,14 +14,6 @@ import {
 
 const { EventTarget, MouseEvent } = globalThis;
 const byId = (id) => document.getElementById(id);
-
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
 
 // A microphone, an audio context with a worklet and a socket, all fake.
 function fakes() {

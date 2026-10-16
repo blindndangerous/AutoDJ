@@ -6,6 +6,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { memoryStorage } from "./helpers.js";
+
 import {
   THEME_STORAGE_KEY,
   applyThemeChoice,
@@ -27,14 +29,6 @@ const RADIOS = ["system", "light", "dark"].map((value) => (
   + `${value === "system" ? " checked" : ""}>`
 )).join("");
 
-function memoryStorage(initial = {}) {
-  const data = new Map(Object.entries(initial));
-  return {
-    getItem: (key) => (data.has(key) ? data.get(key) : null),
-    setItem: (key, value) => data.set(key, String(value)),
-    data,
-  };
-}
 
 const blockedStorage = {
   getItem() { throw new Error("SecurityError"); },

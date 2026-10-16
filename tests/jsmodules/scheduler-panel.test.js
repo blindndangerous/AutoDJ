@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 import { installSchedulerPanel } from "../../src/autodj/static/modules/scheduler-panel.js";
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
@@ -19,11 +19,7 @@ const ACTIONS = [
 ];
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   // The Settings view, as the section router shows it.
   byId("settings-tabs").closest("section").hidden = false;
   const dialog = byId("confirm-dialog");

@@ -3435,7 +3435,7 @@ describe("listener request contracts", () => {
   it("labels every smooth-transition setting, groups the give-up choice and links its help and error", () => {
     const start = htmlSource.indexOf('<form id="requests-settings"');
     const form = htmlSource.slice(start, htmlSource.indexOf("</form>", start));
-    expect(form).toMatch(/aria-labelledby="requests-settings-heading"/);
+    expect(form).not.toMatch(/aria-labelledby="requests-settings-heading"/);
     expect(form).toMatch(/<h3 id="requests-settings-heading">/);
     for (const id of ["requests-bridges", "requests-max-bridges", "requests-threshold",
       "requests-no-smooth-best", "requests-no-smooth-wait"]) {

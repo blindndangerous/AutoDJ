@@ -5,6 +5,7 @@
 // then hands the browser the file to save.
 
 import { requestFile } from "./api-client.js";
+import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const FALLBACK_NAME = "autodj-plays.csv";
 const SERVICE_KEY = "autodj.historyExport.service";
@@ -51,19 +52,11 @@ export function saveFile(doc, blob, filename) {
 
 // The service name is remembered in this browser only, as a convenience.
 function rememberedService(storage) {
-  try {
-    return storage?.getItem(SERVICE_KEY) || "";
-  } catch (_) {
-    return "";
-  }
+  return readStorage(storage, SERVICE_KEY) || "";
 }
 
 function rememberService(storage, value) {
-  try {
-    storage?.setItem(SERVICE_KEY, value);
-  } catch (_) {
-    // Private windows may refuse storage; the export still works.
-  }
+  writeStorage(storage, SERVICE_KEY, value);
 }
 
 // announce(message, tone) reports the outcome once; tone is "info" or "error".
@@ -73,7 +66,7 @@ export function installHistoryExport({
   save = saveFile,
   announce,
   now = () => new Date(),
-  storage = globalThis.localStorage,
+  storage = defaultStorage(),
 }) {
   const form = doc.getElementById("hist-export");
   const from = doc.getElementById("hist-export-from");

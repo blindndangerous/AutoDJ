@@ -166,7 +166,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   function openEditor(number) {
     loadEditor(number);
     say(`Cart ${number} is empty. Choose its name and clip, then Save cart.`);
-    name.focus();
+    focusRevealed(name);
   }
 
   // `resetEditor` is false when another page changed the wall, so a cart
@@ -263,7 +263,7 @@ export function installCartWall(root = document.getElementById("cart-wall"), {
   function invalid(field, message) {
     field.setAttribute("aria-invalid", "true");
     // A cart editor field is named in the editor too, and linked to it.
-    if (editError && field.closest("section") === editError.closest("section")) {
+    if (editError && field.closest(".card") === editError.closest(".card")) {
       editError.textContent = message;
       editError.hidden = false;
       linkError(field, true);

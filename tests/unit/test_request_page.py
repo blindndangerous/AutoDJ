@@ -56,9 +56,16 @@ def _page(**state: object) -> str:
     )
 
 
+def _assert_no_repeated_section_labels(html: str) -> None:
+    assert all("aria-labelledby" not in attrs for tag, attrs in _tags(html) if tag == "section")
+
+
 def test_the_search_form_is_labelled_and_says_how_requests_work() -> None:
     html = _page()
     tags = _tags(html)
+    _assert_no_repeated_section_labels(html)
+    assert '<h2 id="req-search">Find a song</h2>' in html
+    assert '<h2 id="req-how">How requests work</h2>' in html
     assert "<title>Night Owl Radio: request a song</title>" in html
     (form,) = [attrs for tag, attrs in tags if tag == "form"]
     assert form == {
@@ -92,6 +99,8 @@ def test_auto_requests_can_still_wait_for_a_smoother_place() -> None:
 def test_results_are_links_named_by_their_songs_and_carry_no_path() -> None:
     other = replace(SONG, path="/srv/private/b.flac", title="B side", album="")
     html = _page(query="song", results=[("a" * 24, SONG), ("b" * 24, other)])
+    _assert_no_repeated_section_labels(html)
+    assert '<h2 id="req-results">Search results</h2>' in html
     assert "<title>Search results: Night Owl Radio: request a song</title>" in html
     assert "2 songs found. Choose a song to request it." in html
     assert (
@@ -108,6 +117,8 @@ def test_results_are_links_named_by_their_songs_and_carry_no_path() -> None:
 
 def test_the_confirm_form_posts_to_itself_with_a_token() -> None:
     html = _page(confirm=("a" * 24, SONG), token="123.abc")
+    _assert_no_repeated_section_labels(html)
+    assert '<h2 id="req-confirm">Confirm your request</h2>' in html
     tags = _tags(html)
     assert "<title>Confirm your request: Night Owl Radio</title>" in html
     (form,) = [attrs for tag, attrs in tags if tag == "form"]
@@ -123,6 +134,7 @@ def test_the_confirm_form_posts_to_itself_with_a_token() -> None:
 
 def test_an_answer_is_in_the_title_and_the_first_heading() -> None:
     html = _page(outcome=Outcome(409, "Not right now", "Song by Artist cannot play again so soon."))
+    _assert_no_repeated_section_labels(html)
     assert "<title>Not right now: Night Owl Radio</title>" in html
     assert '<h2 id="req-message">Not right now</h2>' in html
     assert html.index("req-message") < html.index("req-search")
@@ -162,6 +174,7 @@ def test_an_off_air_page_offers_no_form() -> None:
         desk=None,
         off_air=True,
     )
+    _assert_no_repeated_section_labels(html)
     assert "<title>Off air: Night Owl Radio</title>" in html
     assert "<form" not in html
 
@@ -202,6 +215,7 @@ def test_a_closed_page_says_so_and_offers_no_form() -> None:
         desk=None,
         closed=True,
     )
+    _assert_no_repeated_section_labels(html)
     assert "<title>Requests are closed: Night Owl Radio</title>" in html
     assert '<h2 id="req-message">Requests are closed</h2>' in html
     assert "Night Owl Radio is not taking requests right now." in html

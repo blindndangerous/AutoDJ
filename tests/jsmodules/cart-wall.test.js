@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup } from "./helpers.js";
 
 const api = vi.hoisted(() => ({ requestJson: vi.fn(), requestBinary: vi.fn() }));
 vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
@@ -16,11 +16,7 @@ const byId = (id) => document.getElementById(id);
 const cart = (number) => byId("cart-slots").querySelector(`[data-slot="${number}"]`);
 
 function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
+  installIndexMarkup();
   byId("panel-carts").hidden = false;
   const dialog = byId("confirm-dialog");
   dialog.showModal = () => { dialog.open = true; };
@@ -216,6 +212,7 @@ describe("cart buttons", () => {
   it("opens an empty cart in the editor with focus on its name", async () => {
     await install();
     cart(4).click();
+    expect(byId("cart-editor-card").open).toBe(true);
     expect(byId("cart-edit-slot").value).toBe("4");
     expect(document.activeElement).toBe(byId("cart-name"));
     expect(byId("cart-name").value).toBe("");

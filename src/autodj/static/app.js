@@ -51,6 +51,7 @@ import { createListenerControls } from "./modules/listener-controls.js";
 import { installStreamFormats } from "./modules/stream-formats.js";
 import { installListenerStats } from "./modules/listener-stats.js";
 import { initSubtabs } from "./modules/subtabs.js";
+import { installCardState } from "./modules/card-state.js";
 import { installThemeSetting } from "./modules/theme.js";
 import { confirmAction } from "./modules/confirm-dialog.js";
 import {
@@ -70,6 +71,8 @@ import {
   stationName,
   stationWsPath,
 } from "./modules/stations.js";
+
+installCardState();
 
 if (isDebug()) {
   console.log("[autodj] debug logging ENABLED " +

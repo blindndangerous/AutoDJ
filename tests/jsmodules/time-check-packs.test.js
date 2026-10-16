@@ -1,19 +1,12 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import { installTimeChecks } from "../../src/autodj/static/modules/time-checks.js";
 
 // Voice packs added from a zip and removed, and clips chosen and uploaded,
 // in the real Settings markup (#388).
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
 
 const byId = (id) => document.getElementById(id);
 const said = () => byId("tc-status").textContent.replace(/\u00a0$/, "");

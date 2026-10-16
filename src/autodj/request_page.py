@@ -120,7 +120,7 @@ def _how_it_works(desk: RequestDesk) -> str:
         else "The station looks at each request and decides whether to play it."
     )
     return (
-        '<section aria-labelledby="req-how">\n<h2 id="req-how">How requests work</h2>\n'
+        '<section>\n<h2 id="req-how">How requests work</h2>\n'
         f"<p>You can request up to {_songs(cfg.per_listener)} every "
         f"{escape(_minutes(cfg.per_listener_minutes))}. {decided} A requested song plays "
         "when it fits in with what is playing, usually within the hour, never at a set time. "
@@ -167,21 +167,21 @@ def render_request_page(
         off_air = True  # no search form either
         title = f"{CLOSED.headline}: {station}"
         parts.append(
-            f'<section aria-labelledby="req-message" class="message">\n'
+            f'<section class="message">\n'
             f'<h2 id="req-message">{escape(CLOSED.headline)}</h2>\n<p>{name} is not taking '
             "requests right now. Please try again later.</p>\n</section>"
         )
     elif off_air:
         title = f"Off air: {station}"
         parts.append(
-            f'<section aria-labelledby="req-message" class="message">\n'
+            f'<section class="message">\n'
             f'<h2 id="req-message">Off air</h2>\n<p>{name} is off air right now, so it is '
             "not taking requests. Please try again later.</p>\n</section>"
         )
     elif outcome is not None:
         title = f"{outcome.headline}: {station}"
         parts.append(
-            f'<section aria-labelledby="req-message" class="message">\n'
+            f'<section class="message">\n'
             f'<h2 id="req-message">{escape(outcome.headline)}</h2>\n'
             f"<p>{escape(outcome.detail)}</p>\n</section>"
         )
@@ -197,7 +197,7 @@ def render_request_page(
     if confirm is not None and outcome is None and not off_air:
         track_id, entry = confirm
         parts.append(
-            f"""<section aria-labelledby="req-confirm">
+            f"""<section>
 <h2 id="req-confirm">Confirm your request</h2>
 <p>{escape(track_text(_track(entry), empty=""))}</p>
 <form method="post" action="{page}">
@@ -218,7 +218,7 @@ def render_request_page(
             invalid = ' aria-invalid="true" aria-describedby="req-q-error"'
             error = f'<p class="error" id="req-q-error">{escape(query_error)}</p>\n'
         parts.append(
-            f"""<section aria-labelledby="req-search">
+            f"""<section>
 <h2 id="req-search">Find a song</h2>
 <form method="get" action="{page}" role="search">
 <label for="req-q">Title, artist or album</label>
@@ -266,7 +266,7 @@ def _track(entry: IndexEntry) -> dict[str, Any]:
 def _results(results: list[tuple[str, IndexEntry]], page: str) -> str:
     if not results:
         return (
-            '<section aria-labelledby="req-results">\n<h2 id="req-results">Search results</h2>\n'
+            '<section>\n<h2 id="req-results">Search results</h2>\n'
             "<p>No songs found. Try other words, or fewer of them.</p>\n</section>"
         )
     count = len(results)
@@ -277,7 +277,7 @@ def _results(results: list[tuple[str, IndexEntry]], page: str) -> str:
     )
     many = " Add words to narrow the search." if count >= 20 else ""
     return (
-        '<section aria-labelledby="req-results">\n<h2 id="req-results">Search results</h2>\n'
+        '<section>\n<h2 id="req-results">Search results</h2>\n'
         f"<p>{count} song{'' if count == 1 else 's'} found.{many} Choose a song to request it.</p>\n"
         f"<ul>\n{items}\n</ul>\n</section>"
     )

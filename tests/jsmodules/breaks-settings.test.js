@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
   DUCK_ERROR,
@@ -15,13 +15,6 @@ import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
 
 // The real Settings markup, so the ids, labels and live region the module
 // relies on are the ones the page ships.
-const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-function installIndex() {
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
 
 const byId = (id) => document.getElementById(id);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -89,7 +82,8 @@ describe("Breaks panel markup", () => {
     // which NVDA does not read reliably on a fieldset.
     expect(byId("brk-placement").hasAttribute("aria-describedby")).toBe(false);
     expect(byId("brk-placement").querySelector("legend + #brk-placement-help")).not.toBeNull();
-    expect(byId("brk-form").getAttribute("aria-labelledby")).toBe("brk-form-heading");
+    expect(byId("brk-form").hasAttribute("aria-labelledby")).toBe(false);
+    expect(byId("brk-form-heading").textContent).toBe("Break settings");
     expect(panel.querySelectorAll("[aria-live]")).toHaveLength(1);
     expect(byId("brk-status").getAttribute("role")).toBe("status");
     expect(byId("brk-reason").hasAttribute("aria-live")).toBe(false);

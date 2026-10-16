@@ -1,17 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { initViewRouter } from "../../src/autodj/static/modules/tabs.js";
+import { installIndexMarkup as installIndex } from "./helpers.js";
 
-function installIndex() {
-  const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
-  const template = document.createElement("template");
-  template.innerHTML = html;
-  template.content.querySelectorAll("script, link").forEach((node) => node.remove());
-  document.body.replaceChildren(template.content.cloneNode(true));
-}
+import { initViewRouter } from "../../src/autodj/static/modules/tabs.js";
 
 describe("playback controls grouping", () => {
   it("uses a labelled group rather than a toolbar without arrow keys", () => {
@@ -24,7 +16,7 @@ describe("playback controls grouping", () => {
 
 describe("card headings", () => {
   it("gives every card a heading inside its disclosure summary, one level below its context", () => {
-    // Track info's, Ads' and Carts' cards sit under the view's own h2, so
+    // Track info's, Ads', Carts' and History's cards sit under the view's own h2, so
     // theirs are h3s (#297); a card inside a Settings group sits under the
     // group's h3, so it has an h4.  The rest are h2s.
     installIndex();
@@ -32,7 +24,7 @@ describe("card headings", () => {
     expect(summaries.length).toBeGreaterThan(0);
     const expectedLevel = (summary) => {
       if (summary.closest("#panel-settings [role='tabpanel']")) return "H4";
-      if (summary.closest("#panel-track-info, #panel-ads, #panel-carts")) return "H3";
+      if (summary.closest("#panel-track-info, #panel-ads, #panel-carts, #panel-history")) return "H3";
       return "H2";
     };
     for (const summary of summaries) {

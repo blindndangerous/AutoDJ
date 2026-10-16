@@ -187,6 +187,8 @@ def test_the_player_page_has_labelled_native_controls_and_one_song_region() -> N
     html = render_player_page(FEED, station="Night Owl Radio", addresses=OWL)
     outline = _outline(html)
     assert "<title>Night Owl Radio: listen live</title>" in html
+    assert all("aria-labelledby" not in attrs for attrs in outline.find("section"))
+    assert '<h2 id="player-listen-heading">Listen</h2>' in html
     (body,) = outline.find("body")
     assert body["data-page"] == "player"
     assert body["data-feed"] == "/api/stations/nightowl/nowplaying"
