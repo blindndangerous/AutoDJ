@@ -404,6 +404,9 @@ class TestLiners:
         class Library:
             catalog = Catalog()
 
+            def station_ledger(self, station):
+                return SimpleNamespace(last_played=lambda: {})
+
             def entry_for_path(self, value):
                 return SimpleNamespace(path=str(path)) if _path(value) == _path(path) else None
 
