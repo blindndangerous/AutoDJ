@@ -254,7 +254,9 @@ def test_start_with_the_server_is_saved_for_a_station_made_in_the_page(rig: Any)
     assert default_update.json()["autostart"] is False
     assert load_config(cfg.config_path, environ={}).default_station.autostart is False
     assert _stations(client)["nightowl"]["autostart_locked"] is False
-    editable = client.put("/api/stations/nightowl/autostart", json={"enabled": False}, headers=origin)
+    editable = client.put(
+        "/api/stations/nightowl/autostart", json={"enabled": False}, headers=origin
+    )
     assert editable.status_code == 200
     assert editable.json()["autostart"] is False
     missing = client.put("/api/stations/nobody/autostart", json={"enabled": True}, headers=origin)

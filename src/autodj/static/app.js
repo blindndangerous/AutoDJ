@@ -1731,7 +1731,7 @@ async function requestStationState() {
   try {
     return await requestJson("/api/status");
   } catch (errorValue) {
-    if (errorValue?.status === 409 && currentStation() !== DEFAULT_STATION) return null;
+    if (errorValue?.status === 409) return null;
     throw errorValue;
   }
 }

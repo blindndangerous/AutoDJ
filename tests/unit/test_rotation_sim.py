@@ -673,14 +673,17 @@ def _cli(tmp_path: Path, *args: str):
     from click.testing import CliRunner
 
     from autodj.cli import cli
+    from autodj.config import load_config, move_station_tables
 
     config = tmp_path / "cli.toml"
     if not config.exists():
         root = (tmp_path / "index").as_posix()
         config.write_text(
-            f'[index]\nindex_dir = "{root}"\n[server]\nstation_timezone = "UTC"\n',
+            f'[index]\nindex_dir = "{root}"\n[station]\ntimezone = "UTC"\n',
             encoding="utf-8",
         )
+    cfg = load_config(config, environ={})
+    move_station_tables(cfg)
     return CliRunner().invoke(cli, ["--config", str(config), "simulate", *args])
 
 
@@ -802,7 +805,7 @@ def test_simulate_beside_a_live_server_leaves_the_library_untouched(tmp_path: Pa
     config.write_text(
         f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
         f'[library]\nmusic_dir = "{music.as_posix()}"\n'
-        '[server]\nstation_timezone = "UTC"\n[playback]\npick_mode = "random"\n',
+        '[station]\ntimezone = "UTC"\n[playback]\npick_mode = "random"\n',
         encoding="utf-8",
     )
     cfg = load_config(config, environ={})

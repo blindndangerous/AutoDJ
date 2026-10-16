@@ -42,7 +42,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
-from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -1044,6 +1043,8 @@ class StationRuntime:
         player = self.player
         if self.stopped or player.bus is None or not player.bus.playing:
             return  # no set is held under the DJ: the station goes back to idle
+        from autodj.stereo import SAMPLE_RATE
+
         buffered = source.buffer.frames / SAMPLE_RATE
         try:
             player.prepare_live_return(min(1.5, buffered))
@@ -1746,7 +1747,7 @@ class StationRegistry:
 
     def configuration(self, slug: str) -> AutoDJConfig:
         """Saved configuration is available independently of the running engine."""
-        if slug == DEFAULT_SLUG and isinstance(self._default, StationRuntime):
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             return self._default.cfg
         return self._extras[slug].paths._cfg
 
@@ -1762,6 +1763,9 @@ class StationRegistry:
             document["station"]["station"] = asdict(proposed)
             atomic_write(paths.definition, json.dumps(document, indent=2) + "\n")
             cfg.station = proposed
+            running = self._running.get(slug)
+            if running is not None:
+                running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
             return asdict(proposed)
 
     def set_autostart(self, slug: str, enabled: bool) -> None:
@@ -1771,7 +1775,7 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The page cannot change it for this station.
         """
-        if slug == DEFAULT_SLUG and isinstance(self._default, StationRuntime):
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             raise StationControlError("The injected station has no saved definition.")
         extra = self._extras[slug]
         if extra.defined_in != "web":
@@ -1839,7 +1843,7 @@ class StationRegistry:
 
     async def start_all(self) -> None:
         """Start configured autostart stations; a failure leaves the server available."""
-        if isinstance(self._default, StationRuntime):
+        if not isinstance(self._default, ExtraStation):
             await _run_as(self._default.slug, self._default.start())
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
             extra = self._extras.get(slug)
@@ -1857,7 +1861,7 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The station could not start.
         """
-        if slug == DEFAULT_SLUG and isinstance(self._default, StationRuntime):
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             return self._default
         extra = self._extras[slug]
         self._refuse_while_stopping(extra)
@@ -1926,7 +1930,7 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: *slug* is the injected legacy default runtime.
         """
-        if slug == DEFAULT_SLUG and isinstance(self._default, StationRuntime):
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             raise StationControlError("The default station cannot be stopped.")
         extra = self._extras[slug]
         if slug in self._stopping:

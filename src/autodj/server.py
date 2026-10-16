@@ -1605,7 +1605,9 @@ def create_app(
     # Radio stream (stream mode only; 404 otherwise)
     # ------------------------------------------------------------------
 
-    async def _serve_listener(station: StationRuntime | StoppedStation, ext: str, request: Request) -> Response:
+    async def _serve_listener(
+        station: StationRuntime | StoppedStation, ext: str, request: Request
+    ) -> Response:
         """Serve *station*'s stream in a format (``mp3``, ``aac``, ``opus``) or its playlist (``m3u``).
 
         ``HEAD`` answers with the same checks and headers but no body and

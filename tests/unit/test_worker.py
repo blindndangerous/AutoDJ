@@ -70,6 +70,11 @@ def write_tone(path: Path, frequency: float) -> None:
     sf.write(path, (0.3 * np.sin(2 * np.pi * frequency * t)).astype(np.float32), rate)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_config_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def server(tmp_path):
     made = Server(tmp_path / "server", songs=0)

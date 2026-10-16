@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import _serve_url, _stage_serve_server, cli
-from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig, load_config
+from autodj.config import ServerConfig, StationConfig, StreamConfig, TimeChecksConfig, load_config
 from autodj.lan import load_or_create_access_token
 from autodj.repeat_settings import RepeatSettings
 from tests._layout import point_index
@@ -35,7 +35,9 @@ def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg.time_checks = TimeChecksConfig()
     cfg.server = server or ServerConfig()
     cfg.stream = StreamConfig()
+    cfg.station = StationConfig()
     cfg.stations = ()  # one station: no [stations.<slug>] tables
+    cfg.default_station = None
     cfg.config_sources = ("defaults",)
     return cfg
 
@@ -353,12 +355,10 @@ def _run_serve(
 ) -> str:
     from autodj.server import serve
 
-    cfg = MagicMock()
-    cfg.index.index_dir = tmp_path
+    cfg = _cfg(tmp_path, server)
     cfg.playback.repeat_rules = RepeatSettings()
     cfg.playback.crossfade_seconds = 3.0
     cfg.time_checks = TimeChecksConfig()
-    cfg.server = server
     sim = MagicMock()
     sim.entries = []
     sim.ntotal = 0

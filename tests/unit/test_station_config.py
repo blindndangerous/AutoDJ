@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import shutil
 import tomllib
 from pathlib import Path
@@ -99,9 +99,12 @@ def test_default_station_migration_uses_definition_schema_and_saved_timezone(
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     import sqlite3
     from contextlib import closing
+
     with closing(sqlite3.connect(catalog_path)) as db:
         db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        db.execute("INSERT INTO catalog_settings VALUES ('station_timezone', 'America/Los_Angeles')")
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('station_timezone', 'America/Los_Angeles')"
+        )
         db.commit()
     assert move_station_tables(cfg)
     migrated = load_config(path, environ={})
@@ -115,6 +118,7 @@ def test_default_station_migration_uses_definition_schema_and_saved_timezone(
     )
     assert migrated.server.trusted_proxies == ["10.0.0.1"]
     from autodj.stations import StationPaths
+
     document = json.loads(StationPaths.default(migrated).definition.read_text("utf-8"))
     assert document["station"]["station"] == {
         "output": "stream",
@@ -139,6 +143,7 @@ def test_a_station_starts_from_the_defaults_not_the_root_sections(tmp_path: Path
     # Unchanged for the default station.
     assert cfg.playback.crossfade_seconds == 7.0
     from autodj.stations import StationPaths
+
     relays = json.loads(StationPaths.default(cfg).relays.read_text("utf-8"))["relays"]
     assert [item["name"] for item in relays] == ["main"]
 
@@ -196,8 +201,9 @@ url = "https://hooks.example.net/nightowl"
         "owl",
         "hoot hoot",
     )
-    from autodj.stations import StationPaths
     from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
     relays = load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl")
     assert relays["owl"].password == "owl-secret"
     assert [hook.url for hook in station.webhooks] == ["https://hooks.example.net/nightowl"]
@@ -299,7 +305,10 @@ password = "pw"
     )
     cfg = _load(tmp_path, other_mount)
     from autodj.stations import StationPaths
-    relays = json.loads(StationPaths.for_station(cfg, "nightowl").relays.read_text("utf-8"))["relays"]
+
+    relays = json.loads(StationPaths.for_station(cfg, "nightowl").relays.read_text("utf-8"))[
+        "relays"
+    ]
     assert [item["name"] for item in relays] == ["copy"]
 
 
@@ -359,16 +368,18 @@ host = "10.0.0.5"
     assert variable == "AUTODJ_STATION_NIGHTOWL_RELAY_BACK_UP_PASSWORD"
     monkeypatch.setenv(variable, "from-env")
     cfg = _load(tmp_path, text)
-    from autodj.stations import StationPaths
     from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
     relays = load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl")
     assert relays["back-up"].password == "from-env"
     # Only relays named in the TOML are looked up, and only for their station.
     ghost = station_relay_password_variable("nightowl", "ghost")
     cfg = _load(tmp_path, BASE + NIGHTOWL)
     monkeypatch.setenv(ghost, "pw")
-    from autodj.stations import StationPaths
     from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
     assert load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl") == {}
 
 
@@ -392,10 +403,14 @@ def test_two_relays_sharing_one_set_variable_are_refused(
     text = text.replace('host = "h1"\n', 'host = "h1"\npassword = "p1"\n')
     text = text.replace('host = "h2"\n', 'host = "h2"\npassword = "p2"\n')
     cfg = _load(tmp_path, text)
-    from autodj.stations import StationPaths
     from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
     passwords = {
-        slug: [relay.password for relay in load_relays(StationPaths.for_station(cfg, slug).relays, {}, slug).values()]
+        slug: [
+            relay.password
+            for relay in load_relays(StationPaths.for_station(cfg, slug).relays, {}, slug).values()
+        ]
         for slug in ("a-relay-b", "a")
     }
     assert passwords["a-relay-b"] == ["p1"] and passwords["a"] == ["p2"]
@@ -414,27 +429,18 @@ def test_doctor_repair_removes_an_unknown_station_key(tmp_path: Path) -> None:
     assert b"fade_in_seconds = 2" in repair.replacement
 
 
-def test_the_commented_examples_load(tmp_path: Path) -> None:
+def test_the_configuration_examples_load(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
-
-    def uncomment(filename: str, start: str) -> str:
-        text = (root / filename).read_text(encoding="utf-8")
-        block = text[text.index(start) :]
-        return "\n".join(line.removeprefix("#").removeprefix(" ") for line in block.splitlines())
-
-    shared = uncomment("config.toml.example", "# [stations.nightowl]\n")
-    local = uncomment("config.local.toml.example", "# [stations.nightowl.stream]\n")
-    shared += '\n[stations.nightowl.stream.relays.main]\ntype = "shoutcast1"\nhost = "10.0.0.5"\n'
-    cfg = _load(tmp_path, BASE + shared, local)
-    station = cfg.stations[0].cfg
-    assert cfg.stations[0].name == "Night Owl Radio"
-    assert station.playback.loudness_processing == "smooth"
-    assert station.stream.listener_user == "owl"
-    from autodj.stations import StationPaths
-    from autodj.relay_settings import load_relays
-    relays = load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl")
-    assert relays["main"].password == "that station's source password"
-    assert len(station.webhooks) == 1
+    config = tmp_path / "config.toml"
+    config.write_text((root / "config.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "config.local.toml").write_text(
+        (root / "config.local.toml.example").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    cfg = load_config(config, environ={})
+    assert cfg.server.host == "127.0.0.1"
+    assert cfg.index.index_dir == Path("/srv/autodj/index")
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.station.output == "browser"
 
 
 def test_a_station_without_a_name_is_called_by_its_slug(

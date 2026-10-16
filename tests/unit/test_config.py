@@ -4,8 +4,8 @@ Tests cover config loading, validation, default values, and error handling.
 All tests are pure — no filesystem I/O beyond temp files provided by fixtures.
 """
 
-import re
 import json
+import re
 import shutil
 import tomllib
 from pathlib import Path
@@ -269,6 +269,7 @@ class TestDefaultAndEnvironmentConfig:
         assert migrated.default_station.cfg.stream.bitrate == 256
         assert migrated.default_station.cfg.station.output == "stream"
         from autodj.stations import StationPaths
+
         definition = StationPaths.default(migrated).definition
         document = json.loads(definition.read_text("utf-8"))
         document["station"]["stream"]["bitrate"] = 128
@@ -858,19 +859,20 @@ class TestServerConfig:
         assert cfg.effective_allowed_hosts() == ["127.0.0.1"]
         assert cfg.effective_allowed_origins() == ["http://127.0.0.1:8080"]
 
-
     def test_output_and_monitoring_modes_validate(self) -> None:
         assert StationConfig.from_dict({}).output == "browser"
         assert StationConfig.from_dict({"output": "server"}).output == "server"
-        assert StationConfig.from_dict({"output": "stream", "server_audio_too": True}).server_audio_too
+        assert StationConfig.from_dict(
+            {"output": "stream", "server_audio_too": True}
+        ).server_audio_too
         with pytest.raises(ValueError, match="server_audio_too requires"):
             StationConfig.from_dict({"output": "browser", "server_audio_too": True})
-        with pytest.raises(ValueError, match="station.output"):
+        with pytest.raises(ValueError, match=r"station\.output"):
             StationConfig.from_dict({"output": "invalid"})
 
     @pytest.mark.parametrize("limit", [0, 1025])
     def test_liner_upload_limit_is_station_local_and_bounded(self, limit: int) -> None:
-        with pytest.raises(ValueError, match="station.liner_upload_max_mib"):
+        with pytest.raises(ValueError, match=r"station\.liner_upload_max_mib"):
             StationConfig.from_dict({"liner_upload_max_mib": limit})
 
     def test_custom_bind_and_default_port_drive_derived_policy(self) -> None:

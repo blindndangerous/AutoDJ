@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 
 # Current files of the index folder stored by a backup.
 INDEX_FILES = (
+    "station.json",
     "dj_meta.db",
     "library.db",
     "web_state.json",
@@ -109,6 +110,7 @@ _FOLDERS = (
 )
 # The default station's state files.
 _STATE_FILES = (
+    "station.json",
     "web_state.json",
     "schedule.json",
     "carts.json",
@@ -125,7 +127,7 @@ _STATE_FILES = (
     "live_djs.json",
 )
 # Another station's state files, in ``stations/<slug>/``.
-STATION_FILES = ("station.json", *_STATE_FILES)
+STATION_FILES = _STATE_FILES
 STATION_FOLDERS = (
     "liners",
     "carts",

@@ -29,7 +29,8 @@ from tests._layout import point_index
 
 
 @pytest.fixture(autouse=True)
-def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
     for variable in ENVIRONMENT_OVERLAY:
         monkeypatch.delenv(variable, raising=False)
 
@@ -47,9 +48,14 @@ def mock_library_startup():
         }
         return library
 
+    from autodj.config import move_station_tables
+
+    def migrate(cfg):
+        return False if isinstance(cfg, MagicMock) else move_station_tables(cfg)
+
     with (
         patch("autodj.library.LibraryManager", side_effect=create),
-        patch("autodj.config.move_station_tables", return_value=False),
+        patch("autodj.config.move_station_tables", side_effect=migrate),
     ):
         yield
 
@@ -204,7 +210,7 @@ class TestCliConfigNotFound:
         # Note: no beets_db key in [library] section.
         cfg.write_text(
             '[library]\nmusic_dir = "Z:/Music"\n'
-            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
+            f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\nmodel_dir = "models"\n'
             "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
             '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
             encoding="utf-8",

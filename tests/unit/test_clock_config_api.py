@@ -12,7 +12,14 @@ from fastapi import HTTPException
 
 from autodj.catalog import LibraryCatalog
 from autodj.clockwheel_store import OLD_CLOCK_MESSAGE
-from autodj.config import AdsConfig, RequestsConfig, ServerConfig, StreamConfig, TimeChecksConfig
+from autodj.config import (
+    AdsConfig,
+    RequestsConfig,
+    ServerConfig,
+    StationConfig,
+    StreamConfig,
+    TimeChecksConfig,
+)
 from autodj.server import create_app
 from autodj.station_ledger import StationLedger
 from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
@@ -28,6 +35,7 @@ subDir['{music}'].QueueBottom(smrandom, EnforceRules);
 def app_for(catalog, root):
     cfg = SimpleNamespace(
         server=ServerConfig(),
+        station=StationConfig(timezone="UTC"),
         stream=StreamConfig(),
         time_checks=TimeChecksConfig(),
         requests=RequestsConfig(),

@@ -45,7 +45,7 @@ class Rig:
         cfg = SimpleNamespace(
             index=layout_index(str(root)),
             playback=SimpleNamespace(liners_duck_db=-12.0),
-            server=SimpleNamespace(liner_upload_max_bytes=1024 * 1024),
+            station=SimpleNamespace(liner_upload_max_mib=1, timezone=None),
         )
         player = SimpleNamespace(
             _cfg=cfg,

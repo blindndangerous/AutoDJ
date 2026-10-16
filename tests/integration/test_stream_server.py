@@ -1487,7 +1487,6 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
     bridge = _lifespan_bridge()
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream = StreamConfig(
-        enabled=True,
         relays={
             "same": {
                 "type": "icecast",

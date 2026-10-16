@@ -983,7 +983,8 @@ def _relay_cfg(tmp_path: Path, **relays: dict) -> AutoDJConfig:
     from autodj.config import StreamConfig
 
     cfg = _config(tmp_path)
-    cfg.stream = StreamConfig(enabled=True, relays=relays)
+    cfg.station.output = "stream"
+    cfg.stream = StreamConfig(relays=relays)
     return cfg
 
 

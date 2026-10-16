@@ -1698,9 +1698,7 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     "--server-audio/--no-server-audio",
     "server_audio",
     default=None,
-    help=(
-        "Override the default station's saved server sound-card output for this run."
-    ),
+    help=("Override the default station's saved server sound-card output for this run."),
 )
 @click.option(
     "--stream/--no-stream",
