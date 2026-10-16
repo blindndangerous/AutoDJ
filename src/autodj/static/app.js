@@ -2294,7 +2294,8 @@ if (btnShortcuts) {
 if (btnShortcutsClose) {
   btnShortcutsClose.addEventListener("click", () => {
     const modal = document.getElementById("hotkey-help-modal");
-    if (modal && modal.open) modal.close();
+    // Closing through the toggle puts focus back on what opened the list.
+    if (modal && modal.open) toggleShortcutsModal();
   });
 }
 
