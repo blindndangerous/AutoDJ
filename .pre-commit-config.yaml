@@ -170,7 +170,7 @@ repos:
         language: system
         stages: [pre-push]
         pass_filenames: false
-        files: ^(src/autodj/static/|tests/jsmodules/|package(-lock)?\.json$|vitest\.config\.js$|eslint\.config\.js$)
+        files: ^(src/autodj/static/|tests/jsmodules/|tests/playwright/|package(-lock)?\.json$|vitest\.config\.js$|eslint\.config\.js$|commitlint\.config\.cjs$)
 
       - id: vitest
         name: vitest (tests related to the push)

@@ -16,7 +16,7 @@
 CI runs the full suite.
 
 The script calls Node directly instead of going through npm so it behaves the
-same on Windows and Linux. Vitest gets an 8 GB heap.
+same on Windows and Linux. Vitest gets the same 5 GB heap as CI's frontend job.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_DIR = ROOT / "tests" / "jsmodules"
-HEAP_OPTION = "--max-old-space-size=8192"
+HEAP_OPTION = "--max-old-space-size=5120"
 
 
 def _fail(message: str) -> int:

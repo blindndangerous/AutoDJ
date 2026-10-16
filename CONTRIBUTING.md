@@ -29,8 +29,7 @@ raise the number. New behavior needs focused tests. Only add regression tests if
 
 ## Checks before a push
 
-`uv run pre-commit install` installs a pre-push hook as well as the commit hooks. If you
-installed the hooks before the pre-push stage existed, run it again. When a push changes web
+`uv run pre-commit install` installs a pre-push hook as well as the commit hooks. When a push changes web
 UI files (`src/autodj/static/`), the frontend tests (`tests/jsmodules/`), or the npm, Vitest or ESLint
 configuration, the hook runs two checks from CI's frontend job:
 
@@ -39,7 +38,7 @@ configuration, the hook runs two checks from CI's frontend job:
   that read it or mention it by name. A configuration-only change may have no related tests.
 
 Pushes that change only Python or documentation skip both. The hook needs `node_modules`; if it
-is missing, the hook stops and asks you to run `npm ci --ignore-scripts`. CI uses Node.js 24.
+is missing, the hook stops and asks you to run `npm ci --ignore-scripts`. CI uses Node.js 26, as `engines` in package.json says.
 CI still runs the full Vitest suite. Run `npm test` yourself after a large frontend change.
 To run every pre-push check by hand, use
 `uv run pre-commit run --all-files --hook-stage pre-push`.

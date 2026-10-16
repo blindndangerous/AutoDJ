@@ -639,11 +639,11 @@ Pre-commit runs these hooks: `trailing-whitespace`, `end-of-file-fixer`, `mixed-
 `check-added-large-files`, `check-merge-conflict`, `check-yaml`, `check-toml`, `check-json`,
 `detect-private-key`, `check-case-conflict`, `check-symlinks`, `gitleaks`, `actionlint`, `ruff`,
 `ruff-format`, `bandit`, `mypy`, `vulture`, `deptry`, `pip-audit`,
-`pip-licenses`, `osv-scanner`, `trivy-fs`, `pytest`, `eslint`, `vitest`, `knip`, and `commitlint`.
+`pip-licenses`, `osv-scanner`, `trivy-fs`, `pytest`, `eslint`, `vitest` (tests related to the push), `knip`, and `commitlint`.
 Install them with `uv run pre-commit install`. The quick ones run on every commit. The slower
 checks run before a push, and CI runs the full checks on every push.
 
-Gates outside pre-commit include lock checks, the coverage-exclusion policy, npm audit,
+Gates outside pre-commit include the full Vitest suite, lock checks, the coverage-exclusion policy, npm audit,
 Playwright audits, container smoke, and release verification.
 Run their commands directly or through CI as described in [Contributing](CONTRIBUTING.md).
 
