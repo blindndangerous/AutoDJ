@@ -286,8 +286,8 @@ class ContinuousMaster:
         self._ready = False
         self._warmup_started = time.monotonic()
         self._warmup_silent_drops = 0
+        self._warmup_audio_drops = 0
         self._first_input_elapsed: float | None = None
-        self._first_output_logged = False
         self._failed = False
         self._recovering = False
         self._recovery_outputs = 0
@@ -356,20 +356,25 @@ class ContinuousMaster:
             self._fallback_delay.append(audio)
             if self._first_input_elapsed is None and np.any(audio):
                 self._first_input_elapsed = time.monotonic() - self._warmup_started
+                logger.info("First non-silent master input after %.3f s", self._first_input_elapsed)
             if self._failed:
                 return self._delayed_fallback()
             generation = self._generation
             if len(self._input) >= _QUEUE_BLOCKS:
                 dropped = self._input.popleft()[1]
-                if (
+                silent = not np.any(np.frombuffer(dropped, dtype=np.float32))
+                if not self._ready:
+                    if silent:
+                        self._warmup_silent_drops += 1
+                    else:
+                        self._warmup_audio_drops += 1
+                # Silence-only initial warmup is not an audio fault; later overflow still is.
+                if not (
                     not self._ready
                     and not self._recovering
                     and self._first_input_elapsed is None
-                    and not np.any(np.frombuffer(dropped, dtype=np.float32))
+                    and silent
                 ):
-                    # Before program audio, bounded warmup silence is not an audio fault.
-                    self._warmup_silent_drops += 1
-                else:
                     self._set_error("master input queue overflow; dropped oldest block")
             self._input.append((generation, data))
             self._input_cond.notify()
@@ -384,22 +389,14 @@ class ContinuousMaster:
             ):
                 self._ready = True
                 logger.info(
-                    "Master processing ready after %.3f s; trimmed %d silent warmup blocks",
+                    "Master processing ready after %.3f s; discarded %d silent and %d non-silent warmup input blocks",
                     time.monotonic() - self._warmup_started,
                     self._warmup_silent_drops,
+                    self._warmup_audio_drops,
                 )
             if self._ready and self._output and self._output[0][0] == generation:
                 output = self._output.popleft()[1]
                 self._output_cond.notify_all()
-                if not self._first_output_logged and np.any(output):
-                    self._first_output_logged = True
-                    logger.info(
-                        "First non-silent mastered block after %.3f s; first non-silent input at %s s",
-                        time.monotonic() - self._warmup_started,
-                        f"{self._first_input_elapsed:.3f}"
-                        if self._first_input_elapsed is not None
-                        else "unknown",
-                    )
                 if self._recovering:
                     if not np.any(output):
                         fallback = self._delayed_fallback()
@@ -446,8 +443,8 @@ class ContinuousMaster:
         self._ready = False
         self._warmup_started = time.monotonic()
         self._warmup_silent_drops = 0
+        self._warmup_audio_drops = 0
         self._first_input_elapsed = None
-        self._first_output_logged = False
         self._failed = False
         self._recovering = changing_processor
         self._recovery_outputs = 0

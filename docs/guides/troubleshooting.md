@@ -28,7 +28,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **Stereo Tool is unavailable.** Open **Settings**, **Sound** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
 
-**Mastering startup messages.** The log reports when master processing is ready and when its first non-silent block reaches the mix bus output. Both times are measured from processor startup, restart, or a processing-mode change; they exclude encoder and listener buffering. A count of trimmed silent warmup blocks is informational: the bounded queue discarded only silence before any non-silent input arrived. Overflow after audio begins, during recovery, or after readiness remains a warning. These diagnostics add no startup wait. Compare the timings and warnings across restarts before changing buffering.
+**Mastering startup messages.** The log reports the first non-silent input to the master and when processing is ready, measured from processor startup, restart, or a processing-mode change. Readiness includes counts of discarded silent and non-silent input blocks. Silence discarded before any non-silent input arrives is informational; overflow after audio begins, during recovery, or after readiness remains a warning even when the discarded block is silent. Non-silent discarded blocks may contain program audio. Processor output can be nonzero on silent input, so it is not used to identify the song opening. These diagnostics add no startup wait and exclude encoder and listener buffering. Compare the timings and counts across restarts before changing buffering.
 
 ## Streaming
 
