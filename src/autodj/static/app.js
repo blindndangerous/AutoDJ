@@ -3071,6 +3071,8 @@ initViewRouter();
 
 libraryFoldersControls = installLibraryFolders({
   landmarks: landmarkControls,
+  getStation: currentStation,
+  onBackgroundError: reportBackgroundRequestError,
   getCurrentTrack: () => _lastState?.current_track || null,
   getCurrentPosition: () => _lastElapsed,
   onFolders(folders) {
