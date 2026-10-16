@@ -325,7 +325,11 @@ def _archive(path: Path, files: dict[str, bytes], stations: list[str] | None = N
             with LibraryCatalog(catalog):
                 pass
             files["index/library.db"] = catalog.read_bytes()
-    manifest: dict[str, object] = {"autodj_version": current_version(), "files": list(files)}
+    manifest: dict[str, object] = {
+        "backup_format": 2,
+        "autodj_version": current_version(),
+        "files": list(files),
+    }
     if stations is not None:
         manifest["stations"] = stations
     with zipfile.ZipFile(path, "w") as archive:
@@ -870,7 +874,13 @@ def test_restore_refuses_a_link_stored_in_the_archive(tmp_path: Path) -> None:
         archive.writestr(info, "/etc/passwd")
         archive.writestr(
             "manifest.json",
-            json.dumps({"autodj_version": current_version(), "files": ["liners/link.wav"]}),
+            json.dumps(
+                {
+                    "backup_format": 2,
+                    "autodj_version": current_version(),
+                    "files": ["liners/link.wav"],
+                }
+            ),
         )
 
     with pytest.raises(BackupError, match="linked file in archive"):

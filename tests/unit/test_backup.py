@@ -179,7 +179,11 @@ def _catalog(cfg: AutoDJConfig) -> sqlite3.Connection:
 
 
 def _archive(path: Path, files: dict[str, bytes], version: str | None = None) -> Path:
-    manifest = {"autodj_version": version or current_version(), "files": list(files)}
+    manifest = {
+        "backup_format": 2,
+        "autodj_version": version or current_version(),
+        "files": list(files),
+    }
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in files.items():
             archive.writestr(name, data)

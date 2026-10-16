@@ -23,6 +23,7 @@ from autodj.config import (
 from autodj.server import create_app
 from autodj.station_ledger import StationLedger
 from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
+from autodj.station_store import StationStore, migrate_legacy
 from tests._layout import layout_index
 
 PAL = """Queue.Clear;
@@ -43,6 +44,8 @@ def app_for(catalog, root):
         index=layout_index(root),
         presets={},
     )
+    store = StationStore(layout_index(root).stations_dir / "default" / "station.db", "default")
+    migrate_legacy(catalog, store)
     player = SimpleNamespace(_cfg=cfg, _clock_status="Idle", _clock=None)
     player.configure_clock = Mock()
     player.configure_clock_after_selection = Mock()
@@ -51,7 +54,7 @@ def app_for(catalog, root):
         catalog=catalog,
         entry_for_path=lambda _path: None,
         entries_snapshot=lambda _kind="music": (),
-        ledger=StationLedger(catalog),
+        ledger=StationLedger(store),
     )
     bridge = SimpleNamespace(player=player, library=library, _ledger=lambda: library.ledger)
     app = create_app(bridge)
@@ -158,12 +161,14 @@ def test_select_keeps_the_place_of_the_active_clockwheel(tmp_path):
         assert call(routes, "GET", "/api/library/clock")["active"] is None
         active = call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
         assert active["active"] == "Morning"
-        catalog.set_setting("clock", {"name": "Morning", "cursor": 3, "resync_minutes": [0]})
+        bridge.library.ledger.store.set_setting(
+            "clock", {"name": "Morning", "cursor": 3, "resync_minutes": [0]}
+        )
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
-        assert catalog.get_setting("clock") == {"name": "Morning", "cursor": 3}
+        assert bridge.library.ledger.get_setting("clock") == {"name": "Morning", "cursor": 3}
         cleared = call(routes, "POST", "/api/library/clock/active", ClockNameBody(name=None))
         assert cleared["active"] is None
-        assert catalog.get_setting("clock") == {"name": None, "cursor": 0}
+        assert bridge.library.ledger.get_setting("clock") == {"name": None, "cursor": 0}
         assert bridge.player.configure_clock_after_selection.call_count == 3
         with pytest.raises(HTTPException, match="no clockwheel named 'Night'"):
             call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
@@ -222,12 +227,12 @@ def test_select_is_not_undone_by_a_buffered_cursor_update(tmp_path):
         ledger.remember_setting("clock", {"name": "Morning", "cursor": 2, "resync_minutes": [0]})
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
         ledger.flush()
-        assert catalog.get_setting("clock") == {"name": "Night", "cursor": 0}
+        assert bridge.library.ledger.get_setting("clock") == {"name": "Night", "cursor": 0}
         # Reselecting keeps a place the player has not written yet.
         ledger.remember_setting("clock", {"name": "Night", "cursor": 4, "resync_minutes": [0]})
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
         ledger.flush()
-        assert catalog.get_setting("clock") == {"name": "Night", "cursor": 4}
+        assert bridge.library.ledger.get_setting("clock") == {"name": "Night", "cursor": 4}
 
 
 def test_select_is_not_undone_by_the_player_saving_before_it_reloads(tmp_path):
@@ -247,7 +252,7 @@ def test_select_is_not_undone_by_the_player_saving_before_it_reloads(tmp_path):
         )
         call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Night"))
         ledger.flush()
-        assert catalog.get_setting("clock") == {"name": "Night", "cursor": 0}
+        assert bridge.library.ledger.get_setting("clock") == {"name": "Night", "cursor": 0}
 
 
 def test_renaming_the_active_clockwheel_keeps_a_place_not_yet_written(tmp_path):
@@ -267,7 +272,7 @@ def test_renaming_the_active_clockwheel_keeps_a_place_not_yet_written(tmp_path):
             NewClockNameBody(name="Day"),
         )
         ledger.flush()
-        assert catalog.get_setting("clock") == {"name": "Day", "cursor": 4}
+        assert bridge.library.ledger.get_setting("clock") == {"name": "Day", "cursor": 4}
 
 
 def test_create_edit_duplicate_rename_delete(tmp_path):
@@ -299,7 +304,7 @@ def test_create_edit_duplicate_rename_delete(tmp_path):
             NewClockNameBody(name="Day"),
         )
         assert renamed["name"] == "Day"
-        assert catalog.get_setting("clock")["name"] == "Day"
+        assert bridge.library.ledger.get_setting("clock")["name"] == "Day"
         call(
             routes, "POST", "/api/library/clock/{name}/rename", "Day", NewClockNameBody(name="DAY")
         )

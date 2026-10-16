@@ -290,7 +290,7 @@ def test_create_rolls_back_after_registration_fails(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
 
     def fail(_extra: Any) -> None:
         raise RuntimeError("injected failure")
@@ -308,7 +308,7 @@ def test_create_rolls_back_after_registration_fails(
     )
     assert response.status_code == 409
     assert not (cfg.index.stations_dir / "new").exists()
-    assert library.catalog.get_setting("clock:new") is None
+    assert library.station_ledger("new").get_setting("clock") is None
     assert "new" not in client.app.state.stations.slugs()
 
 
@@ -329,7 +329,7 @@ def test_create_checks_recording_conflict_and_station_limit(rig: Any) -> None:
 
 def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
     response = client.post(
         "/api/stations",
         json={
@@ -341,7 +341,7 @@ def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
         headers={"Origin": "http://testserver"},
     )
     assert response.status_code == 201, response.text
-    assert library.catalog.get_setting("clock:new") == "Evening"
+    assert library.station_ledger("new").get_setting("clock") == "Evening"
     assert load_config(cfg.config_path, environ={}).stations[-1].defined_in == "web"
 
 
