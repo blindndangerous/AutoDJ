@@ -10,6 +10,7 @@ import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
+import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
@@ -64,6 +65,15 @@ export function installLibraryFolders({ document: doc = document, request = requ
     progress = doc.createElement("p");
     progress.id = "source-folders-progress";
     status.insertAdjacentElement("afterend", progress);
+  }
+  // Whether beets' songs match the library's: static text, not a live region,
+  // so the 3-second poll never repeats a problem that lasts.
+  let beetsPaths = doc.getElementById("source-folders-beets");
+  if (!beetsPaths) {
+    beetsPaths = doc.createElement("p");
+    beetsPaths.id = "source-folders-beets";
+    beetsPaths.hidden = true;
+    progress.insertAdjacentElement("afterend", beetsPaths);
   }
   const pathInput = doc.getElementById("source-folder-path");
   const kindInput = doc.getElementById("source-folder-kind");
@@ -249,6 +259,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     } else {
       progress.textContent = `${data.tracks_ready ?? 0} tracks ready; ${data.tracks_indexed ?? 0} indexed.`;
     }
+    showBeetsPaths(beetsPaths, data.beets_paths, { full: true });
   }
   async function refresh() {
     if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;

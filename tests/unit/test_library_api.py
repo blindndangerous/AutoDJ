@@ -89,6 +89,35 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
     ]
 
 
+def test_folder_routes_check_beets_paths_off_event_loop(library_api, tmp_path, monkeypatch):
+    import autodj.beets_paths as beets_paths
+
+    _manager, call, _app = library_api
+    checked = []
+
+    def check_library(_cfg, _entries):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        checked.append(True)
+        return None
+
+    monkeypatch.setattr(beets_paths, "check_library", check_library)
+    folder = tmp_path / "off-loop"
+    folder.mkdir()
+    call("GET", "/api/library/folders")
+    created = call("POST", "/api/library/folders", LibraryFolderBody(path=str(folder)))
+    source = next(
+        item for item in created["folders"] if item["path"] == os.path.normcase(str(folder))
+    )
+    call(
+        "PATCH",
+        "/api/library/folders/{source_id}",
+        source["id"],
+        LibraryFolderUpdateBody(recursive=False),
+    )
+    assert len(checked) == 3
+
+
 def test_rescan_passes_explicit_tag_override_option(library_api):
     manager, call, _app = library_api
 

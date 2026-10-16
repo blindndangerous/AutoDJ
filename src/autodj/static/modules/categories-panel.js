@@ -13,6 +13,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { showBeetsPaths } from "./beets-paths.js";
 import { createConditionRow, readConditionRows } from "./condition-editor.js";
 import { describeConditions } from "./clockwheel-step.js";
 import { parsePointTime } from "./library-folders.js";
@@ -476,6 +477,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     data = { ...empty(), ...result };
     renderList();
     renderPlaylists();
+    // Beets' paths matching no library song empty every beets query: said
+    // in static text above the list, never announced by the 15-second poll.
+    // A match or a found folder is said in Library tools only.
+    showBeetsPaths(el("categories-beets-paths"), data.beets_paths?.problem ? data.beets_paths : null);
   }
 
   async function remove(id) {

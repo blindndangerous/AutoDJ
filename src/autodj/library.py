@@ -176,7 +176,7 @@ class LibraryManager:
         # Each station's rotation categories, by its folder (see categories_for).
         self._category_indexes: dict[Path, CategoryIndex] = {}
         self._category_lock = threading.Lock()
-        self.clock_beets = BeetsConditions(cfg)
+        self.clock_beets = BeetsConditions(cfg, self.entries_snapshot)
         catalog_path = cfg.index.library_dir / "library.db"
         require_current_library(
             cfg.index.library_dir,
@@ -571,11 +571,15 @@ class LibraryManager:
             errors = list(self._import_errors)
             ready, indexed = self._tracks_ready, self._tracks_indexed
         state["errors"] = [f"{item['path']}: {item['error']}" for item in errors]
+        from autodj.beets_paths import check_library, page_view
+
         return {
             "folders": self.catalog.sources(),
             "import": state,
             "tracks_ready": ready,
             "tracks_indexed": indexed,
+            # Whether beets' songs are the library's (None without beets).
+            "beets_paths": page_view(check_library(self.cfg, self.entries_snapshot())),
         }
 
     def missing_removal_preview(
