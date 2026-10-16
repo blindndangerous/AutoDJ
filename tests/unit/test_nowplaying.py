@@ -98,8 +98,7 @@ def test_webhook_urls_are_local_only_and_redacted(tmp_path) -> None:
     shared = tmp_path / "config.toml"
     index_dir = (tmp_path / "index").as_posix()
     shared.write_text(
-        f'[index]\nindex_dir = "{index_dir}"\n'
-        '[[webhooks]]\nurl = "https://example.com/token"\n',
+        f'[index]\nindex_dir = "{index_dir}"\n[[webhooks]]\nurl = "https://example.com/token"\n',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match=r"config\.local\.toml"):

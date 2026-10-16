@@ -115,7 +115,7 @@ def test_each_station_has_its_own_request_settings(tmp_path: Path) -> None:
     path.write_text(
         f"""
 [index]
-index_dir = "{(tmp_path / 'index').as_posix()}"
+index_dir = "{(tmp_path / "index").as_posix()}"
 
 [library]
 music_dir = "music"
@@ -139,7 +139,10 @@ blocked_artists = ["Loud Band"]
     legacy = load_config(path, environ={})
     assert move_station_tables(legacy)
     cfg = load_config(path, environ={})
-    assert (cfg.default_station.cfg.requests.enabled, cfg.default_station.cfg.requests.approval) == (
+    assert (
+        cfg.default_station.cfg.requests.enabled,
+        cfg.default_station.cfg.requests.approval,
+    ) == (
         True,
         "auto",
     )
