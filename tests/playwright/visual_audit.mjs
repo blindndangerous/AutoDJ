@@ -1160,8 +1160,9 @@ async function adsProblems(page) {
   await page.locator("#ads-spot-cancel").focus();
   await page.keyboard.press("Enter");
   if (await focusId() !== "ads-spot-add") problems.push(`Cancel moved focus to ${await focusId()}`);
-  // The Ad report card is closed until opened: Enter on its summary opens
-  // it, keeps focus there and says nothing (the browser says expanded).
+  // Earlier layout checks persist open cards; start this keyboard check closed.
+  await page.locator("#ad-report-card").evaluate((card) => { card.open = false; });
+  // Enter opens it, keeps focus there and says nothing (the browser says expanded).
   await page.evaluate(() => { window.__adsSaid = []; });
   await page.locator("summary:has(> #ads-report-heading)").focus();
   await page.keyboard.press("Enter");
