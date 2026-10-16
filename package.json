@@ -32,5 +32,8 @@
       "tests/jsmodules/**/*.test.js",
       "tests/playwright/*.mjs"
     ]
+  },
+  "engines": {
+    "node": ">=26"
   }
 }
