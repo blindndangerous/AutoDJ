@@ -676,6 +676,7 @@ class SongPointsBody(BaseModel):
     path: str
     points: dict[str, Any]
     allow_outro: StrictBool | None = None
+    station: str = DEFAULT_SLUG
 
 
 class PairBody(BaseModel):
@@ -2205,19 +2206,26 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"removed": removed, "remaining": library.snapshot()["tracks_ready"]}
 
+    def library_station(slug: str) -> str:
+        if slug not in app.state.stations.slugs():
+            raise HTTPException(status_code=404, detail="Station not found")
+        return slug
+
     @app.get("/api/library/points")
-    async def api_library_points(path: str) -> dict:
+    async def api_library_points(path: str, station: str = DEFAULT_SLUG) -> dict:
+        station = library_station(station)
         library = _catalog_library()
         entry = library.entry_for_path(path)
         if entry is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
-        return await _track_info(library, path)
+        return await _track_info(library, path, station)
 
-    async def _track_info(library: Any, path: str) -> dict:
+    async def _track_info(library: Any, path: str, station: str = DEFAULT_SLUG) -> dict:
         """The Track info record of *path*: details, cue points and tag form."""
         record = await asyncio.to_thread(library.catalog.record_for_path, path)
         if record is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
+        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
         record["playable"] = True
         from autodj.processing import loudness_matches
 
@@ -2245,6 +2253,7 @@ def create_app(
 
     @app.post("/api/library/points")
     async def api_library_save_points(body: SongPointsBody) -> dict:
+        station = library_station(body.station)
         library = _catalog_library()
         entry = library.entry_for_path(body.path)
         if entry is None:
@@ -2267,7 +2276,9 @@ def create_app(
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return await asyncio.to_thread(library.catalog.record_for_path, body.path)
+        record = await asyncio.to_thread(library.catalog.record_for_path, body.path)
+        record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
+        return record
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:

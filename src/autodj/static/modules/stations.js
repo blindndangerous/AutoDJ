@@ -5,8 +5,9 @@
 // default station and at /api/stations/<slug>/<route> for any station.
 // The page keeps writing /api/<route>; api-client.js sends each request
 // through stationApi(), which puts a station route under the station
-// this page controls.  Shared routes (the library, search, pairing,
-// presets...) are left as they are.  STATION_ROUTES must list exactly
+// this page controls.  Shared routes stay shared; Track info adds the
+// selected station as query context for its station-specific play time.
+// STATION_ROUTES must list exactly
 // the station router's routes: tests/integration/test_station_routes.py
 // compares the two, so a new station route cannot be forgotten here.
 //
