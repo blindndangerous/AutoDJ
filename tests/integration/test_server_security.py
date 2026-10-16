@@ -991,7 +991,10 @@ class TestArt:
             resp = tc.get("/api/art", params={"path": "Z:/Music/song_0.flac"})
 
         assert resp.status_code == 200
-        assert called[-2:] == ["to_thread", "Z:/Music/song_0.flac"]
+        # The lookup itself went through to_thread; shutting the app down may
+        # use to_thread again afterwards.
+        lookup = called.index("Z:/Music/song_0.flac")
+        assert called[lookup - 1] == "to_thread"
 
 
 # ---------------------------------------------------------------------------
