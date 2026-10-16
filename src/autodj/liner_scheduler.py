@@ -24,6 +24,7 @@ next track; otherwise it plays as the track starts, as without talk-up.
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import logging
 import random
@@ -270,6 +271,7 @@ class LinerScheduler:
         self._folder = folder
         self._bus = bus
         self._clock = clock
+        self._wall_clock = time.time
         self._rng = rng or random.Random()
         self._decoder = decoder
         self._can_fire = can_fire
@@ -305,6 +307,8 @@ class LinerScheduler:
         self._planned_name: str | None = None
         # How far the sequential cursor moves when the planned liner airs.
         self._planned_moves = 1
+        self._forecast_only = False
+        self._forecast_clock_aligned = False
 
     def _trigger(self) -> LinerTrigger:
         """Build a :class:`LinerTrigger` from the current config values."""
@@ -315,6 +319,136 @@ class LinerScheduler:
             random_max_minutes=self._cfg.liners_random_max_minutes,
             enabled=bool(self._cfg.liners_enabled),
         )
+
+    def snapshot(
+        self,
+        *,
+        clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
+        cfg: Any | None = None,
+    ) -> LinerScheduler:
+        """Return an isolated scheduler copy for read-only planning simulations.
+
+        ``cfg`` may be the playback config or a full config exposing
+        ``playback``. ``wall_clock`` supplies forecast Unix time for play-date
+        checks. Provider callbacks remain shared and must be read-only.
+        The clone has no bus or announcement, and its RNG, config and state
+        are independent of the live scheduler.
+        """
+        with self._work_lock, self._lock:
+            snapshot = copy.copy(self)
+            settings = self._cfg if cfg is None else getattr(cfg, "playback", cfg)
+            snapshot._cfg = copy.deepcopy(settings)
+            snapshot._clock = self._clock if clock is None else clock
+            snapshot._forecast_clock_aligned = clock is not None
+            offset = 0.0
+            if clock is not None:
+                offset = clock() - self._clock()
+                snapshot._last_fire += offset
+            snapshot._wall_clock = self._wall_clock if wall_clock is None else wall_clock
+            snapshot._rng = random.Random()
+            snapshot._rng.setstate(self._rng.getstate())
+            snapshot._library = copy.copy(self._library)
+            snapshot._library.files = list(self._library.files)
+            snapshot._prepared = copy.copy(self._prepared)
+            if snapshot._prepared is not None and snapshot._prepared.cue is not None:
+                snapshot._prepared.cue = copy.copy(snapshot._prepared.cue)
+            snapshot._heard = deque((key, at + offset) for key, at in self._heard)
+            snapshot._lock = threading.Lock()
+            snapshot._work_lock = threading.Lock()
+            snapshot._bus = None
+            snapshot._can_fire = lambda: False
+            snapshot.announcement = None
+            snapshot._forecast_only = True
+            return snapshot
+
+    def forecast(
+        self,
+        start: float,
+        end: float,
+        *,
+        track: RenderedTrack | None = None,
+        track_start: bool = True,
+    ) -> list[tuple[float, str, float]]:
+        """Forecast automatic liners from one track start through *end*.
+
+        A snapshot runs the normal trigger and decode paths, with a captured
+        bus and simulated clock. Forecast state accumulates on that snapshot;
+        calling this on a live scheduler makes a temporary snapshot. Planner-
+        mode talk-ups are forecast by the handoff planner instead.
+        """
+        try:
+            start, end = float(start), float(end)
+        except (TypeError, ValueError):
+            return []
+        if not np.isfinite(start) or not np.isfinite(end) or end < start or self._planner_mode():
+            return []
+
+        simulation = self
+        if not getattr(self, "_forecast_only", False):
+            simulation = self.snapshot(clock=lambda: start, wall_clock=lambda: start)
+        if not getattr(simulation, "_forecast_clock_aligned", False):
+            offset = start - simulation._clock()
+            simulation._last_fire += offset
+            simulation._heard = deque((key, at + offset) for key, at in simulation._heard)
+            simulation._forecast_clock_aligned = True
+        now = [start]
+        simulation._clock = lambda: now[0]
+        simulation._wall_clock = lambda: now[0]
+        original_bus = simulation._bus
+        original_can_fire = simulation._can_fire
+        original_play_dates = simulation.play_dates
+        original_decode = simulation._decode
+        had_decode_override = "_decode" in simulation.__dict__
+        decode_override = simulation.__dict__.get("_decode")
+        simulation._can_fire = lambda: True
+        events: list[tuple[float, str, float]] = []
+        names: dict[int, str] = {}
+
+        class ForecastBus:
+            def play_liner(
+                _self, audio: np.ndarray, *, at: LinerCue | None = None, **_kwargs: Any
+            ) -> None:
+                name = names.get(id(audio))
+                if name is None:
+                    return
+                at_time = now[0] + (at.frame / SAMPLE_RATE if at is not None else 0.0)
+                if at_time < end:
+                    events.append((at_time, name, len(audio) / SAMPLE_RATE))
+                    if at is not None:
+                        at.started = True
+
+            def stop_liner(_self) -> None:
+                return None
+
+        simulation._bus = ForecastBus()
+        if simulation.play_dates_at is not None:
+            simulation.play_dates = lambda name: simulation.refusal(name, now[0])
+
+        def decode_named(name: str | None) -> _Prepared | None:
+            prepared = original_decode(name)
+            if prepared is not None:
+                names[id(prepared.audio)] = prepared.name
+            return prepared
+
+        simulation.__dict__["_decode"] = decode_named
+        try:
+            if track_start:
+                simulation.on_track_start(track)
+            tick_at = start + 1.0
+            while tick_at < end:
+                now[0] = tick_at
+                simulation.tick()
+                tick_at += 1.0
+        finally:
+            if had_decode_override:
+                simulation.__dict__["_decode"] = decode_override
+            else:
+                simulation.__dict__.pop("_decode", None)
+            simulation.play_dates = original_play_dates
+            simulation._can_fire = original_can_fire
+            simulation._bus = original_bus
+        return sorted(events)
 
     def _refresh_library(self) -> None:
         """Rescan the liner folder in place, keeping the rotation cursor.
@@ -770,7 +904,7 @@ class LinerScheduler:
         # picks pass over them; the dates are read before the state lock.
         names = [key for key, _path in registered] or [path.name for path in self._library.files]
         # Judged by the day the liner airs, at the handoff *seconds* from now.
-        airs = time.time() + seconds
+        airs = self._wall_clock() + seconds
         playable = [self.refusal(name, airs) is None for name in names]
         with self._state():
             answer = check_locked()

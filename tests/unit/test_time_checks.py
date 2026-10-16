@@ -72,6 +72,70 @@ def test_recording_wraps_intro_and_outro_as_one_clip(tmp_path: Path) -> None:
     assert rendered.source == "recorded clip"
 
 
+def test_forecast_seconds_is_read_only_and_keeps_hour_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    checks._pending = True
+    checks._aired_hour = (2026, 10, 11, 2, 0)
+    before = (checks._pending, checks._aired_hour, checks._rotation)
+    file_before = (checks.folder / "03_05.wav").read_bytes()
+
+    assert checks.forecast_seconds(local) == pytest.approx(0.01)
+    assert (checks._pending, checks._aired_hour, checks._rotation) == before
+    assert (checks.folder / "03_05.wav").read_bytes() == file_before
+
+
+def test_hour_forecast_fires_once_from_pending_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local) == pytest.approx(0.01)
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_scheduled_forecast_marks_hour_and_suppresses_hour_rule(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local, scheduled=True) == pytest.approx(0.01)
+    assert forecast._aired_hour == (2026, 10, 11, 3, int(local.utcoffset().total_seconds()))
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_forecast_seconds_does_not_run_or_cache_tts(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    marker = tmp_path / "tts-ran.txt"
+    checks.config.tts_command = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+        "{out}",
+    ]
+    when = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+
+    assert checks.forecast_seconds(when) is None
+    assert not marker.exists()
+    assert not checks.cache.exists()
+
+
 _TTS_SCRIPT = (
     "import sys,wave; text=sys.stdin.read(); "
     "open(sys.argv[2],'a').write(text+'\\n'); "
