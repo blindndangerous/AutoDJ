@@ -29,6 +29,12 @@ export function parsePointTime(value) {
     const seconds = Number(match[2]) * 60 + Number(match[3]);
     if (Number.isFinite(seconds)) return match[1] ? -seconds : seconds;
   }
+  // A point in an hour-long mix may be typed as hours:minutes:seconds.
+  const long = /^(-?)(\d+):([0-5]?\d):([0-5]?\d(?:\.\d+)?)$/.exec(text);
+  if (long) {
+    const seconds = Number(long[2]) * 3600 + Number(long[3]) * 60 + Number(long[4]);
+    if (Number.isFinite(seconds)) return long[1] ? -seconds : seconds;
+  }
   throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
 }
 

@@ -85,15 +85,17 @@ def detect_intro_start(audio: np.ndarray, sr: int) -> float:
         The first-sound time in seconds, ``0.0`` for an empty or silent
         track.
     """
-    if len(audio) == 0:
-        return 0.0
-    loud = np.abs(audio) >= _SILENCE_AMPLITUDE
-    if loud.ndim > 1:
-        loud = loud.any(axis=1)
-    first = int(np.argmax(loud))
-    if not loud[first]:
-        return 0.0
-    return first / max(1, sr)
+    # Ten seconds at a time: the first sound is near the start, and a whole
+    # hour-long track's comparison array would be hundreds of megabytes.
+    block = max(1, sr) * 10
+    for start in range(0, len(audio), block):
+        loud = np.abs(audio[start : start + block]) >= _SILENCE_AMPLITUDE
+        if loud.ndim > 1:
+            loud = loud.any(axis=1)
+        first = int(np.argmax(loud))
+        if loud[first]:
+            return (start + first) / max(1, sr)
+    return 0.0
 
 
 def detect_intro_outro(

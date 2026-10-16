@@ -48,7 +48,12 @@ def _mapped(nbytes: int) -> mmap.mmap:
     mapping closes (Windows), so nothing is left behind.
     """
     with tempfile.TemporaryFile(prefix="autodj-audio-") as handle:
-        handle.truncate(nbytes)
+        if hasattr(os, "posix_fallocate"):
+            # Reserve the space now: a full disk is an OSError here, not a
+            # crash (SIGBUS) when a sparse page is first written.
+            os.posix_fallocate(handle.fileno(), 0, nbytes)
+        else:
+            handle.truncate(nbytes)
         return mmap.mmap(handle.fileno(), nbytes)
 
 

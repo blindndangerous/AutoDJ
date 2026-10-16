@@ -140,6 +140,13 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("reads a point in an hour-long mix typed as hours:minutes:seconds (#391)", () => {
+    expect(parsePointTime("1:02:05.5")).toBe(3725.5);
+    expect(parsePointTime("75:30")).toBe(4530);
+    expect(parsePointTime(formatPointTime(4530))).toBe(4530);
+    expect(() => parsePointTime("1:60:00")).toThrow("Enter seconds or minutes:seconds");
+  });
+
   it("counts import errors in the summary and lists them in a details list that stays open (#391)", async () => {
     document.getElementById("panel-library").hidden = false;
     let errors = ["C:/music/a.flac: could not decode", "C:/music/b.mp3: could not decode"];
