@@ -974,7 +974,6 @@ class _Resolved:
     entries: Sequence[Any]
     categories: tuple[Category, ...]
     results: dict[str, Resolution]
-    beets_check: PathCheck | None = None
 
 
 #: What :meth:`CategoryIndex.closed_now` last worked out: the results it read,
@@ -1113,17 +1112,8 @@ class CategoryIndex:
                     )
                 elif not result.paths:
                     logger.warning("Category %s has no songs in the library", category.name)
-            self._resolved = _Resolved(signature, entries, categories, by_id, check)
+            self._resolved = _Resolved(signature, entries, categories, by_id)
             return categories, by_id
-
-    def beets_check(self) -> PathCheck | None:
-        """How beets' paths matched the library when the categories were last worked out.
-
-        ``None`` when no category reads beets.
-        """
-        self.resolutions()
-        resolved = self._resolved
-        return resolved.beets_check if resolved is not None else None
 
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each category's ID mapped to its name and the paths of its songs."""

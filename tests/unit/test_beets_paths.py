@@ -238,7 +238,8 @@ def test_an_empty_beets_category_logs_the_likely_cause(tmp_path, caplog):
     wrong.mkdir()
     db = make_beets(tmp_path / "library.db", RELATIVE)
     songs = tuple(song(Path(path)) for path in library_under(music))
-    index = CategoryIndex(category_config(tmp_path, db, wrong), lambda: songs)
+    cfg = category_config(tmp_path, db, wrong)
+    index = CategoryIndex(cfg, lambda: songs)
     index.save([Category(id="c1", name="Gold", source="query", query="original_year:2001")])
 
     with caplog.at_level(logging.WARNING):
@@ -250,7 +251,7 @@ def test_an_empty_beets_category_logs_the_likely_cause(tmp_path, caplog):
         "check [library] music_dir" in messages
     )
     assert sum("Beets paths: No song in the beets database" in m for m in messages) == 1
-    check = index.beets_check()
+    check = latest(cfg)
     assert check is not None and check.mismatch and check.found == music
 
 
@@ -258,11 +259,12 @@ def test_categories_use_the_found_folder_when_music_dir_is_missing(tmp_path):
     music = tmp_path / "music"
     db = make_beets(tmp_path / "library.db", RELATIVE)
     songs = tuple(song(Path(path)) for path in library_under(music))
-    index = CategoryIndex(category_config(tmp_path, db, tmp_path / "Z" / "Music"), lambda: songs)
+    cfg = category_config(tmp_path, db, tmp_path / "Z" / "Music")
+    index = CategoryIndex(cfg, lambda: songs)
     index.save([Category(id="c1", name="Gold", source="query", query="original_year:2001")])
 
     assert index.members()["c1"][1] == frozenset(s.path for s in songs)
-    check = index.beets_check()
+    check = latest(cfg)
     assert check is not None and check.detected
 
 
