@@ -577,17 +577,23 @@ async function standInForSchedule(page) {
     : route.continue()));
 }
 
-// Song picking: Fit songs to the hour ticked in the page only, without the
-// change event, so nothing is saved; its window field and help show (#126).
+const hourFitPages = new WeakSet();
+
+// Keep the unsaved checkbox enabled in status pushes while measuring its fields.
 async function openHourFit(page, visit) {
   const toggle = page.locator("#pb-hour-fit");
   await toggle.waitFor({ state: "visible" });
   const was = await toggle.isChecked();
-  await toggle.evaluate((box) => { box.checked = true; });
-  await page.locator("#pb-hour-fit-window").waitFor({ state: "visible" });
-  await settle(page);
-  await visit("settings/picking/hour-fit");
-  await toggle.evaluate((box, checked) => { box.checked = checked; }, was);
+  hourFitPages.add(page);
+  try {
+    await toggle.evaluate((box) => { box.checked = true; });
+    await page.locator("#pb-hour-fit-window").waitFor({ state: "visible" });
+    await settle(page);
+    await visit("settings/picking/hour-fit");
+  } finally {
+    hourFitPages.delete(page);
+    await toggle.evaluate((box, checked) => { box.checked = checked; }, was);
+  }
 }
 
 // Schedule: a hard event's Wait up to seconds refused in the browser, the
@@ -965,6 +971,9 @@ async function standInForLiveDj(page) {
       try {
         const parsed = JSON.parse(message);
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !parsed.type) {
+          if (hourFitPages.has(page) && parsed.settings?.playback) {
+            parsed.settings.playback.hour_fit = true;
+          }
           data = JSON.stringify({ ...parsed, live: state.live, talkover: false });
         }
       } catch { /* not JSON: passed on as it is */ }
