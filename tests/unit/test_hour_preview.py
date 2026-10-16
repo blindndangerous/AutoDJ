@@ -1645,9 +1645,10 @@ def test_browser_forecast_uses_live_position_after_seek(tmp_path: Path, percent:
     assert found[4] == pytest.approx(NOW + remaining)
 
 
+@pytest.mark.parametrize("filename_pattern", [None, "year-{year}.wav"])
 @pytest.mark.parametrize("talk_up", [False, True])
 def test_year_intro_rules_are_predicted_without_consuming_live_state(
-    tmp_path, monkeypatch, talk_up
+    tmp_path, monkeypatch, talk_up, filename_pattern
 ):
     from autodj.intro_rules import IntroRule, IntroRules
     from autodj.matched_intros import MatchedIntros
@@ -1662,7 +1663,7 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     _playing(source, gold[0], NOW - 50)
     decided = read_station(player, now=NOW)
     player.bus = SimpleNamespace()
-    clip_path = write_voice(tmp_path / "year.wav", 2)
+    clip_path = write_voice(tmp_path / "year-2000.wav", 2)
     clip = SimpleNamespace(path=str(clip_path), length=2)
     catalog = source.library.catalog
     catalog.record_for_path = lambda path: (
@@ -1673,13 +1674,19 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     )
     lookup = source.library.entry_for_path
     source.library.entry_for_path = lambda path: clip if path == clip.path else lookup(path)
+    entries_snapshot = source.library.entries_snapshot
+    source.library.entries_snapshot = lambda kind="music": (
+        (clip,) if kind == "liner" else entries_snapshot(kind)
+    )
     player.matched_intros = store = MatchedIntros(tmp_path / "matched_intros.json", tmp_path)
     store.rules = IntroRules(tmp_path / "intro_rules.json", date.fromtimestamp, store._rng)
     store.rules.save(
         "a" * 32,
         IntroRule(
             conditions=[{"field": "year", "operator": "eq", "value": 2000}],
-            clip_ids=["year"],
+            clip_ids=[] if filename_pattern else ["year"],
+            liner_folder=str(tmp_path) if filename_pattern else None,
+            filename_pattern=filename_pattern,
             label="Year 2000",
             cooldown_minutes=60,
         ),
