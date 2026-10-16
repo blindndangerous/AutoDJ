@@ -679,7 +679,7 @@ def test_the_cpu_job_skips_songs_a_worker_holds_and_leases_its_own(tmp_path):
 
     def embed(tracks, wrapper, workers, checkpoint, throttle_ms, report, gate=None):
         result = _gated_embed(decisions)
-        queue = AnalysisQueue(cfg.index.active_dir / "library.db")
+        queue = AnalysisQueue(cfg.index.library_dir / "library.db")
         try:
             out = result(tracks, wrapper, workers, lambda e, v: None, throttle_ms, report, gate)
             seen_leases.append(queue.held_paths())
@@ -694,7 +694,7 @@ def test_the_cpu_job_skips_songs_a_worker_holds_and_leases_its_own(tmp_path):
     assert decisions == [False, True]
     # While analysing, the CPU job held the song it took.
     assert seen_leases[0] == {record["path"], _norm(songs[1])}
-    check = AnalysisQueue(cfg.index.active_dir / "library.db")
+    check = AnalysisQueue(cfg.index.library_dir / "library.db")
     try:
         # Done: its own lease is gone, the worker's remains.
         assert check.held_paths() == {record["path"]}

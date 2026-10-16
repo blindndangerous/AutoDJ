@@ -33,7 +33,7 @@ def test_examples_describe_current_catalog() -> None:
         assert "dj_meta.db" in text
         assert "separate catalog per machine" in text
         assert "index-manifest.json" not in text
-        assert "<index_dir>/<name>/liners/" in text
+        assert "stations/<slug>/" in text
         assert "metadata.json" not in text
 
 

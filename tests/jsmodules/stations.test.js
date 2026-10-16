@@ -77,7 +77,7 @@ describe("where a request goes", () => {
     selectStation("nightowl");
     for (const url of [
       "/api/search?q=x", "/api/audio?path=a.mp3", "/api/art?path=a", "/api/library/tracks",
-      "/api/library/folders", "/api/library/points", "/api/categories", "/api/stations",
+      "/api/library/folders", "/api/library/points", "/api/stations",
       "/api/stations/oldies/start", "/api/stereo-tool-presets", "/api/devices", "/api/version",
       "/stream.mp3", "/api/library/clockwork",
     ]) {

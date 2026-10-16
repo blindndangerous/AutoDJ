@@ -21,6 +21,7 @@ from autodj.player import Player, PlayerState, _join_recent, apply_repeat_window
 from autodj.repeat_rules import RepeatRules
 from autodj.repeat_settings import RepeatSettings
 from autodj.similarity import SimilarityIndex
+from tests._layout import point_index
 from tests.unit._fakes import make_cfg_mock, make_entry
 
 # (artist, title).  Track 0 has just played; only track 4 is allowed after it.
@@ -56,7 +57,7 @@ def _player(
     active_dir: Path | None = None,
 ) -> Player:
     cfg = make_cfg_mock()
-    cfg.index.active_dir = active_dir or Path(__file__).parents[2] / "src" / "autodj" / "data"
+    point_index(cfg.index, active_dir or Path(__file__).parents[2] / "src" / "autodj" / "data")
     defaults = {
         "track": {"tracks": 1},
         "artist": {"tracks": 3},

@@ -167,15 +167,20 @@ class LibraryManager:
         self._tracks_ready = 0
         self._tracks_indexed = 0
         # Rotation categories for clockwheel steps, worked out from these entries.
-        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
+        # Each station's rotation categories, by its folder (see categories_for).
+        self._category_indexes: dict[Path, CategoryIndex] = {}
+        self._category_lock = threading.Lock()
         self.clock_beets = BeetsConditions(cfg)
-        catalog_path = cfg.index.active_dir / "library.db"
+        catalog_path = cfg.index.library_dir / "library.db"
         require_current_library(
-            cfg.index.active_dir,
-            (
-                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-                for spec in cfg.stations
-            ),
+            cfg.index.library_dir,
+            [
+                StationPaths.default(cfg).web_state,
+                *(
+                    StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                    for spec in cfg.stations
+                ),
+            ],
         )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
@@ -204,6 +209,29 @@ class LibraryManager:
             self.analysis_queue.close()
             self.catalog.close()
             raise
+
+    def categories_for(self, paths: Any = None) -> CategoryIndex:
+        """One station's rotation categories; the default station's without *paths*."""
+        from autodj.categories import FILE_NAME
+        from autodj.stations import StationPaths
+
+        state = Path((paths or StationPaths.default(self.cfg)).state_dir)
+        with self._category_lock:
+            found = self._category_indexes.get(state)
+            if found is None:
+                found = CategoryIndex(
+                    self.cfg,
+                    self.entries_snapshot,
+                    lambda: self.catalog.sources(),
+                    path=state / FILE_NAME,
+                )
+                self._category_indexes[state] = found
+        return found
+
+    @property
+    def categories(self) -> CategoryIndex:
+        """The default station's rotation categories."""
+        return self.categories_for()
 
     def _changed(self) -> bool:
         """Whether records, vectors or sources changed since the last load."""
@@ -850,12 +878,12 @@ class LibraryManager:
                     continue
                 moved = True
                 try:
-                    if not (self.cfg.index.active_dir / "dj_meta.db").is_file():
+                    if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
                         continue
                     from autodj.dj_meta import get_cache
 
                     cache = get_cache(
-                        self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir
+                        self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir
                     )
                     if cache is not None:
                         cache.rekey_many([(source, str(track.path))])
@@ -883,12 +911,12 @@ class LibraryManager:
         return fresh
 
     def _legacy_point_suggestions(self, path: Path) -> dict[str, float]:
-        if not (self.cfg.index.active_dir / "dj_meta.db").is_file():
+        if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
             return {}
         try:
             from autodj.dj_meta import get_cache
 
-            cache = get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
+            cache = get_cache(self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir)
             meta = cache.get(str(path)) if cache is not None else None
         except ValueError:
             # Invalid legacy cache paths must not prevent library scanning.
@@ -1167,7 +1195,7 @@ class LibraryManager:
         from autodj.dj_meta import get_cache
 
         try:
-            return get_cache(self.cfg.index.active_dir, music_dir=self.cfg.library.music_dir)
+            return get_cache(self.cfg.index.library_dir, music_dir=self.cfg.library.music_dir)
         except (OSError, ValueError) as exc:
             logger.warning("DJ analysis unavailable: %s", exc)
             return None
@@ -1292,7 +1320,6 @@ class LibraryManager:
         manager.configure(
             config_path=self.cfg.config_path,
             index_dir=self.cfg.index.index_dir,
-            index_name=self.cfg.index.name,
         )
         if not manager.start("analyse-library"):
             return False
@@ -1408,7 +1435,7 @@ def analyse_library(
                     report=report,
                     gate=gate,
                 )
-        _finish_decode_report(report, cfg.index.active_dir / LIBRARY_DECODE_LOG)
+        _finish_decode_report(report, cfg.index.library_dir / LIBRARY_DECODE_LOG)
         return completed
     finally:
         manager.close()

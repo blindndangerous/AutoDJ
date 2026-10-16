@@ -64,9 +64,8 @@ def project_dir(tmp_path: Path) -> Path:
     conn.commit()
     conn.close()
 
-    # Pre-built index — files live under index/<name>/ where <name>
-    # defaults to "default" (see IndexConfig.active_dir).
-    index_dir = tmp_path / "index" / "default"
+    # Pre-built index, in the library folder (see IndexConfig.library_dir).
+    index_dir = tmp_path / "index" / "libraries" / "main"
     index_dir.mkdir(parents=True)
     entries = [
         IndexEntry(
@@ -157,8 +156,8 @@ class TestIndexCommand:
             result = runner.invoke(cli, ["--config", str(config_path), "index", "--limit", "1"])
         assert result.exit_code == 0, result.output
         download.assert_not_called()
-        assert (tmp_path / "index" / "default" / "library.db").is_file()
-        assert not (tmp_path / "index" / "default" / "index-manifest.json").exists()
+        assert (tmp_path / "index" / "libraries" / "main" / "library.db").is_file()
+        assert not (tmp_path / "index" / "libraries" / "main" / "index-manifest.json").exists()
 
 
 # ---------------------------------------------------------------------------

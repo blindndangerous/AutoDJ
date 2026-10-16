@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from autodj.config import TimeChecksConfig
 from autodj.server import create_app
+from tests._layout import point_index
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 
@@ -32,7 +33,7 @@ def _zip(entries: dict[str, bytes]) -> bytes:
 
 def _client(bridge, tmp_path, *, secret: str | None = None) -> TestClient:
     cfg = bridge.player._cfg
-    cfg.index.active_dir = tmp_path
+    point_index(cfg.index, tmp_path)
     cfg.index.index_dir = tmp_path
     cfg.server.station_timezone = "UTC"
     if secret is not None:
@@ -58,7 +59,7 @@ def _upload_pack(client: TestClient, data: bytes, filename: str = "Studio.zip", 
 def test_only_a_paired_browser_can_add_or_remove_packs_and_clips(bridge, tmp_path) -> None:
     cfg = bridge.player._cfg
     cfg.server.access_token = _SECRET
-    cfg.index.active_dir = tmp_path
+    point_index(cfg.index, tmp_path)
     cfg.index.index_dir = tmp_path
     app = create_app(bridge)
     client = TestClient(app)
@@ -196,7 +197,9 @@ def test_clips_are_uploaded_chosen_and_kept_by_name(bridge, tmp_path) -> None:
     # A save that leaves the clip choices out keeps them.
     kept = client.put("/api/time-checks", json={**body, "rule": "after_hour_song"})
     assert (kept.json()["recorded_folder"], kept.json()["intro"]) == ("Clips", "hello.wav")
-    saved = json.loads((tmp_path / "time_checks.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (tmp_path / "stations" / "default" / "time_checks.json").read_text(encoding="utf-8")
+    )
     assert saved["settings"]["intro"] == "hello.wav"
     for choice, words in (
         ({"recorded_folder": "Gone"}, "No folder named Gone"),

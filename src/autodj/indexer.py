@@ -1009,7 +1009,7 @@ def backfill_dj_meta(
     """
     from autodj.dj_meta import get_cache
 
-    cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+    cache = get_cache(cfg.index.library_dir, music_dir=cfg.library.music_dir)
     if cache is None:  # pragma: no cover - get_cache with an index_dir always builds one
         return
     removed_stale = cache.prune_to_paths({e.path for e in entries}) if prune else 0
@@ -1055,7 +1055,7 @@ def backfill_dj_meta(
                 progress.update(count)
     except KeyboardInterrupt:  # pragma: no cover - Ctrl+C
         cache.flush(force=True)
-        _finish_decode_report(report, cfg.index.active_dir / ANALYSE_DECODE_LOG)
+        _finish_decode_report(report, cfg.index.library_dir / ANALYSE_DECODE_LOG)
         print(
             f"[AutoDJ] DJ-meta interrupted: {done}/{total} analysed.  "
             "Re-run `autodj analyse` to resume.",
@@ -1063,7 +1063,7 @@ def backfill_dj_meta(
         )
         return
     cache.flush(force=True)
-    _finish_decode_report(report, cfg.index.active_dir / ANALYSE_DECODE_LOG)
+    _finish_decode_report(report, cfg.index.library_dir / ANALYSE_DECODE_LOG)
     print(f"[AutoDJ] DJ-meta backfill done: {done}/{total} tracks analysed.", flush=True)
 
 

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from autodj import rotation_api, shows_api
 from autodj.server import create_app
+from tests._layout import point_index
 from tests.unit._rotation_station import category_step, make_station, song
 
 
@@ -34,7 +35,7 @@ def station(tmp_path: Path):
 @pytest.fixture
 def client(bridge, tmp_path, monkeypatch, station) -> TestClient:
     source, _hits, _gold = station
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.entry_for_path = source.library.entry_for_path
     monkeypatch.setattr(rotation_api, "station_source", lambda _station: source)
@@ -61,7 +62,9 @@ def test_plan_edit_generate_and_remove_a_show(client: TestClient, station, tmp_p
         [],
     )
     url = f"/api/shows/{show['id']}"
-    saved = json.loads((tmp_path / "shows.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (tmp_path / "stations" / "default" / "shows.json").read_text(encoding="utf-8")
+    )
     assert list(saved["shows"]) == [show["id"]]
 
     generated = client.post(f"{url}/generate", json={"start": "2026-10-12T20:00", "seed": 7})

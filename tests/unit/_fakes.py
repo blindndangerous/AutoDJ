@@ -20,6 +20,7 @@ from autodj.dj_meta import Cue
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.similarity import SimilarityIndex
+from tests._layout import point_index
 
 
 def write_serato_flac(path: Path) -> Cue:
@@ -106,7 +107,7 @@ def make_cfg_mock() -> MagicMock:
     cfg.transitions.wet_mix = 1.0
     cfg.library.beets_db = None
     cfg.library.music_dir = None
-    cfg.index.active_dir = None
+    point_index(cfg.index, None)
     cfg.time_checks = TimeChecksConfig()
     cfg.server.station_timezone = "UTC"
     cfg.dmca = DmcaConfig()

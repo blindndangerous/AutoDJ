@@ -785,7 +785,7 @@ class TestBackfillDjMeta:
         from autodj.indexer import backfill_dj_meta
 
         cfg = _backfill_cfg(tmp_path)
-        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        cache = get_cache(cfg.index.library_dir, music_dir=cfg.library.music_dir)
         assert cache is not None
         gone = str(cfg.library.music_dir / "gone.flac")
         cache.set(gone, DjMeta(analysed=True))
@@ -817,7 +817,7 @@ class TestBackfillDjMeta:
         from autodj.indexer import backfill_dj_meta
 
         cfg = _backfill_cfg(tmp_path)
-        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        cache = get_cache(cfg.index.library_dir, music_dir=cfg.library.music_dir)
         assert cache is not None
         stale = str(cfg.library.music_dir / "stale.flac")
         entry = self._entries(cfg, "done.flac")[0]
@@ -835,7 +835,7 @@ class TestBackfillDjMeta:
         from autodj.indexer import backfill_dj_meta
 
         cfg = _backfill_cfg(tmp_path)
-        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir)
+        cache = get_cache(cfg.index.library_dir, music_dir=cfg.library.music_dir)
         assert cache is not None
         entries = self._entries(cfg, "done.flac", "next.flac", "later.flac")
         imported = DjMeta(analysed=True, cues=[Cue(time_s=4.0, source="mixxx")])

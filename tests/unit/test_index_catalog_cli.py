@@ -18,8 +18,8 @@ from tests.unit.test_library import fake_basic, fake_loudness, make_config
 
 
 def _source(cfg, folder: Path, *, advanced: bool = True) -> None:
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, (cfg.index.stations_dir / "default") / "liners")
         catalog.add_source(folder, advanced=advanced)
 
 
@@ -77,7 +77,7 @@ def test_index_uses_registered_folder_and_forwards_limit_force_workers(tmp_path:
     song.write_bytes(b"song")
     other_song.write_bytes(b"other song")
     _source(cfg, registered)
-    manifest = cfg.index.active_dir / "index-manifest.json"
+    manifest = cfg.index.library_dir / "index-manifest.json"
     manifest.write_text("legacy manifest", encoding="utf-8")
     calls: list[dict] = []
     with (
@@ -93,7 +93,7 @@ def test_index_uses_registered_folder_and_forwards_limit_force_workers(tmp_path:
     assert len(calls) == 1
     assert [track.path for track in calls[0]["tracks"]] == [song]
     assert calls[0]["workers"] == 3
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.has_vector(song)
         assert not catalog.has_vector(other_song)
         assert catalog.record_for_path(song)["title"] == "a-registered"
@@ -111,8 +111,8 @@ def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> N
     assert result.exit_code != 0
     assert "missing packages" in result.output
     download.assert_not_called()
-    assert not (cfg.index.active_dir / "index-manifest.json").exists()
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    assert not (cfg.index.library_dir / "index-manifest.json").exists()
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.record_for_path(song) is not None
         assert not catalog.has_vector(song)
 
@@ -129,7 +129,7 @@ def test_index_model_failure_leaves_basic_song_available(tmp_path: Path) -> None
 
     assert result.exit_code != 0
     assert "model unavailable" in result.output
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.record_for_path(song) is not None
         assert not catalog.has_vector(song)
 
@@ -146,7 +146,7 @@ def test_index_skips_model_for_disabled_source(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     download.assert_not_called()
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.record_for_path(song) is not None
         assert not catalog.has_vector(song)
 
@@ -175,7 +175,7 @@ def test_force_replaces_vector_and_preserves_user_data(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "song.flac"
     song.write_bytes(b"song")
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir)
         catalog.put_entry(_entry(song))
         catalog.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
@@ -202,7 +202,7 @@ def test_force_replaces_vector_and_preserves_user_data(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         record = catalog.record_for_path(song)
         assert record["points"]["intro"] == 12.0
         assert record["point_sources"]["intro"] == "user"
@@ -237,23 +237,23 @@ def test_catalog_beets_enrichment_keeps_vector_and_cues_without_legacy_files(
                 "Am",
             ),
         )
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir)
         catalog.put_entry(_entry(song))
         catalog.set_vector(song, np.full(FEATURE_DIM, 0.25, dtype=np.float32))
         catalog.set_points(song, {"intro": 8.0}, source="user")
 
-    updated, total = enrich_from_beets(cfg.index.active_dir, cfg.library.music_dir, beets_db)
+    updated, total = enrich_from_beets(cfg.index.library_dir, cfg.library.music_dir, beets_db)
 
     assert (updated, total) == (1, 1)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         record = catalog.record_for_path(song)
         assert record["title"] == "Updated"
         assert record["points"]["intro"] == 8.0
         assert record["point_sources"]["intro"] == "user"
         _, vectors = catalog.vectors_snapshot()
         assert np.all(vectors[0] == 0.25)
-    assert not (cfg.index.active_dir / "index-manifest.json").exists()
+    assert not (cfg.index.library_dir / "index-manifest.json").exists()
 
 
 def test_index_requires_explicit_migration_without_rewriting_manifest(tmp_path: Path) -> None:
@@ -264,11 +264,11 @@ def test_index_requires_explicit_migration_without_rewriting_manifest(tmp_path: 
     save_index(
         [_entry(song)],
         vectors,
-        cfg.index.active_dir,
+        cfg.index.library_dir,
         music_dir=cfg.library.music_dir,
         base_generation=0,
     )
-    manifest = cfg.index.active_dir / "index-manifest.json"
+    manifest = cfg.index.library_dir / "index-manifest.json"
     original = manifest.read_bytes()
     with patch("autodj.model.download_model_if_needed") as download:
         result = _invoke(cfg, ["--no-enrich", "--no-analyse"])
@@ -276,18 +276,20 @@ def test_index_requires_explicit_migration_without_rewriting_manifest(tmp_path: 
     assert "migrate-index" in result.output
     download.assert_not_called()
     assert manifest.read_bytes() == original
-    assert not (cfg.index.active_dir / "library.db").exists()
+    assert not (cfg.index.library_dir / "library.db").exists()
 
 
 def test_index_force_cannot_bypass_legacy_migration(tmp_path: Path) -> None:
     cfg = make_config(tmp_path)
-    cfg.index.active_dir.mkdir(parents=True)
-    manifest = cfg.index.active_dir / "index-manifest.json"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    manifest = cfg.index.library_dir / "index-manifest.json"
     manifest.write_text("obsolete", encoding="utf-8")
     result = _invoke(cfg, ["--force", "--no-enrich", "--no-analyse"])
     assert result.exit_code != 0
     assert "migrate-index" in result.output
-    assert not (cfg.index.active_dir / "library.db").exists()
+    assert not (cfg.index.library_dir / "library.db").exists()
     assert manifest.read_text(encoding="utf-8") == "obsolete"
 
 
@@ -311,13 +313,13 @@ def test_index_backfills_relative_music_root_without_pruning_disabled_folder(
     enabled.mkdir()
     song = song.rename(enabled / song.name)
     _source(cfg, enabled)
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.put_entry(_entry(song))
         catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
         catalog.set_points(song, {"intro": 12.0}, source="user")
     close_cache()
     try:
-        cache = get_cache(cfg.index.active_dir, music_dir=cfg.library.music_dir.resolve())
+        cache = get_cache(cfg.index.library_dir, music_dir=cfg.library.music_dir.resolve())
         cache.set(str(other.resolve()), DjMeta(analysed=True, intro_end_s=7.0))
         cache.flush(force=True)
         with (
@@ -335,7 +337,7 @@ def test_index_backfills_relative_music_root_without_pruning_disabled_folder(
         analyse.assert_called_once()
         assert Path(analyse.call_args.args[0]) == song.resolve()
         assert cache.get(str(other.resolve())).intro_end_s == 7.0
-        with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
             record = catalog.record_for_path(song)
             assert record["points"]["intro"] == 12.0
             assert record["point_sources"]["intro"] == "user"
@@ -349,14 +351,14 @@ def test_force_preserves_catalog_vector_after_failed_reanalysis(tmp_path: Path) 
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "old.flac"
     song.write_bytes(b"song")
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
-        catalog.seed_sources(cfg.library.music_dir, cfg.index.active_dir / "liners")
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        catalog.seed_sources(cfg.library.music_dir, (cfg.index.stations_dir / "default") / "liners")
         catalog.seed_entries([_entry(song)])
         catalog.seed_vectors([_entry(song)], np.ones((1, FEATURE_DIM), dtype=np.float32))
     with patch("autodj.model.download_model_if_needed", side_effect=RuntimeError("unavailable")):
         result = _invoke(cfg, ["--force", "--no-enrich", "--no-analyse"])
     assert result.exit_code != 0
-    with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.has_vector(song)
 
 

@@ -16,6 +16,7 @@ from autodj.version import (
     _source_pyproject,
     current_version,
 )
+from tests._layout import point_index
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -145,7 +146,7 @@ def test_installed_version_is_returned(monkeypatch) -> None:
 def test_api_version_derives_from_project_metadata(tmp_path: Path) -> None:
     bridge = MagicMock()
     bridge.player._cfg.server.station_timezone = "UTC"
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.time_checks = TimeChecksConfig()
     assert create_app(bridge).version == current_version()
 

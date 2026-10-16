@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from autodj import rotation_api
 from autodj.rotation_sim import SimulationRequest
 from autodj.server import create_app
+from tests._layout import point_index
 from tests.unit._rotation_station import category_step, make_station, song
 
 NOON = datetime(2026, 10, 12, 12, 0, tzinfo=UTC).timestamp()
@@ -33,7 +34,7 @@ def _station(tmp_path: Path):
 
 @pytest.fixture
 def client(bridge, tmp_path, monkeypatch) -> TestClient:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     source = _station(tmp_path)
     monkeypatch.setattr(rotation_api, "station_source", lambda _station: source)
@@ -107,7 +108,7 @@ def test_one_run_at_a_time_and_cancel(client: TestClient, monkeypatch) -> None:
 
 
 def test_a_station_without_a_library_cannot_be_tested(bridge, tmp_path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     client = TestClient(create_app(bridge))
     refused = client.post("/api/rotation-test", json={"hours": 1})
@@ -117,7 +118,7 @@ def test_a_station_without_a_library_cannot_be_tested(bridge, tmp_path) -> None:
 
 def test_unpaired_browsers_cannot_start_a_run(bridge, tmp_path) -> None:
     bridge.player._cfg.server.access_token = "pairing-secret-that-is-at-least-32-bytes"
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     client = TestClient(create_app(bridge))
     assert client.get("/api/rotation-test").status_code in (401, 403)
@@ -170,7 +171,7 @@ def test_another_stations_run_holds_the_one_slot() -> None:
 def test_shutting_the_server_down_cancels_and_waits_for_a_run(
     bridge, tmp_path, monkeypatch
 ) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     source = _station(tmp_path)
     monkeypatch.setattr(rotation_api, "station_source", lambda _station: source)
@@ -219,7 +220,7 @@ def test_no_run_starts_once_shutdown_has_begun() -> None:
 def test_a_run_that_outlives_shutdown_is_logged(bridge, tmp_path, monkeypatch, caplog) -> None:
     import logging
 
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     app = create_app(bridge)
     app.state.rotation_tests = rotation_api.RotationTests()

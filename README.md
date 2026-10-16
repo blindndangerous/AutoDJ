@@ -243,13 +243,12 @@ Every command takes `--help`, for example `./autodj serve --help`. The global op
 - `autodj enrich` refreshes key and mode from your beets database.
 - `autodj prune` removes index entries whose audio files no longer exist.
 - `autodj stats` prints an overview of the indexed library.
-- `autodj list-indexes` lists the named indexes under `[index] index_dir`.
 - `autodj serve` starts the browser interface; `autodj serve --lan` opens it to your local
   network; `autodj serve --stream` also serves the live mix as an MP3 radio station.
 - `autodj list-devices` lists the audio output devices available to `serve --server-audio`.
 - `autodj doctor` checks configuration, saved browser settings, paths, dependencies, the model,
-  and security settings, and each station when there are several. Use `--name` to check a
-  specific index and `--station` to check one station. If `serve` fails in a terminal, it offers
+  and security settings, and each station when there are several. Use `--station` to check
+  one station. If `serve` fails in a terminal, it offers
   to run Doctor; repairs still require confirmation.
 - `autodj backup` and `autodj restore` archive and restore index and user data, every station's
   included.
@@ -262,7 +261,7 @@ With no configuration or environment overrides, `autodj serve`:
 - Serves the web interface at `http://127.0.0.1:8080`, accessible on this computer only.
 - Uses browser playback. The server chooses tracks, but the browser plays and mixes them.
 - Leaves the radio stream and server speaker output off.
-- Uses the named index `default` and does not open a browser automatically; add `--open` for that.
+- Keeps its data in `index/` and does not open a browser automatically; add `--open` for that.
 - Offers a backed-up schema-3 conversion in an interactive terminal if the index needs it.
   It only converts after you accept; non-interactive startup prints the manual command and exits.
 
@@ -572,10 +571,10 @@ the old keys in **Settings > Picking > Repeats**. Current repeat rules are prese
 Doctor can optionally remove obsolete keys with a backup.
 
 **Use related artists** holds back the artists linked in your editable TOML file, with its
-own limits. The page shows its fixed location, `index/<name>/related-artists.toml`.
+own limits. The page shows its fixed location, `index/libraries/main/related-artists.toml`.
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
 such as a song and one that samples it, written as "Artist - Title" in
-`index/<name>/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
+`index/libraries/main/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
 leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
 **Count versions as one song**, also off by default, treats a radio edit, a remix and other
 versions by the same lead artist as one song: it comes up as often as a song with one file, and
@@ -598,7 +597,7 @@ variables and CLI flags still take precedence.
 
 ## Troubleshooting
 
-`autodj serve` writes its log to `index/<name>/logs/autodj.log` as well as the console, a new
+`autodj serve` writes its log to `index/logs/autodj.log` as well as the console, a new
 file each day, with the last 7 kept. The pairing code shown at start-up goes to the console only.
 
 **The first index run is taking forever.**  This is the slow pass.  AutoDJ has to listen to every file and remember what it sounds like.  On a CPU it can take many hours for a 10000-track library.  A compatible GPU can speed up the embedding step.  In one small, repeated benchmark on a Ryzen AI 7 PRO 350 with Radeon 860M graphics, the GPU was about 1.9x faster than CPU after warmup; that smoke-test result does not predict full-library time.  See [Windows AMD GPU setup](docs/windows-amd.md) for the tested configuration.  Run with `--limit 50` first to confirm it works, then leave the full run going overnight.

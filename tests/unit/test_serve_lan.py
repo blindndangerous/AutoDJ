@@ -15,6 +15,7 @@ from autodj.cli import _serve_url, _stage_serve_server, cli
 from autodj.config import ServerConfig, StreamConfig, TimeChecksConfig, load_config
 from autodj.lan import load_or_create_access_token
 from autodj.repeat_settings import RepeatSettings
+from tests._layout import point_index
 
 _DETECTED = ["127.0.0.1", "192.168.1.20", "::1", "localhost", "nas", "nas.local"]
 _TOKEN = "e" * 40
@@ -30,8 +31,7 @@ def _cfg(tmp_path: Path, server: ServerConfig | None = None) -> MagicMock:
     cfg.library.beets_db = None
     cfg.playback.discovery_every = None
     cfg.presets = {}
-    cfg.index.name = "default"
-    cfg.index.index_dir = tmp_path / "index"
+    point_index(cfg.index, tmp_path / "index")
     cfg.time_checks = TimeChecksConfig()
     cfg.server = server or ServerConfig()
     cfg.stream = StreamConfig()

@@ -486,7 +486,7 @@ class TestExportPlaysCli:
         song = music / "song.flac"
         song.write_bytes(b"audio")
         index_dir = tmp_path / "index"
-        with LibraryCatalog(index_dir / "default" / "library.db") as catalog:
+        with LibraryCatalog(index_dir / "libraries" / "main" / "library.db") as catalog:
             catalog.add_source(music)
             catalog.put_entry(_entry(song, "Song"))
             catalog.write_history(
@@ -540,7 +540,7 @@ class TestExportPlaysCli:
 
     def test_exports_one_station_at_a_time(self, config: Path, tmp_path: Path) -> None:
         song = tmp_path / "Music" / "song.flac"
-        with LibraryCatalog(tmp_path / "index" / "default" / "library.db") as catalog:
+        with LibraryCatalog(tmp_path / "index" / "libraries" / "main" / "library.db") as catalog:
             played = datetime(2026, 9, 1, 13).astimezone()
             catalog.write_history([_row("owl", song, "Owl play", played)], station="nightowl")
         dates = ("--from", "2026-09-01", "--to", "2026-09-01")
@@ -586,13 +586,15 @@ class TestExportPlaysCli:
         )
         assert result.exit_code == 1
         assert "Could not write" in result.stderr
-        (tmp_path / "index" / "default" / "library.db").unlink()
+        (tmp_path / "index" / "libraries" / "main" / "library.db").unlink()
         result = self._run(config, "--from", "2026-09-01", "--to", "2026-09-01")
         assert result.exit_code == 1
         assert "No play log found" in result.stderr
 
     def test_reports_unreadable_log(self, config: Path, tmp_path: Path) -> None:
-        (tmp_path / "index" / "default" / "library.db").write_bytes(b"not a database" * 100)
+        (tmp_path / "index" / "libraries" / "main" / "library.db").write_bytes(
+            b"not a database" * 100
+        )
         result = self._run(config, "--from", "2026-09-01", "--to", "2026-09-01")
         assert result.exit_code == 1
         assert "Could not read the play log" in result.stderr

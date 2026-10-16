@@ -20,7 +20,7 @@ YEAR = {"field": "year", "operator": "between", "value": 1990, "upper": 1999}
 
 @pytest.mark.parametrize("condition", [YEAR, {"field": "category", "category": "gold"}])
 def test_conditions_save_and_load_into_player_without_a_folder(tmp_path, condition):
-    saved = ClockwheelStore(tmp_path / "clockwheels").save(
+    saved = ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(
         clock([{"type": "music", "conditions": [condition], "match": "any"}])
     )
     assert saved["steps"][0]["match"] == "any"
@@ -76,7 +76,7 @@ def test_api_conditions_roundtrip_and_registered_folder_validation(tmp_path):
         bad = {**step, "conditions": [{"field": "folder", "source": liners["id"]}]}
         with pytest.raises(HTTPException, match="music folder is not registered"):
             call(routes, "POST", "/api/library/clock", body(name="Bad", steps=[bad]))
-        assert not (tmp_path / "clockwheels" / "Bad.json").exists()
+        assert not (tmp_path / "stations" / "default" / "clockwheels" / "Bad.json").exists()
         # A bad update leaves the saved clock untouched.
         bad = {
             **step,
@@ -129,7 +129,9 @@ def test_beets_conditions_require_available_fields_on_save_and_activation(tmp_pa
             call(routes, "POST", "/api/library/clock/active", ClockNameBody(name="Morning"))
         assert catalog.get_setting("clock", {}) == {}
         assert (
-            json.loads((tmp_path / "clockwheels" / "Morning.json").read_text())["steps"]
+            json.loads(
+                (tmp_path / "stations" / "default" / "clockwheels" / "Morning.json").read_text()
+            )["steps"]
             == saved["steps"]
         )
 
@@ -141,7 +143,7 @@ def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_p
             "type": "music",
             "conditions": [{"field": "beets", "name": "mood", "operator": "is", "value": "happy"}],
         }
-        ClockwheelStore(tmp_path / "clockwheels").save(clock([step]))
+        ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(clock([step]))
         catalog.set_setting("clock", {"name": "Morning", "cursor": 0})
         result = call(
             routes,
@@ -152,8 +154,8 @@ def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_p
         )
         assert result["name"] == "Daytime"
         assert catalog.get_setting("clock")["name"] == "Daytime"
-        assert (tmp_path / "clockwheels" / "Daytime.json").exists()
-        assert not (tmp_path / "clockwheels" / "Morning.json").exists()
+        assert (tmp_path / "stations" / "default" / "clockwheels" / "Daytime.json").exists()
+        assert not (tmp_path / "stations" / "default" / "clockwheels" / "Morning.json").exists()
 
 
 def test_genre_choices_are_listed_again_only_when_the_library_changes(tmp_path, monkeypatch):

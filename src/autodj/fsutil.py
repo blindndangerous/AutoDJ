@@ -92,7 +92,8 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
 
     The data goes to a flushed temporary file named ``.<name>.<32 hex>.tmp``
     beside *path*, which is then renamed over it, and the directory is
-    flushed.  Text is written as UTF-8 with the newlines it contains.
+    flushed.  Text is written as UTF-8 with the newlines it contains.  The
+    folder is made if it is not there yet, such as a station's first file.
 
     Args:
         path: File to replace.
@@ -108,6 +109,7 @@ def atomic_write(path: Path, data: str | bytes, *, mode: int = 0o666) -> None:
             is removed.
     """
     payload = data.encode("utf-8") if isinstance(data, str) else data
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:

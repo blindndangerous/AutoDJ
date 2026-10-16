@@ -14,6 +14,7 @@ from autodj.config import DmcaConfig, RequestsConfig, ServerConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
 from autodj.server import create_app
+from tests._layout import point_index
 
 from ._helpers import _make_entry
 
@@ -28,7 +29,7 @@ def _client(bridge, tmp_path: Path, *, token: bool = True, **settings: object) -
         allowed_hosts=["testserver"],
         allowed_origins=["http://testserver"],
     )
-    cfg.index.active_dir = tmp_path
+    point_index(cfg.index, tmp_path)
     cfg.library.music_dir = tmp_path / "music"
     cfg.requests = RequestsConfig(**settings)  # type: ignore[arg-type]
     bridge.player._track_keys.return_value = TrackKeyCache()
@@ -348,11 +349,13 @@ def test_the_operator_saves_bridge_settings_and_they_survive_a_restart(
         answer = client.post("/api/requests/settings", json=refused, headers=ORIGIN)
         assert answer.status_code == 422, refused
     assert client.get("/api/requests").json()["max_bridges"] == 2
-    stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    stored = json.loads(
+        (tmp_path / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+    )["playback"]
     assert stored["requests_max_bridges"] == 2
     assert stored["requests_no_smooth_spot"] == "wait"
     bridge.player._cfg.requests = RequestsConfig(enabled=True)
-    load_into_bridge(bridge, tmp_path)
+    load_into_bridge(bridge, tmp_path / "stations" / "default")
     restored = bridge.player._cfg.requests
     assert (restored.bridges_enabled, restored.max_bridges) == (True, 2)
     assert (restored.bridge_cost_threshold, restored.no_smooth_spot) == (1.5, "wait")
@@ -419,11 +422,13 @@ def test_saved_request_switches_win_over_config_after_a_restart(bridge, tmp_path
         "/api/requests/settings", json={"enabled": True, "approval": "auto"}, headers=ORIGIN
     )
     assert saved.status_code == 200
-    stored = json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    stored = json.loads(
+        (tmp_path / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+    )["playback"]
     assert (stored["requests_enabled"], stored["requests_approval"]) == (True, "auto")
     # config.toml still says off and manual: the saved values win at the next start.
     bridge.player._cfg.requests = RequestsConfig(enabled=False, approval="manual")
-    load_into_bridge(bridge, tmp_path)
+    load_into_bridge(bridge, tmp_path / "stations" / "default")
     restored = bridge.player._cfg.requests
     assert (restored.enabled, restored.approval) == (True, "auto")
     restarted = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
@@ -444,7 +449,9 @@ def test_request_switches_are_checked(bridge, tmp_path: Path, refused: dict) -> 
 def _stored(tmp_path: Path) -> dict:
     import json
 
-    return json.loads((tmp_path / "web_state.json").read_text(encoding="utf-8"))["playback"]
+    return json.loads(
+        (tmp_path / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+    )["playback"]
 
 
 def test_only_the_request_cards_own_save_keeps_the_switches(bridge, tmp_path: Path) -> None:
@@ -471,7 +478,7 @@ def test_only_the_request_cards_own_save_keeps_the_switches(bridge, tmp_path: Pa
     # A restart keeps it, whatever config.toml says, and keeps saving it.
     bridge.page_saved.clear()
     bridge.player._cfg.requests = RequestsConfig(enabled=False)
-    load_into_bridge(bridge, tmp_path)
+    load_into_bridge(bridge, tmp_path / "stations" / "default")
     assert bridge.player._cfg.requests.enabled is True
     assert "requests" in bridge.page_saved
 
@@ -500,7 +507,9 @@ def test_a_desk_that_cannot_open_puts_every_setting_back(
         3,
         "best",
     )
-    assert not (tmp_path / "web_state.json").exists() or "requests_enabled" not in _stored(tmp_path)
+    assert not (
+        tmp_path / "stations" / "default" / "web_state.json"
+    ).exists() or "requests_enabled" not in _stored(tmp_path)
 
 
 def test_a_desk_built_as_the_station_stops_is_closed_not_attached(

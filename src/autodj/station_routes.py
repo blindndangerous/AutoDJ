@@ -590,7 +590,7 @@ def _validate_step_conditions(
 ) -> None:
     from autodj.clockwheel_store import resolve_conditions
 
-    categories = _category_names(library)
+    categories = _category_names(station, library)
     for condition in resolve_conditions(step, sources, number):
         if condition["field"] == "category" and condition["category"] not in categories:
             raise ValueError(
@@ -604,9 +604,17 @@ def _validate_step_conditions(
                 raise ValueError(f"Step {number}: Beets has no field named {condition['name']}")
 
 
-def _category_names(library: Any) -> dict[str, str]:
-    """Each saved rotation category's ID and name."""
-    index = getattr(library, "categories", None)
+def _station_categories(station: StationRuntime, library: Any) -> Any:
+    """The station's rotation categories, or ``None`` without a library."""
+    pick = getattr(library, "categories_for", None)
+    if callable(pick):
+        return pick(station.paths)
+    return getattr(library, "categories", None)
+
+
+def _category_names(station: StationRuntime, library: Any) -> dict[str, str]:
+    """Each of the station's saved rotation categories' ID and name."""
+    index = _station_categories(station, library)
     if index is None:
         return {}
     return {category.id: category.name for category in index.categories()}
@@ -616,7 +624,7 @@ def _validate_native_clock(station: StationRuntime, library: Any, value: Any) ->
     """Validate *value*, then check its folders, tracks and presets exist."""
     clock = validate_clockwheel(value)
     sources = {source["id"]: source for source in library.catalog.sources()}
-    categories = _category_names(library)
+    categories = _category_names(station, library)
     for number, step in enumerate(clock["steps"], 1):
         kind = step["type"]
         if kind in {"music", "liner"}:
@@ -696,7 +704,9 @@ def _clock_snapshot(station: StationRuntime, library: Any) -> dict:
         "genres": _clock_genres.names(library),
         "beets_fields": sorted(known),
         "beets_error": beets_error,
-        "categories": [{"id": key, "name": name} for key, name in _category_names(library).items()],
+        "categories": [
+            {"id": key, "name": name} for key, name in _category_names(station, library).items()
+        ],
         "cursor": (getattr(player, "_clock", None) or {}).get("cursor", 0),
         "last_status": getattr(player, "_clock_status", None),
         "pending_update": getattr(player, "_pending_clock_update", None) is not None,
@@ -1215,6 +1225,7 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.ads_api import install_ads
     from autodj.breaks_api import install_breaks
     from autodj.carts import install_carts
+    from autodj.categories_api import install_categories
     from autodj.hour_preview import install_hour_preview
     from autodj.landmarks import install_landmarks
     from autodj.live_routes import install_live_api
@@ -2151,7 +2162,7 @@ def install_station_routes(router: StationRouter) -> None:
                         "error": None,
                     }
                 if step["type"] == "category":
-                    _, results = library.categories.resolutions()
+                    _, results = _station_categories(station, library).resolutions()
                     result = results.get(step["category"])
                     if result is None:
                         raise ValueError("Its category is unavailable; choose a saved category")
@@ -2282,6 +2293,7 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     install_carts(router)
+    install_categories(router)
     install_scheduler(router)
     install_time_checks(router)
     install_breaks(router)

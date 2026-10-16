@@ -750,8 +750,10 @@ def test_open_station_reads_the_saved_station_without_writing(tmp_path: Path) ->
         encoding="utf-8",
     )
     cfg = load_config(config, environ={})
-    cfg.index.active_dir.mkdir(parents=True)
-    LibraryCatalog(cfg.index.active_dir / "library.db").close()
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    LibraryCatalog(cfg.index.library_dir / "library.db").close()
     unknown = pytest.raises(SimulationError, match="No station named nightowl is configured")
     with unknown, open_station(cfg, "nightowl"):
         pass
@@ -761,7 +763,9 @@ def test_open_station_reads_the_saved_station_without_writing(tmp_path: Path) ->
         assert source.player._clock is None
         with pytest.raises(SimulationError, match="no songs"):
             simulate(source, SimulationRequest(hours=1))
-    (cfg.index.active_dir / "schedule.json").write_text("{not json", encoding="utf-8")
+    ((cfg.index.stations_dir / "default") / "schedule.json").write_text(
+        "{not json", encoding="utf-8"
+    )
     with pytest.raises(SimulationError, match="schedule file"), open_station(cfg):
         pass
 
@@ -802,11 +806,14 @@ def test_simulate_beside_a_live_server_leaves_the_library_untouched(tmp_path: Pa
         encoding="utf-8",
     )
     cfg = load_config(config, environ={})
-    active = cfg.index.active_dir
+    active = cfg.index.library_dir
     active.mkdir(parents=True)
     # A categories file that cannot be read stays where it is.
-    (active / "categories.json").write_text("{broken", encoding="utf-8")
-    live = LibraryCatalog(active / "library.db")
+    (cfg.index.stations_dir / "default" / "categories.json").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    (cfg.index.stations_dir / "default" / "categories.json").write_text("{broken", encoding="utf-8")
+    live = LibraryCatalog(cfg.index.library_dir / "library.db")
     try:
         live.seed_sources(music, tmp_path / "liners")
         live.seed_entries(
@@ -1286,8 +1293,10 @@ def test_an_unreadable_library_stops_simulate_in_words(tmp_path: Path, content: 
         f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n', encoding="utf-8"
     )
     cfg = load_config(config, environ={})
-    cfg.index.active_dir.mkdir(parents=True)
-    database = cfg.index.active_dir / "library.db"
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+    database = cfg.index.library_dir / "library.db"
     database.write_bytes(content)
     with pytest.raises(SimulationError) as refused, open_station(cfg):
         pass

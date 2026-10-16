@@ -1017,7 +1017,7 @@ class Player:
 
         try:
             self._related_artists = (
-                load_configured_related_artists(cfg.index.active_dir)
+                load_configured_related_artists(cfg.index.library_dir)
                 if cfg.playback.repeat_rules.use_related_artists
                 else RelatedArtists()
             )
@@ -1028,7 +1028,7 @@ class Player:
             logger.warning("Related artists file was not used: %s", exc)
         try:
             self._related_tracks = (
-                load_configured_related_tracks(cfg.index.active_dir)
+                load_configured_related_tracks(cfg.index.library_dir)
                 if cfg.playback.repeat_rules.use_related_tracks
                 else RelatedTracks()
             )
@@ -1932,7 +1932,7 @@ class Player:
             for condition in step.get("conditions", ())
             if condition.get("field") == "category"
         )
-        category_index = getattr(self._library, "categories", None)
+        category_index = self._category_index()
         try:
             categories = (
                 [
@@ -2006,9 +2006,19 @@ class Player:
         parts.append(base[begin:])
         return tuple(chain.from_iterable(parts))
 
+    def _category_index(self) -> Any:
+        """This station's rotation categories, or ``None`` without a library."""
+        library = self._library
+        if library is None:
+            return None
+        pick = getattr(library, "categories_for", None)
+        if not callable(pick):
+            return getattr(library, "categories", None)
+        return pick(getattr(self, "station_paths", None))
+
     def _category_members(self) -> dict[str, tuple[str, frozenset[str]]] | None:
         """Return category membership, or None when the index cannot be read."""
-        index = getattr(self._library, "categories", None)
+        index = self._category_index()
         if index is None:
             return {}
         try:
@@ -4082,7 +4092,7 @@ class Player:
         Read now, or at *at* (the expected start of the song being picked).
         Categories that cannot be read limit nothing; the failure is logged.
         """
-        index = getattr(self._library, "categories", None)
+        index = self._category_index()
         if index is None:
             return frozenset(), {}
         try:
@@ -5428,9 +5438,9 @@ class Player:
             try:
                 from autodj.dj_meta import get_cache
 
-                if isinstance(self._cfg.index.active_dir, Path):
+                if isinstance(self._cfg.index.library_dir, Path):
                     self._dj_cache = get_cache(
-                        self._cfg.index.active_dir,
+                        self._cfg.index.library_dir,
                         music_dir=self._cfg.library.music_dir
                         if isinstance(self._cfg.library.music_dir, Path)
                         else None,

@@ -11,7 +11,7 @@ A category such as A, B, "2000s" or "Rock gold" has a name and one source:
   one an update-playlists script writes.  Each line is matched to a library
   track; the lines that match none are reported as missing.
 
-The categories are kept in ``categories.json`` in the active index folder
+Each station keeps its categories in ``categories.json`` in its own folder
 (versioned, written atomically; a file that cannot be read is set aside
 and the station starts with none).  :class:`CategoryIndex` works out which
 library songs each category holds and keeps the answer until the
@@ -67,6 +67,7 @@ from autodj.timefmt import clock_text
 
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
+    from autodj.stations import StationPaths
 
 logger = logging.getLogger(__name__)
 
@@ -536,15 +537,17 @@ class CategoryStore:
         atomic_write(self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n")
 
 
-def store_path(cfg: AutoDJConfig) -> Path:
-    """Where this configuration keeps its categories."""
-    return Path(cfg.index.active_dir) / FILE_NAME
+def store_path(cfg: AutoDJConfig, paths: StationPaths | None = None) -> Path:
+    """Where a station keeps its categories; the default station's without *paths*."""
+    from autodj.stations import StationPaths
+
+    return (paths or StationPaths.default(cfg)).state_dir / FILE_NAME
 
 
 def playlists_folder(cfg: AutoDJConfig) -> Path:
     """The folder M3U categories read from."""
     configured = cfg.library.playlists_folder
-    return Path(configured) if configured else Path(cfg.index.active_dir) / "playlists"
+    return Path(configured) if configured else Path(cfg.index.shared_dir) / "playlists"
 
 
 def list_playlists(folder: Path) -> list[str]:
@@ -950,11 +953,13 @@ class CategoryIndex:
         cfg: AutoDJConfig,
         entries: Callable[[], Sequence[Any]],
         folders: Callable[[], Sequence[Mapping[str, Any]]] = lambda: (),
+        path: Path | None = None,
     ) -> None:
         self._cfg = cfg
         self._entries = entries
         self._folders = folders
-        self.store = CategoryStore(store_path(cfg))
+        # One station's categories: the default station's without *path*.
+        self.store = CategoryStore(path or store_path(cfg))
         self._lock = threading.Lock()
         self._resolved: _Resolved | None = None
         self._loaded: tuple[tuple[int, int] | None, tuple[Category, ...]] | None = None

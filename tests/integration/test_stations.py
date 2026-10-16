@@ -47,18 +47,17 @@ def test_live_dj_title_reaches_extra_mounts() -> None:
 def _config(tmp_path: Path, *, clips: str | None = None) -> AutoDJConfig:
     cfg = load_config(environ={})
     cfg.index.index_dir = tmp_path / "index"
-    cfg.index.name = "main"
     cfg.time_checks.clips_folder = clips
     return cfg
 
 
-def test_default_paths_are_where_the_state_has_always_been(tmp_path: Path) -> None:
+def test_the_default_station_has_a_folder_like_every_other(tmp_path: Path) -> None:
     from autodj.relay import relay_status_path
     from autodj.time_checks import TimeChecks, clips_folder, state_path
 
     cfg = _config(tmp_path)
     index = tmp_path / "index"
-    active = index / "main"
+    active = index / "stations" / "default"
     paths = StationPaths.default(cfg)
 
     assert paths.state_dir == active
@@ -68,14 +67,14 @@ def test_default_paths_are_where_the_state_has_always_been(tmp_path: Path) -> No
     assert paths.cart_uploads == active / "carts"
     assert paths.time_checks == active / "time_checks.json"
     assert paths.time_checks_cache == active / "time_checks_cache"
-    assert paths.time_check_clips == active / "time_checks"
+    # Its clips are the shared packs every station can use.
+    assert paths.time_check_clips == index / "shared" / "time_checks"
     assert paths.listener_bans == active / "listener_bans.json"
     assert paths.recording == active / "recording.json"
-    assert paths.relay_status == index / "relay-status.json"
+    assert paths.relay_status == active / "relay-status.json"
     assert paths.clockwheels == active / "clockwheels"
     assert paths.liners == active / "liners"
-    # Profiles are shared by every named index of the index folder.
-    assert paths.profiles == index / "profiles"
+    assert paths.profiles == active / "profiles"
 
     # The modules that keep these files ask StationPaths and get the same answer.
     store = CartStore(paths.state_dir)
@@ -96,7 +95,7 @@ def test_paths_follow_a_changed_index_folder(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     paths = StationPaths.default(cfg)
     cfg.index.index_dir = tmp_path / "elsewhere"
-    assert paths.schedule == tmp_path / "elsewhere" / "main" / "schedule.json"
+    assert paths.schedule == tmp_path / "elsewhere" / "stations" / "default" / "schedule.json"
 
 
 def test_the_app_registers_exactly_the_default_station() -> None:

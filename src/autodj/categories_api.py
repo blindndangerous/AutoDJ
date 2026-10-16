@@ -1,4 +1,8 @@
-"""Paired web routes for rotation categories (Library tools, Categories).
+"""Paired web routes for a station's rotation categories (Library tools, Categories).
+
+Each station has its own categories, like its clockwheels: the routes are
+station routes, ``/api/categories`` for the default station and
+``/api/stations/<slug>/categories`` for another.
 
 ``GET /api/categories`` lists the categories with their song, missing-line
 and year-fallback counts, the clockwheels that use each, and the playlist
@@ -12,11 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, HTTPException
 from fastapi.responses import JSONResponse
 
 from autodj.categories import MAX_CATEGORIES as _MAX
@@ -34,7 +37,11 @@ from autodj.categories import (
     summary,
 )
 from autodj.clockwheel_store import ClockwheelStore, step_categories
-from autodj.stations import StationPaths
+from autodj.station_routes import StationDep, _station_categories
+
+if TYPE_CHECKING:
+    from autodj.station_routes import StationRouter
+    from autodj.stations import StationRuntime
 
 
 def _rejected(field: str, message: str, status: int = 400) -> JSONResponse:
@@ -70,43 +77,25 @@ def clockwheel_uses(root: Path) -> dict[str, list[str]]:
     return uses
 
 
-def install_categories(
-    app: FastAPI, bridge: Any, clock_roots: Callable[[], Iterable[Path]] | None = None
-) -> None:
-    """Register the paired category routes; the library owns the category index.
+def install_categories(router: StationRouter) -> None:
+    """Register the paired category routes of every station.
 
-    Categories are shared by every station.  *clock_roots* lists each
-    station's clockwheel folder, so a category shows every clockwheel that
-    uses it; without it, the default station's folder is the only one.
+    A category shows the station's own clockwheels that use it.
     """
     write_lock = threading.Lock()
-    genre_entries: Any = None
-    genre_names: list[str] = []
+    genres_seen: dict[int, tuple[Any, list[str]]] = {}
 
-    def index() -> CategoryIndex:
-        library = bridge.library
-        found = getattr(library, "categories", None)
+    def index(station: StationRuntime) -> CategoryIndex:
+        found = _station_categories(station, station.bridge.library)
         if found is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
         return found
 
-    def roots() -> Iterable[Path]:
-        if clock_roots is not None:
-            return clock_roots()
-        return (StationPaths.default(bridge.player._cfg).clockwheels,)
-
-    def all_uses() -> dict[str, list[str]]:
-        uses: dict[str, list[str]] = {}
-        for root in roots():
-            for category, names in clockwheel_uses(root).items():
-                uses.setdefault(category, []).extend(names)
-        return uses
-
-    def daypart(category: CategorySpec) -> dict[str, Any]:
+    def daypart(station: StationRuntime, category: CategorySpec) -> dict[str, Any]:
         """The allowed days, hours and dates in words, whether they allow now, and if not, which."""
         from autodj.categories import daypart_refusal
 
-        refused = daypart_refusal(category, station_now(bridge.player._cfg))
+        refused = daypart_refusal(category, station_now(station.cfg))
         return {
             "daypart_text": describe_daypart(category),
             "allowed_now": refused is None,
@@ -114,28 +103,29 @@ def install_categories(
             "outside_now": refused,
         }
 
-    def listing(categories: CategoryIndex) -> dict[str, Any]:
-        nonlocal genre_entries, genre_names
+    def listing(station: StationRuntime, categories: CategoryIndex) -> dict[str, Any]:
         saved, results = categories.resolutions()
-        uses = all_uses()
+        uses = clockwheel_uses(station.paths.clockwheels)
         folder = categories.folder
-        library = bridge.library
+        library = station.bridge.library
         from autodj.clock_conditions import genres
 
         source = getattr(library, "clock_beets", None)
         known, _, beets_error = source.snapshot() if source else ((), None, None)
         entries = library.entries_snapshot()
-        if entries is not genre_entries:
-            genre_names = sorted(
+        seen = genres_seen.get(id(library))
+        if seen is None or seen[0] is not entries:
+            names = sorted(
                 {value for entry in entries for value in genres(entry.genre)}, key=str.casefold
             )
-            genre_entries = entries
+            genres_seen[id(library)] = seen = (entries, names)
+        genre_names = seen[1]
         return {
             "categories": [
                 {
                     **category.model_dump(mode="json"),
                     **counts(results[category.id]),
-                    **daypart(category),
+                    **daypart(station, category),
                     "used_by": uses.get(category.id, []),
                 }
                 for category in saved
@@ -146,7 +136,7 @@ def install_categories(
             "genres": genre_names,
             "beets_fields": sorted(known),
             "beets_error": beets_error,
-            "beets": bridge.player._cfg.library.beets_db is not None,
+            "beets": station.cfg.library.beets_db is not None,
         }
 
     def checked(categories: CategoryIndex, spec: CategorySpec) -> Resolution:
@@ -163,8 +153,10 @@ def install_categories(
             raise CategoryError(field, result.error)
         return result
 
-    def write(category_id: str | None, spec: CategorySpec) -> dict[str, Any]:
-        categories = index()
+    def write(
+        station: StationRuntime, category_id: str | None, spec: CategorySpec
+    ) -> dict[str, Any]:
+        categories = index(station)
         with write_lock:
             saved = list(categories.categories())
             others = [c for c in saved if c.id != category_id]
@@ -182,64 +174,71 @@ def install_categories(
                 saved = [category if c.id == category_id else c for c in saved]
             categories.save(saved)
         return {
-            "category": {**category.model_dump(mode="json"), **counts(result), **daypart(category)},
-            **listing(categories),
+            "category": {
+                **category.model_dump(mode="json"),
+                **counts(result),
+                **daypart(station, category),
+            },
+            **listing(station, categories),
         }
 
-    def remove(category_id: str) -> dict[str, Any]:
-        categories = index()
+    def remove(station: StationRuntime, category_id: str) -> dict[str, Any]:
+        categories = index(station)
         with write_lock:
             saved = list(categories.categories())
             kept = [c for c in saved if c.id != category_id]
             if len(kept) == len(saved):
                 raise KeyError(category_id)
             categories.save(kept)
-        return listing(categories)
+        return listing(station, categories)
 
     def unknown() -> HTTPException:
         return HTTPException(status_code=404, detail="That category no longer exists")
 
-    @app.get("/api/categories")
-    async def categories_list() -> dict[str, Any]:
+    @router.get("/categories")
+    async def categories_list(station: StationDep) -> dict[str, Any]:
         """Return the categories with their counts, and what the form chooses from."""
-        return await asyncio.to_thread(listing, index())
+        return await asyncio.to_thread(listing, station, index(station))
 
-    @app.post("/api/categories/check", response_model=None)
-    async def categories_check(body: dict[str, Any] = Body(...)) -> dict[str, Any] | JSONResponse:
+    @router.post("/categories/check", response_model=None)
+    async def categories_check(
+        station: StationDep, body: dict[str, Any] = Body(...)
+    ) -> dict[str, Any] | JSONResponse:
         """Count the songs an unsaved category holds."""
-        categories = index()
+        categories = index(station)
         try:
             spec = parse_spec(body)
         except CategoryError as exc:
             return _rejected(exc.field, exc.message)
         return counts(await asyncio.to_thread(categories.check, spec))
 
-    @app.post("/api/categories", status_code=201, response_model=None)
+    @router.post("/categories", status_code=201, response_model=None)
     async def categories_create(
+        station: StationDep,
         body: dict[str, Any] = Body(...),
     ) -> dict[str, Any] | JSONResponse:
         """Add a category."""
         try:
-            return await asyncio.to_thread(write, None, parse_spec(body))
+            return await asyncio.to_thread(write, station, None, parse_spec(body))
         except CategoryError as exc:
             return _rejected(exc.field, exc.message)
 
-    @app.put("/api/categories/{category_id}", response_model=None)
+    @router.put("/categories/{category_id}", response_model=None)
     async def categories_update(
-        category_id: str, body: dict[str, Any] = Body(...)
+        station: StationDep, category_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Replace a category; clockwheel steps keep naming it by its ID."""
         try:
-            return await asyncio.to_thread(write, category_id, parse_spec(body))
+            return await asyncio.to_thread(write, station, category_id, parse_spec(body))
         except KeyError:
             raise unknown() from None
         except CategoryError as exc:
             return _rejected(exc.field, exc.message)
 
-    @app.delete("/api/categories/{category_id}")
-    async def categories_delete(category_id: str) -> dict[str, Any]:
+    @router.delete("/categories/{category_id}")
+    async def categories_delete(station: StationDep, category_id: str) -> dict[str, Any]:
         """Delete a category; a clockwheel step that names it is skipped from now on."""
         try:
-            return await asyncio.to_thread(remove, category_id)
+            return await asyncio.to_thread(remove, station, category_id)
         except KeyError:
             raise unknown() from None

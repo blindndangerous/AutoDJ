@@ -65,8 +65,8 @@ def test_configured_and_found_packs_merge_and_the_first_source_keeps_a_name(
 ) -> None:
     cfg = load_config(environ={})
     cfg.index.index_dir = tmp_path
-    shared = tmp_path / "default" / "time_checks"
-    own = tmp_path / "default" / "stations" / "night" / "time_checks"
+    shared = tmp_path / "shared" / "time_checks"
+    own = tmp_path / "stations" / "night" / "time_checks"
     elsewhere = _write_pack(tmp_path / "voices" / "Studio", [3], [5])
     # The same folder listed in config and found is one pack, from config.
     listed = _write_pack(own / "Listed", [3], [5])

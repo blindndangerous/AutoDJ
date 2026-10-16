@@ -17,6 +17,7 @@ from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 from autodj.playlog import COLUMNS
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
 
@@ -303,7 +304,7 @@ def test_the_csv_lists_the_ad_spots_that_aired(catalog, tmp_path: Path) -> None:
     client = _paired(SimpleNamespace(catalog=catalog))
     station = client.app.state.stations.default
     # This station's own folder, not the shared stand-in the mock points at.
-    station.bridge.player._cfg.index.active_dir = tmp_path / "index"
+    point_index(station.bridge.player._cfg.index, tmp_path / "index")
     aired = datetime(2026, 9, 1, 12, 30).astimezone()
     common = {
         "run": "d" * 32,

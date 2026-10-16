@@ -24,6 +24,7 @@ from autodj.categories import (
 )
 from autodj.clockwheel import ClockSlot, pick_slot
 from autodj.player import Player
+from tests._layout import layout_index
 from tests.unit.test_dmca import _player, _with_library
 
 DENVER = ZoneInfo("America/Denver")
@@ -495,7 +496,7 @@ def test_a_saved_category_change_reaches_the_closed_songs_at_once(tmp_path: Path
         length=1,
     )
     cfg = SimpleNamespace(
-        index=SimpleNamespace(active_dir=tmp_path),
+        index=layout_index(tmp_path),
         library=SimpleNamespace(beets_db=None, music_dir=None, playlists_folder=None),
     )
     entries = (song,)

@@ -202,7 +202,9 @@ def rule_choices(station: StationRuntime, library: Any) -> dict[str, Any]:
         "genres": _clock_genres.names(library),
         "beets_fields": sorted(known),
         "beets_error": beets_error,
-        "categories": [{"id": key, "name": name} for key, name in _category_names(library).items()],
+        "categories": [
+            {"id": key, "name": name} for key, name in _category_names(station, library).items()
+        ],
     }
 
 

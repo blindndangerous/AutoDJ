@@ -32,11 +32,11 @@ from autodj.stations import (
     StoppedStation,
 )
 from autodj.stereotool_presets import PresetInUseError, delete_preset, preset_folder
+from tests._layout import point_index
 
 CONFIG = """
 [index]
 index_dir = "{root}/index"
-name = "main"
 
 [stations.nightowl.recording]
 folder = "{root}/recordings/nightowl"
@@ -65,7 +65,7 @@ def _spec(cfg: Any, slug: str) -> Any:
 
 def test_another_stations_state_is_under_its_own_folder(cfg: Any, tmp_path: Path) -> None:
     index = tmp_path / "index"
-    own = index / "main" / "stations" / "nightowl"
+    own = index / "stations" / "nightowl"
     paths = StationPaths.for_station(_spec(cfg, "nightowl").cfg, "nightowl")
     assert paths.slug == "nightowl"
     assert not paths.is_default
@@ -86,11 +86,11 @@ def test_another_stations_state_is_under_its_own_folder(cfg: Any, tmp_path: Path
         ("profiles", own / "profiles"),
     ):
         assert getattr(paths, name) == expected, name
-    # The default station's files stay where they were.
+    # The default station's are in a folder of the same kind.
     default = StationPaths.default(cfg)
-    assert default.state_dir == index / "main"
-    assert default.relay_status == index / "relay-status.json"
-    assert default.profiles == index / "profiles"
+    assert default.state_dir == index / "stations" / "default"
+    assert default.relay_status == index / "stations" / "default" / "relay-status.json"
+    assert default.profiles == index / "stations" / "default" / "profiles"
     daybreak = StationPaths.for_station(_spec(cfg, "daybreak").cfg, "daybreak")
     assert daybreak.liners == daybreak.state_dir / "liners"
 
@@ -427,7 +427,7 @@ def _bridge(tmp_path: Path, **kwargs: Any) -> PlayerBridge:
     from tests.integration._helpers import _make_player_mock, _make_sim_mock
 
     player = _make_player_mock()
-    player._cfg.index.active_dir = tmp_path / "main"
+    point_index(player._cfg.index, tmp_path / "main")
     return PlayerBridge(player=player, sim=_make_sim_mock(), **kwargs)
 
 

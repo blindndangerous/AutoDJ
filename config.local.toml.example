@@ -7,8 +7,8 @@
 # beets_db = "/srv/beets/library.db"
 
 [index]
-# Each named library directory <index_dir>/<name>/ holds library.db, dj_meta.db,
-# station state, and liner files. Default liner path: <index_dir>/<name>/liners/.
+# <index_dir> holds the library (library.db, dj_meta.db) in libraries/main/, what
+# stations share in shared/, and each station's state and liners in stations/<slug>/.
 # Keep a separate catalog per machine and register folders using that machine's paths.
 # Do not share this directory between an indexing machine and a playout machine.
 index_dir = "/srv/autodj/index"

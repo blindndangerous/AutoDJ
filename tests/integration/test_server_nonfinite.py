@@ -13,6 +13,8 @@ import math
 
 import pytest
 
+from tests._layout import point_index
+
 _JSON = {"Content-Type": "application/json"}
 
 _NON_FINITE = ("Infinity", "-Infinity", "NaN")
@@ -80,9 +82,9 @@ def test_hand_edited_profile_with_non_finite_value_is_refused(bridge, tmp_path) 
 
     from autodj.server import create_app
 
-    bridge.player._cfg.index.active_dir = str(tmp_path / "idx")
-    profiles = tmp_path / "profiles"
-    profiles.mkdir()
+    point_index(bridge.player._cfg.index, str(tmp_path / "idx"))
+    profiles = tmp_path / "idx" / "stations" / "default" / "profiles"
+    profiles.mkdir(parents=True)
     (profiles / "p.json").write_text('{"name": "p", "crossfade_seconds": NaN}', encoding="utf-8")
     before = bridge.player._cfg.playback.crossfade_seconds
 

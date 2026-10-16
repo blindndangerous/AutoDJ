@@ -297,7 +297,18 @@ class LibrarySnapshot:
         self._by_path = {
             normalize_path(entry.path): entry for entry in (*self._music, *self._liners)
         }
-        self.categories = CategoryIndex(cfg, self.entries_snapshot, lambda: self.catalog.sources())
+        from autodj.categories import store_path
+        from autodj.stations import DEFAULT_SLUG, StationPaths
+
+        paths = (
+            StationPaths.default(cfg)
+            if station == DEFAULT_SLUG
+            else StationPaths.for_station(cfg, station)
+        )
+        # The station's own categories, only read.
+        self.categories = CategoryIndex(
+            cfg, self.entries_snapshot, lambda: self.catalog.sources(), path=store_path(cfg, paths)
+        )
         self.categories.store = _ReadOnlyCategoryStore(self.categories.store.path)
         self.clock_beets = BeetsConditions(cfg)
         self.ledger = StationLedger(catalog, station, self.entry_for_path)
@@ -367,7 +378,7 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             )
         cfg = station_config(spec.cfg, root)
         paths = StationPaths.for_station(cfg, station)
-    active = Path(root.index.active_dir)
+    active = Path(root.index.library_dir)
     if not (active / "library.db").is_file():
         raise SimulationError(
             f"No music library in {active}. Start autodj serve or run autodj index first."

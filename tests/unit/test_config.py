@@ -4,7 +4,6 @@ Tests cover config loading, validation, default values, and error handling.
 All tests are pure — no filesystem I/O beyond temp files provided by fixtures.
 """
 
-import sys
 import tomllib
 from pathlib import Path
 
@@ -277,87 +276,18 @@ class TestIndexConfig:
         idx = IndexConfig.from_dict({})
         assert idx.index_dir == Path("index")
         assert idx.model_dir == Path("models")
-        assert idx.name == "default"
 
     def test_custom_paths(self) -> None:
         idx = IndexConfig.from_dict({"index_dir": "Z:/autodj-index", "model_dir": "Z:/models"})
         assert idx.index_dir == Path("Z:/autodj-index")
 
-    def test_active_dir_default(self) -> None:
-        idx = IndexConfig.from_dict({})
-        assert idx.active_dir == Path("index/default")
-
-    def test_active_dir_named(self) -> None:
-        idx = IndexConfig.from_dict({"name": "workout"})
-        assert idx.active_dir == Path("index/workout")
-        assert idx.name == "workout"
-
-    def test_blank_name_falls_back_to_default(self) -> None:
-        idx = IndexConfig.from_dict({"name": "  "})
-        assert idx.name == "default"
-
-    @pytest.mark.parametrize("name", ["chill.", "a:b"] if sys.platform != "win32" else ["chill."])
-    def test_an_existing_name_windows_reads_differently_still_loads(self, name, caplog) -> None:
-        """An install already using such a name keeps starting; it is warned about."""
-        idx = IndexConfig.from_dict({"index_dir": "srv/index", "name": name})
-        assert idx.active_dir == Path("srv/index") / name
-        assert f"[index] name {name!r}" in caplog.text
-        assert "new index names may not use it" in caplog.text
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows drive letters")
-    @pytest.mark.parametrize("name", ["C:", "D:music"])
-    def test_an_existing_name_leading_outside_index_dir_stops_loading(self, name) -> None:
-        with pytest.raises(ValueError, match="would put the index outside index_dir"):
-            IndexConfig.from_dict({"index_dir": "C:/srv/index", "name": name})
-
-
-class TestValidateIndexName:
-    def test_accepts_simple(self) -> None:
-        from autodj.config import validate_index_name
-
-        validate_index_name("default")
-        validate_index_name("workout")
-        validate_index_name("my-mix-2026")
-
-    def test_rejects_empty(self) -> None:
-        import pytest
-
-        from autodj.config import validate_index_name
-
-        with pytest.raises(ValueError):
-            validate_index_name("")
-        with pytest.raises(ValueError):
-            validate_index_name("   ")
-
-    def test_rejects_path_separators(self) -> None:
-        import pytest
-
-        from autodj.config import validate_index_name
-
-        with pytest.raises(ValueError, match="path separators"):
-            validate_index_name("index/tracks.db")
-        with pytest.raises(ValueError, match="path separators"):
-            validate_index_name("a\\b")
-
-    def test_rejects_traversal(self) -> None:
-        import pytest
-
-        from autodj.config import validate_index_name
-
-        with pytest.raises(ValueError):
-            validate_index_name("..")
-        with pytest.raises(ValueError):
-            validate_index_name(".hidden")
-        with pytest.raises(ValueError):
-            validate_index_name("foo..bar")
-
-    @pytest.mark.parametrize("name", ["C:", "D:music", "a:b", "x.", "chill "])
-    def test_rejects_names_windows_reads_as_another_folder(self, name: str) -> None:
-        """A drive letter escapes <index_dir>; a trailing dot or space is dropped."""
-        from autodj.config import validate_index_name
-
-        with pytest.raises(ValueError, match="Index name cannot"):
-            validate_index_name(name)
+    def test_the_library_shared_files_and_stations_have_their_own_folders(self, caplog) -> None:
+        idx = IndexConfig.from_dict({"index_dir": "srv/index", "name": "workout"})
+        assert idx.library_dir == Path("srv/index/libraries/main")
+        assert idx.shared_dir == Path("srv/index/shared")
+        assert idx.stations_dir == Path("srv/index/stations")
+        # Named indexes are gone: the old key is only warned about.
+        assert "name" in caplog.text
 
 
 # ---------------------------------------------------------------------------

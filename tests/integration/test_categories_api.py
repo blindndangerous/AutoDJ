@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from autodj.catalog import LibraryCatalog
 from autodj.categories import CategoryIndex
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -33,7 +34,7 @@ def _song(path, genre, year):
 def _client(tmp_path, catalog):
     player = _make_player_mock()
     player._cfg.server.access_token = _SECRET
-    player._cfg.index.active_dir = tmp_path
+    point_index(player._cfg.index, tmp_path)
     player._cfg.index.index_dir = tmp_path
     player._cfg.presets = {}
     player._cfg.library.beets_db = None
