@@ -8,6 +8,7 @@ import logging
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,9 +21,13 @@ from autodj.config import load_config, move_station_tables, station_config
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_log import (
     CURRENT_STATION,
+    CURRENT_STATION_SCOPE,
+    enter_station,
     install_log_prefix,
+    new_station_scope,
     station_thread,
     thread_name,
+    wait_for_station_threads,
 )
 from autodj.stations import (
     ExtraStation,
@@ -1105,6 +1110,7 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
         _state=SimpleNamespace(should_stop=False), _skip_event=threading.Event()
     )
     runtime = StationRuntime.__new__(StationRuntime)
+    runtime.slug = "nightowl"
     runtime.stopped = False
     runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
         scheduler_track_changed=None,
@@ -1152,6 +1158,148 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
 
     assert asyncio.run(twice()) is True
     assert calls == [1, 1]
+
+
+def test_new_station_runtime_ignores_thread_from_previous_run(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import stations
+    from autodj.stations import StationRuntime
+
+    release = threading.Event()
+    started = threading.Event()
+    previous_scope = new_station_scope("nightowl")
+
+    def work() -> None:
+        started.set()
+        release.wait()
+
+    station_token = CURRENT_STATION.set("nightowl")
+    scope_token = CURRENT_STATION_SCOPE.set(previous_scope)
+    try:
+        previous_thread = station_thread(target=work, name="autodj-previous-worker")
+    finally:
+        CURRENT_STATION_SCOPE.reset(scope_token)
+        CURRENT_STATION.reset(station_token)
+    previous_thread.start()
+    assert started.wait(1)
+
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.slug = "nightowl"
+    runtime.thread_scope = new_station_scope("nightowl")
+    runtime.player_thread = None
+    runtime.bridge = SimpleNamespace(player=SimpleNamespace(_continuous_master=None))  # type: ignore[assignment]
+    runtime._broadcast_task = None
+    runtime._close_task = None
+    runtime.stop_problems = []
+
+    try:
+        monkeypatch.setattr(stations, "_THREAD_JOIN_TIMEOUT_S", 0.05)
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(runtime.close())
+        assert previous_thread.is_alive()
+        assert "autodj-previous-worker-nightowl" not in caplog.text
+    finally:
+        release.set()
+        previous_thread.join(1)
+    new_station_scope("nightowl")
+    assert not previous_scope.threads
+
+
+def test_station_close_warns_when_background_thread_outlives_deadline(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import stations
+    from autodj.stations import StationRuntime
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def work() -> None:
+        entered.set()
+        release.wait(5)
+
+    scope = new_station_scope("nightowl")
+    token = CURRENT_STATION.set("nightowl")
+    scope_token = CURRENT_STATION_SCOPE.set(scope)
+    try:
+        worker = station_thread(target=work, name="autodj-test-worker")
+    finally:
+        CURRENT_STATION_SCOPE.reset(scope_token)
+        CURRENT_STATION.reset(token)
+    worker.start()
+    assert entered.wait(1)
+
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.slug = "nightowl"
+    runtime.thread_scope = scope
+    runtime.stopped = False
+    runtime.live = SimpleNamespace(source=None)  # type: ignore[assignment]
+    runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
+        scheduler_track_changed=None,
+        player=SimpleNamespace(
+            _state=SimpleNamespace(should_stop=False), _skip_event=threading.Event()
+        ),
+    )
+    runtime._schedule_ticker = None
+    runtime._stream_ticker = None
+    runtime.webhooks = SimpleNamespace(close=lambda: None)  # type: ignore[assignment]
+    runtime.stream_out = None
+    runtime.recorder = None
+    runtime.server_audio = False
+    runtime.player_thread = None
+    runtime._stop_task = None
+    runtime._close_task = None
+    runtime._broadcast_task = None
+    runtime.stop_problems = []
+
+    try:
+        monkeypatch.setattr(stations, "_THREAD_JOIN_TIMEOUT_S", 0.05)
+        assert asyncio.run(runtime.stop(0.05)) is True
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(runtime.close())
+        assert worker.is_alive()
+        assert "autodj-test-worker-nightowl" in caplog.text
+        release.set()
+        worker.join(1)
+        assert not worker.is_alive()
+    finally:
+        release.set()
+        worker.join(1)
+
+
+def test_station_thread_wait_joins_liner_pool_worker_within_one_deadline() -> None:
+    release = threading.Event()
+    entered = threading.Event()
+    scope = new_station_scope("nightowl")
+    token = CURRENT_STATION.set("nightowl")
+    try:
+        worker = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=thread_name("autodj-liner"),
+            initializer=enter_station,
+            initargs=(CURRENT_STATION.get(), scope),
+        )
+    finally:
+        CURRENT_STATION.reset(token)
+
+    def work() -> None:
+        entered.set()
+        release.wait(5)
+
+    future = worker.submit(work)
+    assert entered.wait(1)
+    worker.shutdown(wait=False, cancel_futures=True)
+    timer = threading.Timer(0.05, release.set)
+    timer.start()
+    try:
+        assert wait_for_station_threads(scope, 1.0) == []
+        future.result(timeout=1)
+    finally:
+        release.set()
+        timer.join(1)
 
 
 def test_leftover_mastering_processes_are_killed_and_none_start_after(tmp_path: Path) -> None:
@@ -1379,11 +1527,17 @@ def test_a_hold_that_fails_still_closes_the_pages(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
-def test_mastering_children_die_with_autodj_on_windows() -> None:
+def test_mastering_children_die_with_autodj_on_windows(monkeypatch) -> None:
     import ctypes
     import subprocess
 
+    from autodj import child_jobs
     from autodj.child_jobs import bind_to_autodj
+
+    # Start from a fresh job: an earlier test whose stand-in process Windows
+    # refused leaves the module marked unavailable for the rest of the run.
+    monkeypatch.setattr(child_jobs, "_job", None)
+    monkeypatch.setattr(child_jobs, "_unavailable", False)
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:

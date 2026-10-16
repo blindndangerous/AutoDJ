@@ -151,6 +151,18 @@ def _without_liner_workers(names: list[str]) -> list[str]:
     return [name for name in names if not name.startswith("autodj-liner-")]
 
 
+def _wait_for_new_threads_to_end(slug: str, already: set[threading.Thread], what: str) -> None:
+    """Wait for *slug*'s threads started since *already* was taken to end."""
+
+    def new() -> list[threading.Thread]:
+        return [thread for thread in _station_threads(slug) if thread not in already]
+
+    try:
+        _wait_for(lambda: not new(), what)
+    except AssertionError as exc:
+        raise AssertionError(f"{exc}: {sorted(thread.name for thread in new())}") from None
+
+
 def _wait_for(predicate: Any, what: str) -> None:
     deadline = time.monotonic() + WAIT
     while not predicate():
@@ -162,9 +174,13 @@ def _wait_for(predicate: Any, what: str) -> None:
 @pytest.fixture
 def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> Any:
     """Build the app as serve() does; yield (client, library, config); shut down after."""
+    # Threads another test in this worker left behind are not this rig's to wait for.
+    already = set(_station_threads("default")) | set(_station_threads("nightowl"))
     values = getattr(request, "param", {})
     FakeMaster.instances = []
     monkeypatch.setattr("autodj.stream.FfmpegEncoder", FakeEncoder)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "ffmpeg")
+    monkeypatch.setattr("autodj.stream.probe_encoder", lambda *_args: None)
     monkeypatch.setattr("autodj.mastering.ContinuousMaster", FakeMaster)
     closes: list[str] = []
     real_close = __import__("autodj.dj_meta", fromlist=["close_cache"]).close_cache
@@ -196,8 +212,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     )
     with TestClient(app, client=("192.0.2.4", 50000)) as client:
         yield client, library, cfg, song, closes
-    assert _station_threads("default") == []
-    assert _station_threads("nightowl") == []
+    _wait_for_new_threads_to_end("default", already, "the default station's threads to end")
+    _wait_for_new_threads_to_end("nightowl", already, "Night Owl's threads to end")
     assert closes == ["closed"]  # once, after both players were quiet
 
 
