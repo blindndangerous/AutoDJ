@@ -40,9 +40,9 @@ def unused_related_artists_message(exc: OSError | ValueError, kind: str = "artis
     )
 
 
-def _ensure_file(active_dir: Path, name: str) -> Path:
+def _ensure_file(library_dir: Path, name: str) -> Path:
     """Return the library folder's file *name*, installing the bundled sample if absent."""
-    destination = Path(active_dir) / name
+    destination = Path(library_dir) / name
     destination.parent.mkdir(parents=True, exist_ok=True)
     sample = importlib.resources.files("autodj").joinpath("data", name)
     if destination.exists():
@@ -56,30 +56,30 @@ def _ensure_file(active_dir: Path, name: str) -> Path:
     return destination
 
 
-def ensure_related_artists_file(active_dir: Path) -> Path:
+def ensure_related_artists_file(library_dir: Path) -> Path:
     """Return the library folder's file, installing the bundled sample if absent."""
-    return _ensure_file(active_dir, DEFAULT_RELATED_ARTISTS_FILE)
+    return _ensure_file(library_dir, DEFAULT_RELATED_ARTISTS_FILE)
 
 
-def ensure_related_tracks_file(active_dir: Path) -> Path:
+def ensure_related_tracks_file(library_dir: Path) -> Path:
     """Return the library folder's related tracks file, installing the bundled sample if absent."""
-    return _ensure_file(active_dir, DEFAULT_RELATED_TRACKS_FILE)
+    return _ensure_file(library_dir, DEFAULT_RELATED_TRACKS_FILE)
 
 
-def load_configured_related_artists(active_dir: Path | None) -> RelatedArtists:
+def load_configured_related_artists(library_dir: Path | None) -> RelatedArtists:
     """Load user links, using an empty set when no index folder is configured."""
     from autodj.repeat_rules import RelatedArtists, load_related_artists
 
-    if active_dir is None:
+    if library_dir is None:
         return RelatedArtists()
-    path = ensure_related_artists_file(active_dir)
+    path = ensure_related_artists_file(library_dir)
     return load_related_artists(path)
 
 
-def load_configured_related_tracks(active_dir: Path | None) -> RelatedTracks:
+def load_configured_related_tracks(library_dir: Path | None) -> RelatedTracks:
     """Load the related track groups, empty when no index folder is configured."""
     from autodj.repeat_rules import RelatedTracks, load_related_tracks
 
-    if active_dir is None:
+    if library_dir is None:
         return RelatedTracks()
-    return load_related_tracks(ensure_related_tracks_file(active_dir))
+    return load_related_tracks(ensure_related_tracks_file(library_dir))
