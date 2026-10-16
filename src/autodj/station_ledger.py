@@ -7,10 +7,9 @@ and settings such as the active clockwheel and its place.
 
 A :class:`StationLedger` buffers these the way the library always has:
 the player and the mix bus record a play without touching SQLite, and
-:meth:`StationLedger.flush` writes them on the library's tick.  The
-default station keeps today's storage exactly (``catalog_entries.last_played``
-and the ``"clock"`` setting); any other station keeps its last plays in
-``station_plays`` and its settings under ``"<name>:<slug>"`` keys.
+:meth:`StationLedger.flush` writes them on the library's tick.  The default
+station and each additional station use their own station database, with
+the same tables, while the shared catalog keeps track metadata and cues.
 """
 
 from __future__ import annotations

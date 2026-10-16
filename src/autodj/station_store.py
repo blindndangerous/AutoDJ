@@ -183,7 +183,7 @@ class StationStore:
             if start is not None and end is not None:
                 self._db.create_function("in_report_range", 1, in_range)
             rows = self._db.execute(
-                "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"
+                "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
                 "CASE WHEN h.kind='live' THEN 'live' ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
                 "h.performances,h.ended_at" + following + " FROM play_history h "
                 "WHERE h.interrupted=0" + where + " ORDER BY h.rowid"

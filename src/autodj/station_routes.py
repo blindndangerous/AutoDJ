@@ -562,7 +562,8 @@ def _clock_setting(station: StationRuntime, library: Any) -> dict:
     ledger = getattr(station, "ledger", None)
     if ledger is None:
         ledger = (
-            library.ledger if station.slug == DEFAULT_SLUG and hasattr(library, "ledger")
+            library.ledger
+            if station.slug == DEFAULT_SLUG and hasattr(library, "ledger")
             else library.station_ledger(station.slug)
         )
     setting = ledger.get_setting("clock", {})
