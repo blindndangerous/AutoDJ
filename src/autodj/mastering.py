@@ -87,6 +87,7 @@ logger = logging.getLogger(__name__)
 BLOCK_FRAMES: Final = 882
 BLOCK_SECONDS: Final = BLOCK_FRAMES / SAMPLE_RATE
 STARTUP_BLOCKS: Final = 12
+_STARTUP_TIMEOUT_SECONDS: Final = 5.0
 # Keep six jitter blocks above the FFmpeg filter's measured 14-block delay.
 # The extra cushion absorbs short Windows pipe/thread scheduling gaps, including
 # the first blocks after a restarted FFmpeg process.
@@ -299,6 +300,18 @@ class ContinuousMaster:
         self._overflow_reported = False
         self._worker = station_thread(target=self._lifecycle, name="autodj-master", daemon=True)
         self._worker.start()
+
+    @property
+    def startup_pending(self) -> bool:
+        """Warm on silence before consuming the first track; never hold recovery."""
+        with self._lock:
+            if self._closed or not self._enabled or self._ready or self._failed or self._recovering:
+                return False
+            if time.monotonic() - self._warmup_started < _STARTUP_TIMEOUT_SECONDS:
+                return True
+            self._recovering = True
+            self._set_error("master startup exceeded 5 seconds; using bounded bypass while warming")
+            return False
 
     @property
     def latency_seconds(self) -> float:

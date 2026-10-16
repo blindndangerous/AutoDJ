@@ -810,3 +810,34 @@ def test_warmup_does_not_hide_program_or_running_overflows(phase, caplog):
         assert len(master._input) == _QUEUE_BLOCKS
     finally:
         master.close()
+
+
+@pytest.mark.parametrize("release", ["ready", "failed", "recovering", "disabled", "timeout"])
+def test_startup_hold_is_bounded_and_never_holds_recovery(release, monkeypatch):
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    now = [10.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        assert master.startup_pending
+        if release == "timeout":
+            now[0] += 5.0
+        elif release == "disabled":
+            master._enabled = False
+        else:
+            setattr(master, f"_{release}", True)
+        assert not master.startup_pending
+        if release == "timeout":
+            assert "exceeded 5 seconds" in master.error
+            # The processor continues receiving audio while bounded bypass plays.
+            for _ in range(25):
+                output = master.process(_block(0.01))
+            assert np.any(output)
+            assert len(master._input) == 25
+            assert not master.startup_pending
+    finally:
+        master.close()
