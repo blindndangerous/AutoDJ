@@ -207,6 +207,41 @@ def _stations(client: TestClient) -> dict[str, dict[str, Any]]:
     return {entry["slug"]: entry for entry in response.json()["stations"]}
 
 
+def test_track_info_uses_selected_station_play_history(
+    rig: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, library, _cfg, song, _closes = rig
+    library.catalog.put_entry(song)
+    other = make_entry(Path(song.path).with_name("never-played.flac"))
+    library.catalog.put_entry(other)
+    entries = {song.path: song, other.path: other}
+    monkeypatch.setattr(library, "entry_for_path", lambda path: entries.get(str(path)))
+    library.station_ledger("default").remember_play(song.path, 10)
+    library.station_ledger("nightowl").remember_play(song.path, 20)
+
+    response = client.get("/api/library/points", params={"path": song.path})
+    assert response.status_code == 200, response.text
+    assert response.json().get("last_played") == 10, response.text
+    assert (
+        client.get("/api/library/points", params={"path": song.path, "station": "nightowl"}).json()[
+            "last_played"
+        ]
+        == 20
+    )
+    assert (
+        client.get(
+            "/api/library/points", params={"path": other.path, "station": "nightowl"}
+        ).json()["last_played"]
+        == 0
+    )
+    assert (
+        client.get(
+            "/api/library/points", params={"path": song.path, "station": "missing"}
+        ).status_code
+        == 404
+    )
+
+
 def test_create_station_registers_stopped_and_persists(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
     response = client.post(

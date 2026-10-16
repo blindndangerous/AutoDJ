@@ -425,6 +425,47 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/points", expect.objectContaining({ method: "POST" }));
   });
 
+  it("carries the selected station through Track info reads and saves", async () => {
+    const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
+      ? { path: "M:/song.flac", kind: "music", length: 200, points: { start: 1, end: 190 }, last_played: 20 }
+      : { last_played: 20 });
+    installLibraryFolders({ document, request, getStation: () => "nightowl" });
+    await document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(request.mock.calls[0][0]).toBe("/api/library/points?path=M%3A%2Fsong.flac&station=nightowl");
+    document.querySelector('[data-point="start"]').value = "2";
+    document.getElementById("points-save").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).station).toBe("nightowl");
+  });
+
+  it("refreshes only play time on station switch and ignores a late prior-station reply", async () => {
+    let station = "default";
+    let finishOldRefresh;
+    let pointsReads = 0;
+    const request = vi.fn((url) => {
+      if (!url.startsWith("/api/library/points?")) return Promise.resolve({});
+      pointsReads += 1;
+      if (pointsReads === 1) return Promise.resolve({ path: "M:/song.flac", kind: "music", length: 200, points: { start: 1, end: 190 }, last_played: 10 });
+      if (url.includes("station=nightowl")) return Promise.resolve({ path: "M:/song.flac", last_played: 172800 });
+      return new Promise((resolve) => { finishOldRefresh = () => resolve({ path: "M:/song.flac", last_played: 10 }); });
+    });
+    const controls = installLibraryFolders({ document, request, getStation: () => station });
+    void controls.openEditor("M:/song.flac");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const lastPlayed = () => [...document.querySelectorAll("#track-info-details dt")]
+      .find((term) => term.textContent === "Last played").nextElementSibling.textContent;
+    const initialTimestamp = lastPlayed();
+    document.querySelector('[data-point="start"]').value = "2";
+    const oldRefresh = controls.refreshIntros();
+    station = "nightowl";
+    await controls.refreshIntros();
+    finishOldRefresh();
+    await oldRefresh;
+    expect(document.querySelector('[data-point="start"]').value).toBe("2");
+    expect(lastPlayed()).not.toBe(initialTimestamp);
+  });
+
   it("opens liner points from a folder row event and exposes only its source window", async () => {
     const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
       ? { path: "N:/voice/same.wav", kind: "liner", length: 4, points: { start: 0.2, segue: 2.6, end: 3.8 } }
