@@ -35,7 +35,7 @@ export function parsePointTime(value) {
     const seconds = Number(long[2]) * 3600 + Number(long[3]) * 60 + Number(long[4]);
     if (Number.isFinite(seconds)) return long[1] ? -seconds : seconds;
   }
-  throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
+  throw new Error("Enter seconds, minutes:seconds or hours:minutes:seconds, for example 1:05:00");
 }
 
 export function formatPointTime(value) {
@@ -103,6 +103,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     progress.insertAdjacentElement("afterend", errorList);
   }
   let errorSignature = "";
+  let importRunning = false;
   const pathInput = doc.getElementById("source-folder-path");
   const kindInput = doc.getElementById("source-folder-kind");
   const recursiveInput = doc.getElementById("source-folder-recursive");
@@ -279,7 +280,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
-    progress.textContent = importSummary(data);
+    const summary = importSummary(data);
+    progress.textContent = summary;
+    if (importRunning && !data.import?.running) announceAction(summary);
+    importRunning = !!data.import?.running;
     renderErrors(data.import?.errors || []);
   }
   // The real failures (unreadable or undecodable files, folders that could
@@ -837,6 +841,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     autoRescan?.clear();
     advancedLength?.clear();
     errorSignature = "";
+    importRunning = false;
     errorList.hidden = true;
     errorList.open = false;
     errorList.querySelector("ul").replaceChildren();

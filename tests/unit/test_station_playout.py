@@ -1414,7 +1414,6 @@ def test_prefetch_does_not_stamp_old_audio_with_changes_during_decode(decoded, m
     monkeypatch.setattr(
         player, "_load_playout_audio", lambda entry: Player._load_playout_audio(player, entry)
     )
-    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
     entered, release = threading.Event(), threading.Event()
     decodes = []
 
@@ -1467,7 +1466,6 @@ def test_first_loudness_measurement_keeps_the_prefetched_decode(decoded, monkeyp
     monkeypatch.setattr(
         player, "_load_playout_audio", lambda entry: Player._load_playout_audio(player, entry)
     )
-    monkeypatch.setattr("autodj.processing.probe_seconds", lambda _path: None)
     audio = np.full((100, 2), 0.3, np.float32)
     measure = MagicMock(return_value=(audio, measured))
     monkeypatch.setattr("autodj.processing.load_and_measure_audio", measure)

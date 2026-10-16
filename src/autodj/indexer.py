@@ -974,6 +974,7 @@ def _analyse_one_track(path: str, points: dict | None = None) -> Any | None:
     from autodj.stereo import LONG_TRACK_SECONDS, SAMPLE_RATE
 
     seconds = estimated_seconds(Path(path))
+    audio: np.ndarray | None = None
     if seconds is not None and seconds > LONG_TRACK_SECONDS:
         # A long track is analysed from its start and end, read as it streams.
         windows = read_windows(Path(path))
@@ -987,7 +988,11 @@ def _analyse_one_track(path: str, points: dict | None = None) -> Any | None:
                 points.get("intro"),
                 points.get("outro"),
             )
-    audio, sr = _load_audio(Path(path))
+        audio = windows
+    if audio is None:
+        audio, sr = _load_audio(Path(path))
+    else:
+        sr = SAMPLE_RATE
     if len(audio) == 0:
         return None
     if points is None:

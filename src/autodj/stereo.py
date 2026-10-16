@@ -19,6 +19,7 @@ import shutil
 import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
 import tempfile
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import IO
 
@@ -39,6 +40,34 @@ _SPILL_BYTES = SPILL_FRAMES * 2 * 4
 #: structure analysis never holds more than a few minutes of it.
 LONG_TRACK_SECONDS = 15 * 60
 ANALYSIS_WINDOW_SECONDS = 5 * 60
+_spill_dir = Path("index") / "cache" / "spill"
+
+
+def configure_spill_dir(index_dir: Path) -> None:
+    """Use the index disk for long decodes and remove leftovers from earlier runs."""
+    global _spill_dir
+    _spill_dir = Path(index_dir) / "cache" / "spill"
+    if _spill_dir.is_dir():
+        for stale in _spill_dir.glob("autodj-audio-*"):
+            # Windows keeps an active mapping's file locked.
+            with suppress(OSError):
+                stale.unlink()
+
+
+def _spill_location() -> Path | None:
+    """Return writable spill directory, or system temp when unavailable."""
+    try:
+        _spill_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=_spill_dir):
+            pass
+    except OSError:
+        logger.warning("Cannot write audio spill directory %s; using system temp", _spill_dir)
+        return None
+    return _spill_dir
+
+
+def _temporary_file() -> IO[bytes]:
+    return tempfile.TemporaryFile(prefix="autodj-audio-", dir=_spill_location())
 
 
 def _mapped(nbytes: int) -> mmap.mmap:
@@ -47,13 +76,19 @@ def _mapped(nbytes: int) -> mmap.mmap:
     The file has no name once it is open (POSIX) or is deleted when the
     mapping closes (Windows), so nothing is left behind.
     """
-    with tempfile.TemporaryFile(prefix="autodj-audio-") as handle:
+    with _temporary_file() as handle:
         if hasattr(os, "posix_fallocate"):
             # Reserve the space now: a full disk is an OSError here, not a
             # crash (SIGBUS) when a sparse page is first written.
             os.posix_fallocate(handle.fileno(), 0, nbytes)
-        else:
+        elif os.name == "nt":
             handle.truncate(nbytes)
+        else:
+            # truncate leaves holes on macOS; write pages before mapping.
+            block = bytes(8 * 1024 * 1024)
+            for offset in range(0, nbytes, len(block)):
+                handle.write(block[: min(len(block), nbytes - offset)])
+            handle.flush()
         return mmap.mmap(handle.fileno(), nbytes)
 
 
@@ -102,7 +137,7 @@ class AudioSpool:
     def write(self, data: bytes) -> None:
         """Append *data*."""
         if self._file is None and len(self._memory) + len(data) > _SPILL_BYTES:
-            self._file = tempfile.TemporaryFile(prefix="autodj-audio-")  # noqa: SIM115
+            self._file = _temporary_file()
             self._file.write(self._memory)
             self._memory = bytearray()
         if self._file is not None:
@@ -296,7 +331,12 @@ def load_with_ffmpeg(
     # Spool larger decodes to disk so the WAV byte stream does not duplicate a
     # full track in RAM alongside the numpy array.  The returned array remains
     # valid after the temporary file closes.
-    with tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024) as decoded:
+    spill_dir = _spill_location()
+    with tempfile.SpooledTemporaryFile(
+        max_size=16 * 1024 * 1024,
+        prefix="autodj-audio-",
+        dir=str(spill_dir) if spill_dir is not None else None,
+    ) as decoded:
         result = subprocess.run(  # nosec B603 -- fixed argv, no shell
             command,
             stdout=decoded,

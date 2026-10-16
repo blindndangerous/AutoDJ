@@ -2950,6 +2950,9 @@ def serve(
     import faiss
 
     from autodj.config import StationSpec, validate_server_exposure
+    from autodj.stereo import configure_spill_dir
+
+    configure_spill_dir(cfg.index.index_dir)
 
     # One exact search per pick: OpenMP's thread pool makes it slower (27 ms
     # on one thread against 41 ms on four, measured on 77k tracks) and

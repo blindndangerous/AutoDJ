@@ -42,10 +42,11 @@ def _mapped(array: np.ndarray) -> bool:
 
 
 @pytest.fixture
-def tiny_spill(monkeypatch):
+def tiny_spill(monkeypatch, tmp_path):
     """Spill anything over a tenth of a second to a temporary file."""
     monkeypatch.setattr(stereo, "SPILL_FRAMES", SR // 10)
     monkeypatch.setattr(stereo, "_SPILL_BYTES", SR // 10 * 8)
+    monkeypatch.setattr(stereo, "_spill_dir", tmp_path / "spill")
     monkeypatch.setattr(music_speed, "SPILL_FRAMES", SR // 10)
 
 
@@ -129,6 +130,12 @@ def test_ffmpeg_time_limit_grows_with_the_track(tmp_path, monkeypatch) -> None:
     assert processing._ffmpeg_timeout(tmp_path / "missing.wav") == 1
 
 
+def test_known_long_track_starts_rolling_after_two_windows() -> None:
+    sink = processing._WindowSink(10, 100, long_header=True)
+    sink(np.ones((21, 2), np.float32).tobytes())
+    assert sink.head is not None and len(sink.head) == 10
+
+
 @needs_ffmpeg
 def test_long_track_is_read_once_keeping_its_start_and_end(tmp_path) -> None:
     source = _song(tmp_path / "mix.wav")
@@ -167,6 +174,24 @@ def test_long_track_basic_analysis_uses_its_ends_on_the_whole_timeline(
     assert again.length == pytest.approx(8.0)
 
 
+@pytest.mark.parametrize("sound_start,sound_end", [(3.0, 7.0), (1.0, 3.0)])
+@needs_ffmpeg
+def test_long_track_cues_survive_silent_windows(
+    tmp_path, monkeypatch, sound_start, sound_end
+) -> None:
+    audio = np.zeros((8 * SR, 2), np.float32)
+    audio[round(sound_start * SR) : round(sound_end * SR)] = 0.2
+    source = tmp_path / "silent-ends.wav"
+    sf.write(source, audio, SR, subtype="FLOAT")
+    monkeypatch.setattr(processing, "LONG_TRACK_SECONDS", 3.0)
+    monkeypatch.setattr(processing, "ANALYSIS_WINDOW_SECONDS", 1.0)
+    windows = processing.load_for_analysis(source)
+    assert isinstance(windows, processing.TrackWindows)
+    _, points = processing.analyze_basic(source, audio=windows)
+    assert points["start"] == pytest.approx(sound_start, abs=1 / SR)
+    assert points["end"] == pytest.approx(sound_end, abs=1 / SR)
+
+
 def test_long_track_beats_and_cues_come_from_its_ends(monkeypatch) -> None:
     calls = []
 
@@ -176,7 +201,7 @@ def test_long_track_beats_and_cues_come_from_its_ends(monkeypatch) -> None:
             intro_start_s=0.5,
             intro_end_s=intro_end_s or 0.0,
             outro_start_s=outro_start_s or 0.0,
-            beats=[1.0, 2.0],
+            beats=[i * 0.05 for i in range(35)] if len(calls) == 1 else [1.0, 2.0],
             analysed=True,
             cues=[
                 Cue(1.0, "first_downbeat"),
@@ -194,7 +219,7 @@ def test_long_track_beats_and_cues_come_from_its_ends(monkeypatch) -> None:
     assert calls == [(300, 2.0, 3.0), (300, 0.0, 1.0)]
     assert meta.analysed and meta.intro_start_s == 0.5 and meta.intro_end_s == 2.0
     assert meta.outro_start_s == pytest.approx(28.0)
-    assert meta.beats == [1.0, 2.0, 28.0, 29.0]
+    assert meta.beats == [i * 0.05 for i in range(32)] + [28.0, 29.0]
     assert [(c.time_s, c.type) for c in meta.cues] == [
         (1.0, "first_downbeat"),
         (1.5, "phrase"),

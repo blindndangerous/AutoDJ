@@ -563,7 +563,7 @@ class LibraryManager:
 
         self.catalog.set_setting(ADVANCED_MAX_MINUTES_KEY, minutes)
         with self._lock:
-            self._scan_generation += 1
+            self._analysis_started_generation = None
             self._analysis_idle = None
 
     def tick(self) -> None:

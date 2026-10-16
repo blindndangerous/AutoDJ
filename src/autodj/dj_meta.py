@@ -1530,7 +1530,8 @@ def analyse_windows(
         intro_start_s=first.intro_start_s,
         intro_end_s=first.intro_end_s,
         outro_start_s=tail_start_s + last.outro_start_s,
-        beats=first.beats + [b + tail_start_s for b in last.beats if b + tail_start_s > head_s],
+        beats=first.beats[: len(first.beats) // 32 * 32]
+        + [b + tail_start_s for b in last.beats if b + tail_start_s > head_s],
         analysed=True,
         cues=sorted(cues, key=lambda cue: cue.time_s),
     )

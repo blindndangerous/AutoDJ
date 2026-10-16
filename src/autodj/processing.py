@@ -40,6 +40,7 @@ TARGET_LUFS = {"music": -28.0, "liner": -28.0, "voice": -28.0}
 MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
 _FFMPEG_TIMEOUT_S = 600
 _READ_CHUNK_BYTES = 1 << 16
+_SILENCE_AMPLITUDE = 10 ** (-60 / 20)
 VOICE_FILTER = (
     "highpass=f=70,acompressor=threshold=0.063095734:ratio=2:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"
@@ -238,9 +239,7 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
         return False
 
 
-def load_processed_audio(
-    source: Path, measurement: dict, kind: str = "music", max_seconds: float | None = None
-) -> np.ndarray:
+def load_processed_audio(source: Path, measurement: dict, kind: str = "music") -> np.ndarray:
     """Decode the original source and apply its cached constant loudness gain."""
     _kind(kind)
     if not loudness_matches(measurement, source, kind):
@@ -267,8 +266,6 @@ def load_processed_audio(
         "-ac",
         "2",
     ]
-    if max_seconds is not None:
-        command += ["-t", str(max_seconds + 1.0)]
     command += ["-f", "f32le", "pipe:1"]
     returncode, output, stderr = _stream_ffmpeg(command, timeout=_ffmpeg_timeout(source))
     detail = stderr.decode(errors="replace").strip()
@@ -280,8 +277,6 @@ def load_processed_audio(
         )
     # The buffer is writable, so the samples use it in place with no copy.
     audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
-    if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
-        raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
     after = source.stat()
     if (after.st_size, after.st_mtime_ns) != (measurement["size"], measurement["mtime_ns"]):
         raise RuntimeError(f"source changed during audio decode: {source}")
@@ -427,31 +422,6 @@ def _ffprobe_seconds(source: Path) -> float | None:
     return seconds if math.isfinite(seconds) and seconds > 0 else None
 
 
-def probe_seconds(source: Path) -> float | None:
-    """Return a header duration suitable for refusing an over-long file.
-
-    MP3 without a known bitrate mode, raw AAC, and damaged MPEG headers may
-    only provide estimates. Return ``None`` for those so callers use the
-    bounded decode instead of rejecting a playable track from an estimate.
-    """
-    from mutagen.mp3 import MPEGInfo
-
-    from autodj.audio_meta import _open_mutagen
-
-    info = getattr(_open_mutagen(source), "info", None)
-    if isinstance(info, MPEGInfo):
-        from mutagen.mp3 import BitrateMode
-
-        if info.sketchy or info.bitrate_mode == BitrateMode.UNKNOWN:
-            return None
-    elif source.suffix.lower() in {".mp3", ".mp2", ".aac"}:
-        return None
-    seconds = getattr(info, "length", 0.0)
-    if math.isfinite(seconds) and seconds > 0:
-        return float(seconds)
-    return _ffprobe_seconds(source)
-
-
 def estimated_seconds(source: Path) -> float | None:
     """The length the file's header gives, estimates included, or ``None``.
 
@@ -479,6 +449,8 @@ class TrackWindows:
         tail_start: The frame of the whole track where *tail* begins.
         frames: The whole track's length in frames, as decoded.
         energy: The RMS of the whole track's mono mix, measured as it decoded.
+        first_audible: First whole-track frame at or above -60 dBFS, if any.
+        last_audible: Frame after the last one at or above -60 dBFS, if any.
     """
 
     head: np.ndarray
@@ -486,6 +458,8 @@ class TrackWindows:
     tail_start: int
     frames: int
     energy: float
+    first_audible: int | None
+    last_audible: int | None
 
     @property
     def seconds(self) -> float:
@@ -501,9 +475,9 @@ class TrackWindows:
 class _WindowSink:
     """Keep a decode's start and a rolling end, and its mono energy."""
 
-    def __init__(self, window_frames: int, whole_frames: int) -> None:
+    def __init__(self, window_frames: int, whole_frames: int, long_header: bool = False) -> None:
         self.window = window_frames
-        self.whole = whole_frames
+        self.whole = min(whole_frames, 2 * window_frames) if long_header else whole_frames
         self.pending = b""
         self.start: list[np.ndarray] = []
         self.head: np.ndarray | None = None
@@ -511,6 +485,8 @@ class _WindowSink:
         self.tail_frames = 0
         self.frames = 0
         self.sum_squares = 0.0
+        self.first_audible: int | None = None
+        self.last_audible: int | None = None
 
     def __call__(self, data: bytes) -> None:
         data = self.pending + data
@@ -519,6 +495,11 @@ class _WindowSink:
         if not usable:
             return
         chunk = np.frombuffer(data[:usable], dtype="<f4").reshape(-1, 2)
+        audible = np.flatnonzero(np.any(np.abs(chunk) >= _SILENCE_AMPLITUDE, axis=1))
+        if len(audible):
+            if self.first_audible is None:
+                self.first_audible = self.frames + int(audible[0])
+            self.last_audible = self.frames + int(audible[-1]) + 1
         channel_mean = chunk.mean(axis=1, dtype=np.float64)
         self.sum_squares += float(np.dot(channel_mean, channel_mean))
         self.frames += len(chunk)
@@ -565,7 +546,12 @@ def read_windows(
     source = Path(source)
     window = ANALYSIS_WINDOW_SECONDS if window_seconds is None else window_seconds
     whole = LONG_TRACK_SECONDS if whole_seconds is None else whole_seconds
-    sink = _WindowSink(round(window * SAMPLE_RATE), round(whole * SAMPLE_RATE))
+    seconds = estimated_seconds(source)
+    sink = _WindowSink(
+        round(window * SAMPLE_RATE),
+        round(whole * SAMPLE_RATE),
+        seconds is not None and seconds > whole,
+    )
     command = [
         shutil.which("ffmpeg") or "ffmpeg",
         "-hide_banner",
@@ -605,10 +591,12 @@ def read_windows(
         tail_start=sink.frames - len(tail),
         frames=sink.frames,
         energy=math.sqrt(sink.sum_squares / sink.frames),
+        first_audible=sink.first_audible,
+        last_audible=sink.last_audible,
     )
 
 
-def load_for_analysis(source: Path, max_seconds: float | None = None) -> np.ndarray | TrackWindows:
+def load_for_analysis(source: Path) -> np.ndarray | TrackWindows:
     """Decode *source* for :func:`analyze_basic`: all of it, or a long track's ends.
 
     A track the header says is at most :data:`LONG_TRACK_SECONDS` long is
@@ -616,19 +604,7 @@ def load_for_analysis(source: Path, max_seconds: float | None = None) -> np.ndar
     unknown length, is read by :func:`read_windows`, so its analysis
     holds a few minutes of it, whatever its length.
 
-    Args:
-        source: Audio file.
-        max_seconds: Refuse a track longer than this, from its header
-            length before anything is decoded, or ``None`` for no limit.
-
-    Raises:
-        TrackTooLongError: If the track is longer than *max_seconds*.
     """
-    if max_seconds is not None:
-        seconds = probe_seconds(source)
-        if seconds is not None and seconds > max_seconds + 1.0:
-            raise TrackTooLongError(str(source), seconds)
-        return load_stereo(str(source), SAMPLE_RATE, max_seconds)
     seconds = estimated_seconds(Path(source))
     if seconds is not None and seconds <= LONG_TRACK_SECONDS:
         return load_stereo(str(source), SAMPLE_RATE)
@@ -638,7 +614,6 @@ def load_for_analysis(source: Path, max_seconds: float | None = None) -> np.ndar
 def analyze_basic(
     source: Path,
     kind: str = "music",
-    max_seconds: float | None = None,
     audio: np.ndarray | TrackWindows | None = None,
 ) -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
@@ -652,12 +627,9 @@ def analyze_basic(
     Args:
         source: Audio file.
         kind: ``"music"`` or ``"liner"``.
-        max_seconds: Longest track to analyse, or ``None`` for any length.
         audio: The track already decoded by :func:`load_for_analysis`, so
             the caller can reuse it; decoded here when ``None``.
 
-    Raises:
-        TrackTooLongError: If the track is longer than *max_seconds*.
     """
     from autodj.audio_meta import load_lrc_for, read_file_tags
     from autodj.indexer import IndexEntry
@@ -667,7 +639,7 @@ def analyze_basic(
         raise ValueError("kind must be 'music' or 'liner'")
     source = Path(source)
     if audio is None:
-        audio = load_for_analysis(source, max_seconds)
+        audio = load_for_analysis(source)
     if isinstance(audio, TrackWindows):
         length, energy, found = audio.seconds, audio.energy, _window_points(audio, kind)
     else:
@@ -710,7 +682,7 @@ _Found = tuple[float, float, float | None, float, float]
 
 def _audible_end(audio: np.ndarray) -> int | None:
     """One past the last frame louder than -60 dBFS, or ``None``."""
-    audible = np.flatnonzero(np.max(np.abs(audio), axis=1) >= 10 ** (-60 / 20))
+    audible = np.flatnonzero(np.max(np.abs(audio), axis=1) >= _SILENCE_AMPLITUDE)
     return int(audible[-1]) + 1 if len(audible) else None
 
 
@@ -753,14 +725,22 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
     head_padded = _padded(head_mono)
     head_s = len(head_padded) / SAMPLE_RATE
     offset = windows.tail_start_s - head_s
-    start = detect_intro_start(windows.head, SAMPLE_RATE)
+    start = (
+        windows.first_audible / SAMPLE_RATE
+        if windows.first_audible is not None and windows.first_audible >= len(windows.head)
+        else detect_intro_start(windows.head, SAMPLE_RATE)
+    )
     intro, outro = detect_intro_outro(
         np.concatenate((head_padded, _padded(tail_mono))), SAMPLE_RATE
     )
     detected_intro = intro if intro < len(head_mono) / SAMPLE_RATE else 0.0
     detected_outro = outro + offset if outro > head_s else windows.seconds
     last = _audible_end(windows.tail)
-    end = (windows.tail_start + last) / SAMPLE_RATE if last is not None else windows.tail_start_s
+    end = (
+        (windows.tail_start + last) / SAMPLE_RATE
+        if last is not None
+        else (windows.last_audible or 0) / SAMPLE_RATE
+    )
     segue: float | None
     if kind == "liner":
         found = _suggest_liner_segue(tail_mono, SAMPLE_RATE)
