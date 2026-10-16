@@ -21,8 +21,10 @@ from autodj.config import load_config, move_station_tables, station_config
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_log import (
     CURRENT_STATION,
+    CURRENT_STATION_SCOPE,
     enter_station,
     install_log_prefix,
+    new_station_scope,
     station_thread,
     thread_name,
     wait_for_station_threads,
@@ -1158,6 +1160,53 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
     assert calls == [1, 1]
 
 
+def test_new_station_runtime_ignores_thread_from_previous_run(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from autodj import stations
+    from autodj.stations import StationRuntime
+
+    release = threading.Event()
+    started = threading.Event()
+    previous_scope = new_station_scope("nightowl")
+
+    def work() -> None:
+        started.set()
+        release.wait()
+
+    station_token = CURRENT_STATION.set("nightowl")
+    scope_token = CURRENT_STATION_SCOPE.set(previous_scope)
+    try:
+        previous_thread = station_thread(target=work, name="autodj-previous-worker")
+    finally:
+        CURRENT_STATION_SCOPE.reset(scope_token)
+        CURRENT_STATION.reset(station_token)
+    previous_thread.start()
+    assert started.wait(1)
+
+    runtime = StationRuntime.__new__(StationRuntime)
+    runtime.slug = "nightowl"
+    runtime.thread_scope = new_station_scope("nightowl")
+    runtime.player_thread = None
+    runtime.bridge = SimpleNamespace(player=SimpleNamespace(_continuous_master=None))  # type: ignore[assignment]
+    runtime._broadcast_task = None
+    runtime._close_task = None
+    runtime.stop_problems = []
+
+    try:
+        monkeypatch.setattr(stations, "_THREAD_JOIN_TIMEOUT_S", 0.05)
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(runtime.close())
+        assert previous_thread.is_alive()
+        assert "autodj-previous-worker-nightowl" not in caplog.text
+    finally:
+        release.set()
+        previous_thread.join(1)
+    new_station_scope("nightowl")
+    assert not previous_scope.threads
+
+
 def test_station_close_warns_when_background_thread_outlives_deadline(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -1172,16 +1221,20 @@ def test_station_close_warns_when_background_thread_outlives_deadline(
         entered.set()
         release.wait(5)
 
+    scope = new_station_scope("nightowl")
     token = CURRENT_STATION.set("nightowl")
+    scope_token = CURRENT_STATION_SCOPE.set(scope)
     try:
         worker = station_thread(target=work, name="autodj-test-worker")
     finally:
+        CURRENT_STATION_SCOPE.reset(scope_token)
         CURRENT_STATION.reset(token)
     worker.start()
     assert entered.wait(1)
 
     runtime = StationRuntime.__new__(StationRuntime)
     runtime.slug = "nightowl"
+    runtime.thread_scope = scope
     runtime.stopped = False
     runtime.live = SimpleNamespace(source=None)  # type: ignore[assignment]
     runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
@@ -1220,13 +1273,14 @@ def test_station_close_warns_when_background_thread_outlives_deadline(
 def test_station_thread_wait_joins_liner_pool_worker_within_one_deadline() -> None:
     release = threading.Event()
     entered = threading.Event()
+    scope = new_station_scope("nightowl")
     token = CURRENT_STATION.set("nightowl")
     try:
         worker = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=thread_name("autodj-liner"),
             initializer=enter_station,
-            initargs=(CURRENT_STATION.get(),),
+            initargs=(CURRENT_STATION.get(), scope),
         )
     finally:
         CURRENT_STATION.reset(token)
@@ -1241,7 +1295,7 @@ def test_station_thread_wait_joins_liner_pool_worker_within_one_deadline() -> No
     timer = threading.Timer(0.05, release.set)
     timer.start()
     try:
-        assert wait_for_station_threads("nightowl", 1.0) == []
+        assert wait_for_station_threads(scope, 1.0) == []
         future.result(timeout=1)
     finally:
         release.set()
