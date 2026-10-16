@@ -97,3 +97,25 @@ def test_files_the_new_layout_already_has_are_left_in_place(tmp_path: Path, capl
     assert new.read_text("utf-8") == "newer"
     assert (old / "web_state.json").read_text("utf-8") == "{}"
     assert "web_state.json" in caplog.text
+
+
+def test_the_server_log_file_records_the_move(tmp_path: Path) -> None:
+    import logging
+
+    from autodj.cli import _load_cfg_or_exit
+
+    _old_index(tmp_path)
+    path = tmp_path / "config.toml"
+    path.write_text(f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n')
+    root = logging.getLogger()
+    before = list(root.handlers)
+    try:
+        _load_cfg_or_exit(str(path), log_file=True)
+    finally:
+        for handler in [h for h in root.handlers if h not in before]:
+            root.removeHandler(handler)
+            handler.close()
+    text = (tmp_path / "index" / "logs" / "autodj.log").read_text(encoding="utf-8")
+    # The moved old log and the new lines about the move, in one file.
+    assert text.startswith("log")
+    assert "Moved " in text

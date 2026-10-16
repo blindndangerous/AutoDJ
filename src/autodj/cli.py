@@ -121,19 +121,33 @@ def _load_cfg_or_exit(
     config_path: str | None,
     *,
     show_error: bool = True,
+    log_file: bool = False,
 ) -> AutoDJConfig:  # pragma: no cover
     """Load *config_path* or print + exit on missing file.
 
     An index folder in the old layout is moved into the new one first
-    (:mod:`autodj.layout`), then the configuration is read again.
+    (:mod:`autodj.layout`), then the configuration is read again.  With
+    *log_file* the server's log file opens here, and what loading and the
+    move logged is written to it too.
     """
+    from logging.handlers import MemoryHandler
+
     from autodj.config import load_config
     from autodj.layout import LayoutError, move_old_layout
 
+    # Held until the log file is open: it lives in the index folder the move may change.
+    early = MemoryHandler(capacity=10_000, flushLevel=logging.CRITICAL + 1) if log_file else None
+    if early is not None:
+        logging.getLogger().addHandler(early)
     try:
         cfg = load_config(config_path)
         if move_old_layout(cfg):
             cfg = load_config(config_path)
+        if early is not None and isinstance(cfg.index.index_dir, Path):
+            handler = _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
+            if handler is not None:
+                early.setTarget(handler)
+                early.flush()
         return cfg
     except LayoutError as exc:
         console.print(f"[bold red]{escape(str(exc))}[/]")
@@ -142,6 +156,10 @@ def _load_cfg_or_exit(
         if show_error:
             console.print(f"[bold red]Config not found or invalid:[/] {escape(str(exc))}")
         raise click.exceptions.Exit(1) from exc
+    finally:
+        if early is not None:
+            logging.getLogger().removeHandler(early)
+            early.close()
 
 
 def _append_cli_source(cfg: AutoDJConfig) -> None:
@@ -445,7 +463,7 @@ def _file_log_record(record: logging.LogRecord) -> logging.LogRecord:
     return copy
 
 
-def _add_log_file(path: Path) -> None:
+def _add_log_file(path: Path) -> logging.Handler | None:
     """Also write the log to *path*: a new file each day, the last 7 kept."""
     from logging.handlers import TimedRotatingFileHandler
 
@@ -454,10 +472,11 @@ def _add_log_file(path: Path) -> None:
         handler = TimedRotatingFileHandler(path, when="midnight", backupCount=7, encoding="utf-8")
     except OSError as exc:
         logging.getLogger(__name__).warning("Could not open the log file %s: %s", path, exc)
-        return
+        return None
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     handler.addFilter(_file_log_record)
     logging.getLogger().addHandler(handler)
+    return handler
 
 
 # ---------------------------------------------------------------------------
@@ -1765,7 +1784,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     """
     from autodj.server import serve
 
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"], log_file=True)
     from autodj.config import is_loopback_bind
 
     original_server = cfg.server
@@ -1820,8 +1839,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     if move_station_tables(cfg):
         # The moved stations are read from their own files from now on.
         cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    if isinstance(cfg.index.index_dir, Path):
-        _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
     library = LibraryManager(cfg, sim)
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
