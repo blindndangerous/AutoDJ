@@ -1,5 +1,7 @@
 # AutoDJ operations
 
+For everyday tasks, start with the [README guide list](../README.md#build-your-station): music, sound, schedules, live work, streaming, several stations, backups, keyboard access, and troubleshooting. Use the [settings reference](settings-reference.md) for values and defaults. This page keeps detailed commands and migration notes.
+
 Commands labeled Bash require a Linux host or WSL2. Native Windows operators should use the
 PowerShell equivalents below. Run Linux container commands inside WSL2 with the repository on a
 WSL filesystem so user IDs and POSIX modes have their documented meaning.
@@ -591,7 +593,7 @@ of the US statutory webcasting licence (section 114, reported to
 SoundExchange). This is general information, not legal advice: you remain
 responsible for your licence and your reports.
 
-Turn it on in the selected station's Settings > Song picking. The choice is station-specific.
+Turn it on with **DMCA mode** in **Settings**, **Song picking**. The choice belongs to the selected station.
 
 ### The limits
 
@@ -765,17 +767,18 @@ same address (`/modules/theme-init.js` reads that choice before the page is draw
 
 ### Player page and embeddable player
 
-A station can also have a public page where listeners press Play to hear it in the browser, and
-a compact version of it to put on another website. Both are off until you turn them on in
-Settings > Stream for the selected station, including while it is stopped. Saving takes effect
-immediately. The settings are stored in that station's `station.json`:
+A station can have a public page where listeners press Play to hear it in the browser, and
+a compact version for another website. Both are off by default. Use **Settings**, **Stream**
+to turn on the **Public player page** or **Embeddable player** and set **Allowed embed sites**.
+You can change them while the station is stopped, and saving takes effect immediately.
+The settings belong to the selected station and are saved in `station.json`:
 
 ```json
 {
   "player_page": {
     "enabled": true,
     "embed": true,
-    "embed_origins": ["https://nightowlradio.example"]
+    "embed_origins": ["https://example.com"]
   }
 }
 ```
@@ -1047,7 +1050,7 @@ Choose **Stream** as the station's output in Settings > Stations. Existing insta
 migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
 definition at startup; the old TOML key and environment variable are migration inputs only.
 For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
-In Docker, change the default station's output in Settings and restart with `docker compose up -d`
+In Docker, change the default station's output in Settings and restart with `docker compose restart autodj`
 when changing the process-level stream setup.
 
 `uv run autodj doctor` warns, without failing, if stream mode is on but the server only listens
@@ -1630,9 +1633,9 @@ client for a running server.
 
 ## Several stations
 
-One AutoDJ server can play several stations, or keep the interface available with no stations
-playing. Every station, including `default`, uses the same construction and Start/Stop controls.
-Stop releases that station's audio resources; Start begins fresh playback. Pause holds playback
+One AutoDJ server can play several stations. Named stations have Start/Stop controls; the
+default station starts with AutoDJ and cannot be stopped separately. Stop releases a named
+station's audio resources; Start begins fresh playback. Pause holds playback
 position. Stopping one station does not stop another. Scheduled events missed while stopped are
 skipped when the station next starts.
 
@@ -2317,7 +2320,7 @@ without changing it.
 When `[library] beets_db` names a beets database, the Tags section also has **Also update the
 beets library**, ticked by default. With it ticked, AutoDJ copies the changed fields into the
 song's beets entry (ISRC only when your beets database has an `isrc` field) and sets its
-modification time, so `beet update` has nothing new to read. The file is always written first.
+modification time, so `beet update` has nothing new to read. When file saving is selected, the file is written first.
 If beets has no entry for the file, or its database cannot be written (for example while beets
 itself holds it), the file and AutoDJ's library keep the new tags, beets keeps the old ones,
 and the page says so; run `beet update` to read the new tags into beets. When beets has no field
@@ -2328,8 +2331,9 @@ If the file is saved but AutoDJ's own library cannot be updated, the page says t
 saved in the file and what went wrong. A rescan then reads the new tags, and the song is
 analysed again. Rescans also detect external tag edits that fit inside existing file padding.
 
-In Docker, the music folder is mounted read-only by default, so saving tags fails with a message
-that AutoDJ is not allowed to change the file. Remove `:ro` from the music volume in
+In Docker, the music folder is mounted read-only by default. **Save tags** can still change
+AutoDJ's library; writing the file fails if **Also save the tags to the file** is ticked.
+Remove `:ro` from the music volume in
 `compose.yaml` to allow it, and from the beets volume to let AutoDJ update beets.
 
 ## Moved files
@@ -4827,3 +4831,5 @@ live in versioned `time_checks.json` in that station's folder after you change t
 a key the file lacks takes the station definition value, and a wrong version stops startup with
 an error. Backups include `time_checks.json` and the recorded clips; preserve the station
 definition separately if you use custom paths or a TTS command.
+
+AutoDJ and this page were developed with AI assistance.
