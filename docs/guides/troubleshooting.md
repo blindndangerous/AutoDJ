@@ -28,6 +28,8 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **Stereo Tool is unavailable.** Open **Settings**, **Sound** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
 
+**Mastering startup messages.** The log reports when master processing is ready and when its first non-silent block reaches the mix bus output. Both times are measured from processor startup, restart, or a processing-mode change; they exclude encoder and listener buffering. A count of trimmed silent warmup blocks is informational: the bounded queue discarded only silence before any non-silent input arrived. Overflow after audio begins, during recovery, or after readiness remains a warning. These diagnostics add no startup wait. Compare the timings and warnings across restarts before changing buffering.
+
 ## Streaming
 
 **The stream is missing.** In **Settings**, **Stations**, set **Playback output** to **Radio stream** and press **Save station options**. Start a named station or restart AutoDJ for the default station, which cannot be stopped separately. **Settings**, **Stream** appears when stream output is active. For a one-time default stream, start AutoDJ with `serve --stream`. FFmpeg must be installed. The default stream is `/stream.mp3`; named stations use `/<station-id>.mp3`.
