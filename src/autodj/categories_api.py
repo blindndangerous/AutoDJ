@@ -37,7 +37,7 @@ from autodj.categories import (
     summary,
 )
 from autodj.clockwheel_store import ClockwheelStore, step_categories
-from autodj.station_routes import StationDep, _station_categories
+from autodj.station_routes import SavedStationDep, _station_categories
 
 if TYPE_CHECKING:
     from autodj.station_routes import StationRouter
@@ -196,13 +196,13 @@ def install_categories(router: StationRouter) -> None:
         return HTTPException(status_code=404, detail="That category no longer exists")
 
     @router.get("/categories")
-    async def categories_list(station: StationDep) -> dict[str, Any]:
+    async def categories_list(station: SavedStationDep) -> dict[str, Any]:
         """Return the categories with their counts, and what the form chooses from."""
         return await asyncio.to_thread(listing, station, index(station))
 
     @router.post("/categories/check", response_model=None)
     async def categories_check(
-        station: StationDep, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Count the songs an unsaved category holds."""
         categories = index(station)
@@ -214,7 +214,7 @@ def install_categories(router: StationRouter) -> None:
 
     @router.post("/categories", status_code=201, response_model=None)
     async def categories_create(
-        station: StationDep,
+        station: SavedStationDep,
         body: dict[str, Any] = Body(...),
     ) -> dict[str, Any] | JSONResponse:
         """Add a category."""
@@ -225,7 +225,7 @@ def install_categories(router: StationRouter) -> None:
 
     @router.put("/categories/{category_id}", response_model=None)
     async def categories_update(
-        station: StationDep, category_id: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, category_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Replace a category; clockwheel steps keep naming it by its ID."""
         try:
@@ -236,7 +236,7 @@ def install_categories(router: StationRouter) -> None:
             return _rejected(exc.field, exc.message)
 
     @router.delete("/categories/{category_id}")
-    async def categories_delete(station: StationDep, category_id: str) -> dict[str, Any]:
+    async def categories_delete(station: SavedStationDep, category_id: str) -> dict[str, Any]:
         """Delete a category; a clockwheel step that names it is skipped from now on."""
         try:
             return await asyncio.to_thread(remove, station, category_id)

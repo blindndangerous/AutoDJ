@@ -4,6 +4,9 @@ Tests cover config loading, validation, default values, and error handling.
 All tests are pure — no filesystem I/O beyond temp files provided by fixtures.
 """
 
+import json
+import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -19,10 +22,12 @@ from autodj.config import (
     ModelConfig,
     PlaybackConfig,
     ServerConfig,
+    StationConfig,
     _deep_merge,
     canonicalize_allowed_origin,
     is_loopback_bind,
     load_config,
+    move_station_tables,
     validate_server_exposure,
 )
 
@@ -32,7 +37,8 @@ from autodj.config import (
 
 
 @pytest.fixture(autouse=True)
-def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def clear_autodj_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
     for variable in ENVIRONMENT_OVERLAY:
         monkeypatch.delenv(variable, raising=False)
 
@@ -74,6 +80,25 @@ def full_toml(tmp_path: Path) -> Path:
     return cfg
 
 
+def load_migrated_config(path: Path):
+    shutil.rmtree(path.parent / "index", ignore_errors=True)
+    text = path.read_text(encoding="utf-8")
+    index_dir = (path.parent / "index").as_posix()
+    if re.search(r"(?m)^index\s*=", text):
+        pass
+    elif re.search(r"(?m)^\[index\]\s*$", text) is None:
+        text += f'\n[index]\nindex_dir = "{index_dir}"\n'
+    elif re.search(r"(?m)^index_dir\s*=", text):
+        text = re.sub(r"(?m)^index_dir\s*=.*$", f'index_dir = "{index_dir}"', text, count=1)
+    else:
+        text = re.sub(r"(?m)^\[index\]\s*$", f'[index]\nindex_dir = "{index_dir}"', text, count=1)
+    path.write_text(text, encoding="utf-8")
+    cfg = load_config(path, environ={})
+    if move_station_tables(cfg):
+        cfg = load_config(path, environ={})
+    return cfg
+
+
 # ---------------------------------------------------------------------------
 # load_config
 # ---------------------------------------------------------------------------
@@ -96,7 +121,7 @@ class TestLoadConfig:
             load_config(bad)
 
     def test_loads_full_config(self, full_toml: Path) -> None:
-        cfg = load_config(full_toml)
+        cfg = load_migrated_config(full_toml)
         assert cfg.playback.crossfade_seconds == 5.0
         assert cfg.playback.repeat_rules.track.tracks == 100
         assert cfg.model.name == "OpenMuQ/MuQ-MuLan-large"
@@ -117,7 +142,7 @@ class TestLoadConfig:
             encoding="utf-8",
         )
 
-        cfg = load_config(cfg_path)
+        cfg = load_migrated_config(cfg_path)
 
         assert cfg.server == ServerConfig(
             host="192.168.1.10",
@@ -126,8 +151,8 @@ class TestLoadConfig:
             allowed_hosts=["radio.local"],
             allowed_origins=["https://radio.local"],
             session_ttl_seconds=3600,
-            liner_upload_max_bytes=25 * 1024 * 1024,
         )
+        assert cfg.station.liner_upload_max_mib == 25
 
 
 class TestDefaultAndEnvironmentConfig:
@@ -150,7 +175,7 @@ class TestDefaultAndEnvironmentConfig:
         config_path.write_text(f"{section} = []\n", encoding="utf-8")
 
         with pytest.raises(TypeError, match=rf"{section} section must be a table"):
-            load_config(config_path, environ={})
+            load_migrated_config(config_path)
 
     def test_missing_implicit_config_uses_validated_defaults(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -225,13 +250,47 @@ class TestDefaultAndEnvironmentConfig:
             "AUTODJ_ACCESS_TOKEN",
             "AUTODJ_LAN",
             "AUTODJ_HUGGINGFACE_TOKEN",
-            "AUTODJ_STREAM_ENABLED",
-            "AUTODJ_STREAM_CONTINUOUS",
-            "AUTODJ_STREAM_BITRATE",
-            "AUTODJ_STREAM_IDLE_GRACE_SECONDS",
-            "AUTODJ_STREAM_MAX_LISTENERS",
-            "AUTODJ_STREAM_STATION_NAME",
         }
+
+    def test_station_environment_is_slug_scoped_and_old_names_are_migration_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        old = load_config(
+            None,
+            environ={"AUTODJ_STREAM_BITRATE": "256", "AUTODJ_STREAM_ENABLED": "on"},
+        )
+        assert old.default_station is not None
+        assert old.default_station.cfg.stream.bitrate == 320
+        assert old.default_station.cfg.station.output == "browser"
+        assert move_station_tables(old)
+        migrated = load_config(None, environ={})
+        assert migrated.default_station is not None
+        assert migrated.default_station.cfg.stream.bitrate == 256
+        assert migrated.default_station.cfg.station.output == "stream"
+        from autodj.stations import StationPaths
+
+        definition = StationPaths.default(migrated).definition
+        document = json.loads(definition.read_text("utf-8"))
+        document["station"]["stream"]["bitrate"] = 128
+        document["station"]["station"]["output"] = "server"
+        definition.write_text(json.dumps(document), encoding="utf-8")
+        later = load_config(
+            None,
+            environ={"AUTODJ_STREAM_BITRATE": "256", "AUTODJ_STREAM_ENABLED": "on"},
+        )
+        assert move_station_tables(later) is False
+        later = load_config(None, environ={})
+        assert later.default_station is not None
+        assert later.default_station.cfg.stream.bitrate == 128
+        assert later.default_station.cfg.station.output == "server"
+
+        scoped = load_config(
+            None,
+            environ={"AUTODJ_STATION_DEFAULT_STREAM_BITRATE": "192"},
+        )
+        assert scoped.default_station is not None
+        assert scoped.default_station.cfg.stream.bitrate == 192
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +490,7 @@ class TestPlaybackConfig:
     ) -> None:
         config_file = tmp_path / "config.toml"
         config_file.write_text(f"[playback]\n{key} = 0\n", encoding="utf-8")
-        cfg = load_config(config_file, environ={})
+        cfg = load_migrated_config(config_file)
         assert cfg.playback.repeat_rules.artist.tracks == 8
         assert key in caplog.text
 
@@ -541,7 +600,7 @@ class TestDeepMergeAndOverlays:
             '[library]\nmusic_dir = "/srv/music"\n[playback]\ncrossfade_seconds = 5.0\n',
             encoding="utf-8",
         )
-        cfg = load_config(base)
+        cfg = load_migrated_config(base)
         assert str(cfg.library.music_dir).replace("\\", "/").endswith("/srv/music")
         assert cfg.playback.crossfade_seconds == 5.0
 
@@ -561,7 +620,7 @@ class TestDeepMergeAndOverlays:
         (tmp_path / "config.local.toml").write_text(overlay, encoding="utf-8")
         cfg = load_config(base)
         assert str(cfg.library.music_dir).replace("\\", "/").endswith("/Music")
-        assert "Ignoring unknown config" in caplog.text
+        assert cfg.playback.crossfade_seconds == 3.0
 
     def test_unknown_nested_repeat_keys_are_ignored_but_known_values_validate(
         self, tmp_path: Path, caplog
@@ -572,7 +631,7 @@ class TestDeepMergeAndOverlays:
             '[playback.repeat_rules.artist]\ntracks = 12\nfuture = "secret"\n',
             encoding="utf-8",
         )
-        cfg = load_config(config_file, environ={})
+        cfg = load_migrated_config(config_file)
         assert cfg.playback.repeat_rules.artist.tracks == 12
         assert "future" in caplog.text
         assert "secret" not in caplog.text
@@ -581,7 +640,7 @@ class TestDeepMergeAndOverlays:
             "[playback.repeat_rules.artist]\ntracks = -1\nfuture = true\n", encoding="utf-8"
         )
         with pytest.raises(ValueError, match="tracks"):
-            load_config(config_file, environ={})
+            load_migrated_config(config_file)
 
     def test_non_table_presets_value_is_a_load_error(self, tmp_path: Path) -> None:
         base = tmp_path / "config.toml"
@@ -760,9 +819,7 @@ def test_playback_pick_and_loudness_modes_validate_and_keep_legacy_default(caplo
     from autodj.config import unknown_config_keys
 
     assert "quiet_boost_db" in caplog.text
-    assert unknown_config_keys({"playback": {"quiet_boost_db": 11.0}}) == {
-        "playback": ("quiet_boost_db",)
-    }
+    assert unknown_config_keys({"playback": {"quiet_boost_db": 11.0}}) == {}
     for value in (0, 12):
         assert (
             PlaybackConfig.from_dict({"stereotool_agc_drive_db": value}).stereotool_agc_drive_db
@@ -798,9 +855,25 @@ class TestServerConfig:
         assert cfg.port == 8080
         assert cfg.access_token is None
         assert cfg.insecure_lan is False
-        assert cfg.liner_upload_max_bytes == 50 * 1024 * 1024
+        assert cfg.trusted_proxies == []
         assert cfg.effective_allowed_hosts() == ["127.0.0.1"]
         assert cfg.effective_allowed_origins() == ["http://127.0.0.1:8080"]
+
+    def test_output_and_monitoring_modes_validate(self) -> None:
+        assert StationConfig.from_dict({}).output == "browser"
+        assert StationConfig.from_dict({"output": "server"}).output == "server"
+        assert StationConfig.from_dict(
+            {"output": "stream", "server_audio_too": True}
+        ).server_audio_too
+        with pytest.raises(ValueError, match="server_audio_too requires"):
+            StationConfig.from_dict({"output": "browser", "server_audio_too": True})
+        with pytest.raises(ValueError, match=r"station\.output"):
+            StationConfig.from_dict({"output": "invalid"})
+
+    @pytest.mark.parametrize("limit", [0, 1025])
+    def test_liner_upload_limit_is_station_local_and_bounded(self, limit: int) -> None:
+        with pytest.raises(ValueError, match=r"station\.liner_upload_max_mib"):
+            StationConfig.from_dict({"liner_upload_max_mib": limit})
 
     def test_custom_bind_and_default_port_drive_derived_policy(self) -> None:
         custom = ServerConfig.from_dict({"host": "127.0.0.2", "port": 9090})
@@ -910,8 +983,6 @@ class TestServerConfig:
             ({"allowed_origins": "http://radio.local"}, "server.allowed_origins"),
             ({"session_ttl_seconds": 59}, "server.session_ttl_seconds"),
             ({"session_ttl_seconds": 31_536_001}, "server.session_ttl_seconds"),
-            ({"liner_upload_max_mib": 0}, "server.liner_upload_max_mib"),
-            ({"liner_upload_max_mib": 1025}, "server.liner_upload_max_mib"),
         ],
     )
     def test_rejects_wrong_types_and_out_of_bounds_values(
@@ -922,7 +993,7 @@ class TestServerConfig:
 
     def test_unknown_upload_bytes_alias_is_ignored(self, caplog) -> None:
         cfg = ServerConfig.from_dict({"liner_upload_max_bytes": 1})
-        assert cfg.liner_upload_max_bytes == 50 * 1024 * 1024
+        assert not hasattr(cfg, "liner_upload_max_bytes")
         assert "liner_upload_max_bytes" in caplog.text
 
     def test_rejects_weak_token_without_echoing_it(self) -> None:
@@ -963,7 +1034,7 @@ class TestServerConfig:
         ("kwargs", "error", "message"),
         [
             ({"access_token": 12345}, TypeError, "access_token must be a string"),
-            ({"liner_upload_max_bytes": 1024}, ValueError, "between 1 MiB and 1024 MiB"),
+            ({"liner_upload_max_bytes": 1024}, TypeError, "unexpected keyword"),
         ],
     )
     def test_programmatic_values_are_validated(self, kwargs, error, message) -> None:

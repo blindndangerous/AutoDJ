@@ -98,7 +98,6 @@ if TYPE_CHECKING:
     from autodj.audio_meta import LyricLine
     from autodj.config import AutoDJConfig
     from autodj.dj_meta import Cue, DjMeta
-    from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
     from autodj.transitions import BeatSync, TransitionFx
 
@@ -874,6 +873,71 @@ class Player:
     # How far ahead of the playing position a skip effect starts, so it is
     # ready before the bus gets there: 0.1 s.
     _SKIP_LOOKAHEAD: ClassVar[int] = SAMPLE_RATE // 10
+
+    @property
+    def _preset(self) -> Any:
+        return self._settings._preset
+
+    @_preset.setter
+    def _preset(self, value: Any) -> None:
+        self._settings._preset = value
+
+    @property
+    def _bpm_range(self) -> tuple[float, float] | None:
+        return self._settings._bpm_range
+
+    @_bpm_range.setter
+    def _bpm_range(self, value: tuple[float, float] | None) -> None:
+        self._settings._bpm_range = value
+
+    @property
+    def _pure_shuffle(self) -> bool:
+        return self._settings._pure_shuffle
+
+    @_pure_shuffle.setter
+    def _pure_shuffle(self, value: bool) -> None:
+        self._settings._pure_shuffle = value
+
+    @property
+    def _anchor_to_seed(self) -> bool:
+        return self._settings._anchor_to_seed
+
+    @_anchor_to_seed.setter
+    def _anchor_to_seed(self, value: bool) -> None:
+        self._settings._anchor_to_seed = value
+
+    @property
+    def _eq_low(self) -> float:
+        return self._settings._eq_low
+
+    @_eq_low.setter
+    def _eq_low(self, value: float) -> None:
+        self._settings._eq_low = value
+
+    @property
+    def _eq_mid(self) -> float:
+        return self._settings._eq_mid
+
+    @_eq_mid.setter
+    def _eq_mid(self, value: float) -> None:
+        self._settings._eq_mid = value
+
+    @property
+    def _eq_high(self) -> float:
+        return self._settings._eq_high
+
+    @_eq_high.setter
+    def _eq_high(self, value: float) -> None:
+        self._settings._eq_high = value
+
+    @property
+    def _discovery_every(self) -> int | None:
+        return self._settings._discovery_every
+
+    @_discovery_every.setter
+    def _discovery_every(self, value: int | None) -> None:
+        self._settings._discovery_every = value
+
     # A dry run of the picker (autodj.rotation_sim) gives the player its own
     # seeded random.Random, a clock of its own (see _now) and a pick_observer
     # that hears what each pick passed over.  On air the random module
@@ -890,6 +954,7 @@ class Player:
         dry_run: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
+        settings: Any = None,
     ) -> None:
         """Initialise the player with configuration and index.
 
@@ -904,6 +969,9 @@ class Player:
                 the stream station (see :meth:`begin_set`).
             server_audio_too: In stream mode, also open the sound card.
         """
+        from autodj.station_settings import StationSettings
+
+        self._settings = settings or StationSettings(cfg, sim=sim_index)
         self._cfg = cfg
         self._sim = sim_index
         self._dry_run = dry_run
@@ -911,14 +979,11 @@ class Player:
         self._server_audio_too = server_audio_too
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
-        self._preset: Preset | None = None
-        self._bpm_range: tuple[float, float] | None = None
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
         # next track is similar to the seed, not to the previous track.
         # Off by default; toggled from the web UI.
-        self._anchor_to_seed = False
         # Path of the seed track — set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
@@ -927,15 +992,11 @@ class Player:
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        self._pure_shuffle = False
         # Lyrics for the current track — populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
         self._current_lyrics_plain: str = ""
         # 3-band EQ state (1.0 = unity), mutated by the web UI
-        self._eq_low: float = 1.0
-        self._eq_mid: float = 1.0
-        self._eq_high: float = 1.0
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -992,7 +1053,6 @@ class Player:
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
-        self._discovery_every: int | None = cfg.playback.discovery_every
         self._last_repeat_cap_warning: tuple[int, int, int] | None = None
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
@@ -1051,6 +1111,7 @@ class Player:
                 related_tracks=self._related_tracks,
             ),
         )
+        self._settings.attach(self)
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
         # Shared playback position (samples) — written by the mix bus, read and
@@ -1378,10 +1439,7 @@ class Player:
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
         # Through the ledger: a place it has not written yet is the latest.
-        if ledger is not None:
-            setting = ledger.get_setting("clock", {})
-        else:
-            setting = self._library.catalog.get_setting("clock", {})
+        setting = ledger.get_setting("clock", {}) if ledger is not None else {}
         if not isinstance(setting, dict):
             setting = {}
         with self._clock_lock:
@@ -4073,18 +4131,18 @@ class Player:
         )
 
     def _station_now(self, at: float | None = None) -> datetime:
-        """The station's local wall time, naive (``[server] station_timezone``), now or *at*."""
+        """The station's local wall time, naive (``[station] timezone``), now or *at*."""
         from autodj.categories import station_wall
 
         return station_wall(self._cfg, self._now() if at is None else at)
 
     def _station_zone(self) -> tzinfo:
-        """The station's time zone (``[server] station_timezone``, else the system's)."""
+        """The station's time zone (``[station] timezone``, else the system's)."""
         from zoneinfo import ZoneInfo
 
         from autodj.scheduler import system_timezone
 
-        return ZoneInfo(self._cfg.server.station_timezone or system_timezone())
+        return ZoneInfo(self._cfg.station.timezone or system_timezone())
 
     def _dayparts(self, at: float | None = None) -> tuple[frozenset[str], dict[str, str]]:
         """The songs whose categories are outside their days and hours, and why.
@@ -4207,7 +4265,7 @@ class Player:
         target = next_target(
             at,
             playback.hour_fit_window_minutes,
-            self._hour_fit_timezone or self._cfg.server.station_timezone or system_timezone(),
+            self._hour_fit_timezone or self._cfg.station.timezone or system_timezone(),
             boundary,
             events,
         )
@@ -4227,7 +4285,7 @@ class Player:
 
         return fit_chooser(target.at - at, seconds, hard=target.hard)
 
-    def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
+    def restore_repeat_history(self, ledger: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
         Reads only as many saved plays as the windows can look at (see
@@ -4235,7 +4293,7 @@ class Player:
         short are not counted, nor are plays dated after now.
 
         Args:
-            catalog: Gives the saved plays (``recent_plays``): the station's
+            ledger: Gives the saved plays (``recent_plays``): the station's
                 :class:`~autodj.station_ledger.StationLedger`.
 
         Returns:
@@ -4247,11 +4305,9 @@ class Player:
         limit = plays_to_load(self._state.rules, self._state.dmca_seconds)
         if limit <= 0:
             return 0
-        rows = catalog.recent_plays(limit)
-        ledger = self._ledger
-        if ledger is not None:
-            # Plays not written to SQLite yet count too.
-            rows.extend(ledger.pending_history())
+        rows = ledger.recent_plays(limit)
+        # Plays not written to SQLite yet count too.
+        rows.extend(ledger.pending_history())
         records = records_from_plays(rows, time.time())
         if records:
             self._state.restore_history(records)
@@ -5214,51 +5270,9 @@ class Player:
 
         The mix reads lyric timing for itself (:meth:`_sung_spans`).
         """
-        from autodj.audio_meta import (
-            load_lrc_for,
-            parse_embedded_lyrics,
-            read_plain_lyrics,
-        )
+        from autodj.audio_meta import read_library_lyrics
 
-        lyrics = load_lrc_for(path)
-        if lyrics:
-            return lyrics, ""
-
-        plain = ""
-        if self._cfg.library.beets_db:
-            from autodj.beets import get_lyrics_for_path
-
-            try:
-                plain = get_lyrics_for_path(
-                    self._cfg.library.beets_db,
-                    path,
-                    music_dir=self._cfg.library.music_dir,
-                )
-            except (OSError, ValueError) as exc:
-                logger.debug("Beets lyrics lookup failed: %s", exc)
-                plain = ""
-
-        # Fall back to embedded tag lyrics when beets has none / no beets at all.
-        if not plain:
-            try:
-                plain = read_plain_lyrics(path)
-            except (OSError, ValueError) as exc:
-                logger.debug("Embedded lyric tag read failed: %s", exc)
-                plain = ""
-
-        # A "plain" lyric field very often *is* LRC: most taggers write the
-        # synced text straight into LYRICS / USLT / ©lyr rather than to a
-        # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
-        # on screen, sent the whole song to the live region in one breath,
-        # and made the current-line highlight impossible.
-        #
-        # The classification has to weigh the whole tag, not stop at the
-        # first bracket that looks like a cue: deciding on one match threw
-        # away every untimestamped line ("Written by X / [00:00.00]Intro /
-        # Verse one" collapsed to "Intro") and mangled prose that merely
-        # mentions a time.  parse_embedded_lyrics requires a clear majority
-        # of leading stamps, and cleans the plain branch instead.
-        return parse_embedded_lyrics(plain)
+        return read_library_lyrics(path, self._cfg.library)
 
     def _timed_lyrics(self, path: str) -> list[LyricLine]:
         """Synced lyric lines of *path* for the mix; empty when none or unreadable."""

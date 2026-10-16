@@ -131,7 +131,7 @@ def test_public_pages_never_show_the_next_song(dmca_bridge) -> None:
 
 def test_show_next_cannot_be_turned_on_in_dmca_mode(dmca_bridge, tmp_path) -> None:
     point_index(dmca_bridge.player._cfg.index, tmp_path)
-    dmca_bridge.player._cfg.stream.enabled = True
+    dmca_bridge.player._cfg.station.output = "stream"
     dmca_bridge.attach_stream(stream=MagicMock(listener_count=0), station=MagicMock(state="idle"))
     dmca_bridge.save_persistent_state = MagicMock()
     with TestClient(create_app(dmca_bridge), client=("192.0.2.4", 50000)) as client:

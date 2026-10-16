@@ -14,7 +14,7 @@ import pytest
 
 from autodj.backup import STATION_FILES, BackupError, create_backup, restore_backup
 from autodj.catalog import LibraryCatalog
-from autodj.config import AutoDJConfig, load_config
+from autodj.config import AutoDJConfig, load_config, move_station_tables
 from autodj.live import strip_secrets
 from autodj.version import current_version
 
@@ -43,6 +43,8 @@ folder = "{(root / "recordings" / slug).as_posix()}"
 """
     path = root / "config.toml"
     path.write_text(text + extra, encoding="utf-8")
+    cfg = load_config(path, environ={})
+    move_station_tables(cfg)
     cfg = load_config(path, environ={})
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
@@ -201,7 +203,9 @@ def test_restore_to_a_new_machine_creates_the_station_folder(tmp_path: Path) -> 
     fresh = _config(tmp_path / "new")
     # A new machine has configuration directories but has not indexed yet.
     (fresh.index.library_dir / "library.db").unlink()
-    restore_backup(fresh, archive, force=False)
+    # Startup has already materialized the default station definition. Restore
+    # replaces it with the definition from the backup on a new machine.
+    restore_backup(fresh, archive, force=True)
 
     for path, data in written.items():
         moved = tmp_path / "new" / path.relative_to(tmp_path / "old")
@@ -284,17 +288,12 @@ def test_folders_that_hold_each_other_are_refused_at_backup(
 def test_a_folder_holding_a_state_folder_is_refused_at_restore(tmp_path: Path) -> None:
     # The default station's clip folder set to its own station folder: a
     # restore of clips would replace the whole station folder.
-    cfg = _config(
-        tmp_path,
-        stations="",
-        extra=f'\n[time_checks]\nclips_folder = "{(tmp_path / "index" / "stations" / "default").as_posix()}"\n',
-    )
-    archive = _archive(tmp_path / "b.zip", {"time_checks/id.mp3": b"x"})
-
-    with pytest.raises(BackupError, match="overlap"):
-        restore_backup(cfg, archive, force=True)
-    assert (cfg.index.stations_dir / "default").is_dir()
-    assert not ((cfg.index.stations_dir / "default") / "id.mp3").exists()
+    with pytest.raises(ValueError, match="holds the station's own folder"):
+        _config(
+            tmp_path,
+            stations="",
+            extra=f'\n[time_checks]\nclips_folder = "{(tmp_path / "index" / "stations" / "default").as_posix()}"\n',
+        )
 
 
 def test_backup_refuses_a_destination_inside_a_station_folder(tmp_path: Path) -> None:
@@ -306,18 +305,16 @@ def test_backup_refuses_a_destination_inside_a_station_folder(tmp_path: Path) ->
         create_backup(cfg, inside, force=False)
 
 
-def test_restore_refuses_a_station_the_config_does_not_define(tmp_path: Path) -> None:
+def test_restore_can_recreate_a_web_created_station_from_its_definition(tmp_path: Path) -> None:
     cfg = _config(tmp_path / "two")
     _fill(cfg)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
     single = _config(tmp_path / "one", stations="")
 
-    with pytest.raises(BackupError, match=r"add \[stations.nightowl\] to config.toml first"):
-        restore_backup(single, archive, force=True)
+    restore_backup(single, archive, force=True)
 
-    # Nothing was unpacked, the default station's files included.
-    assert not ((single.index.stations_dir / "default") / "web_state.json").exists()
-    assert not ((single.index.stations_dir / "default") / "stations").exists()
+    assert (single.index.stations_dir / "nightowl" / "station.json").is_file()
+    assert (single.index.stations_dir / "default" / "web_state.json").is_file()
 
 
 def _archive(path: Path, files: dict[str, bytes], stations: list[str] | None = None) -> Path:
@@ -328,7 +325,11 @@ def _archive(path: Path, files: dict[str, bytes], stations: list[str] | None = N
             with LibraryCatalog(catalog):
                 pass
             files["index/library.db"] = catalog.read_bytes()
-    manifest: dict[str, object] = {"autodj_version": current_version(), "files": list(files)}
+    manifest: dict[str, object] = {
+        "backup_format": 2,
+        "autodj_version": current_version(),
+        "files": list(files),
+    }
     if stations is not None:
         manifest["stations"] = stations
     with zipfile.ZipFile(path, "w") as archive:
@@ -458,7 +459,7 @@ def test_restore_refuses_two_folders_that_land_in_one_place(tmp_path: Path) -> N
 def test_restore_without_force_refuses_existing_station_files(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     owl = _station_dir(cfg, "nightowl") / "web_state.json"
-    owl.parent.mkdir(parents=True)
+    owl.parent.mkdir(parents=True, exist_ok=True)
     owl.write_bytes(b"current")
     archive = _archive(
         tmp_path / "b.zip", {"stations/nightowl/index/web_state.json": b"saved"}, ["nightowl"]
@@ -482,7 +483,7 @@ def test_an_archive_from_before_stations_restores_and_leaves_stations_alone(
 ) -> None:
     cfg = _config(tmp_path)
     owl = _station_dir(cfg, "nightowl") / "schedule.json"
-    owl.parent.mkdir(parents=True)
+    owl.parent.mkdir(parents=True, exist_ok=True)
     owl.write_bytes(b"owl schedule")
     archive = _archive(tmp_path / "old.zip", {"index/schedule.json": b"default schedule"})
 
@@ -497,7 +498,7 @@ def test_an_archive_from_before_stations_restores_and_leaves_stations_alone(
 def test_restore_replaces_only_the_station_files_in_the_archive(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     folder = _station_dir(cfg, "nightowl")
-    folder.mkdir(parents=True)
+    folder.mkdir(parents=True, exist_ok=True)
     (folder / "carts.json").write_bytes(b"current carts")
     archive = _archive(
         tmp_path / "part.zip",
@@ -873,7 +874,13 @@ def test_restore_refuses_a_link_stored_in_the_archive(tmp_path: Path) -> None:
         archive.writestr(info, "/etc/passwd")
         archive.writestr(
             "manifest.json",
-            json.dumps({"autodj_version": current_version(), "files": ["liners/link.wav"]}),
+            json.dumps(
+                {
+                    "backup_format": 2,
+                    "autodj_version": current_version(),
+                    "files": ["liners/link.wav"],
+                }
+            ),
         )
 
     with pytest.raises(BackupError, match="linked file in archive"):
@@ -1358,3 +1365,17 @@ def test_stereo_tool_keys_and_program_stay_out_of_backups(tmp_path: Path) -> Non
     assert not [name for name in names if ".stereo-tool-license" in name or "tools/" in name]
     assert key.encode() not in contents
     assert b"stereo tool program bytes" not in contents
+
+
+def test_default_station_definition_is_backed_up_and_restored(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    path = cfg.index.stations_dir / "default" / "station.json"
+    original = path.read_bytes()
+    archive = create_backup(cfg, tmp_path / "backup.zip", force=False)
+    with zipfile.ZipFile(archive) as opened:
+        assert opened.read("index/station.json") == original
+    changed = json.loads(original)
+    changed["station"]["autostart"] = False
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    restore_backup(cfg, archive, force=True)
+    assert path.read_bytes() == original

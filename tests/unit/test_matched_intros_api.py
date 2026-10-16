@@ -28,8 +28,12 @@ UNTAGGED = "c" * 32
 class Station:
     """The app and a stood-in library: two songs by one artist and one with no artist."""
 
-    def __init__(self, tmp_path: Path, **server: object) -> None:
+    def __init__(
+        self, tmp_path: Path, *, liner_upload_max_mib: int | None = None, **server: object
+    ) -> None:
         cfg = make_config(tmp_path)
+        if liner_upload_max_mib is not None:
+            cfg.station.liner_upload_max_mib = liner_upload_max_mib
         if server:
             cfg.server = ServerConfig(**server)  # type: ignore[arg-type]
         self.player, self.entries, _points, _desk = make_station(tmp_path, cfg)
@@ -231,7 +235,7 @@ def test_an_intro_past_the_length_limit_is_refused(station, monkeypatch) -> None
 
 def test_an_upload_over_the_liner_cap_is_refused(tmp_path: Path) -> None:
     mib = 1024 * 1024
-    station = Station(tmp_path, liner_upload_max_bytes=mib)
+    station = Station(tmp_path, liner_upload_max_mib=1)
     # Far over: refused on its declared length, before the body is read.
     assert station.upload(body=b"\0" * (mib + 200_000)).status_code == 413
     # Just over, inside the room left for the form: refused as it streams in.
