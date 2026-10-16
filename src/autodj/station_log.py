@@ -17,6 +17,8 @@ from __future__ import annotations
 import contextvars
 import logging
 import threading
+import time
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -33,6 +35,8 @@ _UNPREFIXED = frozenset({"autodj.audit"})
 
 _install_lock = threading.Lock()
 _installed = False
+_threads_lock = threading.Lock()
+_station_threads: dict[str, weakref.WeakSet[threading.Thread]] = {}
 
 
 def _labelled(slug: str | None) -> bool:
@@ -54,7 +58,7 @@ def station_thread(
     daemon: bool = True,
 ) -> threading.Thread:
     """A thread named for, and running as, the current station (not started)."""
-    return threading.Thread(
+    thread = threading.Thread(
         target=target,
         name=thread_name(name),
         args=args,
@@ -62,11 +66,42 @@ def station_thread(
         daemon=daemon,
         context=contextvars.copy_context(),
     )
+    track_station_thread(thread, CURRENT_STATION.get())
+    return thread
+
+
+def track_station_thread(thread: threading.Thread, slug: str | None) -> None:
+    """Track a station-owned thread without changing its existing name."""
+    if slug is not None:
+        with _threads_lock:
+            _station_threads.setdefault(slug, weakref.WeakSet()).add(thread)
+
+
+def wait_for_station_threads(slug: str, timeout: float) -> list[str]:
+    """Join station threads against one deadline; return names still running."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        with _threads_lock:
+            threads = tuple(_station_threads.get(slug, ()))
+        running = [
+            thread
+            for thread in threads
+            if thread is not threading.current_thread() and thread.is_alive()
+        ]
+        if not running:
+            return []
+        for thread in running:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            with _threads_lock:
+                threads = tuple(_station_threads.get(slug, ()))
+            return sorted(thread.name for thread in threads if thread.is_alive())
 
 
 def enter_station(slug: str | None) -> None:
     """Make the calling thread work for *slug*; a thread pool's ``initializer``."""
     CURRENT_STATION.set(slug)
+    track_station_thread(threading.current_thread(), slug)
 
 
 def install_log_prefix() -> None:

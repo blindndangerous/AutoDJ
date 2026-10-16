@@ -41,7 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
+from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG, wait_for_station_threads
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     from autodj.webhooks import WebhookWorker
 
 logger = logging.getLogger(__name__)
+_THREAD_JOIN_TIMEOUT_S = 5.0
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
@@ -1321,6 +1322,7 @@ class StationRuntime:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
+        """Close the master and page updates, then wait for remaining station threads."""
         try:
             if self.player_running():
                 logger.warning(
@@ -1343,6 +1345,10 @@ class StationRuntime:
                 lambda: _cancel(self._broadcast_task, Exception),
                 self.stop_problems,
             )
+            for name in await asyncio.to_thread(
+                wait_for_station_threads, self.slug, _THREAD_JOIN_TIMEOUT_S
+            ):
+                logger.warning("Station %s: thread %s did not stop in time", self.slug, name)
 
     async def _tick_schedule(self) -> None:
         """Run due scheduled events once a second; a failure never stops the timer."""
