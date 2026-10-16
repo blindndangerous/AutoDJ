@@ -1379,11 +1379,17 @@ def test_a_hold_that_fails_still_closes_the_pages(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
-def test_mastering_children_die_with_autodj_on_windows() -> None:
+def test_mastering_children_die_with_autodj_on_windows(monkeypatch) -> None:
     import ctypes
     import subprocess
 
+    from autodj import child_jobs
     from autodj.child_jobs import bind_to_autodj
+
+    # Start from a fresh job: an earlier test whose stand-in process Windows
+    # refused leaves the module marked unavailable for the rest of the run.
+    monkeypatch.setattr(child_jobs, "_job", None)
+    monkeypatch.setattr(child_jobs, "_unavailable", False)
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
