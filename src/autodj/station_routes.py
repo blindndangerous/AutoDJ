@@ -1762,7 +1762,7 @@ def install_station_routes(router: StationRouter) -> None:
                 station.paths.liners,
                 name,
                 file,
-                max_bytes=station.cfg.server.liner_upload_max_bytes,
+                max_bytes=(station.cfg.station.liner_upload_max_mib * 1024 * 1024),
                 replace=replace,
                 # A file that is not audio is refused now, not when it plays
                 # (#323), with the header check the breaks use.
@@ -2182,7 +2182,7 @@ def install_station_routes(router: StationRouter) -> None:
                 _, beets, error = _clock_beets(station, library).snapshot(fields)
                 if error and fields:
                     raise ValueError(error)
-                categories_index = getattr(library, "categories", None)
+                categories_index = _station_categories(station, library)
                 from autodj.clockwheel_store import step_categories
 
                 if categories_index and any(c["field"] == "category" for c in conditions):

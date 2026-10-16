@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from autodj.config import MAX_EMBED_ORIGINS, PlayerPageConfig, load_config
+from autodj.config import MAX_EMBED_ORIGINS, PlayerPageConfig, load_config, move_station_tables
 from autodj.player_page import (
     PLAYER_PAGE_CSP,
     PageAddresses,
@@ -111,7 +111,10 @@ def test_wrong_types_and_too_many_origins_are_refused() -> None:
 def test_each_station_has_its_own_player_page_settings(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
-        """
+        f"""
+[index]
+index_dir = "{(tmp_path / "index").as_posix()}"
+
 [library]
 music_dir = "music"
 
@@ -130,9 +133,12 @@ embed_origins = ["https://nightowl.example"]
 """,
         encoding="utf-8",
     )
+    legacy = load_config(path, environ={})
+    assert move_station_tables(legacy)
     cfg = load_config(path, environ={})
-    assert cfg.player_page.enabled is True
-    assert cfg.player_page.embed is False
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.player_page.enabled is True
+    assert cfg.default_station.cfg.player_page.embed is False
     (owl,) = cfg.stations
     # A station starts from the defaults, not from the root section.
     assert owl.cfg.player_page.enabled is False

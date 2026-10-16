@@ -578,7 +578,7 @@ def install_carts(router: StationRouter) -> None:
                 uploads,
                 name,
                 file,
-                max_bytes=station.cfg.server.liner_upload_max_bytes,
+                max_bytes=(station.cfg.station.liner_upload_max_mib * 1024 * 1024),
                 replace=False,
             )
         except InvalidLinerName as exc:

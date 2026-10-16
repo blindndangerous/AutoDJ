@@ -32,7 +32,7 @@ def rig(tmp_path: Path) -> tuple[TestClient, PlayerBridge, Path]:
     )
     player = _make_player_mock()
     point_index(player._cfg.index, str(active))
-    player._cfg.server.station_timezone = "UTC"
+    player._cfg.station.timezone = "UTC"
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     return TestClient(create_app(bridge)), bridge, active
 

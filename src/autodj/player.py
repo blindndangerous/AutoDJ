@@ -4070,18 +4070,18 @@ class Player:
         )
 
     def _station_now(self, at: float | None = None) -> datetime:
-        """The station's local wall time, naive (``[server] station_timezone``), now or *at*."""
+        """The station's local wall time, naive (``[station] timezone``), now or *at*."""
         from autodj.categories import station_wall
 
         return station_wall(self._cfg, self._now() if at is None else at)
 
     def _station_zone(self) -> tzinfo:
-        """The station's time zone (``[server] station_timezone``, else the system's)."""
+        """The station's time zone (``[station] timezone``, else the system's)."""
         from zoneinfo import ZoneInfo
 
         from autodj.scheduler import system_timezone
 
-        return ZoneInfo(self._cfg.server.station_timezone or system_timezone())
+        return ZoneInfo(self._cfg.station.timezone or system_timezone())
 
     def _dayparts(self, at: float | None = None) -> tuple[frozenset[str], dict[str, str]]:
         """The songs whose categories are outside their days and hours, and why.
@@ -4204,7 +4204,7 @@ class Player:
         target = next_target(
             at,
             playback.hour_fit_window_minutes,
-            self._hour_fit_timezone or self._cfg.server.station_timezone or system_timezone(),
+            self._hour_fit_timezone or self._cfg.station.timezone or system_timezone(),
             boundary,
             events,
         )
@@ -5209,51 +5209,9 @@ class Player:
 
         The mix reads lyric timing for itself (:meth:`_sung_spans`).
         """
-        from autodj.audio_meta import (
-            load_lrc_for,
-            parse_embedded_lyrics,
-            read_plain_lyrics,
-        )
+        from autodj.audio_meta import read_library_lyrics
 
-        lyrics = load_lrc_for(path)
-        if lyrics:
-            return lyrics, ""
-
-        plain = ""
-        if self._cfg.library.beets_db:
-            from autodj.beets import get_lyrics_for_path
-
-            try:
-                plain = get_lyrics_for_path(
-                    self._cfg.library.beets_db,
-                    path,
-                    music_dir=self._cfg.library.music_dir,
-                )
-            except (OSError, ValueError) as exc:
-                logger.debug("Beets lyrics lookup failed: %s", exc)
-                plain = ""
-
-        # Fall back to embedded tag lyrics when beets has none / no beets at all.
-        if not plain:
-            try:
-                plain = read_plain_lyrics(path)
-            except (OSError, ValueError) as exc:
-                logger.debug("Embedded lyric tag read failed: %s", exc)
-                plain = ""
-
-        # A "plain" lyric field very often *is* LRC: most taggers write the
-        # synced text straight into LYRICS / USLT / ©lyr rather than to a
-        # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
-        # on screen, sent the whole song to the live region in one breath,
-        # and made the current-line highlight impossible.
-        #
-        # The classification has to weigh the whole tag, not stop at the
-        # first bracket that looks like a cue: deciding on one match threw
-        # away every untimestamped line ("Written by X / [00:00.00]Intro /
-        # Verse one" collapsed to "Intro") and mangled prose that merely
-        # mentions a time.  parse_embedded_lyrics requires a clear majority
-        # of leading stamps, and cleans the plain branch instead.
-        return parse_embedded_lyrics(plain)
+        return read_library_lyrics(path, self._cfg.library)
 
     def _timed_lyrics(self, path: str) -> list[LyricLine]:
         """Synced lyric lines of *path* for the mix; empty when none or unreadable."""

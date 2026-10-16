@@ -1378,7 +1378,7 @@ import { installTimeSettings } from "./modules/time-settings.js";
 import { setTimeFormat } from "./modules/time-format.js";
 
 installAnalysisWorkers();
-installTimeSettings();
+const timeSettings = installTimeSettings();
 
 // ----------------------------------------------------------------
 // WebSocket
@@ -1731,13 +1731,14 @@ async function requestStationState() {
   try {
     return await requestJson("/api/status");
   } catch (errorValue) {
-    if (errorValue?.status === 409 && currentStation() !== DEFAULT_STATION) return null;
+    if (errorValue?.status === 409) return null;
     throw errorValue;
   }
 }
 
 // Every panel that shows the station asks it again.
 function refreshStationPanels() {
+  void timeSettings.load();
   streamSettings.retryIfMissing();
   void listenerControls.refresh();
   void nowPlayingSettings?.load();

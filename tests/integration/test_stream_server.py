@@ -41,7 +41,7 @@ def _stream_mock() -> MagicMock:
 def stream_app(bridge, tmp_path: Path):
     stream = _stream_mock()
     point_index(bridge.player._cfg.index, tmp_path)
-    bridge.player._cfg.stream.enabled = True
+    bridge.player._cfg.station.output = "stream"
     bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
     app = create_app(bridge)
     return TestClient(app, client=("192.0.2.4", 50000)), stream
@@ -220,10 +220,10 @@ def test_m3u_points_at_stream(stream_app) -> None:
 
 
 def test_playlist_uses_forwarded_https_only_from_trusted_peer(bridge) -> None:
-    bridge.player._cfg.stream.trusted_proxies = ["198.51.100.5"]
+    bridge.player._cfg.server.trusted_proxies = ["198.51.100.5"]
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
     app = ProxyHeadersMiddleware(
-        create_app(bridge), trusted_hosts=proxy_allowlist(bridge.player._cfg.stream.trusted_proxies)
+        create_app(bridge), trusted_hosts=proxy_allowlist(bridge.player._cfg.server.trusted_proxies)
     )
     headers = {"X-Forwarded-Proto": "https"}
     trusted = TestClient(app, client=("198.51.100.5", 50000))
@@ -1308,7 +1308,7 @@ def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: 
 
     bridge = _lifespan_bridge()
     point_index(bridge.player._cfg.index, tmp_path / "index")
-    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.station.timezone = "UTC"
     bridge.player._cfg.recording = RecordingConfig(tmp_path / "recordings")
     with (
         patch("autodj.stream.FfmpegEncoder", FakeEncoder),
@@ -1487,7 +1487,6 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
     bridge = _lifespan_bridge()
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream = StreamConfig(
-        enabled=True,
         relays={
             "same": {
                 "type": "icecast",

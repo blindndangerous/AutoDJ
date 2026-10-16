@@ -37,8 +37,7 @@ def _settings(**changes: object) -> SettingsBody:
 
 
 def _checks(tmp_path: Path) -> TimeChecks:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     return TimeChecks(cfg, "America/Denver")
 
 
@@ -247,8 +246,7 @@ def test_config_rejects_bad_tts_templates() -> None:
 
 
 def test_doctor_reports_missing_minutes_and_fallback(tmp_path: Path) -> None:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     check = _time_checks_check(cfg)
     assert check.status is CheckStatus.PASS
     assert check.summary == "disabled; 1440 of 1440 minute clips missing"
@@ -270,8 +268,7 @@ def test_doctor_reports_missing_minutes_and_fallback(tmp_path: Path) -> None:
 
 
 def test_doctor_reads_the_switches_saved_from_settings(tmp_path: Path) -> None:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     state = Path((cfg.index.stations_dir / "default")) / "time_checks.json"
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
@@ -308,8 +305,7 @@ def _write_pack(
 
 
 def _pack_checks(tmp_path: Path, *folders: Path) -> TimeChecks:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     cfg.time_checks = TimeChecksConfig(voice_packs=[str(folder) for folder in folders])
     return TimeChecks(cfg, "UTC")
 
@@ -481,8 +477,7 @@ def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: P
     full = _write_pack(tmp_path / "Full", range(24), range(1, 60))
     partial = _write_pack(tmp_path / "Partial", range(23), range(1, 59))
     (partial / "hm_07.wav").write_bytes(b"x")
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     cfg.time_checks = TimeChecksConfig(
         enabled=True, voice_packs=[str(full), str(partial), str(tmp_path / "Gone")]
     )

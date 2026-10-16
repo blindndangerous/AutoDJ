@@ -2393,22 +2393,36 @@
     <div id="stations-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <!-- Time for every station (#282, #286): time-settings.js. -->
     <fieldset id="time-settings">
-      <legend>Time for every station</legend>
+      <legend>Time for the selected station</legend>
       <div class="settings-row">
         <label for="time-zone">Time zone</label>
         <select id="time-zone" aria-describedby="time-zone-help"></select>
       </div>
       <span class="setting-desc" id="time-zone-help">
-        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time AutoDJ starts.
+        Changing it moves when scheduled events, ad breaks and clockwheel restarts happen, from the next time this station starts.
       </span>
       <div class="settings-row">
-        <label for="time-format">Time format</label>
+        <label for="time-format">Time format for all stations</label>
         <select id="time-format">
           <option value="24">24 hour (15:04)</option>
           <option value="12">12 hour (3:04 PM)</option>
         </select>
       </div>
       <button type="button" id="time-settings-save">Save time settings</button>
+    </fieldset>
+    <fieldset>
+      <legend>Output for the selected station</legend>
+      <label for="station-output">Playback output</label>
+      <select id="station-output">
+        <option value="browser">Browser</option>
+        <option value="server">Server sound card</option>
+        <option value="stream">Radio stream</option>
+      </select>
+      <label><input type="checkbox" id="station-monitor">Also play the radio stream on the server sound card</label>
+      <label for="station-upload-cap">Maximum liner upload size (MiB)</label>
+      <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
+      <p>Output changes apply when this station next starts.</p>
+      <button type="button" id="station-options-save">Save station options</button>
     </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <div class="data-table-scroll">
