@@ -1,4 +1,4 @@
-"""One station's plays, play log and settings in the shared ``library.db`` (#70).
+"""One station's plays, play log and settings in its ``station.db`` (#417).
 
 The library and its catalog are shared by every station, but what a
 station played is its own: the play log rows, each track's last-played
@@ -19,13 +19,10 @@ import math
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from autodj.catalog import DEFAULT_STATION, _path
-
-if TYPE_CHECKING:
-    from autodj.catalog import LibraryCatalog
-    from autodj.indexer import IndexEntry
+from autodj.station_store import StationStore
 
 # StationLedger._selected_clock before any clockwheel is selected.
 _UNSELECTED = object()
@@ -35,7 +32,7 @@ def setting_key(station: str, name: str) -> str:
     """The ``catalog_settings`` key of setting *name* for *station*.
 
     The default station keeps the key it always had (``"clock"``); any
-    other station's is ``"clock:<slug>"``.
+    other station's is ``"clock:<slug>"`` in the legacy catalog.
     """
     return name if station == DEFAULT_STATION else f"{name}:{station}"
 
@@ -50,21 +47,21 @@ class StationLedger:
 
     def __init__(
         self,
-        catalog: LibraryCatalog,
-        station: str = DEFAULT_STATION,
-        entry_for_path: Callable[[str], IndexEntry | None] | None = None,
+        store: StationStore,
+        entry_for_path: Callable[[str], Any | None] | None = None,
+        kind_for_path: Callable[[str], str | None] | None = None,
     ) -> None:
-        """Keep *station*'s plays for *catalog*.
+        """Keep one station's plays in *store*.
 
         Args:
-            catalog: The shared library catalog.
-            station: The station's name.
+            store: The station's database.
             entry_for_path: Finds a track's library entry, for the album of
                 a play not yet written.
         """
-        self.catalog = catalog
-        self.station = station
+        self.store = store
+        self.station = store.station
         self._entry_for_path = entry_for_path
+        self._kind_for_path = kind_for_path
         self._lock = threading.Lock()
         # Held while settings are written, so a flush in progress cannot put
         # back a value select_clock has just replaced.
@@ -125,7 +122,7 @@ class StationLedger:
         with self._settings_lock:
             with self._lock:
                 buffered = self._pending_settings.get(key)
-            setting = buffered if buffered is not None else self.catalog.get_setting(key, {})
+            setting = buffered if buffered is not None else self.store.get_setting("clock", {})
             setting = setting if isinstance(setting, dict) else {}
             if cursor is None:
                 kept = setting.get("cursor")
@@ -133,7 +130,7 @@ class StationLedger:
                 same = was is not None and was in (name, renamed_from)
                 cursor = kept if same and type(kept) is int else 0
             value = {"name": name, "cursor": cursor}
-            self.catalog.set_setting(key, value)
+            self.store.set_setting("clock", value)
             with self._lock:
                 self._selected_clock = name
                 # The update read above is written now, and one the player
@@ -184,6 +181,9 @@ class StationLedger:
         for row in rows:
             entry = self._entry_for_path(row.get("path") or "") if self._entry_for_path else None
             row["album"] = entry.album if entry is not None else ""
+            row["track_kind"] = (
+                self._kind_for_path(row.get("path") or "") if self._kind_for_path else ""
+            )
         return rows
 
     def get_setting(self, name: str, default: Any = None) -> Any:
@@ -192,26 +192,26 @@ class StationLedger:
         with self._lock:
             if key in self._pending_settings:
                 return self._pending_settings[key]
-        return self.catalog.get_setting(key, default)
+        return self.store.get_setting(name, default)
 
     def recent_history(self, limit: int = 500) -> list[dict]:
         """The station's latest *limit* completed plays, oldest first."""
-        return self.catalog.recent_history(limit, station=self.station)
+        return self.store.recent_history(limit)
 
     def recent_plays(self, limit: int) -> list[dict]:
         """The station's latest *limit* plays for the repeat rules, oldest first."""
-        return self.catalog.recent_plays(limit, station=self.station)
+        return self.store.recent_plays(limit)
 
     def play_log(self) -> list[dict]:
         """Every completed play of the station, oldest first."""
-        return self.catalog.play_log(station=self.station)
+        return self.store.play_log()
 
     # ------------------------------------------------------------------
     # The library's side
     # ------------------------------------------------------------------
 
     def loaded(self, played: dict[str, float]) -> None:
-        """Take last-played times read from the catalog; a later play known here wins.
+        """Take last-played times read from the station store; later plays win.
 
         A play flushed after the catalog was read is no longer pending, so
         the later of the two times is kept rather than the catalog's.
@@ -223,8 +223,21 @@ class StationLedger:
                     known[path] = value
             known.update(self._pending_plays)
 
+    def rekey(self, old: str | Path, new: str | Path) -> None:
+        """Move a track's station-owned dates and history to its new catalog path."""
+        old_path, new_path = _path(old), _path(new)
+        self.store.rekey(old_path, new_path)
+        with self._lock:
+            if old_path in self._last_played:
+                self._last_played[new_path] = self._last_played.pop(old_path)
+            if old_path in self._pending_plays:
+                self._pending_plays[new_path] = self._pending_plays.pop(old_path)
+            for row in self._pending_history.values():
+                if row.get("path") and _path(row["path"]) == old_path:
+                    row["path"] = new_path
+
     def flush(self) -> None:
-        """Write buffered plays, play log rows and settings to the catalog."""
+        """Write buffered plays, play log rows and settings to the station store."""
         self._flush_plays()
         self._flush_history()
         self._flush_settings()
@@ -233,7 +246,7 @@ class StationLedger:
         with self._lock:
             pending = dict(self._pending_plays)
         for path, value in pending.items():
-            self.catalog.remember_play(path, value, station=self.station)
+            self.store.remember_play(path, value)
             with self._lock:
                 if self._pending_plays.get(path) == value:
                     self._pending_plays.pop(path, None)
@@ -243,7 +256,10 @@ class StationLedger:
             with self._lock:
                 pending = dict(self._pending_settings)
             for key, value in pending.items():
-                self.catalog.set_setting(key, value)
+                name = (
+                    key if self.station == DEFAULT_STATION else key.removesuffix(f":{self.station}")
+                )
+                self.store.set_setting(name, value)
                 with self._lock:
                     if self._pending_settings.get(key) == value:
                         self._pending_settings.pop(key, None)
@@ -254,7 +270,19 @@ class StationLedger:
             interrupted = set(self._interrupted_plays)
         if not pending and not interrupted:
             return
-        self.catalog.write_history(list(pending.values()), list(interrupted), station=self.station)
+        enriched = []
+        for row in pending.values():
+            entry = self._entry_for_path(row.get("path") or "") if self._entry_for_path else None
+            enriched.append(
+                {
+                    **row,
+                    "album": entry.album if entry is not None else "",
+                    "track_kind": self._kind_for_path(row.get("path") or "")
+                    if self._kind_for_path
+                    else "",
+                }
+            )
+        self.store.write_history(enriched, list(interrupted))
         with self._lock:
             for event_id, row in pending.items():
                 if self._pending_history.get(event_id) == row:

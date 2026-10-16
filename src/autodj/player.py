@@ -1378,10 +1378,7 @@ class Player:
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
         # Through the ledger: a place it has not written yet is the latest.
-        if ledger is not None:
-            setting = ledger.get_setting("clock", {})
-        else:
-            setting = self._library.catalog.get_setting("clock", {})
+        setting = ledger.get_setting("clock", {}) if ledger is not None else {}
         if not isinstance(setting, dict):
             setting = {}
         with self._clock_lock:
@@ -4247,8 +4244,8 @@ class Player:
         limit = plays_to_load(self._state.rules, self._state.dmca_seconds)
         if limit <= 0:
             return 0
-        rows = catalog.recent_plays(limit)
         ledger = self._ledger
+        rows = ledger.recent_plays(limit) if ledger is not None else catalog.recent_plays(limit)
         if ledger is not None:
             # Plays not written to SQLite yet count too.
             rows.extend(ledger.pending_history())
