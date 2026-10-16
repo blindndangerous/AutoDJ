@@ -33,7 +33,6 @@ describe("public station settings", () => {
     expect(get("origins").value).toBe("https://example.org");
     get("dmca").checked = true;
     get("dmca").dispatchEvent(new Event("change", { bubbles: true }));
-    get("dmca-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await flush();
     expect(saved.dmca_enabled).toBe(true);
     await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
@@ -62,16 +61,57 @@ describe("public station settings", () => {
     get("page-form").dispatchEvent(new Event("submit", { cancelable: true }));
     expect(get("page-save").getAttribute("aria-busy")).toBe("true");
     expect(get("page-save").hasAttribute("aria-disabled")).toBe(false);
-    rejectSave(Object.assign(new Error("player_page.embed_origins must be an HTTP(S) origin"),
-      { status: 400 }));
+    rejectSave(Object.assign(new Error("Sites allowed to embed: 'ftp://bad.example' is not an http:// or https:// site address, such as https://radio.example.net."),
+      { status: 400, field: "embed_origins" }));
     await flush();
     expect(get("page-save").hasAttribute("aria-busy")).toBe(false);
     expect(get("origins").getAttribute("aria-invalid")).toBe("true");
     expect(get("origins").getAttribute("aria-describedby")).toContain("public-origins-error");
     expect(document.activeElement).toBe(get("origins"));
     await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
-      .toMatch(/Could not save player pages/));
+      .toMatch(/Sites allowed to embed: 'ftp:\/\/bad.example'/));
     get("origins").dispatchEvent(new Event("input", { bubbles: true }));
     expect(get("origins").hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("shows canonical sites returned after saving", async () => {
+    const request = vi.fn(async (_url, options = {}) => options.method === "PUT"
+      ? { ...state, embed_origins: ["https://radio.example.net"] } : state);
+    const controls = installPublicSettings({ doc: document, request });
+    await controls.refresh();
+    get("origins").value = "HTTPS://RADIO.EXAMPLE.NET:443";
+    get("page-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(get("origins").value).toBe("https://radio.example.net");
+  });
+
+  it("reverts a DMCA change the server refuses", async () => {
+    const request = vi.fn(async (_url, options = {}) => {
+      if (options.method === "PUT") throw new Error("Could not save");
+      return state;
+    });
+    const controls = installPublicSettings({ doc: document, request });
+    await controls.refresh();
+    get("dmca").checked = true;
+    get("dmca").dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(get("dmca").checked).toBe(false);
+    await vi.waitFor(() => expect(document.getElementById("settings-status").textContent)
+      .toMatch(/Could not save DMCA mode/));
+  });
+
+  it("keeps newer site edits made while a save is pending", async () => {
+    let resolveSave;
+    const request = vi.fn((_url, options = {}) => options.method === "PUT"
+      ? new Promise((resolve) => { resolveSave = resolve; }) : Promise.resolve(state));
+    const controls = installPublicSettings({ doc: document, request });
+    await controls.refresh();
+    get("origins").value = "https://first.example";
+    get("page-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    get("origins").value = "https://newer.example";
+    get("origins").dispatchEvent(new Event("input", { bubbles: true }));
+    resolveSave({ ...state, embed_origins: ["https://first.example"] });
+    await flush();
+    expect(get("origins").value).toBe("https://newer.example");
   });
 });

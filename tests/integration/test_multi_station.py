@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -26,7 +27,9 @@ from fastapi.testclient import TestClient
 
 from autodj import server
 from autodj.config import load_config, move_station_tables
+from autodj.dmca import complement
 from autodj.library import LibraryManager
+from autodj.repeat_rules import TrackKeyCache
 from autodj.similarity import SimilarityIndex
 from autodj.stream import Listener
 from tests.unit._fakes import FakeEncoder
@@ -677,6 +680,13 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
         .headers["content-security-policy"]
         .endswith("frame-ancestors 'self' https://example.org")
     )
+    wildcard = client.put(path, json={"embed_origins": ["*"]}, headers=headers)
+    assert wildcard.status_code == 200, wildcard.text
+    assert (
+        client.get("/stations/nightowl/embed")
+        .headers["content-security-policy"]
+        .endswith("frame-ancestors *")
+    )
 
     changed = client.put(
         path,
@@ -709,6 +719,12 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
     ):
         invalid = client.put(path, json=body, headers=headers)
         assert invalid.status_code == 400, invalid.text
+        if body == {"embed_origins": ["ftp://example.org"]}:
+            assert invalid.json() == {
+                "detail": "Sites allowed to embed: 'ftp://example.org' is not an http:// or "
+                "https:// site address, such as https://radio.example.net.",
+                "field": "embed_origins",
+            }
         assert definition.read_bytes() == unchanged
 
     assert client.post(f"{OWL}/stop").status_code == 200
@@ -725,6 +741,73 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
     assert nightowl.cfg.dmca.enabled is True
     assert nightowl.cfg.player_page.enabled is True
     assert nightowl.cfg.player_page.embed is False
+
+
+def test_enabling_dmca_refreshes_public_feed_and_saved_play_limits(rig: Any) -> None:
+    client, _library, _cfg, song, _closes = rig
+    station = client.app.state.stations.get("nightowl")
+    state = station.player._state
+    station.cfg.nowplaying.show_next = True
+    state.next_track = song
+    station.nowplaying.refresh()
+    assert station.nowplaying.snapshot()["next_track"]["title"] == song.title
+    assert '<section id="status-next-section">' in client.get("/stations/nightowl/status").text
+
+    # Saved plays outlive the short repeat-rule window while DMCA mode is off.
+    assert state.rules.keep_seconds < 100 * 60
+    saved_at = time.time()
+    station.ledger.store.write_history(
+        [
+            {
+                "event_id": f"dmca-{index}",
+                "path": str(Path(song.path).with_name(f"played-{index}.flac")),
+                "title": f"Played {index}",
+                "artist": song.artist,
+                "album": song.album,
+                "duration": 180.0,
+                "played_at": datetime.fromtimestamp(saved_at - minutes * 60, UTC).isoformat(),
+            }
+            for index, minutes in enumerate((120, 110, 100))
+        ],
+        [],
+    )
+    assert not any(record.path.endswith("played-0.flac") for record in state.play_history)
+
+    response = client.put(
+        f"{OWL}/public-settings",
+        json={"dmca_enabled": True},
+        headers={"Origin": "http://testserver"},
+    )
+    assert response.status_code == 200, response.text
+    assert station.nowplaying.snapshot()["next_track"] is None
+    assert client.get(f"{OWL}/nowplaying").json()["next_track"] is None
+    assert (
+        '<section id="status-next-section" hidden>' in client.get("/stations/nightowl/status").text
+    )
+    assert (
+        client.put(
+            f"{OWL}/public-settings",
+            content=b" " * (8 * 1024 + 1),
+            headers={"Origin": "http://testserver"},
+        ).status_code
+        == 413
+    )
+    assert {Path(record.path).stem for record in state.play_history} >= {
+        "played-0",
+        "played-1",
+        "played-2",
+    }
+    assert any(
+        "more than 3 songs from the album" in limit
+        for limit in complement(list(state.play_history), time.time(), TrackKeyCache()).broken(song)
+    )
+    disabled = client.put(
+        f"{OWL}/public-settings",
+        json={"dmca_enabled": False},
+        headers={"Origin": "http://testserver"},
+    )
+    assert disabled.status_code == 200, disabled.text
+    assert station.nowplaying.snapshot()["next_track"]["title"] == song.title
 
 
 def test_a_restarted_station_runs_the_same_threads_each_once(rig: Any) -> None:

@@ -1854,7 +1854,12 @@ class StationRegistry:
                 running.cfg.dmca = dmca
                 running.cfg.player_page = page
                 running.player._cfg.dmca = dmca
-                running.player._state.dmca_enabled = dmca.enabled
+                with running.player._state.history_lock:
+                    was_enabled = running.player._state.dmca_enabled
+                    running.player._state.dmca_enabled = dmca.enabled
+                if dmca.enabled and not was_enabled:
+                    running.player.restore_repeat_history(running.ledger, refresh=True)
+                running.public_state_changed()
             return self.public_settings(slug)
 
     def set_autostart(self, slug: str, enabled: bool) -> None:
@@ -1866,15 +1871,15 @@ class StationRegistry:
         """
         if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             raise StationControlError("The injected station has no saved definition.")
-        extra = self._extras[slug]
-        if extra.defined_in != "web":
-            raise StationControlError(
-                f"{extra.name} is set in config.toml; change autostart there."
-            )
         from autodj.fsutil import atomic_write
 
-        path = extra.paths.definition
         with self.configuration_lock:
+            extra = self._extras[slug]
+            if extra.defined_in != "web":
+                raise StationControlError(
+                    f"{extra.name} is set in config.toml; change autostart there."
+                )
+            path = extra.paths.definition
             document = json.loads(path.read_text(encoding="utf-8"))
             document["station"]["autostart"] = enabled
             atomic_write(path, json.dumps(document, indent=2) + "\n")

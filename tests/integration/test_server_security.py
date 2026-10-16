@@ -74,6 +74,13 @@ def test_create_station_needs_session_origin_and_small_body() -> None:
     assert client.post("/api/stations", json=body).status_code == 503
 
 
+def test_settings_request_bodies_are_capped() -> None:
+    client = _security_client()
+    assert _pair(client).status_code == 200
+    for path in ("/api/time-settings", "/api/station-settings", "/api/public-settings"):
+        assert client.put(path, content=b" " * (8 * 1024 + 1)).status_code == 413
+
+
 def _security_app():
     player = _make_player_mock()
     player._cfg.server = ServerConfig(

@@ -93,7 +93,7 @@ from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
 from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
-from autodj.config import AdsConfig, BreaksConfig
+from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import (
@@ -1228,6 +1228,12 @@ def create_app(
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
@@ -2213,13 +2219,30 @@ def create_app(
         return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
 
     @station_router.put("/public-settings")
-    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> Any:
         try:
             return await asyncio.to_thread(
                 stations.save_public_settings, _settings_slug(request), body
             )
         except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            detail = str(exc)
+            if detail.startswith("player_page.embed_origins"):
+                if detail.startswith("player_page.embed_origins entry "):
+                    site = detail.removeprefix("player_page.embed_origins entry ").rsplit(
+                        " must be an HTTP(S) origin", 1
+                    )[0]
+                    detail = (
+                        f"Sites allowed to embed: {site} is not an http:// or https:// site "
+                        "address, such as https://radio.example.net."
+                    )
+                elif "allows at most" in detail:
+                    detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
+                else:
+                    detail = "Sites allowed to embed: enter one site per line."
+                return JSONResponse(
+                    status_code=400, content={"detail": detail, "field": "embed_origins"}
+                )
+            raise HTTPException(status_code=400, detail=detail) from exc
 
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:

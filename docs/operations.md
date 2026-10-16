@@ -550,7 +550,7 @@ of the US statutory webcasting licence (section 114, reported to
 SoundExchange). This is general information, not legal advice: you remain
 responsible for your licence and your reports.
 
-Turn it on in the selected station's Settings > DMCA controls. The choice is station-specific.
+Turn it on in the selected station's Settings > Song picking. The choice is station-specific.
 
 ### The limits
 
@@ -622,7 +622,8 @@ estimate.
 ### Public pages
 
 Turn DMCA mode on or off in Settings > Song picking for the selected station. Saving it changes
-the next song pick and public feed immediately. Songs already picked or queued are not rechecked.
+the next song pick and public feed immediately. From the moment it turns on, the limits count
+the last three hours of saved plays. Songs already picked or queued are not rechecked.
 The public now-playing feed (`/api/nowplaying`), the `/status` page and the
 track-change webhooks never include the next song in DMCA mode, whatever
 `[nowplaying] show_next` says. In Settings, Stream, the "Show the next song

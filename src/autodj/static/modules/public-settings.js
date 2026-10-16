@@ -22,6 +22,7 @@ export function installPublicSettings({ doc = document, request = requestJson } 
   let dirtyPage = false;
   let savingDmca = false;
   let savingPage = false;
+  let savedDmca = false;
 
   function say(message, tone = "success") {
     announceStatus(status, message, { tone, force: true, dwellMs: tone === "error" ? 6000 : 4000 });
@@ -47,11 +48,12 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     say(message, "error");
   }
 
-  function fill(settings) {
+  function fill(settings, { forcePage = false } = {}) {
+    if (!savingDmca) savedDmca = settings.dmca_enabled === true;
     if (!dirtyDmca && !savingDmca && !dmcaForm.contains(doc.activeElement)) {
-      dmca.checked = settings.dmca_enabled === true;
+      dmca.checked = savedDmca;
     }
-    if (!dirtyPage && !savingPage && !pageForm.contains(doc.activeElement)) {
+    if (forcePage || (!dirtyPage && !savingPage && !pageForm.contains(doc.activeElement))) {
       page.checked = settings.player_page_enabled === true;
       embed.checked = settings.embed_enabled === true;
       origins.value = (settings.embed_origins || []).join("\n");
@@ -76,6 +78,7 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     loadSequence += 1;
     dirtyDmca = false;
     dirtyPage = false;
+    savedDmca = false;
     dmca.checked = false;
     page.checked = false;
     embed.checked = false;
@@ -94,8 +97,8 @@ export function installPublicSettings({ doc = document, request = requestJson } 
         body: JSON.stringify(body),
       });
       if (mine !== generation) return;
-      done();
-      fill(settings);
+      done?.(settings);
+      fill(settings, { forcePage: "embed_origins" in body && !dirtyPage });
       say(success);
     } catch (error) {
       if (mine !== generation) return;
@@ -108,23 +111,32 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     }
   }
 
-  dmcaForm.addEventListener("change", () => { dirtyDmca = true; });
-  pageForm.addEventListener("input", () => { dirtyPage = true; clearError(); });
-  pageForm.addEventListener("change", () => { dirtyPage = true; });
-  dmcaForm.addEventListener("submit", (event) => {
-    event.preventDefault();
+  function saveDmca() {
     if (savingDmca) return;
     savingDmca = true;
-    void save(get("dmca-save"), { dmca_enabled: dmca.checked },
-      `DMCA mode ${dmca.checked ? "on" : "off"}.`,
-      (error) => say(`Could not save DMCA mode: ${error?.message || "no answer"}`, "error"),
-      () => { dirtyDmca = false; }).finally(() => { savingDmca = false; });
-  });
+    dirtyDmca = false;
+    const enabled = dmca.checked;
+    void save(dmca, { dmca_enabled: enabled },
+      `DMCA mode ${enabled ? "on" : "off"}.`,
+      (error) => {
+        if (!dirtyDmca) dmca.checked = savedDmca;
+        say(`Could not save DMCA mode: ${error?.message || "no answer"}`, "error");
+      },
+      (settings) => { savedDmca = settings.dmca_enabled === true; })
+      .finally(() => {
+        savingDmca = false;
+        if (dirtyDmca) saveDmca();
+      });
+  }
+  dmca.addEventListener("change", () => { dirtyDmca = true; saveDmca(); });
+  pageForm.addEventListener("input", () => { dirtyPage = true; clearError(); });
+  pageForm.addEventListener("change", () => { dirtyPage = true; });
   pageForm.addEventListener("submit", (event) => {
     event.preventDefault();
     if (savingPage) return;
     clearError();
     savingPage = true;
+    dirtyPage = false;
     const body = {
       player_page_enabled: page.checked,
       embed_enabled: embed.checked,
@@ -132,11 +144,11 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     };
     void save(get("page-save"), body, "Public player pages saved.",
       (error) => {
-        const message = `Could not save player pages: ${error?.message || "no answer"}`;
-        if (error?.status === 400 && error.message.includes("embed_origins")) showError(message);
-        else say(message, "error");
-      },
-      () => { dirtyPage = false; }).finally(() => { savingPage = false; });
+        dirtyPage = true;
+        const message = error?.message || "Could not save player pages: no answer";
+        if (error?.field === "embed_origins") showError(message);
+        else say(`Could not save player pages: ${message}`, "error");
+      }).finally(() => { savingPage = false; });
   });
   return { refresh, clear };
 }
