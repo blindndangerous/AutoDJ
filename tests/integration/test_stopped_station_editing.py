@@ -310,3 +310,19 @@ def test_default_station_can_be_stopped_edited_and_restarted(rig) -> None:  # no
     restarted = client.post("/api/stations/default/start", headers=ORIGIN)
     assert restarted.status_code == 200, restarted.text
     assert stations.default.cfg.playback.hour_fit is True
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_saved_edits_refused_during_station_start(rig) -> None:  # noqa: F811
+    import asyncio
+
+    client, _library, _cfg, _song, _closes = rig
+    registry = client.app.state.stations
+
+    async def during_start():
+        async with registry._locks["nightowl"]:
+            response = await asyncio.to_thread(client.get, f"{OWL}/settings")
+            assert response.status_code == 409
+            assert "nightowl" not in registry._content
+
+    asyncio.run(during_start())

@@ -578,8 +578,13 @@ def break_settings_view(station: StationRuntime) -> dict[str, Any]:
     """
     config = station.cfg.breaks
     reason = None
+    library = (
+        getattr(station.player, "_library", None)
+        if station.player is not None
+        else station.bridge.library
+    )
     if config.enabled is True and (
-        station.bridge.library is None or station.cfg.playback.transition_mode != "saved_points"
+        library is None or station.cfg.playback.transition_mode != "saved_points"
     ):
         reason = NEEDS_SAVED_POINTS
     return {

@@ -1746,6 +1746,9 @@ class StationRegistry:
     def editable(self, slug: str) -> Any:
         """Return the running station or its saved editors, without starting playback."""
         current = self.get(slug)
+        lock = self._locks.get(slug)
+        if lock is not None and lock.locked():
+            raise StationControlError("That station is starting or stopping")
         if not current.stopped:
             return current
         if slug in self._stopping or slug in self._stuck:
@@ -1913,6 +1916,8 @@ class StationRegistry:
                 # A failed start gives up its claim.
                 with self.stereo_tool_lock:
                     self._starting.pop(slug, None)
+                with self.configuration_lock:
+                    self._content.pop(slug, None)
             return running
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
