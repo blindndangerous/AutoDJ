@@ -67,8 +67,7 @@ def test_the_default_station_has_a_folder_like_every_other(tmp_path: Path) -> No
     assert paths.cart_uploads == active / "carts"
     assert paths.time_checks == active / "time_checks.json"
     assert paths.time_checks_cache == active / "time_checks_cache"
-    # Its clips are the shared packs every station can use.
-    assert paths.time_check_clips == index / "shared" / "time_checks"
+    assert paths.time_check_clips == active / "time_checks"
     assert paths.listener_bans == active / "listener_bans.json"
     assert paths.recording == active / "recording.json"
     assert paths.relay_status == active / "relay-status.json"

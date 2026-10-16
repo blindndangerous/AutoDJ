@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from autodj import stereotool_setup as setup
 from autodj.security import emit_audit, new_request_id
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationRouter
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -82,7 +82,7 @@ def _running(station: StationRuntime) -> dict[str, object] | None:
 
 def status(station: StationRuntime, several: bool) -> dict[str, Any]:
     """One station's Stereo Tool library and licence, with no path and no key."""
-    cfg = station.bridge.player._cfg
+    cfg = station.cfg
     licence = setup.license_state(
         index_dir=cfg.index.index_dir,
         state_dir=station.paths.state_dir,
@@ -113,7 +113,7 @@ def _install_license_path(station: StationRuntime) -> Path:
     Raises:
         HTTPException: 409 when the environment sets the licence for every station.
     """
-    cfg = station.bridge.player._cfg
+    cfg = station.cfg
     state = setup.license_state(index_dir=cfg.index.index_dir, state_dir=station.paths.state_dir)
     if state.install == "environment":
         raise HTTPException(
@@ -151,13 +151,13 @@ def install_stereo_tool(router: StationRouter) -> None:
     """Register the routes that read and set one station's licence."""
 
     @router.get("/stereo-tool")
-    async def get_stereo_tool(station: StationDep, request: Request) -> dict[str, Any]:
+    async def get_stereo_tool(station: SavedStationDep, request: Request) -> dict[str, Any]:
         """Whether Stereo Tool is installed, its version, and which licence this station uses."""
         return await asyncio.to_thread(status, station, _several_stations(request))
 
     @router.put("/stereo-tool/license")
     async def put_license(
-        station: StationDep, body: LicenseBody, request: Request
+        station: SavedStationDep, body: LicenseBody, request: Request
     ) -> dict[str, Any]:
         """Save a licence key readable only by AutoDJ's user; the answer never holds it."""
         try:
@@ -178,7 +178,7 @@ def install_stereo_tool(router: StationRouter) -> None:
 
     @router.delete("/stereo-tool/license")
     async def delete_license(
-        station: StationDep, request: Request, scope: Scope = Query("all")
+        station: SavedStationDep, request: Request, scope: Scope = Query("all")
     ) -> dict[str, Any]:
         """Delete a saved licence key; Stereo Tool restarts without it."""
         try:

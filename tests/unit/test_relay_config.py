@@ -6,7 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from autodj.config import RelayConfig, StreamConfig, load_config, relay_password_variable
+from autodj.config import (
+    RelayConfig,
+    StreamConfig,
+    load_config,
+    move_station_tables,
+    relay_password_variable,
+)
+from autodj.relay_settings import load_relays
+from autodj.stations import StationPaths
 
 ICECAST = {"type": "icecast", "host": "radio.example.com", "mount": "/live", "password": "pw"}
 
@@ -90,30 +98,43 @@ def test_too_many_relays() -> None:
         StreamConfig.from_dict({"relays": {f"r{i}": ICECAST for i in range(9)}})
 
 
-def test_password_from_config_local_toml_and_environment(tmp_path: Path) -> None:
+def test_legacy_relay_secrets_and_environment_are_migrated(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_bytes(
-        b'[stream.relays.main]\ntype = "icecast"\nhost = "radio.example.com"\nmount = "/live"\n'
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'.encode()
+        + b'[stream.relays.main]\ntype = "icecast"\nhost = "radio.example.com"\nmount = "/live"\n'
         b'[stream.relays.backup-sc]\ntype = "shoutcast1"\nhost = "sc.example.com"\n'
     )
     (tmp_path / "config.local.toml").write_bytes(
         b'[stream.relays.main]\npassword = "from-local"\n'
         b'[stream.relays.backup-sc]\npassword = "local-sc"\n'
     )
-    cfg = load_config(tmp_path / "config.toml", environ={})
-    assert cfg.stream.relays["main"].password == "from-local"
-    assert cfg.stream.relays["main"].host == "radio.example.com"
-
-    env = {relay_password_variable("backup-sc"): "from-env"}
-    cfg = load_config(tmp_path / "config.toml", environ=env)
-    assert cfg.stream.relays["backup-sc"].password == "from-env"
-    assert cfg.stream.relays["main"].password == "from-local"
-    assert "environment" in cfg.config_sources
+    path = tmp_path / "config.toml"
+    env = {"AUTODJ_STREAM_RELAY_BACKUP_SC_PASSWORD": "from-env"}
+    cfg = load_config(path, environ=env)
+    assert move_station_tables(cfg)
+    cfg = load_config(path, environ={})
+    relays = load_relays(StationPaths.default(cfg).relays, {}, "default")
+    assert relays["main"].password == "from-local"
+    assert relays["main"].host == "radio.example.com"
+    assert relays["backup-sc"].password == "from-env"
+    # A legacy variable is captured for one-time migration, never a runtime override.
+    reloaded = load_config(path, environ={"AUTODJ_STREAM_RELAY_BACKUP_SC_PASSWORD": "later"})
+    assert move_station_tables(reloaded) is False
+    assert (
+        load_relays(StationPaths.default(reloaded).relays, {}, "default")["backup-sc"].password
+        == "from-env"
+    )
 
 
 def test_environment_password_alone_does_not_create_a_relay(tmp_path: Path) -> None:
-    (tmp_path / "config.toml").write_bytes(b"[stream]\nenabled = false\n")
+    (tmp_path / "config.toml").write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n[stream]\nenabled = false\n',
+        encoding="utf-8",
+    )
     env = {relay_password_variable("ghost"): "pw"}
-    assert load_config(tmp_path / "config.toml", environ=env).stream.relays == {}
+    assert (
+        load_config(tmp_path / "config.toml", environ=env).default_station.cfg.stream.relays == {}
+    )
 
 
 @pytest.mark.parametrize(("first", "second"), [("a-b", "a_b"), ("Main", "main")])
@@ -121,7 +142,9 @@ def test_relays_reading_one_set_password_variable_are_refused(
     tmp_path: Path, first: str, second: str
 ) -> None:
     """One server's source password must never be sent to another."""
-    (tmp_path / "config.toml").write_text(
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
         f"""
 [stream.relays.{first}]
 type = "icecast"
@@ -137,17 +160,20 @@ password = "placeholder-two"
 """,
         encoding="utf-8",
     )
-    variable = relay_password_variable(first)
+    variable = "AUTODJ_STREAM_RELAY_" + first.upper().replace("-", "_") + "_PASSWORD"
     with pytest.raises(ValueError, match=f"would both read {variable}, which is set"):
-        load_config(tmp_path / "config.toml", environ={variable: "secret-for-one"})
+        move_station_tables(load_config(path, environ={variable: "secret-for-one"}))
     # Unset, the variable sends nothing: each relay keeps its own TOML password.
-    relays = load_config(tmp_path / "config.toml", environ={}).stream.relays
+    cfg = load_config(path, environ={})
+    move_station_tables(cfg)
+    cfg = load_config(path, environ={})
+    relays = load_relays(StationPaths.default(cfg).relays, {}, "default")
     assert relays[first].password == "placeholder-one"
     assert relays[second].password == "placeholder-two"
 
 
 def test_password_variable_name() -> None:
-    assert relay_password_variable("backup-sc") == "AUTODJ_STREAM_RELAY_BACKUP_SC_PASSWORD"
+    assert relay_password_variable("backup-sc") == "AUTODJ_STATION_DEFAULT_RELAY_BACKUP_SC_PASSWORD"
 
 
 def test_a_host_with_a_port_points_at_the_port_key() -> None:

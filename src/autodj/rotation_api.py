@@ -33,8 +33,9 @@ from autodj.rotation_sim import (
     report_text,
     simulate,
     snapshot_player,
+    snapshot_settings,
 )
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationRouter
 
 
 class RotationTestBody(BaseModel):
@@ -258,6 +259,9 @@ def station_source(station: Any) -> SimulationSource:
         events=events,
         timezone=station.timezone,
         liner_dates=station.paths.liner_dates,
+        snapshot=snapshot_settings(station.bridge, station.ledger)
+        if station.player is None
+        else None,
     )
 
 
@@ -265,14 +269,14 @@ def install_rotation_test(router: StationRouter) -> None:
     """Add the paired rotation test routes; each acts on the station its URL names."""
 
     @router.get("/rotation-test")
-    async def rotation_test_status(station: StationDep, request: Request) -> dict[str, Any]:
+    async def rotation_test_status(station: SavedStationDep, request: Request) -> dict[str, Any]:
         """The station's latest run: progress while it runs, then the report."""
         run = _tests(request).get(station.slug)
         return {**_IDLE, "station": station.slug} if run is None else run.view()
 
     @router.post("/rotation-test", status_code=202)
     async def rotation_test_start(
-        station: StationDep, request: Request, body: RotationTestBody
+        station: SavedStationDep, request: Request, body: RotationTestBody
     ) -> dict[str, Any]:
         """Start a run; 409 while another is running."""
         source = station_source(station)
@@ -282,14 +286,14 @@ def install_rotation_test(router: StationRouter) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         # Copied now, in a worker thread: the copy may wait a moment on the
         # settings lock, and the event loop never does.
-        snapshot = await asyncio.to_thread(snapshot_player, source.player)
+        snapshot = source.snapshot or await asyncio.to_thread(snapshot_player, source.player)
         source = replace(source, snapshot=snapshot)
         run = RotationTestRun(station.slug, source, wanted)
         _tests(request).start(run)
         return run.view()
 
     @router.delete("/rotation-test")
-    async def rotation_test_cancel(station: StationDep, request: Request) -> dict[str, Any]:
+    async def rotation_test_cancel(station: SavedStationDep, request: Request) -> dict[str, Any]:
         """Stop the station's run; it ends with the report of what it picked so far."""
         run = _tests(request).get(station.slug)
         if run is None or run.state != "running":

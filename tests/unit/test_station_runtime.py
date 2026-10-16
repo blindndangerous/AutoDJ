@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from autodj._bridge import PlayerBridge
-from autodj.config import load_config, station_config
+from autodj.config import load_config, move_station_tables, station_config
 from autodj.settings_bodies import PlaybackSettingsBody
 from autodj.station_log import (
     CURRENT_STATION,
@@ -53,6 +53,8 @@ stereotool_preset = "Day.sts"
 def cfg(tmp_path: Path) -> Any:
     path = tmp_path / "config.toml"
     path.write_text(CONFIG.format(root=tmp_path.as_posix()), encoding="utf-8")
+    initial = load_config(path, environ={})
+    move_station_tables(initial)
     return load_config(path, environ={})
 
 
@@ -95,10 +97,16 @@ def test_another_stations_state_is_under_its_own_folder(cfg: Any, tmp_path: Path
     assert daybreak.liners == daybreak.state_dir / "liners"
 
 
-@pytest.mark.parametrize("slug", ["default", "../x", "Owl", "", "a/b"])
+@pytest.mark.parametrize("slug", ["../x", "Owl", "", "a/b"])
 def test_only_another_stations_name_makes_extra_paths(cfg: Any, slug: str) -> None:
     with pytest.raises(ValueError, match="not another station"):
         StationPaths.for_station(cfg, slug)
+
+
+def test_default_paths_use_the_same_station_factory_path(cfg: Any) -> None:
+    paths = StationPaths.for_station(cfg, "default")
+    assert paths.is_default
+    assert paths.state_dir == StationPaths.default(cfg).state_dir
 
 
 def test_each_run_gets_a_fresh_copy_of_the_station_config(cfg: Any) -> None:
@@ -196,7 +204,9 @@ class _Runtime:
 
 def _extra(slug: str, build: Any, tmp_path: Path, autostart: bool = True) -> ExtraStation:
     paths = SimpleNamespace(
-        liners=tmp_path / slug / "liners", web_state=tmp_path / slug / "web_state.json"
+        liners=tmp_path / slug / "liners",
+        web_state=tmp_path / slug / "web_state.json",
+        _cfg=SimpleNamespace(station=SimpleNamespace(output="stream")),
     )
     return ExtraStation(
         slug=slug,
@@ -358,6 +368,57 @@ def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
     assert disconnected == ["nightowl", "nightowl"]
 
 
+def test_a_factory_default_rebuilds_and_other_stations_stay_registered(tmp_path: Path) -> None:
+    log: list[str] = []
+    defaults: list[_Runtime] = []
+    extras: list[_Runtime] = []
+
+    def build_default(_registry: StationRegistry) -> _Runtime:
+        defaults.append(_Runtime("default", log))
+        return defaults[-1]
+
+    def build_extra(_registry: StationRegistry) -> _Runtime:
+        extras.append(_Runtime("nightowl", log))
+        return extras[-1]
+
+    factory = _extra("default", build_default, tmp_path)
+    registry = StationRegistry(factory, [_extra("nightowl", build_extra, tmp_path, False)])
+    registry.prepare = lambda _station: None
+
+    async def scenario() -> None:
+        assert isinstance(registry.default, StoppedStation)
+        assert registry.all() == ()
+        assert registry.slugs() == {"default", "nightowl"}
+        assert len(registry.paths()) == 2
+        await registry.start_all()
+        first = registry.default
+        assert first is defaults[0]
+        assert isinstance(registry.get("nightowl"), StoppedStation)
+        await registry.stop("default")
+        assert isinstance(registry.default, StoppedStation)
+        assert isinstance(registry.get("nightowl"), StoppedStation)
+        second = await registry.start("default")
+        assert second is defaults[1]
+
+    asyncio.run(scenario())
+    assert log == ["default started", "default stopped", "default closed", "default started"]
+    assert extras == []
+
+
+def test_a_failed_factory_default_start_is_torn_down_and_remains_stopped(
+    tmp_path: Path,
+) -> None:
+    log: list[str] = []
+    factory = _extra("default", lambda _registry: _Runtime("default", log, fail=True), tmp_path)
+    registry = StationRegistry(factory)
+    registry.prepare = lambda _station: None
+
+    asyncio.run(registry.start_all())
+    assert isinstance(registry.default, StoppedStation)
+    assert registry.all() == ()
+    assert log == ["default started", "default stopped", "default closed"]
+
+
 def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -433,7 +494,7 @@ def _bridge(tmp_path: Path, **kwargs: Any) -> PlayerBridge:
 
 def test_another_stations_settings_are_saved_in_its_folder(tmp_path: Path, cfg: Any) -> None:
     paths = StationPaths.for_station(_spec(cfg, "nightowl").cfg, "nightowl")
-    paths.state_dir.mkdir(parents=True)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
     bridge = _bridge(tmp_path, paths=paths, stream_path="/nightowl.mp3")
     bridge.save_persistent_state()
     assert paths.web_state.is_file()
@@ -1022,10 +1083,10 @@ def test_a_start_queued_behind_another_refuses_once_a_stop_begins(tmp_path: Path
         with pytest.raises(StationControlError, match="still stopping"):
             await second
         await stopping
-        # Shutdown leaves only the default station in the running list.
+        # Shutdown closes and unregisters every runtime.
         await registry.start("nightowl")
         await registry.shutdown(_Library(log), 1.0)  # type: ignore[arg-type]
-        assert [station.slug for station in registry.all()] == ["default"]
+        assert registry.all() == ()
 
     asyncio.run(scenario())
 

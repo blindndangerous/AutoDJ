@@ -222,7 +222,7 @@ def test_saved_relays_sharing_a_set_password_variable_are_refused(tmp_path, monk
     with caplog.at_level("ERROR"):
         assert load_relays(path, {}, "default") == {}
     # The reason is logged, not only its type; never the password.
-    assert "AUTODJ_STREAM_RELAY_A_B_PASSWORD, which is set" in caplog.text
+    assert "AUTODJ_STATION_DEFAULT_RELAY_A_B_PASSWORD, which is set" in caplog.text
     assert "secret-for-one" not in caplog.text
 
 

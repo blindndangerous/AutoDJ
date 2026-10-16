@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from autodj.config import _build_station, load_config
+from autodj.config import _build_station, load_config, move_station_tables
 from autodj.doctor import CheckStatus, run_doctor
 from autodj.station_creation import CreationConflict, duplicate_table, stage_station
 from autodj.stations import StationPaths
@@ -22,12 +22,15 @@ def _root(tmp_path: Path, extra: str = ""):
         '[recording]\nfolder = "recordings"\n' + extra,
         encoding="utf-8",
     )
-    return load_config(path, environ={})
+    cfg = load_config(path, environ={})
+    if move_station_tables(cfg):
+        cfg = load_config(path, environ={})
+    return cfg
 
 
 def _definition(cfg, slug: str, table: dict) -> Path:
     path = StationPaths.for_station(cfg, slug).definition
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {"version": 1, "created": "2026-01-01T00:00:00Z", "source": None, "station": table}
@@ -64,7 +67,7 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
     extra = '\n[stations.owl]\nautostart = true\n[stations.owl.stream]\nstation_name = "Owl"\nlistener_user = "secret"\nlistener_password = "secret"\n[stations.owl.recording]\nfolder = "recordings/owl"\n'
     cfg = _root(tmp_path, extra)
     old = StationPaths.for_station(cfg, "owl")
-    old.state_dir.mkdir(parents=True)
+    old.state_dir.mkdir(parents=True, exist_ok=True)
     old.web_state.write_text(
         json.dumps({"playback": {"stream_station_name": "Owl", "crossfade_seconds": 9}}),
         encoding="utf-8",
@@ -114,7 +117,7 @@ def test_duplicate_copies_only_selected_station_assets(tmp_path: Path) -> None:
 def test_duplicate_refuses_bad_saved_settings_and_links(tmp_path: Path) -> None:
     cfg = _root(tmp_path)
     old = StationPaths.default(cfg)
-    old.state_dir.mkdir(parents=True)
+    old.state_dir.mkdir(parents=True, exist_ok=True)
     old.web_state.write_text("broken", encoding="utf-8")
     table = duplicate_table(cfg, "default", "new", "New", False)
     with pytest.raises(CreationConflict, match="saved settings"):
@@ -133,7 +136,7 @@ def test_duplicate_refuses_bad_saved_settings_and_links(tmp_path: Path) -> None:
 def test_duplicate_without_flags_skips_assets(tmp_path: Path) -> None:
     cfg = _root(tmp_path)
     old = StationPaths.default(cfg)
-    old.state_dir.mkdir(parents=True)
+    old.state_dir.mkdir(parents=True, exist_ok=True)
     old.schedule.write_text('{"schema_version": 1, "events": [], "runs": []}', encoding="utf-8")
     old.clockwheels.mkdir()
     (old.clockwheels / "mix.json").write_text("{}", encoding="utf-8")
@@ -187,8 +190,8 @@ def test_serve_moves_a_config_station_into_its_own_file(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     cfg = _root(tmp_path, extra)
-    assert cfg.stations[0].defined_in == "config"
-    assert move_station_tables(cfg) is True
+    assert cfg.stations[0].defined_in == "web"
+    assert move_station_tables(cfg) is False
     paths = StationPaths.for_station(cfg, "owl")
     document = json.loads(paths.definition.read_text("utf-8"))
     assert "listener_password" not in document["station"]["stream"]

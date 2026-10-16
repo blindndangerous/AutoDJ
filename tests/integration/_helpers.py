@@ -28,6 +28,7 @@ from autodj.config import (
     RecordingConfig,
     RequestsConfig,
     ServerConfig,
+    StationConfig,
     StreamConfig,
     TimeChecksConfig,
 )
@@ -117,6 +118,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     # Concrete config so get_settings does not traverse MagicMock chains
     # and trip JSONResponse on un-serialisable mocks.
     cfg = MagicMock()
+    cfg.station = StationConfig(timezone="UTC")
     cfg.server = ServerConfig(
         allowed_hosts=["testserver"],
         allowed_origins=["http://testserver"],

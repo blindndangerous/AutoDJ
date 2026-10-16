@@ -100,7 +100,7 @@ def test_time_checks_settings_and_recordings_survive_restore(tmp_path: Path) -> 
         '{"version":1,"settings":{"enabled":true,"hour_format":"12","rule":"off"}}',
         encoding="utf-8",
     )
-    clips = cfg.index.shared_dir / "time_checks"
+    clips = cfg.index.stations_dir / "default" / "time_checks"
     clips.mkdir()
     (clips / "03_05.wav").write_bytes(b"clip")
     # A voice pack kept in the time_checks folder is backed up; one elsewhere is not.
@@ -179,7 +179,11 @@ def _catalog(cfg: AutoDJConfig) -> sqlite3.Connection:
 
 
 def _archive(path: Path, files: dict[str, bytes], version: str | None = None) -> Path:
-    manifest = {"autodj_version": version or current_version(), "files": list(files)}
+    manifest = {
+        "backup_format": 2,
+        "autodj_version": version or current_version(),
+        "files": list(files),
+    }
     with zipfile.ZipFile(path, "w") as archive:
         for name, data in files.items():
             archive.writestr(name, data)

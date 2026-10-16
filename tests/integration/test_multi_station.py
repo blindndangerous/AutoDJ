@@ -25,12 +25,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj import server
-from autodj._bridge import PlayerBridge
-from autodj.config import load_config
+from autodj.config import load_config, move_station_tables
 from autodj.library import LibraryManager
-from autodj.player import Player
 from autodj.similarity import SimilarityIndex
-from autodj.station_log import station_thread
 from autodj.stream import Listener
 from tests.unit._fakes import FakeEncoder
 from tests.unit.test_library import make_entry
@@ -178,6 +175,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
 
     monkeypatch.setattr("autodj.dj_meta.close_cache", close_cache)
     cfg = load_config(_write_config(tmp_path, **values), environ={})
+    if move_station_tables(cfg):
+        cfg = load_config(cfg.config_path, environ={})
     sim = SimilarityIndex.empty()
     library = LibraryManager(cfg, sim)
     library.catalog.add_source(cfg.library.music_dir)
@@ -186,24 +185,18 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     monkeypatch.setattr(
         library, "entry_for_path", lambda path: song if str(path) == song.path else None
     )
-    player = Player(cfg, sim, stream_mode=True, server_audio_too=False)
-    player._library = library
-    bridge = PlayerBridge(player=player, sim=sim, library=library)
-    player.on_track_started = bridge.on_track_started
-    bridge.load_persistent_state()
-    player.configure_clock()
-    server._attach_master(player, cfg)
-    player_thread = station_thread(
-        target=player.run, kwargs={"seed_entry": None}, name="autodj-player"
-    )
-    player_thread.start()
+    from autodj._bridge import LibraryServices
+
+    default = server._extra_station(cfg, cfg.default_station, sim, library, "UTC")
     extras = [server._extra_station(cfg, spec, sim, library, "UTC") for spec in cfg.stations]
     app = server.create_app(
-        bridge, player_thread=player_thread, stream_mode=True, extra_stations=extras
+        services=LibraryServices(cfg, sim, library),
+        default_station=default,
+        extra_stations=extras,
     )
     with TestClient(app, client=("192.0.2.4", 50000)) as client:
         yield client, library, cfg, song, closes
-    assert not player_thread.is_alive()
+    assert _station_threads("default") == []
     assert _station_threads("nightowl") == []
     assert closes == ["closed"]  # once, after both players were quiet
 
@@ -252,14 +245,20 @@ def test_start_with_the_server_is_saved_for_a_station_made_in_the_page(rig: Any)
     assert response.status_code == 200, response.text
     assert response.json()["autostart"] is True
     assert load_config(cfg.config_path, environ={}).stations[-1].autostart is True
-    # The default station, and a station written in config.toml, cannot be changed here.
-    assert _stations(client)["default"]["autostart_locked"] is True
-    assert _stations(client)["nightowl"]["autostart_locked"] is True
-    for slug in ("default", "nightowl"):
-        refused = client.put(
-            f"/api/stations/{slug}/autostart", json={"enabled": False}, headers=origin
-        )
-        assert refused.status_code == 409
+    # The canonical default and migrated station definitions are editable.
+    assert _stations(client)["default"]["autostart_locked"] is False
+    default_update = client.put(
+        "/api/stations/default/autostart", json={"enabled": False}, headers=origin
+    )
+    assert default_update.status_code == 200
+    assert default_update.json()["autostart"] is False
+    assert load_config(cfg.config_path, environ={}).default_station.autostart is False
+    assert _stations(client)["nightowl"]["autostart_locked"] is False
+    editable = client.put(
+        "/api/stations/nightowl/autostart", json={"enabled": False}, headers=origin
+    )
+    assert editable.status_code == 200
+    assert editable.json()["autostart"] is False
     missing = client.put("/api/stations/nobody/autostart", json={"enabled": True}, headers=origin)
     assert missing.status_code == 404
 
@@ -291,7 +290,7 @@ def test_create_rolls_back_after_registration_fails(
     rig: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
 
     def fail(_extra: Any) -> None:
         raise RuntimeError("injected failure")
@@ -309,7 +308,7 @@ def test_create_rolls_back_after_registration_fails(
     )
     assert response.status_code == 409
     assert not (cfg.index.stations_dir / "new").exists()
-    assert library.catalog.get_setting("clock:new") is None
+    assert library.station_ledger("new").get_setting("clock") is None
     assert "new" not in client.app.state.stations.slugs()
 
 
@@ -330,7 +329,7 @@ def test_create_checks_recording_conflict_and_station_limit(rig: Any) -> None:
 
 def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
     client, library, cfg, _song, _closes = rig
-    library.catalog.set_setting("clock:nightowl", "Evening")
+    library.station_ledger("nightowl").store.set_setting("clock", "Evening")
     response = client.post(
         "/api/stations",
         json={
@@ -342,7 +341,7 @@ def test_duplicate_copies_active_clock_setting(rig: Any) -> None:
         headers={"Origin": "http://testserver"},
     )
     assert response.status_code == 201, response.text
-    assert library.catalog.get_setting("clock:new") == "Evening"
+    assert library.station_ledger("new").get_setting("clock") == "Evening"
     assert load_config(cfg.config_path, environ={}).stations[-1].defined_in == "web"
 
 
@@ -371,7 +370,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
     assert listing["default"]["stream_path"] == "/stream.mp3"
     assert listing["nightowl"] == {
         "slug": "nightowl",
-        "defined_in": "config",
+        "defined_in": "web",
         "name": "Night Owl Radio",
         "state": "idle",
         "listeners": 0,
@@ -383,7 +382,7 @@ def test_two_stations_run_side_by_side(rig: Any) -> None:
         "player_path": "/stations/nightowl/player",
         "embed_path": "/stations/nightowl/embed",
         "autostart": True,
-        "autostart_locked": True,
+        "autostart_locked": False,
     }
     assert listing["default"]["player_path"] is None
     assert listing["default"]["embed_path"] is None
@@ -516,9 +515,10 @@ def test_stop_and_start_clean_up_one_of_two_stereo_tool_stations(rig: Any) -> No
     assert client.post(f"{OWL}/start").json()["slug"] == "nightowl"
     assert stations.get("nightowl") is fresh
 
-    refused = client.post("/api/stations/default/stop")
-    assert refused.status_code == 409
-    assert "cannot be stopped" in refused.json()["detail"]
+    assert client.post("/api/stations/default/stop").status_code == 200
+    assert default_master.closed
+    assert stations.get("nightowl") is fresh
+    assert not fresh.stopped
 
 
 def test_station_log_lines_name_the_station(rig: Any, caplog: pytest.LogCaptureFixture) -> None:
@@ -547,6 +547,62 @@ def test_a_station_without_autostart_waits_to_be_started(rig: Any) -> None:
     assert client.get(f"{OWL}/status").status_code == 409
     assert client.post(f"{OWL}/start").status_code == 200
     _wait_for(lambda: _station_threads("nightowl"), "the station's threads")
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
+    from autodj import timefmt
+
+    client, _library, _cfg, _song, _closes = rig
+    station_settings = f"{OWL}/station-settings"
+    time_settings = f"{OWL}/time-settings"
+    definition = client.app.state.stations._extras["nightowl"].paths.definition
+    original_format = timefmt.time_format
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+
+    time_response = client.put(
+        time_settings,
+        json={"timezone": "America/New_York", "time_format": "12"},
+        headers={"Origin": "http://testserver"},
+    )
+    assert time_response.status_code == 200
+    assert time_response.json()["timezone"] == "America/New_York"
+    assert time_response.json()["running_timezone"] is None
+    assert time_response.json()["time_format"] == "12"
+
+    output_response = client.put(
+        station_settings,
+        json={
+            "output": "stream",
+            "server_audio_too": True,
+            "liner_upload_max_mib": 12,
+        },
+        headers={"Origin": "http://testserver"},
+    )
+    assert output_response.status_code == 200
+    assert output_response.json() == {
+        "timezone": "America/New_York",
+        "liner_upload_max_mib": 12,
+        "output": "stream",
+        "server_audio_too": True,
+    }
+    assert client.get(time_settings).json()["timezone"] == "America/New_York"
+    assert client.get(station_settings).json() == output_response.json()
+    assert _stations(client)["nightowl"]["state"] == "stopped"
+
+    unchanged = definition.read_bytes()
+    invalid_updates = [
+        (station_settings, {"liner_upload_max_mib": 0}),
+        (station_settings, {"output": "headphones"}),
+        (station_settings, {"timezone": "Mars/Olympus_Mons"}),
+        (time_settings, {"timezone": "Mars/Olympus_Mons", "time_format": "24"}),
+    ]
+    for path, body in invalid_updates:
+        response = client.put(path, json=body, headers={"Origin": "http://testserver"})
+        assert response.status_code == 400
+        assert definition.read_bytes() == unchanged
+
+    timefmt.time_format = original_format
 
 
 def test_a_restarted_station_runs_the_same_threads_each_once(rig: Any) -> None:
@@ -935,6 +991,9 @@ def test_a_station_that_fails_to_build_stops_its_player_and_master(
     assert FakeMaster.instances[-1].closed
     assert _station_threads("nightowl") == []
     assert _stations(client)["nightowl"]["state"] == "stopped"
+    assert client.get("/").status_code == 200
+    assert client.get("/api/stations").status_code == 200
+    assert not client.app.state.stations.default.stopped
 
 
 def test_stopping_a_station_cancels_its_cart_timer(rig: Any) -> None:
@@ -1200,3 +1259,26 @@ def test_a_stop_that_meets_a_problem_still_stops_and_says_what_failed(
     # A clean stop has no warnings.
     assert client.post(f"{OWL}/start").status_code == 200
     assert client.post(f"{OWL}/stop").json()["warnings"] == []
+
+
+def test_default_can_restart_and_shared_routes_survive_zero_stations(rig: Any) -> None:
+    client, library, _cfg, _song, _closes = rig
+    registry = client.app.state.stations
+    original = registry.default
+    other = registry.get("nightowl")
+    headers = {"Origin": "http://testserver"}
+    assert client.post("/api/stations/default/stop", headers=headers).status_code == 200
+    assert registry.default.stopped
+    assert registry.get("nightowl") is other
+    assert not other.stopped
+    assert client.get("/api/status").status_code == 409
+    assert client.get("/api/search", params={"q": "song"}).status_code == 200
+    assert client.post("/api/stations/nightowl/stop", headers=headers).status_code == 200
+    assert registry.all() == ()
+    assert client.get("/").status_code == 200
+    assert client.get("/api/stations").status_code == 200
+    assert client.get("/api/library/folders").status_code == 200
+    assert client.post("/api/stations/default/start", headers=headers).status_code == 200
+    assert registry.default is not original
+    assert registry.default.ledger is library.ledger
+    assert client.get("/api/status").status_code == 200

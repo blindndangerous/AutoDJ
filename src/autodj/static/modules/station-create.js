@@ -187,8 +187,7 @@ export function installStationCreator({
     box.disabled = Boolean(station.autostart_locked);
     box.setAttribute("aria-label", `Start ${station.name} with the server`);
     const button = cells[4].querySelector("button");
-    // The default station runs as long as the server does.
-    button.hidden = station.slug === "default";
+    button.hidden = false;
     const action = isOnAir(station) ? "Stop" : "Start";
     if (button.textContent !== action) button.textContent = action;
     button.setAttribute("aria-label", `${action} ${station.name}`);

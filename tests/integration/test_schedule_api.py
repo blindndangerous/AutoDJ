@@ -32,7 +32,7 @@ def rig(tmp_path: Path) -> tuple[TestClient, PlayerBridge, Path]:
     )
     player = _make_player_mock()
     point_index(player._cfg.index, str(active))
-    player._cfg.server.station_timezone = "UTC"
+    player._cfg.station.timezone = "UTC"
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     return TestClient(create_app(bridge)), bridge, active
 
@@ -334,7 +334,9 @@ def test_builtin_actions_report_failures_in_words(
     assert run("stream", {"state": "start"})["message"] == "Stream control needs stream mode"
     for action in ("recording_start", "recording_stop", "recording_split"):
         assert run(action, {})["message"] == "Recording requires stream mode"
-    assert client.get("/api/recording").json()["detail"] == "Recording requires stream mode"
+    recording = client.get("/api/recording")
+    assert recording.status_code == 200, recording.text
+    assert recording.json()["running"] is False
     assert run("discovery", {"state": "on"})["message"] == (
         "Set a discovery rate in Song picking first"
     )

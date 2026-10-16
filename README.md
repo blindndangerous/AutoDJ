@@ -137,20 +137,19 @@ CSV download; it keeps only daily counts, never addresses. See
 
 The public `/api/nowplaying` JSON feed lets pages show the station's current song, upcoming song,
 recent plays and listener count, and the public `/status` page shows the same to listeners as plain text. With several stations, each has its own feed and page, at `/api/stations/<slug>/nowplaying` and `/stations/<slug>/status`. The upcoming song is hidden unless you turn on `[nowplaying] show_next`. Track-change
-webhooks can send the same metadata to other services or Discord; configure their URLs in
-`config.local.toml`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
+webhooks can send the same metadata to other services or Discord; configure their URLs in the
+station's private `secrets.json`. See [Operations](docs/operations.md#now-playing-feed-and-webhooks).
 An optional public request page (`/requests`) lets listeners search the library and request
 songs, within per-listener and daily limits, the repeat rules and DMCA limits; you approve them
 by hand or automatically in Queue & Search. It is off until you turn it on in the Listener
-requests card, or with `[requests]` in config.toml, which is used until the card saves its own
-switch for the station. See
+requests card for that station. See
 [Operations](docs/operations.md#listener-requests).
 An optional public player page (`/player`) lets listeners press Play to hear the station in the
 browser, and an embeddable version (`/embed`) puts the same player on another website; both are
-off until `[player_page]` turns them on. See
+off until enabled in Settings for that station. See
 [Operations](docs/operations.md#player-page-and-embeddable-player).
 
-DMCA mode (`[dmca] enabled = true`) keeps the station inside the US statutory webcasting
+DMCA mode, enabled in the selected station's settings, keeps the station inside the US statutory webcasting
 licence's performance complement: album, artist and box set limits in any three hours, in every
 pick mode, with a warning to confirm before you queue a song that breaks one. Public pages never
 show the next song in this mode. See [DMCA mode](docs/operations.md#dmca-mode). This is general
@@ -159,21 +158,8 @@ information, not legal advice.
 ### Relay to Icecast or Shoutcast
 
 Stream mode can also push the station to hosted Icecast 2.4, Shoutcast 1 or Shoutcast 2 servers,
-so a host's listener capacity and directory listings carry it too. Describe each server in
-`config.toml` and keep its password in `config.local.toml`:
-
-```toml
-# config.toml
-[stream.relays.main]
-type = "icecast"
-host = "radio.example.com"
-port = 8000
-mount = "/live"
-
-# config.local.toml
-[stream.relays.main]
-password = "the source password from your host"
-```
+so a host's listener capacity and directory listings carry it too. Configure relay definitions
+and passwords in the station's private `relays.json` file.
 
 Each relay sends the song titles, reconnects on its own, and keeps the station playing even
 when nobody listens to AutoDJ directly. Settings, Stream shows each relay's state, and
@@ -192,10 +178,11 @@ over the music from the browser's microphone. See
 
 ### Several stations
 
-One server can run more than one station from the same library. The root sections of
-`config.toml` stay the default station; each other station is made in Settings, Stations and
-kept in its own `station.json`, with its own playback, stream, relays, recording, schedule, carts, clockwheels, liners and saved
-settings, streaming at `/<slug>.mp3`. The Station button in the web page's banner
+One server can run more than one station from the same library. Every station, including the
+default, has a `station.json` under `index/stations/<slug>/`, with its own output mode, playback,
+stream, relays, recording, schedule, carts, clockwheels, liners and saved settings. New stations
+are made in Settings, Stations; the default streams at `/stream.mp3` when configured to stream,
+and other stations use `/<slug>.mp3`. The Station button in the web page's banner
 chooses which station the page controls, and `autodj backup` and `autodj doctor` cover every
 station. See [Several stations](docs/operations.md#several-stations), including
 [adding a station step by step](docs/operations.md#adding-a-station-step-by-step), and
@@ -271,9 +258,11 @@ and `--lan` to allow other devices to connect. `--stream` is an existing option;
 `migrate-index` command only upgrades stored index data and does not select a playback mode.
 
 These are the built-in defaults, not a reset of your installation. `config.toml`,
-`config.local.toml` and environment variables can change the address, port, index and stream
-setting. Saved web settings also restore playback preferences. See [Configuration](#configuration)
-for precedence and `autodj serve --help` for the available flags.
+`config.local.toml` and shared environment variables can change the address, port and index.
+Each station's output and playout settings live in its `station.json`; station-scoped environment
+variables can override supported stream settings. Saved web settings also restore playback
+preferences. See [Configuration](#configuration) for precedence and `autodj serve --help` for
+the available flags.
 
 ## Containers
 
@@ -306,9 +295,11 @@ and an 8-digit pairing code; `docker compose logs autodj`
 shows them again. The container uses the host network, so those are the machine's own names and
 addresses, and it restarts after a crash or a reboot.
 
-Settings such as HTTPS certificates, extra host names, and `[stream] enabled` go in `config.toml`
-and `config.local.toml` beside `compose.yaml`, as on bare metal. The container reads them from that
-folder, so give relative paths such as `ssl_certfile = "certs/fullchain.pem"`. To use a beets
+Shared server settings such as HTTPS certificates and extra host names go in `config.toml` and
+`config.local.toml` beside `compose.yaml`, as on bare metal. Station output and stream settings
+belong in each station's `station.json`; old root stream settings migrate into the default station
+once at startup. The container reads shared settings from that folder, so give relative paths such
+as `ssl_certfile = "certs/fullchain.pem"`. To use a beets
 library, set `AUTODJ_BEETS_PATH` to the folder that holds `library.db`, and set
 `beets_db = "/beets/library.db"` in `config.local.toml`. See [Operations](docs/operations.md) for
 more.
@@ -333,7 +324,7 @@ After `autodj serve`, point a browser at `http://localhost:8080`.  Six tabs:
 - **Now Playing.**  What is playing, the next track, album art, lyrics, the cue strip on the progress bar, and the **Hour preview**: what plays next with estimated start times, each marked fixed or predicted, and how early or late the hour lands.  See [Hour preview and backtiming](docs/operations.md#hour-preview-and-backtiming).
 - **Queue & Search.**  Find any track in your library and choose Play now, Play next (straight after the current track) or Add to queue (at the end).  Move queued tracks up, down or to the top, remove them, or clear the whole queue; each move says the new position, such as "Moved Alpha to position 2 of 5".  After Search come **Browse library**, which lists the whole library or one music or voice liner folder 100 tracks a page, and **Browse voice liners**, the liner files with Delete and Track info.
 - **Track info.**  View a recording's details, edit its tags (title, artist, album, genre, year, BPM, key and ISRC, written into the file without analysing it again) and edit its cue points. **Song structure** lists the song's landmarks, such as "Intro, 0:00 to 0:32", "Vocals from 0:45" and "Drop, 1:35, bar 49" (see [Song structure and landmarks](docs/operations.md#song-structure-and-landmarks)). Attach matched intros: voice clips that play as the song starts, for that song or any song by its artist (see [Matched intros](docs/operations.md#matched-intros)). Open it from Now Playing, History, or the Queue, Search results, Browse library and Browse voice liners lists in Queue & Search. Use the Return to History, Return to Queue & Search or other view-specific button to return to the source item.
-- **Ads.**  Spots (advertiser, campaign, flight dates, daily and hourly limits) and ad breaks that run at chosen minutes past the hour or from a Schedule event, between two songs at the next song change.  Competing advertisers are kept apart, and the ad report lists what aired, late or on time, and what was missed and why, by advertiser and campaign, with a CSV export for affidavits.  Needs `[ads] enabled = true`; see [Ad breaks](docs/operations.md#ad-breaks).
+- **Ads.**  Spots (advertiser, campaign, flight dates, daily and hourly limits) and ad breaks that run at chosen minutes past the hour or from a Schedule event, between two songs at the next song change.  Competing advertisers are kept apart, and the ad report lists what aired, late or on time, and what was missed and why, by advertiser and campaign, with a CSV export for affidavits. Enable them in the selected station's settings; see [Ad breaks](docs/operations.md#ad-breaks).
 - **History.**  What has played, newest first, one page at a time.  Times get a date when the page holds tracks from before today.  While page 1 is shown, each new song is added to the top on its own.  Refresh history reloads the page you are on.  Export play log saves every play between two dates, for royalty reports: a CSV with one row per play (times, seconds played, artist, title, album, ISRC, label, kind, file and performances, meaning listeners who heard it) or a SoundExchange Report of Use.  `autodj export-plays` does the same from the command line; see [Play log export](docs/operations.md#play-log-export).
 - **Settings.**  Split into subtabs, so each screen holds one group.  Move between them with the arrow keys, Home and End, as with the section tabs; the page remembers the last one you used.
   - **Transitions**: the transition mode, crossfade and fade-in length, EQ ducking and its cutoff, the transition effect and its level, and how Skip ends a track.
@@ -420,7 +411,7 @@ The message never takes focus when it appears.
 
 The default `serve` mode is browser-driven: the server picks tracks; the browser plays them.  Switching audio output devices in the browser only affects the browser.
 
-To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), run `autodj serve --server-audio` and control it from the web page. It needs the `play` extra. Pick the output device with `[playback] audio_device` in `config.toml`; `autodj list-devices` shows the choices.
+To play on the machine's own speakers instead (for example to send sound to a Bluetooth speaker through ALSA on Linux), choose server output in Settings > Stations and control it from the web page. It needs the `play` extra. Choose an output device in that station's settings; `autodj list-devices` shows the choices. `--server-audio` can override the default station output for a run.
 
 #### Preview output device
 
@@ -476,9 +467,13 @@ It does not work well when:
 AutoDJ starts with validated defaults. If `config.toml` exists in the working directory, AutoDJ
 loads it, then loads sibling `config.local.toml`. Environment variables override files, and
 command-line options such as `--host` or `--stream` override both. `autodj serve` also restores
-the settings last saved from the web page (`web_state.json`), which override the files and
-environment variables. The playback and DJ-mix settings have no `serve` options; change them in
-the web page or in `config.toml`. Omitting `--config` is valid. Passing
+the settings last saved from the web page (`web_state.json`), which override station definition
+values. Every station, including default, has a canonical
+`<index_dir>/stations/<slug>/station.json`; server and library settings stay in the TOML files.
+Startup migrates legacy root station TOML and `[stations.<slug>]` tables once. Normal loading
+does not use those old settings as fallback. Playback and DJ-mix settings have no `serve`
+options; change them in the selected station's web settings or definition file. Omitting
+`--config` is valid. Passing
 `--config /path/to/config.toml` makes that file explicit, so a missing path is an error. Shipped
 `config.toml.example` lists supported environment variables and settings. A key or section in
 `config.toml` or `config.local.toml` that AutoDJ does not know, such as a removed or misspelled
@@ -551,16 +546,10 @@ Common things to set:
 ```toml
 [library]
 beets_db  = "/home/me/.config/beets/library.db"   # optional
-
-[playback]
-crossfade_seconds       = 5
-crossfade_eq_duck       = true
-discovery_every         = 8        # pick a sonically distant track once per 8 songs
-show_lyrics             = true
-beat_sync_fx            = true
-key_sync_fx             = true
-transition_mode         = "full_intro_outro"
 ```
+
+Station playback settings live in `<index_dir>/stations/<slug>/station.json` and can be edited
+in Settings for the selected station. Old root station sections are imported once at startup.
 
 Set repeat limits in **Settings > Picking > Repeats**. Artist, related artists, album, track,
 title and related tracks have separate Tracks and Minutes boxes. Zero turns off a limit; when both are set,
