@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from starlette.routing import Mount
 from starlette.websockets import WebSocketDisconnect
 
-from autodj.config import ServerConfig
+from autodj.config import ServerConfig, StationConfig
 from autodj.security import station_relative
 from autodj.server import PlayerBridge, create_app
 from autodj.station_routes import STATION_PREFIX
@@ -44,7 +44,6 @@ SHARED = frozenset(
         "/api/art",
         "/api/lyrics",
         "/api/audio",
-        "/api/stereo-tool-presets",
         "/api/stereo-tool-presets/upload",
         "/api/stereo-tool-presets/{name}",
         "/api/stereo-tool/download",
@@ -54,7 +53,6 @@ SHARED = frozenset(
         "/api/library/rescan",
         "/api/library/auto-rescan",
         "/api/library/dj-analysis",
-        "/api/time-settings",
         "/api/library/points",
         "/api/library/tags",
         "/api/library/job",
@@ -106,6 +104,10 @@ SOURCE_MOUNTS = frozenset({"/live", "/stations/{slug}/live"})
 STATION = frozenset(
     {
         "/status",
+        "/settings",
+        "/stereo-tool-presets",
+        "/time-settings",
+        "/station-settings",
         "/nowplaying",
         "/history",
         "/history/export",
@@ -246,9 +248,9 @@ def _default_path(route: str) -> str:
 
 def _app(tmp_path: Path | None = None, **server: object) -> tuple[TestClient, PlayerBridge]:
     player = _make_player_mock()
+    player._cfg.station = StationConfig(timezone="UTC")
     if tmp_path is not None:
         point_index(player._cfg.index, tmp_path)
-        player._cfg.server.station_timezone = "UTC"
     if server:
         player._cfg.server = ServerConfig(
             allowed_hosts=["testserver"], allowed_origins=["http://testserver"], **server
@@ -394,6 +396,10 @@ def test_station_relative_maps_only_configured_stations() -> None:
         # and nothing else under a station is public, even where the
         # default-station path of the same name would be.
         ("get", "/api/stations/default/status", 401),
+        ("get", "/api/stations/default/time-settings", 401),
+        ("put", "/api/stations/default/time-settings", 401),
+        ("get", "/api/stations/default/station-settings", 401),
+        ("put", "/api/stations/default/station-settings", 401),
         ("post", "/api/stations/default/skip", 401),
         ("get", "/api/stations/default/version", 401),
         ("post", "/api/stations/default/pair", 401),

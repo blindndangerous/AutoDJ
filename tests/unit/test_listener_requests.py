@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from autodj._bridge import QueueView, RequestInsert, RequestSlot
-from autodj.config import RequestsConfig, load_config
+from autodj.config import RequestsConfig, load_config, move_station_tables
 from autodj.indexer import IndexEntry
 from autodj.listener_requests import (
     EXPIRED,
@@ -113,7 +113,10 @@ def test_bridge_settings_load_and_unknown_keys_are_warned(caplog: pytest.LogCapt
 def test_each_station_has_its_own_request_settings(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
-        """
+        f"""
+[index]
+index_dir = "{(tmp_path / "index").as_posix()}"
+
 [library]
 music_dir = "music"
 
@@ -133,8 +136,16 @@ blocked_artists = ["Loud Band"]
 """,
         encoding="utf-8",
     )
+    legacy = load_config(path, environ={})
+    assert move_station_tables(legacy)
     cfg = load_config(path, environ={})
-    assert (cfg.requests.enabled, cfg.requests.approval) == (True, "auto")
+    assert (
+        cfg.default_station.cfg.requests.enabled,
+        cfg.default_station.cfg.requests.approval,
+    ) == (
+        True,
+        "auto",
+    )
     (owl,) = cfg.stations
     assert owl.cfg.requests.approval == "manual"
     assert owl.cfg.requests.blocked_artists == ["Loud Band"]

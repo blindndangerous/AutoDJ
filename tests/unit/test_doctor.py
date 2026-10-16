@@ -809,7 +809,7 @@ def test_stream_check_passes_when_disabled(tmp_path: Path) -> None:
 
 def test_stream_check_fails_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
-    cfg.stream.enabled = True
+    cfg.station.output = "stream"
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
 
     result = doctor._stream_check(cfg)
@@ -824,7 +824,7 @@ def test_stream_check_warns_on_loopback_only(
     from dataclasses import replace
 
     cfg = _config(tmp_path)
-    cfg.stream.enabled = True
+    cfg.station.output = "stream"
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
     cfg.server = replace(cfg.server, host="127.0.0.1")
 
@@ -837,7 +837,7 @@ def test_stream_check_passes_enabled_with_ffmpeg_and_non_loopback_bind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _config(tmp_path, host="192.168.1.30")
-    cfg.stream.enabled = True
+    cfg.station.output = "stream"
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
 
     result = doctor._stream_check(cfg)
@@ -940,7 +940,7 @@ def test_stream_check_accepts_loopback_config_in_lan_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _lan_config(tmp_path, monkeypatch)
-    cfg.stream.enabled = True
+    cfg.station.output = "stream"
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
 
     assert doctor._stream_check(cfg).status is doctor.CheckStatus.PASS
@@ -983,7 +983,8 @@ def _relay_cfg(tmp_path: Path, **relays: dict) -> AutoDJConfig:
     from autodj.config import StreamConfig
 
     cfg = _config(tmp_path)
-    cfg.stream = StreamConfig(enabled=True, relays=relays)
+    cfg.station.output = "stream"
+    cfg.stream = StreamConfig(relays=relays)
     return cfg
 
 

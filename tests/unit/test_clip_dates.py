@@ -78,7 +78,7 @@ def test_bad_dates_name_the_field(body: dict, field: str, message: str | None) -
 
 
 def test_station_today_reads_the_station_time_zone() -> None:
-    cfg = SimpleNamespace(server=SimpleNamespace(station_timezone="Pacific/Kiritimati"))
+    cfg = SimpleNamespace(station=SimpleNamespace(timezone="Pacific/Kiritimati"))
     from datetime import datetime
 
     assert station_today(cfg) == datetime.now(ZoneInfo("Pacific/Kiritimati")).date()

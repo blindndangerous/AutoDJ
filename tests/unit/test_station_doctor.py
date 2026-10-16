@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from autodj.cli import cli
-from autodj.config import AutoDJConfig, load_config
+from autodj.config import AutoDJConfig, load_config, move_station_tables
 from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport, render_text, run_doctor
 
 STATION_CHECKS = [
@@ -26,7 +27,7 @@ STATION_CHECKS = [
 ]
 
 
-def _config(root: Path, extra: str = "") -> AutoDJConfig:
+def _config(root: Path, extra: str = "", *, missing_station_folder: bool = False) -> AutoDJConfig:
     (root / "music").mkdir(parents=True, exist_ok=True)
     path = root / "config.toml"
     path.write_text(
@@ -51,10 +52,14 @@ folder = "{(root / "recordings" / "nightowl").as_posix()}"
         encoding="utf-8",
     )
     cfg = load_config(path, environ={})
+    move_station_tables(cfg)
+    cfg = load_config(path, environ={})
     cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
     cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
     (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
     cfg.index.model_dir.mkdir(parents=True, exist_ok=True)
+    if missing_station_folder:
+        shutil.rmtree(cfg.index.stations_dir / "nightowl")
     return cfg
 
 
@@ -86,14 +91,13 @@ def test_each_station_gets_its_own_checks(tmp_path: Path) -> None:
     # The default station's own folder is never an unused one.
     assert (cfg.index.stations_dir / "default").is_dir()
     assert default["station-folders"].status is CheckStatus.PASS
-    _owl(cfg).mkdir(parents=True)
     last = run_doctor(cfg, python_version=(3, 14)).checks[-1]
     assert (last.name, last.status) == ("station-folders", CheckStatus.PASS)
 
 
 def test_a_station_check_reads_that_station_only(tmp_path: Path) -> None:
     cfg = _config(tmp_path)
-    _owl(cfg).mkdir(parents=True)
+    _owl(cfg).mkdir(parents=True, exist_ok=True)
     (_owl(cfg) / "web_state.json").write_text(json.dumps(OBSOLETE), encoding="utf-8")
 
     report = run_doctor(cfg, python_version=(3, 14))
@@ -154,7 +158,7 @@ mount = "/owl"
 password = "secret"
 """,
     )
-    _owl(cfg).mkdir(parents=True)
+    _owl(cfg).mkdir(parents=True, exist_ok=True)
     (_owl(cfg) / "relay-status.json").write_text(
         json.dumps(
             {
@@ -276,7 +280,7 @@ def test_cli_refuses_an_unknown_station(tmp_path: Path) -> None:
 
 
 def test_cli_dry_run_changes_nothing(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, missing_station_folder=True)
     result = _cli(cfg, ["--no-fix", "--station", "nightowl"], tty=True)
     assert "Station nightowl, station-folder:" in result.output
     assert "Create missing" not in result.output
@@ -284,7 +288,7 @@ def test_cli_dry_run_changes_nothing(tmp_path: Path) -> None:
 
 
 def test_cli_json_is_read_only_and_names_the_station(tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, missing_station_folder=True)
     result = _cli(cfg, ["--json", "--station", "nightowl"], tty=True)
     data = json.loads(result.output)
     assert {"station": "nightowl", "name": "station-folder"}.items() <= next(
@@ -297,7 +301,7 @@ def test_cli_json_is_read_only_and_names_the_station(tmp_path: Path) -> None:
 def test_cli_makes_the_station_folder_only_with_consent(
     tmp_path: Path, answer: str, made: bool
 ) -> None:
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, missing_station_folder=True)
     result = _cli(cfg, ["--station", "nightowl"], answer=answer, tty=True)
     assert f"Create missing folder for station nightowl: {_owl(cfg)}" in result.output
     assert _owl(cfg).is_dir() is made
@@ -310,7 +314,7 @@ def test_cli_repairs_a_station_saved_settings_with_consent_and_a_backup(
     tmp_path: Path, args: list[str], answer: str, repaired: bool
 ) -> None:
     cfg = _config(tmp_path)
-    _owl(cfg).mkdir(parents=True)
+    _owl(cfg).mkdir(parents=True, exist_ok=True)
     state = _owl(cfg) / "web_state.json"
     original = json.dumps(OBSOLETE).encode()
     state.write_bytes(original)

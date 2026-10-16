@@ -80,7 +80,7 @@ def test_preview_uses_recorded_clip_and_server_test_uses_liner_path(
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.player._cfg.time_checks = TimeChecksConfig(enabled=True, clips_folder=str(tmp_path))
-    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.station.timezone = "UTC"
     now = datetime(2026, 10, 11, 3, 5, tzinfo=UTC)
 
     class FixedDateTime(datetime):
@@ -118,7 +118,7 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
     monkeypatch.setattr(time_checks, "datetime", FixedDateTime)
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
-    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.station.timezone = "UTC"
     client = TestClient(create_app(bridge))
 
     bridge.skip = MagicMock()
@@ -156,8 +156,10 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
     bridge.liner_scheduler = MagicMock()
     assert run()["message"] == "No voice pack, recorded clip or working TTS command for this minute"
     bridge.skip.assert_not_called()
-    (tmp_path / "time_checks").mkdir()
-    sf.write(tmp_path / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100)
+    (tmp_path / "stations" / "default" / "time_checks").mkdir()
+    sf.write(
+        tmp_path / "stations" / "default" / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100
+    )
     assert run()["result"] == "ok"
     bridge.liner_scheduler.play_audio.assert_called_once()
     assert bridge.skip.call_count == (1 if timing == "hard" else 0)
@@ -197,7 +199,7 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     sf.write(studio / "m_05.wav", word, 44100)
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
-    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.station.timezone = "UTC"
     bridge.player._cfg.time_checks = TimeChecksConfig(
         enabled=True, voice_packs=[str(studio), str(tmp_path / "Night")]
     )
@@ -223,8 +225,10 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     # Studio is not ticked, but a test can still choose it.
     played = client.post("/api/time-checks/test", json={"pack": "Studio"})
     assert played.json() == {"message": "Time check played from the voice pack Studio"}
-    (tmp_path / "time_checks").mkdir()
-    sf.write(tmp_path / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100)
+    (tmp_path / "stations" / "default" / "time_checks").mkdir()
+    sf.write(
+        tmp_path / "stations" / "default" / "time_checks" / "03_05.wav", np.zeros((441, 2)), 44100
+    )
     fallback = client.post("/api/time-checks/test", json={"pack": "Night"})
     assert fallback.json() == {
         "message": "Voice pack Night cannot say this minute; played the recorded clip"
@@ -272,7 +276,7 @@ def test_a_voice_pack_that_cannot_say_the_minute_keeps_the_song_on_a_hard_event(
     sf.write(studio / "hr_03.wav", np.zeros((4410, 2)), 44100)
     point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
-    bridge.player._cfg.server.station_timezone = "UTC"
+    bridge.player._cfg.station.timezone = "UTC"
     bridge.player._cfg.time_checks = TimeChecksConfig(enabled=True, voice_packs=[str(studio)])
     bridge.liner_scheduler = MagicMock()
     bridge.skip = MagicMock()

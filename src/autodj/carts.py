@@ -48,7 +48,7 @@ from autodj.liner_files import (
 )
 from autodj.liner_scheduler import decode_liner, decode_liner_path
 from autodj.scheduler import Action, ActionField
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -492,7 +492,7 @@ def install_carts(router: StationRouter) -> None:
     """Add the paired cart routes; each acts on the station its URL names."""
 
     @router.get("/carts")
-    async def get_carts(station: StationDep) -> dict[str, Any]:
+    async def get_carts(station: SavedStationDep) -> dict[str, Any]:
         """The wall, and the clips a slot can use."""
         carts = station.carts
         choices = await asyncio.to_thread(carts.clip_choices)
@@ -506,7 +506,9 @@ def install_carts(router: StationRouter) -> None:
         }
 
     @router.put("/carts/pages/{page}/slots/{slot}")
-    async def set_slot(station: StationDep, page: int, slot: int, body: CartSlot) -> dict[str, Any]:
+    async def set_slot(
+        station: SavedStationDep, page: int, slot: int, body: CartSlot
+    ) -> dict[str, Any]:
         """Assign a clip to a slot; the clip must decode."""
         carts = station.carts
         try:
@@ -526,7 +528,7 @@ def install_carts(router: StationRouter) -> None:
         return {"slot": assigned.model_dump()}
 
     @router.delete("/carts/pages/{page}/slots/{slot}")
-    async def clear_slot(station: StationDep, page: int, slot: int) -> dict[str, bool]:
+    async def clear_slot(station: SavedStationDep, page: int, slot: int) -> dict[str, bool]:
         """Empty a slot."""
         carts = station.carts
         try:
@@ -539,7 +541,7 @@ def install_carts(router: StationRouter) -> None:
         return {"cleared": True}
 
     @router.put("/carts/pages/{page}/name")
-    async def rename_page(station: StationDep, page: int, body: PageName) -> dict[str, str]:
+    async def rename_page(station: SavedStationDep, page: int, body: PageName) -> dict[str, str]:
         """Rename a page; names are unique, ignoring case."""
         carts = station.carts
         try:
@@ -556,7 +558,7 @@ def install_carts(router: StationRouter) -> None:
         return {"name": body.name}
 
     @router.put("/carts/active-page/{page}")
-    async def select_page(station: StationDep, page: int) -> dict[str, int]:
+    async def select_page(station: SavedStationDep, page: int) -> dict[str, int]:
         """Remember the page shown; every open page follows."""
         carts = station.carts
         try:
@@ -568,7 +570,7 @@ def install_carts(router: StationRouter) -> None:
         return {"active_page": page}
 
     @router.post("/carts/upload")
-    async def upload(station: StationDep, file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload(station: SavedStationDep, file: UploadFile = File(...)) -> dict[str, Any]:
         """Store an uploaded clip; it must decode, and an existing clip is never replaced."""
         carts = station.carts
         uploads = carts.store.uploads
@@ -578,7 +580,7 @@ def install_carts(router: StationRouter) -> None:
                 uploads,
                 name,
                 file,
-                max_bytes=station.cfg.server.liner_upload_max_bytes,
+                max_bytes=(station.cfg.station.liner_upload_max_mib * 1024 * 1024),
                 replace=False,
             )
         except InvalidLinerName as exc:
@@ -600,7 +602,7 @@ def install_carts(router: StationRouter) -> None:
         return {"name": name, "size": size}
 
     @router.get("/carts/uploads/{name}")
-    async def get_upload(station: StationDep, name: str) -> FileResponse:
+    async def get_upload(station: SavedStationDep, name: str) -> FileResponse:
         """Serve an uploaded clip, for browser playback."""
         uploads = station.carts.store.uploads
         try:
@@ -619,7 +621,7 @@ def install_carts(router: StationRouter) -> None:
         )
 
     @router.delete("/carts/uploads/{name}")
-    async def delete_upload(station: StationDep, name: str) -> dict[str, str]:
+    async def delete_upload(station: SavedStationDep, name: str) -> dict[str, str]:
         """Delete an uploaded clip that no slot uses."""
         carts = station.carts
         try:

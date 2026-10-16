@@ -589,7 +589,7 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     Returns:
         A DoctorCheck describing stream-mode readiness.
     """
-    if not cfg.stream.enabled:
+    if cfg.station.output != "stream":
         return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
     if shutil.which("ffmpeg") is None:
         return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")
@@ -656,7 +656,12 @@ def _relay_checks(
     paths: StationPaths | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return one check per configured relay (``[stream.relays.<name>]``)."""
-    if not cfg.stream.relays:
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
+    paths = paths or StationPaths.default(cfg)
+    relays = load_relays(paths.relays, cfg.stream.relays, paths.slug)
+    if not relays:
         return ()
     connect = connect or socket.create_connection
     from autodj.relay import read_status_file, relay_status_path
@@ -664,7 +669,7 @@ def _relay_checks(
     report = read_status_file(relay_status_path(cfg, paths)) or {"updated": "", "relays": {}}
     return tuple(
         _relay_check(relay, report["relays"].get(relay.name), report["updated"], connect)
-        for relay in cfg.stream.relays.values()
+        for relay in relays.values()
     )
 
 
@@ -926,7 +931,11 @@ def _config_keys_check(cfg: AutoDJConfig) -> DoctorCheck:
     Loading only logs them; this lists them by file, including those under
     ``[stations.<slug>]``.  The files are read, never changed.
     """
-    from autodj.config import unknown_config_keys, unknown_config_sections
+    from autodj.config import (
+        STATION_SECTION_TYPES,
+        unknown_config_keys,
+        unknown_config_sections,
+    )
 
     found: dict[str, list[str]] = {}
     for source in cfg.config_sources:
@@ -940,7 +949,12 @@ def _config_keys_check(cfg: AutoDJConfig) -> DoctorCheck:
         names = [
             f"{table}.{key}" for table, keys in unknown_config_keys(raw).items() for key in keys
         ]
-        names += [f"[{table}]" for table in unknown_config_sections(raw)]
+        legacy_station_sections = {section.SECTION for section in STATION_SECTION_TYPES}
+        names += [
+            f"[{table}]"
+            for table in unknown_config_sections(raw)
+            if table not in legacy_station_sections
+        ]
         if names:
             found[str(path)] = names
     if not found:

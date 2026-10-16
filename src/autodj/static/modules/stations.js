@@ -24,6 +24,10 @@ const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 // announcer's machine routes are not requested by this page.
 export const STATION_ROUTES = Object.freeze([
   "/status",
+  "/settings",
+  "/stereo-tool-presets",
+  "/time-settings",
+  "/station-settings",
   "/nowplaying",
   "/history",
   "/history/export",

@@ -1,61 +1,27 @@
-# Per-machine overrides, loaded only when a sibling base configuration file is loaded.
-# Copy to config.local.toml; this example remains safe to commit.
-# Only supported configuration sections and keys are accepted; any other is an error.
-# Every value here replaces the one in config.toml, so delete the lines you do not need.
+# Per-machine overrides. Copy to config.local.toml; this example is safe to commit.
+# These values are loaded when a sibling base configuration file is loaded.
+# The index contains library.db and dj_meta.db plus stations/<slug>/ state.
+# Station secrets do not belong in TOML. AutoDJ stores default station relay
+# passwords in <index_dir>/stations/default/relays.json and listener credentials
+# and webhooks in that folder's secrets.json. Other stations have matching files
+# under their own slug. These files are private and excluded from backups.
 
 [library]
 # beets_db = "/srv/beets/library.db"
 
 [index]
-# <index_dir> holds the library (library.db, dj_meta.db) in libraries/main/, what
-# stations share in shared/, and each station's state and liners in stations/<slug>/.
 # Keep a separate catalog per machine and register folders using that machine's paths.
-# Do not share this directory between an indexing machine and a playout machine.
 index_dir = "/srv/autodj/index"
 model_dir = "/srv/autodj/models"
 
 [server]
 host = "127.0.0.1"
 port = 8080
-# With lan = true AutoDJ creates the server secret itself.  Without it, a
-# non-loopback host needs access_token here or in AUTODJ_ACCESS_TOKEN; never
-# put a real secret in this example.
-# HTTPS for your own domain on the LAN and through a Cloudflare Tunnel with Cloudflare
-# Access (see "HTTPS with your own domain" in docs/operations.md).  The same as
-# `autodj serve --lan --allowed-host autodj.example.net
-# --allowed-origin https://autodj.example.net --ssl-certfile ... --ssl-keyfile ...`:
+# access_token = "private-pairing-secret"
 # lan = true
 # allowed_hosts = ["autodj.example.net"]
 # allowed_origins = ["https://autodj.example.net"]
 # ssl_certfile = "/srv/autodj/tls/fullchain.pem"
 # ssl_keyfile = "/srv/autodj/tls/privkey.pem"
-
-# Optional HTTP Basic credentials for /stream.mp3 and /stream.m3u:
-# [stream]
-# listener_user = "radio"
-# listener_password = "choose a strong password"
-#
-# Relay passwords belong here, beside the relay described in config.toml
-# under the same name; the two tables are merged key by key.
-# [stream.relays.main]
-# password = "the source password from your host"
-
-# Track-change webhooks belong only here, because their URLs often hold a
-# token; config.toml refuses them.  Up to ten; Settings, Stream lists them by
-# host and can send a test.  See "Now-playing feed and webhooks" in
-# docs/operations.md.
-# [[webhooks]]
-# url = "https://discord.com/api/webhooks/your-id/your-token"
-# format = "discord"   # or "generic" for the JSON feed object
-
-# Another station's secrets go under its own table (see "More stations on one
-# server" in config.toml.example):
-# [stations.nightowl.stream]
-# listener_user = "owl"
-# listener_password = "choose another strong password"
-#
-# [stations.nightowl.stream.relays.main]
-# password = "that station's source password"
-#
-# [[stations.nightowl.webhooks]]
-# url = "https://example.com/your-secret-endpoint"
+# trusted_proxies = ["127.0.0.1", "192.168.1.10"]
+# live_plain_http_lan = false

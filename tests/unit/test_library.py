@@ -23,6 +23,8 @@ from autodj.config import (
 )
 from autodj.indexer import FEATURE_DIM, FINGERPRINT_BYTES, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
+from autodj.station_store import StationStore
+from autodj.stations import DEFAULT_SLUG
 
 
 class _Faiss:
@@ -883,34 +885,32 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
         "played_at": "2026-01-01T00:00:00+00:00",
     }
     manager.ledger.remember_history(first)
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 0
+    assert os.path.normcase(str(song)) not in manager.ledger.store.last_played()
     assert manager.ledger.last_played()[os.path.normcase(str(song))] == 99.5
-    assert manager.catalog.recent_history() == []
+    assert manager.ledger.recent_history() == []
     manager.tick()
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 99.5
-    stored = manager.catalog.recent_history()
+    assert manager.ledger.store.last_played()[os.path.normcase(str(song))] == 99.5
+    stored = manager.ledger.recent_history()
     assert len(stored) == 1
     assert (stored[0]["event_id"], stored[0]["title"], stored[0]["played_at"]) == (
         first["event_id"],
         first["title"],
         first["played_at"],
     )
-    assert stored[0]["entry_id"] is not None
+    assert stored[0]["entry_id"] is None
 
     second = {**first, "event_id": "play-2", "title": "Interrupted"}
     manager.ledger.remember_history(second)
     manager.ledger.interrupt_history(second["event_id"])
-    assert len(manager.catalog.recent_history()) == 1
+    assert len(manager.ledger.recent_history()) == 1
     manager.close()
 
-    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
+    reopened = StationStore(manager.cfg.index.stations_dir / "default" / "station.db", DEFAULT_SLUG)
     try:
-        assert [row["event_id"] for row in reopened.recent_history()] == ["play-1"]
-        rows = (
-            reopened._db()
-            .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
-            .fetchall()
-        )
+        assert [row["event_id"] for row in reopened.recent_history(100)] == ["play-1"]
+        rows = reopened._db.execute(
+            "SELECT event_id,interrupted FROM play_history ORDER BY rowid"
+        ).fetchall()
         assert [(row["event_id"], row["interrupted"]) for row in rows] == [
             ("play-1", 0),
             ("play-2", 1),
@@ -963,28 +963,26 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
     }
     second = {**first, "event_id": "play-2", "title": "Two"}
     manager.ledger.remember_history(first)
-    write_history = manager.catalog.write_history
+    write_history = manager.ledger.store.write_history
     enqueued = False
 
-    def write_during_callback(rows, interrupted=(), station="default"):
+    def write_during_callback(rows, interrupted=()):
         nonlocal enqueued
         if not enqueued:
             enqueued = True
             manager.ledger.remember_history(second)
             manager.ledger.interrupt_history(first["event_id"])
-        write_history(rows, interrupted, station)
+        write_history(rows, interrupted)
 
-    monkeypatch.setattr(manager.catalog, "write_history", write_during_callback)
+    monkeypatch.setattr(manager.ledger.store, "write_history", write_during_callback)
     manager.tick()
-    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-1"]
+    assert [row["event_id"] for row in manager.ledger.recent_history()] == ["play-1"]
 
     manager.tick()
-    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-2"]
-    rows = (
-        manager.catalog._db()
-        .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
-        .fetchall()
-    )
+    assert [row["event_id"] for row in manager.ledger.recent_history()] == ["play-2"]
+    rows = manager.ledger.store._db.execute(
+        "SELECT event_id,interrupted FROM play_history ORDER BY rowid"
+    ).fetchall()
     assert [(row["event_id"], row["interrupted"]) for row in rows] == [
         ("play-1", 1),
         ("play-2", 0),
@@ -994,13 +992,13 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
 def test_runtime_settings_are_buffered_until_tick_and_close(manager_factory, tmp_path):
     manager = manager_factory()
     manager.ledger.remember_setting("clock", {"cursor": 3, "enabled": True})
-    assert manager.catalog.get_setting("clock") is None
+    assert manager.ledger.store.get_setting("clock") is None
     manager.tick()
-    assert manager.catalog.get_setting("clock") == {"cursor": 3, "enabled": True}
+    assert manager.ledger.store.get_setting("clock") == {"cursor": 3, "enabled": True}
 
     manager.ledger.remember_setting("clock", {"cursor": 4, "enabled": True})
     manager.close()
-    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
+    reopened = StationStore(manager.cfg.index.stations_dir / "default" / "station.db", DEFAULT_SLUG)
     try:
         assert reopened.get_setting("clock") == {"cursor": 4, "enabled": True}
     finally:
@@ -1352,7 +1350,7 @@ def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
 
     assert reads == [0]
     assert manager.sim.replaced is loaded
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 50.0
+    assert manager.ledger.store.last_played()[os.path.normcase(str(song))] == 50.0
 
     other = music / "other.flac"
     other.write_bytes(b"other")
@@ -1486,7 +1484,7 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
-        manager.catalog.write_history(
+        manager.ledger.store.write_history(
             [
                 {
                     "event_id": "gone-play",
@@ -1496,7 +1494,8 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
                     "duration": 3.0,
                     "played_at": "2025-01-01T00:00:00+00:00",
                 }
-            ]
+            ],
+            [],
         )
         gone.unlink()
         moved = tmp_path / "Share-offline"
@@ -1513,7 +1512,7 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
         manager.remove_missing(preview["token"], confirmed=True, allow_mass=True)
     gone.unlink()
     assert manager.remove_missing(preview["token"], confirmed=True, allow_mass=True) == 1
-    assert manager.catalog.recent_history()[0]["path"] == os.path.normcase(str(gone))
+    assert manager.ledger.recent_history()[0]["path"] == os.path.normcase(str(gone))
     assert manager.catalog.record_for_path(remote) is not None
 
 

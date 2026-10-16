@@ -6,12 +6,16 @@ WSL filesystem so user IDs and POSIX modes have their documented meaning.
 
 ## Configuration precedence
 
-AutoDJ resolves defaults, `config.toml`, sibling `config.local.toml`, environment variables, then
-explicit CLI flags. `config.local.toml` is read only when a `config.toml` was loaded next to it;
-on its own it is ignored. Omitting `--config` is valid. Explicitly naming a missing file is an error. Put
-access tokens only in ignored local configuration or `AUTODJ_ACCESS_TOKEN`. An unknown section or
-key in either file, such as a setting a newer AutoDJ removed, produces a warning and is ignored.
-Invalid values for supported settings still need fixing.
+Shared settings resolve from defaults, `config.toml`, sibling `config.local.toml`, environment
+variables, then explicit CLI flags. Station settings load from each station's
+`<index_dir>/stations/<slug>/station.json`, with saved web state overriding the definition.
+`config.local.toml` is read only when a `config.toml` was loaded next to it; on its own it is
+ignored. Startup migrates legacy root station sections and `[stations.<slug>]` tables once; normal
+loading does not fall back to those keys. Omitting `--config` is valid. Explicitly naming a
+missing file is an error. Put access tokens only in ignored local configuration or
+`AUTODJ_ACCESS_TOKEN`. An unknown shared section or key in either TOML file, such as a setting a
+newer AutoDJ removed, produces a warning and is ignored. Invalid values for supported settings
+still need fixing.
 
 ## Diagnose before serving
 
@@ -166,15 +170,18 @@ It applies to the tracks `autodj index` embeds and the tracks `autodj index` and
 
 ### Drop mixing and key shift
 
-Two `[djmix]` options in `config.toml` (also under DJ mixing in the web Settings) change how the
-server mix joins songs. Both are off by default and both apply only when the server does the
-mixing, in stream mode or with server audio.
+Two `djmix` options in a station's `station.json` (also under DJ mixing in the web Settings)
+change how the server mix joins songs. Both are off by default and both apply only when the
+server does the mixing, in stream mode or with server audio.
 
-```toml
-[djmix]
-beatmatch = true
-drop_mix = true
-key_shift = true
+```json
+{
+  "djmix": {
+    "beatmatch": true,
+    "drop_mix": true,
+    "key_shift": true
+  }
+}
 ```
 
 `drop_mix` brings the next song in so that its drop lands on the downbeat that starts the ending
@@ -532,7 +539,7 @@ tunnel, port forwarding or any other proxy: AutoDJ's pairing is built for a home
 strangers on the internet. After the Access login, pair each remote browser as usual. Every
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
 per-address limit on wrong pairing codes counts all remote browsers together unless
-`[stream] trusted_proxies` includes that direct peer. This setting affects client addresses on all
+`[server] trusted_proxies` includes that direct peer. This setting affects client addresses on all
 routes in every mode, including pairing, the listener request limits and audit logs. Set it only
 when the proxy appends the address it saw to `X-Forwarded-For`, or overwrites the header with it.
 A proxy that passes a client's own `X-Forwarded-For` through unchanged lets any client choose its
@@ -549,12 +556,7 @@ of the US statutory webcasting licence (section 114, reported to
 SoundExchange). This is general information, not legal advice: you remain
 responsible for your licence and your reports.
 
-Turn it on in `config.toml` and restart AutoDJ:
-
-```toml
-[dmca]
-enabled = true
-```
+Turn it on in the selected station's Settings > DMCA controls. The choice is station-specific.
 
 ### The limits
 
@@ -663,7 +665,7 @@ working, since no field was removed or renamed.
 - `listener_count` is the number of players connected to this server's stream now (0 outside
   stream mode). Listeners of a relay to another server are not counted.
 - `peak_listeners_today` is the most listeners connected at once since midnight in the station
-  time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
+  time zone (`station.timezone in the station definition`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
 - `uptime_seconds` counts whole seconds since this station started: for the default station,
@@ -681,18 +683,18 @@ licences, such as the US statutory licence, forbid announcing specific songs in 
 it is always `null` in [DMCA mode](#dmca-mode).
 `history_limit` defaults to 5 and accepts 0 through 20.
 
-Put webhook URLs in `config.local.toml` only. Each `[[webhooks]]` table accepts an HTTP or
-HTTPS `url`, `format = "generic"` or `"discord"`, and optional
-`events = ["track_change"]`. Up to ten destinations are accepted:
+Put webhook URLs in the station's private `secrets.json` only. Each webhook accepts an HTTP or
+HTTPS URL, `format` of `generic` or `discord`, and optional `events` containing `track_change`.
+Up to ten destinations are accepted:
 
-```toml
-[[webhooks]]
-url = "https://example.com/secret-endpoint"
-format = "generic"
-
-[[webhooks]]
-url = "https://discord.com/api/webhooks/your-secret"
-format = "discord"
+```json
+{
+  "version": 1,
+  "webhooks": [
+    {"url": "https://example.com/secret-endpoint", "format": "generic"},
+    {"url": "https://discord.com/api/webhooks/your-secret", "format": "discord"}
+  ]
+}
 ```
 
 The generic POST body is the feed object above plus `"event": "track_change"`.
@@ -702,8 +704,8 @@ five-second request timeout. A track change is tried three times, waiting about 
 4 seconds, or the destination's `Retry-After` up to 30 seconds; a newer track change replaces
 one still waiting. A test send is tried once. The paired `GET /api/webhooks` route shows only the destination host, format
 and last result; `POST /api/webhooks/{index}/test` sends the current snapshot.
-Webhook URLs are never returned to the browser. Back up `config.local.toml`
-separately if you need to restore secrets.
+Webhook URLs are never returned to the browser. The private station secret files are excluded
+from AutoDJ backups; preserve them separately if you need to restore secrets.
 
 ### Status page
 
@@ -729,14 +731,17 @@ A station can also have a public page where listeners press Play to hear it in t
 a compact version of it to put on another website. Both are off until you turn them on, for each
 station on its own:
 
-```toml
-[player_page]
-enabled = true                 # the player page, /player
-embed = true                   # the embeddable player, /embed
-embed_origins = ["https://nightowlradio.example"]   # sites that may show /embed in a frame
+```json
+{
+  "player_page": {
+    "enabled": true,
+    "embed": true,
+    "embed_origins": ["https://nightowlradio.example"]
+  }
+}
 ```
 
-For another station, write the same keys under `[stations.<slug>.player_page]`; its pages are at
+For another station, select it in Settings > Stations and change the same settings; its pages are at
 `/stations/<slug>/player` and `/stations/<slug>/embed` (the default station's also answer at
 `/stations/default/player` and `/stations/default/embed`). A page that is off answers 404. The
 settings are read when AutoDJ starts. `GET /api/stations` lists each station's `player_path` and
@@ -795,13 +800,13 @@ In stream mode, **Settings, Stream** has a **Now-playing feed** card, closed unt
 - **Status page link** shows the address of `/status`, with **Copy status page link** and an
   **Open the status page (new tab)** link.
 - **Show the next song publicly** turns `show_next` on or off and is saved like the other
-  stream settings. Outside stream mode, set `[nowplaying] show_next` in `config.toml`. In
+  station settings. In
   [DMCA mode](#dmca-mode) it is unavailable, and says why.
 - **Track-change webhooks** lists each destination by number, host, format and last delivery
   result (Not sent, Delivered or Delivery failed). Its **Send test** button sends the current
   snapshot once and says whether it was delivered. With no webhooks configured, the group says so
-  and points to `config.local.toml`; webhooks are added or changed there and take effect on
-  restart.
+  and points to that station's private `secrets.json`; webhooks are added or changed there and
+  take effect on restart.
 
 ## Listener requests
 
@@ -817,35 +822,34 @@ expires three hours after it was sent).
 **Approval** in the same card chooses **I approve each one** (`approval = "manual"`) or
 **Automatic** (`"auto"`): a request that keeps the rules joins the queue at once.
 
-Until you save **Take listener requests** and **Approval** with this card, `enabled` and
-`approval` under `[requests]` in config.toml are in charge for the station, and a change there
-takes effect at the next start; saving any other setting on the page (volume, EQ and the like)
-does not change that. Once you save the card, the station's `web_state.json` keeps both, and
-they take the place of the config.toml values at every start from then on. When a saved value
-differs from config.toml, the log says so once at start, for example "Listener requests on for
-nightowl (saved in Settings; config.toml says off)". The four smooth-transition settings are kept
-in `web_state.json` whenever the station's settings are saved, as before. The other keys are read
-from config.toml when AutoDJ starts:
+Until you save **Take listener requests** and **Approval** with this card, the values in that
+station's `station.json` are in charge; a change there takes effect at the next start. Once you
+save the card, the station's `web_state.json` keeps both values, and they take the place of the
+definition values at every start from then on. When a saved value differs, the log says so once at
+start. The other keys are read from the station definition when AutoDJ starts:
 
-```toml
-[requests]
-enabled = true
-approval = "manual"          # or "auto": a request that keeps the rules is queued at once
-per_listener = 3             # requests one address may make ...
-per_listener_minutes = 60    # ... in this many minutes
-daily_limit = 50             # requests the station takes per day, from everyone
-max_pending = 20             # requests that may wait for you at once
-window_minutes = 30          # how far ahead in the queue a request may be placed
-bridges_enabled = false       # optional transition songs; off by default
-max_bridges = 3              # one to three when enabled
-bridge_cost_threshold = 2.0  # seek a bridge above this fit cost (0 to 10)
-no_smooth_spot = "best"       # "best" or "wait" for operator approval
-blocked_artists = ["Night Owl Jingles"]
-blocked_folders = ["Christmas"]   # full paths, or folders relative to registered music folders
-ipv6_prefix = 56             # an IPv6 listener's limits count over this network
+```json
+{
+  "requests": {
+    "enabled": true,
+    "approval": "manual",
+    "per_listener": 3,
+    "per_listener_minutes": 60,
+    "daily_limit": 50,
+    "max_pending": 20,
+    "window_minutes": 30,
+    "bridges_enabled": false,
+    "max_bridges": 3,
+    "bridge_cost_threshold": 2.0,
+    "no_smooth_spot": "best",
+    "blocked_artists": ["Night Owl Jingles"],
+    "blocked_folders": ["Christmas"],
+    "ipv6_prefix": 56
+  }
+}
 ```
 
-For another station, write the same keys under `[stations.<slug>.requests]`.
+For another station, select it in Settings > Stations and change the same settings.
 
 **What a listener does.** The page has a search box for title, artist or album. The songs it
 finds are links: at most 20, and never from a blocked folder or by a blocked artist. Choosing one
@@ -1000,8 +1004,12 @@ the network can reach it:
 uv run autodj serve --lan --stream
 ```
 
-`[stream] enabled = true` in `config.toml`, or `AUTODJ_STREAM_ENABLED=1`, does the same without
-the flag. In Docker, set it in `config.toml` and restart with `docker compose up -d`.
+Choose **Stream** as the station's output in Settings > Stations. Existing installations
+migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
+definition at startup; the old TOML key and environment variable are migration inputs only.
+For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
+In Docker, change the default station's output in Settings and restart with `docker compose up -d`
+when changing the process-level stream setup.
 
 `uv run autodj doctor` warns, without failing, if stream mode is on but the server only listens
 on loopback, since no other device could reach it.
@@ -1028,12 +1036,16 @@ can delete it.
 ### Listener access controls
 
 Listening stays public by default. To require HTTP Basic authentication, put these lines in
-`config.local.toml` and restart AutoDJ:
+the station's private `secrets.json` and restart AutoDJ:
 
-```toml
-[stream]
-listener_user = "radio"
-listener_password = "a long private password"
+```json
+{
+  "version": 1,
+  "stream": {
+    "listener_user": "radio",
+    "listener_password": "a long private password"
+  }
+}
 ```
 
 Give a player `http://user:pass@host/stream.mp3` (or use `https://` when AutoDJ serves HTTPS).
@@ -1041,13 +1053,13 @@ The password protects `/stream.mp3` and `/stream.m3u`; the playlist itself never
 credentials, so a player opening it must already know them. Some players, possibly Sonos, cannot
 send HTTP Basic credentials. The page's **Listen here** button may also fail when a password is
 set. HTTP sends the password across the network in plain text; use HTTPS if the network is not
-trusted. Settings, Stream shows whether a password is set, but edits to this private file require
-a restart.
+trusted. Settings, Stream shows whether a password is set; edits to this private file require a
+restart. For the default station, the file is `<index_dir>/stations/default/secrets.json`.
 
 `max_listeners_per_address = 0` leaves the per-address limit off by default. A positive value
 limits one IP address to that many simultaneous connections, in addition to `max_listeners`.
 Change the value in Settings, Stream. If clients reach AutoDJ through a proxy or tunnel, list the **direct proxy
-peer's** IP address or CIDR in `[stream] trusted_proxies`, for example
+peer's** IP address or CIDR in `[server] trusted_proxies`, for example
 `trusted_proxies = ["192.168.1.10"]`. Uvicorn then reads `X-Forwarded-For` from right to left
 and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` header. Without
 this setting, AutoDJ uses the socket peer and ignores forwarded headers. Set trusted proxies
@@ -1183,12 +1195,16 @@ The listening address stays the same across restarts. There is no key to copy or
 
 Beside the MP3 stream, a station can serve the same mix in AAC, in Opus, or both, each at its
 own address and bitrate. Turn them on in Settings, Stream, **More formats** (a card closed until you open it), with **AAC
-quality** and **Opus quality** (Off, or a bitrate), or in `config.toml`:
+quality** and **Opus quality** (Off, or a bitrate). In `station.json`, these keys are in the
+station's `stream` section:
 
-```toml
-[stream]
-aac_bitrate = 96    # 0 (off), 64, 96, 128, 192 or 256
-opus_bitrate = 64   # 0 (off), 48, 64, 96, 128 or 192
+```json
+{
+  "stream": {
+    "aac_bitrate": 96,
+    "opus_bitrate": 64
+  }
+}
 ```
 
 A format that is on answers at `/stream.aac` or `/stream.opus` for the default station, and at
@@ -1196,7 +1212,7 @@ A format that is on answers at `/stream.aac` or `/stream.opus` for the default s
 404. Settings, Stream lists the address of every format that is on, each with its own Copy
 button. The addresses are public like `/stream.mp3`, and the station's listener password, bans
 and per-address limit apply to them too. The choice made in Settings is saved in
-`web_state.json` and wins over `config.toml` at the next start, as the MP3 quality does.
+`web_state.json` and wins over the station definition at the next start, as the MP3 quality does.
 Changing a format's bitrate makes only that format's listeners reconnect.
 
 - **AAC** (AAC-LC in ADTS frames, `audio/aac`) sounds better than MP3 at the same bitrate and
@@ -1264,7 +1280,7 @@ never interrupted. **Download statistics (CSV)** saves every day kept as a sprea
 one row per day, with the same numbers for each format and each session length band.
 
 A session is one connection, from connect to disconnect, and counts on the day it began, in
-the station's time zone (`[server] station_timezone`). The peak is the most listeners connected
+the station's time zone (`station.timezone in the station definition`). The peak is the most listeners connected
 at once. Listeners of a relay's server are not counted here; that server keeps its own figures.
 
 Nothing in the statistics identifies a listener. AutoDJ keeps no address, player name or
@@ -1292,9 +1308,9 @@ and check their connection status. Set the station name, genre, description and 
 inherit this metadata. Saving metadata reconnects enabled relays, but leaves direct stream
 listeners connected. Changing one relay reconnects that relay only.
 
-Until the first web relay save, the list comes from `config.toml`. After that, the complete
-list is stored in the station's `relays.json`, including an empty list if every relay is
-removed; saved definitions and passwords then take precedence over TOML. A blank password
+The complete relay list is stored in the station's `relays.json`, including an empty list if
+every relay is removed. Startup migration moves old TOML definitions and passwords there once;
+normal loading does not fall back to TOML. A blank password
 keeps the saved one only when editing the same relay destination (host, port and type).
 Environment passwords take precedence over both files and cannot be edited in the web form.
 `relays.json` contains credentials and is deliberately excluded from AutoDJ backups; keep a
@@ -1304,37 +1320,29 @@ Linux and macOS, and on Windows an access list granting that user alone, with no
 inherited from the folder.
 Station metadata is saved with the other web settings in `web_state.json`.
 
-For initial configuration, describe each server as a named table in `config.toml`:
+For initial configuration, describe each relay in the station's `relays.json` file:
 
-```toml
-[stream.relays.main]
-type = "icecast"
-host = "radio.example.com"
-port = 8000
-mount = "/live"
-
-[stream.relays.backup]
-type = "shoutcast2"
-host = "sc.example.net"
-port = 8000
-stream_id = 1
-bitrate = 128
+```json
+{
+  "version": 1,
+  "relays": [
+    {"name": "main", "type": "icecast", "host": "radio.example.com", "port": 8000,
+     "mount": "/live", "password": "the source password from your host"},
+    {"name": "backup", "type": "shoutcast2", "host": "sc.example.net", "port": 8000,
+     "stream_id": 1, "bitrate": 128, "password": "the second source password"}
+  ]
+}
 ```
 
-Put each password in `config.local.toml` under the same table name, where it is merged with
-the table above:
-
-```toml
-[stream.relays.main]
-password = "the source password from your host"
-```
-
-Or set it in the environment as `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD`, with the name
-upper-cased and `-` written as `_`, for example `AUTODJ_STREAM_RELAY_MAIN_PASSWORD`. A relay
+Or set it in the environment as `AUTODJ_STATION_DEFAULT_RELAY_<NAME>_PASSWORD`, with the name
+upper-cased and `-` written as `_`, for example `AUTODJ_STATION_DEFAULT_RELAY_MAIN_PASSWORD`.
+For another station, replace `DEFAULT` with its slug. Legacy
+`AUTODJ_STREAM_RELAY_<NAME>_PASSWORD` values are copied into the default station's private
+`relays.json` on startup migration only. A relay
 without a password stops AutoDJ at startup with an error naming the table. Two relay names that
 read the same variable, such as `a-b` and `a_b` or `Main` and `main`, stop AutoDJ at startup
 when that variable is set, so one server's password is never sent to another; Settings refuses
-such a name then too. While the variable is unset, each relay uses its own table's password.
+such a name then too. While the variable is unset, each relay uses its own saved password.
 
 The keys:
 
@@ -1387,8 +1395,9 @@ not use TLS for relays, so use a host you trust on networks you trust. See the t
 ### Live DJs and talkover
 
 A live DJ can take over a station from their own DJ software, and anyone signed in to the page
-can talk over the music from the browser. Both need stream mode (`serve --stream`, or a station
-under `[stations.<name>]`), because the server mixes what goes on the air.
+can talk over the music from the browser. Both need that station's stream output, because the
+server mixes what goes on the air. The `serve --stream` option can override the default station's
+saved output for that run.
 
 **Adding DJs.** In **Settings > Live DJ**, add each DJ with a username, the name
 listeners see (for example "DJ Alice") and a password of 12 to 256 characters. Passwords are
@@ -1511,10 +1520,10 @@ browser session like the rest of the page.
 
 ### Recording the broadcast
 
-Recording needs `serve --stream`. It saves the encoded MP3 that listeners receive, including
+Recording needs stream output. It saves the encoded MP3 that listeners receive, including
 liners and output processing. Starting a recording keeps the station playing without listeners.
-Set `[recording] folder` in `config.toml`, or in `config.local.toml` for a path on this
-machine only. The browser and the API can neither change nor see the folder.
+Set `recording.folder` in the station's `station.json` definition. The browser and the API can
+neither change nor see the folder.
 The default is `recordings`. Files use the station time zone and names such as
 `AutoDJ-2026-10-11_13-00-00.mp3`. The station name is reduced to safe filename characters.
 
@@ -1527,15 +1536,15 @@ The scheduler also has Stop recording. A new encoder, such as after a bitrate ch
 a new file.
 The running choice survives a server restart; a new dated file begins when audio resumes.
 
-`[recording] retention_days = 0` keeps files forever. A positive value deletes only dated
+`recording.retention_days = 0` keeps files forever. A positive value deletes only dated
 MP3 files in the configured folder whose modification time is older than that many days.
 Cleanup runs in the recorder worker about once an hour. Set `free_space_mb` to the minimum
 free space that must remain on the recording volume. The defaults are 0 days and 100 MB.
-The `config.toml` values apply until you save recording settings in the web page. From then on
-the saved split, retention and free space, and whether recording was running, live in the
-index's `recording.json` and win over `config.toml`. Backups include `recording.json` but not
+The station definition supplies startup values until you save recording settings in the web
+page. From then on the saved split, retention and free space, and whether recording was running,
+live in the station's `recording.json` and win over the definition. Backups include `recording.json` but not
 the recorded MP3 files; archive the recordings folder yourself. A damaged `recording.json` is
-renamed with a `.bad` suffix and recording starts stopped with the `config.toml` settings.
+renamed with a `.bad` suffix and recording starts stopped with the station definition settings.
 
 If disk space drops below the floor, a write fails, or the recorder queue fills, recording
 pauses and reports the error in Settings and the server log. The stream keeps playing.
@@ -1561,8 +1570,8 @@ client for a running server.
   origin with `--allowed-origin`) if it is a name `--lan` cannot detect, such as a router DNS
   entry.
 - **A player gets a 503 "Stream listener limit reached"** — `max_listeners` (default 8) is full.
-  It counts the listeners of every format (MP3, AAC and Opus) together. Raise
-  `[stream] max_listeners` (or `AUTODJ_STREAM_MAX_LISTENERS`) if you regularly have more
+  It counts the listeners of every format (MP3, AAC and Opus) together. Raise the selected
+  station's `stream.max_listeners` setting (or `AUTODJ_STATION_<SLUG>_STREAM_MAX_LISTENERS`) if you regularly have more
   simultaneous listeners.
 - **The AAC or Opus address answers 404** — that format is off for the station. Turn it on in
   Settings, Stream, More formats. If the log says the Opus stream encoder keeps exiting, the
@@ -1582,115 +1591,99 @@ client for a running server.
 
 ## Several stations
 
-One AutoDJ server can play more than one station from the same music library. The root sections
-of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
-before: a server with one station needs no change. Another station is defined by its own
-`station.json`, made from the web page. A `[stations.<slug>]` table in `config.toml` is moved
-into a `station.json` the next time `autodj serve` starts. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
-schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
-similarity index, pairing and the web server are shared.
+One AutoDJ server can play several stations, or keep the interface available with no stations
+playing. Every station, including `default`, uses the same construction and Start/Stop controls.
+Stop releases that station's audio resources; Start begins fresh playback. Pause holds playback
+position. Stopping one station does not stop another. Scheduled events missed while stopped are
+skipped when the station next starts.
 
-The web page controls one station at a time; the station switcher in its banner picks which.
-See [The station switcher](#the-station-switcher).
+Each station has its own settings, categories, queue, history, schedule, carts, clockwheels,
+liners, shows, ads, requests and relays. Music metadata, analysis and cue points belong to the
+shared library. Pairing, authentication, networking, TLS, trusted proxies and analysis workers
+belong to the installation.
 
 ### Configuration
 
-The slug names the station in addresses, folders and log lines. It uses lower-case letters,
-digits and inner hyphens, at most 32 characters, such as `nightowl`. `default` is reserved for the
-root sections. A server can have at most 8 stations besides the default one.
+Every station has `<index_dir>/stations/<slug>/station.json`, including `stations/default/`.
+Use Settings > Stations to create or duplicate a station and set whether it starts with the
+server. The slug uses lower-case letters, digits and inner hyphens, up to 32 characters.
+A server supports the default station and up to eight additional stations.
 
-This example adds a station called Night Owl Radio. In `config.toml`:
+Startup migrates old root station settings and `[stations.<slug>]` tables into these definitions.
+It also migrates station passwords and webhooks from `config.local.toml` and
+legacy relay environment passwords when their matching relays exist. Normal loading reads the
+migrated format; old TOML keys and default-only `AUTODJ_STREAM_*` variables are not fallback
+settings. Station secrets live separately in `secrets.json` and `relays.json` and remain excluded
+from backups. Server and library configuration remain in `config.toml`. Fresh installations
+configure every station in its `station.json`; existing settings can also be changed in Settings,
+Stations.
 
-```toml
-[stations.nightowl]
-autostart = true
+The top-level `station` object in `station.json` contains the station's settings sections. Its
+nested `station` section holds output, time zone and upload size, for example:
 
-[stations.nightowl.stream]
-station_name = "Night Owl Radio"
-bitrate = 192
-continuous = true
-max_listeners = 20
-
-[stations.nightowl.playback]
-loudness_processing = "smooth"
-
-[stations.nightowl.recording]
-folder = "recordings/nightowl"
+```json
+{
+  "version": 1,
+  "created": "2026-10-16T00:00:00+00:00",
+  "source": null,
+  "station": {
+    "station": {
+      "output": "stream",
+      "server_audio_too": false,
+      "timezone": "America/New_York",
+      "liner_upload_max_mib": 50
+    }
+  }
+}
 ```
 
-In `config.local.toml`, beside the default station's secrets. `autodj serve` moves them into
-the station's own files:
+Settings > Stations edits these options for the selected station, including while it is stopped.
+Output can be `browser`, `server` (sound card), or `stream`. In stream mode, `server_audio_too`
+also sends audio to the sound card. Stations may play on the same sound card simultaneously.
+Output and timezone changes take effect on that station's next start. Time display format remains
+shared across the interface. A station that cannot start reports its error while the interface
+and other stations stay available.
 
-```toml
-[stations.nightowl.stream]
-listener_user = "owl"
-listener_password = "choose another strong password"
+Stations need separate recording folders and relay targets. Their definitions do not inherit
+settings from the default station. A duplicate copies explicitly selected saved configuration;
+it does not inherit the source's credentials or playback history.
 
-[stations.nightowl.stream.relays.main]
-password = "that station's source password"
-
-[[stations.nightowl.webhooks]]
-url = "https://example.com/your-secret-endpoint"
-```
-
-The rules:
-
-- **A station starts from the defaults, not from the root sections.** Nothing is copied from the
-  default station. Copying would quietly give the new station the default station's relays,
-  webhooks, listener password and recording folder. Set everything the station needs in its own
-  tables.
-- **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `player_page`, `requests`, `time_checks`, `dmca` and `presets.<name>`, plus
-  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
-- **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
-  server and are read only from the root. So are `stream.trusted_proxies` (from the root
-  `[stream]`) and `server.station_timezone`.
-- **Another station always streams.** It mixes on the server and never opens the sound card, so
-  its `stream.enabled` is ignored with a warning, and so is its `stream.trusted_proxies`.
-- **`autostart`** (default `true`) starts the station with the server. With `false` it is
-  configured but stays stopped until it is started.
-- **Secrets stay out of `config.toml`.** Listener credentials, relay passwords and webhooks go in
-  `config.local.toml` under the same table names; the two files are merged key by key.
-  `config.toml` refuses a station's `webhooks`, as it does the root ones, and a station named
-  in `config.local.toml` but not in `config.toml` is refused, so a misspelled name cannot start
-  a station of its own. A relay password can
-  also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
-  `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
-  the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
-- **Each station needs its own recording folder.** A recorder deletes old recordings from its
-  folder, so two stations sharing one could delete each other's. Leaving `recording.folder`
-  unset in a station uses the default `recordings`, which the default station already uses, so
-  set it.
-- **Each relay target belongs to one station.** Two stations pushing to the same host, port and
-  mount (or Shoutcast stream) are refused.
-- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
-  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
-  stations given the same name are warned about at startup: listeners could not tell them apart.
-- **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
-  station's table. `autodj doctor` lists them in its `config-keys` check and offers to remove an
-  unknown key from a station section, with a backup of the file.
-- **Errors name the station**, for example
-  `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
+The index folder holds `libraries/main/` for library data, `shared/` for shared assets,
+`stations/<slug>/` for each station's files, and installation-wide logs and tools. Categories are
+station-owned, in each station's `categories.json`. The earlier layout migration copied formerly
+shared categories into each station's folder. A migrated default station keeps its old time-check
+clip folder through an explicit setting; fresh stations use their own clip folder unless configured
+otherwise.
 
 A station keeps its state in `<index_dir>/stations/<slug>/`, the default station in
-`stations/default/`, all with the same file names: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
+`stations/default/`, all with the same file names: `station.json` for its configuration, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
 `time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
-`categories.json`, `liners/` and `profiles/`. Its plays are kept in the
-shared `library.db`.
+`categories.json`, `liners/` and `profiles/`. Each station's `station.db` holds its history,
+last-played values and clock setting independently of the library catalog.
 
-The index folder holds:
+Startup imports existing station history and settings from `library.db`, including records for
+stations no longer configured. Each import commits with a completion marker, so interrupted imports
+can be retried without duplicating history or replacing newer station values. The legacy source is
+preserved. Track metadata, analysis and shared cue points stay in the library.
 
-- `libraries/main/`: the library, `library.db` and `dj_meta.db`, with the related artists and
-  tracks files.
-- `shared/`: what every station shares, the playlists, uploaded Stereo Tool presets and time
-  check packs.
-- `stations/<slug>/`: each station's own files.
-- `logs/`, `tools/` and the pairing files, for the whole server.
+Whole-installation backups snapshot station databases through SQLite, including committed WAL data.
+Restore rolls back a failed installation with the other restored files. Ledger-only folders for
+removed stations are included. Create fresh backups after updating: older backup formats are not
+supported. This does not add an individual-station backup command.
 
-`autodj serve`, or any other command that uses the library, moves an index folder from an older
-release into these folders once, inside the index folder. The categories every station used to
-share go to the default station, and each other station starts with a copy of them. Named indexes (`[index] name`,
-`--name`) are gone; a second named index found there is left as it is.
+
+
+### Editing a stopped station
+
+Select a stopped station to inspect and edit its saved settings, schedules, clockwheels,
+relays, carts, shows, ads, liners, matched intros, requests configuration, and DJ accounts.
+History and exports remain available. These editors use the same validation and saving logic
+as a running station; opening an editor does not create an audio engine. Rotation tests and
+show generation can run explicitly without broadcasting.
+
+Commands that require playback, such as Skip, queue changes, firing a cart, and recording a
+live voice transition, remain unavailable. Start builds a fresh player from the saved settings.
+Edits are briefly unavailable while a station is starting or stopping.
 
 ### Creating a station from the web page
 
@@ -1717,24 +1710,23 @@ Stereo Tool preset files remain shared.
 AutoDJ stores the definition at `<index_dir>/stations/<slug>/station.json` alongside
 that station's state. A station's secrets (its stream relays, listener user and password, and
 webhooks) never go in `station.json`. They go beside it in `relays.json` and `secrets.json`,
-which only your account can read and backups leave out. When `autodj serve` finds a
-`[stations.<slug>]` table in `config.toml` or `config.local.toml`, it moves the station into
-those files unless it already has them. It leaves both config files as they are, which may be
-read-only, and warns that the table is no longer read and should be removed. Moved stations come
-before stations made in the page, in `config.toml`'s order. To remove a web-created station, stop AutoDJ and move its station folder
-away. There is no delete button yet.
+which only your account can read and backups leave out. Startup migration reads legacy root
+station sections and `[stations.<slug>]` tables from `config.toml` and `config.local.toml`, and writes
+the canonical station files. The
+legacy sections remain in the TOML file but normal loading ignores them; remove them after
+migration to avoid confusion. A later edit to legacy TOML is not applied. To remove a web-created
+station, stop AutoDJ and move its station folder away. There is no delete button yet.
 
 ### Running
 
 `autodj serve` starts the default station as before, then every other station with
 `autostart = true`. Each other station mixes on the server and streams at
 `/<slug>.mp3`, with a one-line playlist at `/<slug>.m3u`; the startup log lists
-the addresses. A station's AAC and Opus streams, when its `[stations.<slug>.stream]` table sets
+the addresses. A station's AAC and Opus streams, when its `station.json` stream settings set
 `aac_bitrate` or `opus_bitrate` (or Settings does), are at `/<slug>.aac` and
 `/<slug>.opus`, each with its own encoders. These are public like `/stream.mp3`, and the station's own `listener_user` and
 `listener_password` protect them. The default station keeps `/stream.mp3`, `/stream.m3u` and
-`/status`, and also answers at `/default.mp3`. A station's stream needs ffmpeg, even when
-the default station is browser-driven.
+`/status`, and also answers at `/default.mp3`. A station's stream needs ffmpeg.
 
 Each station also has its own public status page and now-playing feed, for listeners and for
 other sites:
@@ -1744,9 +1736,9 @@ other sites:
 - `/api/stations/<slug>/nowplaying`, the now-playing feed, in the same form as `/api/nowplaying`
   (see [Now-playing feed and webhooks](#now-playing-feed-and-webhooks)).
 - `/stations/<slug>/requests`, the listener request page, when the station's
-  `[stations.<slug>.requests]` turns it on (see [Listener requests](#listener-requests)).
+  station settings turn it on (see [Listener requests](#listener-requests)).
 - `/stations/<slug>/player` and `/stations/<slug>/embed`, the player page and embeddable player,
-  when the station's `[stations.<slug>.player_page]` turns them on (see
+  when the station's settings turn them on (see
   [Player page and embeddable player](#player-page-and-embeddable-player)).
 - Both are public without pairing, like the stream, but only for a configured station: any
   other name needs a paired browser and then answers 404. The station's listener password
@@ -1790,13 +1782,14 @@ need a paired browser, like the default station's.
   station changes nothing.
 - `POST /api/stations/<slug>/stop` stops a station completely: its listeners are disconnected,
   its encoder, relays, recorder and mastering process are closed and its player ends, so it uses
-  no memory or processor time. Its routes then answer 409 and its stream answers 503, "off air".
+  no playback resources. Playback commands then answer 409 and its stream answers 503, "off air".
+  Saved configuration and content remain available while stopped.
   This starts as soon as the stop is asked for: while the player finishes its work, which can
   take several seconds, the station is listed as `stopping`, its routes already answer 409, a
   start request is refused at once with 409, and a second stop request returns at once. Its
   open pages are told at once. Other stations can be started and stopped meanwhile. If the
   stopping station used Stereo Tool, it keeps it until it has stopped, and another station asking
-  for it is told to try again in a few seconds. The default station cannot be stopped.
+  for it is told to try again in a few seconds. This applies to the default station too.
 - The stop reply is the station's entry, as in `GET /api/stations`, plus `warnings`: a list of
   what went wrong, in plain words, such as "Closing its recorder failed; the server log has the
   details.". It is empty when everything stopped cleanly. The station is stopped either way.
@@ -1856,15 +1849,13 @@ uv run autodj backup backups/after-nightowl.zip
 unzip -l backups/after-nightowl.zip | grep stations/nightowl
 ```
 
-An older archive without `index/library.db` cannot be restored directly by this version. Restore
-it with a compatible older release, then run `autodj migrate-index --apply` and create a new
-backup. Archives containing old index generations are also refused, since those files may
-contain vectors that have not been imported into the catalog.
+Archives containing old index generations are refused, since those files may contain vectors
+that have not been imported into the catalog. Use current-format backups for restore.
 
-Restore puts each station's files back in that station's folder. A backup that holds a station
-your configuration does not define is refused before anything changes: add its
-`[stations.<slug>]` tables to `config.toml` first (copy them from the old machine's
-configuration), then restore again. Removing a station from the configuration does not delete
+Restore puts each station's files back in that station's folder. Only current-format backups are
+supported. A backup that holds a station your installation does not define is refused before
+anything changes: copy that station's `station.json` definition from the old machine into
+`<index_dir>/stations/<slug>/`, then restore again. Removing a station definition does not delete
 its folder; doctor names such a folder, and backups leave it out.
 
 `autodj doctor` checks the server once and every station separately. The default station's
@@ -2072,13 +2063,13 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
 - **Listen here** keeps playing the station it was started on. While the page controls another
   station, a line under the controls says which, for example "Playing AutoDJ"; pressing Listen
   here stops it, and pressing it again plays the station the page now controls.
-- **Browser playback:** when the default station plays in the browser (no `--stream`), only that
+- **Browser playback:** when the selected station plays in the browser, only that
   page's own decks play it. Switching away asks first, because the page then stops playing it;
   the station itself goes on for everyone else.
 - **A stopped station:** choosing one, or having the station stopped while the page controls it,
   shows "Night Owl Radio is off air." with a **Start Night Owl Radio** button on Now Playing. The
-  page looks every 10 seconds whether the station is back. **Settings, Stream** of a station other
-  than the default one has **Stop Night Owl Radio**, which asks first.
+  page looks every 10 seconds whether the station is back. **Settings, Stations** has Stop and
+  Start controls for every station, including the default.
 
 Every page has its own choice, so two browsers can control two stations at once.
 
@@ -2159,41 +2150,23 @@ moves: the default station keeps its files, and Night Owl starts with empty ones
    One Stereo Tool licence runs one copy, so give the new station
    `playback.loudness_processing = "smooth"` unless you have a second licence.
 2. **Stop AutoDJ and take a backup:** `uv run autodj backup backups/before-nightowl.zip`.
-3. **Describe the station** in `config.toml`, with its own recording folder:
-
-   ```toml
-   [stations.nightowl]
-   autostart = true
-
-   [stations.nightowl.stream]
-   station_name = "Night Owl Radio"
-   bitrate = 192
-   continuous = true
-
-   [stations.nightowl.playback]
-   loudness_processing = "smooth"
-
-   [stations.nightowl.recording]
-   folder = "recordings/nightowl"
-   ```
-
-   Put its secrets in `config.local.toml`: `listener_user` and `listener_password` under
-   `[stations.nightowl.stream]`, relay passwords under
-   `[stations.nightowl.stream.relays.<name>]` and webhooks as `[[stations.nightowl.webhooks]]`.
-   If a relay under the root `[stream.relays.*]` really belongs to the new station, move its
-   tables in both files under `stations.nightowl.stream.relays`. The full list of keys and rules
-   is in [Configuration](#configuration).
+3. **Create the station** in Settings > Stations. Set its display name, output, and whether it
+   starts with the server. Review its Stream, Playback, and Recording settings; they are saved in
+   `<index_dir>/stations/nightowl/station.json`. The station folder is created automatically.
+   Its secrets are stored separately in `secrets.json` and `relays.json`. For deployment
+   automation, edit those canonical files or use station-scoped environment variables; do not
+   add a new `[stations.nightowl]` TOML table, which is accepted only as legacy migration input.
 4. **Liners and time checks.** Night Owl plays the liners in every registered liner folder,
    and liners uploaded for it go in `<index_dir>/stations/nightowl/liners/`. Its time
    checks folder is `<index_dir>/stations/nightowl/time_checks/` unless you set
-   `[stations.nightowl.time_checks] clips_folder`; add voice packs and clips to it from
+   `time_checks.clips_folder` in its `station.json`; add voice packs and clips to it from
    **Settings**, **Time checks** while Night Owl is the station the page controls. It also finds
    the packs in the shared `<index_dir>/shared/time_checks/` folder.
 5. **Containers only:** make sure the new recording folder, and any liner folder outside the
    index, is mounted and writable. The station's own folder is inside the `/index` volume.
-6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a misspelt
-   station name, a recording folder or relay target another station uses, webhooks in
-   `config.toml`) stops the configuration from loading, and doctor says which. Doctor offers to
+6. **Check it:** `uv run autodj doctor --station nightowl`. A configuration error (a recording
+   folder or relay target another station uses, or an invalid station definition) stops the
+   configuration from loading, and doctor says which. Doctor offers to
    make the station's folder; AutoDJ also makes it when the station first starts.
 7. **Start AutoDJ.** The startup log names each station's stream and status page, such as
    `/nightowl.mp3`. Run `uv run autodj doctor` again: each station now has its own
@@ -2605,25 +2578,26 @@ and the ad schedule's spots stay. From then on the announcer's `GET context` ans
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
 Settings, Breaks", and an upload is refused with 409 and the same words.
 
-The `[breaks]` section in config.toml holds them, for another station under
-`[stations.<slug>.breaks]`:
+The station definition holds these startup values. Settings > Breaks changes them for the
+selected station:
 
-```toml
-[breaks]
-enabled = true
-dj_placement = "auto"
+```json
+{
+  "breaks": {
+    "enabled": true,
+    "dj_placement": "auto"
+  }
+}
 ```
 
 Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
-`min_intro_seconds` and `duck_db` under `[breaks]` in config.toml are in charge, and a change
-there takes effect at the next start; saving any other setting on the page (volume, EQ and the
-like) does not change that. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
+`min_intro_seconds` and `duck_db` in its station definition are in charge; a change there takes
+effect at the next start. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
 under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
-and they take the place of the config.toml values at every start from then on. When the saved
-switch differs from config.toml, the log says so once at start, for example "Breaks on for
-nightowl (saved in Settings; config.toml says off)". With breaks off, AutoDJ picks songs exactly
-as before and the API says so. The upload limits, quotas and waiting times below stay in config.toml. The
-`[breaks]` keys, with their defaults, are in `config.toml.example`:
+and they take the place of definition values at every start from then on. When the saved
+switch differs from the station definition, the log says so once at start. With breaks off,
+AutoDJ picks songs exactly as before and the API says so. The upload limits, quotas and waiting
+times below are station settings:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
   upcoming song when its intro (Start to Intro) is at least `min_intro_seconds` long (2 seconds),
@@ -2673,7 +2647,7 @@ HTTP request with a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header is refuse
 loopback, because a reverse proxy on the same machine may have brought it in from the network in
 the clear. From anywhere else, or through a reverse proxy, it needs HTTPS. A reverse proxy must
 terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy: the
-addresses in `[stream] trusted_proxies` when that list is set, otherwise a proxy on the same
+addresses in `[server] trusted_proxies` when that list is set, otherwise a proxy on the same
 machine (`127.0.0.1` or `::1`), so a TLS proxy on the station's own host needs no setting. A
 request with no proxy headers is treated as before. A request with an `Origin` header, as every
 browser sends, is refused: these routes are for programs only.
@@ -2991,7 +2965,7 @@ press it again. Remove asks first and deletes the clip.
 
 Under **Add an intro**:
 
-- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `[server] liner_upload_max_mib` (the
+- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `station.liner_upload_max_mib` (the
   liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
 - **Plays on**: **This song**, or **Any song by** the artist. The artist comes from the song's
   artist tag; a song without one takes only an intro for itself. A credit such as "Someone feat.
@@ -3147,16 +3121,20 @@ a Schedule event), while one waits or is booked, and after Run now. The rest of 
 picked exactly as with ads off; the rotation tester and the hour preview pick the same songs with
 ads on or off.
 
-```toml
-[ads]
-enabled = true
-max_upload_mb = 20             # largest spot file (at most 200)
-max_spot_seconds = 120.0       # longest spot (5 to 600)
-max_spots = 200                # spots one station keeps (at most 1000)
+```json
+{
+  "ads": {
+    "enabled": true,
+    "max_upload_mb": 20,
+    "max_spot_seconds": 120.0,
+    "max_spots": 200
+  }
+}
 ```
 
-For another station, the same keys go under `[stations.<slug>.ads]`; each station has its own
-spots, breaks and report.
+Each station has its own ads settings, spots, breaks and report; select the station before editing
+these settings. The example shows these keys inside the top-level `station` object in its
+`station.json` definition.
 
 ### Spots
 
@@ -3369,7 +3347,7 @@ is transmitted to one listener, so one play heard by 100 listeners is 100 perfor
 - The rule can undercount: two players behind one public address that send the same User-Agent,
   such as two speakers of the same model in one home, count once while both are connected. Behind
   a reverse proxy such as a Cloudflare Tunnel, the address is the one the proxy passes on in
-  `X-Forwarded-For` only when the direct proxy peer is in `[stream] trusted_proxies`. Without
+  `X-Forwarded-For` only when the direct proxy peer is in `[server] trusted_proxies`. Without
   that setting, every listener has the proxy's address and only the User-Agent tells them apart.
 - Addresses and User-Agents are kept in memory only, for the song that is playing and the 10
   seconds after a disconnect. The play log stores only the count.
@@ -3447,8 +3425,7 @@ artists file is `index/libraries/main/related-artists.toml` and is read only whe
 Each must be at most 1 MiB.
 
 The daypart and quarter-hour rules (both off to start with) keep a song from playing at the same
-time of day, day after day. They read the hours on the station's clock (`[server]
-station_timezone`), and each station keeps its own. See
+time of day, day after day. They read the station's own `station.timezone`. See
 [Time of day](track-selection.md#time-of-day) for how they work.
 
 ## Testing the rotation
@@ -3474,9 +3451,9 @@ uv run autodj simulate --picks 500 --json    # 500 songs, as JSON
 uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
 ```
 
-`--station` names the default station or one configured under `[stations.<name>]`; the run uses
+`--station` names the default station or one with a canonical station definition; the run uses
 that station's settings, clockwheels, schedule and plays. `--start` is read in the station time
-zone (`[server] station_timezone`) and must fall between
+zone (`station.timezone in the station definition`) and must fall between
 2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
 a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
@@ -3590,7 +3567,7 @@ said once, and not again until one succeeds. Choosing another span under **Show*
 counts once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
 says so. Timestamps and durations use the same compact text on screen and in speech, such as
 "14:04:30" and "3:45" (24 hour). Times are in the station
-time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone (`station.timezone in the station definition`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
 The page asks the server only while the card is open. Each preview runs on one worker thread
@@ -3814,8 +3791,8 @@ In the editor, choose the cart, its name, its clip and what happens to the music
   when the cart ends, so it resumes at its later position.
 
 A clip is a voice liner from the library or the liner folder, or an audio file uploaded under
-**Uploaded clips**. Uploads use the voice liner extensions and the `[server]
-liner_upload_max_mib` limit, must decode as audio, and never replace a clip with the same name. A
+**Uploaded clips**. Uploads use the voice liner extensions and the selected station's
+`station.liner_upload_max_mib` limit, must decode as audio, and never replace a clip with the same name. A
 clip still on a cart cannot be deleted. **Rename this page** names the page shown.
 
 One cart plays at a time: a new one cuts off the last, and **Stop carts** fades it out. Each
@@ -3860,7 +3837,7 @@ liner's Segue, though the liner's tail may still run over it.
 
 A voice liner or a cart can have a **Not before** date, a **Do not play after** date, or both,
 such as a promotion that must stop after the event. Both days are included, and the days are
-read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
+read in the station time zone (`station.timezone in the station definition`). Leave both empty to play the clip
 on any day.
 
 - **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
@@ -3936,7 +3913,7 @@ A seasonal clockwheel, such as a holiday one from 27 November to 26 December, ta
 
 Use **Run now** on the first event to start the season at once when you add it partway through.
 
-Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
+Times use `station.timezone in the station definition`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). **Time for every station** in
 Settings > Stations sets the time zone from the page instead; a saved one takes the place of
 `config.toml`'s from the next time AutoDJ starts. The same fieldset sets **Time format**, 24 hour
@@ -4250,7 +4227,7 @@ incomplete conditions are shown in the form; automatic updates are not announced
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
 Saturday from 22:00 until 02:00. Leave every day unchecked for every day and both times empty for
-all day. The times are wall-clock times in the station time zone (`[server] station_timezone`);
+all day. The times are wall-clock times in the station time zone (`station.timezone in the station definition`);
 the start time is included and the end time is not. A window that crosses midnight belongs to the
 day it starts, so Friday 22:00 until 02:00 still allows the songs at 01:00 on Saturday. On the
 night the clocks go back, a window inside the repeated hour is open for both passes; on the night
@@ -4270,8 +4247,8 @@ The hours are checked for when the song is expected to start, not when it is pic
 after this one is picked while this one plays, so a pick at 01:58 with four minutes of this song
 to go checks the hours at 02:02, and a window that ends at 02:00 no longer lets its songs start
 just after it closes. The rotation tester checks them the same way. Which songs are outside their
-hours is worked out once a minute, so a pick only looks them up. Without `[server]
-station_timezone`, the system time zone is asked for once, when AutoDJ starts; a host with no
+hours is worked out once a minute, so a pick only looks them up. Without a station-specific
+`station.timezone`, the system time zone is asked for once, when AutoDJ starts; a host with no
 known zone uses UTC and logs one warning. When every song is outside its hours, the warning that
 one plays anyway is logged once, and again only after the hours change.
 
@@ -4516,7 +4493,7 @@ Open **Settings**, then **Time checks**, and turn on **Enable time checks** (or 
 `[time_checks] enabled = true`). Choose 12- or 24-hour speech, and choose **After the song that
 crosses the hour** to hear the time when the song playing at the top of the hour ends. The
 Schedule panel also offers a **Time check** action for set times; it needs server audio or
-stream mode. Both use `[server] station_timezone` (or the detected system zone), and the time
+stream mode. Both use `station.timezone in the station definition` (or the detected system zone), and the time
 said is the time when the check plays. A check plays at most once an hour from the rule: when a
 scheduled check already played in that hour, the rule stays quiet.
 
@@ -4532,11 +4509,10 @@ browser playback the page plays it when the next song starts; there it does not 
 liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server
 audio or stream mode, and in this browser otherwise.
 
-Each station has a **time checks folder**: the `time_checks` folder in the station's folder (for
-the default station, the shared `<index_dir>/shared/time_checks`), or `[time_checks] clips_folder` when it
-is set. It holds the recorded minute clips, the intro and outro clips, and one folder per voice
-pack. Everything in it is managed from **Settings**, **Time checks**; only the text-to-speech
-command is set in `config.toml`, because it runs a program on the server.
+Each station has a **time checks folder**: the `time_checks` folder in the station's folder, or
+`time_checks.clips_folder` in its `station.json` when it is set. It holds the recorded minute clips, the intro and outro clips, and one folder per voice
+pack. Everything in it is managed from **Settings**, **Time checks**; the text-to-speech
+command is set in the station's `station.json`, because it runs a program on the server.
 
 Record one clip per minute: `00_00.wav` through `23_59.wav`, using 24-hour names even when
 speech uses 12 hours. MP3, FLAC and OGG are also accepted. For example, `03_05.wav` plays at
@@ -4546,13 +4522,13 @@ folder** (a zip of the clips can be added with **Add a voice pack**, below, and 
 there). A folder chosen for the clips is not a voice pack. **Upload a clip** adds one clip: an
 intro or outro goes to the time checks folder, and a minute clip such as `15_05.wav` to the
 recorded minute clips folder in use. When a clip of that name is there it asks before replacing
-it. The file must play as the audio its extension says, and may
-be up to `[server] liner_upload_max_bytes` and two minutes long.
+it. The file must play as the audio its extension says, and may be up to the station's
+`station.liner_upload_max_mib` MiB limit and two minutes long.
 
 **Intro clip** and **Outro clip** wrap every check. Choose **None**, or an audio file directly in
 the time checks folder (minute clips are not offered). Until one is chosen here, `intro_clip`
-and `outro_clip` in `config.toml` are used, and the list shows that file's name followed by
-"from config.toml"; choosing **None** turns off one set there. The choices are saved in
+and `outro_clip` in the station definition are used, and the list shows that file's name followed by
+"from station settings"; choosing **None** turns off one set there. The choices are saved in
 `time_checks.json` by name, never as paths. A chosen clip that is no longer in the folder is
 shown as "not found", and a check that needs it is skipped with a warning, as a missing
 `intro_clip` always was. When a station is duplicated, its clip choices are not copied, because
@@ -4572,18 +4548,20 @@ in Settings.
 
 AutoDJ finds packs by itself: every folder in the station's time checks folder is a pack, and so
 is every folder in the shared `<index_dir>/shared/time_checks` folder, which every station
-shares (for the default station without a `clips_folder`, the two are the same folder). Some
+shares. Some
 folders are not packs: those whose names start with a dot, which AutoDJ uses while it unpacks
 an upload; a folder whose audio files are all minute clips (`15_05.wav`); the station's chosen
-recorded clips folder; and, for another station, the default station's chosen one in the shared
-folder. Packs are looked for again each time the panel loads and before each check, so a folder copied
+recorded clips folder; and any explicitly chosen recorded clips folder. Packs are looked for again each time the panel loads and before each check, so a folder copied
 in on the server needs no restart; **Look for new voice packs** looks straight away and names
-the new ones. Folders elsewhere can still be listed in `config.toml`, and those keep working:
+the new ones. Folders elsewhere can also be listed in the station definition:
 
-```toml
-[time_checks]
-voice_packs = ["D:/Voices/Studio", "D:/Voices/Night"]
-pack_order = "rotate"   # or "random"
+```json
+{
+  "time_checks": {
+    "voice_packs": ["D:/Voices/Studio", "D:/Voices/Night"],
+    "pack_order": "rotate"
+  }
+}
 ```
 
 The packs are listed in this order: those in `voice_packs`, then the station's own folders, then
@@ -4623,11 +4601,10 @@ The zip is unpacked into a hidden folder beside the packs and renamed into place
 of that has passed, so a refused upload leaves nothing behind and a pack is never seen half
 written. A pack in the station's time checks folder has a **Remove** button. It asks first, then
 deletes the folder with the pack's tick and play dates, and focus moves to the next pack, or to
-the **Voice packs** group when none follows. Packs listed in `config.toml` and shared packs have
-no **Remove** button and say where they come from. The default station without a `clips_folder`
-keeps its packs in the shared folder, so while there are other stations, removing or replacing
-one there takes it from every station, and the confirmation says "Other stations use this pack
-too." Like every setting, adding and removing packs and clips needs a paired browser; a machine
+the **Voice packs** group when none follows. Packs listed in a station definition and shared packs have
+no **Remove** button and say where they come from. A migrated default station can retain its
+former shared clips folder through an explicit setting; fresh stations use their own folders.
+Shared packs remain visible to all stations. Like every setting, adding and removing packs and clips needs a paired browser; a machine
 token cannot do it.
 
 An upload or removal stopped half way (the server was stopped, say) leaves a hidden
@@ -4656,7 +4633,7 @@ pack is passed over and the other ticked packs speak; **Voice to test** still pl
 pack's description says its dates in words and "Skipped now" when it is outside them. A refused
 date is shown under the form and linked to its field. The dates are kept beside the switches in
 `time_checks.json` under `pack_dates`, written only when a pack has dates, and are kept for a
-pack taken out of `config.toml`, or whose folder goes away, until it comes back. A pack removed
+pack taken out of the station definition, or whose folder goes away, until it comes back. A pack removed
 with its **Remove** button loses its dates, and a new pack added from the page starts without
 any. Dates that cannot be read, and keys this
 version does not know, are logged and not used, and are written back as they were on the next
@@ -4727,31 +4704,22 @@ The speech says "It's 3:05", or "It's 15:05" in 24-hour mode. On the hour it say
 o'clock" in 12-hour mode and "It's 15 hundred" in 24-hour mode, and in both modes "It's midnight"
 at 00:00 and "It's noon" at 12:00.
 
-The `tts_command` is an argument array in `config.toml`. AutoDJ passes the spoken text on stdin,
+The `tts_command` is an argument array in the station's `station.json`. AutoDJ passes the spoken text on stdin,
 replaces `{out}` with a temporary WAV path, replaces `{text}` with the text as one argument,
 allows 20 seconds, and caches the result for each command and text. It runs the program
 directly, never through a shell, and on a worker thread. A command that fails, times out or
 writes a WAV with no sound is skipped with a warning. Examples:
 
-```toml
-# Piper, with an installed voice model (Linux or Windows)
-[time_checks]
-tts_command = ["piper", "--model", "/voices/en_US-lessac-medium.onnx", "--output_file", "{out}"]
+```json
+{"time_checks":{"tts_command":["piper","--model","/voices/en_US-lessac-medium.onnx","--output_file","{out}"]}}
 ```
 
-```toml
-# espeak-ng in a Linux container
-[time_checks]
-tts_command = ["espeak-ng", "-w", "{out}", "{text}"]
+```json
+{"time_checks":{"tts_command":["espeak-ng","-w","{out}","{text}"]}}
 ```
 
-```toml
-# Windows SAPI, with the full path to the script in your AutoDJ folder
-[time_checks]
-tts_command = [
-  "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-  "-File", "C:/AutoDJ/scripts/time_check_sapi.ps1", "{out}", "-Voice", "Microsoft Zira Desktop",
-]
+```json
+{"time_checks":{"tts_command":["powershell.exe","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File","C:/AutoDJ/scripts/time_check_sapi.ps1","{out}","-Voice","Microsoft Zira Desktop"]}}
 ```
 
 The SAPI script speaks the text as plain text and never runs it. Name a voice with `-Voice`:
@@ -4763,7 +4731,7 @@ through the screen reader and writes no sound to the file. To list the installed
 Choose one command, and test it with **Play a time check now**. `intro_clip`, `outro_clip`,
 `clips_folder`, `voice_packs` and `tts_command` are local file settings only; the browser
 cannot change or read them. The enabled switch, hour format, rule, ticked packs and pack order
-live in versioned `time_checks.json` in the index folder after you change them in Settings; a
-key the file lacks takes the `config.toml` value, and a wrong version stops startup with an
-error. Backups include `time_checks.json` and the recorded clips; copy `config.toml` yourself
-if you use custom paths or a TTS command.
+live in versioned `time_checks.json` in that station's folder after you change them in Settings;
+a key the file lacks takes the station definition value, and a wrong version stops startup with
+an error. Backups include `time_checks.json` and the recorded clips; preserve the station
+definition separately if you use custom paths or a TTS command.
