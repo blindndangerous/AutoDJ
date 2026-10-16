@@ -33,6 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from autodj.liners import LINER_PICK_MODES
 from autodj.repeat_settings import RepeatSettings, ignore_unknown_repeat_keys
+from autodj.sqlite_utils import readonly_uri
 
 
 def stereotool_library_name(system: str | None = None, machine: str | None = None) -> str:
@@ -2420,7 +2421,7 @@ def _saved_catalog_timezone(cfg: AutoDJConfig) -> str | None:
     if not path.is_file():
         return None
     try:
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+        with closing(sqlite3.connect(readonly_uri(path), uri=True)) as db:
             found = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_settings'"
             ).fetchone()
