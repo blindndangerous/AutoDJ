@@ -1,11 +1,10 @@
-"""Station database snapshots and migration of pre-ledger backups."""
+"""Station database snapshots and restore rollback."""
 
 from contextlib import ExitStack, closing
 
 from autodj.backup import create_backup, restore_backup
-from autodj.catalog import LibraryCatalog, _path
+from autodj.catalog import _path
 from autodj.station_store import StationStore
-from tests.unit.test_library import make_entry
 from tests.unit.test_station_backup import _config
 
 
@@ -52,46 +51,6 @@ def test_station_backup_includes_live_wal_and_unconfigured_station(tmp_path):
     assert not (destination.index.stations_dir / "removed" / "station.json").exists()
 
 
-def test_restoring_legacy_backup_replaces_newer_station_database(tmp_path):
-    cfg = _config(tmp_path / "source")
-    song = cfg.library.music_dir / "song.flac"
-    song.write_bytes(b"audio")
-    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
-        catalog.add_source(cfg.library.music_dir)
-        catalog.put_entry(make_entry(song))
-        catalog.remember_play(song, 10)
-        catalog.remember_play(song, 20, station="nightowl")
-        catalog.set_setting("clock", "Main")
-        catalog.set_setting("clock:nightowl", "Night")
-        catalog.write_history(
-            [
-                {
-                    "event_id": "old",
-                    "path": str(song),
-                    "title": "Old",
-                    "artist": "Artist",
-                    "duration": 30,
-                    "played_at": "2026-10-01T12:00:00+00:00",
-                }
-            ],
-            [],
-            station="nightowl",
-        )
-    archive = create_backup(cfg, tmp_path / "legacy.zip", force=False)
-    for slug in ("default", "nightowl"):
-        with closing(StationStore(cfg.index.stations_dir / slug / "station.db", slug)) as store:
-            store.remember_play(str(song), 999)
-            store.set_setting("clock", "Newer")
-    for _retry in range(2):
-        restore_backup(cfg, archive, force=True)
-        for slug, timestamp, clock in (("default", 10, "Main"), ("nightowl", 20, "Night")):
-            with closing(StationStore(cfg.index.stations_dir / slug / "station.db", slug)) as store:
-                assert store.last_played()[_path(song)] == timestamp
-                assert store.get_setting("clock") == clock
-                if slug == "nightowl":
-                    assert len(store.play_log()) == 1
-
-
 def test_failed_restore_rolls_back_station_database(tmp_path, monkeypatch):
     import pytest
 
@@ -117,3 +76,25 @@ def test_failed_restore_rolls_back_station_database(tmp_path, monkeypatch):
     with closing(StationStore(path, "default")) as store:
         assert store.last_played()[_path("song")] == 2
     assert backup.pending_restore_state(cfg.index.library_dir) is None
+
+
+def test_older_backup_format_is_refused_before_installation(tmp_path):
+    import json
+    import zipfile
+
+    import pytest
+
+    from autodj.backup import BackupError
+    from autodj.version import current_version
+
+    cfg = _config(tmp_path / "source")
+    archive = tmp_path / "old.zip"
+    with zipfile.ZipFile(archive, "w") as opened:
+        opened.writestr(
+            "manifest.json", json.dumps({"autodj_version": current_version(), "files": []})
+        )
+    database = cfg.index.library_dir / "library.db"
+    before = database.read_bytes()
+    with pytest.raises(BackupError, match="unsupported backup format"):
+        restore_backup(cfg, archive, force=True)
+    assert database.read_bytes() == before

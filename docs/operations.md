@@ -1678,9 +1678,9 @@ can be retried without duplicating history or replacing newer station values. Th
 preserved. Track metadata, analysis and shared cue points stay in the library.
 
 Whole-installation backups snapshot station databases through SQLite, including committed WAL data.
-Restoring an older backup stages the station-data migration before replacing live files; a failed
-installation rolls back the database changes with the other restored files. Ledger-only folders
-for removed stations are included. This does not add an individual-station backup command.
+Restore rolls back a failed installation with the other restored files. Ledger-only folders for
+removed stations are included. Create fresh backups after updating: older backup formats are not
+supported. This does not add an individual-station backup command.
 
 The index folder holds:
 

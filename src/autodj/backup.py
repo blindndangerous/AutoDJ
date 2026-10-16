@@ -592,6 +592,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     for name, path in members.items():
                         archive.write(path, name)
                     manifest = {
+                        "backup_format": 2,
                         "autodj_version": current_version(),
                         "files": list(members),
                         "stations": [spec.slug for spec in cfg.stations],
@@ -620,8 +621,7 @@ class _Manifest:
 def _read_manifest(archive: zipfile.ZipFile) -> _Manifest:
     """Return the manifest of a backup made by this major.minor version.
 
-    An archive made before stations has no ``"stations"`` list and no
-    ``"shared"`` map: only the default station.
+    Format 2 snapshots station databases; earlier backup formats are unsupported.
     """
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
 
@@ -642,6 +642,8 @@ def _read_manifest(archive: zipfile.ZipFile) -> _Manifest:
             raise TypeError("wrong field types")
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise BackupError(f"the archive has no valid manifest.json: {exc!r}") from exc
+    if manifest.get("backup_format") != 2:
+        raise BackupError("unsupported backup format; create a new backup after updating AutoDJ")
     for slug in stations:
         if slug == DEFAULT_SLUG or not SLUG_PATTERN.match(slug):
             raise BackupError(f"unsafe station name in archive: {slug!r}")
@@ -914,39 +916,6 @@ class _Swap:
         return leftovers
 
 
-def _stage_station_ledgers(roots: dict[str, Path], stages: dict[str, Path], *, force: bool) -> None:
-    """Migrate an older backup before swapping it over any newer station state."""
-    from autodj.catalog import LibraryCatalog
-    from autodj.station_store import StationStore, discover_stations, migrate_legacy
-
-    with LibraryCatalog(stages["library"] / "library.db") as catalog:
-        slugs = {"default", *discover_stations(catalog)}
-        slugs.update(
-            key.split("/")[1]
-            for key in stages
-            if key.startswith("stations/") and key.endswith("/index")
-        )
-        for slug in sorted(slugs):
-            key = "index" if slug == "default" else f"stations/{slug}/index"
-            root = roots.setdefault(key, roots["index"].parent / slug)
-            stage = stages.get(key)
-            if stage is not None and (stage / "station.db").is_file():
-                continue
-            target = root / "station.db"
-            _within_root(target, root)
-            if target.exists() and not force:
-                raise BackupError(f"{target} already exists; pass --force to replace it")
-            if stage is None:
-                stage = root.with_name(f".{root.name}.restore-{uuid.uuid4().hex}")
-                stages[key] = stage
-            stage.mkdir(parents=True, exist_ok=True)
-            store = StationStore(stage / "station.db", slug)
-            try:
-                migrate_legacy(catalog, store)
-            finally:
-                store.close()
-
-
 def _install(
     swap: _Swap, files: list[str], roots: dict[str, Path], stages: dict[str, Path]
 ) -> None:
@@ -1108,7 +1077,6 @@ def _restore(
                         _check_sqlite(database)
                         if name == "library.db":
                             _check_catalog(database)
-            _stage_station_ledgers(roots, stages, force=force)
             for key, stage in stages.items():
                 database = stage / "station.db"
                 if key != "library" and _is_files(key) and database.is_file():
