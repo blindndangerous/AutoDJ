@@ -5,6 +5,8 @@
 # "The", featured artists and version notes such as "(Radio Edit)" do not matter.
 # A track and its list form one group: every track in a group holds back every other
 # track in it, in both directions. Groups are not joined to each other.
+# Write "*" as the artist to mean every track with that title, such as every recording of a
+# song that a medley includes: "* - Silent Night" = ["Some Artist - Silent Night / O Holy Night"]
 # Tracks that are not in your library are ignored.
 
 [related]

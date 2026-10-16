@@ -439,7 +439,8 @@ class RelatedTracks:
 
     Every track in a group holds back every other track in it, both ways.
     Groups are not joined: a track in two groups holds back the tracks of
-    both, but those tracks do not hold each other back.
+    both, but those tracks do not hold each other back.  A key whose artist
+    is :data:`ANY_ARTIST` stands for every track with its title.
 
     Attributes:
         links: Track key -> the track keys it holds back.
@@ -458,10 +459,19 @@ class RelatedTracks:
         return self.names.get(key, " - ".join(key))
 
 
+#: The artist of a related track written "* - Title": any artist with that title.
+#: No artist key is "*", since :func:`artist_key` drops punctuation.
+ANY_ARTIST = "*"
+
+
 def related_track_key(text: str) -> TrackKey | None:
-    """The key of "Artist - Title" (split at the first " - "), or ``None`` when it is not one."""
+    """The key of "Artist - Title" (split at the first " - "), or ``None`` when it is not one.
+
+    An artist written "*" keeps the key :data:`ANY_ARTIST`, for any artist.
+    """
     artist, separator, title = text.partition(" - ")
-    key = (artist_key(artist), title_key(title))
+    name = ANY_ARTIST if artist.strip() == ANY_ARTIST else artist_key(artist)
+    key = (name, title_key(title))
     return key if separator and all(key) else None
 
 
@@ -477,6 +487,10 @@ def parse_related_tracks(data: Mapping[str, Any], source: str) -> RelatedTracks:
 
     Case, punctuation, a leading "The", featured artists and version notes
     such as "(Radio Edit)" do not matter, as in the artist and title rules.
+    An artist written "*" matches every track with the title, such as every
+    recording of a song a medley includes::
+
+        "* - Let It Snow! Let It Snow! Let It Snow!" = ["Ray Conniff - Let It Snow! / Sleigh Ride"]
 
     Raises:
         ValueError: An unknown key, a value of the wrong type, or a track
@@ -1127,7 +1141,7 @@ class RepeatFilter:
         if keys.title and keys.title in self.titles:
             return "same title"
         if keys.title in self._related_titles and any(
-            (artist, keys.title) in self.related_tracks for artist in keys.artists
+            (artist, keys.title) in self.related_tracks for artist in (ANY_ARTIST, *keys.artists)
         ):
             return "related track"
         if self._timed:
@@ -1271,7 +1285,7 @@ def build_filter(
             if by_title:
                 titles.add(track.title)
             if by_related_track and track.title:
-                for artist in track.artists:
+                for artist in (ANY_ARTIST, *track.artists):
                     for linked in track_links.related_to((artist, track.title)):
                         related_tracks.setdefault(linked, (artist, track.title))
         if age < track_seconds:
@@ -1301,6 +1315,7 @@ def build_filter(
 
 
 __all__ = [
+    "ANY_ARTIST",
     "HISTORY_LIMIT",
     "HOURPART_DAYS",
     "MAX_RELATED_ARTISTS_BYTES",

@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A related tracks entry can name its artist as `*` to mean every track with that title (#411).
+  A medley written with `"* - Let It Snow! Let It Snow! Let It Snow!"` holds back every recording
+  of the song in the library, including ones added later, instead of a line that names each one.
 - Time check voice packs and clips are managed in **Settings**, **Time checks** instead of
   `config.toml` (#388). Every folder in the station's time checks folder is a voice pack, found
   without a restart and without a `voice_packs` line; packs still listed in `voice_packs` keep

@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 
 from autodj.config import PlaybackConfig
 from autodj.repeat_rules import (
+    ANY_ARTIST,
     HISTORY_LIMIT,
     MAX_REPEAT_MINUTES,
     ArtistSplitter,
@@ -634,6 +635,31 @@ class TestRelatedTracks:
             RepeatRules(artist_window=2, related=artists, related_artist_window=40).keep_tracks
             == 40
         )
+
+    def test_a_star_artist_is_any_artist_with_the_title(self) -> None:
+        assert related_track_key("* - Let It Snow! (Live)") == (ANY_ARTIST, "let it snow")
+        assert related_track_key(" * - Let It Snow") == (ANY_ARTIST, "let it snow")
+        # Only a bare "*" is the wildcard; punctuation around a name still folds away.
+        assert related_track_key("*NSYNC* - O Holy Night") == ("nsync", "o holy night")
+        assert related_track_key("* - ") is None
+
+    def test_a_star_entry_holds_back_every_version_both_ways(self) -> None:
+        group = {"related": {"* - Let It Snow": ["Ray Conniff - Let It Snow / Sleigh Ride"]}}
+        rules = RepeatRules(
+            related_tracks=parse_related_tracks(group, "test"), related_track_window=2
+        )
+        snow = [_entry(artist=artist, title="Let It Snow") for artist in ("Dean Martin", "Chicago")]
+        medley = _record(1, "Ray Conniff", "Let It Snow / Sleigh Ride")
+        repeat, _ = build_filter([medley], rules, 0.0, ArtistSplitter())
+        assert [repeat.reason(entry) for entry in snow] == ["related track"] * 2
+        assert repeat.reason(_entry(artist="Dean Martin", title="Sleigh Ride")) is None
+        sinatra = _record(1, "Frank Sinatra", "Let It Snow (Remastered)")
+        repeat, _ = build_filter([sinatra], rules, 0.0, ArtistSplitter())
+        assert repeat.reason(_entry(artist="Ray Conniff", title="Let It Snow / Sleigh Ride")) == (
+            "related track"
+        )
+        # Versions are not linked to each other through the star; the title rule does that.
+        assert repeat.reason(snow[0]) is None
 
     def test_empty_related_tracks_do_not_load_or_retain_extra_history(self) -> None:
         playback = PlaybackConfig.from_dict(
