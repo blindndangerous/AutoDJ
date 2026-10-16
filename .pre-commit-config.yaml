@@ -66,6 +66,13 @@ repos:
   # commit it is checking.
   - repo: local
     hooks:
+      - id: architecture-docs
+        name: ADR and documentation contracts
+        entry: uv run --frozen --no-sync python scripts/check_architecture_docs.py
+        language: system
+        pass_filenames: false
+        files: (\.md$|\.mdc$|^tests/.*\.(py|js)$|^scripts/check_architecture_docs\.py$)
+
       - id: ruff
         name: ruff
         entry: uv run --frozen ruff check --fix src/ tests/ scripts/

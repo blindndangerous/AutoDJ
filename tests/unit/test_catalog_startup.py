@@ -16,6 +16,7 @@ from tests.unit.test_library import make_config, make_entry
 
 
 def test_serve_uses_catalog_counts_and_can_seed_an_unanalyzed_song(tmp_path):
+    """ADR-0006-01."""
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "fresh.flac"
     song.write_bytes(b"audio")
@@ -50,6 +51,7 @@ def test_serve_uses_catalog_counts_and_can_seed_an_unanalyzed_song(tmp_path):
 
 
 def test_catalog_survives_without_a_manifest_and_ignores_stale_similarity(tmp_path):
+    """ADR-0006-01."""
     cfg = make_config(tmp_path)
     song = cfg.library.music_dir / "first.flac"
     song.write_bytes(b"audio")
@@ -90,6 +92,7 @@ def test_catalog_reporting_does_not_repair_a_corrupt_catalog(tmp_path):
 
 
 def test_legacy_only_startup_requires_explicit_migration_without_mutation(tmp_path):
+    """ADR-0006-02."""
     from autodj.index_manifest import IndexConsistencyError
 
     cfg = make_config(tmp_path)

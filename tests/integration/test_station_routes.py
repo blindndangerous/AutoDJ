@@ -260,7 +260,10 @@ def _app(tmp_path: Path | None = None, **server: object) -> tuple[TestClient, Pl
 
 
 def test_every_route_is_classified_as_shared_or_station() -> None:
-    """A new route must say whether it acts on one station; this test fails until it does."""
+    """A new route must say whether it acts on one station; this test fails until it does.
+
+    ADR-0005-04.
+    """
     client, _bridge = _app()
     paths = {route.path for route in client.app.routes}
     unclassified = []
@@ -323,6 +326,7 @@ def test_station_routes_answer_the_same_at_both_addresses(
 
 
 def test_a_named_station_route_acts_on_that_station(tmp_path: Path) -> None:
+    """ADR-0005-04."""
     client, bridge = _app(tmp_path)
     bridge.skip = MagicMock()
     assert client.post("/api/stations/default/skip").status_code == 200
@@ -441,12 +445,14 @@ def test_station_relative_maps_only_configured_stations() -> None:
     ],
 )
 def test_station_paths_security_matrix(method: str, path: str, status: int) -> None:
+    """ADR-0007-04."""
     client, _bridge = _app(access_token=_TOKEN)
     response = client.request(method.upper(), path)
     assert response.status_code == status, response.text
 
 
 def test_station_paths_keep_their_body_limits() -> None:
+    """ADR-0007-04."""
     client, _bridge = _app()
     huge = {"name": "x" * 20_000}
     assert client.post("/api/stations/default/schedule", json=huge).status_code == 413

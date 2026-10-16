@@ -164,7 +164,10 @@ def test_two_stations_round_trip(tmp_path: Path, caplog: pytest.LogCaptureFixtur
 
 
 def test_restore_skips_relay_settings_in_an_archive_that_has_them(tmp_path: Path) -> None:
-    """An archive from a build that backed relays.json up never replaces the live one."""
+    """An archive from a build that backed relays.json up never replaces the live one.
+
+    ADR-0010-04.
+    """
     cfg = _config(tmp_path)
     written = _fill(cfg)
     archive = create_backup(cfg, tmp_path / "backup.zip", force=False)

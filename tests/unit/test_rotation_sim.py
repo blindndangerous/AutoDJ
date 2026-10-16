@@ -133,6 +133,7 @@ def test_a_run_without_a_seed_reports_the_one_it_drew(tmp_path: Path) -> None:
 
 
 def test_nothing_on_air_changes(tmp_path: Path) -> None:
+    """ADR-0009-01."""
     source = _rotation(tmp_path, dmca=True)
     player = source.player
     before = (

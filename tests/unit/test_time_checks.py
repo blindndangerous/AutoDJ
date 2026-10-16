@@ -318,6 +318,7 @@ def _source(checks: TimeChecks, at: datetime, pack: str | None = None) -> str | 
 def test_voice_pack_speaks_first_and_falls_back_to_clips_then_tts(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """ADR-0009-04."""
     pack = _write_pack(tmp_path / "packs" / "Studio", range(24), range(1, 30))
     checks = _pack_checks(tmp_path, pack)
     assert checks.settings.enabled_packs == ["Studio"]

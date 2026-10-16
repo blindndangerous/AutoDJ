@@ -45,6 +45,39 @@ the format is wrong.
 
 ## Writing issues and pull requests
 
+Agree on observable acceptance criteria, scope exclusions, and constraints in
+the GitHub issue before implementing substantial work. If work starts in a
+conversation, preserve the agreed requirements in the issue or PR so another
+contributor can resume it without the conversation or an agent tracker.
+
+Consult the [ADR index](docs/adr/README.md) before architectural changes.
+Read the applicable status and dated amendments, then follow links to code,
+tests, and operational docs. Significant new choices need a Proposed ADR;
+routine changes within an accepted boundary do not. Existing code or passing
+tests alone cannot establish that a new policy is accepted. Explain mismatches
+and document intentional evolution or link a defect rather than silently
+rewriting history. Follow the index's content and lifecycle rules.
+
+Run `uv run --frozen --no-sync python scripts/check_architecture_docs.py` for
+ADR/doc changes and mapped-test renames. The read-only check also runs in the
+commit hook and normal pytest/CI. It verifies local links, status/index agreement,
+stable constraint IDs, and reciprocal test selectors; it does not run behavioral
+tests or approve decisions. Follow the [mapping rules](docs/adr/README.md#constraint-traceability-and-local-checks),
+keep manual/gap evidence explicit, and run the affected tests separately.
+Record an ADR disposition and rationale in every PR, even when none is needed.
+
+Link applicable ADRs and acceptance criteria in the PR, identify evidence for
+each affected invariant, and report the checks actually run and their limits.
+Update affected docs and ADR links in the same change. Newly reconstructed
+decisions with uncertain intent remain Proposed until maintainer acceptance.
+
+GitHub issues and PRs are authoritative for shared requirements and status.
+Beads is optional agent execution tracking; nobody needs it to contribute.
+Agents using it link their bead to the issue and carry relevant outcomes and
+blockers back to the issue or PR. Closing a bead does not close the GitHub
+issue. There is no automatic bidirectional synchronization requirement.
+[AGENTS.md](AGENTS.md) provides the agent discovery path.
+
 Write titles and descriptions in clear, natural language for someone who has not read the
 conversation. When using AI tools, use Humanize or a similar writing skill when available,
 or review the wording for clarity yourself. Lead with the problem and the intended or resulting
@@ -54,7 +87,7 @@ and repeated explanations. Preserve precise facts and the repository templates.
 
 ## Pull request checklist
 
-The PR template lists the first two; check the rest as well:
+Use the PR template and check the following as applicable:
 
 - Tests added or updated for the new behaviour.
 - Keep help on the page to one short line; put the detail in the docs.

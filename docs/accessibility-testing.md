@@ -1,5 +1,9 @@
 # Accessibility testing
 
+The [Proposed accessibility ADR](adr/0011-verify-accessibility-with-browser-and-speech-evidence.md)
+connects these existing contracts to implementation and tests. Its acceptance
+is pending; the detailed interaction and release-sampling rules remain here.
+
 AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
 ## Published evidence

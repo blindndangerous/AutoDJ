@@ -13,6 +13,7 @@ from tests.unit.test_runtime_state import _make_player
 
 
 def test_offline_settings_load_edit_save_without_player(tmp_path, monkeypatch) -> None:
+    """ADR-0005-03."""
     cfg = _make_player()._cfg
     paths = SimpleNamespace(state_dir=tmp_path, slug="nightowl")
     (tmp_path / "web_state.json").write_text(
@@ -50,6 +51,7 @@ def test_offline_settings_load_edit_save_without_player(tmp_path, monkeypatch) -
 
 
 def test_offline_settings_use_running_setter_validation(tmp_path) -> None:
+    """ADR-0005-03."""
     settings = StationSettings(_make_player()._cfg, paths=SimpleNamespace(state_dir=tmp_path))
     with pytest.raises(ValueError, match="unknown transition effect"):
         settings.set_transition("not-an-effect")

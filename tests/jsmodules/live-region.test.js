@@ -68,6 +68,7 @@ describe("announceStatus", () => {
     expect(toast.hidden).toBe(false);
   });
 
+  // ADR-0011-01
   it("keeps the visible mirror out of the accessibility tree", () => {
     const toast = document.querySelector("#status-toast");
     announceStatus(document.querySelector("#region"), "Added a track to queue.");
@@ -78,6 +79,7 @@ describe("announceStatus", () => {
     expect(toast.hasAttribute("role")).toBe(false);
   });
 
+  // ADR-0011-02
   it("does not rewrite a region that already carries the message", () => {
     const region = document.querySelector("#region");
     region.textContent = "Saved.";

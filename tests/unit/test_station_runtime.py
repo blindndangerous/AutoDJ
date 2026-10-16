@@ -104,12 +104,14 @@ def test_only_another_stations_name_makes_extra_paths(cfg: Any, slug: str) -> No
 
 
 def test_default_paths_use_the_same_station_factory_path(cfg: Any) -> None:
+    """ADR-0005-01."""
     paths = StationPaths.for_station(cfg, "default")
     assert paths.is_default
     assert paths.state_dir == StationPaths.default(cfg).state_dir
 
 
 def test_each_run_gets_a_fresh_copy_of_the_station_config(cfg: Any) -> None:
+    """ADR-0005-01."""
     spec = _spec(cfg, "nightowl")
     first = station_config(spec.cfg, cfg)
     first.playback.crossfade_seconds = 9.0
@@ -966,6 +968,7 @@ def test_a_check_from_another_thread_always_finds_the_licence_holder(tmp_path: P
 def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
     tmp_path: Path,
 ) -> None:
+    """ADR-0005-05."""
     log: list[str] = []
     release = threading.Event()
     closed: list[str] = []
@@ -1380,6 +1383,7 @@ def test_a_hold_that_fails_still_closes_the_pages(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
 def test_mastering_children_die_with_autodj_on_windows() -> None:
+    """ADR-0008-05."""
     import ctypes
     import subprocess
 

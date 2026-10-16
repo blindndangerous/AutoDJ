@@ -1,5 +1,11 @@
 # Music embedding model selection
 
+See the [accepted FAISS decision](adr/0002-faiss-for-vector-search.md),
+[Proposed catalog/identity decision](adr/0006-use-a-catalog-with-explicit-migrations.md),
+and [Proposed setup/model boundary](adr/0012-separate-runtime-setup-from-model-execution.md).
+The Proposed records reconstruct implementation constraints for review;
+this guide retains model evaluation detail.
+
 As of 2026-09-12, AutoDJ uses [`OpenMuQ/MuQ-large-msd-iter`](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) for music embeddings. MuQ remains a sound default because it accepts 24 kHz audio, produces a 1024-dimensional representation, and performed well across the music-information-retrieval tasks in the [MuQ paper](https://arxiv.org/html/2501.01108). The available checkpoint is about 300 million parameters and uses CC-BY-NC-4.0 weights.
 
 The paper results have an important limit. The public checkpoint was trained on the Million Song Dataset, while the paper evaluated a model trained with different and larger data. The model card warns that the public checkpoint might not reproduce the reported results. MARBLE and similar benchmarks also measure music understanding tasks, not whether two complete songs make a good transition. They support the current choice, but they do not prove that MuQ is the best model for AutoDJ.

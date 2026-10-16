@@ -9,6 +9,9 @@ settings at startup. Every station can stop/restart and use browser, sound-card 
 Categories and scheduling timezone are station-owned; trusted proxies remain server-owned.
 See [Several stations](../operations.md#several-stations) for the current configuration.
 
+> Current scope and implementation evidence are in the dated amendment
+> at the end of this record. Original sections below are retained as history.
+
 ## Context
 
 Some operators run more than one station: a main station and a second one with its own
@@ -86,3 +89,71 @@ uploaded Stereo Tool presets.
   recording folder (whose retention would delete the other station's recordings).
 - Moving the default station's files under `stations/default/`. It would need conversion code,
   a migration on every upgrade and a way back, for no gain.
+
+## Amendment, 2026-10-16: current station and shared ownership
+
+The station-owned playout decision remains accepted. The original Decision and
+Consequences sections above describe the first multi-station release. In
+particular, their root-TOML precedence, old path layout, shared history/categories,
+shared timezone, and default-only output restrictions are historical.
+
+Current constraints:
+
+- Every station, including default, has a definition at
+  `stations/<slug>/station.json`; stopped stations retain editable validated
+  settings without a live Player. Legacy TOML station configuration is migrated
+  at startup, not used as an ongoing competing definition.
+- Station state/history uses its own `station.db`, settings, and asset paths.
+  Categories and scheduling timezone belong to the station. `StationPaths` and
+  the configuration path properties define current locations.
+- The shared music catalog, analysis infrastructure, related-track/artist data,
+  pairing/token registry, HTTP/TLS security policy, and trusted proxies stay
+  outside the station's playout ownership. Shared/library folders are distinct
+  from `stations/<slug>/`; do not construct paths from the historical layout.
+- Every station can stop/restart and choose supported browser, sound-card, or
+  stream output. A stopped station is not simply an unknown station: saved-state
+  endpoints can remain available while runtime-only endpoints refuse work.
+- Station routes use explicit station resolution; shared routes stay shared.
+  Default and named aliases preserve authorization and body limits. Browser
+  pairing remains server-wide, not a per-station operator role system.
+- Duplication copies only selected allowed assets/settings and omits destination
+  credentials. Backup/restore and diagnostics must address every configured station.
+
+Implementation: [runtime and paths](../../src/autodj/stations.py),
+[settings](../../src/autodj/station_settings.py), [definitions](../../src/autodj/station_creation.py),
+[station store](../../src/autodj/station_store.py), [ledger](../../src/autodj/station_ledger.py),
+[routes](../../src/autodj/station_routes.py), and [layout migration](../../src/autodj/layout.py).
+See [station operations](../operations.md#several-stations) and
+[configuration precedence](../operations.md#configuration-precedence) for procedures.
+
+Verification criteria: default and other station paths use the same ownership
+model; settings/history stay isolated; stopped settings are editable; every route
+is classified; duplication omits secrets; lifecycle failures retain resource ownership.
+Use [config tests](../../tests/unit/test_station_config.py),
+[settings tests](../../tests/unit/test_station_settings.py),
+[creation tests](../../tests/unit/test_station_creation.py),
+[ledger tests](../../tests/unit/test_station_ledger.py),
+[route tests](../../tests/integration/test_station_routes.py),
+[stopped-state tests](../../tests/integration/test_stopped_station_editing.py), and
+[lifecycle tests](../../tests/unit/test_station_runtime.py).
+
+Independent station authorization and extra library owners remain outside this
+decision. Revisit if either becomes required. Resource figures in the original
+record remain estimates requiring load evidence, not admission guarantees.
+The new storage/access records are Proposed, not silently accepted replacements.
+Actual checks are in [audit evidence](verification-2026-10-16.md).
+
+## Current contracts
+
+IDs are stable and are never recycled. Automated means an existing regression
+test is mapped; structural validation does not execute it, prove platform
+coverage, or accept this ADR. Manual and gap rows remain explicit obligations
+or evidence limits. Narrative above retains rationale and scope.
+
+| ID | Constraint | Method | Evidence |
+| --- | --- | --- | --- |
+| `ADR-0005-01` | Each runtime receives independent station configuration and default station paths use the same ownership model. | automated | `tests/unit/test_station_runtime.py::test_each_run_gets_a_fresh_copy_of_the_station_config`; `tests/unit/test_station_runtime.py::test_default_paths_use_the_same_station_factory_path` |
+| `ADR-0005-02` | Station histories, last-played values, and clock state remain separate after persistence. | automated | `tests/unit/test_station_ledger.py::test_two_ledgers_on_one_catalog_keep_history_last_played_and_clock_apart` |
+| `ADR-0005-03` | Stopped settings load/edit/save without a Player and retain running-setter validation. | automated | `tests/unit/test_station_settings.py::test_offline_settings_load_edit_save_without_player`; `tests/unit/test_station_settings.py::test_offline_settings_use_running_setter_validation` |
+| `ADR-0005-04` | Every route declares shared/station ownership and named station operations target that station. | automated | `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station`; `tests/integration/test_station_routes.py::test_a_named_station_route_acts_on_that_station` |
+| `ADR-0005-05` | A station whose Player will not stop retains ownership of its mastering process and licence. | automated | `tests/unit/test_station_runtime.py::test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence` |

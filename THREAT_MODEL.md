@@ -1,5 +1,10 @@
 # Threat model: AutoDJ
 
+Architecture discovery starts at the [ADR index](docs/adr/README.md).
+[Proposed access-boundary ADR 7](docs/adr/0007-separate-browser-worker-and-listener-access.md)
+summarizes existing trust separation for review and links its code/tests;
+this threat model retains detailed security policy and limitations.
+
 Last reviewed: 2026-10-13. Re-review every major release.
 
 ## Scope and trust boundaries
@@ -7,9 +12,10 @@ Last reviewed: 2026-10-13. Re-review every major release.
 AutoDJ is a single-user local music player with these exposed surfaces:
 
 - CLI commands read local audio and configuration, then write index, profile, liner or backup
-  data as the invoking user. `library.db` keeps the complete play history, with performance
-  counts; `autodj export-plays` reads it and writes a CSV or text report to standard output or
-  to the `--out` file.
+  data as the invoking user. `library.db` keeps shared track metadata, cues, and analysis vectors. Each
+  station's `station.db` keeps its play history and performance counts;
+  `autodj export-plays` reads the selected station's history and writes a CSV
+  or text report to standard output or to the `--out` file.
 - The web UI uses FastAPI and WebSocket. The default host process binds to `127.0.0.1:8080`.
   The Compose service runs `serve --lan` on the host network, so it listens on every host
   interface on port 8080 and every browser must pair.

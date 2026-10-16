@@ -130,6 +130,7 @@ def _dj_meta_path(path: Path) -> str:
 
 
 def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """ADR-0006-03."""
     index_dir, music_dir = _fixture(tmp_path)
     (music_dir / "old.flac").write_bytes(b"audio bytes")
     before = _tree(index_dir)
@@ -143,6 +144,7 @@ def test_dry_run_writes_nothing(tmp_path: Path, capsys: pytest.CaptureFixture[st
 def test_apply_preserves_vectors_metadata_and_reports_missing_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """ADR-0006-03."""
     index_dir, music_dir = _fixture(tmp_path)
     audio = b"audio bytes"
     (music_dir / "old.flac").write_bytes(audio)

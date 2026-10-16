@@ -32,6 +32,7 @@ SONGS = [(f"/music/{n}.flac", 100 + n, f"{n:064x}") for n in range(3)]
 
 
 def test_a_song_is_leased_to_one_holder_until_it_expires(queue):
+    """ADR-0008-03."""
     q, clock = queue
     first = q.claim("worker-a", SONGS[:2], WORKER_LEASE_SECONDS)
     assert [lease.path for lease in first] == ["/music/0.flac", "/music/1.flac"]
@@ -64,6 +65,7 @@ def test_heartbeat_renews_and_release_returns_songs(queue):
 
 
 def test_finishing_counts_and_holds_back_failed_songs(queue):
+    """ADR-0008-03."""
     q, clock = queue
     q.seen("worker-a", "Studio PC", "RTX (CUDA GPU)")
     done, stale, failed = q.claim("worker-a", SONGS, WORKER_LEASE_SECONDS)

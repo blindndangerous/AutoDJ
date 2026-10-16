@@ -160,7 +160,10 @@ class TestFindNext:
             )
 
     def test_returns_closest_neighbor(self) -> None:
-        """With other ranking inputs equal, choose the eligible highest cosine."""
+        """With other ranking inputs equal, choose the eligible highest cosine.
+
+        ADR-0002-01.
+        """
         vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
         vectors[:, :2] = [(1.0, 0.0), (0.8, 0.6), (0.0, 1.0)]
         index = faiss.IndexFlatIP(FEATURE_DIM)

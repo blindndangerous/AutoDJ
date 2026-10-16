@@ -22,6 +22,7 @@ def _configs(tmp_path: Path, **model) -> tuple[ModelConfig, IndexConfig]:
 
 
 def test_a_cached_model_is_named_by_the_commit_its_branch_resolved_to(tmp_path):
+    """ADR-0012-02."""
     model, index = _configs(tmp_path)
     cfg = type("Cfg", (), {"model": model, "index": index})()
     assert local_model_commit(model, index) is None
@@ -35,6 +36,7 @@ def test_a_cached_model_is_named_by_the_commit_its_branch_resolved_to(tmp_path):
 
 
 def test_a_manual_folder_is_named_by_a_digest_of_its_weights(tmp_path):
+    """ADR-0012-02."""
     folder = tmp_path / "MuQ"
     folder.mkdir()
     (folder / "config.json").write_text("{}")

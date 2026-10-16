@@ -54,6 +54,7 @@ def test_invalid_pairing_code_cannot_create_device(bridge, tmp_path) -> None:
 
 
 def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path) -> None:
+    """ADR-0007-01."""
     client, registry = _paired_client(bridge, tmp_path)
     code = client.app.state.request_pairing_code()[0]
     paired = client.post(
@@ -69,6 +70,7 @@ def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path
 
 
 def test_pairing_rejects_oversized_body_before_json_parsing(bridge, tmp_path) -> None:
+    """ADR-0007-03."""
     client, registry = _paired_client(bridge, tmp_path)
 
     response = client.post(
@@ -82,6 +84,7 @@ def test_pairing_rejects_oversized_body_before_json_parsing(bridge, tmp_path) ->
 
 
 def test_pairing_rejects_untrusted_browser_origin(bridge, tmp_path) -> None:
+    """ADR-0007-03."""
     client, registry = _paired_client(bridge, tmp_path)
 
     response = client.post(

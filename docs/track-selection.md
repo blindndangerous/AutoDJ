@@ -1,9 +1,16 @@
 # How AutoDJ picks the next track
 
-AutoDJ never opens an audio file to decide what plays next. Every track is
-reduced once, during `autodj index`, to 1040 floating-point numbers. Choosing a
-follow-up is one inner product against that matrix plus a little arithmetic on
-tempo, energy, and key. This page is the reference for that path.
+The similarity picker uses stored analysis rather than decoding an audio file
+to score a follow-up. Advanced analysis represents a track as 1040 floating-point
+numbers, and search combines inner products with tempo, energy, and key rules.
+The playable catalog can also contain tracks without advanced analysis; not
+every live pick goes through this similarity path. This page describes that path
+and the surrounding selection rules.
+
+See the [FAISS decision](adr/0002-faiss-for-vector-search.md),
+[Proposed catalog decision](adr/0006-use-a-catalog-with-explicit-migrations.md), and
+[Proposed picking/preview decision](adr/0009-share-picking-rules-with-isolated-previews.md)
+for architectural scope and verification links.
 
 ## The vector: 1024 + 16
 
@@ -23,16 +30,24 @@ carry as much of the cosine score as the 1024 MuQ dimensions. Because the
 centroid is in Hz (roughly 900 to 5800) next to values near 0.05, the librosa
 half points almost the same direction for every track and contributes a
 near-constant 0.5 to every pair. The discrimination comes from MuQ. Measure it
-on your own index before relying on this:
+on a sample of up to 512 stored music vectors before relying on this. The
+following example opens the configured catalog read-only and requires at least
+two analysed tracks:
 
 ```bash
 uv run python -X utf8 -c "
-from pathlib import Path
+from contextlib import closing
+import sqlite3
 import numpy as np
-from autodj.similarity import SimilarityIndex
-sim = SimilarityIndex.from_index_dir(Path('index'))
-half = sim.faiss_index.reconstruct_n(0, sim.ntotal)[:, 1024:]
-unit = half / np.linalg.norm(half, axis=1, keepdims=True)
+from autodj.config import load_config
+from autodj.sqlite_utils import readonly_uri
+cfg = load_config()
+with closing(sqlite3.connect(readonly_uri(cfg.index.library_dir / 'library.db'), uri=True)) as db:
+    rows = db.execute('SELECT v.vector FROM catalog_vectors v JOIN catalog_entries e ON e.id=v.entry_id WHERE e.kind=? ORDER BY e.path LIMIT 512', ('music',)).fetchall()
+if len(rows) < 2:
+    raise SystemExit('Need at least two analysed music tracks')
+half = np.stack([np.frombuffer(row[0], dtype=np.float32)[1024:] for row in rows])
+unit = half / np.maximum(np.linalg.norm(half, axis=1, keepdims=True), np.finfo(np.float32).tiny)
 print('min pairwise cosine of the librosa half:', float((unit @ unit.T).min()))
 "
 ```
@@ -40,7 +55,7 @@ print('min pairwise cosine of the librosa half:', float((unit @ unit.T).min()))
 ## The search: exact, by path
 
 The FAISS index is `IndexFlatIP`, an exact inner-product scan
-(`docs/adr/0002-faiss-for-vector-search.md`). On unit vectors, inner product
+([ADR 2](adr/0002-faiss-for-vector-search.md)). On unit vectors, inner product
 is cosine similarity. Flat indexes support `reconstruct`, which is how
 `SimilarityIndex.find_next_for_path` re-queries by file path without loading
 the model: look the path up in `_path_to_idx`, reconstruct the stored vector,

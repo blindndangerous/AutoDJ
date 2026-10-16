@@ -157,6 +157,7 @@ def test_browser_requests_and_sessions_do_not_reach_worker_routes(server):
 
 
 def test_a_machine_token_opens_nothing_but_the_worker_routes(tmp_path):
+    """ADR-0007-02."""
     made = Server(tmp_path, access_token=secrets.token_urlsafe(32))
     try:
         _token, secret = made.token()
@@ -279,6 +280,7 @@ def test_a_valid_result_goes_into_the_live_catalog(server):
     ],
 )
 def test_results_from_other_weights_or_versions_are_refused(server, field, value, advice):
+    """ADR-0006-04."""
     _token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, _ = server.result(song, song["lease"], **{field: value})
@@ -327,6 +329,7 @@ def _vector_text(values):
     ],
 )
 def test_invalid_vectors_are_refused(server, vector):
+    """ADR-0006-04."""
     _token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, _ = server.result(song, song["lease"], vector=vector)
@@ -345,6 +348,7 @@ def test_out_of_range_fields_are_refused(server, overrides):
 
 
 def test_a_result_for_a_changed_file_is_refused_as_stale(server):
+    """ADR-0006-04."""
     _token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, _ = server.result(song, song["lease"])

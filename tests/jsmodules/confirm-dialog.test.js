@@ -42,6 +42,7 @@ const ask = () => confirmAction(document, {
 afterEach(() => document.body.replaceChildren());
 
 describe("confirmAction focus (#385)", () => {
+  // ADR-0011-03
   it("puts focus back on the opener only once the dialog has closed, after Cancel", async () => {
     const { opener, focusedWhileOpen } = mount();
     opener.focus();

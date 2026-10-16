@@ -61,6 +61,7 @@ async def test_listener_limit(output: StreamOutput) -> None:
 
 
 async def test_slow_listener_is_dropped_others_continue(output: StreamOutput) -> None:
+    """ADR-0004-03."""
     slow = output.add_listener(icy=False)
     slow._max_bytes = 100
     fast = output.add_listener(icy=False)

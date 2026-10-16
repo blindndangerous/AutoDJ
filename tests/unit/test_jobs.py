@@ -12,6 +12,7 @@ from autodj.jobs import JobManager
 
 class TestJobManagerStart:
     def test_rejects_unknown_subcommand(self) -> None:
+        """ADR-0008-01."""
         mgr = JobManager()
         assert mgr.start("rm", ["-rf", "/"]) is False
 
@@ -35,6 +36,7 @@ class TestJobManagerStart:
         ],
     )
     def test_rejects_flags_the_web_ui_never_sends(self, name, args) -> None:
+        """ADR-0008-01."""
         mgr = JobManager()
         with patch("autodj.jobs.subprocess.Popen") as popen:
             assert mgr.start(name, args) is False
@@ -74,6 +76,7 @@ class TestJobManagerStart:
         assert snap["exit_code"] == 0
 
     def test_refuses_concurrent_start(self) -> None:
+        """ADR-0008-01."""
         mgr = JobManager()
         with patch("autodj.jobs.subprocess.Popen") as popen:
             fake = MagicMock()
@@ -360,7 +363,10 @@ class TestJobManagerConfigPassthrough:
 
 
 def test_verbose_job_keeps_recent_output_without_retaining_the_entire_run() -> None:
-    """A verbose job must not grow the retained log with its entire output."""
+    """A verbose job must not grow the retained log with its entire output.
+
+    ADR-0008-02.
+    """
     from types import SimpleNamespace
 
     lines = [f"progress {n}" for n in range(10_000)]

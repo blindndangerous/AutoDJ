@@ -31,6 +31,7 @@ def test_stream_mode_builds_the_bus_up_front() -> None:
 
 
 def test_server_audio_builds_the_bus_up_front_and_browser_mode_has_none() -> None:
+    """ADR-0003-01."""
     assert isinstance(_player().bus, MixBus)
     assert _player(dry_run=True).bus is None
 
