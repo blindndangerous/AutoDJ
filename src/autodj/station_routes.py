@@ -48,7 +48,7 @@ from autodj.clockwheel_store import (
     validate_clockwheel,
     validate_name,
 )
-from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RelayConfig, _relay_target
+from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RecordingConfig, RelayConfig, _relay_target
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -57,7 +57,7 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
 )
-from autodj.recorder import Recorder
+from autodj.recorder import Recorder, load_saved_state, save_state
 from autodj.relay import resolve_safe_relay_addresses, source_port
 from autodj.relay_settings import (
     credential_is_missing,
@@ -80,7 +80,6 @@ from autodj.settings_bodies import (
     VolumeBody,
     validate_playback_choices,
 )
-from autodj.station_ledger import StationLedger, setting_key
 from autodj.station_log import CURRENT_STATION
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
@@ -161,6 +160,26 @@ async def current_station(request: Request) -> StationRuntime:
 
 
 StationDep = Annotated[StationRuntime, Depends(current_station)]
+
+
+async def editable_station(request: Request) -> Any:
+    """Resolve saved configuration independently of playback availability."""
+    slug = request.path_params.get("slug", DEFAULT_SLUG)
+    try:
+        station = await asyncio.to_thread(request.app.state.stations.editable, slug)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="No station has that name") from None
+    except Exception as exc:
+        from autodj.stations import StationControlError
+
+        if isinstance(exc, StationControlError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
+    CURRENT_STATION.set(slug)
+    return station
+
+
+SavedStationDep = Annotated[Any, Depends(editable_station)]
 
 
 async def public_station(request: Request) -> StationRuntime:
@@ -391,6 +410,100 @@ def _catalog_library(station: StationRuntime) -> Any:
     return library
 
 
+def _stream_info(station: Any) -> dict[str, Any]:
+    """Use live stream details when running, saved stream config while stopped."""
+    bridge = station.bridge
+    if getattr(bridge, "stream_mode", False):
+        return bridge.stream_info()
+    cfg = station.cfg
+    from autodj.stations import public_addresses
+
+    addresses = public_addresses(station.slug, streams=True)
+    stream_path = addresses["stream_path"] or "/stream.mp3"
+    formats = []
+    for name, fmt in FORMATS.items():
+        bitrate = (
+            int(cfg.stream.bitrate)
+            if name == "mp3"
+            else int(getattr(cfg.stream, f"{name}_bitrate", 0))
+        )
+        formats.append(
+            {
+                "format": name,
+                "label": fmt.label,
+                "bitrate": bitrate,
+                "path": f"{stream_path.removesuffix('.mp3')}.{name}",
+                "listeners": 0,
+                "error": None,
+            }
+        )
+    return {
+        "path": stream_path,
+        "m3u_path": addresses["m3u_path"] or "/stream.m3u",
+        "bitrate": int(cfg.stream.bitrate),
+        "continuous": bool(cfg.stream.continuous),
+        "station_name": cfg.stream.station_name,
+        "genre": cfg.stream.genre,
+        "description": cfg.stream.description,
+        "url": cfg.stream.url,
+        "show_next": cfg.nowplaying.show_next,
+        "listeners": 0,
+        "state": "stopped",
+        "relays": [],
+        "formats": formats,
+        "stats_days": int(cfg.stream.stats_days),
+    }
+
+
+def _recording_values(station: Any) -> tuple[bool, RecordingConfig]:
+    """Read validated recorder settings without constructing its writer thread."""
+    cfg = station.cfg.recording
+    return load_saved_state(
+        station.paths.recording,
+        cfg.folder,
+        RecordingConfig(cfg.folder, cfg.split, cfg.retention_days, cfg.free_space_mb),
+    )
+
+
+def _recording_saved_status(station: Any) -> dict[str, object]:
+    _running, cfg = _recording_values(station)
+    return {
+        "running": False,
+        "file": None,
+        "bytes": 0,
+        "error": None,
+        "split": cfg.split,
+        "retention_days": cfg.retention_days,
+        "free_space_mb": cfg.free_space_mb,
+    }
+
+
+def _save_recording_settings(station: Any, body: RecordingSettingsBody) -> dict[str, object]:
+    was_running, _old = _recording_values(station)
+    cfg = RecordingConfig(
+        station.cfg.recording.folder, body.split, body.retention_days, body.free_space_mb
+    )
+    station.cfg.recording.split = cfg.split
+    station.cfg.recording.retention_days = cfg.retention_days
+    station.cfg.recording.free_space_mb = cfg.free_space_mb
+    save_state(station.paths.recording, was_running, cfg)
+    return _recording_saved_status(station)
+
+
+def _stopped_webhooks(station: Any) -> list[dict[str, str | int]]:
+    from urllib.parse import urlsplit
+
+    return [
+        {
+            "index": index,
+            "host": urlsplit(hook.url).hostname or "",
+            "format": hook.format,
+            "result": "Not sent",
+        }
+        for index, hook in enumerate(station.cfg.webhooks)
+    ]
+
+
 def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
     """404 unless the station streams."""
     if not station.bridge.stream_mode or station.listener_access is None:
@@ -418,7 +531,8 @@ def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]
         logger.error("Could not save relay settings", exc_info=True)
         raise HTTPException(status_code=503, detail="Could not save relay settings.") from exc
     try:
-        station.bridge.relays.reconfigure(proposed.values())
+        if station.bridge.relays is not None:
+            station.bridge.relays.reconfigure(proposed.values())
     except Exception as exc:
         logger.error("Could not apply relay settings", exc_info=True)
         try:
@@ -560,7 +674,14 @@ def _clock_store(station: StationRuntime) -> ClockwheelStore:
 
 
 def _clock_setting(station: StationRuntime, library: Any) -> dict:
-    setting = library.catalog.get_setting(setting_key(station.slug, "clock"), {})
+    ledger = getattr(station, "ledger", None)
+    if ledger is None:
+        ledger = (
+            library.ledger
+            if station.slug == DEFAULT_SLUG and hasattr(library, "ledger")
+            else library.station_ledger(station.slug)
+        )
+    setting = ledger.get_setting("clock", {})
     return setting if isinstance(setting, dict) else {}
 
 
@@ -740,9 +861,10 @@ async def select_clock(
                 )
     # Through the station's ledger when it has one: its buffered cursor is
     # the latest place, and the old clockwheel's must not flush over this choice.
-    ledger = station.ledger or StationLedger(library.catalog, station.slug)
+    ledger = station.ledger or library.station_ledger(station.slug)
     await asyncio.to_thread(ledger.select_clock, name, cursor, renamed_from)
-    await asyncio.to_thread(station.player.configure_clock_after_selection)
+    if station.player is not None:
+        await asyncio.to_thread(station.player.configure_clock_after_selection)
     return await asyncio.to_thread(_clock_snapshot, station, library)
 
 
@@ -978,9 +1100,7 @@ def _dmca_refusal(
 # ---------------------------------------------------------------------------
 
 
-def equip_station(
-    station: StationRuntime, publish: Callable[[dict[str, Any]], Awaitable[None]]
-) -> None:
+def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
     """Build the station's cart wall, scheduler and time checks; start nothing.
 
     Features with scheduler actions register them here, before the
@@ -1068,10 +1188,11 @@ def equip_station(
     from autodj.breaks import BreakDesk
 
     station.breaks = BreakDesk(lambda: station.cfg.breaks, station.paths.announcements)
-    bridge.player.break_desk = station.breaks
+    if bridge.player is not None:
+        bridge.player.break_desk = station.breaks
     _equip_ads(station, schedule)
 
-    if station.cfg.requests.enabled is True:
+    if not station.stopped and station.cfg.requests.enabled is True:
         station.requests = request_desk(station)
         # A show that starts ahead of queued requests updates their notes.
         station.show_runner.on_started = station.requests.show_started
@@ -1094,7 +1215,8 @@ def equip_station(
         station.intros._rng,
         library=lambda: bridge.library,
     )
-    bridge.player.matched_intros = station.intros
+    if bridge.player is not None:
+        bridge.player.matched_intros = station.intros
 
 
 def request_desk(station: StationRuntime) -> RequestDesk:
@@ -1237,6 +1359,20 @@ def install_station_routes(router: StationRouter) -> None:
     from autodj.stereotool_api import install_stereo_tool
     from autodj.time_checks import install_time_checks
 
+    @router.get("/settings")
+    async def api_settings(station: SavedStationDep) -> dict:
+        return await asyncio.to_thread(station.bridge.get_settings)
+
+    @router.get("/stereo-tool-presets")
+    async def api_stereo_tool_presets(station: SavedStationDep) -> dict:
+        from autodj.stereotool_presets import INCLUDED, list_presets
+
+        presets = await asyncio.to_thread(list_presets, station.cfg.index.shared_dir)
+        active = station.cfg.playback.stereotool_preset
+        if active not in {preset["name"] for preset in presets}:
+            active = INCLUDED
+        return {"active": active, "presets": presets}
+
     @router.get("/status")
     async def api_status(station: StationDep) -> JSONResponse:
         """Return the current player state snapshot."""
@@ -1256,12 +1392,16 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.get("/history")
     async def api_history(
-        station: StationDep,
+        station: SavedStationDep,
         page: int = Query(1, ge=1),
         per_page: int = Query(50, ge=1, le=500),
     ) -> JSONResponse:
         """Return recent play history across restarts (newest first), one page."""
-        hist = station.bridge.history_snapshot()
+        hist = (
+            station.bridge.history_snapshot()
+            if station.player is not None
+            else station.ledger.recent_history()
+        )
         total = len(hist)
         pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, pages))
@@ -1279,7 +1419,7 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.get("/history/export")
     async def api_history_export(
-        station: StationDep,
+        station: SavedStationDep,
         from_text: Annotated[str, Query(alias="from", max_length=64)],
         to_text: Annotated[str, Query(alias="to", max_length=64)],
         report_format: Annotated[Literal["csv", "soundexchange"], Query(alias="format")] = "csv",
@@ -1300,7 +1440,10 @@ def install_station_routes(router: StationRouter) -> None:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
             plays = await asyncio.to_thread(
-                functools.partial(plays_between, station=station.slug), library.catalog, start, end
+                functools.partial(plays_between, station=station.slug),
+                library.catalog,
+                start,
+                end,
             )
             last_day = end - timedelta(microseconds=1)
             count = len(plays)
@@ -1356,14 +1499,12 @@ def install_station_routes(router: StationRouter) -> None:
     # ------------------------------------------------------------------
 
     @router.get("/stream")
-    async def api_stream_info(station: StationDep) -> dict:
+    async def api_stream_info(station: SavedStationDep) -> dict:
         """Return the stream URL paths, bitrate, listener count and state."""
-        _require_stream_mode(station)
-        return station.bridge.stream_info()
+        return _stream_info(station)
 
     @router.get("/stream/relays")
-    async def api_stream_relays(station: StationDep) -> dict:
-        _require_stream_mode(station)
+    async def api_stream_relays(station: SavedStationDep) -> dict:
         statuses = {item["name"]: item for item in station.bridge.relay_status()}
         return {
             "relays": [
@@ -1374,20 +1515,22 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/stream/relays")
     async def api_stream_relay_save(
-        station: StationDep, body: RelaySettingsBody, request: Request
+        station: SavedStationDep, body: RelaySettingsBody, request: Request
     ) -> dict:
-        _require_stream_mode(station)
         registry = request.app.state.stations
         return await asyncio.to_thread(_save_stream_relay, station, body, registry)
 
     @router.delete("/stream/relays/{name}")
-    async def api_stream_relay_remove(station: StationDep, name: str, request: Request) -> dict:
-        _require_stream_mode(station)
+    async def api_stream_relay_remove(
+        station: SavedStationDep, name: str, request: Request
+    ) -> dict:
         registry = request.app.state.stations
         return await asyncio.to_thread(_remove_stream_relay, station, name, registry)
 
     @router.get("/recording")
-    async def api_recording_status(station: StationDep) -> dict[str, object]:
+    async def api_recording_status(station: SavedStationDep) -> dict[str, object]:
+        if station.recorder is None:
+            return _recording_saved_status(station)
         return await _recording_route(station, Recorder.status)
 
     @router.post("/recording/start")
@@ -1404,16 +1547,26 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/recording/settings")
     async def api_recording_settings(
-        station: StationDep, body: RecordingSettingsBody
+        station: SavedStationDep, body: RecordingSettingsBody
     ) -> dict[str, object]:
+        if station.recorder is None:
+            try:
+                return await asyncio.to_thread(_save_recording_settings, station, body)
+            except OSError as exc:
+                logger.error("Could not save recording settings", exc_info=True)
+                raise HTTPException(
+                    status_code=503, detail="Could not save recording settings"
+                ) from exc
         return await _recording_route(
             station,
             lambda target: target.configure(body.split, body.retention_days, body.free_space_mb),
         )
 
     @router.get("/webhooks")
-    async def api_webhooks(station: StationDep) -> list[dict[str, str | int]]:
+    async def api_webhooks(station: SavedStationDep) -> list[dict[str, str | int]]:
         """Show redacted webhook destinations to a paired browser."""
+        if station.player is None:
+            return _stopped_webhooks(station)
         return station.webhooks.status()
 
     @router.post("/webhooks/{index}/test")
@@ -1517,11 +1670,12 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/stream/settings")
     async def api_stream_settings(
-        station: StationDep, body: StreamSettingsBody, request: Request
+        station: SavedStationDep, body: StreamSettingsBody, request: Request
     ) -> dict:
         """Change the stream bitrates (listeners reconnect), continuous play, name or statistics."""
-        access = _require_stream_mode(station)
         bridge = station.bridge
+        live = bool(getattr(bridge, "stream_mode", False))
+        access = station.listener_access if live else None
         cfg = station.cfg
         metadata_changed = any(
             getattr(cfg.stream, field) != getattr(body, field)
@@ -1541,7 +1695,7 @@ def install_station_routes(router: StationRouter) -> None:
             if value is not None
         }
         changed_formats: list[str] = []
-        if formats:
+        if formats and live:
             try:
                 changed_formats = await asyncio.to_thread(bridge.set_stream_formats, formats)
             except EncoderUnavailableError as exc:
@@ -1549,7 +1703,7 @@ def install_station_routes(router: StationRouter) -> None:
                 raise HTTPException(status_code=503, detail=f"{exc}. Nothing was changed.") from exc
             except (ValueError, MountsClosedError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
-        if body.bitrate is not None:
+        if body.bitrate is not None and live:
             try:
                 await asyncio.to_thread(bridge.set_stream_bitrate, body.bitrate)
             except EncoderUnavailableError as exc:
@@ -1582,27 +1736,29 @@ def install_station_routes(router: StationRouter) -> None:
                 setattr(cfg.stream, field, value)
         if body.show_next is not None:
             cfg.nowplaying.show_next = body.show_next
-        station.nowplaying.refresh()
+        if live:
+            station.nowplaying.refresh()
         if body.max_listeners_per_address is not None:
             cfg.stream.max_listeners_per_address = body.max_listeners_per_address
-            access.max_per_address = body.max_listeners_per_address
+            if access is not None:
+                access.max_per_address = body.max_listeners_per_address
         await asyncio.to_thread(bridge.save_persistent_state)
-        if metadata_changed and bridge.relays is not None:
+        if live and metadata_changed and bridge.relays is not None:
             await asyncio.to_thread(_refresh_relay_metadata, station, request.app.state.stations)
-        return bridge.stream_info()
+        return _stream_info(station)
 
     # ------------------------------------------------------------------
     # Profiles
     # ------------------------------------------------------------------
 
     @router.get("/profiles")
-    async def api_profiles(station: StationDep) -> dict:
+    async def api_profiles(station: SavedStationDep) -> dict:
         """List saved profile bundles."""
         store = _profile_store(station)
         return {"profiles": await asyncio.to_thread(store.list_names), "root": str(store.root)}
 
     @router.post("/profiles")
-    async def api_profile_save(station: StationDep, body: ProfileSaveBody) -> dict:
+    async def api_profile_save(station: SavedStationDep, body: ProfileSaveBody) -> dict:
         """Save (or overwrite) a profile bundle."""
         from autodj.profiles import ProfileSnapshot
 
@@ -1619,7 +1775,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {"saved": snap.name, "path": str(target)}
 
     @router.delete("/profiles/{name}")
-    async def api_profile_delete(station: StationDep, name: str) -> dict:
+    async def api_profile_delete(station: SavedStationDep, name: str) -> dict:
         """Delete a saved profile bundle by name."""
         with _profile_http_errors():
             ok = await asyncio.to_thread(_profile_store(station).delete, name)
@@ -1628,7 +1784,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {"deleted": name}
 
     @router.post("/profiles/{name}/apply")
-    async def api_profile_apply(station: StationDep, name: str) -> dict:
+    async def api_profile_apply(station: SavedStationDep, name: str) -> dict:
         """Load a saved profile and push every set field through the bridge."""
         return await apply_profile(station, name)
 
@@ -1637,7 +1793,7 @@ def install_station_routes(router: StationRouter) -> None:
     # ------------------------------------------------------------------
 
     @router.get("/liners")
-    async def api_liners(station: StationDep) -> dict:
+    async def api_liners(station: SavedStationDep) -> dict:
         """List discovered voice liners + current trigger config.
 
         The browser uses this to populate the Settings panel listing
@@ -1717,7 +1873,7 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/liners/upload")
     async def api_liner_upload(
-        station: StationDep, file: UploadFile = File(...), replace: bool = False
+        station: SavedStationDep, file: UploadFile = File(...), replace: bool = False
     ) -> dict[str, str | int]:
         """Validate, bound, and atomically store a liner clip."""
         from autodj.break_audio import AudioCheckError, BreakAudioError, check_playable
@@ -1756,7 +1912,7 @@ def install_station_routes(router: StationRouter) -> None:
                 station.paths.liners,
                 name,
                 file,
-                max_bytes=station.cfg.server.liner_upload_max_bytes,
+                max_bytes=(station.cfg.station.liner_upload_max_mib * 1024 * 1024),
                 replace=replace,
                 # A file that is not audio is refused now, not when it plays
                 # (#323), with the header check the breaks use.
@@ -1781,7 +1937,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {"filename": target.name, "size": size}
 
     @router.delete("/liners/file/{name}")
-    async def api_liner_delete(station: StationDep, name: str) -> dict[str, str]:
+    async def api_liner_delete(station: SavedStationDep, name: str) -> dict[str, str]:
         """Remove one validated plain liner file."""
         from autodj.liner_files import InvalidLinerName, delete_liner_file
 
@@ -1821,7 +1977,7 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.put("/liners/dates/{liner_id}", response_model=None)
     async def api_liner_dates(
-        station: StationDep, liner_id: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, liner_id: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Set a liner's play dates: "not before" and "do not play after", both optional."""
         from autodj.clip_dates import ClipDatesError, parse_dates, station_today
@@ -1846,7 +2002,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {**item, **dates.view(station_today(station.cfg))}
 
     @router.get("/liners/file/{name}")
-    async def api_liner_file(station: StationDep, name: str) -> FileResponse:
+    async def api_liner_file(station: SavedStationDep, name: str) -> FileResponse:
         """Serve one validated plain liner file."""
         from autodj.liner_files import InvalidLinerName, open_liner_file
 
@@ -2053,7 +2209,7 @@ def install_station_routes(router: StationRouter) -> None:
     # ------------------------------------------------------------------
 
     @router.post("/preset")
-    async def api_preset(station: StationDep, body: PresetBody) -> dict:
+    async def api_preset(station: SavedStationDep, body: PresetBody) -> dict:
         """Activate a preset by name."""
         bridge = station.bridge
         bridge.set_preset(body.name)
@@ -2061,7 +2217,7 @@ def install_station_routes(router: StationRouter) -> None:
         return bridge.get_settings()
 
     @router.post("/transition")
-    async def api_transition(station: StationDep, body: TransitionBody) -> dict:
+    async def api_transition(station: SavedStationDep, body: TransitionBody) -> dict:
         """Apply transition-effect overrides."""
         bridge = station.bridge
         try:
@@ -2072,7 +2228,7 @@ def install_station_routes(router: StationRouter) -> None:
         return bridge.get_settings()
 
     @router.post("/djmix")
-    async def api_djmix(station: StationDep, body: DjMixBody) -> dict:
+    async def api_djmix(station: SavedStationDep, body: DjMixBody) -> dict:
         """Apply dj-mix flag overrides (beatmatch, harmonic, etc.)."""
         bridge = station.bridge
         bridge.set_djmix(**body.model_dump(exclude_none=True))
@@ -2080,7 +2236,7 @@ def install_station_routes(router: StationRouter) -> None:
         return bridge.get_settings()
 
     @router.post("/playback-settings")
-    async def api_playback_settings(station: StationDep, body: PlaybackSettingsBody) -> dict:
+    async def api_playback_settings(station: SavedStationDep, body: PlaybackSettingsBody) -> dict:
         """Apply playback-flag overrides (transition mode, lyrics, ...)."""
         bridge = station.bridge
         try:
@@ -2092,7 +2248,7 @@ def install_station_routes(router: StationRouter) -> None:
         return bridge.get_settings()
 
     @router.post("/bpm-range")
-    async def api_bpm_range(station: StationDep, body: BpmRangeBody) -> dict:
+    async def api_bpm_range(station: SavedStationDep, body: BpmRangeBody) -> dict:
         """Set the active BPM range filter."""
         bridge = station.bridge
         bridge.set_bpm_range(body.lo, body.hi)
@@ -2100,7 +2256,7 @@ def install_station_routes(router: StationRouter) -> None:
         return bridge.get_settings()
 
     @router.post("/discovery")
-    async def api_discovery(station: StationDep, body: DiscoveryBody) -> dict:
+    async def api_discovery(station: SavedStationDep, body: DiscoveryBody) -> dict:
         """Set the discovery rate (null turns discovery off)."""
         bridge = station.bridge
         bridge.set_discovery_every(body.every)
@@ -2115,7 +2271,7 @@ def install_station_routes(router: StationRouter) -> None:
         return {"discovery_enabled": enabled}
 
     @router.post("/eq")
-    async def api_eq(station: StationDep, body: EqBody) -> dict[str, float]:
+    async def api_eq(station: SavedStationDep, body: EqBody) -> dict[str, float]:
         """Set the 3-band EQ gains."""
         result = station.bridge.set_eq(low=body.low, mid=body.mid, high=body.high)
         station.bridge.save_persistent_state()
@@ -2127,11 +2283,11 @@ def install_station_routes(router: StationRouter) -> None:
     # ------------------------------------------------------------------
 
     @router.get("/library/clock")
-    async def api_library_clock(station: StationDep) -> dict:
+    async def api_library_clock(station: SavedStationDep) -> dict:
         return await asyncio.to_thread(_clock_snapshot, station, _catalog_library(station))
 
     @router.post("/library/clock")
-    async def api_library_create_clock(station: StationDep, body: ClockBody) -> dict:
+    async def api_library_create_clock(station: SavedStationDep, body: ClockBody) -> dict:
         library = _catalog_library(station)
         try:
             clock = await asyncio.to_thread(
@@ -2142,7 +2298,7 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/library/clock/check")
-    async def api_library_clock_check(station: StationDep, body: ClockStepCheckBody) -> dict:
+    async def api_library_clock_check(station: SavedStationDep, body: ClockStepCheckBody) -> dict:
         library = _catalog_library(station)
 
         def count() -> dict:
@@ -2176,7 +2332,7 @@ def install_station_routes(router: StationRouter) -> None:
                 _, beets, error = _clock_beets(station, library).snapshot(fields)
                 if error and fields:
                     raise ValueError(error)
-                categories_index = getattr(library, "categories", None)
+                categories_index = _station_categories(station, library)
                 from autodj.clockwheel_store import step_categories
 
                 if categories_index and any(c["field"] == "category" for c in conditions):
@@ -2203,14 +2359,14 @@ def install_station_routes(router: StationRouter) -> None:
         return await asyncio.to_thread(count)
 
     @router.post("/library/clock/active")
-    async def api_library_select_clock(station: StationDep, body: ClockNameBody) -> dict:
+    async def api_library_select_clock(station: SavedStationDep, body: ClockNameBody) -> dict:
         try:
             return await select_clock(station, _catalog_library(station), body.name)
         except (ValueError, OSError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/library/clock/import")
-    async def api_library_import_clock(station: StationDep, body: PalImportBody) -> dict:
+    async def api_library_import_clock(station: SavedStationDep, body: PalImportBody) -> dict:
         library = _catalog_library(station)
         try:
             slots = parse_pal(
@@ -2223,12 +2379,12 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.get("/library/clock/{name}")
-    async def api_library_get_clock(station: StationDep, name: str) -> dict:
+    async def api_library_get_clock(station: SavedStationDep, name: str) -> dict:
         return _existing_clock(station, name)
 
     @router.put("/library/clock/{name}")
     async def api_library_update_clock(
-        station: StationDep,
+        station: SavedStationDep,
         name: str,
         body: ClockBody,
         apply_timing: Literal["immediate", "continue", "next_restart"] = "immediate",
@@ -2242,7 +2398,7 @@ def install_station_routes(router: StationRouter) -> None:
                 _validate_native_clock, station, library, body.model_dump()
             )
             clock = _clock_store(station).save(checked)
-            if _active_clock(station, library) == name:
+            if station.player is not None and _active_clock(station, library) == name:
                 await asyncio.to_thread(station.player.apply_clockwheel_update, name, apply_timing)
             return clock
         except (ValueError, OSError) as exc:
@@ -2250,7 +2406,7 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/library/clock/{name}/duplicate")
     async def api_library_duplicate_clock(
-        station: StationDep, name: str, body: NewClockNameBody
+        station: SavedStationDep, name: str, body: NewClockNameBody
     ) -> dict:
         clock = _existing_clock(station, name)
         try:
@@ -2260,7 +2416,7 @@ def install_station_routes(router: StationRouter) -> None:
 
     @router.post("/library/clock/{name}/rename")
     async def api_library_rename_clock(
-        station: StationDep, name: str, body: NewClockNameBody
+        station: SavedStationDep, name: str, body: NewClockNameBody
     ) -> dict:
         library = _catalog_library(station)
         clock = _existing_clock(station, name)
@@ -2281,7 +2437,7 @@ def install_station_routes(router: StationRouter) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.delete("/library/clock/{name}")
-    async def api_library_delete_clock(station: StationDep, name: str) -> dict:
+    async def api_library_delete_clock(station: SavedStationDep, name: str) -> dict:
         library = _catalog_library(station)
         _existing_clock(station, name)
         try:

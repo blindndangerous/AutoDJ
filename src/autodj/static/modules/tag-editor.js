@@ -67,7 +67,7 @@ export function tagFieldError(field, value) {
 
 const NO_EDITOR = { load() {}, clear() {}, dirty: () => false, save: async () => true, destroy() {} };
 
-export function installTagEditor({ document: doc = document, request = requestJson, onSaved = () => {}, isCurrent = () => true } = {}) {
+export function installTagEditor({ document: doc = document, request = requestJson, onSaved = () => {}, isCurrent = () => true, getStation = () => "default" } = {}) {
   const section = doc.getElementById("tags-editor");
   const form = doc.getElementById("tags-form");
   if (!section || !form) return NO_EDITOR;
@@ -174,6 +174,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
     saving = token;
     const mine = generation;
     const epoch = captureAuthenticatedRequestEpoch();
+    const station = getStation();
     // The page's own preview may be reading the file; let it go first.
     const preview = doc.getElementById("points-preview");
     const previewSrc = preview?.getAttribute("src") || "";
@@ -182,9 +183,9 @@ export function installTagEditor({ document: doc = document, request = requestJs
       const record = await request("/api/library/tags", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file }),
+        body: JSON.stringify({ path, tags: changed, beets: !!(beets && !beetsLabel?.hidden && beets.checked), write_file: file, ...(station !== "default" ? { station } : {}) }),
       });
-      if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent()) return false;
+      if (mine !== generation || !isAuthenticatedRequestCurrent(epoch) || !isCurrent() || getStation() !== station) return false;
       const keepBeets = beets?.checked;
       load(record);
       if (beets) beets.checked = keepBeets;

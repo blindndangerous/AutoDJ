@@ -3,7 +3,7 @@
 A voice liner or a cart can carry a first and a last date to play, both
 included, such as a promotion that must stop after the event.  Outside its
 dates a clip is skipped and said to be expired (or not playable yet).  The
-dates are station-local calendar days, read in ``[server] station_timezone``.
+dates are station-local calendar days, read in ``[station] timezone``.
 
 Carts keep their dates in their slot in ``carts.json``.  Voice liners keep
 theirs in ``liner_dates.json`` in the station's state folder, keyed by the
@@ -128,15 +128,15 @@ def parse_dates(body: object) -> ClipDates:
 
 
 def station_zone(cfg: AutoDJConfig) -> str:
-    """The station time zone's name: ``[server] station_timezone`` or the system's."""
+    """The station time zone's name: ``[station] timezone`` or the system's."""
     from autodj.scheduler import system_timezone
 
-    zone = getattr(getattr(cfg, "server", None), "station_timezone", None)
+    zone = getattr(getattr(cfg, "station", None), "timezone", None)
     return str(zone or system_timezone())
 
 
 def station_today(cfg: AutoDJConfig) -> Date:
-    """Today in the station time zone: ``[server] station_timezone`` or the system's."""
+    """Today in the station time zone: ``[station] timezone`` or the system's."""
     from zoneinfo import ZoneInfo
 
     return datetime.now(ZoneInfo(station_zone(cfg))).date()

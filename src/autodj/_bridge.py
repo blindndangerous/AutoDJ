@@ -22,7 +22,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from autodj.audience import StreamAudience
@@ -258,8 +257,91 @@ def _stereotool_report(master: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, dict) else None
 
 
+class LibraryAccess:
+    """Library operations that remain available without a running player."""
+
+    library: Any
+    sim: Any
+
+    def search(self, query: str, limit: int = 100) -> list[dict]:
+        """Search indexed tracks by title, artist, and album.
+
+        Splits the query into whitespace-separated tokens and requires
+        every token to appear somewhere in the combined ``title +
+        artist + album`` text of a candidate.  Token matching is case-
+        insensitive and substring-based, so:
+
+        - ``"portishead mysterons"`` matches title=Mysterons artist=Portishead
+        - ``"dummy sour"`` matches album=Dummy title=Sour Times
+        - ``"thom yorke amok"`` matches Atoms For Peace album=Amok
+
+        Args:
+            query: Multi-token search string.  Empty / whitespace-only
+                returns an empty list.
+            limit: Maximum number of results to return.  Default 100.
+
+        Returns:
+            List of track dicts with the keys ``path``, ``title``,
+            ``artist``, ``album``, ``bpm``, ``length`` and ``display_name``.
+        """
+        tokens = [t for t in query.lower().split() if t]
+        if not tokens:
+            return []
+
+        results = []
+        for entry, haystack in _search_index(self.library, self.sim):
+            if all(tok in haystack for tok in tokens):
+                results.append(
+                    {
+                        "title": entry.title,
+                        "artist": entry.artist,
+                        "album": entry.album,
+                        "path": entry.path,
+                        "bpm": entry.bpm,
+                        "length": entry.length,
+                        "display_name": entry.display_name,
+                    },
+                )
+                if len(results) >= limit:
+                    break
+        return results
+
+    def search_index(self) -> list[tuple[IndexEntry, str]]:
+        """Every music entry with its lowercased "title — artist — album" text."""
+        return _search_index(self.library, self.sim)
+
+    def entry_for_path(self, path: str) -> IndexEntry | None:
+        """Resolve only a registered playable file, including basic-ready tracks."""
+        collection = self.library if self.library is not None else self.sim
+        return collection.entry_for_path(path)
+
+    def cover_art_for(self, path: str) -> tuple[bytes, str] | None:
+        """Return (image_bytes, mime_type) for the embedded cover art."""
+        from autodj.audio_meta import read_cover_art
+
+        art = read_cover_art(path)
+        if art is None:
+            return None
+        return art.data, art.mime_type
+
+
 @dataclass
-class PlayerBridge:
+class LibraryServices(LibraryAccess):
+    """Installation-owned configuration and library access for shared routes."""
+
+    cfg: Any
+    sim: Any
+    library: Any
+
+    def lyrics_for(self, path: str) -> list[dict]:
+        from autodj.audio_meta import read_library_lyrics
+
+        lyrics, _plain = read_library_lyrics(path, self.cfg.library)
+        return [{"time_s": line.time_s, "text": line.text} for line in lyrics]
+
+
+@dataclass
+class PlayerBridge(LibraryAccess):
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
 
     Exposes playback control methods that can be called from the asyncio
@@ -282,6 +364,7 @@ class PlayerBridge:
     player: Any
     sim: Any
     library: Any = None
+    settings: Any = None
     # This station's plays and settings (a StationLedger); the library's
     # default-station ledger when not given.
     ledger: Any = None
@@ -297,7 +380,6 @@ class PlayerBridge:
     # (PAGE_SAVED_REQUESTS, PAGE_SAVED_BREAKS), or that web_state.json held
     # at start.  Only those are written to web_state.json; the others stay
     # config.toml's.
-    page_saved: set[str] = field(default_factory=set)
     # The viewer keeps 500 rows; the catalog retains the full play log.
     _play_history: deque = field(
         default_factory=lambda: deque(maxlen=500),
@@ -345,6 +427,46 @@ class PlayerBridge:
     # path -> (entry, DJ-meta object, (records version, settings), track dict)
     # for the tracks the last state showed.
     _track_dicts: dict[str, tuple[Any, Any, tuple, dict]] = field(default_factory=dict, init=False)
+
+    def __post_init__(self) -> None:
+        from autodj.station_settings import StationSettings
+
+        if self.settings is None:
+            candidate = getattr(self.player, "_settings", None)
+            if isinstance(candidate, StationSettings):
+                self.settings = candidate
+        if self.settings is None:
+            self.settings = StationSettings(self.player._cfg, self.library, self.sim, self.paths)
+            for name in (
+                "_preset",
+                "_bpm_range",
+                "_pure_shuffle",
+                "_anchor_to_seed",
+                "_eq_low",
+                "_eq_mid",
+                "_eq_high",
+                "_discovery_every",
+            ):
+                if hasattr(self.player, name):
+                    setattr(self.settings, name, getattr(self.player, name))
+            state = getattr(self.player, "_state", None)
+            if state is not None:
+                self.settings._volume = getattr(state, "volume", 1.0)
+                self.settings._is_muted = getattr(state, "is_muted", False)
+                self.settings._discovery_enabled = getattr(state, "discovery_enabled", False)
+        self.settings.library = self.library or self.settings.library
+        self.settings.sim = self.sim or self.settings.sim
+        self.settings.paths = self.paths or self.settings.paths
+        self.settings.attach(self.player)
+
+    @property
+    def page_saved(self) -> set[str]:
+        """Compatibility view of the settings owner's persistence flags."""
+        return self.settings.page_saved
+
+    @page_saved.setter
+    def page_saved(self, value: set[str]) -> None:
+        self.settings.page_saved = value
 
     # ------------------------------------------------------------------
     # Stream mode
@@ -975,7 +1097,7 @@ class PlayerBridge:
         Args:
             volume: Float in ``[0.0, 1.0]``.  Clamped automatically.
         """
-        self.player._state.volume = max(0.0, min(1.0, volume))
+        self.settings.set_volume(volume)
 
     def toggle_mute(self) -> bool:
         """Toggle mute.
@@ -983,9 +1105,7 @@ class PlayerBridge:
         Returns:
             New muted state (``True`` = muted).
         """
-        state = self.player._state
-        state.is_muted = not state.is_muted
-        return state.is_muted
+        return self.settings.toggle_mute()
 
     def toggle_discovery(self) -> bool:
         """Toggle discovery mode on/off.
@@ -995,11 +1115,10 @@ class PlayerBridge:
         Returns:
             New ``discovery_enabled`` state (``True`` = enabled).
         """
-        state = self.player._state
-        state.discovery_enabled = not state.discovery_enabled
+        enabled = self.settings.toggle_discovery()
         if refresh := getattr(self.player, "refresh_render_ahead", None):
             refresh()
-        return state.discovery_enabled
+        return enabled
 
     # ------------------------------------------------------------------
     # State read
@@ -1441,58 +1560,6 @@ class PlayerBridge:
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
-
-    def search(self, query: str, limit: int = 100) -> list[dict]:
-        """Search indexed tracks by title, artist, and album.
-
-        Splits the query into whitespace-separated tokens and requires
-        every token to appear somewhere in the combined ``title +
-        artist + album`` text of a candidate.  Token matching is case-
-        insensitive and substring-based, so:
-
-        - ``"portishead mysterons"`` matches title=Mysterons artist=Portishead
-        - ``"dummy sour"`` matches album=Dummy title=Sour Times
-        - ``"thom yorke amok"`` matches Atoms For Peace album=Amok
-
-        Args:
-            query: Multi-token search string.  Empty / whitespace-only
-                returns an empty list.
-            limit: Maximum number of results to return.  Default 100.
-
-        Returns:
-            List of track dicts with the keys ``path``, ``title``,
-            ``artist``, ``album``, ``bpm``, ``length`` and ``display_name``.
-        """
-        tokens = [t for t in query.lower().split() if t]
-        if not tokens:
-            return []
-
-        results = []
-        for entry, haystack in _search_index(self.library, self.sim):
-            if all(tok in haystack for tok in tokens):
-                results.append(
-                    {
-                        "title": entry.title,
-                        "artist": entry.artist,
-                        "album": entry.album,
-                        "path": entry.path,
-                        "bpm": entry.bpm,
-                        "length": entry.length,
-                        "display_name": entry.display_name,
-                    },
-                )
-                if len(results) >= limit:
-                    break
-        return results
-
-    def search_index(self) -> list[tuple[IndexEntry, str]]:
-        """Every music entry with its lowercased "title — artist — album" text."""
-        return _search_index(self.library, self.sim)
-
-    def entry_for_path(self, path: str) -> IndexEntry | None:
-        """Resolve only a registered playable file, including basic-ready tracks."""
-        collection = self.library if self.library is not None else self.sim
-        return collection.entry_for_path(path)
 
     # ------------------------------------------------------------------
     # Queue control
@@ -2234,15 +2301,6 @@ class PlayerBridge:
     # Cover art and lyrics
     # ------------------------------------------------------------------
 
-    def cover_art_for(self, path: str) -> tuple[bytes, str] | None:
-        """Return (image_bytes, mime_type) for the embedded cover art."""
-        from autodj.audio_meta import read_cover_art
-
-        art = read_cover_art(path)
-        if art is None:
-            return None
-        return art.data, art.mime_type
-
     def lyrics_for(self, path: str) -> list[dict]:
         """Read timed lyrics for *path* without depending on current-track state."""
         lyrics, _plain = self.player._read_lyrics_for_path(path)
@@ -2253,39 +2311,18 @@ class PlayerBridge:
     # ------------------------------------------------------------------
 
     def set_eq(
-        self,
-        low: float | None = None,
-        mid: float | None = None,
-        high: float | None = None,
+        self, low: float | None = None, mid: float | None = None, high: float | None = None
     ) -> dict[str, float]:
-        """Set one or more EQ band gains.  Returns the resulting state."""
-        p = self.player
-        if low is not None:
-            p._eq_low = max(0.0, min(2.0, low))
-        if mid is not None:
-            p._eq_mid = max(0.0, min(2.0, mid))
-        if high is not None:
-            p._eq_high = max(0.0, min(2.0, high))
-        return self.get_eq()
+        """Set one or more EQ band gains. Returns the resulting state."""
+        return self.settings.set_eq(low=low, mid=mid, high=high)
 
     def get_eq(self) -> dict[str, float]:
         """Return current EQ band gains."""
-        p = self.player
-        return {
-            "low": round(p._eq_low, 3),
-            "mid": round(p._eq_mid, 3),
-            "high": round(p._eq_high, 3),
-        }
-
-    # ------------------------------------------------------------------
-    # Persistence — settings survive serve restarts
-    # ------------------------------------------------------------------
+        return self.settings.get_eq()
 
     def load_persistent_state(self) -> None:
-        """Restore settings and recent history before playback starts."""
-        from autodj.runtime_state import load_into_bridge
-
-        load_into_bridge(self, self._state_dir())
+        """Restore saved settings and recent history before playback starts."""
+        self.settings.load()
         ledger = self._ledger()
         if ledger is None:
             return
@@ -2294,403 +2331,47 @@ class PlayerBridge:
                 return
             self._play_history.clear()
             self._play_history.extend(ledger.recent_history())
-        # The repeat rules count the plays from before the restart too.
         try:
             self.player.restore_repeat_history(ledger)
         except Exception:
             logger.exception("Could not load earlier plays into the repeat rules")
 
     def save_persistent_state(self) -> None:
-        """Write current settings to web_state.json (atomic)."""
-        from autodj.runtime_state import save_from_player
-
-        save_from_player(self.get_settings(), self._state_dir())
+        """Write the settings owner's web_state.json atomically."""
+        self.settings.save()
 
     def _state_dir(self) -> Any:
         """The folder holding this station's ``web_state.json``."""
-        if self.paths is not None:
-            return self.paths.state_dir
-        return self.player._cfg.index.stations_dir / "default"
+        return self.settings.state_dir
 
     def get_settings(self) -> dict:
-        """Return a snapshot of every adjustable setting + available presets."""
-        p = self.player
-        cfg = p._cfg
-        pb = cfg.playback
-        preset = p._preset
-        from autodj.presets import BUILTIN_PRESETS
-
-        names = sorted(set(BUILTIN_PRESETS.keys()) | set(cfg.presets.keys()))
-        bpm_range = p._bpm_range
-        related_problem = getattr(p, "related_artists_problem", None)
-        tracks_problem = getattr(p, "related_tracks_problem", None)
-        library_dir = cfg.index.library_dir
-        return {
-            "preset": preset.name if preset else None,
-            "available_presets": names,
-            "transition": cfg.transitions.effect,
-            "djmix": {
-                "harmonic_mode": cfg.djmix.harmonic_mode,
-                "beatmatch": cfg.djmix.beatmatch,
-                "drop_mix": cfg.djmix.drop_mix,
-                "key_shift": cfg.djmix.key_shift,
-                "phrase_align": cfg.djmix.phrase_align,
-                "outro_intro_align": cfg.djmix.outro_intro_align,
-                "filter_sweep": cfg.djmix.filter_sweep,
-                "vocal_guard": bool(cfg.djmix.vocal_guard),
-                "phrase_bars": int(cfg.djmix.phrase_bars),
-                "beatmatch_max_stretch": float(cfg.djmix.beatmatch_max_stretch),
-                "beatmatch_glide_bars": int(cfg.djmix.beatmatch_glide_bars),
-                "filter_sweep_floor_hz": float(cfg.djmix.filter_sweep_floor_hz),
-            },
-            "playback": {
-                "crossfade_seconds": pb.crossfade_seconds,
-                "fade_in_seconds": pb.fade_in_seconds,
-                "music_speed_percent": float(pb.music_speed_percent),
-                "crossfade_eq_duck": pb.crossfade_eq_duck,
-                "pure_shuffle": p._pure_shuffle,
-                "pick_mode": "random" if p._pure_shuffle else pb.pick_mode,
-                "anchor_to_seed": p._anchor_to_seed,
-                "replaygain_enabled": cfg.replaygain.enabled,
-                "loudness_processing": pb.loudness_processing
-                or ("replaygain" if cfg.replaygain.enabled else "off"),
-                "transition_mode": pb.transition_mode,
-                "post_queue_seed": pb.post_queue_seed,
-                "key_notation": pb.key_notation,
-                "key_prefer_flats": bool(pb.key_prefer_flats),
-                "show_lyrics": pb.show_lyrics,
-                "beat_sync_fx": bool(pb.beat_sync_fx),
-                "repeat_rules": pb.repeat_rules.model_dump(),
-                "related_artists_problem": related_problem
-                if isinstance(related_problem, str)
-                else None,
-                "related_artists_default_file": str(
-                    (Path(library_dir) / "related-artists.toml").resolve()
-                )
-                if library_dir is not None
-                else "",
-                "related_tracks_problem": tracks_problem
-                if isinstance(tracks_problem, str)
-                else None,
-                "related_tracks_default_file": str(
-                    (Path(library_dir) / "related-tracks.toml").resolve()
-                )
-                if library_dir is not None
-                else "",
-                "transition_wet_mix": float(cfg.transitions.wet_mix),
-                "replaygain_target_db": float(cfg.replaygain.target_db),
-                "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
-                "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
-                "pick_top_k": int(pb.pick_top_k),
-                "hour_fit": bool(pb.hour_fit),
-                "hour_fit_window_minutes": int(pb.hour_fit_window_minutes),
-                "pick_temperature": float(pb.pick_temperature),
-                "stereotool_agc_drive_db": float(pb.stereotool_agc_drive_db),
-                "intro_lift_max_db": float(pb.intro_lift_max_db),
-                "stereotool_input_trim_db": float(pb.stereotool_input_trim_db),
-                "stereotool_preset": pb.stereotool_preset,
-                "library_size": len(self.library.entries_snapshot())
-                if self.library is not None
-                else int(p._sim.ntotal if p._sim else 0),
-                "key_sync_fx": bool(pb.key_sync_fx),
-                "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
-                "skip_style": pb.skip_style,
-                "prefetch_next_track": pb.prefetch_next_track,
-                "silence_trigger_crossfade": pb.silence_trigger_crossfade,
-                "liners_enabled": bool(pb.liners_enabled),
-                "liners_every_n_songs": pb.liners_every_n_songs,
-                "liners_every_minutes": pb.liners_every_minutes,
-                "liners_random_min_minutes": pb.liners_random_min_minutes,
-                "liners_random_max_minutes": pb.liners_random_max_minutes,
-                "liners_pick_mode": pb.liners_pick_mode,
-                "liners_duck_db": pb.liners_duck_db,
-                "liners_talk_up": bool(pb.liners_talk_up),
-                "matched_intro_only_without_liner": bool(
-                    getattr(pb, "matched_intro_only_without_liner", False)
-                ),
-                "stream_bitrate": int(cfg.stream.bitrate),
-                "stream_continuous": bool(cfg.stream.continuous),
-                "stream_station_name": cfg.stream.station_name,
-                "stream_genre": getattr(cfg.stream, "genre", ""),
-                "stream_description": getattr(cfg.stream, "description", ""),
-                "stream_url": getattr(cfg.stream, "url", ""),
-                "nowplaying_show_next": cfg.nowplaying.show_next,
-                "dmca_enabled": cfg.dmca.enabled,
-                "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
-                **_request_settings(getattr(cfg, "requests", None)),
-                **_request_switches(getattr(cfg, "requests", None), self.page_saved),
-                **_break_settings(getattr(cfg, "breaks", None), self.page_saved),
-                "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
-                "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
-                "stream_stats_days": int(cfg.stream.stats_days),
-                "volume": float(p._state.volume),
-                "is_muted": bool(p._state.is_muted),
-            },
-            "bpm_range": {
-                "lo": bpm_range[0] if bpm_range else None,
-                "hi": bpm_range[1] if bpm_range else None,
-            },
-            "discovery_every": p._discovery_every,
-            "discovery_enabled": p._state.discovery_enabled,
-            "eq": self.get_eq(),
-        }
+        """Return a snapshot of every adjustable setting and available presets."""
+        return self.settings.get_settings()
 
     def set_preset(self, name: str | None) -> None:
         """Set the active preset by name, or pass None / '' to clear."""
-        p = self.player
-        if not name:
-            p._preset = None
-            if refresh := getattr(p, "refresh_render_ahead", None):
-                refresh()
-            return
-        from autodj.presets import get_preset
-
-        try:
-            p._preset = get_preset(name, p._cfg.presets)
-            # Apply preset-defined discovery rate if set, only when no
-            # explicit discovery_every is currently configured.
-            if p._preset.discovery_every and p._discovery_every is None:
-                p._discovery_every = p._preset.discovery_every
-        except ValueError:
-            pass
-        else:
-            if refresh := getattr(p, "refresh_render_ahead", None):
-                refresh()
+        self.settings.set_preset(name)
 
     def set_transition(self, effect: str) -> None:
-        """Set the transition effect by name.
-
-        Args:
-            effect: One of the names in
-                :data:`~autodj.transitions.TRANSITION_EFFECT_NAMES`.
-
-        Raises:
-            ValueError: When *effect* is not a known effect name.  Silently
-                keeping the old value made the web UI's dropdown snap back
-                with no explanation.
-        """
-        from autodj.transitions import TRANSITION_EFFECT_NAMES
-
-        name = effect.lower()
-        if name not in TRANSITION_EFFECT_NAMES:
-            raise ValueError(f"unknown transition effect: {effect}")
-        self.player._cfg.transitions.effect = name
+        """Set a validated transition effect."""
+        self.settings.set_transition(effect)
 
     def set_djmix(self, **flags: bool | int | float | str | None) -> None:
-        """Set DJ-mix toggles, harmonic_mode and the numeric DJ-mix settings."""
-        from autodj.dj_meta import HARMONIC_MODES
-
-        cfg = self.player._cfg
-        for k, v in flags.items():
-            if v is None:
-                continue
-            if k == "harmonic_mode":
-                mode = str(v).lower()
-                if mode in HARMONIC_MODES:
-                    cfg.djmix.harmonic_mode = mode
-                continue
-            if k in ("phrase_bars", "beatmatch_glide_bars"):
-                setattr(cfg.djmix, k, int(v))
-                continue
-            if k in ("beatmatch_max_stretch", "filter_sweep_floor_hz"):
-                setattr(cfg.djmix, k, float(v))
-                continue
-            if hasattr(cfg.djmix, k):
-                setattr(cfg.djmix, k, bool(v))
+        """Set DJ-mix toggles and numeric options."""
+        self.settings.set_djmix(**flags)
 
     def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
-        """Apply the fields set in *body*, which pydantic has already validated.
-
-        Files are checked and read first; then the new values are swapped in
-        under the player's settings lock (see :func:`~autodj.player.settings_lock`),
-        which a rotation test's copy also holds; the saved plays are read
-        again for new repeat rules only after it is released.  Callers on
-        the event loop run this in a worker thread.
-        """
+        """Apply validated playback settings through the station settings owner."""
         self._set_playback_settings(body, restoring=restoring)
 
     def _set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool) -> None:
-        from autodj.player import settings_lock
-
-        values = body.model_dump(exclude_none=True)
-        player = self.player
-        cfg = player._cfg
-        if "stereotool_preset" in values:
-            from autodj.stereotool_presets import preset_path
-
-            preset_path(cfg.index.shared_dir, values["stereotool_preset"])
-        related_artists = self._read_related_artists(body, restoring=restoring)
-        related_tracks = self._read_related_tracks(body, restoring=restoring)
-        if body.repeat_rules is not None:
-            values["repeat_rules"] = body.repeat_rules
-        with settings_lock(player):
-            self._apply_playback_settings(values, related_artists, related_tracks)
-        picking_changed = any(hasattr(cfg.playback, key) for key in values) or bool(
-            {"pure_shuffle", "anchor_to_seed"} & values.keys()
-        )
-        if (
-            picking_changed
-            and not restoring
-            and (refresh := getattr(player, "refresh_render_ahead", None))
-        ):
-            # The playing render is immutable; refresh its unrendered successor.
-            refresh()
-        if "repeat_rules" in values and (ledger := self._ledger()) is not None:
-            player.restore_repeat_history(ledger, refresh=True)
-
-    def _read_related_artists(
-        self, body: PlaybackSettingsBody, *, restoring: bool
-    ) -> tuple[Any, str | None] | None:
-        """The related artists new repeat rules use, and any problem with the file.
-
-        ``None`` when *body* sets no repeat rules.  A file that cannot be
-        read refuses the change (the old rules stay), except while settings
-        are restored at startup, when the rules apply without it.
-        """
-        player = self.player
-        cfg = player._cfg
-        if body.repeat_rules is not None:
-            from autodj.related_artist_file import (
-                invalid_related_artists_message,
-                load_configured_related_artists,
-                unused_related_artists_message,
-            )
-            from autodj.repeat_rules import RelatedArtists
-
-            related = RelatedArtists()
-            problem = None
-            # The file is read only while it is in use, so a broken one
-            # never blocks saving the other rules.
-            if body.repeat_rules.use_related_artists:
-                try:
-                    related = load_configured_related_artists(cfg.index.library_dir)
-                except (OSError, ValueError) as exc:
-                    if not restoring:
-                        # Refused before any setting changes; the old rules stay.
-                        message = invalid_related_artists_message(exc)
-                        player.related_artists_problem = message
-                        raise ValueError(message) from exc
-                    problem = unused_related_artists_message(exc)
-                    logger.warning("Related artists file was not used: %s", exc)
-            return related, problem
-        return None
-
-    def _read_related_tracks(
-        self, body: PlaybackSettingsBody, *, restoring: bool
-    ) -> tuple[Any, str | None] | None:
-        """The related tracks new repeat rules use, and any problem with the file.
-
-        Works like :meth:`_read_related_artists`: ``None`` when *body* sets
-        no repeat rules, and a file that cannot be read refuses the change
-        except while settings are restored at startup.
-        """
-        if body.repeat_rules is None:
-            return None
-        from autodj.related_artist_file import (
-            invalid_related_artists_message,
-            load_configured_related_tracks,
-            unused_related_artists_message,
-        )
-        from autodj.repeat_rules import RelatedTracks
-
-        player = self.player
-        related = RelatedTracks()
-        problem = None
-        if body.repeat_rules.use_related_tracks:
-            try:
-                related = load_configured_related_tracks(player._cfg.index.library_dir)
-            except (OSError, ValueError) as exc:
-                if not restoring:
-                    message = invalid_related_artists_message(exc, "tracks")
-                    player.related_tracks_problem = message
-                    raise ValueError(message) from exc
-                problem = unused_related_artists_message(exc, "tracks")
-                logger.warning("Related tracks file was not used: %s", exc)
-        return related, problem
-
-    def _apply_playback_settings(
-        self,
-        values: dict[str, Any],
-        related_artists: tuple[Any, str | None] | None,
-        related_tracks: tuple[Any, str | None] | None = None,
-    ) -> None:
-        """Swap *values* in (hold the settings lock); only memory changes here."""
-        player = self.player
-        cfg = player._cfg
-        if related_tracks is not None:
-            player._related_tracks, player.related_tracks_problem = related_tracks
-        if related_artists is not None:
-            player._related_artists, player.related_artists_problem = related_artists
-            if hasattr(player, "_key_cache_lock"):
-                with player._key_cache_lock:
-                    player._key_cache = None
-        targets = {
-            "pure_shuffle": (player, "_pure_shuffle"),
-            "anchor_to_seed": (player, "_anchor_to_seed"),
-            "replaygain_enabled": (cfg.replaygain, "enabled"),
-            "replaygain_target_db": (cfg.replaygain, "target_db"),
-            "replaygain_max_clip_safe_gain": (cfg.replaygain, "max_clip_safe_gain"),
-            "transition_wet_mix": (cfg.transitions, "wet_mix"),
-        }
-        for key, value in values.items():
-            target, attribute = targets.get(key, (cfg.playback, key))
-            setattr(target, attribute, value)
-
-        if "pick_mode" in values:
-            player._pure_shuffle = values["pick_mode"] == "random"
-            if values["pick_mode"] == "clock":
-                cfg.playback.transition_mode = "saved_points"
-        elif "pure_shuffle" in values:
-            cfg.playback.pick_mode = "random" if values["pure_shuffle"] else "similarity"
-        if "loudness_processing" in values:
-            cfg.replaygain.enabled = values["loudness_processing"] == "replaygain"
-        elif "replaygain_enabled" in values:
-            cfg.playback.loudness_processing = (
-                "replaygain" if values["replaygain_enabled"] else "off"
-            )
-
-        # Liner triggers: 0 turns the trigger off.
-        for key in (
-            "liners_every_n_songs",
-            "liners_every_minutes",
-            "liners_random_min_minutes",
-            "liners_random_max_minutes",
-        ):
-            if values.get(key) == 0:
-                setattr(cfg.playback, key, None)
-        if values.get("anchor_to_seed") and not getattr(player, "_seed_path", None):
-            current = player._state.current_track
-            if current:
-                player._seed_path = current.path
-        if "post_queue_seed" in values and cfg.playback.post_queue_seed != "pre_queue":
-            player._state.pre_queue_seed = None
-        if values.get("show_lyrics") is False:
-            player._current_lyrics = []
-            player._current_lyrics_plain = ""
-        if "repeat_rules" in values:
-            from autodj.player import apply_repeat_windows
-
-            apply_repeat_windows(player)
+        """Retain the established hook for callers that serialize settings swaps."""
+        self.settings.set_playback_settings(body, restoring=restoring)
 
     def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
         """Set the hard BPM filter; pass both null to clear."""
-        if lo is None or hi is None or lo >= hi:
-            self.player._bpm_range = None
-        else:
-            self.player._bpm_range = (lo, hi)
+        self.settings.set_bpm_range(lo, hi)
 
     def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
-        """Set the discovery rate; null disables.
-
-        Configuring a rate also arms the runtime toggle.  Without that,
-        ticking the Settings checkbox left ``discovery_enabled`` false, so
-        the checkbox read "on" while the Now Playing button read "off".
-        """
-        if every is None or every <= 0:
-            self.player._discovery_every = None
-            self.player._state.discovery_enabled = False
-        else:
-            self.player._discovery_every = int(every)
-            self.player._state.discovery_enabled = True
-        if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
-            refresh()
+        """Set the discovery rate; null disables."""
+        self.settings.set_discovery_every(every, restoring=restoring)

@@ -69,7 +69,7 @@ export function importSummary(data) {
 }
 
 // landmarks: Track info's Song structure (modules/landmarks.js, #60).
-export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, onFolders, landmarks = NO_LANDMARKS }) {
+export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, getStation = () => "default", onBackgroundError = () => {}, onFolders, landmarks = NO_LANDMARKS }) {
   const panel = doc.getElementById("panel-library");
   const searchPanel = doc.getElementById("library-kind")?.closest("section[data-view]") || null;
   let searchShown = false;
@@ -114,6 +114,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const allowOutroLabel = doc.getElementById("points-allow-outro-label");
   let timer = null;
   let currentPath = null;
+  let currentStation = "default";
+  let currentRecord = null;
   let currentKind = "music";
   let currentName = "this track";
   let savedFields = "";
@@ -131,6 +133,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   const tags = installTagEditor({
     document: doc,
     request,
+    getStation: () => currentStation,
     isCurrent: () => !suspended,
     onSaved(record) {
       if (record.title) currentName = fmtTrack(record);
@@ -471,9 +474,10 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function renderDetails(data) {
     const details = doc.getElementById("track-info-details");
     if (!details) return;
+    currentRecord = data;
     const path = data.path || currentPath;
     const split = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-    const lastPlayed = data.last_played > 0
+    const lastPlayed = data.last_played == null ? "Unavailable" : data.last_played > 0
       ? `${formatPlayedAt(new Date(data.last_played * 1000).toISOString(), true)} (${lastSeenWords(data.last_played)})`
       : "Never";
     const analysis = currentKind === "liner" ? "Not needed for liners" : {
@@ -512,6 +516,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     editor.inert = true;
     try {
       const points = {};
+      const station = currentStation;
       for (const name of POINTS) {
         const field = doc.querySelector(`[data-point="${name}"]`);
         if (!field.closest("label").hidden) {
@@ -525,9 +530,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
         }
       }
       const body = { path: currentPath, points };
+      if (station !== "default") body.station = station;
       if (currentKind === "liner" && allowOutro) body.allow_outro = allowOutro.checked;
       const data = await request("/api/library/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      if (!requestCurrent(epoch, generation)) return false;
+      if (!requestCurrent(epoch, generation) || currentStation !== station) return false;
+      if (currentRecord) { currentRecord.last_played = data.last_played; }
       if (data.points) setPointFields(data.points, data.point_sources || {});
       else savedFields = fieldSnapshot();
       // New cue points can move the intro, outro and segue landmarks.
@@ -658,8 +665,11 @@ export function installLibraryFolders({ document: doc = document, request = requ
       }
       if (!requestCurrent(epoch, generation)) return;
       editor.inert = true;
-      const data = await request(`/api/library/points?path=${encodeURIComponent(path)}`);
-      if (!requestCurrent(epoch, generation)) return;
+      const station = getStation();
+      const stationQuery = station === "default" ? "" : `&station=${encodeURIComponent(station)}`;
+      const data = await request(`/api/library/points?path=${encodeURIComponent(path)}${stationQuery}`);
+      if (!requestCurrent(epoch, generation) || getStation() !== station) return;
+      currentStation = station;
       currentPath = data.path || path;
       currentKind = data.kind || kind;
       currentName = data.title ? fmtTrack(data) : currentPath.split(/[\\/]/).pop();
@@ -809,6 +819,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     intros.clear();
     landmarks.clear();
     currentPath = null;
+    currentRecord = null;
     currentKind = "music";
     currentName = "this track";
     if (allowOutro) allowOutro.checked = false;
@@ -848,8 +859,32 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (preview) { preview.pause(); preview.removeAttribute("src"); preview.load(); }
   }
   function resume() { suspended = false; updatePolling(); }
-  // Matched intros are each station's own (#70); the rest of Track info is shared.
-  // The song structure is read through the station too.
-  const refreshIntros = () => { landmarks.refresh(); return intros.refresh(); };
+  // Refresh station-owned details without discarding shared cue or tag edits.
+  const refreshIntros = () => {
+    landmarks.refresh();
+    const station = getStation();
+    const changedStation = station !== currentStation;
+    currentStation = station;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const generation = protectedGeneration;
+    const path = currentPath;
+    if (changedStation && currentRecord) {
+      currentRecord.last_played = null;
+      renderDetails(currentRecord);
+    }
+    const timestamp = path
+      ? request(`/api/library/points?path=${encodeURIComponent(path)}${station === "default" ? "" : `&station=${encodeURIComponent(station)}`}`)
+        .then((data) => {
+          if (!requestCurrent(epoch, generation) || currentStation !== station || currentPath !== path || data.path !== path) return;
+          if (currentRecord) currentRecord.last_played = data.last_played;
+          renderDetails(currentRecord || data);
+        }).catch((error) => {
+          if (!requestCurrent(epoch, generation) || currentStation !== station || currentPath !== path) return;
+          if (currentRecord) { currentRecord.last_played = null; renderDetails(currentRecord); }
+          onBackgroundError(error);
+        })
+      : Promise.resolve();
+    return Promise.all([intros.refresh?.(), timestamp]);
+  };
   return { refresh, openEditor, clearProtectedData, resume, refreshIntros, destroy() { clearProtectedData(); tags.destroy(); intros.destroy(); returnButton.remove(); window.removeEventListener("hashchange", updatePolling); doc.removeEventListener("visibilitychange", updatePolling); doc.removeEventListener("autodj:edit-points", onEditPoints); } };
 }

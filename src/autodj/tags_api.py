@@ -54,6 +54,7 @@ class TagEditBody(BaseModel):
     tags: dict[str, StrictStr]
     beets: StrictBool = False
     write_file: StrictBool = False
+    station: str = DEFAULT_SLUG
 
 
 def _bpm_text(bpm: float) -> str:
@@ -237,7 +238,7 @@ def _save(
 
 
 def install_tag_editor(
-    app: FastAPI, bridge: Any, describe: Callable[[Any, str], Awaitable[dict[str, Any]]]
+    app: FastAPI, bridge: Any, describe: Callable[[Any, str, str], Awaitable[dict[str, Any]]]
 ) -> None:
     """Register ``POST /api/library/tags``; the stations come from ``app.state``.
 
@@ -250,6 +251,8 @@ def install_tag_editor(
         library = bridge.library
         if library is None:
             raise HTTPException(status_code=503, detail="Folder library is not attached")
+        if body.station not in app.state.stations.slugs():
+            raise HTTPException(status_code=404, detail="Station not found")
         if await asyncio.to_thread(library.entry_for_path, body.path) is None:
             raise HTTPException(status_code=404, detail="Recording not in library")
         path = normalize_path(body.path)
@@ -287,7 +290,7 @@ def install_tag_editor(
             )
         except TagError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        record = await describe(library, path)
+        record = await describe(library, path, body.station)
         record["beets"] = beets
         record["beets_error"] = beets_error
         record["warning"] = warning

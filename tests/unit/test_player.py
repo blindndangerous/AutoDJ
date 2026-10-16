@@ -11,6 +11,7 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -78,6 +79,20 @@ def _sine_audio(seconds: float = 1.0, sr: int = 44100) -> np.ndarray:
     """Generate a simple sine wave as float32 audio."""
     t = np.linspace(0, seconds, int(seconds * sr), dtype=np.float32)
     return np.sin(2 * np.pi * 440 * t)
+
+
+def _init_bare_player_settings(player: Player) -> None:
+    """Give __new__-built players the settings backing used by delegated properties."""
+    player._settings = SimpleNamespace(
+        _preset=None,
+        _bpm_range=None,
+        _pure_shuffle=False,
+        _anchor_to_seed=False,
+        _eq_low=1.0,
+        _eq_mid=1.0,
+        _eq_high=1.0,
+        _discovery_every=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +480,7 @@ class TestLoadLyricsToggle:
         player = self._make()
         point_index(player._cfg.index, tmp_path)
         bridge = PlayerBridge(player, player._sim)
-        monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
+        monkeypatch.setattr(bridge.settings, "get_settings", lambda: {"eq": bridge.get_eq()})
         app = create_app(bridge)
         route = next(route for route in app.routes if getattr(route, "path", None) == "/api/eq")
         station = app.state.stations.default
@@ -2121,6 +2136,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None
@@ -2156,6 +2172,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None
@@ -2192,6 +2209,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None

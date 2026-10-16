@@ -32,7 +32,35 @@ describe("time format", () => {
     document.getElementById("time-format").value = "12";
     document.getElementById("time-settings-save").click();
     await vi.waitFor(() => expect(document.getElementById("stations-status").textContent)
-      .toBe("Time settings saved. The new time zone applies when AutoDJ restarts."));
+      .toBe("Time settings saved. The new time zone applies when this station restarts."));
     expect(clockText(when, { locale: "en-US" })).toBe("3:04 PM");
   });
+});
+
+
+it("saves output and cap for the selected station and clears incompatible monitoring", async () => {
+  document.body.innerHTML = `
+    <div id="spanel-stations"><div id="stations-status"></div>
+    <select id="time-zone"></select><select id="time-format"></select>
+    <button id="time-settings-save"></button>
+    <select id="station-output"><option value="browser">Browser</option><option value="stream">Stream</option></select>
+    <input id="station-monitor" type="checkbox"><input id="station-upload-cap" type="number">
+    <button id="station-options-save"></button></div>`;
+  const options = { output: "stream", server_audio_too: true, liner_upload_max_mib: 80 };
+  const request = vi.fn(async (url, init) => {
+    if (url === "/api/time-settings") return { timezone: "UTC", timezones: ["UTC"], time_format: "24" };
+    return init ? JSON.parse(init.body) : options;
+  });
+  await installTimeSettings({ request }).load();
+  const output = document.getElementById("station-output");
+  const monitor = document.getElementById("station-monitor");
+  expect(monitor.checked).toBe(true);
+  output.value = "browser";
+  output.dispatchEvent(new Event("change"));
+  expect(monitor.checked).toBe(false);
+  expect(monitor.disabled).toBe(true);
+  document.getElementById("station-options-save").click();
+  await vi.waitFor(() => expect(request).toHaveBeenLastCalledWith("/api/station-settings", expect.objectContaining({
+    method: "PUT", body: JSON.stringify({ output: "browser", server_audio_too: false, liner_upload_max_mib: 80 }),
+  })));
 });

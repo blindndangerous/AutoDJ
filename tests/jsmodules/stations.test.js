@@ -78,7 +78,7 @@ describe("where a request goes", () => {
     for (const url of [
       "/api/search?q=x", "/api/audio?path=a.mp3", "/api/art?path=a", "/api/library/tracks",
       "/api/library/folders", "/api/library/points", "/api/stations",
-      "/api/stations/oldies/start", "/api/stereo-tool-presets", "/api/devices", "/api/version",
+      "/api/stations/oldies/start", "/api/stereo-tool-presets/upload", "/api/devices", "/api/version",
       "/stream.mp3", "/api/library/clockwork",
     ]) {
       expect(stationApi(url)).toBe(url);
@@ -103,6 +103,7 @@ describe("where a request goes", () => {
 
   it("lists only routes the server has, with no socket or machine routes", () => {
     expect(new Set(STATION_ROUTES).size).toBe(STATION_ROUTES.length);
+    expect(STATION_ROUTES).toContain("/settings");
     expect(STATION_ROUTES).not.toContain("/ws");
     expect(STATION_ROUTES.some((route) => route.startsWith("/announcer"))).toBe(false);
   });

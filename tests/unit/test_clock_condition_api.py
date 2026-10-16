@@ -144,7 +144,7 @@ def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_p
             "conditions": [{"field": "beets", "name": "mood", "operator": "is", "value": "happy"}],
         }
         ClockwheelStore(tmp_path / "stations" / "default" / "clockwheels").save(clock([step]))
-        catalog.set_setting("clock", {"name": "Morning", "cursor": 0})
+        _bridge.library.ledger.remember_setting("clock", {"name": "Morning", "cursor": 0})
         result = call(
             routes,
             "POST",
@@ -153,7 +153,7 @@ def test_renaming_active_clock_keeps_it_selected_when_beets_is_unavailable(tmp_p
             NewClockNameBody(name="Daytime"),
         )
         assert result["name"] == "Daytime"
-        assert catalog.get_setting("clock")["name"] == "Daytime"
+        assert _bridge.library.ledger.get_setting("clock")["name"] == "Daytime"
         assert (tmp_path / "stations" / "default" / "clockwheels" / "Daytime.json").exists()
         assert not (tmp_path / "stations" / "default" / "clockwheels" / "Morning.json").exists()
 
