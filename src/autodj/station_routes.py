@@ -1214,6 +1214,7 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
         station.intros._day_at,
         station.intros._rng,
         library=lambda: bridge.library,
+        paths=station.paths,
     )
     if bridge.player is not None:
         bridge.player.matched_intros = station.intros
