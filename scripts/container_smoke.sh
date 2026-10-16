@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the image and smoke-test the Compose service: LAN mode on the host
 # network, pairing, the health check, folder ownership, the CPU-only torch
-# build, and stream mode switched on through config.toml.
+# build, and stream mode switched on through the saved station definition.
 set -euo pipefail
 
 temp_parent="${RUNNER_TEMP:-/tmp}"
@@ -152,8 +152,17 @@ if (
     raise SystemExit(f"unexpected health payload: {payload!r}")
 PY
 
-# Stream mode comes from config.toml, which the container reads from this folder.
-printf '[stream]\nenabled = true\n' > config.toml
+# Startup has migrated station settings; later changes use the canonical definition.
+python3 - "$AUTODJ_INDEX_DIR/stations/default/station.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+document = json.loads(path.read_text(encoding="utf-8"))
+document["station"].setdefault("station", {})["output"] = "stream"
+path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+PY
 docker compose up -d --force-recreate
 wait_until_healthy
 

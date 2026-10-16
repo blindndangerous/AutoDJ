@@ -165,6 +165,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     values = getattr(request, "param", {})
     FakeMaster.instances = []
     monkeypatch.setattr("autodj.stream.FfmpegEncoder", FakeEncoder)
+    monkeypatch.setattr("autodj.server.shutil.which", lambda _name: "ffmpeg")
+    monkeypatch.setattr("autodj.stream.probe_encoder", lambda *_args: None)
     monkeypatch.setattr("autodj.mastering.ContinuousMaster", FakeMaster)
     closes: list[str] = []
     real_close = __import__("autodj.dj_meta", fromlist=["close_cache"]).close_cache
