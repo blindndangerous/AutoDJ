@@ -704,6 +704,12 @@ def test_liner_duck_range_ends_are_accepted(value: float) -> None:
     assert PlaybackConfig.from_dict({"liners_duck_db": value}).liners_duck_db == value
 
 
+def test_liner_duck_default_is_three_db() -> None:
+    from autodj.config import PlaybackConfig
+
+    assert PlaybackConfig.from_dict({}).liners_duck_db == -3.0
+
+
 # ---------------------------------------------------------------------------
 # PlaybackConfig.transition_mode (Mixxx-style crossfade alignment)
 # ---------------------------------------------------------------------------

@@ -619,7 +619,7 @@ describe("liner settings and upload", () => {
       <input type="number" id="rand-min" value="">
       <input type="number" id="rand-max" value="">
       <select id="pick"><option value="random">Random</option></select>
-      <input type="number" id="duck" value="-12">
+      <input type="number" id="duck" value="3">
       <input type="file" id="upload"><button id="submit">Upload</button>
       <input type="checkbox" id="replace">
       <p id="status"></p><div id="status-toast" hidden></div>`;
@@ -656,21 +656,20 @@ describe("liner settings and upload", () => {
     });
   });
 
-  it("refuses a duck depth outside minus 30 to 0 and says so", async () => {
+  it("shows duck depth as positive dB and saves the existing negative API value", async () => {
     vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: { duck_db: -9 } })));
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
     const postSettings = vi.fn().mockResolvedValue(true);
     const elements = els();
     installLiners(elements, { postSettings, canPlay: () => false });
-    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("-9"));
+    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("9"));
 
-    // +60 dB would multiply the music by 1000 while a liner plays.
-    for (const typed of ["60", "-31", ""]) {
+    for (const typed of ["31", "-1", ""]) {
       elements.lnDuckDb.value = typed;
       elements.lnDuckDb.dispatchEvent(new Event("change"));
-      expect(elements.lnDuckDb.value).toBe("-9");
+      expect(elements.lnDuckDb.value).toBe("9");
       await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(
-        "Could not save Duck depth: enter a number from minus 30 to 0.  It is still minus 9.",
+        "Could not save Music duck: enter a number from 0 to 30.  It is still 9.",
       ));
       elements.lnStatus.textContent = "";
     }
@@ -679,6 +678,9 @@ describe("liner settings and upload", () => {
     elements.lnDuckDb.value = "0";
     elements.lnDuckDb.dispatchEvent(new Event("change"));
     expect(postSettings.mock.calls[0][1]).toMatchObject({ liners_duck_db: 0 });
+    elements.lnDuckDb.value = "8";
+    elements.lnDuckDb.dispatchEvent(new Event("change"));
+    expect(postSettings.mock.calls[1][1]).toMatchObject({ liners_duck_db: -8 });
   });
 
   it("asks the server to replace an existing file only when ticked", async () => {

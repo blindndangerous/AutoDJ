@@ -91,7 +91,9 @@ choose all folders or one folder, and optionally
 search by artist or title. Each result has Play now, Play next, Add to queue and Track info.
 Manage liner files, including Delete and Play dates, under **Settings > Voice liners** (see
 [Liner and cart play dates](#liner-and-cart-play-dates)). Track info's Return button puts focus
-back on the result that opened it.
+back on the result that opened it. **Music duck (dB)** sets the music drop under overlays and
+scheduled IDs, from 0 to 30 dB (default 3). Zero leaves music unchanged. Existing saved depths
+are preserved. The config/API value `liners_duck_db` remains negative: -3 means a 3 dB drop.
 
 An uploaded voice liner must be audio AutoDJ can play, or the upload is refused with "<name> is
 not an audio file AutoDJ can play." AutoDJ reads the file's header: libsndfile reads MP3, WAV, FLAC
@@ -1127,10 +1129,16 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
   preset's `[Pre Compressor] Drive` after the tracks are blended; 0 keeps its base value and does
   not disable AGC. Smooth uses its continuous mix compressor and does not level each song's quiet
   passages. Music and liners stay as original files: AutoDJ caches loudness measurements in the
-  catalog and applies the measured gain when it decodes a track. Voice clips of kind `liner`
-  (liners and voice breaks) use an 18 dB cap when they need more boost. Liners also pass through
-  voice compression, and server-mixed playback holds decoded track audio in memory while
-  it is mixed.
+  catalog and applies the measured gain when it decodes a track. Music, catalog liners and
+  spoken breaks all use the same -28 LUFS preparation target before the master processor.
+  Catalog liners (produced IDs and jingles) retain a 70 Hz high-pass but receive no extra
+  compression. Recorded/uploaded breaks and matched intros retain that high-pass and use
+  lighter 2:1 voice compression. Both kinds of voice clip cap upward gain at 18 dB.
+  These are fixed processing defaults, not additional settings; Stereo Tool AGC drive and
+  master limiting are unchanged. A raw voice file imported as a catalog liner follows the
+  produced-ID treatment; use a break or matched intro for the voice treatment.
+  Old liner loudness measurements are refreshed when scanned or next played; music measurements
+  remain valid. Server-mixed playback holds decoded audio in memory while it is mixed.
   Earlier versions wrote processed copies to a `prepared` folder inside the old index
   folder. It is no longer read or written and is safe to delete: its 32-bit float WAVs take
   about 21 MB per minute of audio, often tens of gigabytes for a large library. After

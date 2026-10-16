@@ -211,7 +211,7 @@ def test_processed_stations_process_a_break_like_a_voice_liner(station, mode, mo
     assert player._load_break_audio(item) is audio
     # FFmpeg is told the demuxer, so it probes nothing.
     load.assert_called_once_with(
-        item.path, "liner", desk.config.max_seconds + 1.0, input_format="wav"
+        item.path, "voice", desk.config.max_seconds + 1.0, input_format="wav"
     )
 
 

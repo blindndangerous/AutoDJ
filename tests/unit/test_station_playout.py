@@ -28,6 +28,7 @@ def station(monkeypatch):
         transition_mode="saved_points",
         crossfade_seconds=1.5,
         loudness_processing="off",
+        liners_duck_db=0.0,
         pick_mode="random",
     )
     player = Player(cfg, make_sim_index(2), dry_run=True)
@@ -1782,3 +1783,21 @@ def test_rotating_transition_effects_are_independent_per_station(station):
     for expected in _REAL_EFFECTS[:4]:
         assert first._pick_effect(TransitionFx.ROTATE, advance=True) is expected
         assert second._pick_effect(TransitionFx.ROTATE, advance=True) is expected
+
+
+def test_scheduled_liner_ducks_outgoing_and_incoming_music_without_lowering_voice(station):
+    player, (a, b, voice, _), _points = station
+    plain = player._render_track(a, b, 0, liners=((voice, True),))
+    player._cfg.playback.liners_duck_db = -3.0
+    ducked = player._render_track(a, b, 0, liners=((voice, True),))
+    gain = 10 ** (-3 / 20)
+    assert ducked.liner_events == plain.liner_events
+    assert ducked.next_entry_offset == plain.next_entry_offset
+    assert ducked.next_start_offset == plain.next_start_offset + round(0.25 * SR)
+    assert len(ducked.audio) == len(plain.audio) + round(0.25 * SR)
+    for seconds in (9.0, 10.5, 11.0):
+        i = round(seconds * SR)
+        assert ducked.audio[i, 0] == pytest.approx(plain.audio[i, 0] * gain)
+        assert ducked.audio[i, 1] == plain.audio[i, 1]
+    assert ducked.audio[7 * SR, 0] == plain.audio[7 * SR, 0]
+    assert ducked.audio[-1, 0] == pytest.approx(0.25, abs=1e-4)

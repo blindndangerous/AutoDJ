@@ -53,9 +53,7 @@ function _floatOrNull(el) {
   return isNaN(n) ? null : n;
 }
 
-// The range the server accepts for liners_duck_db: 0 is no drop, minus
-// 30 nearly silent.
-const DUCK_DB = { label: "Duck depth", min: -30, max: 0, integer: false };
+const DUCK_DB = { label: "Music duck", min: 0, max: 30, integer: false };
 
 function _setStatus(els, msg, { force = false, tone = "info", region = els.lnStatus } = {}) {
   if (!region) return;
@@ -194,7 +192,7 @@ async function _loadLibrary(els, epoch) {
   sync(els.lnRandMin,   c.random_min_minutes   != null ? c.random_min_minutes   : "");
   sync(els.lnRandMax,   c.random_max_minutes   != null ? c.random_max_minutes   : "");
   sync(els.lnPickMode,  c.pick_mode || "random");
-  sync(els.lnDuckDb,    c.duck_db != null ? c.duck_db : -12);
+  sync(els.lnDuckDb,    c.duck_db != null ? Math.abs(c.duck_db) : 3);
   return true;
 }
 
@@ -270,6 +268,7 @@ async function _deleteLiner(els, name, button, label = name) {
 }
 
 function _postConfig(els, postSettings, control) {
+  const duckDb = _floatOrNull(els.lnDuckDb);
   void postSettings("/api/playback-settings", {
     liners_enabled:            !!(els.lnEnabled && els.lnEnabled.checked),
     liners_every_n_songs:      _intOrOff(els.lnEveryN),
@@ -277,7 +276,7 @@ function _postConfig(els, postSettings, control) {
     liners_random_min_minutes: _floatOrOff(els.lnRandMin),
     liners_random_max_minutes: _floatOrOff(els.lnRandMax),
     liners_pick_mode:          els.lnPickMode ? els.lnPickMode.value : "random",
-    liners_duck_db:            _floatOrNull(els.lnDuckDb),
+    liners_duck_db:            duckDb === null ? null : (duckDb === 0 ? 0 : -duckDb),
   }, control);
 }
 
@@ -325,7 +324,7 @@ async function _playByName(els, deps, name, ready = deps.canPlay) {
     if (!ready()) return;
     const buf = await requestBinary(`/api/liners/file/${encodeURIComponent(name)}`);
     if (!ready() || !isAuthenticatedRequestCurrent(epoch)) return;
-    const duckDb = state.lib.config?.duck_db ?? -12;
+    const duckDb = state.lib.config?.duck_db ?? -3;
     const ok = await deps.playLiner(buf, duckDb, epoch);
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     if (!ok) {
@@ -542,7 +541,7 @@ export function installLiners(els, deps) {
     el.addEventListener("change", (event) => {
       // A depth outside the range goes back to the saved one, and says so.
       if (el === els.lnDuckDb && parseSettingValue(el.value, DUCK_DB) === null) {
-        el.value = String(state.lib.config?.duck_db ?? -12);
+        el.value = String(Math.abs(state.lib.config?.duck_db ?? -3));
         _setStatus(els, refusalText(DUCK_DB, el.value), { force: true, tone: "error" });
         return;
       }

@@ -370,3 +370,28 @@ def test_a_ducked_voice_lowers_the_music_and_reports_the_overlay_gain():
         )
     plain = render_handoff(audio(6), {"segue": 4}, {}, liner=voice, duck_db=-20.0)
     assert plain.overlay_gain is None
+
+
+def test_liner_and_break_ducks_keep_separate_depths_without_stacking():
+    voice = np.zeros((4 * SAMPLE_RATE, 2), dtype=np.float32)
+    voice[:, 1] = 0.5
+    music = audio(8)
+    music[:, 1] = 0
+    result = render_handoff(
+        music,
+        {"segue": 4, "end": 8},
+        {"intro": 4},
+        liner=voice,
+        overlap_start=0,
+        liner_duck_spans=((0, 2),),
+        liner_duck_db=-3,
+        duck_spans=((2, 4),),
+        duck_db=-9,
+    )
+    assert result.overlay_gain is not None
+    assert result.overlay_gain[SAMPLE_RATE] == pytest.approx(10 ** (-3 / 20))
+    assert result.overlay_gain[3 * SAMPLE_RATE] == pytest.approx(10 ** (-9 / 20))
+    assert result.overlay_gain.min() == pytest.approx(10 ** (-9 / 20))
+    first = round(result.liner_s * SAMPLE_RATE) - result.start_offset
+    assert np.all(result.full_audio[first : first + 4 * SAMPLE_RATE, 1] == 0.5)
+    assert result.overlay_gain[-1] == pytest.approx(1.0, abs=1e-4)

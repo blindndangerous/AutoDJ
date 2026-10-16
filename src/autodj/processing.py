@@ -22,12 +22,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PREPARATION_VERSION = "loudness-v1"
-TARGET_LUFS = {"music": -28.0, "liner": -25.0}
+LINER_PREPARATION_VERSION = "liner-loudness-v2"
+TARGET_LUFS = {"music": -28.0, "liner": -28.0, "voice": -28.0}
 MIN_GAIN_DB, MAX_GAIN_DB = -60.0, 18.0
 _FFMPEG_TIMEOUT_S = 600
 _READ_CHUNK_BYTES = 1 << 16
 VOICE_FILTER = (
-    "highpass=f=70,acompressor=threshold=0.063095734:ratio=3:attack=10:release=180:"
+    "highpass=f=70,acompressor=threshold=0.063095734:ratio=2:attack=10:release=180:"
     "makeup=1:knee=4:link=maximum:detection=rms"
 )
 MASTER_FILTER = (
@@ -106,7 +107,7 @@ def _kind(kind: str) -> float:
     try:
         return TARGET_LUFS[kind]
     except KeyError as exc:
-        raise ValueError("kind must be 'music' or 'liner'") from exc
+        raise ValueError("kind must be 'music', 'liner' or 'voice'") from exc
 
 
 def analyze_loudness(source: Path, kind: str = "music") -> dict[str, object]:
@@ -158,7 +159,8 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
         stat = Path(source).stat()
         lufs, gain = float(measurement["lufs"]), float(measurement["gain_db"])
         return (
-            measurement["version"] == PREPARATION_VERSION
+            measurement["version"]
+            == (PREPARATION_VERSION if kind == "music" else LINER_PREPARATION_VERSION)
             and measurement["kind"] == kind
             and measurement["size"] == stat.st_size
             and measurement["mtime_ns"] == stat.st_mtime_ns
@@ -168,7 +170,7 @@ def loudness_matches(measurement: dict | None, source: Path, kind: str = "music"
             and MIN_GAIN_DB <= gain <= MAX_GAIN_DB
             and math.isclose(
                 gain,
-                min(target - lufs, MAX_GAIN_DB) if kind == "liner" else target - lufs,
+                min(target - lufs, MAX_GAIN_DB) if kind != "music" else target - lufs,
                 abs_tol=0.01,
             )
         )
@@ -231,6 +233,8 @@ def load_processed_audio(
 def _processing_filters(kind: str) -> str:
     filters = "aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo"
     if kind == "liner":
+        filters += ",highpass=f=70"
+    elif kind == "voice":
         filters += f",{VOICE_FILTER}"
     return filters
 
@@ -240,12 +244,12 @@ def _measurement(source: Path, kind: str, lufs: float, before: os.stat_result) -
     if not math.isfinite(lufs) or lufs <= -65:
         raise ValueError(f"silent or invalid audio: {source}")
     gain_db = _kind(kind) - lufs
-    if kind == "liner":
+    if kind != "music":
         gain_db = min(gain_db, MAX_GAIN_DB)
     if not MIN_GAIN_DB <= gain_db <= MAX_GAIN_DB:
         raise ValueError(f"required gain outside safe range: {source}")
     return {
-        "version": PREPARATION_VERSION,
+        "version": PREPARATION_VERSION if kind == "music" else LINER_PREPARATION_VERSION,
         "kind": kind,
         "size": before.st_size,
         "mtime_ns": before.st_mtime_ns,

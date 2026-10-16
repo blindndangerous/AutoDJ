@@ -144,7 +144,9 @@ jobs:
         run: uv sync --frozen --all-extras
 
       - name: Pytest — test suite
-        run: uv run python scripts/ci_pytest.py
+        run: uv run python scripts/ci_pytest.py --durations=30
+        env:
+          AUTODJ_PYTEST_WORKERS: "2"
 
   browser:
     name: Browser assertions (Chromium, Firefox)
@@ -201,9 +203,48 @@ jobs:
         env:
           AUTODJ_BROWSERS: chromium,firefox
           AUTODJ_URL: http://127.0.0.1:8080
-      # Settings > Stream (listener link, relays) shows only in stream mode,
-      # so a second empty-library server runs with --stream and the visual
-      # audit goes over it once more, in Chromium only to keep the job short.
+      - name: Stop empty-library server
+        if: always()
+        shell: bash
+        run: |
+          for pid_file in "$RUNNER_TEMP/autodj.pid"; do
+            test -f "$pid_file" || continue
+            server_pid=$(cat "$pid_file")
+            kill "$server_pid" 2>/dev/null || true
+            for _attempt in $(seq 1 10); do
+              kill -0 "$server_pid" 2>/dev/null || break
+              sleep 1
+            done
+            kill -KILL "$server_pid" 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: playwright-audit-reports
+          path: |
+            *_audit*.json
+            ${{ runner.temp }}/autodj.log
+
+  browser-stream:
+    name: Browser assertions (stream, Chromium)
+    needs: [frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24.6.0"
+          cache: npm
+      - run: uv sync --frozen --all-extras
+      - run: npm ci --ignore-scripts
+      - run: npx --no-install playwright install --with-deps chromium
       - name: Start stream-mode server
         shell: bash
         run: |
@@ -238,11 +279,11 @@ jobs:
         env:
           AUTODJ_BROWSERS: chromium
           AUTODJ_URL: http://127.0.0.1:8081
-      - name: Stop empty-library servers
+      - name: Stop stream-mode server
         if: always()
         shell: bash
         run: |
-          for pid_file in "$RUNNER_TEMP/autodj.pid" "$RUNNER_TEMP/autodj-stream.pid"; do
+          for pid_file in "$RUNNER_TEMP/autodj-stream.pid"; do
             test -f "$pid_file" || continue
             server_pid=$(cat "$pid_file")
             kill "$server_pid" 2>/dev/null || true
@@ -255,8 +296,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: playwright-audit-reports
+          name: playwright-stream-audit-reports
           path: |
             *_audit*.json
-            ${{ runner.temp }}/autodj.log
             ${{ runner.temp }}/autodj-stream.log

@@ -513,9 +513,9 @@ export function duckMusic(level, seconds) {
   const gain = _duck.gain;
   gain.cancelScheduledValues(t0);
   gain.setValueAtTime(gain.value, t0);
-  gain.linearRampToValueAtTime(level, t0 + 0.2);
-  gain.setValueAtTime(level, t0 + Math.max(0.2, seconds - 0.2));
-  gain.linearRampToValueAtTime(1, t0 + seconds + 0.2);
+  gain.linearRampToValueAtTime(level, t0 + 0.25);
+  gain.setValueAtTime(level, t0 + Math.max(0.25, seconds));
+  gain.linearRampToValueAtTime(1, t0 + Math.max(0.25, seconds) + 0.25);
 }
 
 // Live deck at full, standby silent.  stopAllDecks leaves both at 0, and
