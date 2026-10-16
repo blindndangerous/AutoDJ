@@ -1991,6 +1991,7 @@ class TestServeFunction:
         with (
             patch("autodj.library.LibraryManager") as manager,
             patch("autodj.mastering.ContinuousMaster"),
+            patch("autodj.server.shutil.which", return_value="ffmpeg"),
         ):
             manager.return_value.catalog.get_setting.return_value = None
             manager.return_value.entries_snapshot.return_value = ()
