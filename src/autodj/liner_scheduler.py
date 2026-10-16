@@ -271,7 +271,7 @@ class LinerScheduler:
         self._folder = folder
         self._bus = bus
         self._clock = clock
-        self._wall_clock = time.time
+        self._wall_clock = lambda: time.time()
         self._rng = rng or random.Random()
         self._decoder = decoder
         self._can_fire = can_fire
