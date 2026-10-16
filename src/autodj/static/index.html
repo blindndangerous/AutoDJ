@@ -345,6 +345,9 @@
          is the one track-change announcement.  Shift+N speaks it. -->
     <p id="next-track-text"><span aria-hidden="true">—</span><span class="visually-hidden">None</span></p>
     <p id="handoff-status" class="setting-desc"></p>
+    <!-- Not live: a problem that lasts (beets' songs matching none of the
+         library's, #386) is found here, not repeated on every update. -->
+    <p id="library-problem" hidden></p>
   </details>
 
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
@@ -3293,6 +3296,7 @@
           <button type="button" id="auto-rescan-save">Save</button>
         </fieldset>
         <p id="source-folders-status">Loading folders…</p>
+        <p id="source-folders-beets" hidden></p>
         <table id="source-folders-table" role="grid"><caption>Registered music and voice liner folders</caption><thead><tr><th scope="col">Type</th><th scope="col">Path</th><th scope="col">Add subfolders</th><th scope="col">Advanced analysis</th><th scope="col">Actions</th></tr></thead><tbody id="source-folders"><tr><td colspan="5">No folders loaded.</td></tr></tbody></table>
       </section>
 
@@ -3364,6 +3368,7 @@
            #categories-status. -->
       <p>A category is a set of songs that a clockwheel step picks from, such as rotation A, B, C and D, or Remembering the 2000s. Its songs come from shared filters, a beets query or an M3U playlist file.</p>
       <div id="categories-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+      <p id="categories-beets-paths" hidden></p>
       <h3 id="categories-list-heading">Saved categories</h3>
       <ul id="categories-list" aria-labelledby="categories-list-heading"><li>No categories loaded.</li></ul>
       <button type="button" id="categories-add">Add category</button>

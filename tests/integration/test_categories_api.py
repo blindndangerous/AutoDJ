@@ -284,3 +284,35 @@ def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
         )
         assert backwards.status_code == 400
         assert backwards.json()["field"] == "not_after"
+
+
+def test_categories_list_names_beets_paths_that_match_no_library_song(tmp_path):
+    import sqlite3
+
+    import autodj.beets_paths as beets_paths
+
+    beets_paths._latest.clear()
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        app, client, _songs = _client(tmp_path, catalog)
+        _pair(app, client)
+        db = tmp_path / "beets.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB, genre TEXT)")
+        conn.executemany(
+            "INSERT INTO items (path, genre) VALUES (?, 'Rock')",
+            [(name.encode(),) for name in ("a.flac", "b.flac", "c.flac")],
+        )
+        conn.commit()
+        conn.close()
+        wrong = tmp_path / "wrong"
+        wrong.mkdir()
+        cfg = app.state.stations.default.cfg
+        cfg.library.beets_db = db
+        cfg.library.music_dir = wrong
+        try:
+            view = client.get("/api/categories").json()["beets_paths"]
+            assert view["mismatch"] is True
+            assert "No song in the beets database matches" in view["problem"]
+            assert view["fix"].startswith("Set music_dir = ")
+        finally:
+            beets_paths._latest.clear()

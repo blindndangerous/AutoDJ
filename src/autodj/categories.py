@@ -66,6 +66,7 @@ from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
 if TYPE_CHECKING:
+    from autodj.beets_paths import PathCheck
     from autodj.config import AutoDJConfig
     from autodj.stations import StationPaths
 
@@ -656,16 +657,30 @@ class BeetsSource:
     def items(self, fields: Iterable[str]) -> dict[str, dict[str, Any]]:
         """The values of *fields* for every beets item, by AutoDJ's library path."""
         from autodj.beets import read_items
-        from autodj.catalog import normalize_path
+        from autodj.beets_paths import library_key
 
-        found: dict[str, dict[str, Any]] = {}
-        for path, values in read_items(self.db_path, fields):
-            raw = str(path).replace("\\", "/")
-            absolute = raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":")
-            if not absolute and self.music_dir is not None:
-                path = Path(self.music_dir) / raw.lstrip("/")
-            found[normalize_path(path)] = values
-        return found
+        return {
+            library_key(str(path), self.music_dir): values
+            for path, values in read_items(self.db_path, fields)
+        }
+
+    def checked_items(
+        self, fields: Iterable[str], library: Sequence[str]
+    ) -> tuple[dict[str, dict[str, Any]], PathCheck]:
+        """Like :meth:`items`, matched against the *library* paths and checked.
+
+        A relative beets path is joined to ``music_dir``, or to the library
+        folder that holds the paths when ``music_dir`` is unset or missing
+        (see :func:`autodj.beets_paths.match`).  The check is remembered,
+        and logged once when what it says changed.
+        """
+        from autodj.beets import read_items
+        from autodj.beets_paths import match, remember
+
+        rows = [(str(path), values) for path, values in read_items(self.db_path, fields)]
+        found, check = match(rows, library, self.music_dir)
+        remember(self.db_path, self.music_dir, check, len(library))
+        return found, check
 
 
 def beets_source(cfg: AutoDJConfig) -> BeetsSource | None:
@@ -789,6 +804,7 @@ class _Sources:
     known: frozenset[str] = field(default_factory=frozenset)
     beets_error: str | None = None
     beets_items: dict[str, dict[str, Any]] = field(default_factory=dict)
+    beets_check: PathCheck | None = None
 
     def lookup(self) -> dict[str, Any]:
         if self.by_path is None:
@@ -806,7 +822,10 @@ class _Sources:
         if self.beets is not None:
             try:
                 known |= self.beets.fields()
-                overlay = self.beets.items(fields)
+                library = [
+                    entry.path for entry in self.entries if not getattr(entry, "is_silent", False)
+                ]
+                overlay, self.beets_check = self.beets.checked_items(fields, library)
             except (OSError, sqlite3.Error) as exc:
                 self.beets_error = f"The beets database could not be read: {exc}"
         self.known = frozenset(known)
@@ -833,6 +852,36 @@ def resolve_all(
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[Resolution]:
     """Work out every category in *categories*, reading beets once for all of them."""
+    return resolve_checked(
+        categories,
+        entries,
+        beets=beets,
+        music_dir=music_dir,
+        folder=folder,
+        sources_by_id=sources_by_id,
+    )[0]
+
+
+def uses_beets(category: CategorySpec) -> bool:
+    """Whether *category* reads the beets database: a query, or a Beets field condition."""
+    return category.source == "query" or (
+        category.source == "filters" and any(c["field"] == "beets" for c in category.conditions)
+    )
+
+
+def resolve_checked(
+    categories: Sequence[CategorySpec],
+    entries: Sequence[Any],
+    *,
+    beets: BeetsSource | None,
+    music_dir: Path | None,
+    folder: Path,
+    sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+) -> tuple[list[Resolution], PathCheck | None]:
+    """Like :func:`resolve_all`, with how beets' paths matched the library.
+
+    The check is ``None`` when no category read beets.
+    """
     sources = _Sources(entries, beets, music_dir, folder)
     queries = [spec.parsed_query() if spec.source == "query" else None for spec in categories]
     fields: set[str] = set()
@@ -844,8 +893,7 @@ def resolve_all(
             condition["name"] for condition in spec.conditions if condition["field"] == "beets"
         )
     if any(query is not None for query in queries) or any(
-        c.source == "filters" and any(x["field"] == "beets" for x in c.conditions)
-        for c in categories
+        c.source == "filters" and uses_beets(c) for c in categories
     ):
         sources.read(fields)
     results: list[Resolution] = []
@@ -900,7 +948,7 @@ def resolve_all(
                 continue
         music_entries = [entry for entry in entries if not getattr(entry, "is_silent", False)]
         results.append(Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path))))
-    return results
+    return results, sources.beets_check
 
 
 # ----------------------------------------------------------------------
@@ -926,6 +974,7 @@ class _Resolved:
     entries: Sequence[Any]
     categories: tuple[Category, ...]
     results: dict[str, Resolution]
+    beets_check: PathCheck | None = None
 
 
 #: What :meth:`CategoryIndex.closed_now` last worked out: the results it read,
@@ -991,11 +1040,7 @@ class CategoryIndex:
     def _signature(self, categories: Sequence[Category], entries: Sequence[Any]) -> tuple:
         folder = self.folder
         beets = self._cfg.library.beets_db
-        uses_beets = beets is not None and any(
-            c.source == "query"
-            or (c.source == "filters" and any(x["field"] == "beets" for x in c.conditions))
-            for c in categories
-        )
+        reads_beets = beets is not None and any(uses_beets(c) for c in categories)
         playlists = []
         for category in categories:
             if category.source == "m3u":
@@ -1010,8 +1055,8 @@ class CategoryIndex:
                 (s.get("id"), s.get("kind"), s.get("path"), s.get("recursive"))
                 for s in self._folders()
             ),
-            _stat(Path(beets)) if uses_beets and beets else None,
-            _stat(Path(f"{beets}-wal")) if uses_beets and beets else None,
+            _stat(Path(beets)) if reads_beets and beets else None,
+            _stat(Path(f"{beets}-wal")) if reads_beets and beets else None,
             tuple(playlists),
         )
 
@@ -1035,7 +1080,7 @@ class CategoryIndex:
                 and resolved.entries is entries
             ):
                 return resolved.categories, resolved.results
-            results = resolve_all(
+            results, check = resolve_checked(
                 categories,
                 entries,
                 beets=beets_source(self._cfg),
@@ -1043,6 +1088,7 @@ class CategoryIndex:
                 folder=self.folder,
                 sources_by_id={source["id"]: source for source in self._folders()},
             )
+            cause = check.cause if check is not None else None
             by_id: dict[str, Resolution] = {}
             previous = resolved.results if resolved is not None else {}
             before = {c.id: c for c in resolved.categories} if resolved is not None else {}
@@ -1061,10 +1107,23 @@ class CategoryIndex:
                 by_id[category.id] = result
                 if result.error:
                     logger.warning("Category %s: %s", category.name, result.error)
+                elif not result.paths and cause and uses_beets(category):
+                    logger.warning(
+                        "Category %s has no songs in the library: %s", category.name, cause
+                    )
                 elif not result.paths:
                     logger.warning("Category %s has no songs in the library", category.name)
-            self._resolved = _Resolved(signature, entries, categories, by_id)
+            self._resolved = _Resolved(signature, entries, categories, by_id, check)
             return categories, by_id
+
+    def beets_check(self) -> PathCheck | None:
+        """How beets' paths matched the library when the categories were last worked out.
+
+        ``None`` when no category reads beets.
+        """
+        self.resolutions()
+        resolved = self._resolved
+        return resolved.beets_check if resolved is not None else None
 
     def members(self) -> dict[str, tuple[str, frozenset[str]]]:
         """Each category's ID mapped to its name and the paths of its songs."""
