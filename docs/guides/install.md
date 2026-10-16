@@ -14,13 +14,9 @@ Whichever you choose, AutoDJ runs on your own computer. Your music is never uplo
 
 ## What you need
 
-- A computer that stays on while the station plays.
-- Your music on that computer, or on a network share it can open.
-- Several gigabytes of free disk space for AutoDJ and its analysis model. The first setup
-  downloads several gigabytes.
-- An internet connection for the first setup and the first analysis. After that, AutoDJ works
-  offline.
-- Optional: an NVIDIA or a recent AMD graphics card, which makes song analysis much faster.
+- A computer that stays on while the station plays, with music it can read.
+- Several gigabytes of disk space and an internet connection for setup and the analysis model.
+- An optional NVIDIA or recent AMD graphics card for faster analysis.
 
 ## Windows
 
@@ -62,37 +58,28 @@ Later, start AutoDJ with `./autodj`, and use it for every other command, such as
 
 ## First start
 
-The first start runs guided setup. It says "Welcome to AutoDJ. Let's detect your hardware and
-set up your music library." Then it:
+The first start runs guided setup:
 
-1. Detects your processor and graphics card, and recommends CPU, NVIDIA or AMD. It explains its
-   choice.
+1. Detects your processor and graphics card, then recommends CPU, NVIDIA, or AMD.
 2. Asks for a web port, `Local web port [8080]:`. Press Enter to keep 8080 unless another
    program uses it.
-3. Shows the installation plan and asks `Apply this setup plan? (y/n) [n]:`. Type `y`.
-4. Installs Python and AutoDJ's packages, then checks that the processor or graphics card really
-   works.
-5. Offers to test importing three tracks. You can answer No; you will add music in the page.
+3. Shows the plan and asks `Apply this setup plan? (y/n) [n]:`. Type `y`.
+4. Installs Python and packages, then checks analysis.
+5. Offers to import three test tracks. You can answer No.
 
 When setup finishes, AutoDJ starts. It prints the address of its web page, normally
-`http://localhost:8080`. Open that address in a browser on the same computer. AutoDJ does not
+  `http://localhost:8080`. Open the exact address printed in your terminal. AutoDJ does not
 open a browser by itself unless you start it with `--open`.
 
 To install without starting AutoDJ, run `.\autodj.cmd setup` on Windows or `./autodj setup`
-elsewhere. [Set up AutoDJ](../setup.md) explains every setup option, such as choosing CPU on
-purpose.
+elsewhere. [Set up AutoDJ](../setup.md) explains setup options.
 
 Your library starts empty. Next, [add your music](add-your-music.md).
 
 ### Graphics cards
 
-Setup picks a graphics card automatically when it finds a supported one:
-
-- NVIDIA cards on Windows and Linux, with a driver that supports CUDA 13.0.
-- Recent AMD cards and laptop graphics on Windows and Linux. [AMD GPU support](../windows-amd.md)
-  lists them.
-
-Everything else uses the processor. That works; it is only slower. A graphics card speeds up
+Setup picks a supported graphics card automatically. [AMD GPU support](../windows-amd.md)
+lists Windows AMD cards. Otherwise analysis uses the processor. A graphics card speeds up
 song analysis, not playback.
 
 ## Docker and NAS
@@ -141,20 +128,21 @@ other devices on your network can open it, and each browser pairs once with a co
 5. Open one of the addresses in a browser and type the code.
 6. In **Library tools**, add the folder `/music`.
 
-The container restarts by itself after a crash or a reboot. It uses the server's own network, so
-the addresses are the server's own names and addresses.
+The container restarts after a crash or reboot. Its addresses are the server's addresses.
 
 Some things to know:
 
 - Shared server settings, such as HTTPS certificates, go in `config.toml` or
   `config.local.toml` beside `compose.yaml`. Give paths inside that folder as relative paths,
-  such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose up -d` after a change.
+  such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose restart autodj` after a change.
   Set a station's **Playback output** in **Settings**, **Stations**.
 - The image includes FFmpeg, and its analysis runs on the processor.
 - The music folder is mounted read-only, so AutoDJ cannot write tag edits into your files.
 - To use a [beets](https://beets.io/) library, set `AUTODJ_BEETS_PATH` to the folder that holds
   beets' `library.db`, and set `beets_db = "/beets/library.db"` in the `[library]` section of
-  `config.local.toml`.
+  `config.local.toml`. Beets' stored music paths must match the folder AutoDJ sees, `/music`
+  in Docker. AutoDJ reports a mismatch. For relative paths, it suggests and uses a registered
+  folder when `music_dir` is unset or missing and only one folder matches.
 - Stereo Tool is not in the image. Download it from Settings, Sound; it is saved in the index
   folder.
 - To get a new pairing code later, run
@@ -162,10 +150,8 @@ Some things to know:
 
 ### A NAS without a graphics card
 
-Analysis on a NAS processor is slow. Another computer with a graphics card can analyse new songs
-for it over the network: create a token in Settings, **Analysis workers**, then run
-`autodj worker` on that computer. It downloads each song from the NAS, so it needs no copy of
-your music. See [Using a GPU machine](../operations.md#using-a-gpu-machine).
+For faster analysis, create a token in **Settings**, **Analysis workers** and run
+`autodj worker` on a GPU computer. See [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
 ## Use AutoDJ from other devices
 
@@ -182,16 +168,15 @@ AutoDJ prints its network addresses. While no browser is paired, it also prints 
 3. For the next device, get a new code: run `autodj devices pairing-code`, or press **Show
    pairing code** in Settings, **Profiles and access** on a browser that is already paired.
 
-Each code pairs one device and changes every five minutes. To make LAN mode permanent, add this
-to `config.toml` and restart AutoDJ:
+Each code pairs one device and changes every five minutes. To keep LAN mode on, add this to
+`config.toml` and restart AutoDJ:
 
 ```toml
 [server]
 lan = true
 ```
 
-Settings, **Profiles and access** lists the paired devices with **Rename** and **Revoke**.
-**Sign out this browser** ends the pairing of the browser you are using.
+**Profiles and access** has **Rename**, **Revoke**, and **Sign out this browser**.
 
 If another device cannot connect, check the firewall on the AutoDJ computer. Windows may show a
 Windows Security prompt the first time; allow access on private networks. On Linux, open the
@@ -202,9 +187,7 @@ Listeners do not pair. Anyone who can reach the address can listen to the stream
 
 ### HTTPS
 
-Over plain HTTP from another device, four transition effects (gate stutter, bitcrusher, freeze
-and glitch) play as a plain crossfade in that browser, because browsers allow them only on HTTPS
-pages. HTTPS also protects pairing codes on the network.
+HTTPS protects pairing codes and enables gate stutter, bitcrusher, freeze, and glitch in remote browsers.
 
 To use HTTPS, give AutoDJ a certificate and its private key in `config.toml`:
 
@@ -225,11 +208,46 @@ has the steps.
 
 ## Update AutoDJ
 
-Back up first with `autodj backup`. The [upgrade checklist](../operations.md#upgrade-checklist)
-has the full steps until the Backups and updates guide is written.
+Back up first with `autodj backup`. Follow [Back up and update AutoDJ](backups-and-updates.md)
+for source, wheel, and Docker updates.
+
+## Release artifacts
+
+Each tagged release publishes a wheel, source archive, CycloneDX SBOM, and a cosign signature
+bundle for each artifact. The wheel includes the web page. AutoDJ is not on PyPI. Choose a version
+on the [AutoDJ releases page](https://github.com/blindndangerous/AutoDJ/releases), then replace
+both `X.Y.Z` values to install the wheel:
+
+```bash
+uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"
+```
+
+The wheel resolves dependencies from PyPI. It does not run the launcher's hardware-aware setup.
+To verify a downloaded artifact and its `.bundle` with cosign, use the release workflow's GitHub
+Actions identity and issuer. See [Sigstore blob verification](https://docs.sigstore.dev/cosign/verifying/verify/):
+
+```bash
+cosign verify-blob autodj-X.Y.Z-py3-none-any.whl --bundle autodj-X.Y.Z-py3-none-any.whl.bundle --certificate-identity https://github.com/blindndangerous/AutoDJ/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The SBOM lists components from the release checkout. Keep it with the artifact for auditing.
+
+## Uninstall
+
+Stop AutoDJ and make a backup if you want to keep station settings. For a source checkout,
+remove the checkout and its `.venv` after saving any music, `index`, `models`, configuration,
+and recordings you need. A model cache may also remain in `~/.cache/huggingface` or `HF_HOME`.
+For a wheel, run `uv pip uninstall autodj` in the environment that holds it.
+
+For Docker, `docker compose down --volumes` removes containers and Compose named volumes;
+bind-mounted music, index, and model folders remain on the host. Remove the local image with
+`docker image rm autodj:local` if you no longer need it. See [Back up and update AutoDJ](backups-and-updates.md)
+for what a backup keeps.
 
 ## Related pages
 
 - [Add your music](add-your-music.md)
 - [Troubleshooting](troubleshooting.md#installing-and-starting)
 - [Settings reference: Server](../settings-reference.md#server)
+
+AutoDJ and this page were developed with AI assistance.

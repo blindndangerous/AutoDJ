@@ -14,7 +14,7 @@ Add music and voice liners, then keep the library current.
   list them in `supported_formats` in the `[library]` section of `config.toml`; see the
   [Settings reference](../settings-reference.md#library).
 
-A new installation starts with an empty library. Importing does not move your files. **Edit tags** can change them later.
+A new installation starts with an empty library. Importing does not move your files. The **Tags** card in **Track info** can change library tags later.
 
 ## Add a music folder
 
@@ -47,9 +47,8 @@ the background, one song at a time.
 
 ### Why advanced analysis matters
 
-Advanced analysis uses a machine-learning model to describe how each song sounds. AutoDJ uses
-that description to find songs that sound alike. It also estimates each song's musical key, its
-energy, and its BPM when the tags do not have one.
+Advanced analysis describes how each song sounds. AutoDJ uses it to find similar songs and
+estimate key, energy, and missing BPM.
 
 With advanced analysis, you can use:
 
@@ -59,16 +58,14 @@ With advanced analysis, you can use:
 
 Without advanced analysis:
 
-- Songs still play, crossfade and appear in searches, the queue, categories and clockwheels.
+- Songs still play and appear in searches, queues, categories, and clockwheels.
 - Similarity picking cannot choose them. When the playing song has no analysis, AutoDJ picks
   the next song at random instead, and notes this in its log.
-- The **Random walk**, **Least recently played** and **Clockwheel** pick modes work normally.
-  Many stations run happily on clockwheels alone.
+- **Random walk**, **Least recently played**, and **Clockwheel** still work.
 - Keys stay unknown unless you set them by hand or get them from beets, so harmonic mixing
   skips those songs.
 
-So, if you plan to use similarity picking, leave advanced analysis on. If you schedule music
-with clockwheels and categories, you can turn it off for some or all folders to save time.
+Keep advanced analysis on for similarity picking. For clockwheels, you can turn it off to save time.
 
 ### How long it takes
 
@@ -77,7 +74,7 @@ library can take many hours, so it is fine to leave it running overnight. A supp
 AMD graphics card makes it much faster. The first run downloads the analysis model from Hugging
 Face into the `models` folder.
 
-The default model's weights are licensed for non-commercial use only. Read [Licence and contributors](../../README.md#licence-and-contributors) before commercial use.
+The default model's weights are licensed for non-commercial use only. Read [Credits and licensing](../../README.md#credits-and-licensing) before commercial use.
 
 If the AutoDJ computer has no graphics card, another computer that has one can do the analysis.
 Create a token in Settings, **Analysis workers**, then run `autodj worker` on that computer. See
@@ -132,9 +129,10 @@ plays nothing from it until it returns. Nothing is marked as deleted.
 
 ## Tags, lyrics and album art
 
-- **Edit tags**: open a song in the **Track info** tab to change its title, artist, album, genre,
-  year, BPM, key and ISRC. AutoDJ writes the change into the file. In Docker, the music folder is
-  mounted read-only by default, so tag edits there fail unless you change the mount.
+- **Tags**: open a song in **Track info** to change its title, artist, album, genre, year,
+  BPM, key and ISRC. **Save tags** changes the library only. To write the file too, tick
+  **Also save the tags to the file** before saving. That box is unticked by default. In Docker,
+  the music mount is read-only by default, so leave it unticked unless you make the mount writable.
 - **Lyrics** come from an `.lrc` file with the same name beside the song, or from lyrics stored
   in the file. Timed `.lrc` lyrics scroll and highlight as the song plays.
 - **Album art** comes from the picture stored in the file.
@@ -150,6 +148,10 @@ If you keep your library in [beets](https://beets.io/), AutoDJ can read it. Set 
 - Categories can use beets queries, such as `original_year:2000..2009`.
 
 Beets is not required. Without it, AutoDJ uses the tags in your files.
+
+Beets' stored music paths must match the folder AutoDJ sees. In Docker, that folder is `/music`.
+AutoDJ reports a mismatch. For relative beets paths, when `music_dir` is unset or names a
+missing folder, AutoDJ suggests a registered music folder and uses it if only one matches.
 
 ## From the command line
 
@@ -175,3 +177,5 @@ saves both.
 - [Install AutoDJ](install.md)
 - [Settings reference](../settings-reference.md)
 - [Troubleshooting](troubleshooting.md#music-and-the-library)
+
+AutoDJ and this page were developed with AI assistance.

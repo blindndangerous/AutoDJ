@@ -15,7 +15,10 @@ and macOS, install it yourself (see [Install AutoDJ](install.md)).
 
 For the selected station, open **Settings**, **Stations**. Under **Output for the selected station**,
 set **Playback output** to **Radio stream**, then press **Save station options**. The change takes
-effect when that station next starts. You can edit a named station while it is stopped.
+effect when that station next starts. You can edit a named station while it is stopped. The
+default station cannot be stopped separately, so restart AutoDJ to apply its output change.
+The **Stream** tab and its stream settings appear when the selected station uses **Radio stream**.
+Start that station to obtain a working stream address.
 
 For a one-time default stream, start AutoDJ with `--stream`, for example
 `./autodj serve --lan --stream` (on Windows, `.\autodj.cmd serve --lan --stream`).
@@ -29,7 +32,7 @@ New named stations use stream output by default. The default station can use bro
 
 ## Find the stream address
 
-1. Open the web page and go to Settings, Stream.
+1. After stream output is active, open the web page and go to **Settings**, **Stream**.
 2. **Stream address** shows the address. Press **Copy address** to copy it.
 3. **Download playlist file (.m3u)** saves a small playlist file that holds the same address.
 
@@ -49,7 +52,7 @@ In Settings, Stream:
 
 - **Station name** is what players show, up to 100 characters. Players pick up a new name the
   next time they connect.
-- **Genre**, **Description** and **Website URL** are sent to players and to relays. Press
+- **Genre** and **Website URL** are sent to players and relays. **Description** is sent only to Icecast. Press
   **Save station metadata** after changing any of them. Saving reconnects any relays that are
   turned on.
 - **Quality** sets the MP3 bitrate: 128, 192, 256 or 320 kbps. The default is 320. Changing it
@@ -112,9 +115,8 @@ Some players cannot send a password. Over plain HTTP, the password travels unenc
 
 ## Relay to Icecast or Shoutcast
 
-A relay pushes your stream to a hosted Icecast or Shoutcast server. The host's server carries
-the listeners and can list the station in public directories. While a relay is turned on, the
-station keeps playing even when nobody listens to AutoDJ directly.
+A relay sends your stream to Icecast or Shoutcast. The host carries listeners. An enabled relay
+keeps AutoDJ playing without direct listeners.
 
 You need these details from your host: the server type, host name, port, source password, and
 for Icecast the mount point.
@@ -139,14 +141,11 @@ for Icecast the mount point.
 The page warns: "Relay TLS is unsupported; the source password is sent without encryption."
 Use a host and network you trust.
 
-The Relays table shows each relay's status and its last error. The same status also appears
-under the stream address. A relay that loses its connection keeps trying again on its own, and
-the station keeps playing. A station can have up to 8 relays. Two relays, on any stations, may
-not push to the same server and mount.
+The Relays table shows status and the last error. A disconnected relay retries automatically.
+A station can have up to 8 relays. Two relays cannot use the same server and mount.
 
-AutoDJ saves each station's relays and source passwords in its private
-`index/stations/<station-id>/relays.json`. Use **Settings**, **Stream**, **Relays** to change them.
-Old relay tables are migrated once at startup, then ignored.
+AutoDJ saves each station's relays and passwords in private
+`index/stations/<station-id>/relays.json`. Change them in **Settings**, **Stream**, **Relays**.
 The [Settings reference](../settings-reference.md#relays) lists the relay fields.
 
 ## Record the broadcast
@@ -179,11 +178,13 @@ feed** section of Settings, Stream.
 
 A public request page and a listening page are also available. Both are off by default. The
 request page is switched on in the **Listener requests** card in Queue & Search. The listening
-page and its embeddable version use the selected station's `player_page` settings in
-`station.json`; see the [Settings reference](../settings-reference.md#player-page).
+page and its embeddable version are set under **Settings**, **Stream**, with allowed embed sites.
+The selected station saves them in `station.json`; see the [Settings reference](../settings-reference.md#player-page).
 
 ## Related pages
 
 - [Run several stations](several-stations.md)
 - [Troubleshooting](troubleshooting.md#streaming)
 - [Settings reference: Stream](../settings-reference.md#stream)
+
+AutoDJ and this page were developed with AI assistance.

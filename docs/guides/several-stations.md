@@ -6,12 +6,7 @@ stations, and look after them.
 
 ## What stations share and what they own
 
-Every station on the server shares:
-
-- the music library and its folders,
-- song analysis and cue points,
-- Stereo Tool preset files, M3U playlist files and time check voice packs,
-- the server settings: address, port, HTTPS and pairing.
+Shared page controls are music folders, library jobs, saved cue points, the time format, and creating stations. Categories, clockwheels, shows, and intro rules belong to each station.
 
 Each station has its own:
 
@@ -72,9 +67,9 @@ With two or more stations, the top of the page shows a **Station** button that n
 this page controls, such as "Station: Night Owl Radio". Press it and choose another station from
 the menu. The page heading also names the station.
 
-Library tools, Settings, Stations and saved cue points affect every station. With several
-stations, screen readers hear "Shared by all stations" on those controls. Everything else
-affects only the station the page controls.
+Music folders, library jobs, saved cue points, time format, and creating stations affect every
+station. Categories, clockwheels, shows, and intro rules in **Library tools** belong to the
+selected station. Shared controls say "Shared by all stations" for screen readers.
 
 ## Set up the new station
 
@@ -179,3 +174,5 @@ Keep a separate, safe copy of those passwords.
 - [Streaming and relays](streaming-and-relays.md)
 - [Settings reference](../settings-reference.md)
 - [Troubleshooting](troubleshooting.md)
+
+AutoDJ and this page were developed with AI assistance.

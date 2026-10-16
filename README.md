@@ -22,16 +22,21 @@ cd AutoDJ
 ./autodj
 ```
 
-The first run guides you through setup. Windows can offer to install missing tools. Open the web address printed in the terminal, usually `http://127.0.0.1:8080`. In **Library tools**, add a music folder. Then open **Now Playing** and start playback. You can queue songs in **Queue & Search** while the library finishes analysis.
+The first run guides you through setup. Windows can offer to install missing tools. Open the web address printed in the terminal, usually `http://localhost:8080`. In **Library tools**, add a music folder. Then open **Now Playing** and start playback. You can queue songs in **Queue & Search** while the library finishes analysis.
 
 For a server or NAS, use the [Docker and NAS steps](docs/guides/install.md#docker-and-nas). To reach the page from another device, use [LAN mode and browser pairing](docs/guides/install.md#use-autodj-from-other-devices).
 
 ## Build your station
 
+- [Install AutoDJ](docs/guides/install.md) on Windows, Linux, macOS, Docker, or a NAS.
 - [Add your music](docs/guides/add-your-music.md) and decide whether to run advanced analysis.
 - [Build your sound](docs/guides/build-your-sound.md) with categories, clockwheels, repeat rules, and transitions.
+- [Plan a schedule](docs/guides/schedule.md) for shows, ads, announcements, and time checks.
+- [Go live](docs/guides/going-live.md) with a DJ, listener requests, and voice tracks.
 - [Stream and relay a station](docs/guides/streaming-and-relays.md) to listeners or a hosted server.
 - [Run several stations](docs/guides/several-stations.md) from one shared music library.
+- [Back up and update](docs/guides/backups-and-updates.md) a station.
+- [Use the keyboard and a screen reader](docs/guides/keyboard-and-screen-reader.md).
 - [Troubleshoot AutoDJ](docs/guides/troubleshooting.md) when setup, playback, or streaming fails.
 - [Look up settings](docs/settings-reference.md) for values, defaults, and the controls shown in the page.
 
@@ -39,14 +44,35 @@ Advanced analysis finds songs that sound alike and estimates key, energy, and te
 
 AutoDJ can also use beat grids, intro and outro points, harmonic mixing, and beatmatching for DJ style transitions. These features are optional. The [sound guide](docs/guides/build-your-sound.md) explains when they help.
 
+You can use AutoDJ just for beatmatching and its library tools without running an automatic station.
+
+## Tour of the web page
+
+**Now Playing** controls playback and shows the next song. **Queue & Search** finds songs and builds a queue. **Track info** shows cues, song structure, and the **Tags** card. **History** lists past plays. **Carts** plays short audio on demand, and **Voice tracks** records breaks. **Ads** manages spots and reports. **Library tools** imports music, categories, clockwheels, and shows. **Settings** holds sound, song picking, schedule, streaming, access, and station controls. Some tabs appear only when their feature is available. See the [keyboard and screen reader guide](docs/guides/keyboard-and-screen-reader.md) for navigation.
+
 ## For administrators
 
 The [install guide](docs/guides/install.md) covers Windows, Linux, Docker, and NAS storage. [Operations](docs/operations.md) has backup, restore, upgrade, network, and command details. Run `autodj doctor` to check an installation. Use **Settings**, **Profiles and access** for paired browsers and **Settings**, **Analysis workers** for machine tokens. Do not publish the control page without access controls.
 
-## Licence and contributors
+## Credits and licensing
 
-AutoDJ is copyright © 2026 blindndangerous, jage9, and contributors. It is licensed under [AGPL version 3 or later](LICENSE). If you change AutoDJ and offer it over a network, that licence requires you to offer the changed source. AutoDJ comes without warranty; check your stream, backups, and licensing obligations before relying on it.
+AutoDJ is copyright © 2026 blindndangerous, jage9, and contributors. It is licensed under [AGPL version 3 or later](LICENSE). If you change AutoDJ and offer it over a network, that licence requires you to offer the changed source. Releases up to and including 0.19.1 remain available under MIT. AutoDJ is provided as is, without warranty; use it at your own risk.
 
-The default MuQ model downloads separately. Its [weights are licensed CC BY-NC 4.0](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter), which forbids commercial use without separate permission. [Model selection](docs/model-selection.md) explains the supported model. Stereo Tool is separate software under [Thimeo's terms](https://www.thimeo.com/stereo-tool/) and downloads through **Settings**, **Sound** after you accept its terms.
+Third-party credits:
 
-AutoDJ and this documentation were developed with AI assistance. Human maintainers set requirements, review changes, and make release decisions. Claude contributed implementation across the application; Codex contributed reviews, verification, and documentation. See [Contributing](CONTRIBUTING.md) to help.
+- [MuQ model weights](https://huggingface.co/OpenMuQ/MuQ-large-msd-iter) use CC BY-NC 4.0 and require attribution. AutoDJ downloads them separately and never redistributes them. Commercial use requires permission or a compatible, separately licensed model. See [Model selection](docs/model-selection.md).
+- The base install and container include [mutagen](https://mutagen.readthedocs.io/) under GPL-2.0-or-later and LGPL-licensed soxr through [librosa](https://librosa.org/). Librosa itself uses ISC.
+- [FAISS](https://github.com/facebookresearch/faiss) powers vector search. [FastAPI](https://fastapi.tiangolo.com/) serves the web page.
+- Cue import reads [Mixxx](https://mixxx.org/), [Rekordbox](https://rekordbox.com/), and [Traktor](https://www.native-instruments.com/en/products/traktor/) libraries, and [Serato](https://serato.com/) cue tags.
+- [Stereo Tool](https://www.thimeo.com/stereo-tool/) has separate terms. AutoDJ does not include it; each installation downloads it after you accept those terms.
+
+## Contributors
+
+- [blindndangerous](https://github.com/blindndangerous): project vision, library design, requirements, web UI direction, accessibility decisions, testing on a 10,000-track library, and release decisions.
+- [jage9](https://github.com/jage9): station playout, folder libraries, cue editing, clockwheel rotation, play history, Smooth and Stereo Tool processing, doctor and launcher repairs, Windows AMD and MuQ work, keyboard shortcuts, the accessibility audit, CI, and testing.
+- Claude (Anthropic): implementation across MuQ and librosa analysis, FAISS picking, audio mixing and effects, FastAPI and WebSocket controls, the web page, and tests.
+- Codex (OpenAI): reviews, automated verification, model research, and documentation corrections.
+
+If you contribute, add your name and the work you contributed.
+
+AutoDJ and this documentation were developed with AI assistance. See [Contributing](CONTRIBUTING.md) to help.
