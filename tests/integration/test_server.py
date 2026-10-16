@@ -1941,6 +1941,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import close_cache, get_cache
+        from autodj.station_log import track_station_thread
 
         player = _make_player_mock()
         player._skip_event = threading.Event()
@@ -1954,6 +1955,7 @@ class TestLifespan:
             allow_player_exit.wait()
 
         player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
+        track_station_thread(player_thread, "default")
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.0)
         app = create_app(bridge, player_thread=player_thread)
         player_thread.start()

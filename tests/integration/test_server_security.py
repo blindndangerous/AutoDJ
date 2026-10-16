@@ -30,6 +30,11 @@ _TEST_ACCESS_TOKEN = "task10-test-access-token-is-32-bytes"
 _TEST_DEVICE_ID = "d" * 32
 
 
+@pytest.fixture(autouse=True)
+def isolate_mock_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tests.integration._helpers.NO_INDEX_DIR", tmp_path / "no-index")
+
+
 def _pair(client: TestClient, *, name: str = "Test browser"):
     """Pair client through public API using current short-lived code."""
     code = client.app.state.request_pairing_code()[0]

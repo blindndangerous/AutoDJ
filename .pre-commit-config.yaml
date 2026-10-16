@@ -137,7 +137,7 @@ repos:
 
       - id: trivy-fs
         name: Trivy filesystem scan
-        entry: trivy fs --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 .
+        entry: trivy fs --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --skip-dirs .venv --skip-dirs node_modules --skip-dirs .codex-tmp .
         language: system
         stages: [pre-push]
         pass_filenames: false

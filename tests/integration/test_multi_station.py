@@ -196,8 +196,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.Fixture
     )
     with TestClient(app, client=("192.0.2.4", 50000)) as client:
         yield client, library, cfg, song, closes
-    assert _station_threads("default") == []
-    assert _station_threads("nightowl") == []
+    _wait_for(lambda: not _station_threads("default"), "the default station's threads to end")
+    _wait_for(lambda: not _station_threads("nightowl"), "Night Owl's threads to end")
     assert closes == ["closed"]  # once, after both players were quiet
 
 

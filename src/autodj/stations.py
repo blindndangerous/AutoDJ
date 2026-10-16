@@ -1345,10 +1345,12 @@ class StationRuntime:
                 lambda: _cancel(self._broadcast_task, Exception),
                 self.stop_problems,
             )
-            for name in await asyncio.to_thread(
-                wait_for_station_threads, self.slug, _THREAD_JOIN_TIMEOUT_S
-            ):
-                logger.warning("Station %s: thread %s did not stop in time", self.slug, name)
+            # A player that outlived stop's timeout must not get another wait.
+            if not self.player_running():
+                for name in await asyncio.to_thread(
+                    wait_for_station_threads, self.slug, _THREAD_JOIN_TIMEOUT_S
+                ):
+                    logger.warning("Station %s: thread %s did not stop in time", self.slug, name)
 
     async def _tick_schedule(self) -> None:
         """Run due scheduled events once a second; a failure never stops the timer."""
