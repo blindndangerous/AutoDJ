@@ -41,7 +41,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
+from autodj.station_log import (
+    CURRENT_STATION,
+    CURRENT_STATION_SCOPE,
+    DEFAULT_SLUG,
+    StationThreadScope,
+    new_station_scope,
+    wait_for_station_threads,
+)
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -65,6 +72,7 @@ if TYPE_CHECKING:
     from autodj.webhooks import WebhookWorker
 
 logger = logging.getLogger(__name__)
+_THREAD_JOIN_TIMEOUT_S = 5.0
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
@@ -831,6 +839,7 @@ class StationRuntime:
         first_track: IndexEntry | None = None,
         slug: str = DEFAULT_SLUG,
         paths: StationPaths | None = None,
+        thread_scope: StationThreadScope | None = None,
     ) -> None:
         """Build the station's feed, webhooks and listener access; start nothing.
 
@@ -843,6 +852,7 @@ class StationRuntime:
             first_track: In stream mode, the track the first set starts with.
             slug: The station's name; the default station's when omitted.
             paths: The station's state files; the default station's when omitted.
+            thread_scope: Thread ownership for this run, if already started.
         """
         from autodj._bridge import PlayerBridge
         from autodj.listener_access import ListenerAccess
@@ -851,6 +861,14 @@ class StationRuntime:
         from autodj.webhooks import WebhookWorker
 
         self.slug = slug
+        current_scope = CURRENT_STATION_SCOPE.get()
+        if thread_scope is None:
+            thread_scope = (
+                current_scope
+                if current_scope is not None and current_scope.slug == slug
+                else new_station_scope(slug)
+            )
+        self.thread_scope = thread_scope
         self.bridge = bridge
         self.defined_in = "config"
         self.timezone = timezone
@@ -1321,6 +1339,7 @@ class StationRuntime:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
+        """Close the master and page updates, then wait for remaining station threads."""
         try:
             if self.player_running():
                 logger.warning(
@@ -1343,6 +1362,12 @@ class StationRuntime:
                 lambda: _cancel(self._broadcast_task, Exception),
                 self.stop_problems,
             )
+            # A player that outlived stop's timeout must not get another wait.
+            if not self.player_running():
+                for name in await asyncio.to_thread(
+                    wait_for_station_threads, self.thread_scope, _THREAD_JOIN_TIMEOUT_S
+                ):
+                    logger.warning("Station %s: thread %s did not stop in time", self.slug, name)
 
     async def _tick_schedule(self) -> None:
         """Run due scheduled events once a second; a failure never stops the timer."""
@@ -1498,10 +1523,13 @@ class StoppedStation:
         }
 
 
-async def _run_as[T](slug: str, coro: Coroutine[Any, Any, T]) -> T:
+async def _run_as[T](
+    slug: str, coro: Coroutine[Any, Any, T], scope: StationThreadScope | None = None
+) -> T:
     """Run *coro* as station *slug*: its tasks, threads and log lines carry the name."""
     context = contextvars.copy_context()
     context.run(CURRENT_STATION.set, slug)
+    context.run(CURRENT_STATION_SCOPE.set, scope)
     return await asyncio.create_task(coro, context=context)
 
 
@@ -1861,7 +1889,11 @@ class StationRegistry:
     async def start_all(self) -> None:
         """Start configured autostart stations; a failure leaves the server available."""
         if not isinstance(self._default, ExtraStation):
-            await _run_as(self._default.slug, self._default.start())
+            await _run_as(
+                self._default.slug,
+                self._default.start(),
+                getattr(self._default, "thread_scope", None),
+            )
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
             extra = self._extras.get(slug)
             if extra is None or not extra.autostart:
@@ -1923,6 +1955,7 @@ class StationRegistry:
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
         self._content.pop(extra.slug, None)
+        CURRENT_STATION_SCOPE.set(new_station_scope(extra.slug))
         try:
             runtime = await asyncio.to_thread(extra.build, self)
         except StationControlError:
@@ -1978,7 +2011,11 @@ class StationRegistry:
                         del self._running[slug]
                     self._stopped_names[slug] = runtime.name
                     self._stopped_requests[slug] = _takes_requests(runtime)
-                    warnings = await _run_as(slug, self._stop_extra(runtime, extra))
+                    warnings = await _run_as(
+                        slug,
+                        self._stop_extra(runtime, extra),
+                        getattr(runtime, "thread_scope", None),
+                    )
         finally:
             with self.stereo_tool_lock:
                 self._stopping_runtimes.pop(slug, None)
@@ -2120,11 +2157,13 @@ class StationRegistry:
                 await held.enter_async_context(lock)
             writers_quiesced = True
             for station in self.all():
-                quiet = await _run_as(station.slug, station.stop(timeout_s))
+                quiet = await _run_as(
+                    station.slug, station.stop(timeout_s), getattr(station, "thread_scope", None)
+                )
                 writers_quiesced = quiet and writers_quiesced
             cache_closed = await library.close(writers_quiesced, readers_stopped=readers_stopped)
             for station in self.all():
-                await _run_as(station.slug, station.close())
+                await _run_as(station.slug, station.close(), getattr(station, "thread_scope", None))
             with self.stereo_tool_lock:
                 self._running.clear()
             return writers_quiesced, cache_closed

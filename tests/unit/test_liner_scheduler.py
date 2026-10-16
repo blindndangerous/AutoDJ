@@ -145,6 +145,140 @@ def test_saved_points_plans_one_liner_until_heard_or_released(tmp_path: Path) ->
     assert scheduler.plan_for_handoff("handoff-2", tracks_ahead=2, seconds_ahead=0) == "id-two"
 
 
+def test_snapshot_plans_and_advances_without_changing_live_scheduler(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "same.wav"
+    second = tmp_path / "two" / "same.wav"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+    now = [1_000_000.0]
+    airs: list[float] = []
+    cfg = _cfg(
+        transition_mode="saved_points",
+        liners_talk_up=True,
+        liners_every_n_songs=2,
+        liners_every_minutes=2,
+    )
+    scheduler = LinerScheduler(
+        cfg,
+        tmp_path / "flat",
+        MagicMock(),
+        clock=lambda: 40.0,
+        registered_liners=lambda: [("id-one", first), ("id-two", second)],
+        path_decoder=lambda _path: np.zeros((8, 2), np.float32),
+        vocal_start=lambda _entry: 1.0,
+    )
+    scheduler.play_dates_at = lambda _name, at: airs.append(at) and None
+    sim = scheduler.snapshot(
+        clock=lambda: now[0], wall_clock=lambda: now[0], cfg=SimpleNamespace(playback=cfg)
+    )
+
+    sim.on_track_start()
+    assert sim._last_fire == now[0]
+    assert sim.plan_for_handoff("too-soon", tracks_ahead=0, seconds_ahead=0) is None
+    assert sim.plan_for_handoff("preview", tracks_ahead=1, seconds_ahead=0) == "id-one"
+    assert airs == [now[0], now[0]]
+    assert sim.mark_planned_fired("preview")
+    now[0] += 60
+    assert sim.plan_for_handoff("preview-next", tracks_ahead=2, seconds_ahead=0) == "id-two"
+    assert airs[-2:] == [now[0], now[0]]
+    assert airs[:2] == [now[0] - 60, now[0] - 60]
+
+    assert scheduler._tracks_since == 0
+    assert scheduler._planned_key is None
+    assert scheduler._registered_cursor == 0
+    assert scheduler.plan_for_handoff("live", tracks_ahead=2, seconds_ahead=0) == "id-one"
+    assert scheduler._cfg is not sim._cfg
+    assert sim._bus is None
+
+
+def test_snapshot_copies_an_existing_handoff_reservation(tmp_path: Path) -> None:
+    path = tmp_path / "liner.wav"
+    path.touch()
+    cfg = _cfg(transition_mode="saved_points", liners_talk_up=True)
+    scheduler = LinerScheduler(
+        cfg,
+        tmp_path,
+        MagicMock(),
+        registered_liners=lambda: [("liner", path)],
+        path_decoder=lambda _path: np.zeros((8, 2), np.float32),
+        vocal_start=lambda _entry: 1.0,
+    )
+    assert scheduler.plan_for_handoff("already-planned", 2, 0) == "liner"
+
+    scheduler._lock.acquire()
+    assert not scheduler.mark_planned_fired("already-planned")
+    scheduler._lock.release()
+    sim_now = 1_000_000.0
+    sim = scheduler.snapshot(clock=lambda: sim_now, wall_clock=lambda: sim_now)
+    assert (sim._planned_key, sim._planned_name) == ("already-planned", "liner")
+    with sim._state():
+        pass
+    assert not sim._heard
+    assert abs(sim._last_fire - sim_now) < 1
+    assert scheduler._planned_key == "already-planned"
+    assert len(scheduler._heard) == 1
+    assert scheduler._registered_cursor == 0
+
+
+def test_snapshot_track_updates_cannot_decode_or_play_outside_planner_mode(tmp_path: Path) -> None:
+    decoder = MagicMock(return_value=np.zeros((8, 2), np.float32))
+    bus = MagicMock()
+    scheduler = LinerScheduler(_cfg(liners_every_n_songs=1), tmp_path, bus, decoder=decoder)
+
+    sim = scheduler.snapshot()
+    sim.on_track_start()
+    sim.tick()
+
+    decoder.assert_not_called()
+    bus.play_liner.assert_not_called()
+
+
+def test_forecast_fires_every_track_trigger_without_mutating_live_scheduler(tmp_path: Path) -> None:
+    _folder(tmp_path)
+    bus = MagicMock()
+    scheduler = LinerScheduler(
+        _cfg(liners_every_n_songs=2),
+        tmp_path,
+        bus,
+        decoder=lambda _folder, _name: np.zeros((4410, 2), np.float32),
+    )
+    sim = scheduler.snapshot(clock=lambda: 100.0, wall_clock=lambda: 100.0)
+
+    assert sim.forecast(100, 109) == []
+    assert sim.forecast(110, 120) == [(110.0, "a.wav", 0.1)]
+    assert scheduler._fires == 0
+    assert scheduler._tracks_since == 0
+    assert scheduler._library.cursor == 0
+    assert sim._fires == 1
+    assert sim._tracks_since == 0
+    assert sim._library.cursor == 1
+    assert "_decode" not in sim.__dict__
+    bus.play_liner.assert_not_called()
+
+
+def test_forecast_fires_timed_triggers_at_simulated_minutes(tmp_path: Path) -> None:
+    _folder(tmp_path)
+    scheduler = LinerScheduler(
+        _cfg(liners_every_n_songs=None, liners_every_minutes=1),
+        tmp_path,
+        MagicMock(),
+        decoder=lambda _folder, _name: np.zeros((4410, 2), np.float32),
+    )
+    sim = scheduler.snapshot(clock=lambda: 100.0, wall_clock=lambda: 100.0)
+
+    assert sim.forecast(100, 160) == []
+    assert sim.forecast(160, 221) == [
+        (160.0, "a.wav", 0.1),
+        (220.0, "b.wav", 0.1),
+    ]
+    assert scheduler._fires == 0
+    assert scheduler._tracks_since == 0
+    assert scheduler._library.cursor == 0
+    assert "_decode" not in sim.__dict__
+
+
 def test_releasing_discarded_plan_keeps_sequential_pick(tmp_path: Path) -> None:
     first = tmp_path / "a" / "one.wav"
     second = tmp_path / "b" / "two.wav"
