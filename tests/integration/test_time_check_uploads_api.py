@@ -35,7 +35,7 @@ def _client(bridge, tmp_path, *, secret: str | None = None) -> TestClient:
     cfg = bridge.player._cfg
     point_index(cfg.index, tmp_path)
     cfg.index.index_dir = tmp_path
-    cfg.server.station_timezone = "UTC"
+    cfg.station.timezone = "UTC"
     if secret is not None:
         cfg.server.access_token = secret
     app = create_app(bridge)

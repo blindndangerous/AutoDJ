@@ -289,7 +289,7 @@ def _listing(station: StationRuntime, track_id: str | None) -> dict[str, Any]:
         # Intros in the file that are not valid and are skipped, in words.
         "problem": store.problem(),
         "limits": {
-            "max_bytes": station.cfg.server.liner_upload_max_bytes,
+            "max_bytes": (station.cfg.station.liner_upload_max_mib * 1024 * 1024),
             "max_seconds": MAX_INTRO_SECONDS,
             "extensions": list(LINER_EXTS),
         },
@@ -507,7 +507,7 @@ def install_matched_intros(router: StationRouter) -> None:
 
         store = _store(station)
         library = _library(station)
-        cap = int(station.cfg.server.liner_upload_max_bytes)
+        cap = int((station.cfg.station.liner_upload_max_mib * 1024 * 1024))
         too_large = f"An intro file may be at most {cap // (1024 * 1024)} MB"
         declared = request.headers.get("content-length")
         size = cap

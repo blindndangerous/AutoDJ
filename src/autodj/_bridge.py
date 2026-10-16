@@ -258,8 +258,91 @@ def _stereotool_report(master: Any) -> dict[str, Any] | None:
     return dict(report) if isinstance(report, dict) else None
 
 
+class LibraryAccess:
+    """Library operations that remain available without a running player."""
+
+    library: Any
+    sim: Any
+
+    def search(self, query: str, limit: int = 100) -> list[dict]:
+        """Search indexed tracks by title, artist, and album.
+
+        Splits the query into whitespace-separated tokens and requires
+        every token to appear somewhere in the combined ``title +
+        artist + album`` text of a candidate.  Token matching is case-
+        insensitive and substring-based, so:
+
+        - ``"portishead mysterons"`` matches title=Mysterons artist=Portishead
+        - ``"dummy sour"`` matches album=Dummy title=Sour Times
+        - ``"thom yorke amok"`` matches Atoms For Peace album=Amok
+
+        Args:
+            query: Multi-token search string.  Empty / whitespace-only
+                returns an empty list.
+            limit: Maximum number of results to return.  Default 100.
+
+        Returns:
+            List of track dicts with the keys ``path``, ``title``,
+            ``artist``, ``album``, ``bpm``, ``length`` and ``display_name``.
+        """
+        tokens = [t for t in query.lower().split() if t]
+        if not tokens:
+            return []
+
+        results = []
+        for entry, haystack in _search_index(self.library, self.sim):
+            if all(tok in haystack for tok in tokens):
+                results.append(
+                    {
+                        "title": entry.title,
+                        "artist": entry.artist,
+                        "album": entry.album,
+                        "path": entry.path,
+                        "bpm": entry.bpm,
+                        "length": entry.length,
+                        "display_name": entry.display_name,
+                    },
+                )
+                if len(results) >= limit:
+                    break
+        return results
+
+    def search_index(self) -> list[tuple[IndexEntry, str]]:
+        """Every music entry with its lowercased "title — artist — album" text."""
+        return _search_index(self.library, self.sim)
+
+    def entry_for_path(self, path: str) -> IndexEntry | None:
+        """Resolve only a registered playable file, including basic-ready tracks."""
+        collection = self.library if self.library is not None else self.sim
+        return collection.entry_for_path(path)
+
+    def cover_art_for(self, path: str) -> tuple[bytes, str] | None:
+        """Return (image_bytes, mime_type) for the embedded cover art."""
+        from autodj.audio_meta import read_cover_art
+
+        art = read_cover_art(path)
+        if art is None:
+            return None
+        return art.data, art.mime_type
+
+
 @dataclass
-class PlayerBridge:
+class LibraryServices(LibraryAccess):
+    """Installation-owned configuration and library access for shared routes."""
+
+    cfg: Any
+    sim: Any
+    library: Any
+
+    def lyrics_for(self, path: str) -> list[dict]:
+        from autodj.audio_meta import read_library_lyrics
+
+        lyrics, _plain = read_library_lyrics(path, self.cfg.library)
+        return [{"time_s": line.time_s, "text": line.text} for line in lyrics]
+
+
+@dataclass
+class PlayerBridge(LibraryAccess):
     """Thread-safe adapter between :class:`~autodj.player.Player` and FastAPI.
 
     Exposes playback control methods that can be called from the asyncio
@@ -1442,58 +1525,6 @@ class PlayerBridge:
     # Search
     # ------------------------------------------------------------------
 
-    def search(self, query: str, limit: int = 100) -> list[dict]:
-        """Search indexed tracks by title, artist, and album.
-
-        Splits the query into whitespace-separated tokens and requires
-        every token to appear somewhere in the combined ``title +
-        artist + album`` text of a candidate.  Token matching is case-
-        insensitive and substring-based, so:
-
-        - ``"portishead mysterons"`` matches title=Mysterons artist=Portishead
-        - ``"dummy sour"`` matches album=Dummy title=Sour Times
-        - ``"thom yorke amok"`` matches Atoms For Peace album=Amok
-
-        Args:
-            query: Multi-token search string.  Empty / whitespace-only
-                returns an empty list.
-            limit: Maximum number of results to return.  Default 100.
-
-        Returns:
-            List of track dicts with the keys ``path``, ``title``,
-            ``artist``, ``album``, ``bpm``, ``length`` and ``display_name``.
-        """
-        tokens = [t for t in query.lower().split() if t]
-        if not tokens:
-            return []
-
-        results = []
-        for entry, haystack in _search_index(self.library, self.sim):
-            if all(tok in haystack for tok in tokens):
-                results.append(
-                    {
-                        "title": entry.title,
-                        "artist": entry.artist,
-                        "album": entry.album,
-                        "path": entry.path,
-                        "bpm": entry.bpm,
-                        "length": entry.length,
-                        "display_name": entry.display_name,
-                    },
-                )
-                if len(results) >= limit:
-                    break
-        return results
-
-    def search_index(self) -> list[tuple[IndexEntry, str]]:
-        """Every music entry with its lowercased "title — artist — album" text."""
-        return _search_index(self.library, self.sim)
-
-    def entry_for_path(self, path: str) -> IndexEntry | None:
-        """Resolve only a registered playable file, including basic-ready tracks."""
-        collection = self.library if self.library is not None else self.sim
-        return collection.entry_for_path(path)
-
     # ------------------------------------------------------------------
     # Queue control
     # ------------------------------------------------------------------
@@ -2233,15 +2264,6 @@ class PlayerBridge:
     # ------------------------------------------------------------------
     # Cover art and lyrics
     # ------------------------------------------------------------------
-
-    def cover_art_for(self, path: str) -> tuple[bytes, str] | None:
-        """Return (image_bytes, mime_type) for the embedded cover art."""
-        from autodj.audio_meta import read_cover_art
-
-        art = read_cover_art(path)
-        if art is None:
-            return None
-        return art.data, art.mime_type
 
     def lyrics_for(self, path: str) -> list[dict]:
         """Read timed lyrics for *path* without depending on current-track state."""

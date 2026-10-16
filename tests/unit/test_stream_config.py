@@ -67,7 +67,7 @@ def test_toml_and_environment(tmp_path: Path) -> None:
         path, environ={"AUTODJ_STREAM_BITRATE": "256", "AUTODJ_STREAM_ENABLED": "off"}
     )
     assert cfg.stream.bitrate == 256
-    assert cfg.stream.enabled is False
+    assert cfg.station.output == "browser"
 
 
 def test_private_listener_credentials_and_proxy_config(tmp_path: Path) -> None:

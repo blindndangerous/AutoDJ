@@ -157,7 +157,7 @@ def test_time_settings_are_saved_and_the_zone_applies_at_the_next_start(library_
     assert unknown.value.status_code == 400
     timefmt.time_format = "24"
     _apply_time_settings(manager.cfg, manager)
-    assert manager.cfg.server.station_timezone == "Pacific/Auckland"
+    assert manager.cfg.station.timezone == "Pacific/Auckland"
     assert timefmt.time_format == "12"
 
 

@@ -15,6 +15,33 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   const status = doc.getElementById("stations-status");
   if (!panel || !zone || !format || !save || !status) return { load: async () => {} };
   let running = null;
+  const output = doc.getElementById("station-output");
+  const monitor = doc.getElementById("station-monitor");
+  const cap = doc.getElementById("station-upload-cap");
+  const optionsSave = doc.getElementById("station-options-save");
+  function showOptions(value) {
+    output.value = value.output;
+    monitor.checked = value.server_audio_too;
+    monitor.disabled = output.value !== "stream";
+    cap.value = value.liner_upload_max_mib;
+  }
+  output?.addEventListener("change", () => {
+    monitor.disabled = output.value !== "stream";
+    if (monitor.disabled) monitor.checked = false;
+  });
+  optionsSave?.addEventListener("click", async () => {
+    try {
+      showOptions(await request("/api/station-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output: output.value, server_audio_too: monitor.checked,
+          liner_upload_max_mib: Number(cap.value) }),
+      }));
+      announceStatus(status, "Station options saved. Output changes apply on the next start.", { force: true });
+    } catch (error) {
+      announceStatus(status, `Could not save station options: ${error.message}`, { force: true, tone: "error" });
+    }
+  });
 
   function show(value) {
     running = value.running_timezone;
@@ -34,6 +61,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   async function load() {
     try {
       show(await request(ENDPOINT));
+      if (output) showOptions(await request("/api/station-settings"));
     } catch {
       // The fields keep what they show; Save reports any problem.
     }
@@ -49,7 +77,7 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
       show(value);
       announceStatus(status, value.timezone === running
         ? "Time settings saved."
-        : "Time settings saved. The new time zone applies when AutoDJ restarts.", { force: true });
+        : "Time settings saved. The new time zone applies when this station restarts.", { force: true });
     } catch (error) {
       announceStatus(status, `Could not save the time settings: ${error.message}`,
         { force: true, tone: "error" });

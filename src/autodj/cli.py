@@ -17,7 +17,6 @@ import io
 import json
 import logging
 import os
-import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -132,7 +131,7 @@ def _load_cfg_or_exit(
     """
     from logging.handlers import MemoryHandler
 
-    from autodj.config import load_config
+    from autodj.config import load_config, move_station_tables
     from autodj.layout import LayoutError, move_old_layout
 
     # Held until the log file is open: it lives in the index folder the move may change.
@@ -142,6 +141,8 @@ def _load_cfg_or_exit(
     try:
         cfg = load_config(config_path)
         if move_old_layout(cfg):
+            cfg = load_config(config_path)
+        if move_station_tables(cfg):
             cfg = load_config(config_path)
         if early is not None and isinstance(cfg.index.index_dir, Path):
             handler = _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
@@ -195,29 +196,6 @@ def _can_import(name: str) -> bool:
     except ImportError:
         return False
     return True
-
-
-def _require_ffmpeg_for_stream(cfg: AutoDJConfig) -> None:
-    """Refuse to start stream mode when ffmpeg is not on the PATH.
-
-    Args:
-        cfg: Staged application configuration.
-
-    Raises:
-        click.ClickException: If ``cfg.stream.enabled``, or another station
-            is configured (``[stations.<slug>]`` always streams), and ffmpeg
-            is missing.
-    """
-    if not (cfg.stream.enabled or cfg.stations) or shutil.which("ffmpeg") is not None:
-        return
-    if cfg.stream.enabled:
-        raise click.ClickException(
-            "Stream mode needs ffmpeg on the PATH. Install ffmpeg, or start without --stream."
-        )
-    raise click.ClickException(
-        "The stations in [stations.<slug>] stream, so they need ffmpeg on the PATH. "
-        "Install ffmpeg, or remove those tables."
-    )
 
 
 def _configured_allowed_hosts(
@@ -1719,11 +1697,9 @@ def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
 @click.option(
     "--server-audio/--no-server-audio",
     "server_audio",
-    default=False,
+    default=None,
     help=(
-        "Play audio from the server process.  Off by default: "
-        "the browser is the audio output so skipping / volume / device "
-        "changes only touch the local browser, never the server thread."
+        "Override the default station's saved server sound-card output for this run."
     ),
 )
 @click.option(
@@ -1763,7 +1739,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     allowed_hosts: tuple[str, ...],
     allowed_origins: tuple[str, ...],
     open_browser: bool,
-    server_audio: bool,
+    server_audio: bool | None,
     stream: bool | None,
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
@@ -1833,12 +1809,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    from autodj.config import move_station_tables
     from autodj.library import LibraryManager
 
-    if move_station_tables(cfg):
-        # The moved stations are read from their own files from now on.
-        cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     library = LibraryManager(cfg, sim)
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
@@ -1846,10 +1818,12 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:
-        cfg.stream.enabled = stream
+        cfg.station.output = "stream" if stream else "browser"
+        cfg.station.server_audio_too = bool(stream and server_audio)
+        if cfg.default_station is not None:
+            cfg.default_station.cfg.station = cfg.station
     if stream is not None or server_cli_override:
         _append_cli_source(cfg)
-    _require_ffmpeg_for_stream(cfg)
     if open_browser:
         import threading
         import webbrowser
@@ -1865,8 +1839,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
             seed_entry=seed_entry,
             host=host,
             port=port,
-            no_playback=not server_audio,
-            stream=cfg.stream.enabled,
+            no_playback=None if server_audio is None else not server_audio,
+            stream=None,
             lan_configured_hosts=lan_configured_hosts,
         )
     except KeyboardInterrupt:
@@ -2161,7 +2135,7 @@ def cmd_simulate(
                 "write the time as 2026-10-12T06:00", param_hint="--start"
             ) from exc
         if moment.tzinfo is None:
-            zone = cfg.server.station_timezone or system_timezone()
+            zone = cfg.station.timezone or system_timezone()
             moment = moment.replace(tzinfo=ZoneInfo(zone))
         start = moment.timestamp()
     try:

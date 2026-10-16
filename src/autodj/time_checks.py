@@ -947,7 +947,7 @@ class TimeChecks:
             "intro_config": Path(tc.intro_clip).name if tc.intro_clip else None,
             "outro_config": Path(tc.outro_clip).name if tc.outro_clip else None,
             "pack_upload_max_mb": MAX_PACK_UPLOAD_BYTES // MIB,
-            "clip_upload_max_mb": self.cfg.server.liner_upload_max_bytes // MIB,
+            "clip_upload_max_mb": self.cfg.station.liner_upload_max_mib,
         }
 
     def tick(self, now: datetime, song_playing: bool) -> None:
@@ -1289,7 +1289,7 @@ def install_time_checks(router: StationRouter) -> None:
             return _file_error(exc)
         upload = hidden_name(checks.root, "clip-upload", Path(filename).suffix.lower())
         try:
-            await receive_upload(file, upload, station.cfg.server.liner_upload_max_bytes)
+            await receive_upload(file, upload, (station.cfg.station.liner_upload_max_mib * 1024 * 1024))
             await asyncio.to_thread(checks.add_clip, filename, upload, replace=replace)
         except (PackError, OSError) as exc:
             return _file_error(exc)

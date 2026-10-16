@@ -526,7 +526,7 @@ tunnel, port forwarding or any other proxy: AutoDJ's pairing is built for a home
 strangers on the internet. After the Access login, pair each remote browser as usual. Every
 request through the tunnel reaches AutoDJ from the `cloudflared` machine's address, so the
 per-address limit on wrong pairing codes counts all remote browsers together unless
-`[stream] trusted_proxies` includes that direct peer. This setting affects client addresses on all
+`[server] trusted_proxies` includes that direct peer. This setting affects client addresses on all
 routes in every mode, including pairing, the listener request limits and audit logs. Set it only
 when the proxy appends the address it saw to `X-Forwarded-For`, or overwrites the header with it.
 A proxy that passes a client's own `X-Forwarded-For` through unchanged lets any client choose its
@@ -657,7 +657,7 @@ working, since no field was removed or renamed.
 - `listener_count` is the number of players connected to this server's stream now (0 outside
   stream mode). Listeners of a relay to another server are not counted.
 - `peak_listeners_today` is the most listeners connected at once since midnight in the station
-  time zone (`[server] station_timezone`, the one the scheduler uses; the computer's time zone
+  time zone (`station.timezone in the station definition`, the one the scheduler uses; the computer's time zone
   when it is not set). It is kept in memory only, so it starts again from the current count when
   AutoDJ restarts.
 - `uptime_seconds` counts whole seconds since this station started: for the default station,
@@ -1041,7 +1041,7 @@ a restart.
 `max_listeners_per_address = 0` leaves the per-address limit off by default. A positive value
 limits one IP address to that many simultaneous connections, in addition to `max_listeners`.
 Change the value in Settings, Stream. If clients reach AutoDJ through a proxy or tunnel, list the **direct proxy
-peer's** IP address or CIDR in `[stream] trusted_proxies`, for example
+peer's** IP address or CIDR in `[server] trusted_proxies`, for example
 `trusted_proxies = ["192.168.1.10"]`. Uvicorn then reads `X-Forwarded-For` from right to left
 and uses the first untrusted address. It does not use the RFC 7239 `Forwarded` header. Without
 this setting, AutoDJ uses the socket peer and ignores forwarded headers. Set trusted proxies
@@ -1258,7 +1258,7 @@ never interrupted. **Download statistics (CSV)** saves every day kept as a sprea
 one row per day, with the same numbers for each format and each session length band.
 
 A session is one connection, from connect to disconnect, and counts on the day it began, in
-the station's time zone (`[server] station_timezone`). The peak is the most listeners connected
+the station's time zone (`station.timezone in the station definition`). The peak is the most listeners connected
 at once. Listeners of a relay's server are not counted here; that server keeps its own figures.
 
 Nothing in the statistics identifies a listener. AutoDJ keeps no address, player name or
@@ -1576,115 +1576,58 @@ client for a running server.
 
 ## Several stations
 
-One AutoDJ server can play more than one station from the same music library. The root sections
-of `config.toml` (`[playback]`, `[stream]` and the rest) are the default station, exactly as
-before: a server with one station needs no change. Another station is defined by its own
-`station.json`, made from the web page. A `[stations.<slug>]` table in `config.toml` is moved
-into a `station.json` the next time `autodj serve` starts. Each station has its own player, mix bus, mastering process, encoder, relays, recorder,
-schedule, carts, time checks, clockwheels, liners, profiles and saved settings; the library, the
-similarity index, pairing and the web server are shared.
+One AutoDJ server can play several stations, or keep the interface available with no stations
+playing. Every station, including `default`, uses the same construction and Start/Stop controls.
+Stop releases that station's audio resources; Start begins fresh playback. Pause holds playback
+position. Stopping one station does not stop another. Scheduled events missed while stopped are
+skipped when the station next starts.
 
-The web page controls one station at a time; the station switcher in its banner picks which.
-See [The station switcher](#the-station-switcher).
+Each station has its own settings, categories, queue, history, schedule, carts, clockwheels,
+liners, shows, ads, requests and relays. Music metadata, analysis and cue points belong to the
+shared library. Pairing, authentication, networking, TLS, trusted proxies and analysis workers
+belong to the installation.
 
 ### Configuration
 
-The slug names the station in addresses, folders and log lines. It uses lower-case letters,
-digits and inner hyphens, at most 32 characters, such as `nightowl`. `default` is reserved for the
-root sections. A server can have at most 8 stations besides the default one.
+Every station has `<index_dir>/stations/<slug>/station.json`, including `stations/default/`.
+Use Settings > Stations to create or duplicate a station and set whether it starts with the
+server. The slug uses lower-case letters, digits and inner hyphens, up to 32 characters.
+A server supports the default station and up to eight additional stations.
 
-This example adds a station called Night Owl Radio. In `config.toml`:
+Startup migrates old root station settings and `[stations.<slug>]` tables into these definitions,
+with recovery copies. Normal loading reads the migrated format; the old tables are not fallback
+settings. Station secrets live separately in `secrets.json` and `relays.json` and remain excluded
+from backups. Server and library configuration remain in `config.toml`.
 
-```toml
-[stations.nightowl]
-autostart = true
+The `station` object inside the definition contains the station's section objects. For example,
+its nested `station` section can contain:
 
-[stations.nightowl.stream]
-station_name = "Night Owl Radio"
-bitrate = 192
-continuous = true
-max_listeners = 20
-
-[stations.nightowl.playback]
-loudness_processing = "smooth"
-
-[stations.nightowl.recording]
-folder = "recordings/nightowl"
+```json
+{
+  "output": "stream",
+  "server_audio_too": false,
+  "timezone": "America/New_York",
+  "liner_upload_max_mib": 50
+}
 ```
 
-In `config.local.toml`, beside the default station's secrets. `autodj serve` moves them into
-the station's own files:
+Settings > Stations edits these options for the selected station, including while it is stopped.
+Output can be `browser`, `server` (sound card), or `stream`. In stream mode, `server_audio_too`
+also sends audio to the sound card. Stations may play on the same sound card simultaneously.
+Output and timezone changes take effect on that station's next start. Time display format remains
+shared across the interface. A station that cannot start reports its error while the interface
+and other stations stay available.
 
-```toml
-[stations.nightowl.stream]
-listener_user = "owl"
-listener_password = "choose another strong password"
+Stations need separate recording folders and relay targets. Their definitions do not inherit
+settings from the default station. A duplicate copies explicitly selected saved configuration;
+it does not inherit the source's credentials or playback history.
 
-[stations.nightowl.stream.relays.main]
-password = "that station's source password"
-
-[[stations.nightowl.webhooks]]
-url = "https://example.com/your-secret-endpoint"
-```
-
-The rules:
-
-- **A station starts from the defaults, not from the root sections.** Nothing is copied from the
-  default station. Copying would quietly give the new station the default station's relays,
-  webhooks, listener password and recording folder. Set everything the station needs in its own
-  tables.
-- **A station's own sections** are `playback`, `djmix`, `transitions`, `replaygain`, `stream`,
-  `recording`, `nowplaying`, `player_page`, `requests`, `time_checks`, `dmca` and `presets.<name>`, plus
-  `webhooks` in `config.local.toml`. They take the same keys as the root sections.
-- **Shared sections:** `library`, `index`, `model`, `huggingface` and `server` belong to the whole
-  server and are read only from the root. So are `stream.trusted_proxies` (from the root
-  `[stream]`) and `server.station_timezone`.
-- **Another station always streams.** It mixes on the server and never opens the sound card, so
-  its `stream.enabled` is ignored with a warning, and so is its `stream.trusted_proxies`.
-- **`autostart`** (default `true`) starts the station with the server. With `false` it is
-  configured but stays stopped until it is started.
-- **Secrets stay out of `config.toml`.** Listener credentials, relay passwords and webhooks go in
-  `config.local.toml` under the same table names; the two files are merged key by key.
-  `config.toml` refuses a station's `webhooks`, as it does the root ones, and a station named
-  in `config.local.toml` but not in `config.toml` is refused, so a misspelled name cannot start
-  a station of its own. A relay password can
-  also come from `AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD`, upper-cased, with `-` written as
-  `_`: for the example above, `AUTODJ_STATION_NIGHTOWL_RELAY_MAIN_PASSWORD`. Only relays named in
-  the TOML are looked up. The other `AUTODJ_STREAM_*` variables apply to the default station only.
-- **Each station needs its own recording folder.** A recorder deletes old recordings from its
-  folder, so two stations sharing one could delete each other's. Leaving `recording.folder`
-  unset in a station uses the default `recordings`, which the default station already uses, so
-  set it.
-- **Each relay target belongs to one station.** Two stations pushing to the same host, port and
-  mount (or Shoutcast stream) are refused.
-- **A station without a `stream.station_name` is called by its slug**, for example `nightowl`, in
-  stream metadata and on its pages, so it never takes the default station's "AutoDJ". Two
-  stations given the same name are warned about at startup: listeners could not tell them apart.
-- **Unknown keys are warned about and ignored**, as in the root sections; the warning names the
-  station's table. `autodj doctor` lists them in its `config-keys` check and offers to remove an
-  unknown key from a station section, with a backup of the file.
-- **Errors name the station**, for example
-  `[stations.nightowl] playback.crossfade_seconds must be between 0 and 20, got 99.0`.
-
-A station keeps its state in `<index_dir>/stations/<slug>/`, the default station in
-`stations/default/`, all with the same file names: `station.json` for a web-created station, `web_state.json`, `schedule.json`, `carts.json` and `carts/`,
-`time_checks.json`, `listener_bans.json`, `listener_stats.json`, `recording.json`, `relay-status.json`, `clockwheels/`,
-`categories.json`, `liners/` and `profiles/`. Its plays are kept in the
-shared `library.db`.
-
-The index folder holds:
-
-- `libraries/main/`: the library, `library.db` and `dj_meta.db`, with the related artists and
-  tracks files.
-- `shared/`: what every station shares, the playlists, uploaded Stereo Tool presets and time
-  check packs.
-- `stations/<slug>/`: each station's own files.
-- `logs/`, `tools/` and the pairing files, for the whole server.
-
-`autodj serve`, or any other command that uses the library, moves an index folder from an older
-release into these folders once, inside the index folder. The categories every station used to
-share go to the default station, and each other station starts with a copy of them. Named indexes (`[index] name`,
-`--name`) are gone; a second named index found there is left as it is.
+The index folder holds `libraries/main/` for library data, `shared/` for shared assets,
+`stations/<slug>/` for each station's files, and installation-wide logs and tools. Categories are
+station-owned, in each station's `categories.json`. The earlier layout migration copied formerly
+shared categories into each station's folder. A migrated default station keeps its old time-check
+clip folder through an explicit setting; fresh stations use their own clip folder unless configured
+otherwise.
 
 ### Creating a station from the web page
 
@@ -2667,7 +2610,7 @@ HTTP request with a `Forwarded`, `X-Forwarded-*` or `X-Real-IP` header is refuse
 loopback, because a reverse proxy on the same machine may have brought it in from the network in
 the clear. From anywhere else, or through a reverse proxy, it needs HTTPS. A reverse proxy must
 terminate TLS itself and send `X-Forwarded-Proto: https`, and AutoDJ must trust that proxy: the
-addresses in `[stream] trusted_proxies` when that list is set, otherwise a proxy on the same
+addresses in `[server] trusted_proxies` when that list is set, otherwise a proxy on the same
 machine (`127.0.0.1` or `::1`), so a TLS proxy on the station's own host needs no setting. A
 request with no proxy headers is treated as before. A request with an `Origin` header, as every
 browser sends, is refused: these routes are for programs only.
@@ -2985,7 +2928,7 @@ press it again. Remove asks first and deletes the clip.
 
 Under **Add an intro**:
 
-- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `[server] liner_upload_max_mib` (the
+- **Audio file**: MP3, WAV, Ogg, M4A, FLAC or AAC, at most `station.liner_upload_max_mib` (the
   liner upload limit) and one minute long. AutoDJ trims the silence before and after the voice.
 - **Plays on**: **This song**, or **Any song by** the artist. The artist comes from the song's
   artist tag; a song without one takes only an intro for itself. A credit such as "Someone feat.
@@ -3363,7 +3306,7 @@ is transmitted to one listener, so one play heard by 100 listeners is 100 perfor
 - The rule can undercount: two players behind one public address that send the same User-Agent,
   such as two speakers of the same model in one home, count once while both are connected. Behind
   a reverse proxy such as a Cloudflare Tunnel, the address is the one the proxy passes on in
-  `X-Forwarded-For` only when the direct proxy peer is in `[stream] trusted_proxies`. Without
+  `X-Forwarded-For` only when the direct proxy peer is in `[server] trusted_proxies`. Without
   that setting, every listener has the proxy's address and only the User-Agent tells them apart.
 - Addresses and User-Agents are kept in memory only, for the song that is playing and the 10
   seconds after a disconnect. The play log stores only the count.
@@ -3470,7 +3413,7 @@ uv run autodj simulate --hours 12 --start 2026-10-16T18:00 --station nightowl
 
 `--station` names the default station or one configured under `[stations.<name>]`; the run uses
 that station's settings, clockwheels, schedule and plays. `--start` is read in the station time
-zone (`[server] station_timezone`) and must fall between
+zone (`station.timezone in the station definition`) and must fall between
 2000 and 2099. Without `--seed` a run draws a seed and the report gives it, so the same seed repeats
 a run song for song, in every pick mode. Runs are capped at 30 days or 20,000 songs, and at ten
 minutes of work: a run that reaches that limit stops with the songs picked so far, and the report
@@ -3584,7 +3527,7 @@ said once, and not again until one succeeds. Choosing another span under **Show*
 counts once. If more than 24 fixed points fall in the span, the first 24 are timed and the card
 says so. Timestamps and durations use the same compact text on screen and in speech, such as
 "14:04:30" and "3:45" (24 hour). Times are in the station
-time zone (`[server] station_timezone`); clockwheel restarts are worked out in the computer's own
+time zone (`station.timezone in the station definition`); clockwheel restarts are worked out in the computer's own
 time zone, as the player does.
 
 The page asks the server only while the card is open. Each preview runs on one worker thread
@@ -3854,7 +3797,7 @@ liner's Segue, though the liner's tail may still run over it.
 
 A voice liner or a cart can have a **Not before** date, a **Do not play after** date, or both,
 such as a promotion that must stop after the event. Both days are included, and the days are
-read in the station time zone (`[server] station_timezone`). Leave both empty to play the clip
+read in the station time zone (`station.timezone in the station definition`). Leave both empty to play the clip
 on any day.
 
 - **Voice liners:** in **Settings > Voice liners**, press **Play dates** on a liner.
@@ -3930,7 +3873,7 @@ A seasonal clockwheel, such as a holiday one from 27 November to 26 December, ta
 
 Use **Run now** on the first event to start the season at once when you add it partway through.
 
-Times use `[server] station_timezone`, an IANA name such as `America/Denver`, or the system time
+Times use `station.timezone in the station definition`, an IANA name such as `America/Denver`, or the system time
 zone when that is not set (UTC when the system has no IANA name). **Time for every station** in
 Settings > Stations sets the time zone from the page instead; a saved one takes the place of
 `config.toml`'s from the next time AutoDJ starts. The same fieldset sets **Time format**, 24 hour
@@ -4244,7 +4187,7 @@ incomplete conditions are shown in the form; automatic updates are not announced
 **Dayparting.** Under **When the songs may play**, a category can allow its songs only on chosen
 days, only between two times (**Allowed from** and **Allowed until**), or both, such as Friday and
 Saturday from 22:00 until 02:00. Leave every day unchecked for every day and both times empty for
-all day. The times are wall-clock times in the station time zone (`[server] station_timezone`);
+all day. The times are wall-clock times in the station time zone (`station.timezone in the station definition`);
 the start time is included and the end time is not. A window that crosses midnight belongs to the
 day it starts, so Friday 22:00 until 02:00 still allows the songs at 01:00 on Saturday. On the
 night the clocks go back, a window inside the repeated hour is open for both passes; on the night
@@ -4478,7 +4421,7 @@ Open **Settings**, then **Time checks**, and turn on **Enable time checks** (or 
 `[time_checks] enabled = true`). Choose 12- or 24-hour speech, and choose **After the song that
 crosses the hour** to hear the time when the song playing at the top of the hour ends. The
 Schedule panel also offers a **Time check** action for set times; it needs server audio or
-stream mode. Both use `[server] station_timezone` (or the detected system zone), and the time
+stream mode. Both use `station.timezone in the station definition` (or the detected system zone), and the time
 said is the time when the check plays. A check plays at most once an hour from the rule: when a
 scheduled check already played in that hour, the rule stays quiet.
 
@@ -4509,7 +4452,7 @@ there). A folder chosen for the clips is not a voice pack. **Upload a clip** add
 intro or outro goes to the time checks folder, and a minute clip such as `15_05.wav` to the
 recorded minute clips folder in use. When a clip of that name is there it asks before replacing
 it. The file must play as the audio its extension says, and may
-be up to `[server] liner_upload_max_bytes` and two minutes long.
+be up to `station.liner_upload_max_mib (in MiB)` and two minutes long.
 
 **Intro clip** and **Outro clip** wrap every check. Choose **None**, or an audio file directly in
 the time checks folder (minute clips are not offered). Until one is chosen here, `intro_clip`

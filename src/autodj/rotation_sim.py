@@ -410,7 +410,7 @@ def open_station(cfg: Any, station: str = "default") -> Iterator[SimulationSourc
             station=station,
             ledger=ledger,
             events=events,
-            timezone=cfg.server.station_timezone or system_timezone(),
+            timezone=cfg.station.timezone or system_timezone(),
             liner_dates=paths.liner_dates,
         )
     finally:

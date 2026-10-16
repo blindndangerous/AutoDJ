@@ -522,7 +522,7 @@ def test_a_pick_reads_the_hours_when_the_song_is_expected_to_start() -> None:
         return closed_now(when)
 
     player._library.categories.closed_now = recording
-    player._cfg.server.station_timezone = "UTC"
+    player._cfg.station.timezone = "UTC"
     noon = datetime(2026, 10, 12, 12, tzinfo=UTC).timestamp()
     player._now = lambda: noon  # type: ignore[method-assign]
     player._pick_context()
@@ -563,7 +563,7 @@ def test_a_song_whose_window_closes_before_it_would_start_is_not_picked() -> Non
     player._library.categories.closed_now = lambda when: (
         (frozenset(), {}) if when.hour < 2 else (night_paths, {"night": reason})
     )
-    player._cfg.server.station_timezone = "UTC"
+    player._cfg.station.timezone = "UTC"
     almost = datetime(2026, 10, 13, 1, 58, tzinfo=UTC).timestamp()
     player._now = lambda: almost  # type: ignore[method-assign]
     current = next(entry for entry in entries if entry.title not in NIGHT)

@@ -376,7 +376,7 @@ def parse_step_hours(step: Mapping[str, Any]) -> StepHours | None:
 
 
 def station_now(cfg: AutoDJConfig) -> datetime:
-    """The station's local wall time, naive: ``[server] station_timezone`` or the system's."""
+    """The station's local wall time, naive: ``[station] timezone`` or the system's."""
     import time
 
     return station_wall(cfg, time.time())
@@ -388,7 +388,7 @@ def station_wall(cfg: AutoDJConfig, timestamp: float) -> datetime:
 
     from autodj.scheduler import system_timezone
 
-    zone = ZoneInfo(cfg.server.station_timezone or system_timezone())
+    zone = ZoneInfo(cfg.station.timezone or system_timezone())
     return datetime.fromtimestamp(timestamp, zone).replace(tzinfo=None)
 
 

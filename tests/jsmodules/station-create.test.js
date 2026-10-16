@@ -96,8 +96,8 @@ describe("Settings > Stations", () => {
       .toEqual([true, true, false, false]);
     expect(owlBox.getAttribute("aria-label")).toBe("Start Night Owl Radio with the server");
     const [autodjButton, owlButton] = rows.map((row) => row.children[4].querySelector("button"));
-    // The default station runs as long as the server does.
-    expect(autodjButton.hidden).toBe(true);
+    expect([autodjButton.hidden, autodjButton.textContent, autodjButton.getAttribute("aria-label")])
+      .toEqual([false, "Stop", "Stop AutoDJ"]);
     expect([owlButton.textContent, owlButton.getAttribute("aria-label")]).toEqual(["Start", "Start Night Owl Radio"]);
     expect([...byId("station-create-source").options].map((option) => [option.value, option.textContent]))
       .toEqual([["", "AutoDJ defaults"], ["default", "Copy of AutoDJ"], ["nightowl", "Copy of Night Owl Radio"]]);
@@ -121,6 +121,7 @@ describe("Settings > Stations", () => {
     const request = vi.fn(async () => ({ ...OWL, warnings: [] }));
     const { onChanged } = setup({ request, stations: [AUTODJ, OWL, { ...OWL, slug: "late", name: "Late", state: "playing" }] });
     const [, owl, late] = byId("stations-list").children;
+    expect(late.children[4].querySelector("button").getAttribute("aria-label")).toBe("Stop Late");
     owl.children[4].querySelector("button").click();
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/stations/nightowl/start", { method: "POST" }));
     await vi.waitFor(() => expect(byId("stations-status").textContent.trim()).toBe("Started Night Owl Radio."));

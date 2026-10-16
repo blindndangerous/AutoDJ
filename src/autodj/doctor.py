@@ -546,7 +546,7 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     Returns:
         A DoctorCheck describing stream-mode readiness.
     """
-    if not cfg.stream.enabled:
+    if cfg.station.output != "stream":
         return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
     if shutil.which("ffmpeg") is None:
         return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")

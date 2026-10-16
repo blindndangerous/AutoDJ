@@ -14,13 +14,11 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import autodj.cli as cli_module
 from autodj.cli import (
-    _require_ffmpeg_for_stream,
     _resolve_seed,
     cli,
 )
-from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig, StreamConfig
+from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig, StationConfig, StreamConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatSettings
 from tests._layout import point_index
@@ -49,7 +47,10 @@ def mock_library_startup():
         }
         return library
 
-    with patch("autodj.library.LibraryManager", side_effect=create):
+    with (
+        patch("autodj.library.LibraryManager", side_effect=create),
+        patch("autodj.config.move_station_tables", return_value=False),
+    ):
         yield
 
 
@@ -111,6 +112,8 @@ def _make_cfg(beets_db=None) -> MagicMock:
     cfg.index.name = "default"
     cfg.server = ServerConfig()
     cfg.stream = StreamConfig()
+    cfg.station = StationConfig()
+    cfg.default_station = None
     cfg.stations = ()
     cfg.config_sources = ("defaults",)
     return cfg
@@ -414,51 +417,6 @@ class TestResolveSeedBeets:
 
 # ---------------------------------------------------------------------------
 # _require_ffmpeg_for_stream
-# ---------------------------------------------------------------------------
-
-
-class TestRequireFfmpegForStream:
-    def test_passes_when_stream_disabled_even_without_ffmpeg(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        cfg = _make_cfg()
-        cfg.stream = StreamConfig(enabled=False)
-        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
-
-        _require_ffmpeg_for_stream(cfg)  # must not raise
-
-    def test_raises_when_stream_enabled_without_ffmpeg(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        cfg = _make_cfg()
-        cfg.stream = StreamConfig(enabled=True)
-        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
-
-        with pytest.raises(click.ClickException, match="ffmpeg"):
-            _require_ffmpeg_for_stream(cfg)
-
-    def test_passes_when_stream_enabled_and_ffmpeg_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        cfg = _make_cfg()
-        cfg.stream = StreamConfig(enabled=True)
-        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
-
-        _require_ffmpeg_for_stream(cfg)  # must not raise
-
-    def test_raises_for_another_station_without_ffmpeg(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        cfg = _make_cfg()
-        cfg.stations = (MagicMock(),)
-        monkeypatch.setattr(cli_module.shutil, "which", lambda _n: None)
-
-        with pytest.raises(click.ClickException, match=r"stations.*ffmpeg"):
-            _require_ffmpeg_for_stream(cfg)
-
-
-# ---------------------------------------------------------------------------
-# cmd_serve — happy path with mocked server
 # ---------------------------------------------------------------------------
 
 
