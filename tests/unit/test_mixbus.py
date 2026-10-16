@@ -410,6 +410,8 @@ def test_run_sends_unclipped_sum_to_master_once_for_all_outputs(eq_gain: float) 
     received: list[np.ndarray] = []
 
     class Master:
+        startup_pending = False
+
         def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
             received.append(block.copy())
             return block
@@ -433,6 +435,8 @@ def test_master_receives_silence_for_idle_and_paused_clock_ticks() -> None:
     received: list[np.ndarray] = []
 
     class Master:
+        startup_pending = False
+
         def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
             received.append(block.copy())
             return block
@@ -764,6 +768,8 @@ class _Counter:
 
 
 class _PassThroughMaster:
+    startup_pending = False
+
     def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
         return block
 
@@ -822,3 +828,45 @@ def test_bus_keeps_rendering_while_another_thread_runs_python(setting: str) -> N
     finally:
         sys.setswitchinterval(previous)
     assert counter.blocks >= 200
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_master_warms_without_consuming_the_first_song_or_liner(enabled):
+    first = _track(0.2, 882 * 4)
+    bus, started, positions = _bus([first])
+    bus.start_set()
+    bus.play_liner(np.full((882 * 4, 2), 0.1, np.float32), duck_db=0)
+    received = []
+
+    class Master:
+        @property
+        def startup_pending(self):
+            return len(received) < 3
+
+        def process(self, block, enabled=True):
+            received.append(block.copy())
+            return block
+
+    bus.set_master(Master(), enabled=enabled)
+    output = Recorder()
+    bus.add_output(output)
+    stop = threading.Event()
+
+    def tick(_seconds):
+        if enabled and len(received) <= 3:
+            assert started == []
+            assert positions == []
+        if len(received) == 4:
+            stop.set()
+
+    bus._clock.sleep = tick
+    bus.run(stop)
+    if enabled:
+        assert all(not np.any(block) for block in received[:3])
+        assert positions == [882]
+    else:
+        assert positions[0] == 882
+        assert np.any(received[0])
+    assert started == [first]
+    # Both the song and the liner start at their original first sample.
+    np.testing.assert_allclose(received[3 if enabled else 0], 0.3)

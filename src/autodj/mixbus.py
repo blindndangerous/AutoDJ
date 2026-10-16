@@ -202,6 +202,9 @@ class Output(Protocol):
 class MasterProcessor(Protocol):
     """Optional continuous audio processor attached to the paced run loop."""
 
+    @property
+    def startup_pending(self) -> bool: ...
+
     def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray: ...
 
 
@@ -954,7 +957,12 @@ class MixBus:
         while not stop.is_set():
             master, master_enabled = self._master_state()
             try:
-                block = self.render_block(master_enabled=master_enabled)
+                # Warm the processor without advancing tracks, liners, or their callbacks.
+                block = (
+                    np.zeros((self.BLOCK, 2), np.float32)
+                    if master is not None and master_enabled and master.startup_pending
+                    else self.render_block(master_enabled=master_enabled)
+                )
             except Exception:
                 logger.exception("Mix bus render_block failed; emitting silence")
                 block = np.zeros((self.BLOCK, 2), np.float32)
