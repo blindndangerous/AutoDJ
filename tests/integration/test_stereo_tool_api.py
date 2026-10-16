@@ -83,16 +83,60 @@ def test_a_saved_key_is_never_sent_back_or_logged(tmp_path: Path, caplog) -> Non
     assert any(entry["route"] == "/api/stereo-tool/license" for entry in audits)
 
 
-def test_a_key_for_this_station_only_is_kept_in_its_folder(tmp_path: Path) -> None:
+def test_a_key_for_this_station_only_is_kept_in_its_secrets_json(tmp_path: Path, caplog) -> None:
     client = _client(tmp_path)
-    response = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+    station = tmp_path / "stations" / "default"
+    secrets = setup.station_secrets_path(station)
+    others = {"webhooks": [{"url": "https://example.com/hook"}]}
+    secrets.write_text(json.dumps({"version": 1, **others}), encoding="utf-8")
+    with caplog.at_level(logging.DEBUG):
+        response = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+        shown = client.get("/api/stereo-tool")
     assert response.json()["license"]["in_use"] == "station"
-    assert setup.station_license_path(tmp_path / "stations" / "default").is_file()
+    assert shown.json()["license"]["station"] == "saved"
+    for answer in (response, shown):
+        assert KEY not in _everything_said(answer, caplog)
+    assert json.loads(secrets.read_text(encoding="utf-8")) == {
+        "version": 1,
+        **others,
+        "stereo_tool": {"license_key": KEY},
+    }
+    assert not setup.old_station_license_path(station).exists()
     assert not setup.install_license_path(tmp_path).exists()
     cleared = client.delete("/api/stereo-tool/license", params={"scope": "station"})
     assert cleared.json()["cleared"] is True
     assert cleared.json()["license"]["in_use"] is None
-    assert not setup.station_license_path(tmp_path / "stations" / "default").exists()
+    assert json.loads(secrets.read_text(encoding="utf-8")) == {"version": 1, **others}
+
+
+def test_an_old_station_key_file_is_moved_without_the_key_being_shown(
+    tmp_path: Path, caplog
+) -> None:
+    client = _client(tmp_path)
+    station = tmp_path / "stations" / "default"
+    old = setup.old_station_license_path(station)
+    old.write_text(KEY + "\n", encoding="ascii")
+    with caplog.at_level(logging.DEBUG):
+        shown = client.get("/api/stereo-tool")
+    assert shown.json()["license"]["in_use"] == "station"
+    assert KEY not in _everything_said(shown, caplog)
+    assert not old.exists()
+    document = json.loads(setup.station_secrets_path(station).read_text(encoding="utf-8"))
+    assert document["stereo_tool"] == {"license_key": KEY}
+
+
+def test_a_damaged_secrets_json_fails_the_save_without_the_key(tmp_path: Path, caplog) -> None:
+    client = _client(tmp_path)
+    secrets = setup.station_secrets_path(tmp_path / "stations" / "default")
+    secrets.write_text("{damaged", encoding="utf-8")
+    with caplog.at_level(logging.DEBUG):
+        response = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
+    assert response.status_code == 500
+    assert response.json()["detail"] == (
+        "Could not save the licence key: secrets.json is not valid JSON."
+    )
+    assert KEY not in _everything_said(response, caplog)
+    assert secrets.read_text(encoding="utf-8") == "{damaged"
 
 
 @pytest.mark.parametrize(

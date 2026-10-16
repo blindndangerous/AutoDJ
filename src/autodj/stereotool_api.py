@@ -107,15 +107,13 @@ def status(station: StationRuntime, several: bool) -> dict[str, Any]:
     }
 
 
-def _license_path(station: StationRuntime, scope: Scope) -> Path:
-    """The file the page may change for *scope*.
+def _install_license_path(station: StationRuntime) -> Path:
+    """The file that holds the key for every station, which the page may change.
 
     Raises:
         HTTPException: 409 when the environment sets the licence for every station.
     """
     cfg = station.bridge.player._cfg
-    if scope == "station":
-        return setup.station_license_path(station.paths.state_dir)
     state = setup.license_state(index_dir=cfg.index.index_dir, state_dir=station.paths.state_dir)
     if state.install == "environment":
         raise HTTPException(
@@ -124,6 +122,29 @@ def _license_path(station: StationRuntime, scope: Scope) -> Path:
             "server; change it there.",
         )
     return setup.install_license_path(cfg.index.index_dir)
+
+
+def _save(station: StationRuntime, scope: Scope, key: str) -> bool:
+    """Save *key* for *scope*: in the station's secrets.json, or for every station."""
+    if scope == "station":
+        return setup.save_station_license(station.paths.state_dir, key)
+    return setup.save_license(_install_license_path(station), key)
+
+
+def _clear(station: StationRuntime, scope: Scope) -> bool:
+    """Delete the key saved for *scope*."""
+    if scope == "station":
+        return setup.clear_station_license(station.paths.state_dir)
+    return setup.clear_license(_install_license_path(station))
+
+
+def _failed(action: str, exc: OSError | ValueError) -> HTTPException:
+    """A 500 that names the file problem, never the key."""
+    reason = exc.strerror if isinstance(exc, OSError) else str(exc)
+    return HTTPException(
+        status_code=500,
+        detail=f"Could not {action} the licence key: {reason or type(exc).__name__}.",
+    )
 
 
 def install_stereo_tool(router: StationRouter) -> None:
@@ -143,15 +164,10 @@ def install_stereo_tool(router: StationRouter) -> None:
             key = setup.validate_key(body.key)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
-        path = await asyncio.to_thread(_license_path, station, body.scope)
-        own = station.paths.state_dir if body.scope == "station" else None
         try:
-            changed = await asyncio.to_thread(setup.save_license, path, key, station_dir=own)
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not save the licence key: {exc.strerror or type(exc).__name__}.",
-            ) from None
+            changed = await asyncio.to_thread(_save, station, body.scope, key)
+        except (OSError, ValueError) as exc:
+            raise _failed("save", exc) from None
         if changed:
             logger.info(
                 "Stereo Tool licence saved for %s",
@@ -165,15 +181,10 @@ def install_stereo_tool(router: StationRouter) -> None:
         station: StationDep, request: Request, scope: Scope = Query("all")
     ) -> dict[str, Any]:
         """Delete a saved licence key; Stereo Tool restarts without it."""
-        path = await asyncio.to_thread(_license_path, station, scope)
-        own = station.paths.state_dir if scope == "station" else None
         try:
-            cleared = await asyncio.to_thread(setup.clear_license, path, station_dir=own)
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Could not clear the licence key: {exc.strerror or type(exc).__name__}.",
-            ) from None
+            cleared = await asyncio.to_thread(_clear, station, scope)
+        except (OSError, ValueError) as exc:
+            raise _failed("clear", exc) from None
         if cleared:
             logger.info(
                 "Stereo Tool licence cleared for %s",

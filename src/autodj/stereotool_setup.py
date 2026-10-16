@@ -24,9 +24,13 @@ file only its own user can read (:func:`autodj.secret_files.write_private_file`)
 outside backups, and never returns it to the page or writes it to a log.
 Where it comes from, first match wins, for one station:
 
-1. the station's own key saved from Settings, Sound (``<state_dir>/.stereo-tool-license``);
+1. the station's own key saved from Settings, Sound, in the station's
+   ``secrets.json`` (``<state_dir>/secrets.json``, with its other secrets);
 2. ``AUTODJ_STEREOTOOL_LICENSE_KEY``, for the whole install;
 3. the install's key saved from Settings, Sound (``<index_dir>/.stereo-tool-license``).
+
+A station's own key used to be kept in ``<state_dir>/.stereo-tool-license``.  The
+first read after an upgrade moves it into ``secrets.json`` and deletes that file.
 """
 
 from __future__ import annotations
@@ -51,7 +55,12 @@ from typing import Any, BinaryIO, Literal
 from urllib.parse import urljoin, urlsplit
 
 from autodj.config import stereotool_library_name
-from autodj.secret_files import write_private_file
+from autodj.secret_files import (
+    private_json_lock,
+    read_private_json,
+    update_private_json,
+    write_private_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +70,9 @@ LICENSING_URL = "https://www.thimeo.com/stereo-tool/licenses/"
 PLUGIN_URL = "https://download.thimeo.com/Stereo_Tool_Generic_plugin.zip"
 LICENSE_ENV = "AUTODJ_STEREOTOOL_LICENSE_KEY"
 LICENSE_FILE_NAME = ".stereo-tool-license"
+#: A station's private secrets file (#394); its own key is kept under SECRETS_SECTION.
+SECRETS_FILE_NAME = "secrets.json"
+SECRETS_SECTION = "stereo_tool"
 #: The 11.05 zip is 318 MB (October 2026); anything far bigger is not it.
 MAX_DOWNLOAD_BYTES = 768 * 1024 * 1024
 #: The one library taken out of it; Thimeo's are 33 to 117 MB.
@@ -731,8 +743,13 @@ def install_license_path(index_dir: Path | str) -> Path:
     return Path(index_dir) / LICENSE_FILE_NAME
 
 
-def station_license_path(state_dir: Path | str) -> Path:
-    """The key saved for one station only."""
+def station_secrets_path(state_dir: Path | str) -> Path:
+    """The station's ``secrets.json``, which holds the key saved for that station only."""
+    return Path(state_dir) / SECRETS_FILE_NAME
+
+
+def old_station_license_path(state_dir: Path | str) -> Path:
+    """Where a station's own key was kept before it moved into ``secrets.json``."""
     return Path(state_dir) / LICENSE_FILE_NAME
 
 
@@ -769,6 +786,101 @@ def _saved(path: Path) -> bool:
         return False
 
 
+def _set_station_key(key: str | None) -> Callable[[dict[str, Any]], bool]:
+    """A change to a station's secrets that sets its key, or removes it when *key* is ``None``."""
+
+    def change(document: dict[str, Any]) -> bool:
+        if key is None:
+            if SECRETS_SECTION not in document:
+                return False
+            del document[SECRETS_SECTION]
+            return True
+        wanted = {"license_key": key}
+        if document.get(SECRETS_SECTION) == wanted:
+            return False
+        document[SECRETS_SECTION] = wanted
+        return True
+
+    return change
+
+
+def _move_old_station_key(state_dir: Path | str) -> None:
+    """Move a station's key from its old ``.stereo-tool-license`` into its ``secrets.json``.
+
+    Done once, on the first read after an upgrade.  A key already in
+    ``secrets.json`` wins, and the old file is only deleted.  An old file
+    that holds no key, or a ``secrets.json`` that cannot be changed, leaves
+    the old file where it is: :func:`license_state` reports it and Clear
+    deletes it.  The caller holds :data:`private_json_lock`.
+    """
+    old = old_station_license_path(state_dir)
+    if not _saved(old):
+        return
+    try:
+        key = _read_key(old, "saved")
+    except _Unreadable:
+        return
+    if key is None:
+        return
+    path = station_secrets_path(state_dir)
+
+    def add(document: dict[str, Any]) -> bool:
+        return SECRETS_SECTION not in document and _set_station_key(key)(document)
+
+    try:
+        moved = update_private_json(path, add)
+        old.unlink(missing_ok=True)
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        with _warned_lock:
+            repeat = _move_warned.get(str(old)) == reason
+            _move_warned[str(old)] = reason
+        if not repeat:
+            # Names the files, never the key.
+            logger.warning(
+                "Could not move the Stereo Tool licence key in %s into %s: %s",
+                old,
+                path.name,
+                reason,
+            )
+        return
+    if moved:
+        logger.info("Moved the Stereo Tool licence key in %s into %s.", old, path)
+    else:
+        logger.info("Deleted %s: this station's own key is already in %s.", old, path)
+
+
+def _read_station_key(state_dir: Path | str, what: str) -> tuple[bool, str | None]:
+    """Whether the station has a key of its own saved, and that key.
+
+    Raises:
+        _Unreadable: A saved key that cannot be used; the message names it, never the key.
+    """
+    with private_json_lock:
+        _move_old_station_key(state_dir)
+        old = old_station_license_path(state_dir)
+        if _saved(old):
+            # Not moved: it holds no key, or secrets.json could not be changed.
+            return True, _read_key(old, what)
+        path = station_secrets_path(state_dir)
+        try:
+            document = read_private_json(path)
+        except OSError as exc:
+            raise _Unreadable(
+                f"{what} cannot be read ({exc.strerror or type(exc).__name__})."
+            ) from None
+        except ValueError as exc:
+            raise _Unreadable(f"{what} cannot be read ({exc}).") from None
+    if SECRETS_SECTION not in document:
+        return False, None
+    section = document[SECRETS_SECTION]
+    value = section.get("license_key") if isinstance(section, dict) else None
+    try:
+        return True, validate_key(value)
+    except ValueError:
+        raise _Unreadable(f"{what} does not hold a Stereo Tool licence key.") from None
+
+
 @dataclass(frozen=True)
 class LicenseState:
     """Which licence a station uses; the key itself never prints."""
@@ -803,17 +915,20 @@ def license_state(
         install = "environment"
     else:
         install = "saved" if _saved(install_license_path(index_dir)) else None
-    station: Literal["saved"] | None = "saved" if _saved(station_license_path(state_dir)) else None
+    problem: str | None = None
+    try:
+        saved, key = _read_station_key(state_dir, "This station's saved licence")
+    except _Unreadable as exc:
+        saved, key, problem = True, None, str(exc)
+    station: Literal["saved"] | None = "saved" if saved else None
 
     def found(
         source: LicenseSource | None, key: str | None, problem: str | None = None
     ) -> LicenseState:
         return LicenseState(source, key, problem, install, station)
 
-    try:
-        key = _read_key(station_license_path(state_dir), "This station's saved licence")
-    except _Unreadable as exc:
-        return found("station", None, str(exc))
+    if problem:
+        return found("station", None, problem)
     if key:
         return found("station", key)
     if env_key:
@@ -844,14 +959,13 @@ def license_key(*, index_dir: Path | str, state_dir: Path | str) -> str | None:
 
 _warned_lock = threading.Lock()
 _warned: dict[str, str | None] = {}
+_move_warned: dict[str, str] = {}
 
 
-def save_license(path: Path, key: str, *, station_dir: Path | str | None = None) -> bool:
-    """Save *key* readable only by AutoDJ's user; return whether it changed.
+def save_license(path: Path, key: str) -> bool:
+    """Save the key for every station, readable only by AutoDJ's user; return whether it changed.
 
-    *station_dir* is the station folder for a key of one station's own, and
-    ``None`` for the key of every station.  Only the stations that key
-    serves restart Stereo Tool, and only when the key is new.
+    Every station restarts Stereo Tool, and only when the key is new.
     """
     key = validate_key(key)
     try:
@@ -861,15 +975,57 @@ def save_license(path: Path, key: str, *, station_dir: Path | str | None = None)
     write_private_file(path, key + "\n")
     if unchanged:
         return False
-    _bump(station_dir)
+    _bump()
     return True
 
 
-def clear_license(path: Path, *, station_dir: Path | str | None = None) -> bool:
-    """Delete a saved key; return whether there was one (see :func:`save_license`)."""
+def clear_license(path: Path) -> bool:
+    """Delete the key saved for every station; return whether there was one."""
     try:
         path.unlink()
     except FileNotFoundError:
         return False
-    _bump(station_dir)
+    _bump()
     return True
+
+
+def save_station_license(state_dir: Path | str, key: str) -> bool:
+    """Save *key* for one station in its ``secrets.json``; return whether it changed.
+
+    The station's other secrets are kept.  Only that station restarts
+    Stereo Tool, and only when the key is new.
+
+    Raises:
+        OSError: ``secrets.json`` cannot be read or written.
+        ValueError: ``secrets.json`` is damaged; it is left as it is.
+    """
+    key = validate_key(key)
+    with private_json_lock:
+        _move_old_station_key(state_dir)
+        changed = update_private_json(station_secrets_path(state_dir), _set_station_key(key))
+        old = old_station_license_path(state_dir)
+        # Still there only when it held no key worth moving.
+        if _saved(old):
+            old.unlink()
+            changed = True
+    if changed:
+        _bump(state_dir)
+    return changed
+
+
+def clear_station_license(state_dir: Path | str) -> bool:
+    """Delete one station's own key, keeping its other secrets; return whether there was one.
+
+    Raises:
+        OSError: ``secrets.json`` cannot be read or written.
+        ValueError: ``secrets.json`` is damaged; it is left as it is.
+    """
+    with private_json_lock:
+        cleared = update_private_json(station_secrets_path(state_dir), _set_station_key(None))
+        old = old_station_license_path(state_dir)
+        if _saved(old):
+            old.unlink()
+            cleared = True
+    if cleared:
+        _bump(state_dir)
+    return cleared
