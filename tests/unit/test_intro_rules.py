@@ -137,6 +137,72 @@ def test_folder_and_category_conditions_use_clockwheel_membership(tmp_path: Path
     assert store.choose(entry, NOW + 3600, lib) is None
 
 
+def test_category_rules_use_station_paths(tmp_path: Path) -> None:
+    entry = SimpleNamespace(path=str(tmp_path / "song.flac"), genre="Rock")
+    lib = library(tmp_path)
+    requested = []
+    lib.categories_for = lambda paths: (
+        requested.append(paths)
+        or SimpleNamespace(members=lambda: {"rock": ("Rock", frozenset({entry.path}))})
+    )
+    lib.categories = SimpleNamespace(members=lambda: {})
+    paths = ("station",)
+    store = IntroRules(
+        tmp_path / "intro_rules.json", date.fromtimestamp, random.Random(1), paths=paths
+    )
+    store.save(
+        "a" * 32,
+        IntroRule(
+            conditions=[{"field": "category", "category": "rock"}],
+            clip_ids=["liner-1"],
+            cooldown_minutes=0,
+        ),
+        create=True,
+    )
+    assert store.choose(entry, NOW, lib) is not None
+    assert requested == [paths]
+
+
+def test_snapshot_copies_rule_choice_state_without_touching_the_source(tmp_path: Path) -> None:
+    lib = library(tmp_path)
+    entry = SimpleNamespace(path=str(tmp_path / "song.flac"), genre="Rock", year=1995)
+    store = IntroRules(tmp_path / "intro_rules.json", date.fromtimestamp, random.Random(1))
+    key = "a" * 32
+    store.save(key, rule(cooldown_minutes=0), create=True)
+    before = store.path.read_bytes()
+    source_rng = store._rng.getstate()
+    store._reserved[key] = NOW
+    store._heard.append((key, NOW - 5))
+    clone = store.snapshot()
+    clone._stat = lambda: (_ for _ in ()).throw(AssertionError("snapshot read the file"))
+
+    assert clone._reserved == {key: NOW}
+    assert list(clone._heard) == [(key, NOW - 5)]
+    assert clone.choose(entry, NOW + 100, lib) is not None
+    assert store._reserved == {key: NOW}
+    assert list(store._heard) == [(key, NOW - 5)]
+    assert store._rng.getstate() == source_rng
+    clone.upkeep()
+    assert store.path.read_bytes() == before
+
+
+def test_snapshot_reads_unopened_rules_without_setting_aside_invalid_data(tmp_path: Path) -> None:
+    written = IntroRules(tmp_path / "intro_rules.json", date.fromtimestamp, random.Random(1))
+    key = "a" * 32
+    written.save(key, rule(), create=True)
+    before = written.path.read_bytes()
+    snapshot = IntroRules(written.path, date.fromtimestamp, random.Random(2)).snapshot()
+    assert key in snapshot.all()
+    assert written.path.read_bytes() == before
+
+    written.path.write_text("not json", encoding="utf-8")
+    before = written.path.read_bytes()
+    snapshot = IntroRules(written.path, date.fromtimestamp, random.Random(3)).snapshot()
+    assert snapshot.all() == {}
+    assert written.path.read_bytes() == before
+    assert not list(tmp_path.glob("intro_rules.json.bad-*"))
+
+
 def test_bad_entries_retained_and_unreadable_file_blocks_saves(tmp_path: Path, monkeypatch) -> None:
     store = IntroRules(
         tmp_path / "intro_rules.json", lambda at: date(2026, 10, 13), random.Random(1)

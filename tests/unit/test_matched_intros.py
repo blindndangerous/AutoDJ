@@ -152,6 +152,50 @@ def test_a_file_that_cannot_be_read_is_kept_and_saves_are_refused(
     assert store.path.read_bytes() == original
 
 
+def test_snapshot_choosing_does_not_change_the_store_or_its_files(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    intro_id = _add(store, track_id="song-a", cooldown_minutes=0)
+    before = store.path.read_bytes()
+    source_rng = store._rng.getstate()
+    store._aired[intro_id] = NOW - 120
+    store._reserved[intro_id] = NOW - 60
+    store._heard.append((intro_id, NOW - 30))
+    store._released.append("other")
+    clone = store.snapshot()
+    clone._stat = lambda: (_ for _ in ()).throw(AssertionError("snapshot read the file"))
+
+    assert clone._aired == store._aired
+    assert clone._reserved == store._reserved
+    assert list(clone._heard) == list(store._heard)
+    assert list(clone._released) == list(store._released)
+    assert clone.choose("song-a", "", NOW) is not None
+    assert store._aired[intro_id] == NOW - 120
+    assert store._reserved[intro_id] == NOW - 60
+    assert list(store._heard) == [(intro_id, NOW - 30)]
+    assert list(store._released) == ["other"]
+    assert store._rng.getstate() == source_rng
+    clone.upkeep()
+    assert store.path.read_bytes() == before
+
+
+def test_snapshot_reads_an_unopened_file_without_setting_aside_invalid_data(
+    tmp_path: Path,
+) -> None:
+    written = _store(tmp_path)
+    intro_id = _add(written)
+    before = written.path.read_bytes()
+    snapshot = _store(tmp_path).snapshot()
+    assert intro_id in snapshot.all()
+    assert written.path.read_bytes() == before
+
+    written.path.write_text("not json", encoding="utf-8")
+    before = written.path.read_bytes()
+    snapshot = _store(tmp_path).snapshot()
+    assert snapshot.all() == {}
+    assert written.path.read_bytes() == before
+    assert not list(tmp_path.glob("matched_intros.json.bad-*"))
+
+
 def test_a_station_keeps_at_most_the_limit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("autodj.matched_intros.MAX_INTROS", 1)
     store = _store(tmp_path)
