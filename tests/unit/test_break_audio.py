@@ -361,7 +361,7 @@ def test_processing_and_liner_decodes_are_whitelisted(tmp_path, monkeypatch):
 
     commands: list[list[str]] = []
 
-    def fake_stream(command):
+    def fake_stream(command, timeout=None):
         commands.append(command)
         return 1, bytearray(), b"failed"
 

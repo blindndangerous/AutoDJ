@@ -466,3 +466,28 @@ def test_a_station_without_a_name_is_called_by_its_slug(
         "Stations default and nightowl are both called" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_migration_drops_the_old_track_length_limit(tmp_path: Path, caplog) -> None:
+    """#391: tracks of any length play; a saved limit is removed, not warned about forever."""
+    from autodj.stations import StationPaths
+
+    text = BASE.replace(
+        "crossfade_seconds = 7\n", "crossfade_seconds = 7\nserver_max_track_minutes = 15.0\n"
+    )
+    cfg = _load(tmp_path, text, environ={})
+    definition = StationPaths.default(cfg).definition
+    document = json.loads(definition.read_text("utf-8"))
+    assert document["station"]["playback"] == {"crossfade_seconds": 7}
+    # A station file saved with the limit is cleaned the next time too.
+    document["station"]["playback"]["server_max_track_minutes"] = 30
+    definition.write_text(json.dumps(document), encoding="utf-8")
+    assert move_station_tables(load_config(tmp_path / "config.toml", environ={}))
+    caplog.clear()
+    reloaded = load_config(tmp_path / "config.toml", environ={})
+    assert (
+        "server_max_track_minutes"
+        not in json.loads(definition.read_text("utf-8"))["station"]["playback"]
+    )
+    assert reloaded.playback.crossfade_seconds == 7
+    assert "server_max_track_minutes" not in caplog.text

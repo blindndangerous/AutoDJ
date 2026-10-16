@@ -103,8 +103,15 @@ def intro_weights(frames: int, sample_rate: int) -> np.ndarray:
     return np.clip((INTRO_SECONDS - seconds) / (INTRO_SECONDS - HOLD_SECONDS), 0.0, 1.0)
 
 
-def apply_intro_lift(audio: np.ndarray, sample_rate: int, lift_db: float) -> np.ndarray:
-    """Apply a cached lift to decoded audio, bounded again for this decode."""
+def apply_intro_lift(
+    audio: np.ndarray, sample_rate: int, lift_db: float, *, in_place: bool = False
+) -> np.ndarray:
+    """Apply a cached lift to decoded audio, bounded again for this decode.
+
+    With *in_place* the caller's fresh decode is changed and returned;
+    otherwise a copy is, so a whole long track is not copied for a lift on
+    its first eight seconds.
+    """
     if not math.isfinite(lift_db) or lift_db <= 0:
         return audio
     frames = min(len(audio), round(INTRO_SECONDS * sample_rate))
@@ -122,6 +129,6 @@ def apply_intro_lift(audio: np.ndarray, sample_rate: int, lift_db: float) -> np.
         )
     if lift_db <= 0:
         return audio
-    result = audio.copy()
+    result = audio if in_place else audio.copy()
     result[:frames] *= (10 ** (lift_db * weights / 20))[:, None]
     return result

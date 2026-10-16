@@ -440,8 +440,8 @@ def test_the_index_works_categories_out_again_only_when_a_source_changes(tmp_pat
     import autodj.categories as module
 
     runs = []
-    real = module.resolve_all
-    monkeypatch.setattr(module, "resolve_all", lambda *a, **k: runs.append(1) or real(*a, **k))
+    real = module.resolve_checked
+    monkeypatch.setattr(module, "resolve_checked", lambda *a, **k: runs.append(1) or real(*a, **k))
     first = index.members()
     assert first == {
         "c1": ("Rock", frozenset({songs[0].path, songs[1].path})),

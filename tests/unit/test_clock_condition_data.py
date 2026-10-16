@@ -85,6 +85,20 @@ def test_refreshes_on_database_and_configuration_change(tmp_path: Path) -> None:
     assert updated is not first
 
 
+def test_keeps_entries_reference_until_identity_changes(tmp_path: Path) -> None:
+    db = _db(tmp_path / "library.db")
+    entries = (SimpleNamespace(path=str(tmp_path / "music" / "Artist" / "Song.flac")),)
+    current = [entries]
+    data = BeetsConditions(_config(db, tmp_path / "music"), lambda: current[0])
+
+    data.snapshot(["year"])
+    assert data._cached_entries is entries
+    current[0] = (*entries,)
+    assert current[0] is not entries
+    data.snapshot(["year"])
+    assert data._cached_entries is current[0]
+
+
 def test_original_year_fallback_and_missing_database_retry(tmp_path: Path) -> None:
     db = _db(tmp_path / "library.db")
     data = BeetsConditions(_config(db))

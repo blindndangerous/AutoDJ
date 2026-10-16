@@ -89,6 +89,35 @@ def test_folder_choices_persist_and_removing_a_source_keeps_files(library_api, t
     ]
 
 
+def test_folder_routes_check_beets_paths_off_event_loop(library_api, tmp_path, monkeypatch):
+    import autodj.beets_paths as beets_paths
+
+    _manager, call, _app = library_api
+    checked = []
+
+    def check_library(_cfg, _entries):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        checked.append(True)
+        return None
+
+    monkeypatch.setattr(beets_paths, "check_library", check_library)
+    folder = tmp_path / "off-loop"
+    folder.mkdir()
+    call("GET", "/api/library/folders")
+    created = call("POST", "/api/library/folders", LibraryFolderBody(path=str(folder)))
+    source = next(
+        item for item in created["folders"] if item["path"] == os.path.normcase(str(folder))
+    )
+    call(
+        "PATCH",
+        "/api/library/folders/{source_id}",
+        source["id"],
+        LibraryFolderUpdateBody(recursive=False),
+    )
+    assert len(checked) == 3
+
+
 def test_rescan_passes_explicit_tag_override_option(library_api):
     manager, call, _app = library_api
 
@@ -126,6 +155,26 @@ def test_dj_analysis_route_saves_the_library_setting(library_api):
     }
     assert manager.dj_analysis_enabled() is False
     assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
+
+
+def test_advanced_length_route_saves_the_cutoff(library_api):
+    """#391: the page sets how long a song the advanced analysis takes; 0 takes all."""
+    from autodj.server import LibraryAdvancedLengthBody
+
+    manager, call, app = library_api
+    assert call("GET", "/api/library/advanced-length") == {"minutes": 15}
+    body = LibraryAdvancedLengthBody(minutes=0)
+    assert call("PUT", "/api/library/advanced-length", body) == {"minutes": 0}
+    assert manager.advanced_max_minutes() == 0
+    assert call("GET", "/api/library/advanced-length") == {"minutes": 0}
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    headers = {"host": urlsplit(origin).netloc, "origin": origin}
+    for bad in (-1, 601, 1.5, "15", True):
+        response = TestClient(app).put(
+            "/api/library/advanced-length", json={"minutes": bad}, headers=headers
+        )
+        assert response.status_code == 422, bad
+    assert manager.advanced_max_minutes() == 0
 
 
 def test_shared_time_format_does_not_override_station_timezone(library_api, monkeypatch):
