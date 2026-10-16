@@ -3015,15 +3015,37 @@ before songs first released in the 1980s. Each station keeps its own rules. Mana
   BPM, duration, any Beets field (`original_year` is the first release, with the release year
   standing in when Beets has none), a registered music folder, or a saved music category. A song
   with no value for a field, or a category that no longer exists, never matches a condition on it.
-- **Voice liners to choose from**: check any of the station's registered voice liners, choose a
-  registered **Liner folder** (every registered liner in it and its subfolders), or both. One clip
-  is picked at random each time. A clip whose file is missing, that is outside its liner play
-  dates, or that belongs to another station's liner folder is passed over.
+- **Voice liners to choose from**: **Choose specific liners** keeps the checkboxes and optional
+  registered **Liner folder** (every registered liner in it and its subfolders). **Match filenames**
+  instead filters that folder using a pattern, such as `year-{year}-*.wav`. One matching clip is
+  picked at random. Missing files and clips outside the selected station's liner play dates
+  are passed over.
 - **Priority**: where the rule stands next to the song's own matched intros and its artist's.
   By default rules come after both; a rule can come after the song's own intros and before the
   artist's, or before both.
 - **Chance (percent)**, **Wait between plays (minutes)**, **Not before** and **Do not play after**:
   as for a matched intro. The wait holds across restarts.
+
+Filename patterns support `{year}`, `{artist}`, `{title}`, `{album}`, `{genre}` and `{bpm}` from
+that upcoming song's indexed metadata. **Insert song field** adds a placeholder at the cursor.
+BPM is rounded to the nearest whole number (119.5 becomes 120). Matching ignores letter case;
+`*` matches any text and `?` one character, including in the extension. For example,
+`year-{year}-*.wav` can choose `year-1988-a.wav` or `year-1988-b.wav` for a 1988 song.
+
+Only wildcards typed in the pattern are active: punctuation in a song field is literal.
+Patterns match filenames, not folder paths; brackets are literal, and doubled braces (`{{` and
+`}}`) match a literal brace. Unknown placeholders or malformed patterns are refused on save.
+Missing metadata or no eligible filename match makes the rule ineligible for that song.
+There is no automatic punctuation cleanup or fuzzy matching. Year comes from the song's year
+field, independently of any year or Beets condition used by the rule.
+
+**Test with a song** lets you search for a song and inspect the expanded pattern, matching files
+and exclusions. It checks filename matches and current liner eligibility, not the rule's song
+conditions, chance or cooldown. It does not play audio, save the rule or consume any reservation.
+The **Wait between plays** applies to the whole rule: airing a 1982 clip also delays the next
+1988 clip selected by that rule. Newly indexed matching liners join the folder pool normally.
+Playback and hour preview use the same filename resolver. Clockwheel liner steps do not yet
+support these placeholders.
 
 Choose **Save intro rule**. A field the page or the server refuses is marked, its error is shown
 under it and it takes focus; any other result is said once.
@@ -3045,7 +3067,9 @@ clips are gathered by the station's upkeep, which looks every 5 seconds, off the
 for 50,000 registered liners, once each time the liner library changes; until then the clips
 gathered before serve, less any no longer registered. A song change then took 0.3 ms median
 and 1.3 ms at the 95th percentile with that folder. For one song change at most 256 clips of a
-large folder are looked at, so a folder of missing files cannot hold up the render.
+large folder are looked at, so a folder of missing files cannot hold up the render. Filename
+patterns first filter the in-memory names; a bounded cache reuses recently expanded patterns
+until the folder pool changes. The timings above do not include a pattern's first filtering pass.
 
 `intro_rules.json` in the station's state folder holds the rules and when each last aired; backups
 include it. When it cannot be read just now, the rules last read are used and saves are refused,
@@ -3074,7 +3098,12 @@ session and the page's `Origin`. The body is a JSON object of at most 64 KiB:
 
 `clip_ids`, `liner_folder` or both are required; `priority` is `after_artist` (the default),
 `before_artist` or `before_song`. A refused rule answers 422 with `detail` and the `field` at fault.
-`GET` also lists the liners, liner folders and condition choices the page offers.
+`GET` also lists the liners, liner folders and condition choices the page offers. For pattern
+selection, send `filename_pattern`, a `liner_folder`, and an empty `clip_ids` list. Omitting
+`filename_pattern` or sending `null` keeps the existing specific-clip/folder selection.
+`POST /api/intros/rules/test?path=<indexed song path>` accepts the same unsaved rule body and
+returns `expanded_pattern`, `missing_fields`, `matches` and an explanatory `note`. The named
+station route is available too, including while the station is stopped.
 
 ### Where they are kept
 
