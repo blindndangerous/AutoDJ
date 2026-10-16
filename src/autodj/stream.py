@@ -33,7 +33,7 @@ from typing import Protocol, cast
 import numpy as np
 
 from autodj.icy import IcyInterleaver, format_stream_title
-from autodj.station_log import station_thread
+from autodj.station_log import CURRENT_STATION, station_thread, track_station_thread
 from autodj.stereo import SAMPLE_RATE
 from autodj.stream_formats import MP3, StreamFormat, ogg_header_end, ogg_starts_stream
 
@@ -153,9 +153,11 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        threading.Thread(
+        thread = threading.Thread(
             target=self._read_errors, name="autodj-encoder-stderr", daemon=True
-        ).start()
+        )
+        track_station_thread(thread, CURRENT_STATION.get())
+        thread.start()
 
     def _read_errors(self) -> None:
         """Keep ffmpeg's last stderr lines until it closes the pipe."""

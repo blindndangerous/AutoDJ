@@ -138,6 +138,7 @@ from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
     install_log_prefix,
+    new_station_scope,
     station_thread,
 )
 from autodj.station_routes import (
@@ -1010,6 +1011,7 @@ def create_app(
     if bridge is not None:
         cfg = bridge.player._cfg
         shared = bridge
+        scope = new_station_scope(DEFAULT_SLUG)
         runtime = StationRuntime(
             bridge,
             timezone=cfg.station.timezone or system_timezone(),
@@ -1017,6 +1019,7 @@ def create_app(
             stream_mode=stream_mode,
             server_audio=server_audio,
             first_track=stream_first_track,
+            thread_scope=scope,
         )
         stations = StationRegistry(runtime, extra_stations)
     else:

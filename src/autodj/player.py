@@ -2632,6 +2632,26 @@ class Player:
                 return ((entry, False),), key
         return (), key
 
+    def _transition_voice(
+        self,
+        current: IndexEntry,
+        upcoming: IndexEntry,
+        liners: tuple[tuple[IndexEntry, bool], ...],
+        breaks: tuple[Any, ...],
+        at: float | None,
+    ) -> tuple[tuple[tuple[IndexEntry, bool], ...], str, Any]:
+        """Choose handoff voice using the same precedence for playback and preview."""
+        key = ""
+        if self._cfg.playback.matched_intro_only_without_liner:
+            if not breaks and not liners:
+                liners, key = self._auto_liner(current, upcoming)
+            intro = None if liners else self._matched_intro(upcoming, breaks, at)
+        else:
+            intro = self._matched_intro(upcoming, breaks, at)
+            if not breaks and not liners and intro is None:
+                liners, key = self._auto_liner(current, upcoming)
+        return liners, key, intro
+
     def _matched_intro(
         self, upcoming: IndexEntry | None, breaks: tuple[Break, ...], at: float | None
     ) -> Any:
@@ -2950,16 +2970,9 @@ class Player:
                     next_clock_name = plan.clock_name
                     next_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
-                    only_without_liner = self._cfg.playback.matched_intro_only_without_liner
-                    if only_without_liner:
-                        if not breaks and not liners:
-                            liners, liner_key = self._auto_liner(current, next_entry)
-                        if not liners:
-                            intro = self._matched_intro(next_entry, breaks, context.at)
-                    else:
-                        intro = self._matched_intro(next_entry, breaks, context.at)
-                        if not breaks and not liners and intro is None:
-                            liners, liner_key = self._auto_liner(current, next_entry)
+                    liners, liner_key, intro = self._transition_voice(
+                        current, next_entry, liners, breaks, context.at
+                    )
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
@@ -2970,15 +2983,9 @@ class Player:
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
                         next_clock_boundary = self._pending_clock_boundary
-                    if self._cfg.playback.matched_intro_only_without_liner:
-                        if not liners:
-                            liners, liner_key = self._auto_liner(current, next_entry)
-                        if not liners:
-                            intro = self._matched_intro(next_entry, (), context.at)
-                    else:
-                        intro = self._matched_intro(next_entry, (), context.at)
-                        if not liners and intro is None:
-                            liners, liner_key = self._auto_liner(current, next_entry)
+                    liners, liner_key, intro = self._transition_voice(
+                        current, next_entry, liners, (), context.at
+                    )
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
                     unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
