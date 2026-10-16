@@ -357,3 +357,19 @@ class TestJobManagerConfigPassthrough:
         mgr.configure(config_path=None)
 
         assert self._capture(mgr).args[0][1:] == ["-m", "autodj", "stats"]
+
+
+def test_verbose_job_keeps_recent_output_without_retaining_the_entire_run() -> None:
+    """A verbose job must not grow the retained log with its entire output."""
+    from types import SimpleNamespace
+
+    lines = [f"progress {n}" for n in range(10_000)]
+    process = SimpleNamespace(stdout=iter(lines), wait=lambda timeout: 0)
+    manager = JobManager()
+    manager._read_loop(process)
+
+    retained = manager.snapshot()["lines"]
+    assert 0 < len(retained) < len(lines)
+    assert lines[-1] in retained
+    assert lines[0] not in retained
+    assert manager.snapshot()["exit_code"] == 0
