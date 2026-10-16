@@ -5,12 +5,13 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from autodj.server import create_app
+from tests._layout import point_index
 
 
 def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:
     active = tmp_path / "index" / "default"
     active.mkdir(parents=True)
-    bridge.player._cfg.index.active_dir = active
+    point_index(bridge.player._cfg.index, active)
     bridge.player._cfg.index.index_dir = active.parent
     client = TestClient(create_app(bridge))
 
@@ -21,7 +22,7 @@ def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:
         "/api/stereo-tool-presets/upload", files={"file": ("Night.sts", b"[Processing]\nGain=0\n")}
     )
     assert upload.status_code == 200
-    assert (active.parent / "stereo-tool-presets" / "Night.sts").is_file()
+    assert (active / "stereo-tool-presets" / "Night.sts").is_file()
     selected = client.post("/api/playback-settings", json={"stereotool_preset": "Night.sts"})
     assert selected.status_code == 200
     assert selected.json()["playback"]["stereotool_preset"] == "Night.sts"
@@ -38,7 +39,7 @@ def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:
 def test_listing_reports_included_when_the_active_file_is_gone(bridge, tmp_path: Path) -> None:
     active = tmp_path / "index" / "default"
     active.mkdir(parents=True)
-    bridge.player._cfg.index.active_dir = active
+    point_index(bridge.player._cfg.index, active)
     bridge.player._cfg.playback.stereotool_preset = "Gone.sts"
     client = TestClient(create_app(bridge))
 
@@ -48,7 +49,7 @@ def test_listing_reports_included_when_the_active_file_is_gone(bridge, tmp_path:
 def test_upload_refuses_a_second_file_of_the_same_name_in_words(bridge, tmp_path: Path) -> None:
     active = tmp_path / "index" / "default"
     active.mkdir(parents=True)
-    bridge.player._cfg.index.active_dir = active
+    point_index(bridge.player._cfg.index, active)
     client = TestClient(create_app(bridge))
     files = {"file": ("Night.sts", b"[Processing]\nGain=0\n")}
 
@@ -65,13 +66,13 @@ def test_upload_refuses_a_second_file_of_the_same_name_in_words(bridge, tmp_path
         files={"file": ("Big.sts", b"[A]\nB=1\n" + b"x" * (3 * 1024 * 1024))},
     )
     assert too_big.status_code == 413
-    assert not (active.parent / "stereo-tool-presets" / "Big.sts").exists()
+    assert not (active / "stereo-tool-presets" / "Big.sts").exists()
 
 
 def test_preset_routes_refuse_unsafe_uploads_and_missing_selection(bridge, tmp_path: Path) -> None:
     active = tmp_path / "index" / "default"
     active.mkdir(parents=True)
-    bridge.player._cfg.index.active_dir = active
+    point_index(bridge.player._cfg.index, active)
     bridge.player._cfg.index.index_dir = active.parent
     client = TestClient(create_app(bridge))
 

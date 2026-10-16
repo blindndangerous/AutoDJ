@@ -122,11 +122,22 @@ def _load_cfg_or_exit(
     *,
     show_error: bool = True,
 ) -> AutoDJConfig:  # pragma: no cover
-    """Load *config_path* or print + exit on missing file."""
+    """Load *config_path* or print + exit on missing file.
+
+    An index folder in the old layout is moved into the new one first
+    (:mod:`autodj.layout`), then the configuration is read again.
+    """
     from autodj.config import load_config
+    from autodj.layout import LayoutError, move_old_layout
 
     try:
-        return load_config(config_path)
+        cfg = load_config(config_path)
+        if move_old_layout(cfg):
+            cfg = load_config(config_path)
+        return cfg
+    except LayoutError as exc:
+        console.print(f"[bold red]{escape(str(exc))}[/]")
+        raise click.exceptions.Exit(1) from exc
     except (OSError, KeyError, TypeError, ValueError) as exc:
         if show_error:
             console.print(f"[bold red]Config not found or invalid:[/] {escape(str(exc))}")
@@ -139,29 +150,7 @@ def _append_cli_source(cfg: AutoDJConfig) -> None:
         cfg.config_sources = (*cfg.config_sources, "cli")
 
 
-def _apply_index_name(cfg: AutoDJConfig, index_name: str | None) -> bool:  # pragma: no cover
-    """Validate + apply ``--name``; return whether effective config changed."""
-    if index_name is None:
-        return False
-    from autodj.config import reload_web_stations, validate_index_name
-
-    try:
-        validate_index_name(index_name)
-    except ValueError as exc:
-        console.print(f"[bold red]Invalid --name:[/] {escape(str(exc))}")
-        sys.exit(1)
-    if cfg.index.name == index_name:
-        return False
-    cfg.index.name = index_name
-    # Web-created stations belong to an index: read the selected one's.
-    reload_web_stations(cfg)
-    _append_cli_source(cfg)
-    return True
-
-
-def _load_index_for_serve(
-    cfg: AutoDJConfig, *, active_dir: Path | None = None
-) -> SimilarityIndex:  # pragma: no cover
+def _load_index_for_serve(cfg: AutoDJConfig) -> SimilarityIndex:  # pragma: no cover
     """Start with an empty similarity view; LibraryManager loads catalog vectors."""
     from autodj.config import station_config
     from autodj.library import require_current_library
@@ -169,45 +158,16 @@ def _load_index_for_serve(
     from autodj.stations import StationPaths
 
     require_current_library(
-        cfg.index.active_dir if active_dir is None else active_dir,
-        (
-            StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-            for spec in cfg.stations
-        ),
+        cfg.index.library_dir,
+        [
+            StationPaths.default(cfg).web_state,
+            *(
+                StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+                for spec in cfg.stations
+            ),
+        ],
     )
     return SimilarityIndex.empty()
-
-
-def _scan_index_rows(
-    base: Path, active_name: str
-) -> list[tuple[str, str, str]]:  # pragma: no cover
-    """Walk *base* for index directories; return (name, track count, path) rows.
-
-    Read catalog counts; flag older libraries for explicit migration.
-    """
-    from autodj.catalog import catalog_counts
-    from autodj.index_manifest import has_legacy_index
-
-    rows: list[tuple[str, str, str]] = []
-    for entry in sorted(base.iterdir()):
-        if not entry.is_dir():
-            continue
-        catalog_path = entry / "library.db"
-        if catalog_path.is_file():
-            try:
-                ready, analyzed = catalog_counts(catalog_path)
-                status = f"{ready} songs; {analyzed} analyzed"
-            except (OSError, sqlite3.Error):
-                status = "[red]corrupt library[/red]"
-            active_marker = "  *" if entry.name == active_name else "   "
-            rows.append((active_marker + entry.name, status, str(entry)))
-            continue
-        if not has_legacy_index(entry):
-            continue
-        status = "[yellow]migration needed: autodj migrate-index --apply[/yellow]"
-        active_marker = "  *" if entry.name == active_name else "   "
-        rows.append((active_marker + entry.name, status, str(entry)))
-    return rows
 
 
 def _can_import(name: str) -> bool:
@@ -515,9 +475,6 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
 
 
 @cli.command("doctor")
-@click.option(
-    "--name", "index_name", default=None, help="Named index to check (defaults to [index].name)."
-)
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 @click.option(
     "--fix/--no-fix",
@@ -536,7 +493,6 @@ def cmd_doctor(
     ctx: click.Context,
     as_json: bool,
     fix: bool | None,
-    index_name: str | None,
     station: str | None,
 ) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health.
@@ -573,7 +529,6 @@ def cmd_doctor(
         )
         click.echo(report.to_json())
         raise click.exceptions.Exit(1) from None
-    _apply_index_name(cfg, index_name)
     if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
         raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
     report = run_doctor(cfg, station=station)
@@ -898,7 +853,7 @@ def cmd_tokens_revoke(ctx: click.Context, token_id: str) -> None:
     cfg, store = _token_store(ctx)
     if not store.revoke(token_id):
         raise click.ClickException("Active machine token was not found.")
-    library_db = cfg.index.active_dir / "library.db"
+    library_db = cfg.index.library_dir / "library.db"
     if library_db.is_file():
         queue = AnalysisQueue(library_db)
         try:
@@ -1038,17 +993,6 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     help="Re-analyse eligible songs, keeping cues, history, settings and old results until replaced.",
 )
 @click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help=(
-        "Named index to write to.  Files land in <index_dir>/<NAME>/.  Use this "
-        "to keep multiple curated libraries side-by-side (e.g. 'workout', 'chill').  "
-        "Default: 'default' (or [index] name in config.toml)."
-    ),
-)
-@click.option(
     "-j",
     "--workers",
     "workers",
@@ -1080,7 +1024,6 @@ def cmd_index(
     ctx: click.Context,
     limit: int | None,
     force: bool,
-    index_name: str | None,
     workers: int | None,
     skip_analyse: bool,
     skip_enrich: bool,
@@ -1098,9 +1041,8 @@ def cmd_index(
     from autodj.library import LibraryManager, analyse_library
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
-    console.print(f"  Library : {cfg.index.active_dir}")
+    console.print(f"  Library : {cfg.index.library_dir}")
     if limit:
         console.print(f"  Advanced analysis limit : {limit} songs")
     if force:
@@ -1149,7 +1091,7 @@ def cmd_index(
 
             try:
                 updated, total = enrich_from_beets(
-                    cfg.index.active_dir,
+                    cfg.index.library_dir,
                     music_dir=cfg.library.music_dir,
                     beets_db=cfg.library.beets_db,
                 )
@@ -1190,18 +1132,10 @@ def cmd_index(
         "Check registered library folders before overriding."
     ),
 )
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
-)
 @click.pass_context
 def cmd_prune(
     ctx: click.Context,
     force: bool,
-    index_name: str | None,
 ) -> None:
     """Preview and confirm removal of catalog records missing from available folders.
 
@@ -1215,9 +1149,7 @@ def cmd_prune(
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    _apply_index_name(cfg, index_name)
-
-    catalog_path = cfg.index.active_dir / "library.db"
+    catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
         raise click.ClickException("No current library catalog. Run `autodj index` first.")
     manager = LibraryManager(cfg, SimilarityIndex.empty())
@@ -1262,15 +1194,8 @@ def cmd_prune(
 
 
 @cli.command("enrich")
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
-)
 @click.pass_context
-def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
+def cmd_enrich(ctx: click.Context) -> None:
     """Refresh current catalog tags and key / mode from the beets database.
 
     Walks every entry in the existing index and looks it up in your beets
@@ -1292,20 +1217,18 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    _apply_index_name(cfg, index_name)
-
     if not cfg.library.beets_db:
         console.print(
             f"[bold red]No {escape('[library]')} beets_db in config — enrich requires beets.[/]"
         )
         sys.exit(1)
 
-    if not (cfg.index.active_dir / "library.db").is_file():
+    if not (cfg.index.library_dir / "library.db").is_file():
         raise click.ClickException("No current library catalog. Run `autodj index` first.")
 
     try:
         updated, total = enrich_from_beets(
-            cfg.index.active_dir,
+            cfg.index.library_dir,
             music_dir=cfg.library.music_dir,
             beets_db=cfg.library.beets_db,
         )
@@ -1329,15 +1252,13 @@ def cmd_enrich(ctx: click.Context, index_name: str | None) -> None:
 
 
 @cli.command("analyse-library")
-@click.option("--name", "index_name", default=None, type=str)
 @click.pass_context
-def cmd_analyse_library(ctx: click.Context, index_name: str | None) -> None:
+def cmd_analyse_library(ctx: click.Context) -> None:
     """Analyse basic-ready songs from folders with advanced analysis enabled."""
     from autodj.library import analyse_library
     from autodj.model import download_model_if_needed, load_model
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
     try:
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         completed = analyse_library(cfg, load_model(model_path))
@@ -1514,13 +1435,6 @@ def cmd_worker(
 
 @cli.command("analyse")
 @click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to operate on (default: [index] name, which is 'default' unless set).",
-)
-@click.option(
     "--limit",
     default=None,
     type=click.IntRange(min=1),
@@ -1529,7 +1443,6 @@ def cmd_worker(
 @click.pass_context
 def cmd_analyse(
     ctx: click.Context,
-    index_name: str | None,
     limit: int | None,
 ) -> None:
     """Backfill CPU DJ metadata for music in the current catalog.
@@ -1549,7 +1462,6 @@ def cmd_analyse(
     \b
     Examples:
       uv run autodj analyse
-      uv run autodj analyse --name workout
       uv run autodj analyse --limit 100   # analyse only the next 100
     """
     missing = [name for name in ("librosa", "soundfile") if not _can_import(name)]
@@ -1562,11 +1474,9 @@ def cmd_analyse(
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    _apply_index_name(cfg, index_name)
-
     from autodj.catalog import LibraryCatalog
 
-    catalog_path = cfg.index.active_dir / "library.db"
+    catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
         console.print(
             f"[bold red]No current library at {catalog_path}.[/]  Run `autodj index` first."
@@ -1593,7 +1503,6 @@ def cmd_analyse(
 
 
 @cli.command("migrate-index")
-@click.option("--name", "index_name", default=None, help="Named index to convert.")
 @click.option(
     "--apply", is_flag=True, help="Save a recovery copy and convert; otherwise preview only."
 )
@@ -1611,7 +1520,6 @@ def cmd_analyse(
 @click.pass_context
 def cmd_migrate_index(
     ctx: click.Context,
-    index_name: str | None,
     apply: bool,
     move_map: Path | None,
     music_dir: Path | None,
@@ -1622,7 +1530,6 @@ def cmd_migrate_index(
     Vectors are imported unchanged; audio is not reanalysed.
     """
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
     try:
         moves = json.loads(move_map.read_text(encoding="utf-8")) if move_map else {}
     except (OSError, ValueError) as exc:
@@ -1633,12 +1540,15 @@ def cmd_migrate_index(
 
     liner_dir = str(StationPaths.default(cfg).liners)
     station_web_states = [
-        StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
-        for spec in cfg.stations
+        StationPaths.default(cfg).web_state,
+        *(
+            StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug).web_state
+            for spec in cfg.stations
+        ),
     ]
     try:
         migrate_catalog(
-            cfg.index.active_dir,
+            cfg.index.library_dir,
             music_dir or cfg.library.music_dir,
             Path(liner_dir),
             moves,
@@ -1681,8 +1591,6 @@ class _ServeCommand(click.Command):
                             if ctx.obj and ctx.obj.get("config_path"):
                                 args.extend(["--config", str(ctx.obj["config_path"])])
                             args.append("doctor")
-                            if ctx.params.get("index_name"):
-                                args.extend(["--name", ctx.params["index_name"]])
                             environment = os.environ.copy()
                             environment["AUTODJ_RUNTIME"] = "current"
                             environment["AUTODJ_DOCTOR_ACTIVE"] = "1"
@@ -1693,7 +1601,7 @@ class _ServeCommand(click.Command):
             raise
 
 
-def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
+def _claim_index_for_serve(ctx: click.Context, library_dir: Path) -> None:
     """Refuse to serve a half-restored index; hold the serve lock while serving.
 
     A restore that stopped part way leaves its journal: some files are new
@@ -1703,7 +1611,7 @@ def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
     """
     from autodj.backup import BackupError, hold_serve_lock, pending_restore_state
 
-    restore_state = pending_restore_state(active_dir)
+    restore_state = pending_restore_state(library_dir)
     if restore_state not in (None, "installed"):
         console.print(
             "[bold red]A restore of this index folder did not finish, so some files are new and "
@@ -1716,7 +1624,7 @@ def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
             "them out of the way.[/]"
         )
     try:
-        serve_lock = hold_serve_lock(active_dir)
+        serve_lock = hold_serve_lock(library_dir)
     except BackupError as exc:
         console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
@@ -1790,13 +1698,6 @@ def _claim_index_for_serve(ctx: click.Context, active_dir: Path) -> None:
     help="Open the web UI in the default browser after starting.",
 )
 @click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to play from (default: [index] name, which is 'default' unless set).",
-)
-@click.option(
     "--server-audio/--no-server-audio",
     "server_audio",
     default=False,
@@ -1843,7 +1744,6 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     allowed_hosts: tuple[str, ...],
     allowed_origins: tuple[str, ...],
     open_browser: bool,
-    index_name: str | None,
     server_audio: bool,
     stream: bool | None,
     ssl_certfile: str | None,
@@ -1899,23 +1799,12 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     server_cli_override = security_cli_requested and staged_server != original_server
     host = staged_server.host
     port = staged_server.port
-    selected_index_name = cfg.index.name
-    if index_name is not None:
-        from autodj.config import validate_index_name
-
-        try:
-            validate_index_name(index_name)
-        except ValueError as exc:
-            console.print(f"[bold red]Invalid --name:[/] {escape(str(exc))}")
-            sys.exit(1)
-        selected_index_name = index_name
     from autodj.index_manifest import IndexConsistencyError
 
-    active_dir = cfg.index.index_dir / selected_index_name
-    _claim_index_for_serve(ctx, active_dir)
+    _claim_index_for_serve(ctx, cfg.index.library_dir)
 
     try:
-        sim = _load_index_for_serve(cfg, active_dir=active_dir)
+        sim = _load_index_for_serve(cfg)
     except IndexConsistencyError as exc:
         console.print(f"[bold red]{escape(str(exc))}[/]")
         sys.exit(1)
@@ -1925,17 +1814,14 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         and not is_loopback_bind(staged_server.host)
     ):
         console.print("[yellow]WARNING: LAN access is unauthenticated (--insecure-lan).[/]")
-    from autodj.library import LibraryManager
-
-    _apply_index_name(cfg, index_name)
     from autodj.config import move_station_tables
+    from autodj.library import LibraryManager
 
     if move_station_tables(cfg):
         # The moved stations are read from their own files from now on.
         cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-        _apply_index_name(cfg, index_name)
-    if isinstance(cfg.index.active_dir, Path):
-        _add_log_file(cfg.index.active_dir / "logs" / "autodj.log")
+    if isinstance(cfg.index.index_dir, Path):
+        _add_log_file(cfg.index.index_dir / "logs" / "autodj.log")
     library = LibraryManager(cfg, sim)
     ctx.call_on_close(library.close)
     _print_serve_banner(console, library)
@@ -2023,41 +1909,6 @@ def cmd_list_devices() -> None:
 
 
 # ---------------------------------------------------------------------------
-# list-indexes subcommand
-# ---------------------------------------------------------------------------
-
-
-@cli.command("list-indexes")
-@click.pass_context
-def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesystem walk
-    """List every named index found under ``[index] index_dir``.
-
-    Shows each index name and its track count.  Use this to remember
-    what indexes you have built — e.g. after running
-    ``autodj index --name workout`` and ``autodj index --name chill``.
-
-    \b
-    Examples:
-      uv run autodj list-indexes
-    """
-    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    base = cfg.index.index_dir
-    if not base.exists():
-        console.print(f"[yellow]No indexes found at[/] {base}")
-        return
-    rows = _scan_index_rows(base, cfg.index.name)
-    if not rows:
-        console.print(
-            f"[yellow]No named indexes found under[/] {base}\n"
-            "Run [bold]autodj index --name <name>[/] to build one.",
-        )
-        return
-    console.print(f"[bold]Indexes under[/] {base}  [dim](* = active)[/]\n")
-    for name, status, path in rows:
-        console.print(f"  {name:24s}  {status:18s}  [dim]{path}[/dim]")
-
-
-# ---------------------------------------------------------------------------
 # export-plays subcommand
 # ---------------------------------------------------------------------------
 
@@ -2111,13 +1962,6 @@ def cmd_list_indexes(ctx: click.Context) -> None:  # pragma: no cover -- filesys
     ),
 )
 @click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index whose play log to export (default: [index] name).",
-)
-@click.option(
     "--station",
     default="default",
     show_default=True,
@@ -2135,7 +1979,6 @@ def cmd_export_plays(
     category: str,
     channel: str,
     missing: bool,
-    index_name: str | None,
     station: str,
 ) -> None:
     """Export the play log between two dates as CSV, for royalty reports.
@@ -2170,13 +2013,12 @@ def cmd_export_plays(
             "a station name is lower-case letters, digits and hyphens", param_hint="--station"
         )
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
     try:
         start = parse_bound(from_text)
         end = parse_bound(to_text, end=True)
     except ValueError as exc:
         raise click.BadParameter(str(exc)) from exc
-    db = cfg.index.active_dir / "library.db"
+    db = cfg.index.library_dir / "library.db"
     if not db.is_file():
         click.echo(f"No play log found: {db} does not exist.", err=True)
         raise click.exceptions.Exit(1)
@@ -2246,13 +2088,6 @@ def cmd_export_plays(
     "--seed", type=int, default=None, help="Seed for the random choices, to repeat a run."
 )
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON.")
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to test (default: [index] name).",
-)
 @click.pass_context
 def cmd_simulate(
     ctx: click.Context,
@@ -2263,7 +2098,6 @@ def cmd_simulate(
     start_text: str | None,
     seed: int | None,
     as_json: bool,
-    index_name: str | None,
 ) -> None:
     """Test the rotation: simulate song picking without changing anything on air.
 
@@ -2301,7 +2135,6 @@ def cmd_simulate(
     if sum(value is not None for value in (hours, days, picks)) > 1:
         raise click.UsageError("Give --hours, --days or --picks, only one of them.")
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
-    _apply_index_name(cfg, index_name)
     start = None
     if start_text is not None:
         try:
@@ -2337,15 +2170,8 @@ def cmd_simulate(
 
 
 @cli.command("stats")
-@click.option(
-    "--name",
-    "index_name",
-    default=None,
-    type=str,
-    help="Named index to inspect (default: [index] name, which is 'default' unless set).",
-)
 @click.pass_context
-def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
+def cmd_stats(ctx: click.Context) -> None:
     """Print a statistical overview of current catalog music.
 
     Reads catalog records (not vectors or the model) and displays BPM distribution, genres,
@@ -2361,9 +2187,7 @@ def cmd_stats(ctx: click.Context, index_name: str | None) -> None:
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
 
-    _apply_index_name(cfg, index_name)
-
-    catalog_path = cfg.index.active_dir / "library.db"
+    catalog_path = cfg.index.library_dir / "library.db"
     if not catalog_path.is_file():
         console.print(f"[bold red]Current library not found:[/] {escape(str(catalog_path))}")
         sys.exit(1)

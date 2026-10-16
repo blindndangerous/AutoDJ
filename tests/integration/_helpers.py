@@ -33,6 +33,7 @@ from autodj.config import (
 )
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatRule, RepeatSettings
+from tests._layout import point_index
 
 # Anything deriving a real filesystem path from a mocked config must point here.
 # Left as a MagicMock, ``index_dir`` stringifies into a literal "MagicMock/..."
@@ -169,7 +170,7 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.playback.repeat_rules = RepeatSettings(
         track=RepeatRule(tracks=500), artist=RepeatRule(tracks=3)
     )
-    cfg.index.active_dir = NO_INDEX_DIR
+    point_index(cfg.index, NO_INDEX_DIR)
     # create_app derives the paired-device registry from index_dir. Tests that
     # assert on pairing state inject their own DeviceRegistry instead.
     cfg.index.index_dir = NO_INDEX_DIR

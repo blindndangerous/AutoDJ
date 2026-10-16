@@ -10,7 +10,7 @@ that wrote it and the list of files) and these members:
   ``index/time_checks.json``, ``index/listener_bans.json``, ``index/listener_stats.json``,
   ``index/recording.json``, ``index/categories.json``, ``index/liner_dates.json``,
   ``index/matched_intros.json``, ``index/intro_rules.json``, ``index/ads.json``,
-  ``index/shows.json`` and ``index/live_djs.json`` from the active index folder.
+  ``index/shows.json`` and ``index/live_djs.json`` from the station, library and shared folders.
   The live DJ accounts are kept without password hashes, so each DJ's password
   must be set again after a restore.  ``relays.json`` and ``secrets.json``, which
   hold a station's passwords, are never backed up (:data:`SECRET_STATE_FILES`).
@@ -107,7 +107,7 @@ _FOLDERS = (
     "ad_plays",
     "stereo-tool-presets",
 )
-# The default station's state files in the active index folder.
+# The default station's state files.
 _STATE_FILES = (
     "web_state.json",
     "schedule.json",
@@ -124,9 +124,8 @@ _STATE_FILES = (
     "shows.json",
     "live_djs.json",
 )
-# Another station's state files, in ``stations/<slug>/``.  The categories
-# are shared, so they are only in the default station's list.
-STATION_FILES = ("station.json", *(name for name in _STATE_FILES if name != "categories.json"))
+# Another station's state files, in ``stations/<slug>/``.
+STATION_FILES = ("station.json", *_STATE_FILES)
 STATION_FOLDERS = (
     "liners",
     "carts",
@@ -152,15 +151,17 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
     The default station's prefixes are the top-level names (``index``,
     ``liners``...); another station's are ``stations/<slug>/index`` and
-    ``stations/<slug>/<folder>``.
+    ``stations/<slug>/<folder>``.  An ``index/`` member is the default
+    station's, or the library's by its name
+    (:func:`_split`), so archives keep the names they always had.
     """
     from autodj.config import station_config
     from autodj.stations import StationPaths
 
-    active = cfg.index.active_dir
     station = StationPaths.default(cfg)
     roots = {
-        "index": active,
+        "index": station.state_dir,
+        "library": cfg.index.library_dir,
         "liners": station.liners,
         "carts": station.cart_uploads,
         "time_checks": station.time_check_clips,
@@ -169,7 +170,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "intros": station.intros,
         "ads": station.ad_spots,
         "ad_plays": station.ad_plays,
-        "stereo-tool-presets": active.parent / "stereo-tool-presets",
+        "stereo-tool-presets": cfg.index.shared_dir / "stereo-tool-presets",
     }
     for spec in cfg.stations:
         paths = StationPaths.for_station(station_config(spec.cfg, cfg), spec.slug)
@@ -188,15 +189,32 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
 
 def _is_files(key: str) -> bool:
     """Whether archive prefix *key* holds single state files, not a whole folder."""
-    return key == "index" or key.endswith("/index")
+    return key in {"index", "library"} or key.endswith("/index")
+
+
+#: ``index/`` members kept in the library folder.
+_LIBRARY_MEMBERS = frozenset(
+    {"dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml", im.MANIFEST_NAME}
+)
 
 
 def _split(name: str) -> tuple[str, tuple[str, ...]]:
-    """Split a member name into its archive prefix and the path below it."""
+    """Split a member name into its root's key and the path below it."""
     parts = PurePosixPath(name).parts
     if parts[0] == "stations" and len(parts) > 3:
         return "/".join(parts[:3]), parts[3:]
+    if (
+        parts[0] == "index"
+        and len(parts) == 2
+        and (parts[1] in _LIBRARY_MEMBERS or im.GENERATION_FILE_RE.match(parts[1]))
+    ):
+        return "library", parts[1:]
     return parts[0], parts[1:]
+
+
+def _index_root(roots: dict[str, Path], name: str) -> Path:
+    """The folder an ``index/`` member *name* lives in."""
+    return roots[_split(f"index/{name}")[0]]
 
 
 def _swallows(folder: Path, other: Path) -> bool:
@@ -359,10 +377,11 @@ def _state_sources(cfg: AutoDJConfig, roots: dict[str, Path]) -> list[tuple[str,
     ]
     sources = []
     for key, name in state:
-        original = roots[key] / name
+        root = _index_root(roots, name) if key == "index" else roots[key]
+        original = root / name
         if not original.exists():
             continue
-        _within_root(original, roots[key])
+        _within_root(original, root)
         if not original.is_file():
             continue
         _single_link(original)
@@ -377,7 +396,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
     SQLite database is copied through SQLite's backup API for a consistent
     snapshot. Returns the archive members, by name.
     """
-    active = roots["index"]
+    active = roots["library"]
     index = snapshot / "index"
     index.mkdir(parents=True)
     members: dict[str, Path] = {}
@@ -403,9 +422,10 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
                 copy.write_bytes(stripped)
             members[member] = copy
     for name in ("dj_meta.db", "library.db", "related-artists.toml", "related-tracks.toml"):
-        if (active / name).exists():
-            _within_root(active / name, active)
-            _single_link(active / name)
+        root = _index_root(roots, name)
+        if (root / name).exists():
+            _within_root(root / name, root)
+            _single_link(root / name)
     for name in ("dj_meta.db", "library.db"):
         database = active / name
         if not database.is_file():
@@ -424,7 +444,7 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
         if name == "library.db":
             _check_catalog(index / name)
     for name in ("related-artists.toml", "related-tracks.toml"):
-        related = active / name
+        related = roots["library"] / name
         if related.is_file():
             _single_link(related)
             shutil.copyfile(related, index / name)
@@ -484,15 +504,14 @@ def _check_backup_space(
     The snapshot holds the catalog database, metadata database and state
     files; the archive at most everything, uncompressed.
     """
-    active = roots["index"]
-    snapshot = sum(_file_size(active / name) for name in INDEX_FILES)
+    snapshot = sum(_file_size(_index_root(roots, name) / name) for name in INDEX_FILES)
     snapshot += sum(
-        _file_size(active / f"{database}{suffix}")
+        _file_size(roots["library"] / f"{database}{suffix}")
         for database in ("dj_meta.db", "library.db")
         for suffix in _SQLITE_SIDECARS
     )
     for key, root in roots.items():
-        if key != "index" and _is_files(key) and root.is_dir():
+        if key not in {"index", "library"} and _is_files(key) and root.is_dir():
             snapshot += sum(_file_size(root / name) for name in STATION_FILES)
     total = snapshot + sum(_file_size(path) for path in folder_files)
     for place, size, what in (
@@ -662,13 +681,13 @@ def _target(roots: dict[str, Path], name: str) -> Path:
         if f"stations/{slug}/index" not in roots:
             raise _unknown_station(slug)
     key, rest = _split(name)
-    if key == "index":
+    if key in {"index", "library"}:
         if len(rest) == 1 and (
             rest[0] in INDEX_FILES
             or rest[0] in _LEGACY_INDEX_FILES
             or im.GENERATION_FILE_RE.match(rest[0])
         ):
-            return roots["index"] / rest[0]
+            return roots[key] / rest[0]
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in STATION_FILES:
             return roots[key] / rest[0]
@@ -681,7 +700,7 @@ def _is_legacy_index_member(name: str) -> bool:
     """Whether a validated archive member is an obsolete index generation file."""
     key, rest = _split(name)
     return (
-        key == "index"
+        key == "library"
         and len(rest) == 1
         and (rest[0] in _LEGACY_INDEX_FILES or im.GENERATION_FILE_RE.match(rest[0]) is not None)
     )
@@ -946,12 +965,12 @@ def _restore(
     Nothing is replaced until every file is unpacked and checked, and if a
     replacement fails, every one already made is undone.
     """
-    if server_running(roots["index"]):
+    if server_running(roots["library"]):
         raise BackupError(
-            f"AutoDJ is serving {roots['index']}; stop it before restoring, so it does not keep "
+            f"AutoDJ is serving {roots['library']}; stop it before restoring, so it does not keep "
             "using the files the restore replaces"
         )
-    pending = _read_journal(roots["index"])
+    pending = _read_journal(roots["library"])
     if pending is not None:
         raise BackupError(
             "an earlier restore did not finish; run `autodj doctor` to put the old files back "
@@ -1015,16 +1034,16 @@ def _restore(
     stages = {
         key: roots[key].with_name(f".{roots[key].name}.restore-{uuid.uuid4().hex}") for key in keys
     }
-    swap = _Swap(roots["index"] / JOURNAL_NAME, stages.values())
+    swap = _Swap(roots["library"] / JOURNAL_NAME, stages.values())
     keep_stages = False
-    with im.publication_lock(roots["index"]):
+    with im.publication_lock(roots["library"]):
         try:
             for name in files:
                 key, rest = _split(name)
                 _stage_member(archive, name, stages[key].joinpath(*rest))
-            if "index" in stages:
+            if "library" in stages:
                 for name in ("dj_meta.db", "library.db"):
-                    database = stages["index"] / name
+                    database = stages["library"] / name
                     if database.is_file():
                         _check_sqlite(database)
                         if name == "library.db":
@@ -1201,7 +1220,7 @@ def _journal_paths(journal: dict[str, Any]) -> set[Path]:
 def restore_leftovers(cfg: AutoDJConfig) -> RestoreLeftovers:
     """Find what an interrupted restore left beside the folders a restore touches."""
     roots = _roots(cfg)
-    journal = _read_journal(roots["index"])
+    journal = _read_journal(roots["library"])
     named = _journal_paths(journal) if journal else set()
     places = {root.parent for root in roots.values()} | {
         root for key, root in roots.items() if _is_files(key)
@@ -1216,7 +1235,7 @@ def restore_leftovers(cfg: AutoDJConfig) -> RestoreLeftovers:
             if re.match(r"^\..+\.(?:old|restore)-[0-9a-f]{32}$", child.name) and child not in named:
                 strays.add(child)
     return RestoreLeftovers(
-        roots["index"] / JOURNAL_NAME if journal is not None else None,
+        roots["library"] / JOURNAL_NAME if journal is not None else None,
         str(journal.get("state")) if journal is not None else None,
         tuple(sorted(strays)),
     )
@@ -1253,11 +1272,11 @@ def recover_restore(cfg: AutoDJConfig, keep: Path) -> list[str]:
             (the journal stays, naming what is left).
     """
     roots = _roots(cfg)
-    if server_running(roots["index"]):
-        raise BackupError(f"AutoDJ is serving {roots['index']}; stop it first")
+    if server_running(roots["library"]):
+        raise BackupError(f"AutoDJ is serving {roots['library']}; stop it first")
     found = restore_leftovers(cfg)
     done: list[str] = []
-    journal = _read_journal(roots["index"])
+    journal = _read_journal(roots["library"])
     if journal is not None and found.journal is not None:
         steps = [step for step in journal.get("steps", []) if isinstance(step, dict)]
         if journal.get("state") == "installing":

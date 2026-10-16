@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from autodj import stereotool_setup as setup
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -27,9 +28,10 @@ _TOKEN = "stereo-tool-routes-token-is-32-bytes-long"
 def _client(tmp_path: Path, *, token: str | None = None) -> TestClient:
     player = _make_player_mock()
     cfg = player._cfg
-    cfg.index.index_dir = tmp_path
-    cfg.index.active_dir = tmp_path / "main"
-    cfg.index.active_dir.mkdir()
+    point_index(cfg.index, tmp_path)
+    cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+    cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
     if token is not None:
         cfg.server.access_token = token
     return TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
@@ -85,12 +87,12 @@ def test_a_key_for_this_station_only_is_kept_in_its_folder(tmp_path: Path) -> No
     client = _client(tmp_path)
     response = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
     assert response.json()["license"]["in_use"] == "station"
-    assert setup.station_license_path(tmp_path / "main").is_file()
+    assert setup.station_license_path(tmp_path / "stations" / "default").is_file()
     assert not setup.install_license_path(tmp_path).exists()
     cleared = client.delete("/api/stereo-tool/license", params={"scope": "station"})
     assert cleared.json()["cleared"] is True
     assert cleared.json()["license"]["in_use"] is None
-    assert not setup.station_license_path(tmp_path / "main").exists()
+    assert not setup.station_license_path(tmp_path / "stations" / "default").exists()
 
 
 @pytest.mark.parametrize(
@@ -284,7 +286,7 @@ def test_a_computer_without_a_build_is_told_why(tmp_path: Path, monkeypatch) -> 
 
 def test_saving_the_same_key_again_changes_nothing(tmp_path: Path) -> None:
     client = _client(tmp_path)
-    state_dir = tmp_path / "main"
+    state_dir = tmp_path / "stations" / "default"
     first = client.put("/api/stereo-tool/license", json={"key": KEY, "scope": "station"})
     assert first.json()["changed"] is True
     before = (setup.generation(), setup.generation(state_dir))
@@ -296,7 +298,7 @@ def test_saving_the_same_key_again_changes_nothing(tmp_path: Path) -> None:
 def test_status_says_what_the_running_stereo_tool_said_of_its_licence(tmp_path: Path) -> None:
     client = _client(tmp_path)
     player = client.app.state.stations.default.bridge.player
-    state_dir = tmp_path / "main"
+    state_dir = tmp_path / "stations" / "default"
     report = {
         "generation": setup.generation(state_dir),
         "version": "11.05",

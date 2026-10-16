@@ -28,6 +28,7 @@ from autodj.player import (
 )
 from autodj.similarity import SimilarityError
 from autodj.transitions import TRANSITION_EFFECT_NAMES
+from tests._layout import point_index
 from tests.unit._fakes import make_cfg_mock as _make_cfg_mock
 from tests.unit._fakes import make_entry as _make_entry
 from tests.unit._fakes import make_sim_index as _make_sim_index
@@ -64,6 +65,7 @@ class Finder(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, Finder())
 import autodj.player
 import autodj.sound_output
+from tests._layout import point_index
 assert 'sounddevice' not in sys.modules
 """
     env = {**os.environ, "PYTHONPATH": str(source_root)}
@@ -461,7 +463,7 @@ class TestLoadLyricsToggle:
         from autodj.settings_bodies import EqBody
 
         player = self._make()
-        player._cfg.index.active_dir = tmp_path
+        point_index(player._cfg.index, tmp_path)
         bridge = PlayerBridge(player, player._sim)
         monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
         app = create_app(bridge)
@@ -474,7 +476,7 @@ class TestLoadLyricsToggle:
         }
 
         restored = self._make()
-        restored._cfg.index.active_dir = tmp_path
+        point_index(restored._cfg.index, tmp_path)
         PlayerBridge(restored, restored._sim).load_persistent_state()
         assert PlayerBridge(restored, restored._sim).get_eq() == {
             "low": 1.25,
@@ -724,7 +726,7 @@ class TestAnalyseTrackInBackground:
         player.analyse_track_in_background(path)
         assert paused_before_write.wait(2.0)
 
-        player._cfg.index.active_dir = tmp_path
+        point_index(player._cfg.index, tmp_path)
         app = create_app(PlayerBridge(player=player, sim=player._sim))
         client = TestClient(app)
         client.__enter__()
@@ -791,7 +793,7 @@ class TestAnalyseTrackInBackground:
         monkeypatch.setattr("autodj.dj_meta.analyse_audio", block_before_write)
         monkeypatch.setattr(threading, "excepthook", capture_thread_error)
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.05)
-        player._cfg.index.active_dir = tmp_path
+        point_index(player._cfg.index, tmp_path)
         app = create_app(PlayerBridge(player=player, sim=player._sim))
 
         player.analyse_track_in_background(path)
@@ -862,7 +864,7 @@ class TestRenderTrackLoading:
     def _make_player(self) -> Player:
         cfg = _make_cfg_mock()
         cfg.playback.crossfade_seconds = 2.0
-        cfg.index.active_dir = MagicMock()
+        cfg.index.library_dir = MagicMock()
         return Player(cfg, _make_sim_index())
 
     def test_renders_normal_tracks_with_an_overlap(self) -> None:
@@ -1238,7 +1240,7 @@ class TestRenderTrackFeatures:
         cfg.replaygain.max_clip_safe_gain = 1.0
         cfg.library.beets_db = None
         cfg.library.music_dir = None
-        cfg.index.active_dir = MagicMock()  # not a Path -> DJ cache lazy init bails
+        cfg.index.library_dir = MagicMock()  # not a Path -> DJ cache lazy init bails
         return Player(cfg, _make_sim_index(n=3))
 
     def _render(self, player: Player, seconds: float = 4.0):
@@ -1740,7 +1742,7 @@ class TestEnsureDjCache:
 
     def test_cache_initialised_from_active_dir(self, tmp_path) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(2))
-        player._cfg.index.active_dir = tmp_path
+        point_index(player._cfg.index, tmp_path)
         player._dj_cache = None
         from autodj import dj_meta as _dm
 
@@ -2110,7 +2112,7 @@ class TestPlayerCoverageErrorPaths:
 
     def test_dj_cache_error_leaves_cache_unavailable(self) -> None:
         player = Player(_make_cfg_mock(), _make_sim_index(2))
-        player._cfg.index.active_dir = Path("index")
+        point_index(player._cfg.index, Path("index"))
         with patch("autodj.dj_meta.get_cache", side_effect=OSError("bad database")):
             player._ensure_dj_cache()
 
@@ -2317,7 +2319,7 @@ def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
     cfg.playback.crossfade_seconds = 2.0
     cfg.djmix.beatmatch = True
     cfg.transitions.effect = "echo_out"
-    cfg.index.active_dir = MagicMock()
+    cfg.index.library_dir = MagicMock()
     player = Player(cfg, _make_sim_index(3))
     cur, nxt = player._sim.entries[0], player._sim.entries[1]
     cur.bpm, nxt.bpm = 120.0, 124.0
@@ -2338,7 +2340,7 @@ def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
 
 def test_render_track_does_not_load_lyrics_ahead_of_time() -> None:
     cfg = _make_cfg_mock()
-    cfg.index.active_dir = MagicMock()
+    cfg.index.library_dir = MagicMock()
     player = Player(cfg, _make_sim_index(3))
     player._current_lyrics_plain = "playing song words"
     with (

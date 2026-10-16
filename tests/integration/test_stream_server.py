@@ -16,6 +16,7 @@ from autodj._bridge import PlayerBridge, StreamSeekUnavailable
 from autodj.listener_access import proxy_allowlist
 from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
+from tests._layout import point_index
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
 
@@ -39,7 +40,7 @@ def _stream_mock() -> MagicMock:
 @pytest.fixture
 def stream_app(bridge, tmp_path: Path):
     stream = _stream_mock()
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream.enabled = True
     bridge.attach_stream(stream=stream, station=MagicMock(state="idle"))
     app = create_app(bridge)
@@ -102,7 +103,7 @@ def _authenticated_stream_client(bridge, tmp_path: Path) -> TestClient:
         allowed_origins=["http://testserver"],
         access_token="t" * 32,
     )
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
     return TestClient(create_app(bridge), client=("192.0.2.4", 50000))
@@ -147,7 +148,7 @@ def test_web_relay_save_persists_privately_and_never_returns_password(stream_app
     assert response.status_code == 200
     assert "source-secret" not in response.text
     assert client.get("/api/stream/relays").json()["relays"][0]["password_configured"] is True
-    saved = bridge.player._cfg.index.active_dir / "relays.json"
+    saved = (bridge.player._cfg.index.stations_dir / "default") / "relays.json"
     assert "source-secret" in saved.read_text(encoding="utf-8")
     assert manager.reconfigure.call_count == 1
 
@@ -263,7 +264,7 @@ def test_malformed_listener_authorization_is_rejected(bridge, authorization: str
 
 
 def test_failed_listener_auth_is_throttled_before_ban_status(bridge, tmp_path: Path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream.listener_user = "radio"
     bridge.player._cfg.stream.listener_password = "secret"
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
@@ -366,12 +367,14 @@ async def test_kick_route_ends_open_stream_response(stream_app) -> None:
 
 
 def test_corrupt_bans_file_does_not_prevent_startup(bridge, tmp_path: Path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
-    (tmp_path / "listener_bans.json").write_text("broken", encoding="utf-8")
+    point_index(bridge.player._cfg.index, tmp_path)
+    (tmp_path / "stations" / "default" / "listener_bans.json").write_text(
+        "broken", encoding="utf-8"
+    )
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
     client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
     assert client.get("/stream.m3u").status_code == 200
-    assert len(list(tmp_path.glob("listener_bans.json.*.bad"))) == 1
+    assert len(list((tmp_path / "stations" / "default").glob("listener_bans.json.*.bad"))) == 1
 
 
 def test_ban_write_failure_returns_json_error(stream_app) -> None:
@@ -388,7 +391,7 @@ def test_ban_write_failure_returns_json_error(stream_app) -> None:
 
 
 def test_ban_api_blocks_stream_and_survives_new_app(bridge, tmp_path: Path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.attach_stream(stream=_stream_mock(), station=MagicMock(state="idle"))
     client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))
     created = client.post(
@@ -851,8 +854,8 @@ def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> 
     player.bus = MagicMock()
     player.bus.playing = True
     playback = player._cfg.playback
-    player._cfg.index.active_dir = str(tmp_path)
-    (tmp_path / "liners").mkdir()
+    point_index(player._cfg.index, str(tmp_path))
+    (tmp_path / "stations" / "default" / "liners").mkdir()
     playback.liners_enabled = True
     playback.liners_every_n_songs = 1
     playback.liners_every_minutes = None
@@ -860,7 +863,11 @@ def test_server_audio_lifespan_fires_liners_into_the_mix_bus(tmp_path: Path) -> 
     playback.liners_random_max_minutes = None
     playback.liners_pick_mode = "sequential"
     playback.liners_duck_db = -9.0
-    sf.write(tmp_path / "liners" / "station-id.wav", np.full(441, 0.25, np.float32), 44100)
+    sf.write(
+        tmp_path / "stations" / "default" / "liners" / "station-id.wav",
+        np.full(441, 0.25, np.float32),
+        44100,
+    )
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     with TestClient(create_app(bridge, server_audio=True)):
         assert not bridge.stream_mode
@@ -1300,7 +1307,7 @@ def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: 
     from tests.unit.test_recorder import _wait_for
 
     bridge = _lifespan_bridge()
-    bridge.player._cfg.index.active_dir = tmp_path / "index"
+    point_index(bridge.player._cfg.index, tmp_path / "index")
     bridge.player._cfg.server.station_timezone = "UTC"
     bridge.player._cfg.recording = RecordingConfig(tmp_path / "recordings")
     with (
@@ -1362,7 +1369,9 @@ def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: 
         assert run("recording_split")["result"] == "ok"
         assert client.post("/api/recording/stop").json()["running"] is False
         assert client.post("/api/recording/split").status_code == 409
-    state = json.loads((tmp_path / "index" / "recording.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        (tmp_path / "index" / "stations" / "default" / "recording.json").read_text(encoding="utf-8")
+    )
     assert state["running"] is False
     assert state["split"] == "show"
 
@@ -1476,7 +1485,7 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
     closed_port.close()  # nothing listens there: the relays keep retrying
     password = "relay-password-value"
     bridge = _lifespan_bridge()
-    bridge.player._cfg.index.index_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream = StreamConfig(
         enabled=True,
         relays={
@@ -1517,11 +1526,13 @@ def test_relays_start_with_the_stream_and_keep_the_station_playing(tmp_path: Pat
             assert relay["state"] in {"connecting", "retrying"}, relay
         assert password not in client.get("/api/status").text
         bridge.on_track_started(bridge.player._state.current_track)
-        assert (tmp_path / "relay-status.json").exists()
+        assert (tmp_path / "stations" / "default" / "relay-status.json").exists()
     assert bus.remove_output.call_count == 2
     assert all(relay.status()["state"] == "stopped" for relay in relays._relays)
     assert all(output._closed for output in relays.outputs)
-    assert password not in (tmp_path / "relay-status.json").read_text(encoding="utf-8")
+    assert password not in (tmp_path / "stations" / "default" / "relay-status.json").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_stream_listeners_are_counted_for_the_play_log(stream_app, bridge) -> None:

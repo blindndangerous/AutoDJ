@@ -53,8 +53,6 @@ def test_rebuild_supersedes_index_and_rechecks_before_analyse(tmp_path: Path) ->
             str(cfg.config_path),
             "index",
             "--force",
-            "--name",
-            "workout",
         ],
         check=False,
     )
@@ -83,8 +81,6 @@ def test_migration_recovery_preserves_config_and_named_index(tmp_path: Path) -> 
             str(cfg.config_path),
             "migrate-index",
             "--apply",
-            "--name",
-            "workout",
         ],
         check=False,
     )

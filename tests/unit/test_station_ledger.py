@@ -173,7 +173,7 @@ def test_the_library_flushes_and_reloads_every_ledger(tmp_path: Path) -> None:
         owl.remember_play(song, 3.0)
     finally:
         manager.close()
-    with LibraryCatalog(manager.cfg.index.active_dir / "library.db") as reopened:
+    with LibraryCatalog(manager.cfg.index.library_dir / "library.db") as reopened:
         assert reopened.last_played("nightowl") == {_key(song): 3.0}
 
 

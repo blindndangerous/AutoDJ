@@ -138,22 +138,16 @@ class LibraryConfig(_Section):
 
 @dataclass
 class IndexConfig(_Section):
-    """Settings for the FAISS index storage locations.
+    """Where AutoDJ keeps its data.
 
-    AutoDJ supports **named indexes** so you can keep multiple curated
-    libraries side-by-side — a "workout" index of high-BPM tracks, a
-    "chill" index for evening listening, etc.  Each named index lives
-    in its own sub-directory ``<index_dir>/<name>/`` with its own FAISS
-    files, metadata, web state, liners and dj-meta cache.  Profiles, paired
-    browsers and the access token live in ``<index_dir>`` and are shared
-    by every named index.
+    ``<index_dir>`` holds the machine-wide files (paired browsers, tokens,
+    ``tools/``, ``logs/``), the library in ``libraries/main/``, what every
+    station shares in ``shared/``, and each station, the default one too,
+    in ``stations/<slug>/``.
 
     Attributes:
-        index_dir: Base directory holding all named indexes.
+        index_dir: The folder holding all of it.
         model_dir: Directory where the MuQ model checkpoint is cached.
-        name: Active index name.  Files live in ``<index_dir>/<name>/``.
-            ``--name`` on ``index``, ``prune``, ``enrich``, ``analyse``,
-            ``serve`` and ``stats`` overrides it.
         throttle_ms: Pause before each track that ``autodj index`` embeds
             and ``autodj analyse`` analyses, in milliseconds.  ``0`` = none.
     """
@@ -162,40 +156,17 @@ class IndexConfig(_Section):
 
     index_dir: Path = field(default_factory=lambda: Path("index"))
     model_dir: Path = field(default_factory=lambda: Path("models"))
-    name: str = "default"
     throttle_ms: float = 0.0
 
     def __post_init__(self) -> None:
-        """Expand the paths and validate the index name and throttle.
+        """Expand the paths and validate the throttle.
 
         Raises:
-            ValueError: If ``name`` contains path separators / traversal /
-                leading dot — names are bare identifiers, not paths —, leads
-                outside ``index_dir`` (a Windows drive letter), or
-                ``throttle_ms`` is negative.  A name Windows reads as another
-                folder inside ``index_dir`` is only warned about.
-            TypeError: If ``throttle_ms`` is not a number.
+            ValueError: ``throttle_ms`` is negative.
+            TypeError: ``throttle_ms`` is not a number.
         """
         self.index_dir = Path(self.index_dir).expanduser()
         self.model_dir = Path(self.model_dir).expanduser()
-        self.name = str(self.name).strip() or "default"
-        _check_index_name_shape(self.name)
-        problem = _index_name_portability_problem(self.name)
-        if problem is not None:
-            # An existing index keeps working: only a name that leads
-            # outside index_dir (a drive letter on Windows) stops loading.
-            if (self.index_dir / self.name).parent != self.index_dir:
-                raise ValueError(
-                    f"[index] name {self.name!r} would put the index outside index_dir "
-                    f"({self.index_dir}): on Windows a drive letter such as 'D:' names "
-                    "another place. Rename the index folder and [index] name."
-                )
-            logger.warning(
-                "[index] name %r: %s It still loads, but new index names may not use it; "
-                "rename the index folder and [index] name when you can.",
-                self.name,
-                problem,
-            )
         if isinstance(self.throttle_ms, bool) or not isinstance(self.throttle_ms, int | float):
             raise TypeError("index.throttle_ms must be a number")
         self.throttle_ms = float(self.throttle_ms)
@@ -203,62 +174,20 @@ class IndexConfig(_Section):
             raise ValueError(f"index.throttle_ms must be >= 0, got {self.throttle_ms}")
 
     @property
-    def active_dir(self) -> Path:
-        """Resolved location of the active named index."""
-        return self.index_dir / self.name
+    def library_dir(self) -> Path:
+        """The music library: library.db, dj_meta.db, related artists and tracks, logs."""
+        # ponytail: one library, "main"; a station picking another comes later.
+        return self.index_dir / "libraries" / "main"
 
+    @property
+    def shared_dir(self) -> Path:
+        """What every station shares: categories, playlists, Stereo Tool presets."""
+        return self.index_dir / "shared"
 
-def validate_index_name(name: str) -> None:
-    """Reject names that aren't safe single-segment directory names.
-
-    Use this on every new name, such as a CLI ``--name`` flag.  An
-    ``[index] name`` already in config.toml is checked by :class:`IndexConfig`,
-    which only warns about a name Windows reads as another folder unless it
-    leads outside ``index_dir``.  A *bad* name like ``index/tracks.db``
-    would silently produce the wrong on-disk path; failing fast with a
-    clear error is better.
-
-    Args:
-        name: Candidate index name.
-
-    Raises:
-        ValueError: If *name* is empty, contains ``/``, ``\\`` or ``:``,
-            contains ``..``, starts with a dot, or ends with a dot or space.
-    """
-    _check_index_name_shape(name)
-    problem = _index_name_portability_problem(name)
-    if problem is not None:
-        raise ValueError(problem)
-
-
-def _check_index_name_shape(name: str) -> None:
-    """Refuse an empty name, a path, or one that starts with a dot or contains ``..``."""
-    if not name or not name.strip():
-        raise ValueError("Index name must not be empty.")
-    if "/" in name or "\\" in name:
-        raise ValueError(
-            f"Index name cannot contain path separators (got {name!r}).  "
-            f"Use a bare identifier like 'workout' or 'chill' — files land "
-            f"under <index_dir>/<name>/ automatically.",
-        )
-    if ".." in name or name.startswith("."):
-        raise ValueError(
-            f"Index name cannot start with '.' or contain '..' (got {name!r}).",
-        )
-
-
-def _index_name_portability_problem(name: str) -> str | None:
-    """Why Windows would read *name* as another folder, or ``None``.
-
-    On Windows ``"D:music"`` is a folder on drive D: and ``"C:"`` the index
-    folder itself, outside ``<index_dir>/<name>``; a trailing dot or space
-    is dropped, so ``"chill."`` is the folder of ``"chill"``.
-    """
-    if ":" in name:
-        return f"Index name cannot contain ':' (got {name!r})."
-    if name.endswith((".", " ")):
-        return f"Index name cannot end with '.' or a space (got {name!r})."
-    return None
+    @property
+    def stations_dir(self) -> Path:
+        """Every station's own folder, ``<slug>/``, the default station's too."""
+        return self.index_dir / "stations"
 
 
 TRANSITION_MODES: tuple[str, ...] = (
@@ -2521,7 +2450,7 @@ def _definition_spec(
 
 def _load_web_stations(cfg: AutoDJConfig) -> None:
     """Load every station from its station.json, with its secrets from its secrets.json."""
-    folder = Path(cfg.index.active_dir) / "stations"
+    folder = Path(cfg.index.stations_dir)
     if not folder.is_dir():
         return
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN, StationPaths
@@ -2764,7 +2693,7 @@ def _check_own_folder(slug: str, cfg: AutoDJConfig) -> None:
     Raises:
         ValueError: Naming the setting and the folders.
     """
-    state = os.path.normcase(os.path.abspath(Path(cfg.index.active_dir) / "stations" / slug))
+    state = os.path.normcase(os.path.abspath(Path(cfg.index.stations_dir) / slug))
     for setting, value in (("time_checks.clips_folder", cfg.time_checks.clips_folder),):
         if not value:
             continue

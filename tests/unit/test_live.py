@@ -28,6 +28,7 @@ from autodj.render_ahead import RenderAhead
 from autodj.station import Station
 from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
+from tests._layout import layout_index
 
 PASSWORD = "correct horse battery"
 
@@ -157,7 +158,7 @@ def test_backups_keep_the_accounts_but_not_their_hashes(tmp_path) -> None:
 
 
 def test_named_stations_have_their_own_accounts(tmp_path) -> None:
-    cfg = SimpleNamespace(index=SimpleNamespace(active_dir=tmp_path))
+    cfg = SimpleNamespace(index=layout_index(tmp_path))
     default = StationPaths.default(cfg).live_djs
     named = StationPaths.for_station(cfg, "night").live_djs
     assert named == tmp_path / "stations" / "night" / "live_djs.json"

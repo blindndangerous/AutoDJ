@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from autodj.config import PlayerPageConfig, ServerConfig, StreamConfig, WebhookConfig
 from autodj.server import create_app
+from tests._layout import point_index
 
 _TOKEN = "player-page-test-access-token-32-bytes"
 
@@ -26,7 +27,7 @@ def _client(bridge, *, token: bool = True, **settings: object) -> TestClient:
 
 
 def _streaming(bridge, tmp_path: Path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.stream = StreamConfig(
         enabled=True, listener_user="owl", listener_password="listener-secret-pw"
     )

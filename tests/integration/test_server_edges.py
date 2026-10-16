@@ -9,13 +9,13 @@ as long as the walk took.
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from autodj.server import create_app
+from tests._layout import point_index
 
 
 class TestHistoryPagination:
@@ -38,10 +38,10 @@ class TestLinerListingRunsOffTheEventLoop:
     ) -> None:
         from autodj import liners
 
-        folder = tmp_path / "liners"
-        folder.mkdir()
+        folder = tmp_path / "stations" / "default" / "liners"
+        folder.mkdir(parents=True)
         (folder / "station-id.mp3").write_bytes(b"0" * 16)
-        bridge.player._cfg.index.active_dir = str(Path(folder).parent)
+        point_index(bridge.player._cfg.index, tmp_path)
 
         recorded: list[str] = []
         original = liners.LinerLibrary.from_folder

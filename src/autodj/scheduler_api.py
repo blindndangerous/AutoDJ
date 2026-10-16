@@ -119,7 +119,7 @@ def _builtin_actions(
     def stereo_tool_presets() -> list[str]:
         from autodj.stereotool_presets import list_presets
 
-        return [str(item["name"]) for item in list_presets(Path(cfg.index.active_dir))]
+        return [str(item["name"]) for item in list_presets(Path(cfg.index.shared_dir))]
 
     async def stereo_tool_preset(params: dict[str, str]) -> None:
         # Stereo Tool restarts with it on the next mix block; a preset

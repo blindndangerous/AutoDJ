@@ -42,13 +42,6 @@ def _write_min_cfg(tmp_path: Path) -> Path:
     return cfg
 
 
-class TestStatsNameFlag:
-    def test_stats_invalid_name_exits(self, tmp_path: Path) -> None:
-        cfg = _write_min_cfg(tmp_path)
-        result = CliRunner().invoke(cli, ["--config", str(cfg), "stats", "--name", "../bad"])
-        assert result.exit_code == 1
-
-
 # ---------------------------------------------------------------------------
 # index command post-passes and failures
 # ---------------------------------------------------------------------------

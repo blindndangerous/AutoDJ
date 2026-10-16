@@ -2310,7 +2310,7 @@ class PlayerBridge:
         """The folder holding this station's ``web_state.json``."""
         if self.paths is not None:
             return self.paths.state_dir
-        return self.player._cfg.index.active_dir
+        return self.player._cfg.index.stations_dir / "default"
 
     def get_settings(self) -> dict:
         """Return a snapshot of every adjustable setting + available presets."""
@@ -2324,7 +2324,7 @@ class PlayerBridge:
         bpm_range = p._bpm_range
         related_problem = getattr(p, "related_artists_problem", None)
         tracks_problem = getattr(p, "related_tracks_problem", None)
-        active_dir = cfg.index.active_dir
+        library_dir = cfg.index.library_dir
         return {
             "preset": preset.name if preset else None,
             "available_presets": names,
@@ -2365,17 +2365,17 @@ class PlayerBridge:
                 if isinstance(related_problem, str)
                 else None,
                 "related_artists_default_file": str(
-                    (Path(active_dir) / "related-artists.toml").resolve()
+                    (Path(library_dir) / "related-artists.toml").resolve()
                 )
-                if active_dir is not None
+                if library_dir is not None
                 else "",
                 "related_tracks_problem": tracks_problem
                 if isinstance(tracks_problem, str)
                 else None,
                 "related_tracks_default_file": str(
-                    (Path(active_dir) / "related-tracks.toml").resolve()
+                    (Path(library_dir) / "related-tracks.toml").resolve()
                 )
-                if active_dir is not None
+                if library_dir is not None
                 else "",
                 "transition_wet_mix": float(cfg.transitions.wet_mix),
                 "replaygain_target_db": float(cfg.replaygain.target_db),
@@ -2518,7 +2518,7 @@ class PlayerBridge:
         if "stereotool_preset" in values:
             from autodj.stereotool_presets import preset_path
 
-            preset_path(cfg.index.active_dir, values["stereotool_preset"])
+            preset_path(cfg.index.shared_dir, values["stereotool_preset"])
         related_artists = self._read_related_artists(body, restoring=restoring)
         related_tracks = self._read_related_tracks(body, restoring=restoring)
         if body.repeat_rules is not None:
@@ -2563,7 +2563,7 @@ class PlayerBridge:
             # never blocks saving the other rules.
             if body.repeat_rules.use_related_artists:
                 try:
-                    related = load_configured_related_artists(cfg.index.active_dir)
+                    related = load_configured_related_artists(cfg.index.library_dir)
                 except (OSError, ValueError) as exc:
                     if not restoring:
                         # Refused before any setting changes; the old rules stay.
@@ -2598,7 +2598,7 @@ class PlayerBridge:
         problem = None
         if body.repeat_rules.use_related_tracks:
             try:
-                related = load_configured_related_tracks(player._cfg.index.active_dir)
+                related = load_configured_related_tracks(player._cfg.index.library_dir)
             except (OSError, ValueError) as exc:
                 if not restoring:
                     message = invalid_related_artists_message(exc, "tracks")

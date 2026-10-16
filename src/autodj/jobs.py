@@ -67,30 +67,18 @@ class JobManager:
     # shell metacharacters are inert; the real exposure is extra flags.  The
     # UI only ever sends ``index --limit N``.  Anything else, such as
     # ``--force`` (re-embed or over-prune), ``--workers``, or a second
-    # ``--config`` / ``--name`` that re-targets another index, is refused.
+    # ``--config`` that re-targets another index, is refused.
     _ALLOWED_FLAGS: ClassVar[dict[str, dict[str, Callable[[str], bool]]]] = {
         "index": {"--limit": _is_positive_int},
         "enrich": {},
         "analyse": {},
         "analyse-library": {},
         "stats": {},
-        "list-indexes": {},
-    }
-
-    # Subcommands that accept ``--name``.  ``list-indexes`` reports on every
-    # index, so it has no single one to be given.
-    _NAME_AWARE: ClassVar[set[str]] = {
-        "index",
-        "enrich",
-        "analyse",
-        "analyse-library",
-        "stats",
     }
 
     def __init__(self) -> None:
         self._config_path: str | None = None
         self._index_dir: str | None = None
-        self._index_name: str | None = None
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
@@ -109,7 +97,6 @@ class JobManager:
         *,
         config_path: object = None,
         index_dir: object = None,
-        index_name: object = None,
     ) -> None:
         """Point future jobs at the configuration the server is running on.
 
@@ -120,12 +107,10 @@ class JobManager:
 
         Args:
             config_path: TOML file the server loaded, or None if it had none.
-            index_dir: Directory holding the named indexes.
-            index_name: Active index name, including a ``--name`` override.
+            index_dir: The index folder.
         """
         self._config_path = str(config_path) if config_path else None
         self._index_dir = str(index_dir) if index_dir else None
-        self._index_name = str(index_name) if index_name else None
 
     def _child_argv(self, name: str, args: list[str]) -> list[str]:
         """Build the child's argv, config first because Click reads it there."""
@@ -133,10 +118,6 @@ class JobManager:
         if self._config_path:
             argv += ["--config", self._config_path]
         argv.append(name)
-        # "default" is what the child assumes anyway; passing it would only
-        # make the logged command noisier.
-        if self._index_name and self._index_name != "default" and name in self._NAME_AWARE:
-            argv += ["--name", self._index_name]
         return argv + args
 
     def _child_env(self) -> dict[str, str]:

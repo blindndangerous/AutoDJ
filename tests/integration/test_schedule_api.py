@@ -15,6 +15,7 @@ from autodj.clockwheel_store import ClockwheelStore
 from autodj.liner_scheduler import LinerDecodeError
 from autodj.profiles import ProfileSnapshot, ProfileStore
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -24,11 +25,13 @@ DAILY = {"name": "Morning", "action": "preset", "params": {"name": "winddown"}, 
 @pytest.fixture
 def rig(tmp_path: Path) -> tuple[TestClient, PlayerBridge, Path]:
     active = tmp_path / "active"
-    (active / "liners").mkdir(parents=True)
-    (active / "liners" / "station-id.wav").write_bytes(b"RIFF")
-    ProfileStore(tmp_path / "profiles").save(ProfileSnapshot(name="Evening", preset="winddown"))
+    (active / "stations" / "default" / "liners").mkdir(parents=True)
+    (active / "stations" / "default" / "liners" / "station-id.wav").write_bytes(b"RIFF")
+    ProfileStore(tmp_path / "active" / "stations" / "default" / "profiles").save(
+        ProfileSnapshot(name="Evening", preset="winddown")
+    )
     player = _make_player_mock()
-    player._cfg.index.active_dir = str(active)
+    point_index(player._cfg.index, str(active))
     player._cfg.server.station_timezone = "UTC"
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     return TestClient(create_app(bridge)), bridge, active
@@ -48,7 +51,9 @@ def test_hour_fit_playback_settings_round_trip(rig: tuple[TestClient, PlayerBrid
     assert bridge.player._cfg.playback.hour_fit_window_minutes == 12
     assert bridge.get_settings()["playback"]["hour_fit"] is True
     assert bridge.get_settings()["playback"]["hour_fit_window_minutes"] == 12
-    saved = json.loads((active / "web_state.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (active / "stations" / "default" / "web_state.json").read_text(encoding="utf-8")
+    )
     assert saved["playback"]["hour_fit"] is True
 
 
@@ -60,7 +65,9 @@ def test_hard_wait_seconds_round_trips_through_api(
     assert created.status_code == 201, created.text
     assert created.json()["wait_seconds"] == 45
     assert client.get("/api/schedule").json()["events"][0]["wait_seconds"] == 45
-    saved = json.loads((active / "schedule.json").read_text(encoding="utf-8"))
+    saved = json.loads(
+        (active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8")
+    )
     assert saved["events"][0]["wait_seconds"] == 45
     refused = client.post("/api/schedule", json=event(timing="hard", wait_seconds=301))
     assert refused.status_code == 400
@@ -75,7 +82,9 @@ def test_create_edit_enable_run_and_delete(rig: tuple[TestClient, PlayerBridge, 
     assert body["repeat_text"] == "Every day at 09:00"
     assert body["action_text"] == "Switch preset: winddown"
     assert (
-        json.loads((active / "schedule.json").read_text(encoding="utf-8"))["events"][0]["id"]
+        json.loads((active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8"))[
+            "events"
+        ][0]["id"]
         == (body["id"])
     )
     url = f"/api/schedule/{body['id']}"
@@ -157,7 +166,7 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
         {"id": "src1", "kind": "music", "path": str(music), "recursive": True}
     ]
     bridge.library.catalog.get_setting.return_value = {}
-    ClockwheelStore(active / "clockwheels").save(
+    ClockwheelStore(active / "stations" / "default" / "clockwheels").save(
         {
             "version": 1,
             "name": "Morning",
@@ -184,7 +193,7 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
     )
     assert missing.status_code == 400
     assert missing.json()["detail"] == "Song picking: clock:Night is not one of the choices"
-    (active / "clockwheels" / "Morning.json").unlink()
+    (active / "stations" / "default" / "clockwheels" / "Morning.json").unlink()
     gone = client.post(f"/api/schedule/{created.json()['id']}/run").json()
     assert gone["result"] == "error"
     assert "no clockwheel named 'Morning'" in gone["message"]
@@ -227,7 +236,7 @@ def test_invalid_events_are_refused_naming_the_field(
         assert reply.json()["field"] == field
         if detail is not None:
             assert reply.json()["detail"] == detail
-    assert not (active / "schedule.json").exists()
+    assert not (active / "stations" / "default" / "schedule.json").exists()
 
 
 def test_date_ranges_are_saved_described_and_skipped_until_they_start(
@@ -244,10 +253,14 @@ def test_date_ranges_are_saved_described_and_skipped_until_they_start(
         "2099-12-26",
         False,
     )
-    saved = json.loads((active / "schedule.json").read_text(encoding="utf-8"))["events"][0]
+    saved = json.loads(
+        (active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8")
+    )["events"][0]
     assert saved["start_date"] == "2099-11-27"
     hourly = client.post("/api/schedule", json=event(repeat="interval", interval_minutes=60))
-    events = json.loads((active / "schedule.json").read_text(encoding="utf-8"))["events"]
+    events = json.loads(
+        (active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8")
+    )["events"]
     assert "start_date" not in events[1]
     upcoming = client.get("/api/schedule/upcoming?count=50").json()["upcoming"]
     assert {row["id"] for row in upcoming} == {hourly.json()["id"]}
@@ -360,7 +373,7 @@ def test_switch_stereo_tool_preset_lists_uploads_and_applies_them(
 ) -> None:
     client, bridge, active = rig
     bridge.save_persistent_state = MagicMock()
-    folder = active.parent / "stereo-tool-presets"
+    folder = active / "stereo-tool-presets"
     folder.mkdir()
     (folder / "Night.sts").write_text("[A]\nB=1\n", encoding="utf-8")
 
@@ -401,7 +414,7 @@ def test_a_profile_removed_after_saving_fails_its_run_in_words(
     created = client.post(
         "/api/schedule", json=event(action="profile", params={"name": "Evening"})
     ).json()
-    ProfileStore(tmp_path / "profiles").delete("Evening")
+    ProfileStore(tmp_path / "active" / "stations" / "default" / "profiles").delete("Evening")
     run = client.post(f"/api/schedule/{created['id']}/run").json()
     assert run["result"] == "error"
     assert not run["message"].startswith("4")  # the HTTP detail, not "404: ..."
@@ -409,7 +422,7 @@ def test_a_profile_removed_after_saving_fails_its_run_in_words(
 
 def test_startup_loads_the_schedule_and_disables_missed_once_events(tmp_path: Path) -> None:
     active = tmp_path / "active"
-    active.mkdir()
+    (active / "stations" / "default").mkdir(parents=True)
     row = {
         **event(repeat="once", date="2020-01-01"),
         "id": "a" * 32,
@@ -420,11 +433,11 @@ def test_startup_loads_the_schedule_and_disables_missed_once_events(tmp_path: Pa
         "timing": "soft",
         "enabled": True,
     }
-    (active / "schedule.json").write_text(
+    (active / "stations" / "default" / "schedule.json").write_text(
         json.dumps({"schema_version": 1, "events": [row], "runs": []}), encoding="utf-8"
     )
     player = _make_player_mock()
-    player._cfg.index.active_dir = str(active)
+    point_index(player._cfg.index, str(active))
     bridge = PlayerBridge(player=player, sim=_make_sim_mock())
     with TestClient(create_app(bridge)) as client:
         assert bridge.scheduler_track_changed is not None

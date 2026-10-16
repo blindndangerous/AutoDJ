@@ -132,7 +132,7 @@ class StationPaths:
 
     @classmethod
     def default(cls, cfg: AutoDJConfig) -> StationPaths:
-        """The default station's paths: the active index folder, as always."""
+        """The default station's paths, in ``stations/default/``."""
         return cls(cfg)
 
     @classmethod
@@ -155,13 +155,12 @@ class StationPaths:
     @property
     def state_dir(self) -> Path:
         """The folder holding the station's state files."""
-        active = Path(self._cfg.index.active_dir)
-        return active if self.is_default else active / "stations" / self.slug
+        return Path(self._cfg.index.stations_dir) / self.slug
 
     @property
     def stations_dir(self) -> Path:
-        """The folder containing named stations' state folders."""
-        return Path(self._cfg.index.active_dir) / "stations"
+        """The folder holding every station's folder."""
+        return Path(self._cfg.index.stations_dir)
 
     @property
     def web_state(self) -> Path:
@@ -200,8 +199,15 @@ class StationPaths:
 
     @property
     def time_check_clips(self) -> Path:
-        """Recorded time check clips: ``[time_checks] clips_folder`` or the default."""
-        return Path(self._cfg.time_checks.clips_folder or self.state_dir / "time_checks")
+        """Recorded time check clips: ``[time_checks] clips_folder`` or the default.
+
+        The default station's are the shared packs every station can use.
+        """
+        if self._cfg.time_checks.clips_folder:
+            return Path(self._cfg.time_checks.clips_folder)
+        if self.is_default:
+            return Path(self._cfg.index.shared_dir) / "time_checks"
+        return self.state_dir / "time_checks"
 
     @property
     def announcements(self) -> Path:
@@ -270,13 +276,7 @@ class StationPaths:
 
     @property
     def relay_status(self) -> Path:
-        """Relay states, for ``autodj doctor``.
-
-        The default station's is in the index folder, not the named index;
-        another station's is in its own folder.
-        """
-        if self.is_default:
-            return Path(self._cfg.index.index_dir) / "relay-status.json"
+        """Relay states, for ``autodj doctor``."""
         return self.state_dir / "relay-status.json"
 
     @property
@@ -306,13 +306,7 @@ class StationPaths:
 
     @property
     def profiles(self) -> Path:
-        """Saved profiles.
-
-        The default station's are shared by every named index of the index
-        folder; another station's are its own.
-        """
-        if self.is_default:
-            return self.state_dir.parent / "profiles"
+        """Saved profiles."""
         return self.state_dir / "profiles"
 
 

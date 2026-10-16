@@ -22,6 +22,7 @@ from starlette.websockets import WebSocketDisconnect
 from autodj.config import ServerConfig
 from autodj.security import COOKIE_NAME, SecurityPolicy
 from autodj.server import PlayerBridge, create_app
+from tests._layout import point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -222,7 +223,7 @@ def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
 ) -> None:
     """A body with no Content-Length is counted as it streams into the multipart parser."""
     player = _make_player_mock()
-    player._cfg.index.active_dir = str(Path(tmp_path / "liners").parent)
+    point_index(player._cfg.index, str(Path(tmp_path / "stations" / "default" / "liners").parent))
     player._cfg.server.liner_upload_max_bytes = 1024
     app = create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
     boundary = b"cap"
@@ -266,7 +267,7 @@ def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
 
     assert _response_status(messages) == 413
     assert reads < len(chunks)
-    assert not (tmp_path / "liners" / "big.mp3").exists()
+    assert not (tmp_path / "stations" / "default" / "liners" / "big.mp3").exists()
 
 
 def test_post_start_exception_audits_actual_status_without_second_response(
@@ -1047,7 +1048,7 @@ class TestProfileApplyBranches:
     def client(self, tmp_path: Path) -> TestClient:
         """Profiles under tmp_path, so parallel workers never see these files."""
         player = _make_player_mock()
-        player._cfg.index.active_dir = str(tmp_path / "idx")
+        point_index(player._cfg.index, str(tmp_path / "idx"))
         return TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
 
     def test_apply_with_bpm_and_harmonic_and_preset(self, client) -> None:
@@ -1096,7 +1097,7 @@ class TestProfileApplyBranches:
 class TestLinerUploadDelete:
     def test_upload_succeeds_and_delete_works(self, client, tmp_path, monkeypatch) -> None:
         # The station's index folder is tmp_path, so its liners folder is
-        # tmp_path / "liners" and writes are isolated.
+        # tmp_path / "stations" / "default" / "liners" and writes are isolated.
         from fastapi.testclient import TestClient
 
         from autodj.server import PlayerBridge, create_app
@@ -1104,7 +1105,7 @@ class TestLinerUploadDelete:
         from ._helpers import _make_player_mock, _make_sim_mock, wav_bytes
 
         player = _make_player_mock()
-        player._cfg.index.active_dir = str(tmp_path)
+        point_index(player._cfg.index, str(tmp_path))
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         resp = client.post(
@@ -1124,7 +1125,7 @@ class TestLinerUploadDelete:
         from ._helpers import _make_player_mock, _make_sim_mock
 
         player = _make_player_mock()
-        player._cfg.index.active_dir = str(tmp_path)
+        point_index(player._cfg.index, str(tmp_path))
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         resp = client.post(
@@ -1142,7 +1143,7 @@ class TestLinerUploadDelete:
         from ._helpers import _make_player_mock, _make_sim_mock
 
         player = _make_player_mock()
-        player._cfg.index.active_dir = str(tmp_path)
+        point_index(player._cfg.index, str(tmp_path))
         bridge = PlayerBridge(player=player, sim=_make_sim_mock())
         client = TestClient(create_app(bridge))
         from autodj import liner_files
@@ -1158,10 +1159,10 @@ class TestLinerUploadDelete:
 
     def test_open_rejects_malformed_range_and_closes_file(self, tmp_path: Path) -> None:
         player = _make_player_mock()
-        player._cfg.index.active_dir = str(tmp_path)
+        point_index(player._cfg.index, str(tmp_path))
         client = TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock())))
-        (tmp_path / "liners").mkdir()
-        (tmp_path / "liners" / "clip.wav").write_bytes(b"audio")
+        (tmp_path / "stations" / "default" / "liners").mkdir()
+        (tmp_path / "stations" / "default" / "liners" / "clip.wav").write_bytes(b"audio")
 
         response = client.get(
             "/api/liners/file/clip.wav",

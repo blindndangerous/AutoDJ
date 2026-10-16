@@ -28,6 +28,7 @@ from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.live_routes import SourceEndpoint
 from autodj.playlog import plays_between, plays_csv, soundexchange_report
 from autodj.server import create_app
+from tests._layout import point_index
 
 PASSWORD = "correct horse battery"
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
@@ -73,7 +74,7 @@ def _wait(condition: Callable[[], object], timeout: float = 10.0) -> None:
 
 
 def _app(tmp_path, bridge, *, stream: bool = True, **server: object) -> TestClient:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     if server:
         bridge.player._cfg.server = ServerConfig(
@@ -116,7 +117,7 @@ def test_a_source_is_decoded_goes_on_the_air_and_hands_back(
     audio = _encoded(1.0, codec, container)
     events: list[str] = []
     desk = LiveDesk(
-        tmp_path / "live_djs.json",
+        tmp_path / "stations" / "default" / "live_djs.json",
         on_start=lambda: events.append(f"start:{desk.status()['dj']}"),
         before_return=lambda source: events.append(f"ready:{source.buffer.frames > 0}"),
         on_end=lambda: events.append("end"),
@@ -379,7 +380,7 @@ def test_the_operator_manages_djs_and_talkover_without_seeing_passwords(tmp_path
     body = {"username": "alice", "password": PASSWORD, "display_name": "DJ Alice"}
     saved = client.post("/api/live/djs", json=body)
     assert saved.json() == {"username": "alice", "display_name": "DJ Alice", "password_set": True}
-    assert PASSWORD not in (tmp_path / "live_djs.json").read_text()
+    assert PASSWORD not in (tmp_path / "stations" / "default" / "live_djs.json").read_text()
     renamed = client.post(
         "/api/live/djs", json={"username": "alice", "display_name": "Alice", "password": None}
     )

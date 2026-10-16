@@ -139,7 +139,7 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
     assert secret.split(".")[2] not in listed.output
     store = MachineTokenStore(tmp_path / "index" / ".machine-tokens.sqlite3")
     assert store.authenticate(secret, SCOPE_ANALYSIS_WORKER) is not None
-    library_db = tmp_path / "index" / "default" / "library.db"
+    library_db = tmp_path / "index" / "libraries" / "main" / "library.db"
     library_db.parent.mkdir(parents=True)
     queue = AnalysisQueue(library_db)
     queue.seen(token_id, "Studio PC")

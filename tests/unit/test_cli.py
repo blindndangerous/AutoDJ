@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import click
-import numpy as np
 import pytest
 from click.testing import CliRunner
 
@@ -24,6 +23,7 @@ from autodj.cli import (
 from autodj.config import ENVIRONMENT_OVERLAY, ServerConfig, StreamConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_settings import RepeatSettings
+from tests._layout import point_index
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -196,45 +196,6 @@ class TestCliConfigNotFound:
         result = CliRunner().invoke(cli, ["--config", self._missing(tmp_path), "enrich"])
         assert result.exit_code == 1
 
-    def test_list_indexes_exits_on_missing_config(self, tmp_path: Path) -> None:
-        result = CliRunner().invoke(
-            cli,
-            ["--config", self._missing(tmp_path), "list-indexes"],
-        )
-        assert result.exit_code == 1
-
-    def test_prune_invalid_index_name_exits(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "c.toml"
-        cfg.write_text(
-            '[library]\nmusic_dir = "Z:/Music"\n'
-            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
-            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
-            encoding="utf-8",
-        )
-        # Names with path separators / special chars are rejected.
-        result = CliRunner().invoke(
-            cli,
-            ["--config", str(cfg), "prune", "--name", "../bad"],
-        )
-        assert result.exit_code == 1
-        assert "Invalid" in result.output or "name" in result.output.lower()
-
-    def test_enrich_invalid_index_name_exits(self, tmp_path: Path) -> None:
-        cfg = tmp_path / "c.toml"
-        cfg.write_text(
-            '[library]\nmusic_dir = "Z:/Music"\n'
-            '[index]\nindex_dir = "Z:/idx"\nmodel_dir = "models"\n'
-            "[playback]\ncrossfade_seconds = 3.0\nrepeat_rules = { track = { tracks = 50 } }\n"
-            '[model]\nname = "OpenMuQ/MuQ-large-msd-iter"\n',
-            encoding="utf-8",
-        )
-        result = CliRunner().invoke(
-            cli,
-            ["--config", str(cfg), "enrich", "--name", "../escape"],
-        )
-        assert result.exit_code == 1
-
     def test_enrich_no_beets_db_exits(self, tmp_path: Path) -> None:
         cfg = tmp_path / "c.toml"
         # Note: no beets_db key in [library] section.
@@ -344,31 +305,6 @@ class TestCliConfigSelection:
         assert result.exit_code == 0
         assert cfg.config_sources == original_sources
 
-    def test_name_override_appends_cli_source_exactly_once(self) -> None:
-        cfg = _make_cfg()
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--name", "alternate"])
-        assert result.exit_code == 0
-        assert cfg.index.name == "alternate"
-        assert cfg.config_sources == ("defaults", "cli")
-
-    def test_name_equal_to_effective_config_does_not_claim_cli_source(self) -> None:
-        cfg = _make_cfg()
-        original_sources = cfg.config_sources
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--name", "default"])
-        assert result.exit_code == 0
-        assert cfg.index.name == "default"
-        assert cfg.config_sources == original_sources
-
 
 # ---------------------------------------------------------------------------
 # CLI commands — index-not-found exits with code 1
@@ -410,8 +346,8 @@ class TestCliHappyPaths:
         from autodj.catalog import LibraryCatalog
 
         with tempfile.TemporaryDirectory() as dirname:
-            cfg_mock.index.active_dir = Path(dirname)
-            with LibraryCatalog(cfg_mock.index.active_dir / "library.db") as catalog:
+            point_index(cfg_mock.index, Path(dirname))
+            with LibraryCatalog(cfg_mock.index.library_dir / "library.db") as catalog:
                 for entry in [_make_entry(i) for i in range(5)]:
                     catalog.put_entry(entry)
             with patch("autodj.config.load_config", return_value=cfg_mock):
@@ -897,7 +833,7 @@ class TestCmdServe:
 class TestCmdPrune:
     def test_prune_no_index(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         with patch("autodj.config.load_config", return_value=cfg_mock):
             result = CliRunner().invoke(cli, ["prune"])
         assert result.exit_code == 1
@@ -905,7 +841,7 @@ class TestCmdPrune:
 
     def test_prune_previews_and_confirms_catalog_removal(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         (tmp_path / "library.db").touch()
 
         class Manager:
@@ -943,7 +879,7 @@ class TestCmdPrune:
 
     def test_prune_requires_force_for_mass_removal(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg()
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         (tmp_path / "library.db").touch()
 
         class Manager:
@@ -991,7 +927,7 @@ class TestCmdEnrich:
 
     def test_enrich_no_index(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         with patch("autodj.config.load_config", return_value=cfg_mock):
             result = CliRunner().invoke(cli, ["enrich"])
         assert result.exit_code == 1
@@ -999,7 +935,7 @@ class TestCmdEnrich:
 
     def test_enrich_all_synced(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
@@ -1011,7 +947,7 @@ class TestCmdEnrich:
 
     def test_enrich_updates_some(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
@@ -1023,7 +959,7 @@ class TestCmdEnrich:
 
     def test_enrich_error_exits_one(self, tmp_path: Path) -> None:
         cfg_mock = _make_cfg(beets_db=tmp_path / "library.db")
-        cfg_mock.index.active_dir = tmp_path
+        point_index(cfg_mock.index, tmp_path)
         (tmp_path / "library.db").touch()
         with (
             patch("autodj.config.load_config", return_value=cfg_mock),
@@ -1039,108 +975,7 @@ class TestCmdEnrich:
 
 
 # ---------------------------------------------------------------------------
-# cmd_list_indexes
 # ---------------------------------------------------------------------------
-
-
-class TestCmdListIndexes:
-    def test_no_index_dir(self, tmp_path: Path) -> None:
-        cfg_mock = _make_cfg()
-        cfg_mock.index.index_dir = tmp_path / "missing"
-        with patch("autodj.config.load_config", return_value=cfg_mock):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 0
-        assert "No indexes found" in result.output
-
-    def test_lists_named_indexes(self, tmp_path: Path) -> None:
-
-        from autodj.catalog import LibraryCatalog
-        from autodj.indexer import FEATURE_DIM
-        from tests.unit._fakes import make_entry
-
-        for n, count in (("default", 5), ("workout", 12)):
-            d = tmp_path / "idx" / n
-            d.mkdir(parents=True)
-            entries = [make_entry(i) for i in range(count)]
-            for entry in entries:
-                entry.path = f"song_{entry.title}.flac"
-            vectors = np.zeros((count, FEATURE_DIM), dtype=np.float32)
-            with LibraryCatalog(d / "library.db") as catalog:
-                catalog.seed_entries(entries)
-                catalog.seed_vectors(entries, vectors)
-        cfg_mock = _make_cfg()
-        cfg_mock.index.index_dir = tmp_path / "idx"
-        cfg_mock.index.name = "workout"
-        with patch("autodj.config.load_config", return_value=cfg_mock):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 0
-        assert "default" in result.output
-        assert "workout" in result.output
-        assert "5 songs" in result.output
-        assert "12 songs" in result.output
-
-    def test_old_format_index_needs_a_rebuild(self, tmp_path: Path) -> None:
-        d = tmp_path / "idx" / "old"
-        d.mkdir(parents=True)
-        (d / "tracks.db").write_bytes(b"")
-        cfg_mock = _make_cfg()
-        cfg_mock.index.index_dir = tmp_path / "idx"
-        with patch("autodj.config.load_config", return_value=cfg_mock):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 0
-        assert "migrate-index --apply" in result.output
-
-    def test_skips_empty_index_dir(self, tmp_path: Path) -> None:
-        (tmp_path / "idx").mkdir()
-        cfg_mock = _make_cfg()
-        cfg_mock.index.index_dir = tmp_path / "idx"
-        with patch("autodj.config.load_config", return_value=cfg_mock):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 0
-        assert "No named indexes" in result.output
-
-    def test_corrupt_metadata_marked(self, tmp_path: Path) -> None:
-        d = tmp_path / "idx" / "broken"
-        d.mkdir(parents=True)
-        (d / "index-manifest.json").write_text("{", encoding="utf-8")
-        cfg_mock = _make_cfg()
-        cfg_mock.index.index_dir = tmp_path / "idx"
-        with patch("autodj.config.load_config", return_value=cfg_mock):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 0
-        assert "corrupt" in result.output
-
-    def test_config_missing(self) -> None:
-        with patch("autodj.config.load_config", side_effect=FileNotFoundError):
-            result = CliRunner().invoke(cli, ["list-indexes"])
-        assert result.exit_code == 1
-
-
-class TestNameValidation:
-    def test_serve_rejects_traversal(self) -> None:
-        cfg_mock = _make_cfg()
-        sim_mock = _make_sim()
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.cli._load_index_for_serve", return_value=sim_mock),
-            patch("autodj.server.serve"),
-        ):
-            result = CliRunner().invoke(cli, ["serve", "--name", "../etc"])
-        assert result.exit_code == 1
-
-    def test_index_accepts_normal_name(self, tmp_path: Path) -> None:
-        cfg_mock = _make_cfg()
-        cfg_mock.index.active_dir = tmp_path / "noindex"
-        with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.model.download_model_if_needed"),
-            patch("autodj.model.load_model"),
-            patch("autodj.library.analyse_library"),
-        ):
-            result = CliRunner().invoke(cli, ["index", "--name", "workout"])
-        assert result.exit_code == 0
-        assert cfg_mock.index.name == "workout"
-        assert cfg_mock.config_sources == ("defaults", "cli")
 
 
 class TestListDevices:
@@ -1277,7 +1112,7 @@ class TestCmdAnalyse:
             for entry in rows:
                 catalog.put_entry(entry)
         cfg = _make_cfg()
-        cfg.index.active_dir = idx_dir
+        point_index(cfg.index, idx_dir)
         cfg.index.name = "default"
         cfg.library.music_dir = tmp_path
         return cfg
@@ -1290,7 +1125,7 @@ class TestCmdAnalyse:
 
     def test_no_index(self, tmp_path: Path) -> None:
         cfg = _make_cfg()
-        cfg.index.active_dir = tmp_path / "missing"
+        point_index(cfg.index, tmp_path / "missing")
         with patch("autodj.config.load_config", return_value=cfg):
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
@@ -1301,21 +1136,16 @@ class TestCmdAnalyse:
         self, tmp_path: Path, command: str
     ) -> None:
         cfg = _make_cfg()
-        cfg.index.active_dir = tmp_path / "old-index"
-        cfg.index.active_dir.mkdir()
-        (cfg.index.active_dir / "tracks.db").touch()  # a pre-manifest index
+        point_index(cfg.index, tmp_path / "old-index")
+        cfg.index.library_dir.mkdir(parents=True, exist_ok=True)
+        cfg.index.shared_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.index.stations_dir / "default").mkdir(parents=True, exist_ok=True)
+        (cfg.index.library_dir / "tracks.db").touch()  # a pre-manifest index
         cfg.library.music_dir = tmp_path
         with patch("autodj.config.load_config", return_value=cfg):
             result = CliRunner().invoke(cli, [command])
         assert result.exit_code == 1
         assert "current library" in " ".join(result.output.split()).lower()
-
-    def test_invalid_name_exits(self, tmp_path: Path) -> None:
-        cfg = self._cfg_with_index(tmp_path)
-        with patch("autodj.config.load_config", return_value=cfg):
-            result = CliRunner().invoke(cli, ["analyse", "--name", "../bad"])
-        assert result.exit_code == 1
-        assert "Invalid --name" in result.output
 
     def test_success_invokes_backfill(self, tmp_path: Path) -> None:
         cfg = self._cfg_with_index(tmp_path, entries=3)
@@ -1353,7 +1183,7 @@ class TestCmdAnalyse:
         cfg.library.music_dir = tmp_path / "unused-old-root"
         cfg.index.throttle_ms = 0
         cfg.playback.import_external_cues = False
-        with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+        with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
             entries = catalog.entries_snapshot("music")
             catalog.set_points(entries[0].path, {"intro": 9.0}, source="user")
         close_cache()
@@ -1371,7 +1201,7 @@ class TestCmdAnalyse:
                 again = CliRunner().invoke(cli, ["analyse"])
                 assert again.exit_code == 0, again.output
                 assert analyse.call_count == 2
-            with LibraryCatalog(cfg.index.active_dir / "library.db") as catalog:
+            with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
                 assert catalog.points(entries[0].path)["intro"] == 9.0
                 # The cues are placed from the saved Intro; none is written back.
                 assert catalog.points(entries[1].path)["intro"] is None
@@ -1391,17 +1221,6 @@ class TestCmdAnalyse:
         assert result.exit_code == 1
         assert "Analyse failed" in result.output
 
-    def test_named_index_override(self, tmp_path: Path) -> None:
-        cfg = self._cfg_with_index(tmp_path)
-        with (
-            patch("autodj.config.load_config", return_value=cfg),
-            patch("autodj.cli._analyse_catalog_dj_meta") as bf,
-        ):
-            result = CliRunner().invoke(cli, ["analyse", "--name", "workout"])
-        assert result.exit_code == 0
-        assert cfg.index.name == "workout"
-        bf.assert_called_once()
-
     def test_missing_packages_exits(self, tmp_path: Path) -> None:
         import builtins
 
@@ -1416,25 +1235,6 @@ class TestCmdAnalyse:
             result = CliRunner().invoke(cli, ["analyse"])
         assert result.exit_code == 1
         assert "missing packages" in result.output
-
-
-@pytest.mark.parametrize("completed", [0, 7])
-def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: Path) -> None:
-    cfg = MagicMock()
-    cfg.model = MagicMock()
-    cfg.index = MagicMock()
-    cfg.huggingface = MagicMock()
-    with (
-        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
-        patch("autodj.cli._apply_index_name"),
-        patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
-        patch("autodj.model.load_model", return_value=object()),
-        patch("autodj.library.analyse_library", return_value=completed),
-    ):
-        result = CliRunner().invoke(cli, ["analyse-library"])
-
-    assert result.exit_code == 0
-    assert f"Advanced analysis embedded {completed} tracks" in result.output
 
 
 def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
@@ -1556,3 +1356,21 @@ def test_serve_log_file_gets_the_file_text_of_a_console_only_record(
         for handler in added:
             root.removeHandler(handler)
             handler.close()
+
+
+@pytest.mark.parametrize("completed", [0, 7])
+def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: Path) -> None:
+    cfg = MagicMock()
+    cfg.model = MagicMock()
+    cfg.index = MagicMock()
+    cfg.huggingface = MagicMock()
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
+        patch("autodj.model.load_model", return_value=object()),
+        patch("autodj.library.analyse_library", return_value=completed),
+    ):
+        result = CliRunner().invoke(cli, ["analyse-library"])
+
+    assert result.exit_code == 0
+    assert f"Advanced analysis embedded {completed} tracks" in result.output

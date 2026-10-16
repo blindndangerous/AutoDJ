@@ -11,10 +11,11 @@ from fastapi.testclient import TestClient
 
 from autodj.config import TimeChecksConfig
 from autodj.server import create_app
+from tests._layout import point_index
 
 
 def test_settings_routes_save_only_switches_and_register_action(bridge, tmp_path) -> None:
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     client = TestClient(create_app(bridge))
     initial = client.get("/api/time-checks")
@@ -60,7 +61,7 @@ def test_settings_routes_save_only_switches_and_register_action(bridge, tmp_path
 
 def test_unpaired_browser_cannot_read_time_check_routes(bridge, tmp_path) -> None:
     bridge.player._cfg.server.access_token = "pairing-secret-that-is-at-least-32-bytes"
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     client = TestClient(create_app(bridge))
     assert client.get("/api/time-checks").status_code in (401, 403)
@@ -76,7 +77,7 @@ def test_preview_uses_recorded_clip_and_server_test_uses_liner_path(
 
     from autodj import time_checks
 
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.player._cfg.time_checks = TimeChecksConfig(enabled=True, clips_folder=str(tmp_path))
     bridge.player._cfg.server.station_timezone = "UTC"
@@ -115,7 +116,7 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
             return now.astimezone(tz)
 
     monkeypatch.setattr(time_checks, "datetime", FixedDateTime)
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.player._cfg.server.station_timezone = "UTC"
     client = TestClient(create_app(bridge))
@@ -165,7 +166,7 @@ def test_scheduled_action_says_why_it_did_not_play_then_plays(
 def test_lifespan_hands_the_hour_rule_to_the_liner_scheduler(bridge, tmp_path) -> None:
     from unittest.mock import MagicMock
 
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.liner_scheduler = MagicMock()
     with TestClient(create_app(bridge)):
@@ -194,7 +195,7 @@ def test_voice_packs_are_chosen_by_name_and_tested_one_at_a_time(
     studio.mkdir(parents=True)
     sf.write(studio / "hr_03.wav", word, 44100)
     sf.write(studio / "m_05.wav", word, 44100)
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.player._cfg.server.station_timezone = "UTC"
     bridge.player._cfg.time_checks = TimeChecksConfig(
@@ -269,7 +270,7 @@ def test_a_voice_pack_that_cannot_say_the_minute_keeps_the_song_on_a_hard_event(
     studio.mkdir(parents=True)
     # The hour, but not the minute: the pack cannot say 3:05.
     sf.write(studio / "hr_03.wav", np.zeros((4410, 2)), 44100)
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     bridge.player._cfg.server.station_timezone = "UTC"
     bridge.player._cfg.time_checks = TimeChecksConfig(enabled=True, voice_packs=[str(studio)])
@@ -303,7 +304,7 @@ def test_settings_are_refused_in_words_while_the_file_cannot_be_read(
 ) -> None:
     from autodj import time_checks
 
-    bridge.player._cfg.index.active_dir = tmp_path
+    point_index(bridge.player._cfg.index, tmp_path)
     bridge.player._cfg.index.index_dir = tmp_path
     client = TestClient(create_app(bridge))
 

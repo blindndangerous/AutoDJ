@@ -148,7 +148,7 @@ describe("Repeats markup", () => {
     expect(describedBy(els.useRelatedArtists)).toEqual([els.fileStatus]);
     expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
-    expect(note.textContent).toContain("related-artists.toml in the index folder");
+    expect(note.textContent).toContain("related-artists.toml in the library folder");
     expect(note.contains(els.defaultFile)).toBe(true);
     expect(status).toBe(els.fileStatus);
     expect(status.closest("fieldset")).toBe(group);
@@ -171,7 +171,7 @@ describe("Repeats markup", () => {
     expect(describedBy(els.useRelatedTracks)).toEqual([els.tracksFileStatus]);
     expect(note.hidden).toBe(false);
     expect(note.closest("fieldset")).toBe(group);
-    expect(note.textContent).toContain("related-tracks.toml in the index folder");
+    expect(note.textContent).toContain("related-tracks.toml in the library folder");
     expect(note.textContent).toContain("Artist - Title");
     expect(note.contains(els.tracksDefaultFile)).toBe(true);
     expect(status).toBe(els.tracksFileStatus);
@@ -561,7 +561,7 @@ describe("repeat settings", () => {
     expect(els.artistTracks.value).toBe("8");
     expect(els.artistTracks.hasAttribute("aria-invalid")).toBe(false);
     expect(els.useRelatedArtists.checked).toBe(false);
-    expect(els.defaultFile.textContent).toBe("index/<name>/related-artists.toml");
+    expect(els.defaultFile.textContent).toBe("index/libraries/main/related-artists.toml");
     expect(els.fileStatus.hidden).toBe(true);
   });
 

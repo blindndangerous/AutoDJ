@@ -61,7 +61,6 @@ def run_recovery_commands(
         if cfg.config_path is not None:
             args.extend(("--config", str(cfg.config_path)))
         args.extend(_COMMANDS[action])
-        args.extend(("--name", cfg.index.name))
         display = "autodj " + subprocess.list2cmdline(args)
         click.echo(f"Suggested recovery: {display}")
         click.echo(_EFFECTS[action])
@@ -76,7 +75,7 @@ def run_recovery_commands(
             continue
         try:
             if action == "rebuild-dj-meta":
-                backup = backup_dj_meta_cache(cfg.index.active_dir)
+                backup = backup_dj_meta_cache(cfg.index.library_dir)
                 if backup is not None:
                     click.echo(f"DJ metadata backup: {backup}")
             # Inherit the terminal for progress and Ctrl+C; no shell interprets paths.

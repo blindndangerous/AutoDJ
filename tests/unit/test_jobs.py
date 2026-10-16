@@ -319,39 +319,9 @@ class TestJobManagerConfigPassthrough:
         # Click reads --config on the GROUP, so it must come first.
         assert argv[1:] == ["-m", "autodj", "--config", "C:/tmp/autodj.toml", "stats"]
 
-    def test_index_name_is_passed_to_name_aware_subcommands(self) -> None:
-        mgr = JobManager()
-        mgr.configure(config_path="cfg.toml", index_name="party")
-
-        for name in ("index", "enrich", "analyse", "stats"):
-            argv = self._capture(mgr, name).args[0]
-            assert argv[1:] == [
-                "-m",
-                "autodj",
-                "--config",
-                "cfg.toml",
-                name,
-                "--name",
-                "party",
-            ]
-
-    def test_index_name_is_withheld_from_subcommands_that_reject_it(self) -> None:
-        mgr = JobManager()
-        mgr.configure(index_name="party")
-
-        argv = self._capture(mgr, "list-indexes").args[0]
-
-        assert argv[1:] == ["-m", "autodj", "list-indexes"]
-
-    def test_default_index_name_is_not_passed(self) -> None:
-        mgr = JobManager()
-        mgr.configure(index_name="default")
-
-        assert self._capture(mgr).args[0][1:] == ["-m", "autodj", "stats"]
-
     def test_job_arguments_follow_the_subcommand(self) -> None:
         mgr = JobManager()
-        mgr.configure(config_path="cfg.toml", index_name="party")
+        mgr.configure(config_path="cfg.toml")
 
         argv = self._capture(mgr, "index", ["--limit", "5"]).args[0]
 
@@ -361,8 +331,6 @@ class TestJobManagerConfigPassthrough:
             "--config",
             "cfg.toml",
             "index",
-            "--name",
-            "party",
             "--limit",
             "5",
         ]
@@ -385,7 +353,7 @@ class TestJobManagerConfigPassthrough:
 
     def test_configure_is_idempotent_and_clearable(self) -> None:
         mgr = JobManager()
-        mgr.configure(config_path="cfg.toml", index_name="party")
-        mgr.configure(config_path=None, index_name=None)
+        mgr.configure(config_path="cfg.toml")
+        mgr.configure(config_path=None)
 
         assert self._capture(mgr).args[0][1:] == ["-m", "autodj", "stats"]
