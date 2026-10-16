@@ -501,15 +501,19 @@ def test_player_state_built_from_rules_sets_the_old_windows() -> None:
 
 
 class _Catalog:
-    """Stands in for LibraryCatalog.recent_plays."""
+    """Stands in for the station ledger's history methods."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], pending: list[dict] | None = None) -> None:
         self.rows = rows
+        self.pending = pending or []
         self.limits: list[int] = []
 
     def recent_plays(self, limit: int) -> list[dict]:
         self.limits.append(limit)
         return self.rows[-limit:] if limit else []
+
+    def pending_history(self) -> list[dict]:
+        return self.pending
 
 
 def _saved_play(entry, minutes_ago: float) -> dict:
@@ -685,7 +689,9 @@ def test_refresh_includes_pending_history_writes() -> None:
     player._library = SimpleNamespace(
         ledger=SimpleNamespace(pending_history=lambda: [_saved_play(entry, minutes_ago=0)])
     )
-    player.restore_repeat_history(_Catalog([]), refresh=True)
+    player.restore_repeat_history(
+        _Catalog([], pending=[_saved_play(entry, minutes_ago=0)]), refresh=True
+    )
     assert list(player._state.recently_played) == [entry.path]
     assert player._state.play_history[0].album == entry.album
 

@@ -261,6 +261,7 @@ def _player(tmp_path, setting, sources):
     player = SimpleNamespace(
         _cfg=SimpleNamespace(index=layout_index(tmp_path), presets={}),
         _library=SimpleNamespace(catalog=catalog),
+        _ledger=SimpleNamespace(get_setting=lambda _key, _default: setting),
     )
     player._clock_lock = threading.RLock()
     player._clock_selection_lock = threading.RLock()

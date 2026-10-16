@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 
 # Current files of the index folder stored by a backup.
 INDEX_FILES = (
+    "station.db",
     "dj_meta.db",
     "library.db",
     "web_state.json",
@@ -156,7 +157,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
     (:func:`_split`), so archives keep the names they always had.
     """
     from autodj.config import station_config
-    from autodj.stations import StationPaths
+    from autodj.stations import SLUG_PATTERN, StationPaths
 
     station = StationPaths.default(cfg)
     roots = {
@@ -184,6 +185,15 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         roots[f"{prefix}/intros"] = paths.intros
         roots[f"{prefix}/ads"] = paths.ad_spots
         roots[f"{prefix}/ad_plays"] = paths.ad_plays
+    # Retain ledger-only stations even when their definition was removed.
+    if cfg.index.stations_dir.is_dir():
+        for folder in cfg.index.stations_dir.iterdir():
+            if (
+                folder.name != "default"
+                and SLUG_PATTERN.fullmatch(folder.name)
+                and (folder / "station.db").is_file()
+            ):
+                roots.setdefault(f"stations/{folder.name}/index", folder)
     return roots
 
 
@@ -428,21 +438,20 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
             _single_link(root / name)
     for name in ("dj_meta.db", "library.db"):
         database = active / name
-        if not database.is_file():
+        if database.is_file():
+            _snapshot_database(database, index / name)
+            if name == "library.db":
+                _check_catalog(index / name)
+    for key, root in roots.items():
+        if key == "library" or not _is_files(key):
             continue
-        for suffix in _SQLITE_SIDECARS:
-            sidecar = database.with_name(database.name + suffix)
-            if sidecar.exists():
-                _within_root(sidecar, active)
-                _single_link(sidecar)
-        with (
-            closing(sqlite3.connect(readonly_uri(database), uri=True)) as source,
-            closing(sqlite3.connect(index / name)) as target,
-        ):
-            source.backup(target)
-        _check_sqlite(index / name)
-        if name == "library.db":
-            _check_catalog(index / name)
+        database = root / "station.db"
+        if database.is_file():
+            member = f"{key}/station.db"
+            target = snapshot / member
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _snapshot_database(database, target)
+            members[member] = target
     for name in ("related-artists.toml", "related-tracks.toml"):
         related = roots["library"] / name
         if related.is_file():
@@ -453,6 +462,23 @@ def _snapshot(cfg: AutoDJConfig, roots: dict[str, Path], snapshot: Path) -> dict
     return dict(
         sorted(members.items(), key=lambda item: (item[0].startswith("stations/"), item[0]))
     )
+
+
+def _snapshot_database(database: Path, target: Path) -> None:
+    """Include committed WAL rows through SQLite, never by copying a live file."""
+    for path in (
+        database,
+        *(database.with_name(database.name + suffix) for suffix in _SQLITE_SIDECARS),
+    ):
+        if path.exists():
+            _within_root(path, database.parent)
+            _single_link(path)
+    with (
+        closing(sqlite3.connect(readonly_uri(database), uri=True)) as source,
+        closing(sqlite3.connect(target)) as destination,
+    ):
+        source.backup(destination)
+    _check_sqlite(target)
 
 
 def _check_sqlite(path: Path) -> None:
@@ -512,7 +538,9 @@ def _check_backup_space(
     )
     for key, root in roots.items():
         if key not in {"index", "library"} and _is_files(key) and root.is_dir():
-            snapshot += sum(_file_size(root / name) for name in STATION_FILES)
+            snapshot += sum(_file_size(root / name) for name in (*STATION_FILES, "station.db"))
+        if key != "library" and _is_files(key):
+            snapshot += sum(_file_size(root / f"station.db{suffix}") for suffix in _SQLITE_SIDECARS)
     total = snapshot + sum(_file_size(path) for path in folder_files)
     for place, size, what in (
         (_nearest_existing(temp), snapshot, "the snapshot"),
@@ -564,6 +592,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
                     for name, path in members.items():
                         archive.write(path, name)
                     manifest = {
+                        "backup_format": 2,
                         "autodj_version": current_version(),
                         "files": list(members),
                         "stations": [spec.slug for spec in cfg.stations],
@@ -592,8 +621,7 @@ class _Manifest:
 def _read_manifest(archive: zipfile.ZipFile) -> _Manifest:
     """Return the manifest of a backup made by this major.minor version.
 
-    An archive made before stations has no ``"stations"`` list and no
-    ``"shared"`` map: only the default station.
+    Format 2 snapshots station databases; earlier backup formats are unsupported.
     """
     from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
 
@@ -614,6 +642,8 @@ def _read_manifest(archive: zipfile.ZipFile) -> _Manifest:
             raise TypeError("wrong field types")
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise BackupError(f"the archive has no valid manifest.json: {exc!r}") from exc
+    if manifest.get("backup_format") != 2:
+        raise BackupError("unsupported backup format; create a new backup after updating AutoDJ")
     for slug in stations:
         if slug == DEFAULT_SLUG or not SLUG_PATTERN.match(slug):
             raise BackupError(f"unsafe station name in archive: {slug!r}")
@@ -689,7 +719,7 @@ def _target(roots: dict[str, Path], name: str) -> Path:
         ):
             return roots[key] / rest[0]
     elif _is_files(key):
-        if len(rest) == 1 and rest[0] in STATION_FILES:
+        if len(rest) == 1 and rest[0] in (*STATION_FILES, "station.db"):
             return roots[key] / rest[0]
     elif key in roots and rest and (key in _FOLDERS or key.split("/")[-1] in STATION_FOLDERS):
         return roots[key].joinpath(*rest)
@@ -1034,7 +1064,6 @@ def _restore(
     stages = {
         key: roots[key].with_name(f".{roots[key].name}.restore-{uuid.uuid4().hex}") for key in keys
     }
-    swap = _Swap(roots["library"] / JOURNAL_NAME, stages.values())
     keep_stages = False
     with im.publication_lock(roots["library"]):
         try:
@@ -1048,6 +1077,12 @@ def _restore(
                         _check_sqlite(database)
                         if name == "library.db":
                             _check_catalog(database)
+            for key, stage in stages.items():
+                database = stage / "station.db"
+                if key != "library" and _is_files(key) and database.is_file():
+                    _check_sqlite(database)
+            _check_layout(roots, list(stages))
+            swap = _Swap(roots["library"] / JOURNAL_NAME, stages.values())
             try:
                 _install(swap, files, roots, stages)
             except BaseException as exc:
@@ -1127,9 +1162,26 @@ def restore_backup(
                 except (ValueError, TypeError, KeyError, UnicodeError, OSError) as exc:
                     raise BackupError(f"invalid web station definition {name}: {exc}") from exc
                 specs += (spec,)
-            restored = _restore(
-                opened, _roots(replace(cfg, stations=specs)), force=force, warnings=said
-            )
+            roots = _roots(replace(cfg, stations=specs))
+            from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
+
+            for name in manifest.files:
+                parts = PurePosixPath(name).parts
+                if (
+                    len(parts) == 4
+                    and parts[0] == "stations"
+                    and parts[2:] == ("index", "station.db")
+                    and parts[1] != DEFAULT_SLUG
+                    and SLUG_PATTERN.fullmatch(parts[1])
+                ):
+                    if not any(spec.slug == parts[1] for spec in specs):
+                        prefix = f"stations/{parts[1]}/"
+                        if any(item.startswith(prefix) and item != name for item in manifest.files):
+                            raise _unknown_station(parts[1])
+                    roots.setdefault(
+                        f"stations/{parts[1]}/index", cfg.index.stations_dir / parts[1]
+                    )
+            restored = _restore(opened, roots, force=force, warnings=said)
     except BackupError:
         raise
     except (OSError, RuntimeError, NotImplementedError, zipfile.BadZipFile) as exc:

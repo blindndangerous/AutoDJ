@@ -2023,6 +2023,7 @@ def cmd_export_plays(
         soundexchange_report,
         summary,
     )
+    from autodj.station_store import StationStore, migrate_legacy
     from autodj.stations import SLUG_PATTERN
 
     if SLUG_PATTERN.match(station) is None:
@@ -2041,7 +2042,19 @@ def cmd_export_plays(
         raise click.exceptions.Exit(1)
     try:
         with LibraryCatalog(db) as catalog:
-            plays = plays_between(catalog, start, end, station=station)
+            from autodj.stations import DEFAULT_SLUG, StationPaths
+
+            paths = (
+                StationPaths.default(cfg)
+                if station == DEFAULT_SLUG
+                else StationPaths.for_station(cfg, station)
+            )
+            store = StationStore(paths.state_dir / "station.db", station)
+            try:
+                migrate_legacy(catalog, store)
+                plays = plays_between(catalog, start, end, station=station, station_store=store)
+            finally:
+                store.close()
     except ValueError as exc:
         raise click.BadParameter(str(exc)) from exc
     except sqlite3.Error as exc:

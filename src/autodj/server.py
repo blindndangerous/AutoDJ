@@ -1790,7 +1790,7 @@ def create_app(
         """Publish a validated definition and register a stopped station."""
         from autodj.config import MAX_STATIONS, _build_station, _check_station_conflicts
         from autodj.station_creation import CreationConflict, duplicate_table, stage_station
-        from autodj.station_ledger import setting_key
+        from autodj.station_store import StationStore, migrate_legacy
         from autodj.stations import StationPaths
 
         root = bridge.player._cfg
@@ -1856,9 +1856,17 @@ def create_app(
             try:
                 if clock is not None:
                     clock_written = True
-                    await asyncio.to_thread(
-                        library.catalog.set_setting, setting_key(body.slug, "clock"), clock
-                    )
+
+                    def save_clock() -> None:
+                        paths = StationPaths.for_station(root, body.slug)
+                        store = StationStore(paths.state_dir / "station.db", body.slug)
+                        try:
+                            migrate_legacy(library.catalog, store)
+                            store.set_setting("clock", clock)
+                        finally:
+                            store.close()
+
+                    await asyncio.to_thread(save_clock)
                 if stations._closing:
                     raise StationControlError("The server is shutting down")
                 extra = _extra_station(root, spec, bridge.sim, library, station_timezone)
@@ -1867,9 +1875,16 @@ def create_app(
             except Exception as exc:
                 try:
                     if clock_written:
-                        await asyncio.to_thread(
-                            library.catalog.delete_setting, setting_key(body.slug, "clock")
-                        )
+
+                        def delete_clock() -> None:
+                            paths = StationPaths.for_station(root, body.slug)
+                            store = StationStore(paths.state_dir / "station.db", body.slug)
+                            try:
+                                store.delete_setting("clock")
+                            finally:
+                                store.close()
+
+                        await asyncio.to_thread(delete_clock)
                 finally:
                     await asyncio.to_thread(shutil.rmtree, destination)
                 raise HTTPException(

@@ -43,6 +43,12 @@ from autodj.processing import (
     loudness_matches,
 )
 from autodj.station_ledger import StationLedger
+from autodj.station_store import (
+    StationStore,
+    discover_station_folders,
+    discover_stations,
+    migrate_legacy,
+)
 from autodj.stations import DEFAULT_SLUG, StationPaths
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
@@ -184,12 +190,39 @@ class LibraryManager:
         )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
+        default_store = self._station_store(DEFAULT_SLUG)
+        stores = [default_store]
+        try:
+            # The global marker avoids consulting legacy station tables after one complete import.
+            if default_store.migration_complete("catalog-stations-v1"):
+                station_ids = discover_station_folders(cfg.index.stations_dir) | {DEFAULT_SLUG}
+            else:
+                station_ids = discover_stations(self.catalog) | {DEFAULT_SLUG}
+            station_ids.update(spec.slug for spec in cfg.stations)
+            self._station_ids = station_ids
+            for station_id in sorted(station_ids):
+                store = (
+                    default_store if station_id == DEFAULT_SLUG else self._station_store(station_id)
+                )
+                if store is not default_store:
+                    stores.append(store)
+                migrate_legacy(self.catalog, store)
+            default_store.mark_migration("catalog-stations-v1")
+        except BaseException:
+            for store in stores:
+                store.close()
+            self.catalog.close()
+            raise
+        for store in stores:
+            store.close()
         self._clock = clock
         self._auto_rescan_minutes = self.catalog.get_setting("auto_rescan_minutes", 0)
         self._last_scan_end = self._clock()
         # What each station played, and its settings; the default station's
         # first.  tick() writes them all.
-        self.ledger = StationLedger(self.catalog, DEFAULT_SLUG, self.entry_for_path)
+        self.ledger = StationLedger(
+            self._station_store(DEFAULT_SLUG), self.entry_for_path, self.kind_for_path
+        )
         self._ledgers: list[StationLedger] = [self.ledger]
         # Set while a remote analysis worker is connected, so the CPU job,
         # which waited for it, runs again once it has gone.
@@ -199,6 +232,7 @@ class LibraryManager:
         try:
             self.analysis_queue = AnalysisQueue(catalog_path)
         except BaseException:
+            self.ledger.store.close()
             self.catalog.close()
             raise
         try:
@@ -207,6 +241,7 @@ class LibraryManager:
             self.refresh()
         except BaseException:
             self.analysis_queue.close()
+            self.ledger.store.close()
             self.catalog.close()
             raise
 
@@ -272,7 +307,13 @@ class LibraryManager:
                     liner_entries = reader.entries("liner", coverage, missing)
                     with self._lock:
                         ledgers = list(self._ledgers)
-                    played = {ledger: reader.last_played(ledger.station) for ledger in ledgers}
+                    played = {}
+                    for ledger in ledgers:
+                        times = ledger.store.last_played()
+                        if ledger.station == DEFAULT_SLUG:
+                            for entry in (*entries, *liner_entries):
+                                times.setdefault(_path(entry.path), 0.0)
+                        played[ledger] = times
                 else:
                     with self._lock:
                         entries, liner_entries = self._entries, self._liner_entries
@@ -353,6 +394,11 @@ class LibraryManager:
     def entry_for_path(self, path: str | Path) -> IndexEntry | None:
         with self._lock:
             return self._by_path.get(_path(path))
+
+    def kind_for_path(self, path: str | Path) -> str | None:
+        with self._lock:
+            position = self._positions.get(_path(path))
+            return position[0] if position is not None else None
 
     def _text_index(
         self, name: str, kind: str, build: Callable[[tuple[IndexEntry, ...]], list[_Indexed]]
@@ -442,11 +488,23 @@ class LibraryManager:
 
     def add_ledger(self, station: str) -> StationLedger:
         """Keep another station's plays; :meth:`tick` writes them with the rest."""
-        ledger = StationLedger(self.catalog, station, self.entry_for_path)
-        ledger.loaded(self.catalog.last_played(station))
+        store = self._station_store(station)
+        ledger = StationLedger(store, self.entry_for_path, self.kind_for_path)
+        ledger.loaded(ledger.store.last_played())
         with self._lock:
+            self._station_ids.add(station)
             self._ledgers.append(ledger)
         return ledger
+
+    def _station_store(self, station: str) -> StationStore:
+        from autodj.stations import StationPaths
+
+        paths = (
+            StationPaths.default(self.cfg)
+            if station == DEFAULT_SLUG
+            else StationPaths.for_station(self.cfg, station)
+        )
+        return StationStore(paths.state_dir / "station.db", station)
 
     def station_ledger(self, station: str) -> StationLedger:
         """*station*'s ledger, added the first time it is asked for.
@@ -876,6 +934,19 @@ class LibraryManager:
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                with self._lock:
+                    ledgers = {ledger.station: ledger for ledger in self._ledgers}
+                    station_ids = set(self._station_ids)
+                for station_id in station_ids:
+                    ledger = ledgers.get(station_id)
+                    if ledger is None:
+                        store = self._station_store(station_id)
+                        try:
+                            store.rekey(source, track.path)
+                        finally:
+                            store.close()
+                    else:
+                        ledger.rekey(source, track.path)
                 moved = True
                 try:
                     if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
@@ -1338,6 +1409,10 @@ class LibraryManager:
             pass
         self._flush_ledgers()
         self.analysis_queue.close()
+        with self._lock:
+            ledgers = list(self._ledgers)
+        for ledger in ledgers:
+            ledger.store.close()
         self.catalog.close()
 
 
