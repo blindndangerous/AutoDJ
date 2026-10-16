@@ -88,11 +88,17 @@ def test_loader_does_not_read_legacy_station_tables_without_startup_migration(
     assert cfg.playback.crossfade_seconds == 3.0
 
 
+@pytest.mark.parametrize("relative_index", [None, "index", "index # station"])
 def test_default_station_migration_uses_definition_schema_and_saved_timezone(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_index: str | None,
 ) -> None:
     text = BASE.replace("[stream]\n", '[stream]\nenabled = true\ntrusted_proxies = ["10.0.0.1"]\n')
     text += '\n[server]\nstation_timezone = "UTC"\nliner_upload_max_mib = 20\n'
+    if relative_index is not None:
+        monkeypatch.chdir(tmp_path)
+        text += f'\n[index]\nindex_dir = "{relative_index}"\n'
     path = _write(tmp_path, text)
     cfg = load_config(path, environ={})
     catalog_path = cfg.index.library_dir / "library.db"
