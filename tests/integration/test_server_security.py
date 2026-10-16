@@ -30,6 +30,11 @@ _TEST_ACCESS_TOKEN = "task10-test-access-token-is-32-bytes"
 _TEST_DEVICE_ID = "d" * 32
 
 
+@pytest.fixture(autouse=True)
+def isolate_mock_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tests.integration._helpers.NO_INDEX_DIR", tmp_path / "no-index")
+
+
 def _pair(client: TestClient, *, name: str = "Test browser"):
     """Pair client through public API using current short-lived code."""
     code = client.app.state.request_pairing_code()[0]
@@ -224,14 +229,14 @@ def test_chunked_liner_upload_past_the_cap_is_413_before_anything_is_stored(
     """A body with no Content-Length is counted as it streams into the multipart parser."""
     player = _make_player_mock()
     point_index(player._cfg.index, str(Path(tmp_path / "stations" / "default" / "liners").parent))
-    player._cfg.server.liner_upload_max_bytes = 1024
+    player._cfg.station.liner_upload_max_mib = 1
     app = create_app(PlayerBridge(player=player, sim=_make_sim_mock()))
     boundary = b"cap"
     head = (
         b'--cap\r\nContent-Disposition: form-data; name="file"; filename="big.mp3"\r\n'
         b"Content-Type: audio/mpeg\r\n\r\n"
     )
-    chunks = [head] + [b"x" * 16384] * 8 + [b"\r\n--cap--\r\n"]
+    chunks = [head] + [b"x" * 16384] * 80 + [b"\r\n--cap--\r\n"]
     reads = 0
     messages: list[dict[str, Any]] = []
 
@@ -649,6 +654,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/tags"),
         ("post", "/api/library/remove-missing"),
         ("put", "/api/library/auto-rescan"),
+        ("put", "/api/library/advanced-length"),
         ("put", "/api/time-settings"),
     ],
 )
@@ -991,7 +997,10 @@ class TestArt:
             resp = tc.get("/api/art", params={"path": "Z:/Music/song_0.flac"})
 
         assert resp.status_code == 200
-        assert called[-2:] == ["to_thread", "Z:/Music/song_0.flac"]
+        # The lookup itself went through to_thread; shutting the app down may
+        # use to_thread again afterwards.
+        lookup = called.index("Z:/Music/song_0.flac")
+        assert called[lookup - 1] == "to_thread"
 
 
 # ---------------------------------------------------------------------------

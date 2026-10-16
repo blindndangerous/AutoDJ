@@ -502,6 +502,9 @@ class TestExportPlaysCli:
             f'model_dir = "{(tmp_path / "models").as_posix()}"\n',
             encoding="utf-8",
         )
+        from autodj.config import load_config, move_station_tables
+
+        move_station_tables(load_config(path, environ={}))
         return path
 
     def _run(self, config: Path, *args: str):

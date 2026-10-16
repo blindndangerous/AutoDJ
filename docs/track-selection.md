@@ -358,7 +358,7 @@ hour the next song starts in: :00 to :14, :15 to :29, :30 to :44 or :45 to :59. 
 never starts in the same quarter twice running; at 3 it moves round all four. Plays more than a
 week old do not count.
 
-- The hours are the station's (`[server] station_timezone`, else the computer's), and a daypart
+- The hours are the station's (`station.timezone in the station definition`, else the computer's), and a daypart
   keeps its hours across a clock change. Quarters of the hour are read on the station's clock
   too, so they hold across every clock change, Lord Howe Island's half-hour one included.
 - Both rules judge the time the next song is expected to start, as dayparting does, not the time

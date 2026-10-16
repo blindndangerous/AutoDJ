@@ -52,7 +52,7 @@ from autodj.security import (
     is_canonical_path,
     machine_transport_allowed,
 )
-from autodj.station_routes import STATION_PREFIX, StationDep, StationRouter, resolve_station
+from autodj.station_routes import STATION_PREFIX, SavedStationDep, StationRouter, resolve_station
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,9 @@ def install_live_api(router: StationRouter) -> None:
     """The operator's DJ accounts and talkover settings, for each station."""
 
     def view(station: Any) -> dict[str, Any]:
-        available = bool(station.stream_mode and station.player.bus is not None)
+        available = bool(
+            station.player is not None and station.stream_mode and station.player.bus is not None
+        )
         try:
             djs = station.live.credentials.accounts()
             problem = None
@@ -306,7 +308,8 @@ def install_live_api(router: StationRouter) -> None:
             if available
             else "Live DJs need stream mode: the station plays on the server.",
             "problem": problem,
-            **station.live_state(),
+            "live": station.live.status(),
+            "talkover": station.live.talkover,
             "source_path": source_path(station.slug),
             "plain_http_lan": bool(getattr(station.cfg.server, "live_plain_http_lan", False)),
             "settings": station.live.settings.as_dict(),
@@ -314,12 +317,12 @@ def install_live_api(router: StationRouter) -> None:
         }
 
     @router.get("/live")
-    async def live_view(station: StationDep) -> dict[str, Any]:
+    async def live_view(station: SavedStationDep) -> dict[str, Any]:
         """The live DJ on the air, the DJ accounts and the talkover settings."""
         return await asyncio.to_thread(view, station)
 
     @router.put("/live/settings")
-    async def live_settings(station: StationDep, body: Any = Body(...)) -> dict[str, float]:
+    async def live_settings(station: SavedStationDep, body: Any = Body(...)) -> dict[str, float]:
         """Save the talkover return time and duck amount; they apply at once."""
         try:
             settings = TalkoverSettings.parse(body)
@@ -332,7 +335,7 @@ def install_live_api(router: StationRouter) -> None:
         return settings.as_dict()
 
     @router.post("/live/djs")
-    async def live_dj_save(station: StationDep, body: Any = Body(...)) -> dict[str, Any]:
+    async def live_dj_save(station: SavedStationDep, body: Any = Body(...)) -> dict[str, Any]:
         """Add a DJ or change one; a password is never sent back."""
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Expected an object")
@@ -349,7 +352,7 @@ def install_live_api(router: StationRouter) -> None:
             raise HTTPException(status_code=503, detail="The DJ could not be saved") from exc
 
     @router.delete("/live/djs/{username}")
-    async def live_dj_delete(station: StationDep, username: str) -> dict[str, bool]:
+    async def live_dj_delete(station: SavedStationDep, username: str) -> dict[str, bool]:
         """Remove a DJ, disconnecting them if they are on the air."""
         try:
             removed = await asyncio.to_thread(station.live.credentials.delete, username)

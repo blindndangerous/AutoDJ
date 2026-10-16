@@ -64,6 +64,7 @@ from autodj.identity_map import attached
 from autodj.indexer import IndexEntry
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.music_speed import resample_music
+from autodj.processing import TrackWindows
 from autodj.render_ahead import RenderAhead
 from autodj.repeat_rules import (
     RELAXED_RULES,
@@ -83,9 +84,10 @@ from autodj.repeat_rules import (
 )
 from autodj.station_log import station_thread
 from autodj.stereo import (
+    LONG_TRACK_SECONDS,
     SAMPLE_RATE,
-    TrackTooLongError,
     envelope,
+    join_audio,
     load_mono,
     load_stereo,
     mono,
@@ -98,7 +100,6 @@ if TYPE_CHECKING:
     from autodj.audio_meta import LyricLine
     from autodj.config import AutoDJConfig
     from autodj.dj_meta import Cue, DjMeta
-    from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
     from autodj.transitions import BeatSync, TransitionFx
 
@@ -156,7 +157,7 @@ def _apply_crossfade(
         ValueError: If *crossfade_samples* is longer than either input.
     """
     if crossfade_samples == 0:
-        return np.concatenate([audio_a, audio_b]).astype(np.float32)
+        return join_audio([audio_a, audio_b])
 
     if crossfade_samples > len(audio_a) or crossfade_samples > len(audio_b):
         raise ValueError(
@@ -175,7 +176,7 @@ def _apply_crossfade(
 
     overlap = (a_tail * envelope(fade_out, a_tail)) + (b_head * envelope(fade_in, b_head))
 
-    return np.concatenate([a_body, overlap, b_body]).astype(np.float32)
+    return join_audio([a_body, overlap, b_body])
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +217,7 @@ def _apply_crossfade_ducked(
         Float32 array with the EQ-ducked crossfade applied.
     """
     if crossfade_samples == 0:
-        return np.concatenate([audio_a, audio_b]).astype(np.float32)
+        return join_audio([audio_a, audio_b])
     if crossfade_samples > len(audio_a) or crossfade_samples > len(audio_b):
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
@@ -253,7 +254,7 @@ def _apply_crossfade_ducked(
     # Hard-limit to ±1.0 — even with bass-ducking, two bright tracks can sum
     # above full scale during the overlap on densely arranged music.
     np.clip(overlap, -1.0, 1.0, out=overlap)
-    return np.concatenate([a_body, overlap, b_body]).astype(np.float32)
+    return join_audio([a_body, overlap, b_body])
 
 
 # ---------------------------------------------------------------------------
@@ -874,6 +875,71 @@ class Player:
     # How far ahead of the playing position a skip effect starts, so it is
     # ready before the bus gets there: 0.1 s.
     _SKIP_LOOKAHEAD: ClassVar[int] = SAMPLE_RATE // 10
+
+    @property
+    def _preset(self) -> Any:
+        return self._settings._preset
+
+    @_preset.setter
+    def _preset(self, value: Any) -> None:
+        self._settings._preset = value
+
+    @property
+    def _bpm_range(self) -> tuple[float, float] | None:
+        return self._settings._bpm_range
+
+    @_bpm_range.setter
+    def _bpm_range(self, value: tuple[float, float] | None) -> None:
+        self._settings._bpm_range = value
+
+    @property
+    def _pure_shuffle(self) -> bool:
+        return self._settings._pure_shuffle
+
+    @_pure_shuffle.setter
+    def _pure_shuffle(self, value: bool) -> None:
+        self._settings._pure_shuffle = value
+
+    @property
+    def _anchor_to_seed(self) -> bool:
+        return self._settings._anchor_to_seed
+
+    @_anchor_to_seed.setter
+    def _anchor_to_seed(self, value: bool) -> None:
+        self._settings._anchor_to_seed = value
+
+    @property
+    def _eq_low(self) -> float:
+        return self._settings._eq_low
+
+    @_eq_low.setter
+    def _eq_low(self, value: float) -> None:
+        self._settings._eq_low = value
+
+    @property
+    def _eq_mid(self) -> float:
+        return self._settings._eq_mid
+
+    @_eq_mid.setter
+    def _eq_mid(self, value: float) -> None:
+        self._settings._eq_mid = value
+
+    @property
+    def _eq_high(self) -> float:
+        return self._settings._eq_high
+
+    @_eq_high.setter
+    def _eq_high(self, value: float) -> None:
+        self._settings._eq_high = value
+
+    @property
+    def _discovery_every(self) -> int | None:
+        return self._settings._discovery_every
+
+    @_discovery_every.setter
+    def _discovery_every(self, value: int | None) -> None:
+        self._settings._discovery_every = value
+
     # A dry run of the picker (autodj.rotation_sim) gives the player its own
     # seeded random.Random, a clock of its own (see _now) and a pick_observer
     # that hears what each pick passed over.  On air the random module
@@ -890,6 +956,7 @@ class Player:
         dry_run: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
+        settings: Any = None,
     ) -> None:
         """Initialise the player with configuration and index.
 
@@ -904,6 +971,9 @@ class Player:
                 the stream station (see :meth:`begin_set`).
             server_audio_too: In stream mode, also open the sound card.
         """
+        from autodj.station_settings import StationSettings
+
+        self._settings = settings or StationSettings(cfg, sim=sim_index)
         self._cfg = cfg
         self._sim = sim_index
         self._dry_run = dry_run
@@ -911,14 +981,11 @@ class Player:
         self._server_audio_too = server_audio_too
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
-        self._preset: Preset | None = None
-        self._bpm_range: tuple[float, float] | None = None
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
         # next track is similar to the seed, not to the previous track.
         # Off by default; toggled from the web UI.
-        self._anchor_to_seed = False
         # Path of the seed track — set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
@@ -927,15 +994,11 @@ class Player:
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        self._pure_shuffle = False
         # Lyrics for the current track — populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
         self._current_lyrics_plain: str = ""
         # 3-band EQ state (1.0 = unity), mutated by the web UI
-        self._eq_low: float = 1.0
-        self._eq_mid: float = 1.0
-        self._eq_high: float = 1.0
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -992,7 +1055,6 @@ class Player:
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
-        self._discovery_every: int | None = cfg.playback.discovery_every
         self._last_repeat_cap_warning: tuple[int, int, int] | None = None
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
@@ -1051,6 +1113,7 @@ class Player:
                 related_tracks=self._related_tracks,
             ),
         )
+        self._settings.attach(self)
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
         # Shared playback position (samples) — written by the mix bus, read and
@@ -1378,10 +1441,7 @@ class Player:
         # The station's own key ("clock" for the default station).
         ledger = getattr(self, "_ledger", None)
         # Through the ledger: a place it has not written yet is the latest.
-        if ledger is not None:
-            setting = ledger.get_setting("clock", {})
-        else:
-            setting = self._library.catalog.get_setting("clock", {})
+        setting = ledger.get_setting("clock", {}) if ledger is not None else {}
         if not isinstance(setting, dict):
             setting = {}
         with self._clock_lock:
@@ -2572,6 +2632,26 @@ class Player:
                 return ((entry, False),), key
         return (), key
 
+    def _transition_voice(
+        self,
+        current: IndexEntry,
+        upcoming: IndexEntry,
+        liners: tuple[tuple[IndexEntry, bool], ...],
+        breaks: tuple[Any, ...],
+        at: float | None,
+    ) -> tuple[tuple[tuple[IndexEntry, bool], ...], str, Any]:
+        """Choose handoff voice using the same precedence for playback and preview."""
+        key = ""
+        if self._cfg.playback.matched_intro_only_without_liner:
+            if not breaks and not liners:
+                liners, key = self._auto_liner(current, upcoming)
+            intro = None if liners else self._matched_intro(upcoming, breaks, at)
+        else:
+            intro = self._matched_intro(upcoming, breaks, at)
+            if not breaks and not liners and intro is None:
+                liners, key = self._auto_liner(current, upcoming)
+        return liners, key, intro
+
     def _matched_intro(
         self, upcoming: IndexEntry | None, breaks: tuple[Break, ...], at: float | None
     ) -> Any:
@@ -2890,16 +2970,9 @@ class Player:
                     next_clock_name = plan.clock_name
                     next_clock_boundary = plan.boundary_after
                     breaks = self._take_breaks(plan)
-                    only_without_liner = self._cfg.playback.matched_intro_only_without_liner
-                    if only_without_liner:
-                        if not breaks and not liners:
-                            liners, liner_key = self._auto_liner(current, next_entry)
-                        if not liners:
-                            intro = self._matched_intro(next_entry, breaks, context.at)
-                    else:
-                        intro = self._matched_intro(next_entry, breaks, context.at)
-                        if not breaks and not liners and intro is None:
-                            liners, liner_key = self._auto_liner(current, next_entry)
+                    liners, liner_key, intro = self._transition_voice(
+                        current, next_entry, liners, breaks, context.at
+                    )
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
@@ -2910,15 +2983,9 @@ class Player:
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
                         next_clock_boundary = self._pending_clock_boundary
-                    if self._cfg.playback.matched_intro_only_without_liner:
-                        if not liners:
-                            liners, liner_key = self._auto_liner(current, next_entry)
-                        if not liners:
-                            intro = self._matched_intro(next_entry, (), context.at)
-                    else:
-                        intro = self._matched_intro(next_entry, (), context.at)
-                        if not liners and intro is None:
-                            liners, liner_key = self._auto_liner(current, next_entry)
+                    liners, liner_key, intro = self._transition_voice(
+                        current, next_entry, liners, (), context.at
+                    )
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
                     unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
@@ -4073,18 +4140,18 @@ class Player:
         )
 
     def _station_now(self, at: float | None = None) -> datetime:
-        """The station's local wall time, naive (``[server] station_timezone``), now or *at*."""
+        """The station's local wall time, naive (``[station] timezone``), now or *at*."""
         from autodj.categories import station_wall
 
         return station_wall(self._cfg, self._now() if at is None else at)
 
     def _station_zone(self) -> tzinfo:
-        """The station's time zone (``[server] station_timezone``, else the system's)."""
+        """The station's time zone (``[station] timezone``, else the system's)."""
         from zoneinfo import ZoneInfo
 
         from autodj.scheduler import system_timezone
 
-        return ZoneInfo(self._cfg.server.station_timezone or system_timezone())
+        return ZoneInfo(self._cfg.station.timezone or system_timezone())
 
     def _dayparts(self, at: float | None = None) -> tuple[frozenset[str], dict[str, str]]:
         """The songs whose categories are outside their days and hours, and why.
@@ -4207,7 +4274,7 @@ class Player:
         target = next_target(
             at,
             playback.hour_fit_window_minutes,
-            self._hour_fit_timezone or self._cfg.server.station_timezone or system_timezone(),
+            self._hour_fit_timezone or self._cfg.station.timezone or system_timezone(),
             boundary,
             events,
         )
@@ -4227,7 +4294,7 @@ class Player:
 
         return fit_chooser(target.at - at, seconds, hard=target.hard)
 
-    def restore_repeat_history(self, catalog: Any, *, refresh: bool = False) -> int:
+    def restore_repeat_history(self, ledger: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
         Reads only as many saved plays as the windows can look at (see
@@ -4235,7 +4302,7 @@ class Player:
         short are not counted, nor are plays dated after now.
 
         Args:
-            catalog: Gives the saved plays (``recent_plays``): the station's
+            ledger: Gives the saved plays (``recent_plays``): the station's
                 :class:`~autodj.station_ledger.StationLedger`.
 
         Returns:
@@ -4247,11 +4314,9 @@ class Player:
         limit = plays_to_load(self._state.rules, self._state.dmca_seconds)
         if limit <= 0:
             return 0
-        rows = catalog.recent_plays(limit)
-        ledger = self._ledger
-        if ledger is not None:
-            # Plays not written to SQLite yet count too.
-            rows.extend(ledger.pending_history())
+        rows = ledger.recent_plays(limit)
+        # Plays not written to SQLite yet count too.
+        rows.extend(ledger.pending_history())
         records = records_from_plays(rows, time.time())
         if records:
             self._state.restore_history(records)
@@ -4633,26 +4698,21 @@ class Player:
         )
         if gain == 1.0:
             return audio
+        # In place: the decode is fresh, and a copy of a long track is large.
+        if audio.dtype == np.float32 and audio.flags.writeable:
+            audio *= np.float32(gain)
+            return audio
         return (audio * gain).astype(np.float32)
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
         """Decode originals on the render worker, preserving source cue positions.
 
-        A reliable source header can refuse an over-long track before FFmpeg
-        starts. Estimated lengths fall through to the bounded decode; catalog
-        lengths may come from metadata and are not proof that a file is too long.
-
-        Raises:
-            TrackTooLongError: The track is longer than the limit.
+        Any length plays: a decode longer than
+        :data:`~autodj.stereo.SPILL_FRAMES` is kept in a temporary file
+        mapped into memory, not in ordinary memory.
         """
-        from autodj.processing import probe_seconds
-
-        limit = self._max_render_seconds()
-        known = probe_seconds(Path(entry.path))
-        if known is not None and known > limit + 1.0:
-            raise TrackTooLongError(str(entry.path), known)
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
-            audio = load_stereo(entry.path, SAMPLE_RATE, self._max_render_seconds())
+            audio = load_stereo(entry.path, SAMPLE_RATE)
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
         from autodj.processing import load_and_measure_audio, load_processed_audio, loudness_matches
 
@@ -4662,9 +4722,9 @@ class Player:
         measurement = record.get("loudness", {}) if record else {}
         # The continuous master handles quiet passages; don't stack an intro-only lift.
         if loudness_matches(measurement, source, kind):
-            return load_processed_audio(source, measurement, kind, self._max_render_seconds())
+            return load_processed_audio(source, measurement, kind)
         # First play: measure in the same FFmpeg run as the decode.
-        audio, measurement = load_and_measure_audio(source, kind, self._max_render_seconds())
+        audio, measurement = load_and_measure_audio(source, kind)
         if record:
             self._library.catalog.set_loudness(source, measurement)
         return audio
@@ -4704,7 +4764,6 @@ class Player:
             (kind, record.get("intro_lift_db") if record else None),
             playback.loudness_processing,
             playback.intro_lift_max_db,
-            self._max_render_seconds(),
             replaygain.enabled,
             replaygain.target_db,
             replaygain.max_clip_safe_gain,
@@ -4792,7 +4851,8 @@ class Player:
         from autodj.intro_lift import apply_intro_lift
 
         lift = record.get("intro_lift_db") if record else None
-        return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0))
+        writable = audio.dtype == np.float32 and audio.flags.writeable
+        return apply_intro_lift(audio, SAMPLE_RATE, min(max_db, lift or 0.0), in_place=writable)
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""
@@ -5214,51 +5274,9 @@ class Player:
 
         The mix reads lyric timing for itself (:meth:`_sung_spans`).
         """
-        from autodj.audio_meta import (
-            load_lrc_for,
-            parse_embedded_lyrics,
-            read_plain_lyrics,
-        )
+        from autodj.audio_meta import read_library_lyrics
 
-        lyrics = load_lrc_for(path)
-        if lyrics:
-            return lyrics, ""
-
-        plain = ""
-        if self._cfg.library.beets_db:
-            from autodj.beets import get_lyrics_for_path
-
-            try:
-                plain = get_lyrics_for_path(
-                    self._cfg.library.beets_db,
-                    path,
-                    music_dir=self._cfg.library.music_dir,
-                )
-            except (OSError, ValueError) as exc:
-                logger.debug("Beets lyrics lookup failed: %s", exc)
-                plain = ""
-
-        # Fall back to embedded tag lyrics when beets has none / no beets at all.
-        if not plain:
-            try:
-                plain = read_plain_lyrics(path)
-            except (OSError, ValueError) as exc:
-                logger.debug("Embedded lyric tag read failed: %s", exc)
-                plain = ""
-
-        # A "plain" lyric field very often *is* LRC: most taggers write the
-        # synced text straight into LYRICS / USLT / ©lyr rather than to a
-        # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
-        # on screen, sent the whole song to the live region in one breath,
-        # and made the current-line highlight impossible.
-        #
-        # The classification has to weigh the whole tag, not stop at the
-        # first bracket that looks like a cue: deciding on one match threw
-        # away every untimestamped line ("Written by X / [00:00.00]Intro /
-        # Verse one" collapsed to "Intro") and mangled prose that merely
-        # mentions a time.  parse_embedded_lyrics requires a clear majority
-        # of leading stamps, and cleans the plain branch instead.
-        return parse_embedded_lyrics(plain)
+        return read_library_lyrics(path, self._cfg.library)
 
     def _timed_lyrics(self, path: str) -> list[LyricLine]:
         """Synced lyric lines of *path* for the mix; empty when none or unreadable."""
@@ -5472,12 +5490,17 @@ class Player:
             # Additional source folders do not share the legacy cache root.
             return None
         if not meta.analysed:
-            meta = self._analyse(mono(audio_a), sr_a, path)
+            meta = self._analyse(audio_a, sr_a, path)
             self._dj_cache.flush(batch=10)
         return self._refresh_library_cues(path, meta)
 
-    def _analyse(self, audio: np.ndarray, sr: int, path: str) -> DjMeta:
+    def _analyse(self, audio: np.ndarray | TrackWindows, sr: int, path: str) -> DjMeta:
         """Analyse *path*'s audio the way ``autodj analyse`` does, and cache it.
+
+        *audio* is the whole track, mono or stereo, or a long track's start
+        and end (:class:`~autodj.processing.TrackWindows`); a long track is
+        analysed from its start and end
+        (:func:`~autodj.dj_meta.analyse_track_audio`).
 
         Runs :func:`autodj.dj_meta.analyse_audio`, then merges cues imported
         from DJ software through the same function as ``autodj analyse``
@@ -5489,9 +5512,9 @@ class Player:
         :meth:`load_library_cues` has read.  A track analysed before that
         read finishes gets its library cues merged when it does.
         """
-        from autodj.dj_meta import analyse_audio
+        from autodj.dj_meta import analyse_decoded
 
-        meta = analyse_audio(audio, sr)
+        meta = analyse_decoded(audio, sr)
         import_cues = self._cfg.playback.import_external_cues
         # Merge and store under the lock, so load_library_cues either sees
         # this track in the cache or has already handed over its cues.
@@ -5609,9 +5632,10 @@ class Player:
 
         def _worker() -> None:  # pragma: no cover -- background thread
             try:
-                audio, sr = load_mono(path)
+                audio, sr = self._background_audio(path)
                 if intro_start_only:
-                    self._record_intro_start(path, audio, sr)
+                    head = audio.head if isinstance(audio, TrackWindows) else audio
+                    self._record_intro_start(path, mono(head), sr)
                     return
                 meta = self._analyse(audio, sr, path)
                 if self._dj_cache is not None:
@@ -5662,6 +5686,21 @@ class Player:
                 self._bg_analysis_inflight.discard(path)
                 self._bg_analysis_threads.discard(thread)
                 raise
+
+    @staticmethod
+    def _background_audio(path: str) -> tuple[np.ndarray | TrackWindows, int]:
+        """*path* decoded for background analysis: mono, or a long track's ends.
+
+        A track the header says is long is read once as it streams, keeping
+        only its start and end (:func:`~autodj.processing.read_windows`);
+        any other is decoded whole, mono, at its own rate, as before.
+        """
+        from autodj.processing import estimated_seconds, read_windows
+
+        seconds = estimated_seconds(Path(path))
+        if seconds is not None and seconds > LONG_TRACK_SECONDS:
+            return read_windows(Path(path)), SAMPLE_RATE
+        return load_mono(path)
 
     def _record_intro_start(self, path: str, audio: np.ndarray, sr: int) -> None:
         """Store the first-sound time of an already analysed track.
@@ -5801,29 +5840,21 @@ class Player:
                     start = snapped_samples
         return start
 
-    def _max_render_seconds(self) -> float:
-        """Longest track server-side mixing decodes (``server_max_track_minutes``)."""
-        return float(self._cfg.playback.server_max_track_minutes) * 60.0
-
     def _load_incoming(
         self,
         next_entry: IndexEntry,
         sr_a: int,
         crossfade_samples: int,
         prefetched: Future[tuple[tuple | None, np.ndarray]] | None = None,
-    ) -> np.ndarray | None:
+    ) -> np.ndarray:
         """Load incoming track, resample to sr_a, ReplayGain — silence on failure.
 
-        Uses the *prefetched* decode when given.  Returns ``None`` when the
-        track is too long to mix: it is skipped (and logged) when its own
-        render comes round.
+        Uses the *prefetched* decode when given.
         """
         try:
             if prefetched is not None:
                 return prefetched.result()[1]
             return self._load_playout_audio(next_entry)
-        except TrackTooLongError:
-            return None
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Cannot pre-load next track (%s): %s", next_entry.path, exc)
             return np.zeros((crossfade_samples, 2), dtype=np.float32)
@@ -6089,7 +6120,7 @@ class Player:
             meta_a = self._peek_incoming_meta(current)
         if meta_a is None or meta_b is None:
             return None
-        drops = mix_drops(meta_b.cues, mono(audio_b), SAMPLE_RATE, meta_b.beats)
+        drops = mix_drops(meta_b.cues, audio_b, SAMPLE_RATE, meta_b.beats)
         if not drops:
             return None
         matched = self._grid_match(
@@ -6106,7 +6137,7 @@ class Player:
         # A stretch too small to apply is not applied, so the drop has to
         # land by the unstretched track.
         ratio = 1.0 if abs(found - 1.0) <= NO_STRETCH else found
-        anchors = mix_anchors(meta_a.cues, mono(audio_a), SAMPLE_RATE, meta_a.beats)
+        anchors = mix_anchors(meta_a.cues, audio_a, SAMPLE_RATE, meta_a.beats)
         longest = min(crossfade, round(self._DROP_MAX_OVERLAP_S * SAMPLE_RATE))
         shortest = min(crossfade, round(self._DROP_MIN_OVERLAP_S * SAMPLE_RATE))
         target = fade_start + crossfade
@@ -6268,9 +6299,7 @@ class Player:
             end_hz=cfg_dj.filter_sweep_floor_hz,
             filter_type="lowpass",
         )
-        return np.concatenate(
-            [audio_a_trimmed[:-crossfade_samples], tail],
-        ).astype(np.float32)
+        return join_audio([audio_a_trimmed[:-crossfade_samples], tail])
 
     # Industry-standard minimum effect lengths in seconds, sourced from
     # commercial DJ-tool defaults (Pioneer DJM, Reloop RMX, Numark NS,
@@ -6500,9 +6529,7 @@ class Player:
             tail_fx = tail * (1.0 - wet) + tail_fx * wet
             head_fx = head_for_fx * (1.0 - wet) + head_fx * wet
 
-        audio_a_trimmed = np.concatenate(
-            [audio_a_trimmed[:-effect_samples], tail_fx],
-        ).astype(np.float32)
+        audio_a_trimmed = join_audio([audio_a_trimmed[:-effect_samples], tail_fx])
         if len(head_fx) >= crossfade_samples:
             b_head = head_fx[:crossfade_samples].astype(np.float32)
         return audio_a_trimmed, b_head, extra_layer, chosen_fx.value
@@ -6577,10 +6604,8 @@ class Player:
                 playback only, #127).
 
         Returns:
-            The rendered track, or ``None`` when *current* cannot be loaded,
-            is longer than ``server_max_track_minutes`` (the whole track is
-            held in memory while it plays), or has no audio left after
-            *start_offset*.
+            The rendered track, or ``None`` when *current* cannot be loaded
+            or has no audio left after *start_offset*.
         """
         # This track's decode, when the previous render mixed it in, and the
         # next track's, started now so it runs alongside this one's.
@@ -6632,15 +6657,6 @@ class Player:
                     incoming_decode=incoming_decode,
                 )
             audio_a_full = self._playout_audio(current, source_decode)
-        except TrackTooLongError as exc:
-            logger.warning(
-                "Skipping %s: it is %.0f minutes long, and [playback] "
-                "server_max_track_minutes is %g.",
-                current.path,
-                exc.seconds / 60.0,
-                self._cfg.playback.server_max_track_minutes,
-            )
-            return None
         except (OSError, ValueError, RuntimeError) as exc:
             logger.error("Cannot load %s: %s — skipping.", current.path, exc)
             return None
@@ -6685,18 +6701,6 @@ class Player:
         # front.  Re-express the result in audio_a's own coordinates after.
         a_start_full = self._crossfade_start_in_a(audio_a_full, SAMPLE_RATE, meta_a, crossfade)
         audio_b_loaded = self._load_incoming(next_entry, SAMPLE_RATE, crossfade, incoming_decode)
-        if audio_b_loaded is None:
-            # Too long to mix in: play this track out; the next render skips it.
-            return RenderedTrack(
-                current,
-                resample_music(audio_a, rate_a),
-                next_entry,
-                0,
-                "",
-                start_offset=start_offset,
-                loudness_processing=processing,
-                playback_rate=rate_a,
-            )
         intro = self._skip_incoming_silence_samples(audio_b_loaded, SAMPLE_RATE, meta_b=meta_b)
         liner_a = self._is_liner(current)
         liner_b = self._is_liner(next_entry)
@@ -6740,7 +6744,7 @@ class Player:
                         rate_b,
                         crossfade,
                     )
-                a_trimmed = np.concatenate((a_prefix, a_tail), axis=0)
+                a_trimmed = join_audio([a_prefix, a_tail])
                 mixed = _apply_crossfade(a_trimmed, b_head, crossfade)
                 return RenderedTrack(
                     current,

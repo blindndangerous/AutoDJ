@@ -82,7 +82,7 @@ from autodj.breaks_api import (
 )
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.liners import LINER_EXTS
-from autodj.station_routes import StationDep, StationRouter, audio_mime
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter, audio_mime
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -384,13 +384,13 @@ def install_ads(router: StationRouter) -> None:
     decoder = decode_gate
 
     @router.get("/ads")
-    async def ads(station: StationDep) -> JSONResponse:
+    async def ads(station: SavedStationDep) -> JSONResponse:
         """The spots, the breaks, the settings and what is waiting."""
         _desk(station)
         return JSONResponse(await asyncio.to_thread(_listing, station), headers=_NO_STORE)
 
     @router.post("/ads/spots", status_code=201)
-    async def spot_upload(station: StationDep, request: Request) -> JSONResponse:
+    async def spot_upload(station: SavedStationDep, request: Request) -> JSONResponse:
         """Upload one spot."""
         desk = _desk(station)
         config = station.cfg.ads
@@ -471,7 +471,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.put("/ads/spots/{spot_id}")
-    async def spot_update(station: StationDep, request: Request, spot_id: str) -> JSONResponse:
+    async def spot_update(station: SavedStationDep, request: Request, spot_id: str) -> JSONResponse:
         """Change what is said about a spot; its audio stays."""
         desk = _desk(station)
         body = await _read_json(request)
@@ -504,7 +504,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, headers=_NO_STORE)
 
     @router.get("/ads/spots/{spot_id}/audio")
-    async def spot_audio(station: StationDep, spot_id: str) -> FileResponse:
+    async def spot_audio(station: SavedStationDep, spot_id: str) -> FileResponse:
         """Serve one spot's audio, to listen to."""
         desk = _desk(station)
         spot = (
@@ -526,7 +526,7 @@ def install_ads(router: StationRouter) -> None:
         )
 
     @router.delete("/ads/spots/{spot_id}")
-    async def spot_delete(station: StationDep, spot_id: str) -> JSONResponse:
+    async def spot_delete(station: SavedStationDep, spot_id: str) -> JSONResponse:
         """Remove one spot and its audio; one booked to air is kept until it has."""
         desk = _desk(station)
         if not valid_id(spot_id):
@@ -554,7 +554,7 @@ def install_ads(router: StationRouter) -> None:
             return _ads_error(field_error(exc))
 
     @router.post("/ads/breaks", status_code=201)
-    async def break_add(station: StationDep, request: Request) -> JSONResponse:
+    async def break_add(station: SavedStationDep, request: Request) -> JSONResponse:
         """Add an ad break."""
         desk = _desk(station)
         fields = await break_fields(request)
@@ -572,7 +572,9 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.put("/ads/breaks/{break_id}")
-    async def break_update(station: StationDep, request: Request, break_id: str) -> JSONResponse:
+    async def break_update(
+        station: SavedStationDep, request: Request, break_id: str
+    ) -> JSONResponse:
         """Change an ad break."""
         desk = _desk(station)
         fields = await break_fields(request)
@@ -592,7 +594,7 @@ def install_ads(router: StationRouter) -> None:
         return JSONResponse(break_view(break_id, item, desk.clock(), desk.zone), headers=_NO_STORE)
 
     @router.delete("/ads/breaks/{break_id}")
-    async def break_delete(station: StationDep, break_id: str) -> JSONResponse:
+    async def break_delete(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Remove an ad break; a run of it still waiting is logged as missed."""
         desk = _desk(station)
         if not valid_id(break_id):
@@ -629,7 +631,7 @@ def install_ads(router: StationRouter) -> None:
         )
 
     @router.put("/ads/settings")
-    async def settings_update(station: StationDep, request: Request) -> JSONResponse:
+    async def settings_update(station: SavedStationDep, request: Request) -> JSONResponse:
         """Save the separation, late and missed times."""
         desk = _desk(station)
         body = await _read_json(request)
@@ -648,7 +650,7 @@ def install_ads(router: StationRouter) -> None:
 
     @router.get("/ads/report")
     async def report(
-        station: StationDep,
+        station: SavedStationDep,
         from_text: Annotated[str, Query(alias="from", max_length=10)],
         to_text: Annotated[str, Query(alias="to", max_length=10)],
     ) -> JSONResponse:
@@ -670,7 +672,7 @@ def install_ads(router: StationRouter) -> None:
 
     @router.get("/ads/report/export")
     async def report_export(
-        station: StationDep,
+        station: SavedStationDep,
         from_text: Annotated[str, Query(alias="from", max_length=10)],
         to_text: Annotated[str, Query(alias="to", max_length=10)],
         report_format: Annotated[Literal["affidavit", "summary"], Query(alias="format")] = (

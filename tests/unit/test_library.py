@@ -23,6 +23,8 @@ from autodj.config import (
 )
 from autodj.indexer import FEATURE_DIM, FINGERPRINT_BYTES, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
+from autodj.station_store import StationStore
+from autodj.stations import DEFAULT_SLUG
 
 
 class _Faiss:
@@ -112,8 +114,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
-    del kind, max_seconds, audio
+def fake_basic(path: Path, kind: str = "music", audio=None):
+    del kind, audio
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -335,7 +337,7 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music", max_seconds=None, audio=None):
+    def analyze(path, kind="music", audio=None):
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -524,12 +526,12 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     manager = manager_factory(music=music, processing="smooth")
     events = []
 
-    def basic(path, kind="music", max_seconds=None, audio=None):
+    def basic(path, kind="music", audio=None):
         events.append(("basic", path.name))
         if path == old_song:
             source_id = manager.catalog.add_source(new_folder)["id"]
             assert manager.start_scan({source_id})
-        return fake_basic(path, kind, max_seconds)
+        return fake_basic(path, kind)
 
     def measure(path, kind="music"):
         events.append(("loudness", path.name))
@@ -654,8 +656,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music", max_seconds: float | None = None, audio=None):
-        del kind, max_seconds, audio
+    def short_track(path: Path, kind: str = "music", audio=None):
+        del kind, audio
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -736,7 +738,7 @@ def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
+    analyzed.assert_called_once_with(liner, kind="liner")
     points = manager.catalog.points(liner)
     assert points["segue"] == 160.0
     assert points["end"] == 180.0
@@ -773,7 +775,7 @@ def test_liner_segue_backfill_clamps_to_saved_manual_range(manager_factory, tmp_
     ):
         manager.scan()
 
-    analyzed.assert_called_once_with(liner, kind="liner", max_seconds=15 * 60.0)
+    analyzed.assert_called_once_with(liner, kind="liner")
     assert manager.catalog.points(liner) == {
         "start": 20.0,
         "intro": 30.0,
@@ -883,34 +885,32 @@ def test_play_history_and_recent_archive_are_buffered_until_tick_and_close(
         "played_at": "2026-01-01T00:00:00+00:00",
     }
     manager.ledger.remember_history(first)
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 0
+    assert os.path.normcase(str(song)) not in manager.ledger.store.last_played()
     assert manager.ledger.last_played()[os.path.normcase(str(song))] == 99.5
-    assert manager.catalog.recent_history() == []
+    assert manager.ledger.recent_history() == []
     manager.tick()
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 99.5
-    stored = manager.catalog.recent_history()
+    assert manager.ledger.store.last_played()[os.path.normcase(str(song))] == 99.5
+    stored = manager.ledger.recent_history()
     assert len(stored) == 1
     assert (stored[0]["event_id"], stored[0]["title"], stored[0]["played_at"]) == (
         first["event_id"],
         first["title"],
         first["played_at"],
     )
-    assert stored[0]["entry_id"] is not None
+    assert stored[0]["entry_id"] is None
 
     second = {**first, "event_id": "play-2", "title": "Interrupted"}
     manager.ledger.remember_history(second)
     manager.ledger.interrupt_history(second["event_id"])
-    assert len(manager.catalog.recent_history()) == 1
+    assert len(manager.ledger.recent_history()) == 1
     manager.close()
 
-    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
+    reopened = StationStore(manager.cfg.index.stations_dir / "default" / "station.db", DEFAULT_SLUG)
     try:
-        assert [row["event_id"] for row in reopened.recent_history()] == ["play-1"]
-        rows = (
-            reopened._db()
-            .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
-            .fetchall()
-        )
+        assert [row["event_id"] for row in reopened.recent_history(100)] == ["play-1"]
+        rows = reopened._db.execute(
+            "SELECT event_id,interrupted FROM play_history ORDER BY rowid"
+        ).fetchall()
         assert [(row["event_id"], row["interrupted"]) for row in rows] == [
             ("play-1", 0),
             ("play-2", 1),
@@ -963,28 +963,26 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
     }
     second = {**first, "event_id": "play-2", "title": "Two"}
     manager.ledger.remember_history(first)
-    write_history = manager.catalog.write_history
+    write_history = manager.ledger.store.write_history
     enqueued = False
 
-    def write_during_callback(rows, interrupted=(), station="default"):
+    def write_during_callback(rows, interrupted=()):
         nonlocal enqueued
         if not enqueued:
             enqueued = True
             manager.ledger.remember_history(second)
             manager.ledger.interrupt_history(first["event_id"])
-        write_history(rows, interrupted, station)
+        write_history(rows, interrupted)
 
-    monkeypatch.setattr(manager.catalog, "write_history", write_during_callback)
+    monkeypatch.setattr(manager.ledger.store, "write_history", write_during_callback)
     manager.tick()
-    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-1"]
+    assert [row["event_id"] for row in manager.ledger.recent_history()] == ["play-1"]
 
     manager.tick()
-    assert [row["event_id"] for row in manager.catalog.recent_history()] == ["play-2"]
-    rows = (
-        manager.catalog._db()
-        .execute("SELECT event_id,interrupted FROM play_history ORDER BY rowid")
-        .fetchall()
-    )
+    assert [row["event_id"] for row in manager.ledger.recent_history()] == ["play-2"]
+    rows = manager.ledger.store._db.execute(
+        "SELECT event_id,interrupted FROM play_history ORDER BY rowid"
+    ).fetchall()
     assert [(row["event_id"], row["interrupted"]) for row in rows] == [
         ("play-1", 1),
         ("play-2", 0),
@@ -994,13 +992,13 @@ def test_history_events_queued_during_flush_are_persisted_next_tick(manager_fact
 def test_runtime_settings_are_buffered_until_tick_and_close(manager_factory, tmp_path):
     manager = manager_factory()
     manager.ledger.remember_setting("clock", {"cursor": 3, "enabled": True})
-    assert manager.catalog.get_setting("clock") is None
+    assert manager.ledger.store.get_setting("clock") is None
     manager.tick()
-    assert manager.catalog.get_setting("clock") == {"cursor": 3, "enabled": True}
+    assert manager.ledger.store.get_setting("clock") == {"cursor": 3, "enabled": True}
 
     manager.ledger.remember_setting("clock", {"cursor": 4, "enabled": True})
     manager.close()
-    reopened = LibraryCatalog(manager.cfg.index.library_dir / "library.db")
+    reopened = StationStore(manager.cfg.index.stations_dir / "default" / "station.db", DEFAULT_SLUG)
     try:
         assert reopened.get_setting("clock") == {"cursor": 4, "enabled": True}
     finally:
@@ -1277,7 +1275,7 @@ def test_dj_backlog_finds_imported_cues_for_case_folded_catalog_path(manager_fac
             patch("autodj.dj_cues_import._default_search_paths", return_value=[]),
             patch("autodj.dj_meta.analyse_audio", return_value=DjMeta(analysed=True)),
         ):
-            manager._dj_analyse(Path(catalog_path), mono=np.zeros(22050 * 5, np.float32))
+            manager._dj_analyse(Path(catalog_path), np.zeros(22050 * 5, np.float32))
         meta = manager._dj_cache().get(catalog_path)
         assert any(abs(cue.time_s - 42.0) < 0.01 for cue in meta.cues)
     finally:
@@ -1352,7 +1350,7 @@ def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
 
     assert reads == [0]
     assert manager.sim.replaced is loaded
-    assert manager.catalog.last_played()[os.path.normcase(str(song))] == 50.0
+    assert manager.ledger.store.last_played()[os.path.normcase(str(song))] == 50.0
 
     other = music / "other.flac"
     other.write_bytes(b"other")
@@ -1486,7 +1484,7 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
     ):
         manager.scan()
-        manager.catalog.write_history(
+        manager.ledger.store.write_history(
             [
                 {
                     "event_id": "gone-play",
@@ -1496,7 +1494,8 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
                     "duration": 3.0,
                     "played_at": "2025-01-01T00:00:00+00:00",
                 }
-            ]
+            ],
+            [],
         )
         gone.unlink()
         moved = tmp_path / "Share-offline"
@@ -1506,6 +1505,8 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
     assert preview["ready"] is True
     assert preview["count"] == 1
     assert [item["title"] for item in preview["tracks"]] == ["gone"]
+    manager.set_advanced_max_minutes(0)
+    assert manager.missing_removal_preview()["token"] == preview["token"]
     with pytest.raises(ValueError, match="confirmation"):
         manager.remove_missing(preview["token"], confirmed=False)
     gone.write_bytes(b"returned")
@@ -1513,7 +1514,7 @@ def test_missing_removal_requires_clean_preview_and_preserves_history(manager_fa
         manager.remove_missing(preview["token"], confirmed=True, allow_mass=True)
     gone.unlink()
     assert manager.remove_missing(preview["token"], confirmed=True, allow_mass=True) == 1
-    assert manager.catalog.recent_history()[0]["path"] == os.path.normcase(str(gone))
+    assert manager.ledger.recent_history()[0]["path"] == os.path.normcase(str(gone))
     assert manager.catalog.record_for_path(remote) is not None
 
 
@@ -1991,14 +1992,14 @@ def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_fa
     manager = manager_factory(music=music)
     listed = {}
 
-    def basic(path, kind="music", max_seconds=None, audio=None):
+    def basic(path, kind="music", audio=None):
         # Both songs are already listed, silent, when the first is decoded.
         for song in (good, bad):
             entry = manager.entry_for_path(song)
             listed[song.name] = entry is not None and entry.is_silent
         if path.name == "bad.flac":
             raise ValueError("not audio")
-        return fake_basic(path, kind, max_seconds)
+        return fake_basic(path, kind)
 
     with (
         patch(
@@ -2016,3 +2017,121 @@ def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_fa
     assert [error for error in errors if "Music" in error or "music" in error] == [
         next(error for error in errors if "bad.flac" in error)
     ]
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="FFmpeg is unavailable")
+def test_a_song_longer_than_the_old_limit_is_imported_without_errors(
+    manager_factory, tmp_path, monkeypatch
+):
+    """#391: a long mix is listed and analysed from its start and end, never refused."""
+    from autodj import processing
+
+    music = tmp_path / "Music"
+    music.mkdir()
+    mix = music / "mix.flac"
+    t = np.arange(44100 * 4, dtype=np.float32) / 44100
+    tone = 0.2 * np.sin(2 * np.pi * 440 * t)
+    sf.write(mix, np.column_stack((tone, tone)), 44100)
+    # Four seconds count as a long track here.
+    monkeypatch.setattr(processing, "LONG_TRACK_SECONDS", 1.0)
+    monkeypatch.setattr(processing, "ANALYSIS_WINDOW_SECONDS", 0.5)
+    windows = []
+    real_read = processing.read_windows
+    monkeypatch.setattr(
+        processing, "read_windows", lambda *a, **k: windows.append(a) or real_read(*a, **k)
+    )
+    manager = manager_factory(music=music)
+    with (
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+    ):
+        manager.scan()
+    snapshot = manager.snapshot()
+    assert snapshot["import"]["errors"] == []
+    assert windows, "the long song was read for its ends, not decoded whole"
+    entry = manager.entry_for_path(mix)
+    assert entry is not None and not entry.is_silent
+    assert entry.length == pytest.approx(4.0, abs=0.01)
+    assert manager.catalog.points(mix)["end"] == pytest.approx(4.0, abs=0.01)
+
+
+def test_advanced_analysis_leaves_out_songs_over_the_length_cutoff(manager_factory, tmp_path):
+    """Long songs are not queued, not errors, and come back when the cutoff allows."""
+    music = tmp_path / "Music"
+    music.mkdir()
+    short, long = music / "song.flac", music / "mix.flac"
+    short.write_bytes(b"song")
+    long.write_bytes(b"mix")
+    manager = manager_factory(music=music)
+    for path, length in ((short, 180.0), (long, 62 * 60.0)):
+        entry = make_entry(path)
+        entry.length = length
+        manager.catalog.put_entry(entry)
+    catalog = manager.catalog
+    assert catalog.advanced_max_minutes() == 15
+    assert catalog.unembedded_paths() == [_path(short)]
+    assert [r["path"] for r in manager.analysis_pending()] == [_path(short)]
+    assert [r["path"] for r in manager.analysis_pending(force=True)] == [_path(short)]
+    snapshot = manager.snapshot()
+    assert snapshot["too_long_for_analysis"] == 1
+    assert snapshot["advanced_max_minutes"] == 15
+    assert snapshot["import"]["errors"] == []
+
+    manager._analysis_idle = ("remembered",)
+    generation = manager._scan_generation
+    manager.set_advanced_max_minutes(0)
+    # Looked for again at once, without waiting for a scan.
+    assert manager._analysis_idle is None and manager._scan_generation == generation
+    assert manager._analysis_started_generation is None
+    assert sorted(catalog.unembedded_paths()) == sorted([_path(short), _path(long)])
+    assert catalog.too_long_for_analysis_count() == 0
+    manager.set_advanced_max_minutes(90)
+    assert catalog.unembedded_count() == 2
+    manager.set_advanced_max_minutes(60)
+    assert catalog.unembedded_paths() == [_path(short)]
+    # A bad stored value falls back to the default.
+    catalog.set_setting("advanced_max_minutes", "lots")
+    assert catalog.advanced_max_minutes() == 15
+
+
+def test_library_snapshot_says_when_beets_songs_match_no_library_song(manager_factory, tmp_path):
+    import sqlite3
+
+    import autodj.beets_paths as beets_paths
+
+    beets_paths._latest.clear()
+    music = tmp_path / "Music"
+    music.mkdir()
+    manager = manager_factory(music=music)
+    for name in ("one.flac", "two.flac", "three.flac"):
+        song = music / "Artist" / name
+        song.parent.mkdir(exist_ok=True)
+        song.write_bytes(name.encode())
+        manager.catalog.put_entry(make_entry(song))
+    manager.refresh()
+    db = tmp_path / "beets.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB)")
+    conn.executemany(
+        "INSERT INTO items (path) VALUES (?)",
+        [(f"Artist/{name}".encode(),) for name in ("one.flac", "two.flac", "three.flac")],
+    )
+    conn.commit()
+    conn.close()
+    wrong = tmp_path / "Wrong"
+    wrong.mkdir()
+    manager.cfg.library.beets_db = db
+    manager.cfg.library.music_dir = wrong
+    try:
+        view = manager.snapshot()["beets_paths"]
+        assert view["mismatch"] is True
+        assert f"[library] music_dir, which is {wrong}." in view["problem"]
+        # The catalog keeps Windows paths case-folded, and so does the suggestion.
+        assert f'set music_dir = "{music.as_posix()}"'.casefold() in view["fix"].casefold()
+
+        manager.cfg.library.music_dir = music
+        view = manager.snapshot()["beets_paths"]
+        assert view["mismatch"] is False and view["problem"] is None
+        assert view["summary"] == "3 of 3 library songs have a beets entry"
+    finally:
+        beets_paths._latest.clear()

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from autodj.carts import CartError, CartSlot, StationCarts, install_carts
 from autodj.scheduler import Action
 from autodj.server import PlayerBridge, create_app
-from autodj.station_routes import StationRouter, current_station
+from autodj.station_routes import StationRouter, current_station, editable_station
 from tests._layout import layout_index, point_index
 
 from ._helpers import _make_player_mock, _make_sim_mock
@@ -45,7 +45,7 @@ class Rig:
         cfg = SimpleNamespace(
             index=layout_index(str(root)),
             playback=SimpleNamespace(liners_duck_db=-12.0),
-            server=SimpleNamespace(liner_upload_max_bytes=1024 * 1024),
+            station=SimpleNamespace(liner_upload_max_mib=1, timezone=None),
         )
         player = SimpleNamespace(
             _cfg=cfg,
@@ -67,7 +67,9 @@ class Rig:
         self.store, self.action = carts.store, carts.action
         app = FastAPI()
         install_carts(StationRouter(app.router, ("/api",)))
-        app.dependency_overrides[current_station] = lambda: SimpleNamespace(carts=carts, cfg=cfg)
+        fake_station = SimpleNamespace(carts=carts, cfg=cfg)
+        app.dependency_overrides[current_station] = lambda: fake_station
+        app.dependency_overrides[editable_station] = lambda: fake_station
         self.client = TestClient(app)
 
     def upload(self, name: str = "id.wav", content: bytes | None = None) -> Any:
@@ -223,12 +225,12 @@ def test_a_clip_that_fails_to_decode_is_not_played(tmp_path: Path) -> None:
 
 def test_uploads_are_checked_and_never_overwrite(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
-    rig.bridge.player._cfg.server.liner_upload_max_bytes = 1000
+    rig.bridge.player._cfg.station.liner_upload_max_mib = 1
     with rig.client:
         assert rig.upload("../id.wav").status_code == 400
         assert rig.upload("C:id.wav").status_code == 400
         assert rig.upload("notes.txt", b"text").status_code == 400
-        assert rig.upload("big.wav", b"\0" * 1001).status_code == 413
+        assert rig.upload("big.wav", b"\0" * (1024 * 1024 + 1)).status_code == 413
         undecodable = rig.upload("bad.wav", b"not audio")
         assert undecodable.status_code == 400
         assert undecodable.json()["detail"] == "bad.wav is not audio AutoDJ can play"
@@ -360,7 +362,7 @@ def test_play_cart_action_needs_the_server_mix(tmp_path: Path) -> None:
 def app_client(tmp_path: Path) -> Iterator[TestClient]:
     player = _make_player_mock()
     point_index(player._cfg.index, str(tmp_path / "active"))
-    player._cfg.server.liner_upload_max_bytes = 1024 * 1024
+    player._cfg.station.liner_upload_max_mib = 1
     with TestClient(create_app(PlayerBridge(player=player, sim=_make_sim_mock()))) as client:
         yield client
 

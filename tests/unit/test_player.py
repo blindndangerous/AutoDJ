@@ -11,6 +11,7 @@ import sys
 import threading
 from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -78,6 +79,20 @@ def _sine_audio(seconds: float = 1.0, sr: int = 44100) -> np.ndarray:
     """Generate a simple sine wave as float32 audio."""
     t = np.linspace(0, seconds, int(seconds * sr), dtype=np.float32)
     return np.sin(2 * np.pi * 440 * t)
+
+
+def _init_bare_player_settings(player: Player) -> None:
+    """Give __new__-built players the settings backing used by delegated properties."""
+    player._settings = SimpleNamespace(
+        _preset=None,
+        _bpm_range=None,
+        _pure_shuffle=False,
+        _anchor_to_seed=False,
+        _eq_low=1.0,
+        _eq_mid=1.0,
+        _eq_high=1.0,
+        _discovery_every=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +480,7 @@ class TestLoadLyricsToggle:
         player = self._make()
         point_index(player._cfg.index, tmp_path)
         bridge = PlayerBridge(player, player._sim)
-        monkeypatch.setattr(bridge, "get_settings", lambda: {"eq": bridge.get_eq()})
+        monkeypatch.setattr(bridge.settings, "get_settings", lambda: {"eq": bridge.get_eq()})
         app = create_app(bridge)
         route = next(route for route in app.routes if getattr(route, "path", None) == "/api/eq")
         station = app.state.stations.default
@@ -893,44 +908,16 @@ class TestRenderTrackLoading:
         assert rendered is not None
         assert rendered.audio.shape == (3 * 44100, 2)
 
-    def test_track_over_the_length_limit_is_skipped_with_one_log_line(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from autodj.stereo import TrackTooLongError
-
-        player = self._make_player()
-        player._cfg.playback.server_max_track_minutes = 15.0
-        current, nxt = player._sim.entries[0], player._sim.entries[1]
-        caplog.clear()
-        with patch(
-            "autodj.player.load_stereo", side_effect=TrackTooLongError(current.path, 3720.0)
-        ) as load:
-            assert player._render_track(current, nxt, 0) is None
-        assert load.call_args.args[2] == 15.0 * 60
-        skipped = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert len(skipped) == 1
-        assert "62 minutes" in skipped[0].getMessage()
-        assert "server_max_track_minutes" in skipped[0].getMessage()
-
-    def test_next_track_over_the_limit_is_not_mixed_in(self) -> None:
-        """The playing track plays out whole; the long one is skipped on its own turn."""
-        from autodj.stereo import TrackTooLongError
-
+    def test_tracks_are_decoded_with_no_length_limit(self) -> None:
+        """An hour-long mix plays: the decode is asked for the whole track."""
         player = self._make_player()
         current, nxt = player._sim.entries[0], player._sim.entries[1]
         body = np.ones((3 * 44100, 2), np.float32)
-
-        def fake_load(path, *_args):
-            if path == nxt.path:
-                raise TrackTooLongError(path, 3720.0)
-            return body
-
-        with patch("autodj.player.load_stereo", side_effect=fake_load):
+        with patch("autodj.player.load_stereo", side_effect=lambda *_a: body.copy()) as load:
             rendered = player._render_track(current, nxt, 0)
         assert rendered is not None
-        assert rendered.audio.shape == body.shape
         assert rendered.next_entry is nxt
-        assert rendered.next_start_offset == 0
+        assert all(call.args[1:] == (44100,) and not call.kwargs for call in load.call_args_list)
 
     def test_short_next_track_skips_crossfade(self) -> None:
         """When the next track is shorter than the crossfade, the render is a plain cut."""
@@ -2149,6 +2136,7 @@ def test_next_rendered_carries_offset_between_tracks(monkeypatch):
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None
@@ -2184,6 +2172,7 @@ def test_next_rendered_skips_unrenderable_tracks_and_stops_without_a_cursor() ->
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None
@@ -2220,6 +2209,7 @@ def test_next_rendered_gives_up_after_five_failed_renders() -> None:
     p._pending_pick_mode = "seed"
     p._pending_clock_step = None
     p._pending_from_queue = False
+    _init_bare_player_settings(p)
     p._cfg = MagicMock()
     p._preset = None
     p._discovery_every = None

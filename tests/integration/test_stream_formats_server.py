@@ -45,7 +45,7 @@ class Rig:
         )
         cfg = bridge.player._cfg
         point_index(cfg.index, tmp_path)
-        cfg.stream.enabled = True
+        cfg.station.output = "stream"
         bridge.attach_stream(stream=self.main, station=MagicMock(state="idle"), mounts=self.mounts)
         bridge.save_persistent_state = MagicMock()
         self.client = TestClient(create_app(bridge), client=("192.0.2.4", 50000))

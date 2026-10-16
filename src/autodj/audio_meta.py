@@ -782,3 +782,46 @@ def current_lyric(lyrics: list[LyricLine], elapsed_s: float) -> LyricLine | None
     """
     index = bisect.bisect_right(lyrics, elapsed_s, key=lambda line: line.time_s)
     return lyrics[index - 1] if index else None
+
+
+def read_library_lyrics(path: str, cfg: Any) -> tuple[list, str]:
+    """Read sidecar, beets, or embedded lyrics without a playback engine."""
+    lyrics = load_lrc_for(path)
+    if lyrics:
+        return lyrics, ""
+
+    plain = ""
+    if cfg.beets_db:
+        from autodj.beets import get_lyrics_for_path
+
+        try:
+            plain = get_lyrics_for_path(
+                cfg.beets_db,
+                path,
+                music_dir=cfg.music_dir,
+            )
+        except (OSError, ValueError) as exc:
+            logger.debug("Beets lyrics lookup failed: %s", exc)
+            plain = ""
+
+    # Fall back to embedded tag lyrics when beets has none / no beets at all.
+    if not plain:
+        try:
+            plain = read_plain_lyrics(path)
+        except (OSError, ValueError) as exc:
+            logger.debug("Embedded lyric tag read failed: %s", exc)
+            plain = ""
+
+    # A "plain" lyric field very often *is* LRC: most taggers write the
+    # synced text straight into LYRICS / USLT / ©lyr rather than to a
+    # sidecar.  Returning it untouched printed raw "[00:17.49]" stamps
+    # on screen, sent the whole song to the live region in one breath,
+    # and made the current-line highlight impossible.
+    #
+    # The classification has to weigh the whole tag, not stop at the
+    # first bracket that looks like a cue: deciding on one match threw
+    # away every untimestamped line ("Written by X / [00:00.00]Intro /
+    # Verse one" collapsed to "Intro") and mangled prose that merely
+    # mentions a time.  parse_embedded_lyrics requires a clear majority
+    # of leading stamps, and cleans the plain branch instead.
+    return parse_embedded_lyrics(plain)

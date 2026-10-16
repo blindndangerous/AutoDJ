@@ -140,6 +140,62 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  it("announces import completion once after running", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let running = true;
+    const request = vi.fn(async () => ({ folders: [], import: { running }, tracks_ready: 2, tracks_indexed: 1 }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const status = document.getElementById("source-folders-status");
+    expect(status.textContent).toBe("");
+    running = false;
+    await controls.refresh();
+    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 indexed."));
+    const changes = [];
+    const observer = new window.MutationObserver((records) => changes.push(...records));
+    observer.observe(status, { childList: true, characterData: true, subtree: true });
+    await controls.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    observer.disconnect();
+    expect(changes).toHaveLength(0);
+  });
+
+  it("reads a point in an hour-long mix typed as hours:minutes:seconds (#391)", () => {
+    expect(parsePointTime("1:02:05.5")).toBe(3725.5);
+    expect(parsePointTime("75:30")).toBe(4530);
+    expect(parsePointTime(formatPointTime(4530))).toBe(4530);
+    expect(() => parsePointTime("1:60:00")).toThrow("Enter seconds, minutes:seconds or hours:minutes:seconds, for example 1:05:00");
+  });
+
+  it("counts import errors in the summary and lists them in a details list that stays open (#391)", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let errors = ["C:/music/a.flac: could not decode", "C:/music/b.mp3: could not decode"];
+    const request = vi.fn(async (url) => url === "/api/library/folders" ? {
+      folders: [], import: { running: false, errors }, tracks_ready: 1204, tracks_indexed: 1100,
+    } : {});
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const progress = document.getElementById("source-folders-progress");
+    const list = document.getElementById("source-folders-errors");
+    expect(progress.textContent).toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 indexed.");
+    expect(progress.textContent).not.toContain("a.flac");
+    expect(list.tagName).toBe("DETAILS");
+    expect(list.hidden).toBe(false);
+    expect(list.querySelector("summary").textContent).toBe("Import errors (2)");
+    expect([...list.querySelectorAll("li")].map((item) => item.textContent)).toEqual(errors);
+    list.open = true;
+    const first = list.querySelector("li");
+    await controls.refresh();
+    expect(list.open).toBe(true);
+    expect(list.querySelector("li")).toBe(first);
+    errors = [];
+    await controls.refresh();
+    expect(list.hidden).toBe(true);
+    expect(list.open).toBe(false);
+    expect(progress.textContent).toBe("1,204 tracks ready; 1,100 indexed.");
+    controls.destroy();
+  });
+
   it("removes surrounding quotes from pasted Windows paths and preserves literal Unix quotes", async () => {
     const request = vi.fn(async () => ({}));
     installLibraryFolders({ document, request });
@@ -425,6 +481,47 @@ describe("clock folder and points controls", () => {
     expect(request).toHaveBeenCalledWith("/api/library/points", expect.objectContaining({ method: "POST" }));
   });
 
+  it("carries the selected station through Track info reads and saves", async () => {
+    const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
+      ? { path: "M:/song.flac", kind: "music", length: 200, points: { start: 1, end: 190 }, last_played: 20 }
+      : { last_played: 20 });
+    installLibraryFolders({ document, request, getStation: () => "nightowl" });
+    await document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(request.mock.calls[0][0]).toBe("/api/library/points?path=M%3A%2Fsong.flac&station=nightowl");
+    document.querySelector('[data-point="start"]').value = "2";
+    document.getElementById("points-save").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).station).toBe("nightowl");
+  });
+
+  it("refreshes only play time on station switch and ignores a late prior-station reply", async () => {
+    let station = "default";
+    let finishOldRefresh;
+    let pointsReads = 0;
+    const request = vi.fn((url) => {
+      if (!url.startsWith("/api/library/points?")) return Promise.resolve({});
+      pointsReads += 1;
+      if (pointsReads === 1) return Promise.resolve({ path: "M:/song.flac", kind: "music", length: 200, points: { start: 1, end: 190 }, last_played: 10 });
+      if (url.includes("station=nightowl")) return Promise.resolve({ path: "M:/song.flac", last_played: 172800 });
+      return new Promise((resolve) => { finishOldRefresh = () => resolve({ path: "M:/song.flac", last_played: 10 }); });
+    });
+    const controls = installLibraryFolders({ document, request, getStation: () => station });
+    void controls.openEditor("M:/song.flac");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const lastPlayed = () => [...document.querySelectorAll("#track-info-details dt")]
+      .find((term) => term.textContent === "Last played").nextElementSibling.textContent;
+    const initialTimestamp = lastPlayed();
+    document.querySelector('[data-point="start"]').value = "2";
+    const oldRefresh = controls.refreshIntros();
+    station = "nightowl";
+    await controls.refreshIntros();
+    finishOldRefresh();
+    await oldRefresh;
+    expect(document.querySelector('[data-point="start"]').value).toBe("2");
+    expect(lastPlayed()).not.toBe(initialTimestamp);
+  });
+
   it("opens liner points from a folder row event and exposes only its source window", async () => {
     const request = vi.fn(async (url) => url.startsWith("/api/library/points?")
       ? { path: "N:/voice/same.wav", kind: "liner", length: 4, points: { start: 0.2, segue: 2.6, end: 3.8 } }
@@ -474,7 +571,7 @@ describe("clock folder and points controls", () => {
     expect(document.querySelector('[data-point="overlap_start"]').value).toBe("0:03.75");
     document.querySelector('[data-point="start"]').value = "invalid";
     document.querySelector('[data-set-current="overlap_start"]').click();
-    expect(document.getElementById("points-status").textContent).toContain("Enter seconds or minutes:seconds");
+    expect(document.getElementById("points-status").textContent).toContain("Enter seconds, minutes:seconds or hours:minutes:seconds");
   });
 
   it("saves negative liner overlap as a song-relative delay and disables track preview controls", async () => {
@@ -908,5 +1005,26 @@ describe("clock folder and points controls", () => {
     await controls.openEditor("N:/two.wav", "liner");
     expect(document.getElementById("points-path").value).toBe("N:/one.wav");
     expect(document.getElementById("points-status").textContent).toContain("Save your changes");
+  });
+});
+
+describe("beets paths in Library tools", () => {
+  it("shows a beets path mismatch as static text after the progress line", async () => {
+    document.getElementById("panel-library").hidden = false;
+    const request = vi.fn(async () => ({
+      folders: [], import: {}, tracks_ready: 3, tracks_indexed: 0,
+      beets_paths: { summary: "0 of 3 library songs have a beets entry", problem: "No song in the beets database matches a song in AutoDJ's library.", fix: 'Set music_dir = "/music" under [library].', note: null, mismatch: true },
+    }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const beets = document.getElementById("source-folders-beets");
+    expect(beets.previousElementSibling.id).toBe("source-folders-progress");
+    expect(beets.hidden).toBe(false);
+    expect(beets.textContent).toBe(`Beets: No song in the beets database matches a song in AutoDJ's library. Set music_dir = "/music" under [library].`);
+    expect(beets.hasAttribute("aria-live")).toBe(false);
+    expect(document.getElementById("source-folders-status").textContent).toBe("");
+    request.mockResolvedValue({ folders: [], import: {}, tracks_ready: 3, tracks_indexed: 0, beets_paths: null });
+    await controls.refresh();
+    expect(beets.hidden).toBe(true);
   });
 });

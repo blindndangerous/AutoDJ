@@ -37,8 +37,7 @@ def _settings(**changes: object) -> SettingsBody:
 
 
 def _checks(tmp_path: Path) -> TimeChecks:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     return TimeChecks(cfg, "America/Denver")
 
 
@@ -71,6 +70,70 @@ def test_recording_wraps_intro_and_outro_as_one_clip(tmp_path: Path) -> None:
     rendered = checks.render(local)
     assert rendered is not None and rendered.audio.shape == (1323, 2)
     assert rendered.source == "recorded clip"
+
+
+def test_forecast_seconds_is_read_only_and_keeps_hour_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    checks._pending = True
+    checks._aired_hour = (2026, 10, 11, 2, 0)
+    before = (checks._pending, checks._aired_hour, checks._rotation)
+    file_before = (checks.folder / "03_05.wav").read_bytes()
+
+    assert checks.forecast_seconds(local) == pytest.approx(0.01)
+    assert (checks._pending, checks._aired_hour, checks._rotation) == before
+    assert (checks.folder / "03_05.wav").read_bytes() == file_before
+
+
+def test_hour_forecast_fires_once_from_pending_state(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local) == pytest.approx(0.01)
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_scheduled_forecast_marks_hour_and_suppresses_hour_rule(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    checks.folder.mkdir(parents=True)
+    local = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    sf.write(checks.folder / "03_05.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    before = (checks._hour, checks._pending, checks._aired_hour)
+    forecast = checks.snapshot()
+    forecast._hour = (2026, 10, 11, 2, 0)
+
+    assert forecast.forecast_seconds(local, scheduled=True) == pytest.approx(0.01)
+    assert forecast._aired_hour == (2026, 10, 11, 3, int(local.utcoffset().total_seconds()))
+    assert forecast.forecast_seconds(local) == 0.0
+    assert (checks._hour, checks._pending, checks._aired_hour) == before
+
+
+def test_forecast_seconds_does_not_run_or_cache_tts(tmp_path: Path) -> None:
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True, rule="after_hour_song")
+    marker = tmp_path / "tts-ran.txt"
+    checks.config.tts_command = [
+        sys.executable,
+        "-c",
+        f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+        "{out}",
+    ]
+    when = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+
+    assert checks.forecast_seconds(when) is None
+    assert not marker.exists()
+    assert not checks.cache.exists()
 
 
 _TTS_SCRIPT = (
@@ -247,8 +310,7 @@ def test_config_rejects_bad_tts_templates() -> None:
 
 
 def test_doctor_reports_missing_minutes_and_fallback(tmp_path: Path) -> None:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     check = _time_checks_check(cfg)
     assert check.status is CheckStatus.PASS
     assert check.summary == "disabled; 1440 of 1440 minute clips missing"
@@ -270,8 +332,7 @@ def test_doctor_reports_missing_minutes_and_fallback(tmp_path: Path) -> None:
 
 
 def test_doctor_reads_the_switches_saved_from_settings(tmp_path: Path) -> None:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     state = Path((cfg.index.stations_dir / "default")) / "time_checks.json"
     state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(
@@ -308,8 +369,7 @@ def _write_pack(
 
 
 def _pack_checks(tmp_path: Path, *folders: Path) -> TimeChecks:
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     cfg.time_checks = TimeChecksConfig(voice_packs=[str(folder) for folder in folders])
     return TimeChecks(cfg, "UTC")
 
@@ -481,8 +541,7 @@ def test_doctor_reports_each_pack_and_counts_pack_minutes_as_covered(tmp_path: P
     full = _write_pack(tmp_path / "Full", range(24), range(1, 60))
     partial = _write_pack(tmp_path / "Partial", range(23), range(1, 59))
     (partial / "hm_07.wav").write_bytes(b"x")
-    cfg = load_config(environ={})
-    cfg.index.index_dir = tmp_path
+    cfg = load_config(environ={"AUTODJ_INDEX_DIR": str(tmp_path)})
     cfg.time_checks = TimeChecksConfig(
         enabled=True, voice_packs=[str(full), str(partial), str(tmp_path / "Gone")]
     )

@@ -38,6 +38,7 @@ from typing import Any
 
 import numpy as np
 
+from autodj.station_log import CURRENT_STATION, track_station_thread
 from autodj.stereo import SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -451,6 +452,7 @@ class LiveSource:
     """
 
     def __init__(self, username: str, name: str, demuxer: str) -> None:
+        self._station_slug = CURRENT_STATION.get()
         self.username = username
         self.name = name
         self.buffer = PcmBuffer(SOURCE_BUFFER_SECONDS)
@@ -504,6 +506,8 @@ class LiveSource:
         )
         self._writer = threading.Thread(target=self._feed, name="autodj-live-feed", daemon=True)
         self._reader = threading.Thread(target=self._read, name="autodj-live-decode", daemon=True)
+        track_station_thread(self._writer, self._station_slug)
+        track_station_thread(self._reader, self._station_slug)
         self._writer.start()
         self._reader.start()
 
@@ -612,6 +616,7 @@ class LiveDesk:
         on_end: Callable[[], None] = lambda: None,
         on_talkover: Callable[[], None] = lambda: None,
     ) -> None:
+        self._station_slug = CURRENT_STATION.get()
         self.credentials = DjCredentials(credentials)
         self.settings = self.credentials.settings()
         self._lock = threading.Lock()
@@ -640,7 +645,11 @@ class LiveDesk:
                 return None
             self._claiming = True
         try:
-            source = LiveSource(username, name, demuxer)
+            token = CURRENT_STATION.set(self._station_slug)
+            try:
+                source = LiveSource(username, name, demuxer)
+            finally:
+                CURRENT_STATION.reset(token)
         except BaseException:
             with self._lock:
                 self._claiming = False
@@ -658,7 +667,9 @@ class LiveDesk:
             self.since = datetime.now(UTC).isoformat()
         # Off the decoder's thread: recording the session may wait on the
         # database, and the decoder must keep draining meanwhile.
-        threading.Thread(target=self._run_on_start, name="autodj-live-start", daemon=True).start()
+        thread = threading.Thread(target=self._run_on_start, name="autodj-live-start", daemon=True)
+        track_station_thread(thread, getattr(source, "_station_slug", self._station_slug))
+        thread.start()
 
     def _run_on_start(self) -> None:
         try:

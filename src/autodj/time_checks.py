@@ -21,11 +21,13 @@ a program on the server.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import io
 import json
 import logging
 import os
+import random
 import secrets
 import subprocess  # nosec B404 -- operator-configured argv, never a shell
 import tempfile
@@ -47,7 +49,7 @@ from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
 from autodj.fsutil import confirm_missing
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.time_check_files import (
@@ -568,6 +570,8 @@ class TimeChecks:
             )
         self._joined = JoinCache()
         self._rotation = 0
+        self._forecast_rng: random.Random | None = None
+        self._forecast_only = False
         self._lock = threading.Lock()
         self._tts_lock = threading.Lock()
         # One pack or clip added or removed at a time.
@@ -947,7 +951,7 @@ class TimeChecks:
             "intro_config": Path(tc.intro_clip).name if tc.intro_clip else None,
             "outro_config": Path(tc.outro_clip).name if tc.outro_clip else None,
             "pack_upload_max_mb": MAX_PACK_UPLOAD_BYTES // MIB,
-            "clip_upload_max_mb": self.cfg.server.liner_upload_max_bytes // MIB,
+            "clip_upload_max_mb": self.cfg.station.liner_upload_max_mib,
         }
 
     def tick(self, now: datetime, song_playing: bool) -> None:
@@ -1001,11 +1005,70 @@ class TimeChecks:
             if not enabled:
                 return []
             if self.settings.pack_order == "random":
-                start = secrets.randbelow(len(enabled))
+                forecast_rng = getattr(self, "_forecast_rng", None)
+                start = (
+                    forecast_rng.randrange(len(enabled))
+                    if forecast_rng is not None
+                    else secrets.randbelow(len(enabled))
+                )
             else:
                 start = self._rotation % len(enabled)
                 self._rotation += 1
         return enabled[start:] + enabled[:start]
+
+    def snapshot(self) -> TimeChecks:
+        """An isolated, read-only copy for forecasting time-check audio."""
+        clone = copy.copy(self)
+        clone.cfg = copy.deepcopy(self.cfg)
+        clone.config = clone.cfg.time_checks
+        clone.settings = self.settings.model_copy(deep=True)
+        with self._lock:
+            clone.packs = dict(self.packs)
+            clone._rotation = self._rotation
+            clone._hour = self._hour
+            clone._aired_hour = self._aired_hour
+            clone._pending = self._pending
+            clone._warned_unavailable = self._warned_unavailable
+        clone.pack_dates = dict(self.pack_dates)
+        clone._packs_chosen = self._packs_chosen
+        clone._unread_pack_dates = copy.deepcopy(self._unread_pack_dates)
+        clone._extra_state = copy.deepcopy(self._extra_state)
+        clone._clashes_logged = set(self._clashes_logged)
+        clone._lock = threading.Lock()
+        clone._save_lock = threading.Lock()
+        clone._tts_lock = threading.Lock()
+        clone._files_lock = threading.Lock()
+        clone._joined = JoinCache()
+        clone._forecast_rng = random.Random(0)
+        clone._forecast_only = True
+        return clone
+
+    def forecast_seconds(
+        self, now: datetime | None = None, *, scheduled: bool = False
+    ) -> float | None:
+        """Duration of an automatic or scheduled check without changing live state or using TTS.
+
+        ``None`` means no configured audio is available, or TTS would be
+        needed to know the duration.
+        """
+        if not getattr(self, "_forecast_only", False):
+            return self.snapshot().forecast_seconds(now, scheduled=scheduled)
+        now = (now or datetime.now(self.zone)).astimezone(self.zone)
+        if not self.settings.enabled:
+            return 0.0
+        if not scheduled:
+            self.tick(now, True)
+            with self._lock:
+                pending = self._pending
+                self._pending = False
+                aired = self._aired_hour == _hour_key(now)
+            if not pending or aired:
+                return 0.0
+        rendered = self.render(now)
+        if rendered is not None:
+            with self._lock:
+                self._aired_hour = _hour_key(now)
+        return None if rendered is None else len(rendered.audio) / SAMPLE_RATE
 
     def _pack_voice(self, name: str, local: datetime) -> np.ndarray | None:
         """Join *name*'s files for this minute, from the cache when unchanged.
@@ -1056,6 +1119,8 @@ class TimeChecks:
 
     def _synthesize(self, text: str) -> Path | None:
         """Render *text* with the configured command, cached per command and text."""
+        if self._forecast_only:
+            return None
         command = self.config.tts_command
         if not command:
             return None
@@ -1224,11 +1289,11 @@ def install_time_checks(router: StationRouter) -> None:
     """Register the paired time check routes; each acts on the station its URL names."""
 
     @router.get("/time-checks")
-    async def get_settings(station: StationDep) -> dict[str, Any]:
+    async def get_settings(station: SavedStationDep) -> dict[str, Any]:
         return await asyncio.to_thread(station.time_checks.status)
 
     @router.put("/time-checks")
-    async def put_settings(station: StationDep, body: SettingsBody) -> dict[str, Any]:
+    async def put_settings(station: SavedStationDep, body: SettingsBody) -> dict[str, Any]:
         checks = station.time_checks
         # The clip choices a request leaves out keep their saved values.
         body = SettingsBody.model_validate(
@@ -1247,7 +1312,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.post("/time-checks/packs", response_model=None)
     async def add_pack(
-        station: StationDep,
+        station: SavedStationDep,
         file: UploadFile = File(...),
         name: str = "",
         replace: bool = False,
@@ -1267,7 +1332,7 @@ def install_time_checks(router: StationRouter) -> None:
         return {**await asyncio.to_thread(checks.status), "added": added}
 
     @router.delete("/time-checks/packs/{name}", response_model=None)
-    async def delete_pack(station: StationDep, name: str) -> dict[str, Any] | JSONResponse:
+    async def delete_pack(station: SavedStationDep, name: str) -> dict[str, Any] | JSONResponse:
         """Remove a voice pack that is a folder in the station's time checks folder."""
         checks = station.time_checks
         try:
@@ -1278,7 +1343,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.post("/time-checks/clips", response_model=None)
     async def add_clip(
-        station: StationDep, file: UploadFile = File(...), replace: bool = False
+        station: SavedStationDep, file: UploadFile = File(...), replace: bool = False
     ) -> dict[str, Any] | JSONResponse:
         """Upload one clip, such as an intro, an outro or a minute clip, to the time checks folder."""
         checks = station.time_checks
@@ -1289,7 +1354,9 @@ def install_time_checks(router: StationRouter) -> None:
             return _file_error(exc)
         upload = hidden_name(checks.root, "clip-upload", Path(filename).suffix.lower())
         try:
-            await receive_upload(file, upload, station.cfg.server.liner_upload_max_bytes)
+            await receive_upload(
+                file, upload, (station.cfg.station.liner_upload_max_mib * 1024 * 1024)
+            )
             await asyncio.to_thread(checks.add_clip, filename, upload, replace=replace)
         except (PackError, OSError) as exc:
             return _file_error(exc)
@@ -1299,7 +1366,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.put("/time-checks/packs/{name}/dates", response_model=None)
     async def put_pack_dates(
-        station: StationDep, name: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, name: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Set a voice pack's play dates: "not before" and "do not play after"."""
         checks = station.time_checks
@@ -1329,7 +1396,7 @@ def install_time_checks(router: StationRouter) -> None:
         return {"message": f"Time check played from the {source}"}
 
     @router.get("/time-checks/preview")
-    async def preview(station: StationDep, pack: str | None = None) -> Response:
+    async def preview(station: SavedStationDep, pack: str | None = None) -> Response:
         checks = station.time_checks
         rendered = await asyncio.to_thread(checks.wav, _known_pack(checks, pack))
         if rendered is None:

@@ -200,6 +200,49 @@ def _beets_db_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _beets_paths_check(cfg: AutoDJConfig) -> list[DoctorCheck]:
+    """Check that the beets database's songs are songs in the library.
+
+    Beets' relative paths are joined to ``[library] music_dir``; when that
+    names the wrong folder, no beets item matches a library song and every
+    beets query category is empty (see :mod:`autodj.beets_paths`).  Both
+    databases are opened read-only.  No check without a beets database
+    file (``beets-db`` reports a missing one).
+    """
+    from autodj.beets import read_items
+    from autodj.beets_paths import match
+
+    path = cfg.library.beets_db
+    if path is None or not path.is_file():
+        return []
+    try:
+        songs = [song.path for song in _catalog_songs(cfg)]
+        rows = [(str(item), values) for item, values in read_items(path, ())]
+    except (OSError, sqlite3.Error) as exc:
+        return [
+            DoctorCheck(
+                "beets-paths", CheckStatus.WARN, "the beets database could not be read", str(exc)
+            )
+        ]
+    _, check = match(rows, songs, cfg.library.music_dir)
+    detail = {
+        "beets_items": check.items,
+        "library_songs": check.library,
+        "matched": check.matched,
+        "relative_paths": check.relative,
+        "music_dir": str(check.music_dir) if check.music_dir is not None else None,
+        "found_folder": check.found.as_posix() if check.found is not None else None,
+        "example": check.example,
+    }
+    if check.problem:
+        return [DoctorCheck("beets-paths", CheckStatus.WARN, check.problem, detail, check.fix)]
+    if check.note:
+        # A music_dir naming a missing folder is wrong; an unset one is only new.
+        status = CheckStatus.WARN if check.music_dir is not None else CheckStatus.PASS
+        return [DoctorCheck("beets-paths", status, check.note, detail)]
+    return [DoctorCheck("beets-paths", CheckStatus.PASS, check.summary, detail)]
+
+
 def _music_paths_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check registered music folders; an empty library needs no configured root."""
     catalog_path = cfg.index.library_dir / "library.db"
@@ -546,7 +589,7 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     Returns:
         A DoctorCheck describing stream-mode readiness.
     """
-    if not cfg.stream.enabled:
+    if cfg.station.output != "stream":
         return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
     if shutil.which("ffmpeg") is None:
         return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")
@@ -613,7 +656,12 @@ def _relay_checks(
     paths: StationPaths | None = None,
 ) -> tuple[DoctorCheck, ...]:
     """Return one check per configured relay (``[stream.relays.<name>]``)."""
-    if not cfg.stream.relays:
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
+    paths = paths or StationPaths.default(cfg)
+    relays = load_relays(paths.relays, cfg.stream.relays, paths.slug)
+    if not relays:
         return ()
     connect = connect or socket.create_connection
     from autodj.relay import read_status_file, relay_status_path
@@ -621,7 +669,7 @@ def _relay_checks(
     report = read_status_file(relay_status_path(cfg, paths)) or {"updated": "", "relays": {}}
     return tuple(
         _relay_check(relay, report["relays"].get(relay.name), report["updated"], connect)
-        for relay in cfg.stream.relays.values()
+        for relay in relays.values()
     )
 
 
@@ -706,6 +754,7 @@ def run_doctor(
         _python_check(python_version),
         _music_paths_check(cfg),
         _beets_db_check(cfg),
+        *_beets_paths_check(cfg),
         _path_check("index-path", cfg.index.index_dir, writable=True),
         _path_check("model-path", cfg.index.model_dir, writable=True),
         _index_check(cfg),
@@ -882,7 +931,11 @@ def _config_keys_check(cfg: AutoDJConfig) -> DoctorCheck:
     Loading only logs them; this lists them by file, including those under
     ``[stations.<slug>]``.  The files are read, never changed.
     """
-    from autodj.config import unknown_config_keys, unknown_config_sections
+    from autodj.config import (
+        STATION_SECTION_TYPES,
+        unknown_config_keys,
+        unknown_config_sections,
+    )
 
     found: dict[str, list[str]] = {}
     for source in cfg.config_sources:
@@ -896,7 +949,12 @@ def _config_keys_check(cfg: AutoDJConfig) -> DoctorCheck:
         names = [
             f"{table}.{key}" for table, keys in unknown_config_keys(raw).items() for key in keys
         ]
-        names += [f"[{table}]" for table in unknown_config_sections(raw)]
+        legacy_station_sections = {section.SECTION for section in STATION_SECTION_TYPES}
+        names += [
+            f"[{table}]"
+            for table in unknown_config_sections(raw)
+            if table not in legacy_station_sections
+        ]
         if names:
             found[str(path)] = names
     if not found:
@@ -988,8 +1046,9 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         count_text,
         missing_text,
         playlists_folder,
-        resolve_all,
+        resolve_checked,
         store_path,
+        uses_beets,
     )
 
     path = store_path(cfg, paths)
@@ -1013,13 +1072,15 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         return DoctorCheck(
             "categories", CheckStatus.WARN, "the library could not be read", str(exc)
         )
-    results = resolve_all(
+    results, check = resolve_checked(
         categories,
         songs,
         beets=beets_source(cfg),
         music_dir=cfg.library.music_dir,
         folder=playlists_folder(cfg),
+        remember_check=False,
     )
+    cause = check.cause if check is not None else None
     problems: list[str] = []
     detail: dict[str, Any] = {}
     for category, result in zip(categories, results, strict=True):
@@ -1032,6 +1093,8 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
         }
         if result.error:
             problems.append(f"{category.name}: {result.error}")
+        elif not result.count and cause and uses_beets(category):
+            problems.append(f"{category.name}: no songs match ({cause})")
         elif not result.count:
             problems.append(f"{category.name}: no songs match")
         if not result.error and result.missing_count:
@@ -1043,13 +1106,14 @@ def _categories_check(cfg: AutoDJConfig, paths: StationPaths | None = None) -> D
     saved = f"{len(categories)} saved, {count_text(total)} in all"
     if not problems:
         return DoctorCheck("categories", CheckStatus.PASS, saved, detail)
-    return DoctorCheck(
-        "categories",
-        CheckStatus.WARN,
-        f"{saved}; " + "; ".join(problems),
-        detail,
+    fix = (
         "Fix the query or the playlist in Library tools, Categories, or the script that writes "
-        "the playlist. A clockwheel step with an empty category is skipped.",
+        "the playlist. A clockwheel step with an empty category is skipped."
+    )
+    if check is not None and check.fix:
+        fix = f"{check.fix} {fix}"
+    return DoctorCheck(
+        "categories", CheckStatus.WARN, f"{saved}; " + "; ".join(problems), detail, fix
     )
 
 

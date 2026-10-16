@@ -37,12 +37,19 @@ from autodj.indexer import (
     file_fingerprint,
 )
 from autodj.processing import (
+    TrackWindows,
     analyze_basic,
     analyze_loudness,
     load_for_analysis,
     loudness_matches,
 )
 from autodj.station_ledger import StationLedger
+from autodj.station_store import (
+    StationStore,
+    discover_station_folders,
+    discover_stations,
+    migrate_legacy,
+)
 from autodj.stations import DEFAULT_SLUG, StationPaths
 from autodj.stereo import SAMPLE_RATE, DecodeReport
 
@@ -170,7 +177,7 @@ class LibraryManager:
         # Each station's rotation categories, by its folder (see categories_for).
         self._category_indexes: dict[Path, CategoryIndex] = {}
         self._category_lock = threading.Lock()
-        self.clock_beets = BeetsConditions(cfg)
+        self.clock_beets = BeetsConditions(cfg, self.entries_snapshot)
         catalog_path = cfg.index.library_dir / "library.db"
         require_current_library(
             cfg.index.library_dir,
@@ -184,12 +191,39 @@ class LibraryManager:
         )
         existing_catalog = catalog_path.is_file()
         self.catalog = LibraryCatalog(catalog_path)
+        default_store = self._station_store(DEFAULT_SLUG)
+        stores = [default_store]
+        try:
+            # The global marker avoids consulting legacy station tables after one complete import.
+            if default_store.migration_complete("catalog-stations-v1"):
+                station_ids = discover_station_folders(cfg.index.stations_dir) | {DEFAULT_SLUG}
+            else:
+                station_ids = discover_stations(self.catalog) | {DEFAULT_SLUG}
+            station_ids.update(spec.slug for spec in cfg.stations)
+            self._station_ids = station_ids
+            for station_id in sorted(station_ids):
+                store = (
+                    default_store if station_id == DEFAULT_SLUG else self._station_store(station_id)
+                )
+                if store is not default_store:
+                    stores.append(store)
+                migrate_legacy(self.catalog, store)
+            default_store.mark_migration("catalog-stations-v1")
+        except BaseException:
+            for store in stores:
+                store.close()
+            self.catalog.close()
+            raise
+        for store in stores:
+            store.close()
         self._clock = clock
         self._auto_rescan_minutes = self.catalog.get_setting("auto_rescan_minutes", 0)
         self._last_scan_end = self._clock()
         # What each station played, and its settings; the default station's
         # first.  tick() writes them all.
-        self.ledger = StationLedger(self.catalog, DEFAULT_SLUG, self.entry_for_path)
+        self.ledger = StationLedger(
+            self._station_store(DEFAULT_SLUG), self.entry_for_path, self.kind_for_path
+        )
         self._ledgers: list[StationLedger] = [self.ledger]
         # Set while a remote analysis worker is connected, so the CPU job,
         # which waited for it, runs again once it has gone.
@@ -199,6 +233,7 @@ class LibraryManager:
         try:
             self.analysis_queue = AnalysisQueue(catalog_path)
         except BaseException:
+            self.ledger.store.close()
             self.catalog.close()
             raise
         try:
@@ -207,6 +242,7 @@ class LibraryManager:
             self.refresh()
         except BaseException:
             self.analysis_queue.close()
+            self.ledger.store.close()
             self.catalog.close()
             raise
 
@@ -272,7 +308,13 @@ class LibraryManager:
                     liner_entries = reader.entries("liner", coverage, missing)
                     with self._lock:
                         ledgers = list(self._ledgers)
-                    played = {ledger: reader.last_played(ledger.station) for ledger in ledgers}
+                    played = {}
+                    for ledger in ledgers:
+                        times = ledger.store.last_played()
+                        if ledger.station == DEFAULT_SLUG:
+                            for entry in (*entries, *liner_entries):
+                                times.setdefault(_path(entry.path), 0.0)
+                        played[ledger] = times
                 else:
                     with self._lock:
                         entries, liner_entries = self._entries, self._liner_entries
@@ -353,6 +395,11 @@ class LibraryManager:
     def entry_for_path(self, path: str | Path) -> IndexEntry | None:
         with self._lock:
             return self._by_path.get(_path(path))
+
+    def kind_for_path(self, path: str | Path) -> str | None:
+        with self._lock:
+            position = self._positions.get(_path(path))
+            return position[0] if position is not None else None
 
     def _text_index(
         self, name: str, kind: str, build: Callable[[tuple[IndexEntry, ...]], list[_Indexed]]
@@ -442,11 +489,23 @@ class LibraryManager:
 
     def add_ledger(self, station: str) -> StationLedger:
         """Keep another station's plays; :meth:`tick` writes them with the rest."""
-        ledger = StationLedger(self.catalog, station, self.entry_for_path)
-        ledger.loaded(self.catalog.last_played(station))
+        store = self._station_store(station)
+        ledger = StationLedger(store, self.entry_for_path, self.kind_for_path)
+        ledger.loaded(ledger.store.last_played())
         with self._lock:
+            self._station_ids.add(station)
             self._ledgers.append(ledger)
         return ledger
+
+    def _station_store(self, station: str) -> StationStore:
+        from autodj.stations import StationPaths
+
+        paths = (
+            StationPaths.default(self.cfg)
+            if station == DEFAULT_SLUG
+            else StationPaths.for_station(self.cfg, station)
+        )
+        return StationStore(paths.state_dir / "station.db", station)
 
     def station_ledger(self, station: str) -> StationLedger:
         """*station*'s ledger, added the first time it is asked for.
@@ -490,6 +549,23 @@ class LibraryManager:
     def set_dj_analysis_enabled(self, enabled: bool) -> None:
         self.catalog.set_setting("dj_analysis", enabled)
 
+    def advanced_max_minutes(self) -> int:
+        """Longest song the advanced analysis takes, in minutes; ``0`` takes every length."""
+        return self.catalog.advanced_max_minutes()
+
+    def set_advanced_max_minutes(self, minutes: int) -> None:
+        """Save the advanced analysis length cutoff and look for work again.
+
+        Songs it now admits are analysed without waiting for a scan; songs it
+        now leaves out are simply not started.
+        """
+        from autodj.catalog import ADVANCED_MAX_MINUTES_KEY
+
+        self.catalog.set_setting(ADVANCED_MAX_MINUTES_KEY, minutes)
+        with self._lock:
+            self._analysis_started_generation = None
+            self._analysis_idle = None
+
     def tick(self) -> None:
         self._flush_ledgers()
         with self._lock:
@@ -513,11 +589,18 @@ class LibraryManager:
             errors = list(self._import_errors)
             ready, indexed = self._tracks_ready, self._tracks_indexed
         state["errors"] = [f"{item['path']}: {item['error']}" for item in errors]
+        from autodj.beets_paths import check_library, page_view
+
         return {
             "folders": self.catalog.sources(),
             "import": state,
             "tracks_ready": ready,
             "tracks_indexed": indexed,
+            # Left out of the advanced analysis for their length: not errors.
+            "too_long_for_analysis": self.catalog.too_long_for_analysis_count(),
+            "advanced_max_minutes": self.catalog.advanced_max_minutes(),
+            # Whether beets' songs are the library's (None without beets).
+            "beets_paths": page_view(check_library(self.cfg, self.entries_snapshot())),
         }
 
     def missing_removal_preview(
@@ -807,14 +890,6 @@ class LibraryManager:
                     found.setdefault(normalized, (source["kind"], path))
         return list(found.values())
 
-    def _max_analysis_seconds(self) -> float:
-        """Longest track the scan analyses: the playout limit, ``server_max_track_minutes``.
-
-        Server playout refuses longer tracks, and analysing one holds it in
-        memory several times over, so the scan refuses it too.
-        """
-        return float(self.cfg.playback.server_max_track_minutes) * 60.0
-
     def _same_identity(self, record: dict[str, Any], path: Path) -> bool:
         size, fingerprint = file_fingerprint(path)
         return bool(
@@ -876,6 +951,19 @@ class LibraryManager:
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                with self._lock:
+                    ledgers = {ledger.station: ledger for ledger in self._ledgers}
+                    station_ids = set(self._station_ids)
+                for station_id in station_ids:
+                    ledger = ledgers.get(station_id)
+                    if ledger is None:
+                        store = self._station_store(station_id)
+                        try:
+                            store.rekey(source, track.path)
+                        finally:
+                            store.close()
+                    else:
+                        ledger.rekey(source, track.path)
                 moved = True
                 try:
                     if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
@@ -982,7 +1070,7 @@ class LibraryManager:
         try:
             tags = read_file_tags(path)
             length = float(tags.length)
-            if not 0 < length <= self._max_analysis_seconds():
+            if not length > 0:
                 return False
             entry = IndexEntry(
                 str(path),
@@ -1060,20 +1148,17 @@ class LibraryManager:
                 and old is not None
                 and not mtime_changed
             ):
-                _, liner_points = analyze_basic(
-                    path, kind="liner", max_seconds=self._max_analysis_seconds()
-                )
+                _, liner_points = analyze_basic(path, kind="liner")
                 segue = liner_points.get("segue")
                 if segue is not None:
                     segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
                 self.catalog.set_points(path, {"segue": segue}, source="analysis")
             elif not valid_existing_points and not mtime_changed:
-                # One decode serves the cue points and the beats and cues.
+                # One decode serves the cue points and the beats and cues.  A
+                # long track's decode keeps only its start and end.
                 dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
-                audio = load_for_analysis(path, self._max_analysis_seconds()) if dj else None
-                fresh, points = analyze_basic(
-                    path, kind=kind, max_seconds=self._max_analysis_seconds(), audio=audio
-                )
+                audio = load_for_analysis(path) if dj else None
+                fresh, points = analyze_basic(path, kind=kind, audio=audio)
                 fresh = self._basic_entry(fresh, old, path)
                 suggestions = self._legacy_point_suggestions(path)
                 for name, value in suggestions.items():
@@ -1086,7 +1171,7 @@ class LibraryManager:
                 # failed or stale analysis.
                 self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
                 if audio is not None:
-                    self._dj_analyse(path, audio.mean(axis=1), force=True)
+                    self._dj_analyse(path, audio, force=True)
                     del audio
             if kind == "music":
                 record = self.catalog.record_for_path(path)
@@ -1200,12 +1285,17 @@ class LibraryManager:
             logger.warning("DJ analysis unavailable: %s", exc)
             return None
 
-    def _dj_analyse(self, path: Path, mono: np.ndarray | None = None, force: bool = False) -> None:
+    def _dj_analyse(
+        self, path: Path, audio: np.ndarray | TrackWindows | None = None, force: bool = False
+    ) -> None:
         """Store *path*'s beat grid and cues, placed from its saved Intro and Outro.
 
-        *mono* is the song already decoded at ``SAMPLE_RATE``; it is decoded
-        here when ``None``.  Without *force* a song already analysed is left
-        alone.  A failure is logged and the scan goes on.
+        *audio* is the song already decoded at ``SAMPLE_RATE`` by
+        :func:`~autodj.processing.load_for_analysis`: all of it, or a long
+        song's start and end, which are analysed on their own
+        (:func:`~autodj.dj_meta.analyse_windows`).  It is decoded here when
+        ``None``.  Without *force* a song already analysed is left alone.  A
+        failure is logged and the scan goes on.
         """
         if not self.dj_analysis_enabled():
             return
@@ -1215,14 +1305,14 @@ class LibraryManager:
         try:
             if not force and cache.get(str(path)).analysed:
                 return
-            if mono is None:
-                mono = load_for_analysis(path, self._max_analysis_seconds()).mean(axis=1)
-            from autodj.dj_meta import analyse_audio
+            if audio is None:
+                audio = load_for_analysis(path)
+            from autodj.dj_meta import analyse_decoded
 
             points = self.catalog.points(path)
-            length = len(mono) / SAMPLE_RATE
-            meta = analyse_audio(
-                mono,
+            length = audio.seconds if isinstance(audio, TrackWindows) else len(audio) / SAMPLE_RATE
+            meta = analyse_decoded(
+                audio,
                 SAMPLE_RATE,
                 intro_end_s=points.get("intro") or 0.0,
                 outro_start_s=points.get("outro") or length,
@@ -1272,8 +1362,12 @@ class LibraryManager:
         if not force:
             return self.catalog.unembedded_music()
         # Force re-embeds songs that already have a vector, so it lists every eligible song.
+        # Songs over the length cutoff stay out, as they do without force.
+        limit = self.catalog.advanced_max_minutes() * 60.0
         pending = []
         for record in self.catalog.all_entries("music"):
+            if limit and record["length"] > limit:
+                continue
             if not Path(record["path"]).is_file():
                 continue
             if any(
@@ -1338,6 +1432,10 @@ class LibraryManager:
             pass
         self._flush_ledgers()
         self.analysis_queue.close()
+        with self._lock:
+            ledgers = list(self._ledgers)
+        for ledger in ledgers:
+            ledger.store.close()
         self.catalog.close()
 
 

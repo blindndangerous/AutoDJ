@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +18,14 @@ _NO_BEETS = "Configure a Beets database to use Beets field conditions."
 class BeetsConditions:
     """Read requested Beets values once per database/configuration fingerprint."""
 
-    def __init__(self, cfg: Any) -> None:
+    def __init__(self, cfg: Any, entries: Callable[[], Sequence[Any]] | None = None) -> None:
+        # The library's music entries, to match beets' paths against and to
+        # find the folder relative beets paths start in (autodj.beets_paths).
         self._cfg = cfg
+        self._entries = entries
         self._lock = threading.RLock()
         self._key: tuple[Any, ...] | None = None
+        self._cached_entries: Sequence[Any] | None = None
         self._fields: frozenset[str] = frozenset()
         self._discovered = False
         self._loaded: set[str] = set()
@@ -46,19 +50,22 @@ class BeetsConditions:
             db = getattr(library, "beets_db", None) if library is not None else None
             if not db:
                 self._key = None
+                self._cached_entries = None
                 self._fields, self._loaded, self._items = frozenset(), set(), {}
                 self._discovered = False
                 return self._fields, {}, _NO_BEETS
 
             db_path = Path(db)
             music_dir = getattr(library, "music_dir", None)
+            entries = self._entries() if self._entries is not None else None
             key = (
                 str(db_path),
                 str(music_dir) if music_dir is not None else None,
                 *self._fingerprint(db_path),
             )
-            if key != self._key:
+            if key != self._key or entries is not self._cached_entries:
                 self._key = key
+                self._cached_entries = entries
                 self._fields, self._loaded, self._items = frozenset(), set(), {}
                 self._discovered = False
 
@@ -80,7 +87,14 @@ class BeetsConditions:
                     self._discovered = True
                 missing = read_fields - self._loaded
                 if missing:
-                    fresh = source.items(missing)
+                    fresh = (
+                        source.items(missing)
+                        if entries is None
+                        else source.checked_items(
+                            missing,
+                            [e.path for e in entries if not getattr(e, "is_silent", False)],
+                        )[0]
+                    )
                     merged = {path: dict(values) for path, values in self._items.items()}
                     for path, values in fresh.items():
                         merged.setdefault(path, {}).update(values)

@@ -36,13 +36,19 @@ import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from autodj.station_log import CURRENT_STATION, DEFAULT_SLUG
-from autodj.stereo import SAMPLE_RATE
+from autodj.station_log import (
+    CURRENT_STATION,
+    CURRENT_STATION_SCOPE,
+    DEFAULT_SLUG,
+    StationThreadScope,
+    new_station_scope,
+    wait_for_station_threads,
+)
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -66,6 +72,7 @@ if TYPE_CHECKING:
     from autodj.webhooks import WebhookWorker
 
 logger = logging.getLogger(__name__)
+_THREAD_JOIN_TIMEOUT_S = 5.0
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
@@ -137,13 +144,13 @@ class StationPaths:
 
     @classmethod
     def for_station(cls, cfg: AutoDJConfig, slug: str) -> StationPaths:
-        """Another station's paths: the same names under ``stations/<slug>/``.
+        """One station's paths: the same names under ``stations/<slug>/``.
 
         Raises:
-            ValueError: *slug* is the default station's or not a station name,
-                so it can never name a folder outside ``stations/``.
+            ValueError: *slug* is not a station name, so it can never name a
+                folder outside ``stations/``.
         """
-        if slug == DEFAULT_SLUG or not SLUG_PATTERN.match(slug):
+        if slug != DEFAULT_SLUG and not SLUG_PATTERN.match(slug):
             raise ValueError(f"not another station's name: {slug!r}")
         return cls(cfg, slug)
 
@@ -199,14 +206,9 @@ class StationPaths:
 
     @property
     def time_check_clips(self) -> Path:
-        """Recorded time check clips: ``[time_checks] clips_folder`` or the default.
-
-        The default station's are the shared packs every station can use.
-        """
+        """Recorded time check clips: an explicit folder or this station's folder."""
         if self._cfg.time_checks.clips_folder:
             return Path(self._cfg.time_checks.clips_folder)
-        if self.is_default:
-            return Path(self._cfg.index.shared_dir) / "time_checks"
         return self.state_dir / "time_checks"
 
     @property
@@ -513,15 +515,12 @@ def start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None:
     bridge.attach_liner_scheduler(scheduler)
 
 
-def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
+def _liner_gate(cfg: Any, library: Any, paths: StationPaths) -> LinerGate:
     """The station's liner play dates, with the catalog naming registered liners."""
     from autodj.categories import station_wall
     from autodj.clip_dates import LinerDates, LinerGate, station_today
 
-    cfg = bridge.player._cfg
-
     def liner_id(path: str) -> str:
-        library = bridge.library
         record = library.catalog.record_for_path(path) if library is not None else None
         return str(record["id"]) if record else Path(path).name
 
@@ -840,6 +839,7 @@ class StationRuntime:
         first_track: IndexEntry | None = None,
         slug: str = DEFAULT_SLUG,
         paths: StationPaths | None = None,
+        thread_scope: StationThreadScope | None = None,
     ) -> None:
         """Build the station's feed, webhooks and listener access; start nothing.
 
@@ -852,6 +852,7 @@ class StationRuntime:
             first_track: In stream mode, the track the first set starts with.
             slug: The station's name; the default station's when omitted.
             paths: The station's state files; the default station's when omitted.
+            thread_scope: Thread ownership for this run, if already started.
         """
         from autodj._bridge import PlayerBridge
         from autodj.listener_access import ListenerAccess
@@ -860,6 +861,14 @@ class StationRuntime:
         from autodj.webhooks import WebhookWorker
 
         self.slug = slug
+        current_scope = CURRENT_STATION_SCOPE.get()
+        if thread_scope is None:
+            thread_scope = (
+                current_scope
+                if current_scope is not None and current_scope.slug == slug
+                else new_station_scope(slug)
+            )
+        self.thread_scope = thread_scope
         self.bridge = bridge
         self.defined_in = "config"
         self.timezone = timezone
@@ -868,7 +877,7 @@ class StationRuntime:
         self.server_audio = server_audio
         self.first_track = first_track
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
-        self.liner_gate = _liner_gate(bridge, self.paths)
+        self.liner_gate = _liner_gate(bridge.player._cfg, bridge.library, self.paths)
         # Keep both station ownership and the expected air time when filtering liners.
         # A plain function avoids deep-copying the store with player settings.
         bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
@@ -1049,6 +1058,8 @@ class StationRuntime:
         player = self.player
         if self.stopped or player.bus is None or not player.bus.playing:
             return  # no set is held under the DJ: the station goes back to idle
+        from autodj.stereo import SAMPLE_RATE
+
         buffered = source.buffer.frames / SAMPLE_RATE
         try:
             player.prepare_live_return(min(1.5, buffered))
@@ -1328,6 +1339,7 @@ class StationRuntime:
         await asyncio.shield(self._close_task)
 
     async def _close(self) -> None:
+        """Close the master and page updates, then wait for remaining station threads."""
         try:
             if self.player_running():
                 logger.warning(
@@ -1350,6 +1362,12 @@ class StationRuntime:
                 lambda: _cancel(self._broadcast_task, Exception),
                 self.stop_problems,
             )
+            # A player that outlived stop's timeout must not get another wait.
+            if not self.player_running():
+                for name in await asyncio.to_thread(
+                    wait_for_station_threads, self.thread_scope, _THREAD_JOIN_TIMEOUT_S
+                ):
+                    logger.warning("Station %s: thread %s did not stop in time", self.slug, name)
 
     async def _tick_schedule(self) -> None:
         """Run due scheduled events once a second; a failure never stops the timer."""
@@ -1486,6 +1504,7 @@ class StoppedStation:
             extra.requests_enabled if requests_enabled is None else requests_enabled
         )
         self.player_page = extra.player_page
+        self.streams = extra.paths._cfg.station.output == "stream"
         # "stopped", "stopping" (closing down: its routes already answer
         # 409) or "stuck stopping" (its player outlived the stop and still
         # runs, with its mastering process, until it ends).
@@ -1500,14 +1519,17 @@ class StoppedStation:
             "state": self.state,
             "listeners": 0,
             "title": None,
-            **public_addresses(self.slug, streams=True, player_page=self.player_page),
+            **public_addresses(self.slug, streams=self.streams, player_page=self.player_page),
         }
 
 
-async def _run_as[T](slug: str, coro: Coroutine[Any, Any, T]) -> T:
+async def _run_as[T](
+    slug: str, coro: Coroutine[Any, Any, T], scope: StationThreadScope | None = None
+) -> T:
     """Run *coro* as station *slug*: its tasks, threads and log lines carry the name."""
     context = contextvars.copy_context()
     context.run(CURRENT_STATION.set, slug)
+    context.run(CURRENT_STATION_SCOPE.set, scope)
     return await asyncio.create_task(coro, context=context)
 
 
@@ -1577,25 +1599,36 @@ def _saved_preset(paths: StationPaths) -> str | None:
 
 
 class StationRegistry:
-    """The stations of one server: the default one, and any others configured.
+    """The stations of one server, each held by a runtime or build factory.
 
-    The default station always runs.  Another station runs from when it
-    is started (with the server when it has ``autostart``, or from
-    ``POST /api/stations/<slug>/start``) until it is stopped; while it is
-    stopped, :meth:`get` answers a :class:`StoppedStation` and nothing of
-    it runs or stays in memory.  Starting it again builds a fresh runtime.
+    A legacy injected default runtime remains running for its whole lifetime.
+    Production can pass an ``ExtraStation`` factory for the default too; it
+    then starts, stops and rebuilds under the same lifecycle as other stations.
     """
 
-    def __init__(self, default: StationRuntime, extras: Sequence[ExtraStation] = ()) -> None:
+    def __init__(
+        self, default: StationRuntime | ExtraStation, extras: Sequence[ExtraStation] = ()
+    ) -> None:
         self._default = default
+        self._default_factory = isinstance(default, ExtraStation)
         self._extras = {extra.slug: extra for extra in extras}
+        if isinstance(default, ExtraStation):
+            if default.slug != DEFAULT_SLUG:
+                raise ValueError(f"the default station factory must use {DEFAULT_SLUG!r}")
+            if DEFAULT_SLUG in self._extras:
+                raise ValueError(f"station {DEFAULT_SLUG!r} is already registered")
+            self._extras[DEFAULT_SLUG] = default
+        elif default.slug != DEFAULT_SLUG:
+            raise ValueError(f"the default station runtime must use {DEFAULT_SLUG!r}")
         # The name each stopped station shows: its saved one, read the first
         # time it is asked for, then the name it had when it last stopped (it
         # changes only while the station runs).
         self._stopped_names: dict[str, str] = {}
         # Whether each stopped station takes requests, kept the same way.
         self._stopped_requests: dict[str, bool] = {}
-        self._running: dict[str, StationRuntime] = {default.slug: default}
+        self._running: dict[str, StationRuntime] = (
+            {} if isinstance(default, ExtraStation) else {default.slug: default}
+        )
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
         # slow stop never holds up another station's start.  Stereo Tool
@@ -1604,6 +1637,9 @@ class StationRegistry:
         # Set once shutdown begins: no station starts after that.
         self._closing = False
         self.relay_lock = threading.RLock()
+        self.configuration_lock = threading.RLock()
+        self._content: dict[str, Any] = {}
+        self.build_content: Callable[[ExtraStation], Any] | None = None
         # Stations being stopped.  From the moment a stop is asked for,
         # their routes answer 409 at once and a start is refused at once,
         # instead of waiting while the player finishes (up to
@@ -1637,9 +1673,9 @@ class StationRegistry:
         self.stuck_retry_s = 5.0
 
     @property
-    def default(self) -> StationRuntime:
-        """The station the root config sections describe."""
-        return self._default
+    def default(self) -> StationRuntime | StoppedStation:
+        """The default station, or its stand-in while a factory-built one is stopped."""
+        return self.get(DEFAULT_SLUG) if isinstance(self._default, ExtraStation) else self._default
 
     def get(self, slug: str) -> StationRuntime | StoppedStation:
         """The station named *slug*, or its stand-in while it is stopped.
@@ -1670,7 +1706,11 @@ class StationRegistry:
 
     def all(self) -> tuple[StationRuntime, ...]:
         """Every running station, the default first."""
-        return tuple(self._running.values())
+        return tuple(
+            station
+            for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras))
+            if (station := self._running.get(slug)) is not None
+        )
 
     def relay_configs(self) -> dict[str, dict[str, Any]]:
         """Current relay definitions for every configured station, including stopped ones."""
@@ -1694,7 +1734,7 @@ class StationRegistry:
 
     def slugs(self) -> frozenset[str]:
         """The name of every configured station, running or not."""
-        return frozenset({self._default.slug, *self._extras})
+        return frozenset({DEFAULT_SLUG, *self._extras})
 
     def add(self, extra: ExtraStation) -> None:
         """Register a stopped station without touching running stations."""
@@ -1709,7 +1749,10 @@ class StationRegistry:
 
     def paths(self) -> tuple[StationPaths, ...]:
         """Every configured station's paths, the default first."""
-        return (self._default.paths, *(extra.paths for extra in self._extras.values()))
+        return (
+            self._default.paths,
+            *(extra.paths for slug, extra in self._extras.items() if slug != DEFAULT_SLUG),
+        )
 
     def summaries(self) -> list[dict[str, Any]]:
         """Every configured station's name, state, listeners, song and stream address.
@@ -1718,7 +1761,7 @@ class StationRegistry:
         page can change that: only for a station made in the page.
         """
         out = []
-        for slug in (self._default.slug, *self._extras):
+        for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
             extra = self._extras.get(slug)
             out.append(
                 {
@@ -1729,6 +1772,47 @@ class StationRegistry:
             )
         return out
 
+    def editable(self, slug: str) -> Any:
+        """Return the running station or its saved editors, without starting playback."""
+        current = self.get(slug)
+        lock = self._locks.get(slug)
+        if lock is not None and lock.locked():
+            raise StationControlError("That station is starting or stopping")
+        if not current.stopped:
+            return current
+        if slug in self._stopping or slug in self._stuck:
+            raise StationControlError("That station is still stopping")
+        with self.configuration_lock:
+            if slug not in self._content:
+                if self.build_content is None:
+                    raise StationControlError("Station configuration is not available")
+                self._content[slug] = self.build_content(self._extras[slug])
+            return self._content[slug]
+
+    def configuration(self, slug: str) -> AutoDJConfig:
+        """Saved configuration is available independently of the running engine."""
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
+            return self._default.cfg
+        return self._extras[slug].paths._cfg
+
+    def save_options(self, slug: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Validate and save station options; output/time-zone changes apply on start."""
+        from autodj.fsutil import atomic_write
+
+        with self.configuration_lock:
+            cfg = self.configuration(slug)
+            proposed = replace(cfg.station, **changes)
+            paths = self._extras[slug].paths
+            document = json.loads(paths.definition.read_text(encoding="utf-8"))
+            document["station"]["station"] = asdict(proposed)
+            atomic_write(paths.definition, json.dumps(document, indent=2) + "\n")
+            cfg.station = proposed
+            self._content.pop(slug, None)
+            running = self._running.get(slug)
+            if running is not None:
+                running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
+            return asdict(proposed)
+
     def set_autostart(self, slug: str, enabled: bool) -> None:
         """Save whether station *slug* starts with the server.
 
@@ -1736,8 +1820,8 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The page cannot change it for this station.
         """
-        if slug == self._default.slug:
-            raise StationControlError("The default station always starts with the server.")
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
+            raise StationControlError("The injected station has no saved definition.")
         extra = self._extras[slug]
         if extra.defined_in != "web":
             raise StationControlError(
@@ -1746,10 +1830,11 @@ class StationRegistry:
         from autodj.fsutil import atomic_write
 
         path = extra.paths.definition
-        document = json.loads(path.read_text(encoding="utf-8"))
-        document["station"]["autostart"] = enabled
-        atomic_write(path, json.dumps(document, indent=2) + "\n")
-        self._extras[slug] = replace(extra, autostart=enabled)
+        with self.configuration_lock:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            document["station"]["autostart"] = enabled
+            atomic_write(path, json.dumps(document, indent=2) + "\n")
+            self._extras[slug] = replace(extra, autostart=enabled)
 
     def stereo_tool_user(self, exclude: str) -> str | None:
         """The station other than *exclude* that uses Stereo Tool, in words, or ``None``.
@@ -1802,14 +1887,16 @@ class StationRegistry:
         return presets
 
     async def start_all(self) -> None:
-        """Start the default station, then every other station with ``autostart``.
-
-        A station that cannot start is logged and left stopped; the
-        server, and the default station, run on.
-        """
-        await _run_as(self._default.slug, self._default.start())
-        for slug, extra in self._extras.items():
-            if not extra.autostart:
+        """Start configured autostart stations; a failure leaves the server available."""
+        if not isinstance(self._default, ExtraStation):
+            await _run_as(
+                self._default.slug,
+                self._default.start(),
+                getattr(self._default, "thread_scope", None),
+            )
+        for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
+            extra = self._extras.get(slug)
+            if extra is None or not extra.autostart:
                 continue
             try:
                 await self.start(slug)
@@ -1823,7 +1910,7 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The station could not start.
         """
-        if slug == self._default.slug:
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             return self._default
         extra = self._extras[slug]
         self._refuse_while_stopping(extra)
@@ -1862,9 +1949,13 @@ class StationRegistry:
                 # A failed start gives up its claim.
                 with self.stereo_tool_lock:
                     self._starting.pop(slug, None)
+                with self.configuration_lock:
+                    self._content.pop(slug, None)
             return running
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
+        self._content.pop(extra.slug, None)
+        CURRENT_STATION_SCOPE.set(new_station_scope(extra.slug))
         try:
             runtime = await asyncio.to_thread(extra.build, self)
         except StationControlError:
@@ -1890,9 +1981,9 @@ class StationRegistry:
 
         Raises:
             KeyError: No station has that name.
-            StationControlError: *slug* is the default station.
+            StationControlError: *slug* is the injected legacy default runtime.
         """
-        if slug == self._default.slug:
+        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
             raise StationControlError("The default station cannot be stopped.")
         extra = self._extras[slug]
         if slug in self._stopping:
@@ -1920,7 +2011,11 @@ class StationRegistry:
                         del self._running[slug]
                     self._stopped_names[slug] = runtime.name
                     self._stopped_requests[slug] = _takes_requests(runtime)
-                    warnings = await _run_as(slug, self._stop_extra(runtime, extra))
+                    warnings = await _run_as(
+                        slug,
+                        self._stop_extra(runtime, extra),
+                        getattr(runtime, "thread_scope", None),
+                    )
         finally:
             with self.stereo_tool_lock:
                 self._stopping_runtimes.pop(slug, None)
@@ -2062,16 +2157,15 @@ class StationRegistry:
                 await held.enter_async_context(lock)
             writers_quiesced = True
             for station in self.all():
-                quiet = await _run_as(station.slug, station.stop(timeout_s))
+                quiet = await _run_as(
+                    station.slug, station.stop(timeout_s), getattr(station, "thread_scope", None)
+                )
                 writers_quiesced = quiet and writers_quiesced
             cache_closed = await library.close(writers_quiesced, readers_stopped=readers_stopped)
             for station in self.all():
-                await _run_as(station.slug, station.close())
-            # Nothing but the default station is running now.
+                await _run_as(station.slug, station.close(), getattr(station, "thread_scope", None))
             with self.stereo_tool_lock:
-                for slug in list(self._running):
-                    if slug != self._default.slug:
-                        del self._running[slug]
+                self._running.clear()
             return writers_quiesced, cache_closed
 
 

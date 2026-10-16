@@ -62,7 +62,7 @@ from autodj.matched_intros import (
     parse_rules,
     rules_text,
 )
-from autodj.station_routes import StationDep, StationRouter, audio_mime
+from autodj.station_routes import SavedStationDep, StationRouter, audio_mime
 
 if TYPE_CHECKING:
     from autodj.stations import StationRuntime
@@ -289,7 +289,7 @@ def _listing(station: StationRuntime, track_id: str | None) -> dict[str, Any]:
         # Intros in the file that are not valid and are skipped, in words.
         "problem": store.problem(),
         "limits": {
-            "max_bytes": station.cfg.server.liner_upload_max_bytes,
+            "max_bytes": (station.cfg.station.liner_upload_max_mib * 1024 * 1024),
             "max_seconds": MAX_INTRO_SECONDS,
             "extensions": list(LINER_EXTS),
         },
@@ -410,7 +410,7 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.get("/intros/rules")
-    async def intro_rules(station: StationDep) -> JSONResponse:
+    async def intro_rules(station: SavedStationDep) -> JSONResponse:
         """The station's intro rules, and the liners and liner folders they may use."""
         store = _rules(station)
         rules = await asyncio.to_thread(store.all)
@@ -433,7 +433,7 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.post("/intros/rules", status_code=201)
-    async def intro_rule_create(station: StationDep, request: Request) -> JSONResponse:
+    async def intro_rule_create(station: SavedStationDep, request: Request) -> JSONResponse:
         store = _rules(station)
         try:
             fields = await rule_body(request, station)
@@ -452,7 +452,9 @@ def install_matched_intros(router: StationRouter) -> None:
         return _saved(key, rule, 201)
 
     @router.put("/intros/rules/{rule_id}")
-    async def intro_rule_edit(station: StationDep, rule_id: str, request: Request) -> JSONResponse:
+    async def intro_rule_edit(
+        station: SavedStationDep, rule_id: str, request: Request
+    ) -> JSONResponse:
         store = _rules(station)
         if not valid_id(rule_id):
             raise HTTPException(status_code=404, detail="No intro rule has that ID")
@@ -477,7 +479,7 @@ def install_matched_intros(router: StationRouter) -> None:
         return _saved(rule_id, rule)
 
     @router.delete("/intros/rules/{rule_id}")
-    async def intro_rule_delete(station: StationDep, rule_id: str) -> JSONResponse:
+    async def intro_rule_delete(station: SavedStationDep, rule_id: str) -> JSONResponse:
         store = _rules(station)
         if not valid_id(rule_id):
             raise HTTPException(status_code=404, detail="No intro rule has that ID")
@@ -493,7 +495,7 @@ def install_matched_intros(router: StationRouter) -> None:
 
     @router.get("/intros")
     async def intros(
-        station: StationDep,
+        station: SavedStationDep,
         track_id: str | None = Query(None, pattern=TRACK_ID_PATTERN),
     ) -> JSONResponse:
         """The station's intros, or one song's and its artist's."""
@@ -501,13 +503,13 @@ def install_matched_intros(router: StationRouter) -> None:
         return JSONResponse(await asyncio.to_thread(_listing, station, track_id), headers=_NO_STORE)
 
     @router.post("/intros", status_code=201)
-    async def intro_upload(station: StationDep, request: Request) -> JSONResponse:
+    async def intro_upload(station: SavedStationDep, request: Request) -> JSONResponse:
         """Upload one intro for a song or for its artist."""
         from autodj.clip_dates import station_today
 
         store = _store(station)
         library = _library(station)
-        cap = int(station.cfg.server.liner_upload_max_bytes)
+        cap = int((station.cfg.station.liner_upload_max_mib * 1024 * 1024))
         too_large = f"An intro file may be at most {cap // (1024 * 1024)} MB"
         declared = request.headers.get("content-length")
         size = cap
@@ -607,7 +609,7 @@ def install_matched_intros(router: StationRouter) -> None:
         return JSONResponse(view, status_code=201, headers=_NO_STORE)
 
     @router.get("/intros/{intro_id}/audio")
-    async def intro_audio(station: StationDep, intro_id: str) -> FileResponse:
+    async def intro_audio(station: SavedStationDep, intro_id: str) -> FileResponse:
         """Serve one intro's audio, to listen to."""
         store = _store(station)
         intro = (await asyncio.to_thread(store.all)).get(intro_id) if valid_id(intro_id) else None
@@ -625,7 +627,7 @@ def install_matched_intros(router: StationRouter) -> None:
         )
 
     @router.delete("/intros/{intro_id}")
-    async def intro_delete(station: StationDep, intro_id: str) -> JSONResponse:
+    async def intro_delete(station: SavedStationDep, intro_id: str) -> JSONResponse:
         """Remove one intro and its audio."""
         store = _store(station)
         if not valid_id(intro_id):

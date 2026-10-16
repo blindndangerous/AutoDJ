@@ -45,6 +45,20 @@ def _tls_files(tmp_path: Path) -> dict[str, str]:
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
 
+def _test_config(tmp_path: Path):
+    """Load defaults without reading the developer's working config."""
+    from autodj.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
+        f'model_dir = "{(tmp_path / "models").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path, environ={})
+    return cfg
+
+
 def _set_repeat_settings(cfg_mock, active_dir: Path) -> None:
     cfg_mock.playback.repeat_rules = RepeatSettings(
         track=RepeatRule(tracks=50), artist=RepeatRule(tracks=3)
@@ -390,6 +404,9 @@ class TestLiners:
         class Library:
             catalog = Catalog()
 
+            def station_ledger(self, station):
+                return SimpleNamespace(last_played=lambda: {})
+
             def entry_for_path(self, value):
                 return SimpleNamespace(path=str(path)) if _path(value) == _path(path) else None
 
@@ -452,7 +469,7 @@ class TestLiners:
         (folder / "promo.mp3").write_bytes(b"\x00")
         (folder / "id.wav").write_bytes(b"\x00")
         point_index(bridge.player._cfg.index, str(tmp_path / "active"))
-        bridge.player._cfg.server.station_timezone = "UTC"
+        bridge.player._cfg.station.timezone = "UTC"
 
         tc = TestClient(create_app(bridge))
         body = tc.get("/api/liners").json()
@@ -753,12 +770,12 @@ class TestLiners:
 
         folder = tmp_path / "stations" / "default" / "liners"
         point_index(bridge.player._cfg.index, tmp_path)
-        bridge.player._cfg.server.liner_upload_max_bytes = 50
+        bridge.player._cfg.station.liner_upload_max_mib = 1
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
             "/api/liners/upload",
-            files={"file": ("clip.mp3", b"x" * 51, "audio/mpeg")},
+            files={"file": ("clip.mp3", b"x" * ((1 << 20) + 1), "audio/mpeg")},
         )
         assert resp.status_code == 413
         assert not (folder / "clip.mp3").exists()
@@ -768,12 +785,12 @@ class TestLiners:
 
         folder = tmp_path / "stations" / "default" / "liners"
         point_index(bridge.player._cfg.index, tmp_path)
-        bridge.player._cfg.server.liner_upload_max_bytes = 50
+        bridge.player._cfg.station.liner_upload_max_mib = 1
 
         tc = TestClient(create_app(bridge))
         resp = tc.post(
             "/api/liners/upload",
-            files={"file": ("clip.mp3", b"x" * 100_000, "audio/mpeg")},
+            files={"file": ("clip.mp3", b"x" * ((1 << 20) + 1), "audio/mpeg")},
         )
         assert resp.status_code == 413
         assert not folder.exists() or list(folder.iterdir()) == []
@@ -1924,6 +1941,7 @@ class TestLifespan:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import close_cache, get_cache
+        from autodj.station_log import track_station_thread
 
         player = _make_player_mock()
         player._skip_event = threading.Event()
@@ -1937,6 +1955,7 @@ class TestLifespan:
             allow_player_exit.wait()
 
         player_thread = threading.Thread(target=player_loop, name="blocked-test-player")
+        track_station_thread(player_thread, "default")
         monkeypatch.setattr("autodj.server._SHUTDOWN_TIMEOUT_S", 0.0)
         app = create_app(bridge, player_thread=player_thread)
         player_thread.start()
@@ -1974,13 +1993,14 @@ class TestServeFunction:
         with (
             patch("autodj.library.LibraryManager") as manager,
             patch("autodj.mastering.ContinuousMaster"),
+            patch("autodj.server.shutil.which", return_value="ffmpeg"),
         ):
             manager.return_value.catalog.get_setting.return_value = None
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
     def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
-        """serve() should call uvicorn.run with the FastAPI app."""
+        """The server app's lifespan builds and starts its default station."""
         import logging
         from unittest.mock import MagicMock, patch
 
@@ -1988,20 +2008,18 @@ class TestServeFunction:
 
         from autodj.server import serve
 
-        # Build a proper cfg mock
-        cfg_mock = MagicMock()
-        _set_repeat_settings(cfg_mock, tmp_path)
-        cfg_mock.playback.crossfade_seconds = 3.0
-        cfg_mock.time_checks = TimeChecksConfig()
-        cfg_mock.server = ServerConfig()
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
         sim = _make_sim_mock()
+        player_run = MagicMock()
 
         with (
-            patch("autodj.player.Player.run"),  # prevent audio loop from blocking
+            patch("autodj.player.Player.run", player_run),
             patch("uvicorn.run") as mock_uvicorn,
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
-            serve(cfg=cfg_mock, sim=sim, seed_entry=None)
+            serve(cfg=cfg, sim=sim, seed_entry=None)
 
         mock_uvicorn.assert_called_once()
         assert mock_uvicorn.call_args.kwargs["host"] == "127.0.0.1"
@@ -2009,40 +2027,28 @@ class TestServeFunction:
         assert "http://127.0.0.1:8080" in caplog.text
         assert "http://localhost:8080" not in caplog.text
         app = mock_uvicorn.call_args.args[0]
-        client = TestClient(
-            app,
-            base_url="http://127.0.0.1:8080",
-            headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8080"},
-        )
-        assert client.get("/api/version").status_code == 200
+        with (
+            patch("autodj.player.Player.run", player_run),
+            TestClient(
+                app,
+                base_url="http://127.0.0.1:8080",
+                headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8080"},
+            ) as client,
+        ):
+            assert client.get("/api/version").status_code == 200
+            runtime = app.state.stations.get("default")
+            assert runtime.stream_mode is False
+            assert runtime.server_audio is False
+            assert runtime.bridge.player.on_track_started is not None
+            player_run.assert_called_once_with(seed_entry=None)
 
     def test_serve_starts_player_thread(self, tmp_path) -> None:
-        """serve() launches a daemon Player thread before starting uvicorn."""
-        import threading
-        from unittest.mock import MagicMock, patch
-
-        from autodj.server import serve
-
-        cfg_mock = MagicMock()
-        _set_repeat_settings(cfg_mock, tmp_path)
-        cfg_mock.playback.crossfade_seconds = 3.0
-        cfg_mock.time_checks = TimeChecksConfig()
-        cfg_mock.server = ServerConfig()
-        sim = _make_sim_mock()
-
-        started = threading.Event()
-
-        def fake_run(*args, **kwargs):
-            started.set()
-
-        with (
-            patch("autodj.player.Player.run", fake_run),
-            patch("uvicorn.run"),
-        ):
-            serve(cfg=cfg_mock, sim=sim, seed_entry=None)
-
-        started.wait(timeout=2.0)
-        assert started.is_set(), "Player thread should have started"
+        """The supplied factory launches a daemon Player thread when it is built."""
+        captured = self._serve_capturing_player(tmp_path, no_playback=True)
+        player_thread = captured["runtime"].player_thread
+        player_thread.join(timeout=2.0)
+        assert not player_thread.is_alive()
+        captured["run"].assert_called_once_with(seed_entry=_make_entry(0))
 
     @staticmethod
     def _serve_capturing_player(tmp_path, stations=(), **serve_kwargs):
@@ -2050,13 +2056,21 @@ class TestServeFunction:
         from autodj.player import Player
         from autodj.server import serve
 
-        cfg_mock = MagicMock()
+        cfg_mock = _test_config(tmp_path)
+        output = (
+            "stream"
+            if serve_kwargs.get("stream")
+            else ("server" if not serve_kwargs.get("no_playback", False) else "browser")
+        )
+        cfg_mock.station.output = output
+        cfg_mock.station.server_audio_too = output == "stream" and not serve_kwargs.get(
+            "no_playback", False
+        )
+        cfg_mock.default_station.cfg.station.output = output
+        cfg_mock.default_station.cfg.station.server_audio_too = cfg_mock.station.server_audio_too
         cfg_mock.stations = stations
-        _set_repeat_settings(cfg_mock, tmp_path)
         cfg_mock.playback.crossfade_seconds = 3.0
-        cfg_mock.time_checks = TimeChecksConfig()
-        cfg_mock.server = ServerConfig()
-        cfg_mock.index.index_dir = tmp_path
+        cfg_mock.default_station.cfg.playback.crossfade_seconds = 3.0
         sim = _make_sim_mock()
         captured: dict[str, object] = {}
         original_init = Player.__init__
@@ -2066,38 +2080,42 @@ class TestServeFunction:
             captured["player"] = self
             original_init(self, *args, **kwargs)
 
+        run = MagicMock()
         with (
             patch.object(Player, "__init__", spy_init),
-            patch("autodj.player.Player.run"),
+            patch("autodj.player.Player.run", run),
             patch("autodj.server.create_app", wraps=create_app) as app_spy,
             patch("uvicorn.run") as mock_uvicorn,
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
-        captured["create_app_kwargs"] = app_spy.call_args.kwargs
-        captured["uvicorn_kwargs"] = mock_uvicorn.call_args.kwargs
+            captured["create_app_kwargs"] = app_spy.call_args.kwargs
+            captured["uvicorn_kwargs"] = mock_uvicorn.call_args.kwargs
+            app = mock_uvicorn.call_args.args[0]
+            factory = app_spy.call_args.kwargs["default_station"]
+            captured["runtime"] = factory.build(app.state.stations)
+            captured["run"] = run
         return captured
 
     def test_serve_stream_builds_a_stream_mode_player(self, tmp_path) -> None:
         """--stream alone: the server mixes, but never opens the sound card."""
         captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
         assert captured["dry_run"] is False
-        assert captured["stream_mode"] is True
-        assert captured["server_audio_too"] is False
-        assert captured["create_app_kwargs"]["stream_mode"] is True
+        assert captured["runtime"].stream_mode is True
+        assert captured["runtime"].server_audio is False
         # Keyed stream links are gone: stream mode keeps no secret file.
         assert not (tmp_path / ".stream-secret").exists()
         assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
         # Connections past the listeners' share and the pages' room get 503 (#48).
         assert captured["uvicorn_kwargs"]["limit_concurrency"] >= 256
         assert captured["uvicorn_kwargs"]["http"] is IcecastSourceH11Protocol
-        player = captured["player"]
-        assert player.on_track_started is not None
+        assert captured["player"].on_track_started is not None
 
     def test_serve_stream_with_server_audio_also_plays_locally(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=False, stream=True)
         assert captured["dry_run"] is False
-        assert captured["stream_mode"] is True
-        assert captured["server_audio_too"] is True
+        assert captured["runtime"].stream_mode is True
+        assert captured["player"]._stream_mode is True
+        assert captured["player"]._server_audio_too is True
 
     def test_serve_hands_the_other_stations_to_the_app(self, tmp_path) -> None:
         """[stations.<slug>] stations are built when the app starts; they always stream."""
@@ -2122,15 +2140,13 @@ class TestServeFunction:
         # Its pages answer while it is stopped, so the stand-in keeps its settings.
         assert extra.player_page == PlayerPageConfig(enabled=True)
         # The default station is browser-driven, but radio players still need h11.
-        assert captured["create_app_kwargs"]["stream_mode"] is False
         assert captured["uvicorn_kwargs"]["http"] is IcecastSourceH11Protocol
 
     def test_serve_without_stream_is_unchanged(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=True)
         assert captured["dry_run"] is True
-        assert captured["stream_mode"] is False
-        assert captured["server_audio_too"] is False
-        assert captured["create_app_kwargs"]["stream_mode"] is False
+        assert captured["runtime"].stream_mode is False
+        assert captured["runtime"].server_audio is False
         assert captured["create_app_kwargs"]["extra_stations"] == []
         assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
         # Trusted proxies apply in every mode (the request limits key on the
@@ -2144,7 +2160,7 @@ class TestServeFunction:
         old = tmp_path / ".stream-secret"
         old.write_bytes(b"x" * 43 + b"\n")
         captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
-        assert captured["create_app_kwargs"]["stream_mode"] is True
+        assert captured["runtime"].stream_mode is True
         assert old.read_bytes() == b"x" * 43 + b"\n"
 
     def test_serve_records_the_seed_only_in_browser_mode(self, tmp_path) -> None:
@@ -2157,28 +2173,42 @@ class TestServeFunction:
 
     def test_serve_stream_starts_the_first_set_with_the_seed(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
-        assert captured["create_app_kwargs"]["stream_first_track"] == _make_entry(0)
+        assert captured["runtime"].first_track == _make_entry(0)
         captured = self._serve_capturing_player(tmp_path, no_playback=True)
-        assert captured["create_app_kwargs"]["stream_first_track"] is None
+        assert captured["runtime"].first_track is None
 
-    def test_serve_stream_without_audio_libraries_says_the_stream_still_works(
-        self, tmp_path, capsys
-    ) -> None:
+    def test_stream_factory_does_not_require_local_audio_libraries(self, tmp_path) -> None:
         with patch("autodj.server._missing_audio_modules", return_value=["sounddevice"]):
-            captured = self._serve_capturing_player(tmp_path, no_playback=False, stream=True)
-        out = capsys.readouterr().out
-        assert "The radio stream still works" in out
-        assert "Headless mode" not in out
-        assert captured["stream_mode"] is True
-        assert captured["server_audio_too"] is False
+            captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
+        assert captured["runtime"].stream_mode is True
+        assert captured["runtime"].server_audio is False
 
-    def test_serve_without_audio_libraries_falls_back_to_the_browser(
-        self, tmp_path, capsys
-    ) -> None:
-        with patch("autodj.server._missing_audio_modules", return_value=["soundfile"]):
-            captured = self._serve_capturing_player(tmp_path, no_playback=False)
-        assert "Headless mode" in capsys.readouterr().out
-        assert captured["dry_run"] is True
+    def test_missing_local_audio_library_fails_only_when_factory_is_built(self, tmp_path) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "server"
+        cfg.default_station.cfg.station.output = "server"
+        with (
+            patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
+            patch("uvicorn.run") as uvicorn_run,
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+            app = uvicorn_run.call_args.args[0]
+            with pytest.raises(RuntimeError, match="Server audio requires"):
+                app.state.stations._extras["default"].build(app.state.stations)
+        assert (
+            TestClient(
+                app,
+                base_url="http://127.0.0.1:8080",
+                headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8080"},
+            )
+            .get("/api/version")
+            .status_code
+            == 200
+        )
 
     def test_missing_audio_modules_treats_odd_specs_as_present(self) -> None:
         from autodj.server import _missing_audio_modules
@@ -2188,15 +2218,12 @@ class TestServeFunction:
             assert _missing_audio_modules() == []
 
     def test_serve_uses_server_config_host_and_port_by_default(self, tmp_path) -> None:
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from autodj.server import serve
 
-        cfg = MagicMock()
-        cfg.time_checks = TimeChecksConfig()
+        cfg = _test_config(tmp_path)
         cfg.server = ServerConfig(host="127.0.0.2", port=9090)
-        _set_repeat_settings(cfg, tmp_path)
-        cfg.playback.crossfade_seconds = 3.0
         sim = _make_sim_mock()
 
         with (
@@ -2271,16 +2298,12 @@ class TestServeFunction:
         mock_uvicorn.assert_not_called()
 
     def test_serve_allows_specific_authenticated_lan_without_policy_lists(self, tmp_path) -> None:
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from autodj.server import serve
 
-        cfg = MagicMock()
-        cfg.index.index_dir = NO_INDEX_DIR
-        cfg.time_checks = TimeChecksConfig()
+        cfg = _test_config(tmp_path)
         cfg.server = ServerConfig(host="192.168.1.10", access_token="s" * 32)
-        _set_repeat_settings(cfg, tmp_path)
-        cfg.playback.crossfade_seconds = 3.0
 
         with (
             patch("autodj.player.Player.run"),
@@ -2307,7 +2330,7 @@ class TestServeFunction:
         origin: str,
     ) -> None:
         import logging
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from fastapi.testclient import TestClient
 
@@ -2315,9 +2338,7 @@ class TestServeFunction:
 
         port = 8443 if tls else 8080
         tls_files = _tls_files(tmp_path) if tls else {}
-        cfg = MagicMock()
-        cfg.index.index_dir = NO_INDEX_DIR
-        cfg.time_checks = TimeChecksConfig()
+        cfg = _test_config(tmp_path)
         cfg.server = ServerConfig(
             host="0.0.0.0",
             port=port,
@@ -2327,8 +2348,6 @@ class TestServeFunction:
             allowed_origins=[origin],
             **tls_files,
         )
-        _set_repeat_settings(cfg, tmp_path)
-        cfg.playback.crossfade_seconds = 3.0
 
         with (
             patch("autodj.player.Player.run"),
@@ -2367,17 +2386,13 @@ class TestServeFunction:
         self, caplog, tmp_path: Path
     ) -> None:
         import logging
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from autodj.pairing import DeviceRegistry
         from autodj.server import serve
 
-        cfg = MagicMock()
-        cfg.index.index_dir = tmp_path
-        cfg.time_checks = TimeChecksConfig()
+        cfg = _test_config(tmp_path)
         cfg.server = ServerConfig(access_token="s" * 32)
-        _set_repeat_settings(cfg, tmp_path)
-        cfg.playback.crossfade_seconds = 3.0
 
         def start() -> tuple[str, object]:
             caplog.clear()
@@ -2393,7 +2408,7 @@ class TestServeFunction:
         code = first_app.state.security_policy.current_pairing_code()
         assert f"using code: {code}" in first_log
         # Starting with nothing paired counts as asking for that code.
-        registry = DeviceRegistry(tmp_path / ".paired-devices.sqlite3")
+        registry = DeviceRegistry(cfg.index.index_dir / ".paired-devices.sqlite3")
         assert registry.pair_on_request("First browser") is not None
 
         second_log, _second_app = start()

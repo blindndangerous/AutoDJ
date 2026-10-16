@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.config import PlayerPageConfig, ServerConfig, StreamConfig, WebhookConfig
+from autodj.config import PlayerPageConfig, ServerConfig, WebhookConfig
 from autodj.server import create_app
 from tests._layout import point_index
 
@@ -28,9 +28,9 @@ def _client(bridge, *, token: bool = True, **settings: object) -> TestClient:
 
 def _streaming(bridge, tmp_path: Path) -> None:
     point_index(bridge.player._cfg.index, tmp_path)
-    bridge.player._cfg.stream = StreamConfig(
-        enabled=True, listener_user="owl", listener_password="listener-secret-pw"
-    )
+    bridge.player._cfg.station.output = "stream"
+    bridge.player._cfg.stream.listener_user = "owl"
+    bridge.player._cfg.stream.listener_password = "listener-secret-pw"
     bridge.attach_stream(stream=MagicMock(listener_count=0), station=MagicMock(state="idle"))
 
 

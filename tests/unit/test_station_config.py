@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -11,6 +13,7 @@ import pytest
 from autodj.config import (
     MAX_STATIONS,
     load_config,
+    move_station_tables,
     station_relay_password_variable,
     unknown_config_keys,
 )
@@ -50,6 +53,9 @@ folder = "recordings/nightowl"
 
 
 def _write(tmp_path: Path, text: str, local: str | None = None) -> Path:
+    shutil.rmtree(tmp_path / "index", ignore_errors=True)
+    if "[index]" not in text:
+        text += f'\n[index]\nindex_dir = "{(tmp_path / "index").as_posix()}"\n'
     config = tmp_path / "config.toml"
     config.write_text(text, encoding="utf-8")
     if local is not None:
@@ -58,13 +64,74 @@ def _write(tmp_path: Path, text: str, local: str | None = None) -> Path:
 
 
 def _load(tmp_path: Path, text: str, local: str | None = None, environ=None):
-    return load_config(_write(tmp_path, text, local), environ=environ or {})
+    path = _write(tmp_path, text, local)
+    cfg = load_config(path, environ=environ)
+    if move_station_tables(cfg):
+        cfg = load_config(path, environ=environ)
+    return cfg
 
 
 def test_a_single_station_config_has_no_other_stations(tmp_path: Path) -> None:
     cfg = _load(tmp_path, BASE)
     assert cfg.stations == ()
     assert cfg.stream.station_name == "AutoDJ"
+
+
+def test_loader_does_not_read_legacy_station_tables_without_startup_migration(
+    tmp_path: Path,
+) -> None:
+    path = _write(tmp_path, BASE + NIGHTOWL)
+    cfg = load_config(path, environ={})
+    assert cfg.stations == ()
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.playback.crossfade_seconds == 3.0
+    assert cfg.playback.crossfade_seconds == 3.0
+
+
+@pytest.mark.parametrize("relative_index", [None, "index", "index # station"])
+def test_default_station_migration_uses_definition_schema_and_saved_timezone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_index: str | None,
+) -> None:
+    text = BASE.replace("[stream]\n", '[stream]\nenabled = true\ntrusted_proxies = ["10.0.0.1"]\n')
+    text += '\n[server]\nstation_timezone = "UTC"\nliner_upload_max_mib = 20\n'
+    if relative_index is not None:
+        monkeypatch.chdir(tmp_path)
+        text += f'\n[index]\nindex_dir = "{relative_index}"\n'
+    path = _write(tmp_path, text)
+    cfg = load_config(path, environ={})
+    catalog_path = cfg.index.library_dir / "library.db"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+    from contextlib import closing
+
+    with closing(sqlite3.connect(catalog_path)) as db:
+        db.execute("CREATE TABLE catalog_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute(
+            "INSERT INTO catalog_settings VALUES ('station_timezone', 'America/Los_Angeles')"
+        )
+        db.commit()
+    assert move_station_tables(cfg)
+    migrated = load_config(path, environ={})
+    assert migrated.default_station is not None
+    assert migrated.default_station.defined_in == "web"
+    station = migrated.default_station.cfg.station
+    assert (station.output, station.timezone, station.liner_upload_max_mib) == (
+        "stream",
+        "America/Los_Angeles",
+        20,
+    )
+    assert migrated.server.trusted_proxies == ["10.0.0.1"]
+    from autodj.stations import StationPaths
+
+    document = json.loads(StationPaths.default(migrated).definition.read_text("utf-8"))
+    assert document["station"]["station"] == {
+        "output": "stream",
+        "timezone": "America/Los_Angeles",
+        "liner_upload_max_mib": 20,
+    }
+    assert "enabled" not in document["station"]["stream"]
 
 
 def test_a_station_starts_from_the_defaults_not_the_root_sections(tmp_path: Path) -> None:
@@ -81,7 +148,10 @@ def test_a_station_starts_from_the_defaults_not_the_root_sections(tmp_path: Path
     assert station.recording.folder == Path("recordings/nightowl")
     # Unchanged for the default station.
     assert cfg.playback.crossfade_seconds == 7.0
-    assert set(cfg.stream.relays) == {"main"}
+    from autodj.stations import StationPaths
+
+    relays = json.loads(StationPaths.default(cfg).relays.read_text("utf-8"))["relays"]
+    assert [item["name"] for item in relays] == ["main"]
 
 
 def test_station_sections_are_separate_objects_and_shared_ones_are_the_roots(
@@ -137,7 +207,11 @@ url = "https://hooks.example.net/nightowl"
         "owl",
         "hoot hoot",
     )
-    assert station.stream.relays["owl"].password == "owl-secret"
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
+    relays = load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl")
+    assert relays["owl"].password == "owl-secret"
     assert [hook.url for hook in station.webhooks] == ["https://hooks.example.net/nightowl"]
     # The default station keeps its own credentials and webhooks.
     assert cfg.stream.listener_password == ""
@@ -170,8 +244,9 @@ def test_invalid_station_names_are_refused(tmp_path: Path, slug: str) -> None:
 
 
 def test_the_default_name_is_reserved(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match=r"\[stations.default\] is reserved"):
-        _load(tmp_path, BASE + "\n[stations.default.stream]\nbitrate = 128\n")
+    cfg = _load(tmp_path, BASE + "\n[stations.default.stream]\nbitrate = 128\n")
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.stream.bitrate == 128
 
 
 def test_stations_must_be_tables(tmp_path: Path) -> None:
@@ -234,7 +309,13 @@ password = "pw"
     other_mount = text.replace(
         'mount = "/live"\npassword = "pw"', 'mount = "/owl"\npassword = "pw"'
     )
-    assert set(_load(tmp_path, other_mount).stations[0].cfg.stream.relays) == {"copy"}
+    cfg = _load(tmp_path, other_mount)
+    from autodj.stations import StationPaths
+
+    relays = json.loads(StationPaths.for_station(cfg, "nightowl").relays.read_text("utf-8"))[
+        "relays"
+    ]
+    assert [item["name"] for item in relays] == ["copy"]
 
 
 def test_unknown_station_keys_are_warned_about_and_ignored(
@@ -263,7 +344,7 @@ quiet_boost_db = 3
     }
 
 
-def test_server_wide_stream_keys_in_a_station_are_ignored(
+def test_server_wide_stream_keys_migrate_to_shared_server_config(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     text = BASE.replace("[stream]\n", '[stream]\ntrusted_proxies = ["10.0.0.1"]\n') + (
@@ -273,14 +354,13 @@ def test_server_wide_stream_keys_in_a_station_are_ignored(
     )
     with caplog.at_level(logging.WARNING, logger="autodj.config"):
         cfg = _load(tmp_path, text)
-    stream = cfg.stations[0].cfg.stream
-    assert stream.enabled is True
-    assert stream.trusted_proxies == ["10.0.0.1"]
-    assert "always streams" in caplog.text
-    assert "applies server-wide" in caplog.text
+    assert cfg.server.trusted_proxies == ["10.0.0.1"]
+    assert cfg.stations[0].cfg.station.output == "stream"
 
 
-def test_station_relay_passwords_come_from_the_environment(tmp_path: Path) -> None:
+def test_station_relay_passwords_come_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     text = (
         BASE
         + NIGHTOWL
@@ -292,16 +372,26 @@ host = "10.0.0.5"
     )
     variable = station_relay_password_variable("nightowl", "back-up")
     assert variable == "AUTODJ_STATION_NIGHTOWL_RELAY_BACK_UP_PASSWORD"
-    cfg = _load(tmp_path, text, environ={variable: "from-env"})
-    assert cfg.stations[0].cfg.stream.relays["back-up"].password == "from-env"
-    assert "environment" in cfg.config_sources
+    monkeypatch.setenv(variable, "from-env")
+    cfg = _load(tmp_path, text)
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
+    relays = load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl")
+    assert relays["back-up"].password == "from-env"
     # Only relays named in the TOML are looked up, and only for their station.
     ghost = station_relay_password_variable("nightowl", "ghost")
-    cfg = _load(tmp_path, BASE + NIGHTOWL, environ={ghost: "pw"})
-    assert cfg.stations[0].cfg.stream.relays == {}
+    cfg = _load(tmp_path, BASE + NIGHTOWL)
+    monkeypatch.setenv(ghost, "pw")
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
+    assert load_relays(StationPaths.for_station(cfg, "nightowl").relays, {}, "nightowl") == {}
 
 
-def test_two_relays_sharing_one_set_variable_are_refused(tmp_path: Path) -> None:
+def test_two_relays_sharing_one_set_variable_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     text = (
         BASE
         + NIGHTOWL
@@ -311,14 +401,23 @@ def test_two_relays_sharing_one_set_variable_are_refused(tmp_path: Path) -> None
         + '[stations.a.stream.relays.b-relay-c]\ntype = "shoutcast1"\nhost = "h2"\n'
     )
     variable = "AUTODJ_STATION_A_RELAY_B_RELAY_C_PASSWORD"
+    monkeypatch.setenv(variable, "from-env")
     with pytest.raises(ValueError, match=f"would both read {variable}, which is set"):
-        _load(tmp_path, text, environ={variable: "from-env"})
+        _load(tmp_path, text)
     # Unset, the variable sends nothing: each relay keeps its own TOML password.
+    monkeypatch.delenv(variable)
     text = text.replace('host = "h1"\n', 'host = "h1"\npassword = "p1"\n')
     text = text.replace('host = "h2"\n', 'host = "h2"\npassword = "p2"\n')
+    cfg = _load(tmp_path, text)
+    from autodj.relay_settings import load_relays
+    from autodj.stations import StationPaths
+
     passwords = {
-        spec.slug: [relay.password for relay in spec.cfg.stream.relays.values()]
-        for spec in _load(tmp_path, text).stations
+        slug: [
+            relay.password
+            for relay in load_relays(StationPaths.for_station(cfg, slug).relays, {}, slug).values()
+        ]
+        for slug in ("a-relay-b", "a")
     }
     assert passwords["a-relay-b"] == ["p1"] and passwords["a"] == ["p2"]
 
@@ -336,24 +435,18 @@ def test_doctor_repair_removes_an_unknown_station_key(tmp_path: Path) -> None:
     assert b"fade_in_seconds = 2" in repair.replacement
 
 
-def test_the_commented_examples_load(tmp_path: Path) -> None:
+def test_the_configuration_examples_load(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
-
-    def uncomment(filename: str, start: str) -> str:
-        text = (root / filename).read_text(encoding="utf-8")
-        block = text[text.index(start) :]
-        return "\n".join(line.removeprefix("#").removeprefix(" ") for line in block.splitlines())
-
-    shared = uncomment("config.toml.example", "# [stations.nightowl]\n")
-    local = uncomment("config.local.toml.example", "# [stations.nightowl.stream]\n")
-    shared += '\n[stations.nightowl.stream.relays.main]\ntype = "shoutcast1"\nhost = "10.0.0.5"\n'
-    cfg = _load(tmp_path, BASE + shared, local)
-    station = cfg.stations[0].cfg
-    assert cfg.stations[0].name == "Night Owl Radio"
-    assert station.playback.loudness_processing == "smooth"
-    assert station.stream.listener_user == "owl"
-    assert station.stream.relays["main"].password == "that station's source password"
-    assert len(station.webhooks) == 1
+    config = tmp_path / "config.toml"
+    config.write_text((root / "config.toml.example").read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "config.local.toml").write_text(
+        (root / "config.local.toml.example").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    cfg = load_config(config, environ={})
+    assert cfg.server.host == "127.0.0.1"
+    assert cfg.index.index_dir == Path("/srv/autodj/index")
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.station.output == "browser"
 
 
 def test_a_station_without_a_name_is_called_by_its_slug(
@@ -373,3 +466,28 @@ def test_a_station_without_a_name_is_called_by_its_slug(
         "Stations default and nightowl are both called" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_migration_drops_the_old_track_length_limit(tmp_path: Path, caplog) -> None:
+    """#391: tracks of any length play; a saved limit is removed, not warned about forever."""
+    from autodj.stations import StationPaths
+
+    text = BASE.replace(
+        "crossfade_seconds = 7\n", "crossfade_seconds = 7\nserver_max_track_minutes = 15.0\n"
+    )
+    cfg = _load(tmp_path, text, environ={})
+    definition = StationPaths.default(cfg).definition
+    document = json.loads(definition.read_text("utf-8"))
+    assert document["station"]["playback"] == {"crossfade_seconds": 7}
+    # A station file saved with the limit is cleaned the next time too.
+    document["station"]["playback"]["server_max_track_minutes"] = 30
+    definition.write_text(json.dumps(document), encoding="utf-8")
+    assert move_station_tables(load_config(tmp_path / "config.toml", environ={}))
+    caplog.clear()
+    reloaded = load_config(tmp_path / "config.toml", environ={})
+    assert (
+        "server_max_track_minutes"
+        not in json.loads(definition.read_text("utf-8"))["station"]["playback"]
+    )
+    assert reloaded.playback.crossfade_seconds == 7
+    assert "server_max_track_minutes" not in caplog.text

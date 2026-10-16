@@ -11,6 +11,11 @@ from autodj.cli import cli
 from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_index(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.mark.parametrize(
     "flags,answer,repairs",
     [
@@ -21,7 +26,7 @@ from autodj.doctor import CheckStatus, DoctorCheck, DoctorReport
 )
 def test_unknown_key_consent(tmp_path: Path, flags, answer, repairs) -> None:
     config = tmp_path / "config.toml"
-    original = b"[playback]\nenable_daypart = true\n"
+    original = b"[server]\nold_option = true\n"
     config.write_bytes(original)
     with (
         patch("autodj.doctor.run_doctor", return_value=DoctorReport(())) as run,
@@ -39,7 +44,7 @@ def test_unknown_key_consent(tmp_path: Path, flags, answer, repairs) -> None:
 
 def test_interactive_default_offers_repair(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    config.write_text("[playback]\nenable_daypart = true\n")
+    config.write_text("[server]\nold_option = true\n")
     with (
         patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
         patch("autodj.doctor.run_doctor", return_value=DoctorReport(())),
@@ -51,7 +56,7 @@ def test_interactive_default_offers_repair(tmp_path: Path) -> None:
 
 def test_interactive_default_declines_repair(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    original = b"[playback]\nenable_daypart = true\n"
+    original = b"[server]\nold_option = true\n"
     config.write_bytes(original)
     with (
         patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
@@ -78,7 +83,7 @@ def test_doctor_help_lists_repair_flags_without_yes() -> None:
 
 def test_json_never_repairs_unknown_keys(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    original = b"[playback]\nenable_daypart = true\n"
+    original = b"[server]\nold_option = true\n"
     config.write_bytes(original)
     with patch("autodj.doctor.run_doctor", return_value=DoctorReport(())):
         result = CliRunner().invoke(cli, ["--config", str(config), "doctor", "--json"])
@@ -90,7 +95,7 @@ def test_json_never_repairs_unknown_keys(tmp_path: Path) -> None:
 
 def test_backup_failure_keeps_config_intact(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    original = b"[playback]\nenable_daypart = true\n"
+    original = b"[server]\nold_option = true\n"
     config.write_bytes(original)
     with patch(
         "autodj.doctor_repair.ConfigRepair._create_backup", side_effect=OSError("disk full")
@@ -103,13 +108,11 @@ def test_backup_failure_keeps_config_intact(tmp_path: Path) -> None:
 
 def test_repairs_multiple_sections_and_rechecks_remaining_errors(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
-    config.write_text(
-        "[playback]\nenable_daypart = true\n[model]\nremoved = 1\n[server]\nport = -1\n"
-    )
+    config.write_text("[server]\nold_option = true\nport = -1\n[model]\nremoved = 1\n")
     original = config.read_bytes()
     result = CliRunner().invoke(cli, ["--config", str(config), "doctor", "--fix"])
     assert result.exit_code == 1
-    assert "enable_daypart" not in config.read_text()
+    assert "old_option" not in config.read_text()
     assert "removed" not in config.read_text()
     assert "port = -1" in config.read_text()
     backups = list(tmp_path.glob("*.bak"))
@@ -121,7 +124,7 @@ def test_repairs_multiple_sections_and_rechecks_remaining_errors(tmp_path: Path)
 def test_batch_preview_and_single_confirmation_across_files(tmp_path: Path, approve: bool) -> None:
     config = tmp_path / "config.toml"
     local = tmp_path / "config.local.toml"
-    original = b"[playback]\nenable_daypart = true\n[model]\nremoved = 1\n"
+    original = b"[server]\nold_option = true\n[model]\nremoved = 1\n"
     overlay = b"[server]\nliner_upload_max_bytes = 1024\n"
     config.write_bytes(original)
     local.write_bytes(overlay)
@@ -135,14 +138,14 @@ def test_batch_preview_and_single_confirmation_across_files(tmp_path: Path, appr
     assert result.exit_code == 0, result.output
     assert result.output.count("Apply this repair") == 1
     preview = result.output.split("Apply this repair")[0]
-    assert "[playback]: ['enable_daypart']" in preview
+    assert "[server]: ['old_option']" in preview
     assert "[model]: ['removed']" in preview
     assert "[server]: ['liner_upload_max_bytes']" in preview
     backups = list(tmp_path.glob("*.bak"))
     if approve:
         assert len(backups) == 2
         assert {backup.read_bytes() for backup in backups} == {original, overlay}
-        assert "enable_daypart" not in config.read_text()
+        assert "old_option" not in config.read_text()
         assert "removed" not in config.read_text()
         assert "liner_upload_max_bytes" not in local.read_text()
     else:

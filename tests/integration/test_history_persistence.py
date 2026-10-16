@@ -63,14 +63,14 @@ def test_history_archive_reopens_in_order_while_view_stays_at_500(tmp_path) -> N
             expected_archive.append(bridge._open_play[1].copy())
         expected_view = bridge.history_snapshot()
         assert len(expected_view) == 500
-        assert library.catalog.recent_history(limit=1000) == []
+        assert library.ledger.recent_history(limit=1000) == []
     finally:
         library.close()
 
     restored, library = _bridge_with_library(tmp_path)
     try:
         restored.load_persistent_state()
-        archive = library.catalog.recent_history(limit=1000)
+        archive = library.ledger.recent_history(limit=1000)
         assert len(archive) == 503
         assert [row["title"] for row in archive] == [
             "Song 7",
@@ -83,7 +83,7 @@ def test_history_archive_reopens_in_order_while_view_stays_at_500(tmp_path) -> N
             row["played_at"] for row in expected_archive
         ]
 
-        # The catalog stores absolute paths; "Z:/Music/..." is relative on POSIX.
+        # The ledger stores absolute paths; "Z:/Music/..." is relative on POSIX.
         def same_path(row: dict) -> dict:
             return row | {"path": os.path.normcase(os.path.abspath(row["path"]))}
 
@@ -114,13 +114,13 @@ def test_forgetting_current_play_hides_it_but_keeps_interrupted_archive_row(tmp_
     try:
         restored.load_persistent_state()
         assert len(restored.history_snapshot()) == 1
-        archived = (
-            library.catalog._db()
-            .execute("SELECT interrupted FROM play_history WHERE event_id=?", (event_id,))
-            .fetchone()
-        )
+        archived = library.ledger.store._db.execute(
+            "SELECT interrupted FROM play_history WHERE event_id=?", (event_id,)
+        ).fetchone()
         assert archived["interrupted"] == 1
-        assert library.catalog._db().execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 2
+        assert (
+            library.ledger.store._db.execute("SELECT COUNT(*) FROM play_history").fetchone()[0] == 2
+        )
     finally:
         library.close()
 
@@ -191,7 +191,7 @@ def test_old_last_played_survives_unbounded_archive_and_still_wins_least_recent(
         try:
             entries = restored.entries_snapshot()
             last_played = restored.ledger.last_played()
-            assert len(restored.catalog.recent_history(limit=1000)) == 503
+            assert len(restored.ledger.recent_history(limit=1000)) == 503
             old_key = os.path.normcase(os.path.abspath(old_path))
             newer_key = os.path.normcase(os.path.abspath(newer_path))
             assert last_played[old_key] == older_time.timestamp()
