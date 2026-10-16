@@ -155,13 +155,13 @@ def test_threads_and_log_lines_carry_the_station_name(caplog: pytest.LogCaptureF
         assert seen == {"name": "autodj-worker-nightowl", "inner": "autodj-inner-nightowl"}
         assert caplog.records[-1].getMessage() == "[nightowl] tick failed"
         assert caplog.records[-1].station == "nightowl"
-        for slug in ("default", None):
+        for slug, expected in (("default", "[default] tick failed"), (None, "tick failed")):
             caplog.clear()
             runner = threading.Thread(target=as_station, args=(slug,))
             runner.start()
             runner.join(5)
             assert seen["name"] == "autodj-worker"
-            assert caplog.records[-1].getMessage() == "tick failed"
+            assert caplog.records[-1].getMessage() == expected
     assert thread_name("autodj-player") == "autodj-player"
 
 

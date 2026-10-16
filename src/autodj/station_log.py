@@ -6,10 +6,10 @@ from.  The station's slug lives in :data:`CURRENT_STATION`, a context
 variable: asyncio tasks and :func:`asyncio.to_thread` carry it, and
 :func:`station_thread` hands it to a new thread, so the slug follows the
 station's work wherever it runs.  :func:`install_log_prefix` then starts
-each log line of a station other than the default with ``[slug]``, and
+each log line in a station context with ``[slug]``, and
 :func:`thread_name` adds the slug to its threads' names
-(``autodj-player-nightowl``).  The default station's lines and thread
-names are unchanged.
+(``autodj-player-nightowl``).  Default station thread names are unchanged;
+its log lines include ``[default]``.
 """
 
 from __future__ import annotations
@@ -167,7 +167,7 @@ def enter_station(slug: str | None, scope: StationThreadScope | None = None) -> 
 
 
 def install_log_prefix() -> None:
-    """Start every log line of a station other than the default with ``[slug]``.
+    """Start every station log line with ``[slug]``.
 
     Installed once per process, as a log-record factory, so the prefix is
     added where the line is logged, in the station's own context, and
@@ -182,7 +182,7 @@ def install_log_prefix() -> None:
         def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
             record = previous(*args, **kwargs)
             slug = CURRENT_STATION.get()
-            if _labelled(slug) and isinstance(record.msg, str) and record.name not in _UNPREFIXED:
+            if slug is not None and isinstance(record.msg, str) and record.name not in _UNPREFIXED:
                 record.msg = f"[{slug}] {record.msg}"
             record.station = slug or DEFAULT_SLUG
             return record
