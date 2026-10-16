@@ -573,7 +573,8 @@ Doctor can optionally remove obsolete keys with a backup.
 **Use related artists** holds back the artists linked in your editable TOML file, with its
 own limits. The page shows its fixed location, `index/libraries/main/related-artists.toml`.
 **Use related tracks**, off by default, does the same for groups of tracks that sound alike,
-such as a song and one that samples it, written as "Artist - Title" in
+such as a song and one that samples it, written as "Artist - Title" (or "* - Title" for every
+recording of a song) in
 `index/libraries/main/related-tracks.toml`. AutoDJ copies a sample of each file there on first use and
 leaves your edits alone on upgrades. After editing a file, save the repeat settings to reload it.
 **Count versions as one song**, also off by default, treats a radio edit, a remix and other

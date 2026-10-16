@@ -285,6 +285,18 @@ Each entry in the `[related]` table is one group, a track and a list of tracks, 
   (case, punctuation and version notes such as "(Radio Edit)" and "(feat. ...)" do not
   matter), and the artist like the artist rule. A track matches when any artist it credits,
   featured artists included, and its title match an entry.
+- Write `*` as the artist to mean every track with that title, whoever recorded it. This
+  suits a medley, which should hold back every recording of the songs in it, and a parody,
+  which should hold back the song it parodies:
+
+  ```toml
+  "* - Let It Snow! Let It Snow! Let It Snow!" = ["Ray Conniff - Let It Snow / Sleigh Ride"]
+  "* - The Twelve Days Of Christmas" = ["Bob Rivers - The Twelve Pains Of Christmas"]
+  ```
+
+  After the medley plays, every "Let It Snow! Let It Snow! Let It Snow!" waits, and after any
+  of them plays, the medley waits. The recordings are not linked to each other this way;
+  the title rule already holds them back from each other.
 - Tracks not in the library are ignored.
 
 An invalid file is refused when you save with **Use related tracks** on, leaving the previous
