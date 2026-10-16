@@ -98,7 +98,6 @@ if TYPE_CHECKING:
     from autodj.audio_meta import LyricLine
     from autodj.config import AutoDJConfig
     from autodj.dj_meta import Cue, DjMeta
-    from autodj.presets import Preset
     from autodj.similarity import SimilarityIndex
     from autodj.transitions import BeatSync, TransitionFx
 
@@ -874,6 +873,71 @@ class Player:
     # How far ahead of the playing position a skip effect starts, so it is
     # ready before the bus gets there: 0.1 s.
     _SKIP_LOOKAHEAD: ClassVar[int] = SAMPLE_RATE // 10
+
+    @property
+    def _preset(self) -> Any:
+        return self._settings._preset
+
+    @_preset.setter
+    def _preset(self, value: Any) -> None:
+        self._settings._preset = value
+
+    @property
+    def _bpm_range(self) -> tuple[float, float] | None:
+        return self._settings._bpm_range
+
+    @_bpm_range.setter
+    def _bpm_range(self, value: tuple[float, float] | None) -> None:
+        self._settings._bpm_range = value
+
+    @property
+    def _pure_shuffle(self) -> bool:
+        return self._settings._pure_shuffle
+
+    @_pure_shuffle.setter
+    def _pure_shuffle(self, value: bool) -> None:
+        self._settings._pure_shuffle = value
+
+    @property
+    def _anchor_to_seed(self) -> bool:
+        return self._settings._anchor_to_seed
+
+    @_anchor_to_seed.setter
+    def _anchor_to_seed(self, value: bool) -> None:
+        self._settings._anchor_to_seed = value
+
+    @property
+    def _eq_low(self) -> float:
+        return self._settings._eq_low
+
+    @_eq_low.setter
+    def _eq_low(self, value: float) -> None:
+        self._settings._eq_low = value
+
+    @property
+    def _eq_mid(self) -> float:
+        return self._settings._eq_mid
+
+    @_eq_mid.setter
+    def _eq_mid(self, value: float) -> None:
+        self._settings._eq_mid = value
+
+    @property
+    def _eq_high(self) -> float:
+        return self._settings._eq_high
+
+    @_eq_high.setter
+    def _eq_high(self, value: float) -> None:
+        self._settings._eq_high = value
+
+    @property
+    def _discovery_every(self) -> int | None:
+        return self._settings._discovery_every
+
+    @_discovery_every.setter
+    def _discovery_every(self, value: int | None) -> None:
+        self._settings._discovery_every = value
+
     # A dry run of the picker (autodj.rotation_sim) gives the player its own
     # seeded random.Random, a clock of its own (see _now) and a pick_observer
     # that hears what each pick passed over.  On air the random module
@@ -890,6 +954,7 @@ class Player:
         dry_run: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
+        settings: Any = None,
     ) -> None:
         """Initialise the player with configuration and index.
 
@@ -904,6 +969,9 @@ class Player:
                 the stream station (see :meth:`begin_set`).
             server_audio_too: In stream mode, also open the sound card.
         """
+        from autodj.station_settings import StationSettings
+
+        self._settings = settings or StationSettings(cfg, sim=sim_index)
         self._cfg = cfg
         self._sim = sim_index
         self._dry_run = dry_run
@@ -911,14 +979,11 @@ class Player:
         self._server_audio_too = server_audio_too
         # Picker settings.  They start off (discovery at the configured
         # rate) and the web page's settings routes change them.
-        self._preset: Preset | None = None
-        self._bpm_range: tuple[float, float] | None = None
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
         # session from drifting away from where the user started — each
         # next track is similar to the seed, not to the previous track.
         # Off by default; toggled from the web UI.
-        self._anchor_to_seed = False
         # Path of the seed track — set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
@@ -927,15 +992,11 @@ class Player:
         # the next pick uses similarity from the current track — so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        self._pure_shuffle = False
         # Lyrics for the current track — populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
         self._current_lyrics_plain: str = ""
         # 3-band EQ state (1.0 = unity), mutated by the web UI
-        self._eq_low: float = 1.0
-        self._eq_mid: float = 1.0
-        self._eq_high: float = 1.0
         # DJ meta cache — initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
@@ -992,7 +1053,6 @@ class Player:
         # Previous track played — kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
-        self._discovery_every: int | None = cfg.playback.discovery_every
         self._last_repeat_cap_warning: tuple[int, int, int] | None = None
         # Clamp no_repeat_window to the library size so the picker never
         # has zero candidates available.  Without this, a library of 200
@@ -1051,6 +1111,7 @@ class Player:
                 related_tracks=self._related_tracks,
             ),
         )
+        self._settings.attach(self)
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
         # Shared playback position (samples) — written by the mix bus, read and

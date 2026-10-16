@@ -47,7 +47,7 @@ from autodj.clip_dates import ClipDates, ClipDatesError, parse_dates
 from autodj.fsutil import confirm_missing
 from autodj.liner_scheduler import LinerDecodeError, decode_liner_path
 from autodj.scheduler import Action
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 from autodj.stations import StationPaths
 from autodj.stereo import SAMPLE_RATE
 from autodj.time_check_files import (
@@ -1224,11 +1224,11 @@ def install_time_checks(router: StationRouter) -> None:
     """Register the paired time check routes; each acts on the station its URL names."""
 
     @router.get("/time-checks")
-    async def get_settings(station: StationDep) -> dict[str, Any]:
+    async def get_settings(station: SavedStationDep) -> dict[str, Any]:
         return await asyncio.to_thread(station.time_checks.status)
 
     @router.put("/time-checks")
-    async def put_settings(station: StationDep, body: SettingsBody) -> dict[str, Any]:
+    async def put_settings(station: SavedStationDep, body: SettingsBody) -> dict[str, Any]:
         checks = station.time_checks
         # The clip choices a request leaves out keep their saved values.
         body = SettingsBody.model_validate(
@@ -1247,7 +1247,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.post("/time-checks/packs", response_model=None)
     async def add_pack(
-        station: StationDep,
+        station: SavedStationDep,
         file: UploadFile = File(...),
         name: str = "",
         replace: bool = False,
@@ -1267,7 +1267,7 @@ def install_time_checks(router: StationRouter) -> None:
         return {**await asyncio.to_thread(checks.status), "added": added}
 
     @router.delete("/time-checks/packs/{name}", response_model=None)
-    async def delete_pack(station: StationDep, name: str) -> dict[str, Any] | JSONResponse:
+    async def delete_pack(station: SavedStationDep, name: str) -> dict[str, Any] | JSONResponse:
         """Remove a voice pack that is a folder in the station's time checks folder."""
         checks = station.time_checks
         try:
@@ -1278,7 +1278,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.post("/time-checks/clips", response_model=None)
     async def add_clip(
-        station: StationDep, file: UploadFile = File(...), replace: bool = False
+        station: SavedStationDep, file: UploadFile = File(...), replace: bool = False
     ) -> dict[str, Any] | JSONResponse:
         """Upload one clip, such as an intro, an outro or a minute clip, to the time checks folder."""
         checks = station.time_checks
@@ -1299,7 +1299,7 @@ def install_time_checks(router: StationRouter) -> None:
 
     @router.put("/time-checks/packs/{name}/dates", response_model=None)
     async def put_pack_dates(
-        station: StationDep, name: str, body: dict[str, Any] = Body(...)
+        station: SavedStationDep, name: str, body: dict[str, Any] = Body(...)
     ) -> dict[str, Any] | JSONResponse:
         """Set a voice pack's play dates: "not before" and "do not play after"."""
         checks = station.time_checks
@@ -1329,7 +1329,7 @@ def install_time_checks(router: StationRouter) -> None:
         return {"message": f"Time check played from the {source}"}
 
     @router.get("/time-checks/preview")
-    async def preview(station: StationDep, pack: str | None = None) -> Response:
+    async def preview(station: SavedStationDep, pack: str | None = None) -> Response:
         checks = station.time_checks
         rendered = await asyncio.to_thread(checks.wav, _known_pack(checks, pack))
         if rendered is None:

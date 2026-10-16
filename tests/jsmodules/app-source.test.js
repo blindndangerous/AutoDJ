@@ -3798,6 +3798,44 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("station-off-air").hidden).toBe(true);
   });
 
+  it("loads and edits saved playback settings while the selected station is stopped", async () => {
+    const playback = { hour_fit: true, hour_fit_window_minutes: 12 };
+    const onRequest = (url, options) => {
+      if (url === "/api/stations/nightowl/settings") return jsonResponse({ playback });
+      if (url === "/api/stations/nightowl/playback-settings") {
+        Object.assign(playback, JSON.parse(options.body));
+        return jsonResponse({ playback });
+      }
+      return owlRequests(url, options);
+    };
+    const app = await setupApp({
+      stations: [AUTODJ, OWL],
+      onRequest,
+    });
+    const sockets = trackSockets(app.WebSocketImpl);
+    chooseOwl();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].onclose({ code: 4409, wasClean: true });
+
+    const skip = document.getElementById("btn-skip");
+    const fit = document.getElementById("pb-hour-fit");
+    const fitWindow = document.getElementById("pb-hour-fit-window");
+    await vi.waitFor(() => expect(skip.disabled).toBe(true));
+    expect(app.fetchImpl.mock.calls.map(([url]) => url))
+      .toContain("/api/stations/nightowl/settings");
+    await vi.waitFor(() => expect(fit.checked).toBe(true));
+    expect(fitWindow.value).toBe("12");
+    expect(fit.disabled).toBe(false);
+    expect(fitWindow.disabled).toBe(false);
+
+    fitWindow.value = "9";
+    fitWindow.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(playback.hour_fit_window_minutes).toBe(9));
+    expect(app.fetchImpl.mock.calls.map(([url]) => url))
+      .toContain("/api/stations/nightowl/playback-settings");
+    expect(fit.disabled).toBe(false);
+  });
+
   it("asks before leaving browser decks that play, and stops them only on yes", async () => {
     const stopAllDecks = vi.fn();
     const app = await setupApp({

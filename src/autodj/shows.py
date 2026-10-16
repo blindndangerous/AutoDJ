@@ -457,9 +457,14 @@ def generate(
     )
 
     library = source.library
+    snapshot = source.snapshot or snapshot_player(source.player)
     members: frozenset[str] | None = None
     if show.source == "category":
-        index = getattr(library, "categories", None)
+        index = (
+            library.categories_for(snapshot.station_paths)
+            if hasattr(library, "categories_for")
+            else getattr(library, "categories", None)
+        )
         found = index.members() if index is not None else {}
         if show.category not in found:
             raise ShowError("category", "That category no longer exists; choose another")
@@ -472,15 +477,13 @@ def generate(
         from autodj.clockwheel_store import ClockwheelStore
         from autodj.stations import StationPaths
 
-        player = source.player
-        paths = getattr(player, "station_paths", None) or StationPaths.default(player._cfg)
+        paths = snapshot.station_paths or StationPaths.default(snapshot.cfg)
         try:
             ClockwheelStore(paths.clockwheels).load(show.clockwheel)
         except (ValueError, OSError) as exc:
             raise ShowError("clockwheel", str(exc)) from None
         clock_name = show.clockwheel
         override = None
-    snapshot = source.snapshot or snapshot_player(source.player)
     cfg = copy.deepcopy(snapshot.cfg)
     cfg.playback.pick_mode = "clock"
     settings = {**snapshot.settings, "_pure_shuffle": False}

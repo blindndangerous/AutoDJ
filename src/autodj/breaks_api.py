@@ -88,7 +88,7 @@ from autodj.breaks import (
 from autodj.liner_files import LinerTooLargeError, store_liner_upload
 from autodj.machine_tokens import SCOPE_ANNOUNCER, MachineToken
 from autodj.settings_bodies import PAGE_SAVED_BREAKS, BreakSettingsBody
-from autodj.station_routes import StationDep, StationRouter
+from autodj.station_routes import SavedStationDep, StationDep, StationRouter
 from autodj.stereo import SAMPLE_RATE
 from autodj.worker_api import RateLimiter
 
@@ -491,7 +491,7 @@ def install_breaks(router: StationRouter) -> None:
         return desk
 
     @router.get("/voice-tracks")
-    async def voice_tracks(station: StationDep) -> JSONResponse:
+    async def voice_tracks(station: SavedStationDep) -> JSONResponse:
         """The open song change, the limits, and this station's voice tracks."""
         desk: BreakDesk | None = getattr(station, "breaks", None)
         if desk is None:
@@ -517,7 +517,7 @@ def install_breaks(router: StationRouter) -> None:
         return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
 
     @router.delete("/voice-tracks/{break_id}")
-    async def voice_track_cancel(station: StationDep, break_id: str) -> JSONResponse:
+    async def voice_track_cancel(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Cancel a voice track that is still waiting for its song change."""
         desk = voice_desk(station)
         if not valid_id(break_id):
@@ -536,12 +536,14 @@ def install_breaks(router: StationRouter) -> None:
     # ------------------------------------------------------------------
 
     @router.get("/breaks/settings")
-    async def break_settings(station: StationDep) -> JSONResponse:
+    async def break_settings(station: SavedStationDep) -> JSONResponse:
         """Whether this station takes breaks, and how it places and ducks them."""
         return JSONResponse(break_settings_view(station), headers=_NO_STORE)
 
     @router.post("/breaks/settings")
-    async def save_break_settings(station: StationDep, body: BreakSettingsBody) -> JSONResponse:
+    async def save_break_settings(
+        station: SavedStationDep, body: BreakSettingsBody
+    ) -> JSONResponse:
         """Change the break settings; saved for this station at once and used from now on.
 
         Turning breaks off drops the breaks still waiting for their song
@@ -575,11 +577,9 @@ def break_settings_view(station: StationRuntime) -> dict[str, Any]:
     liner does (``liners_duck_db``).
     """
     config = station.cfg.breaks
-    player = station.player
     reason = None
     if config.enabled is True and (
-        getattr(player, "_library", None) is None
-        or player._cfg.playback.transition_mode != "saved_points"
+        station.bridge.library is None or station.cfg.playback.transition_mode != "saved_points"
     ):
         reason = NEEDS_SAVED_POINTS
     return {
@@ -587,7 +587,7 @@ def break_settings_view(station: StationRuntime) -> dict[str, Any]:
         "dj_placement": config.dj_placement,
         "min_intro_seconds": float(config.min_intro_seconds),
         "duck_db": None if config.duck_db is None else float(config.duck_db),
-        "liners_duck_db": float(player._cfg.playback.liners_duck_db),
+        "liners_duck_db": float(station.cfg.playback.liners_duck_db),
         "reason": reason,
     }
 
@@ -609,7 +609,18 @@ def _voice_context(station: StationRuntime) -> dict[str, Any]:
     go, the limits a recording must keep, and the voice tracks booked on
     this station, waiting ones first.
     """
-    context = _context(station)
+    context: dict[str, Any] = (
+        {
+            "station": station.slug,
+            "accepting": False,
+            "reason": "Station is stopped",
+            "now": None,
+            "next": None,
+            "slot": None,
+        }
+        if station.player is None
+        else _context(station)
+    )
     desk: BreakDesk = station.breaks
     config = desk.config
     slot = context["slot"]

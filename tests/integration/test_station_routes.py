@@ -44,7 +44,6 @@ SHARED = frozenset(
         "/api/art",
         "/api/lyrics",
         "/api/audio",
-        "/api/stereo-tool-presets",
         "/api/stereo-tool-presets/upload",
         "/api/stereo-tool-presets/{name}",
         "/api/stereo-tool/download",
@@ -105,6 +104,8 @@ SOURCE_MOUNTS = frozenset({"/live", "/stations/{slug}/live"})
 STATION = frozenset(
     {
         "/status",
+        "/settings",
+        "/stereo-tool-presets",
         "/time-settings",
         "/station-settings",
         "/nowplaying",

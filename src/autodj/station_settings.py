@@ -1,0 +1,459 @@
+"""Saved, editable settings for a station, independent of its audio runtime."""
+
+from __future__ import annotations
+
+import logging
+import threading
+from pathlib import Path
+from typing import Any
+
+from autodj.settings_bodies import PlaybackSettingsBody
+
+logger = logging.getLogger(__name__)
+
+
+class StationSettings:
+    """Own a station's config-backed and web-state settings.
+
+    A Player can attach for effects that only make sense while running. The
+    settings and their validation remain here when the station is stopped.
+    """
+
+    def __init__(self, cfg: Any, library: Any = None, sim: Any = None, paths: Any = None) -> None:
+        self.cfg = cfg
+        self.library = library
+        self.sim = sim
+        self.paths = paths
+        self.player: Any = None
+        self._preset: Any = None
+        self._bpm_range: tuple[float, float] | None = None
+        self._pure_shuffle = False
+        self._anchor_to_seed = False
+        self._eq_low = self._eq_mid = self._eq_high = 1.0
+        self._discovery_every = getattr(cfg.playback, "discovery_every", None)
+        self._discovery_enabled = False
+        self._volume = 1.0
+        self._is_muted = False
+        self.page_saved: set[str] = set()
+        self.related_artists_problem: str | None = None
+        self.related_tracks_problem: str | None = None
+        self._lock = threading.RLock()
+
+    def attach(self, player: Any) -> None:
+        """Attach live-only effects and seed its PlayerState from saved values."""
+        self.player = player
+        self.library = self.library or getattr(player, "_library", None)
+        self.sim = self.sim or getattr(player, "_sim", None)
+        player._settings = self
+        player._state.volume = self._volume
+        player._state.is_muted = self._is_muted
+        player._state.discovery_enabled = (
+            self._discovery_enabled and self._discovery_every is not None
+        )
+        self.sync_to_player()
+
+    def sync_to_player(self) -> None:
+        """Mirror state to legacy duck-typed player fixtures; real Player properties alias us."""
+        if self.player is None:
+            return
+        for name in (
+            "_preset",
+            "_bpm_range",
+            "_pure_shuffle",
+            "_anchor_to_seed",
+            "_eq_low",
+            "_eq_mid",
+            "_eq_high",
+            "_discovery_every",
+        ):
+            if not isinstance(getattr(type(self.player), name, None), property):
+                setattr(self.player, name, getattr(self, name))
+
+    @property
+    def state_dir(self) -> Path | None:
+        if self.paths is not None:
+            return Path(self.paths.state_dir)
+        directory = getattr(getattr(self.cfg, "index", None), "stations_dir", None)
+        return Path(directory) / "default" if directory is not None else None
+
+    def load(self) -> None:
+        from autodj.runtime_state import load_into_settings
+
+        load_into_settings(self, self.state_dir)
+
+    def load_persistent_state(self) -> None:
+        """Compatibility name shared with PlayerBridge."""
+        self.load()
+
+    def save(self) -> None:
+        from autodj.runtime_state import save_from_player
+
+        save_from_player(self.get_settings(), self.state_dir)
+
+    def save_persistent_state(self) -> None:
+        """Compatibility name shared with PlayerBridge."""
+        self.save()
+
+    def get_settings(self) -> dict[str, Any]:
+        """Return the same settings document shape served by PlayerBridge."""
+        cfg, pb = self.cfg, self.cfg.playback
+        from autodj._bridge import _break_settings, _request_settings, _request_switches
+        from autodj.presets import BUILTIN_PRESETS
+
+        names = sorted(set(BUILTIN_PRESETS) | set(cfg.presets))
+        library_dir = cfg.index.library_dir
+        related_problem = getattr(
+            self.player, "related_artists_problem", self.related_artists_problem
+        )
+        tracks_problem = getattr(self.player, "related_tracks_problem", self.related_tracks_problem)
+        return {
+            "preset": self._preset.name if self._preset else None,
+            "available_presets": names,
+            "transition": cfg.transitions.effect,
+            "djmix": {
+                "harmonic_mode": cfg.djmix.harmonic_mode,
+                "beatmatch": cfg.djmix.beatmatch,
+                "drop_mix": cfg.djmix.drop_mix,
+                "key_shift": cfg.djmix.key_shift,
+                "phrase_align": cfg.djmix.phrase_align,
+                "outro_intro_align": cfg.djmix.outro_intro_align,
+                "filter_sweep": cfg.djmix.filter_sweep,
+                "vocal_guard": bool(cfg.djmix.vocal_guard),
+                "phrase_bars": int(cfg.djmix.phrase_bars),
+                "beatmatch_max_stretch": float(cfg.djmix.beatmatch_max_stretch),
+                "beatmatch_glide_bars": int(cfg.djmix.beatmatch_glide_bars),
+                "filter_sweep_floor_hz": float(cfg.djmix.filter_sweep_floor_hz),
+            },
+            "playback": {
+                "crossfade_seconds": pb.crossfade_seconds,
+                "fade_in_seconds": pb.fade_in_seconds,
+                "music_speed_percent": float(pb.music_speed_percent),
+                "crossfade_eq_duck": pb.crossfade_eq_duck,
+                "pure_shuffle": self._pure_shuffle,
+                "pick_mode": "random" if self._pure_shuffle else pb.pick_mode,
+                "anchor_to_seed": self._anchor_to_seed,
+                "replaygain_enabled": cfg.replaygain.enabled,
+                "loudness_processing": pb.loudness_processing
+                or ("replaygain" if cfg.replaygain.enabled else "off"),
+                "transition_mode": pb.transition_mode,
+                "post_queue_seed": pb.post_queue_seed,
+                "key_notation": pb.key_notation,
+                "key_prefer_flats": bool(pb.key_prefer_flats),
+                "show_lyrics": pb.show_lyrics,
+                "beat_sync_fx": bool(pb.beat_sync_fx),
+                "repeat_rules": pb.repeat_rules.model_dump(),
+                "related_artists_problem": related_problem
+                if isinstance(related_problem, str)
+                else None,
+                "related_artists_default_file": str(
+                    (Path(library_dir) / "related-artists.toml").resolve()
+                )
+                if library_dir is not None
+                else "",
+                "related_tracks_problem": tracks_problem
+                if isinstance(tracks_problem, str)
+                else None,
+                "related_tracks_default_file": str(
+                    (Path(library_dir) / "related-tracks.toml").resolve()
+                )
+                if library_dir is not None
+                else "",
+                "transition_wet_mix": float(cfg.transitions.wet_mix),
+                "replaygain_target_db": float(cfg.replaygain.target_db),
+                "replaygain_max_clip_safe_gain": float(cfg.replaygain.max_clip_safe_gain),
+                "crossfade_bass_cutoff_hz": float(pb.crossfade_bass_cutoff_hz),
+                "pick_top_k": int(pb.pick_top_k),
+                "hour_fit": bool(pb.hour_fit),
+                "hour_fit_window_minutes": int(pb.hour_fit_window_minutes),
+                "pick_temperature": float(pb.pick_temperature),
+                "stereotool_agc_drive_db": float(pb.stereotool_agc_drive_db),
+                "intro_lift_max_db": float(pb.intro_lift_max_db),
+                "stereotool_input_trim_db": float(pb.stereotool_input_trim_db),
+                "stereotool_preset": pb.stereotool_preset,
+                "library_size": len(self.library.entries_snapshot())
+                if self.library is not None
+                else int(self.sim.ntotal if self.sim else 0),
+                "key_sync_fx": bool(pb.key_sync_fx),
+                "beatmatch_on_skip": bool(pb.beatmatch_on_skip),
+                "skip_style": pb.skip_style,
+                "prefetch_next_track": pb.prefetch_next_track,
+                "silence_trigger_crossfade": pb.silence_trigger_crossfade,
+                "liners_enabled": bool(pb.liners_enabled),
+                "liners_every_n_songs": pb.liners_every_n_songs,
+                "liners_every_minutes": pb.liners_every_minutes,
+                "liners_random_min_minutes": pb.liners_random_min_minutes,
+                "liners_random_max_minutes": pb.liners_random_max_minutes,
+                "liners_pick_mode": pb.liners_pick_mode,
+                "liners_duck_db": pb.liners_duck_db,
+                "liners_talk_up": bool(pb.liners_talk_up),
+                "matched_intro_only_without_liner": bool(
+                    getattr(pb, "matched_intro_only_without_liner", False)
+                ),
+                "stream_bitrate": int(cfg.stream.bitrate),
+                "stream_continuous": bool(cfg.stream.continuous),
+                "stream_station_name": cfg.stream.station_name,
+                "stream_genre": getattr(cfg.stream, "genre", ""),
+                "stream_description": getattr(cfg.stream, "description", ""),
+                "stream_url": getattr(cfg.stream, "url", ""),
+                "nowplaying_show_next": cfg.nowplaying.show_next,
+                "dmca_enabled": cfg.dmca.enabled,
+                "stream_max_listeners_per_address": cfg.stream.max_listeners_per_address,
+                **_request_settings(getattr(cfg, "requests", None)),
+                **_request_switches(getattr(cfg, "requests", None), self.page_saved),
+                **_break_settings(getattr(cfg, "breaks", None), self.page_saved),
+                "stream_aac_bitrate": int(cfg.stream.aac_bitrate),
+                "stream_opus_bitrate": int(cfg.stream.opus_bitrate),
+                "stream_stats_days": int(cfg.stream.stats_days),
+                "volume": self._volume,
+                "is_muted": self._is_muted,
+            },
+            "bpm_range": {
+                "lo": self._bpm_range[0] if self._bpm_range else None,
+                "hi": self._bpm_range[1] if self._bpm_range else None,
+            },
+            "discovery_every": self._discovery_every,
+            "discovery_enabled": self._discovery_enabled,
+            "eq": self.get_eq(),
+        }
+
+    def set_preset(self, name: str | None) -> None:
+        if not name:
+            self._preset = None
+        else:
+            from autodj.presets import get_preset
+
+            try:
+                self._preset = get_preset(name, self.cfg.presets)
+            except ValueError:
+                return
+            if self._preset.discovery_every and self._discovery_every is None:
+                self._discovery_every = self._preset.discovery_every
+        if self.player is not None and (
+            refresh := getattr(self.player, "refresh_render_ahead", None)
+        ):
+            refresh()
+        self.sync_to_player()
+
+    def set_transition(self, effect: str) -> None:
+        from autodj.transitions import TRANSITION_EFFECT_NAMES
+
+        name = effect.lower()
+        if name not in TRANSITION_EFFECT_NAMES:
+            raise ValueError(f"unknown transition effect: {effect}")
+        self.cfg.transitions.effect = name
+
+    def set_djmix(self, **flags: Any) -> None:
+        from autodj.dj_meta import HARMONIC_MODES
+
+        for key, value in flags.items():
+            if value is None:
+                continue
+            if key == "harmonic_mode":
+                mode = str(value).lower()
+                if mode in HARMONIC_MODES:
+                    self.cfg.djmix.harmonic_mode = mode
+            elif key in {"phrase_bars", "beatmatch_glide_bars"}:
+                setattr(self.cfg.djmix, key, int(value))
+            elif key in {"beatmatch_max_stretch", "filter_sweep_floor_hz"}:
+                setattr(self.cfg.djmix, key, float(value))
+            elif hasattr(self.cfg.djmix, key):
+                setattr(self.cfg.djmix, key, bool(value))
+
+    def set_playback_settings(self, body: PlaybackSettingsBody, *, restoring: bool = False) -> None:
+        values = body.model_dump(exclude_none=True)
+        from autodj.settings_bodies import validate_playback_choices
+
+        validate_playback_choices(values)
+        if body.repeat_rules is not None:
+            values["repeat_rules"] = body.repeat_rules
+        if "stereotool_preset" in values:
+            from autodj.stereotool_presets import preset_path
+
+            preset_path(self.cfg.index.shared_dir, values["stereotool_preset"])
+        related_artists = self._read_related_artists(body, restoring=restoring)
+        related_tracks = self._read_related_tracks(body, restoring=restoring)
+        if related_artists is not None:
+            self._related_artists, self.related_artists_problem = related_artists
+        if related_tracks is not None:
+            self._related_tracks, self.related_tracks_problem = related_tracks
+        targets = {
+            "pure_shuffle": (self, "_pure_shuffle"),
+            "anchor_to_seed": (self, "_anchor_to_seed"),
+            "replaygain_enabled": (self.cfg.replaygain, "enabled"),
+            "replaygain_target_db": (self.cfg.replaygain, "target_db"),
+            "replaygain_max_clip_safe_gain": (self.cfg.replaygain, "max_clip_safe_gain"),
+            "transition_wet_mix": (self.cfg.transitions, "wet_mix"),
+        }
+        for key, value in values.items():
+            target, attr = targets.get(key, (self.cfg.playback, key))
+            setattr(target, attr, value)
+        if "pick_mode" in values:
+            self._pure_shuffle = values["pick_mode"] == "random"
+            if values["pick_mode"] == "clock":
+                self.cfg.playback.transition_mode = "saved_points"
+        elif "pure_shuffle" in values:
+            self.cfg.playback.pick_mode = "random" if values["pure_shuffle"] else "similarity"
+        if "loudness_processing" in values:
+            self.cfg.replaygain.enabled = values["loudness_processing"] == "replaygain"
+        elif "replaygain_enabled" in values:
+            self.cfg.playback.loudness_processing = (
+                "replaygain" if values["replaygain_enabled"] else "off"
+            )
+        for key in (
+            "liners_every_n_songs",
+            "liners_every_minutes",
+            "liners_random_min_minutes",
+            "liners_random_max_minutes",
+        ):
+            if values.get(key) == 0:
+                setattr(self.cfg.playback, key, None)
+        player = self.player
+        if player is not None:
+            if related_tracks is not None:
+                player._related_tracks = related_tracks[0]
+            if related_artists is not None:
+                player._related_artists = related_artists[0]
+                if hasattr(player, "_key_cache_lock"):
+                    with player._key_cache_lock:
+                        player._key_cache = None
+            if (
+                values.get("anchor_to_seed")
+                and not getattr(player, "_seed_path", None)
+                and player._state.current_track
+            ):
+                player._seed_path = player._state.current_track.path
+            if "post_queue_seed" in values and self.cfg.playback.post_queue_seed != "pre_queue":
+                player._state.pre_queue_seed = None
+            if values.get("show_lyrics") is False:
+                player._current_lyrics = []
+                player._current_lyrics_plain = ""
+            if "repeat_rules" in values:
+                from autodj.player import apply_repeat_windows
+
+                apply_repeat_windows(player)
+            picking_changed = any(hasattr(self.cfg.playback, key) for key in values) or bool(
+                {"pure_shuffle", "anchor_to_seed"} & values.keys()
+            )
+            if (
+                picking_changed
+                and not restoring
+                and (refresh := getattr(player, "refresh_render_ahead", None))
+            ):
+                refresh()
+            if (
+                "repeat_rules" in values
+                and (ledger := getattr(player, "_ledger", None)) is not None
+                and hasattr(ledger, "recent_plays")
+            ):
+                player.restore_repeat_history(ledger, refresh=True)
+        self.sync_to_player()
+
+    def _read_related_artists(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
+        if body.repeat_rules is None:
+            return None
+        from autodj.related_artist_file import (
+            invalid_related_artists_message,
+            load_configured_related_artists,
+            unused_related_artists_message,
+        )
+        from autodj.repeat_rules import RelatedArtists
+
+        related = RelatedArtists()
+        problem = None
+        if body.repeat_rules.use_related_artists:
+            try:
+                related = load_configured_related_artists(self.cfg.index.library_dir)
+            except (OSError, ValueError) as exc:
+                if not restoring:
+                    message = invalid_related_artists_message(exc)
+                    self.related_artists_problem = message
+                    if self.player is not None:
+                        self.player.related_artists_problem = message
+                    raise ValueError(message) from exc
+                problem = unused_related_artists_message(exc)
+                logger.warning("Related artists file was not used: %s", exc)
+        return related, problem
+
+    def _read_related_tracks(self, body: PlaybackSettingsBody, *, restoring: bool) -> Any:
+        if body.repeat_rules is None:
+            return None
+        from autodj.related_artist_file import (
+            invalid_related_artists_message,
+            load_configured_related_tracks,
+            unused_related_artists_message,
+        )
+        from autodj.repeat_rules import RelatedTracks
+
+        related = RelatedTracks()
+        problem = None
+        if body.repeat_rules.use_related_tracks:
+            try:
+                related = load_configured_related_tracks(self.cfg.index.library_dir)
+            except (OSError, ValueError) as exc:
+                if not restoring:
+                    message = invalid_related_artists_message(exc, "tracks")
+                    self.related_tracks_problem = message
+                    if self.player is not None:
+                        self.player.related_tracks_problem = message
+                    raise ValueError(message) from exc
+                problem = unused_related_artists_message(exc, "tracks")
+                logger.warning("Related tracks file was not used: %s", exc)
+        return related, problem
+
+    def set_bpm_range(self, lo: float | None, hi: float | None) -> None:
+        self._bpm_range = None if lo is None or hi is None or lo >= hi else (lo, hi)
+        self.sync_to_player()
+
+    def set_discovery_every(self, every: int | None, *, restoring: bool = False) -> None:
+        self._discovery_every = None if every is None or every <= 0 else int(every)
+        if every is not None and every > 0:
+            self._discovery_enabled = True
+        else:
+            self._discovery_enabled = False
+        if self.player is not None:
+            self.player._state.discovery_enabled = self._discovery_enabled
+            if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
+                refresh()
+        self.sync_to_player()
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(1.0, volume))
+        if self.player is not None:
+            self.player._state.volume = self._volume
+
+    def toggle_mute(self) -> bool:
+        self._is_muted = not self._is_muted
+        if self.player is not None:
+            self.player._state.is_muted = self._is_muted
+        return self._is_muted
+
+    def set_muted(self, value: bool) -> None:
+        self._is_muted = value
+        if self.player is not None:
+            self.player._state.is_muted = value
+
+    def set_eq(
+        self, low: float | None = None, mid: float | None = None, high: float | None = None
+    ) -> dict[str, float]:
+        if low is not None:
+            self._eq_low = max(0.0, min(2.0, low))
+        if mid is not None:
+            self._eq_mid = max(0.0, min(2.0, mid))
+        if high is not None:
+            self._eq_high = max(0.0, min(2.0, high))
+        self.sync_to_player()
+        return self.get_eq()
+
+    def get_eq(self) -> dict[str, float]:
+        return {
+            "low": round(self._eq_low, 3),
+            "mid": round(self._eq_mid, 3),
+            "high": round(self._eq_high, 3),
+        }
+
+    def toggle_discovery(self) -> bool:
+        self._discovery_enabled = not self._discovery_enabled
+        if self.player is not None:
+            self.player._state.discovery_enabled = self._discovery_enabled
+        self.sync_to_player()
+        return self._discovery_enabled

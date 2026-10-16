@@ -508,15 +508,12 @@ def start_server_audio_liners(bridge: PlayerBridge, liner_folder: Path) -> None:
     bridge.attach_liner_scheduler(scheduler)
 
 
-def _liner_gate(bridge: PlayerBridge, paths: StationPaths) -> LinerGate:
+def _liner_gate(cfg: Any, library: Any, paths: StationPaths) -> LinerGate:
     """The station's liner play dates, with the catalog naming registered liners."""
     from autodj.categories import station_wall
     from autodj.clip_dates import LinerDates, LinerGate, station_today
 
-    cfg = bridge.player._cfg
-
     def liner_id(path: str) -> str:
-        library = bridge.library
         record = library.catalog.record_for_path(path) if library is not None else None
         return str(record["id"]) if record else Path(path).name
 
@@ -863,7 +860,7 @@ class StationRuntime:
         self.server_audio = server_audio
         self.first_track = first_track
         self.paths = paths if paths is not None else StationPaths.default(bridge.player._cfg)
-        self.liner_gate = _liner_gate(bridge, self.paths)
+        self.liner_gate = _liner_gate(bridge.player._cfg, bridge.library, self.paths)
         # Keep both station ownership and the expected air time when filtering liners.
         # A plain function avoids deep-copying the store with player settings.
         bridge.player.liner_filter = lambda entries, at=None: self._playable_liners(entries, at)
@@ -1612,6 +1609,8 @@ class StationRegistry:
         self._closing = False
         self.relay_lock = threading.RLock()
         self.configuration_lock = threading.RLock()
+        self._content: dict[str, Any] = {}
+        self.build_content: Callable[[ExtraStation], Any] | None = None
         # Stations being stopped.  From the moment a stop is asked for,
         # their routes answer 409 at once and a start is refused at once,
         # instead of waiting while the player finishes (up to
@@ -1744,6 +1743,20 @@ class StationRegistry:
             )
         return out
 
+    def editable(self, slug: str) -> Any:
+        """Return the running station or its saved editors, without starting playback."""
+        current = self.get(slug)
+        if not current.stopped:
+            return current
+        if slug in self._stopping or slug in self._stuck:
+            raise StationControlError("That station is still stopping")
+        with self.configuration_lock:
+            if slug not in self._content:
+                if self.build_content is None:
+                    raise StationControlError("Station configuration is not available")
+                self._content[slug] = self.build_content(self._extras[slug])
+            return self._content[slug]
+
     def configuration(self, slug: str) -> AutoDJConfig:
         """Saved configuration is available independently of the running engine."""
         if slug == DEFAULT_SLUG and isinstance(self._default, StationRuntime):
@@ -1762,6 +1775,10 @@ class StationRegistry:
             document["station"]["station"] = asdict(proposed)
             atomic_write(paths.definition, json.dumps(document, indent=2) + "\n")
             cfg.station = proposed
+            self._content.pop(slug, None)
+            running = self._running.get(slug)
+            if running is not None:
+                running.cfg.station.liner_upload_max_mib = proposed.liner_upload_max_mib
             return asdict(proposed)
 
     def set_autostart(self, slug: str, enabled: bool) -> None:
@@ -1899,6 +1916,7 @@ class StationRegistry:
             return running
 
     async def _start_extra(self, extra: ExtraStation) -> StationRuntime:
+        self._content.pop(extra.slug, None)
         try:
             runtime = await asyncio.to_thread(extra.build, self)
         except StationControlError:
