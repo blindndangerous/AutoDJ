@@ -23,9 +23,12 @@ waits, and the tick writes when it aired, so its wait holds across restarts.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
+import math
 import random
+import re
 import threading
 import time
 import uuid
@@ -33,10 +36,12 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from datetime import date as Date
+from functools import lru_cache
 from pathlib import Path
+from string import Formatter
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from autodj.catalog import normalize_path
 from autodj.clip_dates import ClipDates
@@ -55,6 +60,63 @@ WARM_SECONDS = 5.0
 MAX_TRIES = 256
 
 
+FILENAME_FIELDS = frozenset({"year", "artist", "title", "album", "genre", "bpm"})
+
+
+@lru_cache(maxsize=256)
+def _filename_parts(pattern: str) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
+    if not pattern.strip() or len(pattern) > 240:
+        raise ValueError("Enter a filename pattern of 1 to 240 characters")
+    if any(char in pattern for char in ("/", "\\")) or any(ord(char) < 32 for char in pattern):
+        raise ValueError("Match a filename, without folder separators or control characters")
+    try:
+        parts = tuple(Formatter().parse(pattern))
+    except ValueError:
+        raise ValueError("Use balanced braces around song fields, such as {year}") from None
+    for _literal, field, spec, conversion in parts:
+        if field is not None and field not in FILENAME_FIELDS:
+            raise ValueError(
+                f"Unknown song field {{{field}}}; use year, artist, title, album, genre or bpm"
+            )
+        if spec or conversion:
+            raise ValueError("Song fields do not accept format specifications or conversions")
+    return parts
+
+
+def resolve_filename_pattern(
+    pattern: str, entry: Any
+) -> tuple[str | None, re.Pattern[str] | None, tuple[str, ...]]:
+    """Expand song fields literally; only the pattern's own * and ? are wildcards."""
+    display: list[str] = []
+    glob: list[str] = []
+    missing: list[str] = []
+    for literal, field, _spec, _conversion in _filename_parts(pattern):
+        display.append(literal)
+        glob.append(literal.replace("[", "[[]"))
+        if field is None:
+            continue
+        value = getattr(entry, field, None)
+        if field in {"year", "bpm"}:
+            try:
+                number = float(value) if value is not None else 0.0
+                value = (
+                    str(math.floor(number + 0.5)) if math.isfinite(number) and number > 0 else ""
+                )
+            except (TypeError, ValueError, OverflowError):
+                value = ""
+        else:
+            value = str(value).strip() if value is not None else ""
+        if not value:
+            if field not in missing:
+                missing.append(field)
+            continue
+        display.append(value)
+        glob.append(value.replace("[", "[[]").replace("*", "[*]").replace("?", "[?]"))
+    if missing:
+        return None, None, tuple(missing)
+    return "".join(display), re.compile(fnmatch.translate("".join(glob)), re.IGNORECASE), ()
+
+
 class IntroRule(BaseModel):
     """Conditions and registered liner clips for one next-song rule."""
 
@@ -64,6 +126,7 @@ class IntroRule(BaseModel):
     priority: Literal["before_song", "before_artist", "after_artist"] = "after_artist"
     clip_ids: list[str] = Field(default_factory=list, max_length=100)
     liner_folder: str | None = None
+    filename_pattern: str | None = Field(default=None, max_length=240)
     label: str = Field(default="", max_length=120)
     chance: int = Field(default=100, ge=1, le=100)
     cooldown_minutes: int = Field(default=60, ge=0, le=MAX_COOLDOWN_MINUTES)
@@ -97,6 +160,18 @@ class IntroRule(BaseModel):
     def _liner_folder(cls, value: str | None) -> str | None:
         if value is not None and (not value.strip() or len(value) > 1000):
             raise ValueError("Choose a registered voice liner folder")
+        return value
+
+    @field_validator("filename_pattern")
+    @classmethod
+    def _filename_pattern(cls, value: str | None, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        _filename_parts(value)
+        if not info.data.get("liner_folder"):
+            raise ValueError("Choose a registered liner folder for filename matching")
+        if info.data.get("clip_ids"):
+            raise ValueError("Choose filename matching or specific liners, not both")
         return value
 
     @model_validator(mode="after")
@@ -141,6 +216,7 @@ class IntroRules:
         self._compiled: dict[str, list[Any]] = {}
         self._liner_snapshot: Any = None
         self._folder_pools: dict[str, tuple[Any, ...]] = {}
+        self._pattern_pools: dict[tuple[str, str], tuple[tuple[Any, ...], tuple[Any, ...]]] = {}
         self._aired: dict[str, float] = {}
         self._reserved: dict[str, float] = {}
         self._heard: deque[tuple[str, float]] = deque()
@@ -422,6 +498,21 @@ class IntroRules:
                 self._liner_snapshot = liners
             self._folder_pools.update(built)
 
+    def _pattern_pool(self, pattern: str, entry: Any, pool: tuple[Any, ...]) -> tuple[Any, ...]:
+        expanded, matcher, _missing = resolve_filename_pattern(pattern, entry)
+        if matcher is None or expanded is None:
+            return ()
+        key = (pattern, matcher.pattern)
+        cached = self._pattern_pools.get(key)
+        if cached is not None and cached[0] is pool:
+            return cached[1]
+        matches = tuple(clip for clip in pool if matcher.fullmatch(Path(clip.path).name))
+        # Repeated years reuse the filtered pool without retaining every artist/title forever.
+        if len(self._pattern_pools) >= 64:
+            self._pattern_pools.pop(next(iter(self._pattern_pools)))
+        self._pattern_pools[key] = pool, matches
+        return matches
+
     def _draw(self, count: int) -> Iterator[int]:
         """Distinct random indices below *count*: every one for a few clips.
 
@@ -570,6 +661,8 @@ class IntroRules:
                             stale = False
                         pool = self._pool(rule.liner_folder, liners)
                         self._folder_pools[rule.liner_folder] = pool
+                if rule.filename_pattern:
+                    pool = self._pattern_pool(rule.filename_pattern, entry, pool)
                 for index in self._draw(len(clips) + len(pool)):
                     if index < len(clips):
                         clip, old = clips[index], False

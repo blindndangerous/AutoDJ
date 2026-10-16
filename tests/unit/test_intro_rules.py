@@ -401,3 +401,157 @@ def test_a_large_folder_of_missing_files_cannot_hold_up_the_render(
     entry = SimpleNamespace(path=str(tmp_path / "song.flac"), genre="Rock")
     assert store.choose(entry, NOW, lib) is None
     assert len(set(looked)) == len(looked) == intro_rules.MAX_TRIES
+
+
+@pytest.mark.parametrize(
+    "field,value,expanded",
+    [
+        ("year", 1988, "1988"),
+        ("bpm", 119.5, "120"),
+        ("bpm", 120.1, "120"),
+        ("artist", "Rick Astley", "Rick Astley"),
+        ("title", "Never Gonna Give You Up", "Never Gonna Give You Up"),
+        ("album", "Whenever You Need Somebody", "Whenever You Need Somebody"),
+        ("genre", "Pop", "Pop"),
+    ],
+)
+def test_filename_pattern_expands_song_fields(field, value, expanded):
+    from autodj.intro_rules import resolve_filename_pattern
+
+    text, matcher, missing = resolve_filename_pattern(
+        "intro-{" + field + "}-?.wav", SimpleNamespace(**{field: value})
+    )
+    assert text == f"intro-{expanded}-?.wav"
+    assert not missing
+    assert matcher.fullmatch(f"INTRO-{expanded.upper()}-1.WAV")
+    assert not matcher.fullmatch(f"intro-{expanded}-12.wav")
+
+
+def test_metadata_wildcards_and_brackets_are_literal():
+    from autodj.intro_rules import resolve_filename_pattern
+
+    text, matcher, missing = resolve_filename_pattern(
+        "[intro]-{artist}-*.wav", SimpleNamespace(artist="A*[B]?")
+    )
+    assert text == "[intro]-A*[B]?-*.wav" and not missing
+    assert matcher.fullmatch("[intro]-A*[B]?-one.wav")
+    assert not matcher.fullmatch("[intro]-AnythingBz-one.wav")
+
+
+@pytest.mark.parametrize(
+    "values,missing",
+    [
+        ({}, ("year", "bpm")),
+        ({"year": 0, "bpm": float("nan")}, ("year", "bpm")),
+        ({"year": 1988, "bpm": -1}, ("bpm",)),
+    ],
+)
+def test_missing_numeric_fields_never_become_wildcards(values, missing):
+    from autodj.intro_rules import resolve_filename_pattern
+
+    assert resolve_filename_pattern("{year}-{bpm}-{year}-*.wav", SimpleNamespace(**values)) == (
+        None,
+        None,
+        missing,
+    )
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "",
+        "{unknown}-*",
+        "{year",
+        "{artist.name}",
+        "{year:04d}",
+        "{artist!r}",
+        "../*.wav",
+        "folder\\*.wav",
+        "a\n*.wav",
+        "x" * 241,
+    ],
+)
+def test_invalid_filename_patterns_are_refused(pattern):
+    with pytest.raises(ValueError):
+        IntroRule(
+            conditions=[{"field": "genre", "operator": "is", "value": "Rock"}],
+            liner_folder="/liners",
+            filename_pattern=pattern,
+        )
+
+
+def test_filename_patterns_require_a_folder_and_cannot_mix_specific_clips():
+    with pytest.raises(ValueError, match="registered liner folder"):
+        rule(filename_pattern="{year}-*.wav")
+    with pytest.raises(ValueError, match="specific liners"):
+        rule(liner_folder="/liners", filename_pattern="{year}-*.wav")
+
+
+def test_pattern_rule_selects_matching_pool_and_keeps_whole_rule_cooldown(tmp_path):
+    root = tmp_path / "liners"
+    root.mkdir()
+    clips = tuple(
+        SimpleNamespace(path=str(root / name))
+        for name in ("year-1982-a.wav", "YEAR-1988-b.WAV", "generic.wav")
+    )
+    for clip in clips:
+        Path(clip.path).touch()
+    lib = SimpleNamespace(
+        entries_snapshot=lambda kind: clips,
+        entry_for_path=lambda path: next((clip for clip in clips if clip.path == path), None),
+    )
+    store = IntroRules(
+        tmp_path / "rules.json", lambda at: date(2026, 10, 16), random.Random(1), lambda: lib
+    )
+    key = "a" * 32
+    store.save(
+        key,
+        IntroRule(
+            conditions=[{"field": "genre", "operator": "is", "value": "Rock"}],
+            liner_folder=str(root),
+            filename_pattern="year-{year}-*.wav",
+            cooldown_minutes=60,
+        ),
+        create=True,
+    )
+    song = SimpleNamespace(path="song.flac", genre="Rock", year=1982)
+    chosen = store.choose(song, NOW, lib)
+    assert chosen.path.name == "year-1982-a.wav"
+    song.year = 1988
+    assert store.choose(song, NOW + 30, lib) is None
+    chosen = store.choose(song, NOW + 3601, lib)
+    assert chosen.path.name == "YEAR-1988-b.WAV"
+    # The same gate used by playback still excludes station-ineligible or expired liners.
+    assert store.choose(song, NOW + 7202, lib, allowed=lambda entries, at: ()) is None
+    song.year = 0
+    assert store.choose(song, NOW + 10803, lib) is None
+    assert (
+        IntroRules(store.path, store._day_at, random.Random()).all()[key].filename_pattern
+        == "year-{year}-*.wav"
+    )
+
+
+def test_pattern_filtering_happens_before_bounded_random_sampling(tmp_path):
+    store = IntroRules(tmp_path / "rules.json", lambda at: date(2026, 10, 16), random.Random(1))
+    clip = tmp_path / "year-1988.wav"
+    clip.touch()
+    pool = (
+        *(SimpleNamespace(path=str(tmp_path / f"other-{n}.wav")) for n in range(1000)),
+        SimpleNamespace(path=str(clip)),
+    )
+    lib = SimpleNamespace(entries_snapshot=lambda kind: pool)
+    store.save(
+        "b" * 32,
+        IntroRule(
+            conditions=[{"field": "year", "operator": "eq", "value": 1988}],
+            liner_folder=str(tmp_path),
+            filename_pattern="year-{year}.wav",
+        ),
+        create=True,
+    )
+    chosen = store.choose(SimpleNamespace(year=1988), NOW, lib)
+    assert chosen.path == clip
+    # A refreshed pool must not reuse an older set of filename matches.
+    first = store._pattern_pool("year-{year}.wav", SimpleNamespace(year=1988), pool)
+    assert store._pattern_pool("year-{year}.wav", SimpleNamespace(year=1988), pool) is first
+    assert store._pattern_pool("year-{year}.wav", SimpleNamespace(year=1988), pool[:-1]) == ()

@@ -98,6 +98,7 @@ export const STATION_ROUTES = Object.freeze([
   "/intros/{intro_id}",
   "/intros/{intro_id}/audio",
   "/intros/rules",
+  "/intros/rules/test",
   "/intros/rules/{rule_id}",
   "/shows",
   "/shows/on-air",

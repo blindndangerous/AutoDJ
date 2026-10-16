@@ -22,10 +22,10 @@ import { announceStatus } from "./live-region.js";
 
 const MAX_CONDITIONS = 32;
 const MAX_COOLDOWN = 7 * 24 * 60;
-const FIELDS = ["label", "conditions", "clips", "folder", "chance", "cooldown", "not-before", "not-after"];
+const FIELDS = ["label", "conditions", "clips", "folder", "pattern", "pattern-folder", "test-song", "chance", "cooldown", "not-before", "not-after"];
 // The server's field names, mapped to the page's.
 const SERVER_FIELDS = {
-  label: "label", conditions: "conditions", clip_ids: "clips", liner_folder: "folder",
+  label: "label", conditions: "conditions", clip_ids: "clips", liner_folder: "folder", filename_pattern: "pattern",
   chance: "chance", cooldown_minutes: "cooldown", not_before: "not-before", not_after: "not-after",
 };
 const CONDITION_FIELDS = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets", "category"];
@@ -69,7 +69,8 @@ export function describeRule(rule, index, data = {}) {
   const liners = new Map((data.liners || []).map((item) => [item.id, item.label]));
   const conditions = describeConditions(rule.conditions || [], rule.match, data.sources || [], data.categories || []);
   const clips = (rule.clip_ids || []).map((id) => liners.get(id) || "a liner that is no longer registered");
-  if (rule.liner_folder) clips.push(`any liner in ${rule.liner_folder}`);
+  if (rule.filename_pattern) clips.push(`liners matching filename pattern "${rule.filename_pattern}" in ${rule.liner_folder || "the selected folder"}`);
+  else if (rule.liner_folder) clips.push(`any liner in ${rule.liner_folder}`);
   const sentences = [
     `${ruleName(rule, index)}: when the next song matches ${conditions}.`,
     `Plays ${clips.length > 1 ? "one of " : ""}${clips.join(", ")}.`,
@@ -84,8 +85,9 @@ export function describeRule(rule, index, data = {}) {
 // The error for the form's values besides its conditions, as [field,
 // message], or null.  The server checks the same rules again and names the
 // field it refuses.
-export function ruleFormError({ clipIds = [], folder = "", chance = "", cooldown = "", notBefore = "", notAfter = "" }) {
-  if (!clipIds.length && !folder) return ["clips", "Check at least one voice liner or choose a liner folder."];
+export function ruleFormError({ clipIds = [], folder = "", patternMode = false, chance = "", cooldown = "", notBefore = "", notAfter = "" }) {
+  if (patternMode && !folder) return ["pattern-folder", "Choose a liner folder for filename matching."];
+  if (!patternMode && !clipIds.length && !folder) return ["clips", "Check at least one voice liner or choose a liner folder."];
   const chanceText = String(chance).trim();
   if (!/^\d{1,3}$/.test(chanceText) || Number(chanceText) < 1 || Number(chanceText) > 100) {
     return ["chance", "Enter the chance as a whole number from 1 to 100."];
@@ -118,6 +120,15 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   const conditionAdd = el("intro-rules-condition-add");
   const linerHost = el("intro-rules-liners");
   const linersEmpty = el("intro-rules-liners-empty");
+  const selectionMode = el("intro-rules-selection-mode");
+  const specificLiners = el("intro-rules-specific-liners");
+  const patternFields = el("intro-rules-pattern-fields");
+  const patternInput = el("intro-rules-pattern");
+  const patternFolder = el("intro-rules-pattern-folder");
+  const testQuery = el("intro-rules-test-query");
+  const testResults = el("intro-rules-test-results");
+  const testSelected = el("intro-rules-test-selected");
+  const testOutput = el("intro-rules-test-output");
   const inputs = {
     label: el("intro-rules-label"), folder: el("intro-rules-folder"), chance: el("intro-rules-chance"),
     cooldown: el("intro-rules-cooldown"), "not-before": el("intro-rules-not-before"), "not-after": el("intro-rules-not-after"),
@@ -128,6 +139,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   let editing = null; // the rule ID being edited, or null when adding
   let opener = null;
   let generation = 0;
+  let testGeneration = 0;
   let suspended = false;
   let busy = false;
   let conditionId = 0;
@@ -173,7 +185,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     return inputs[field];
   }
   function showError(field, message) {
-    const control = controlFor(field);
+    const control = ({ pattern: patternInput, "pattern-folder": patternFolder, "test-song": testQuery })[field] || controlFor(field);
+    if (!control) { say(message, "error"); return; }
     control.setAttribute("aria-invalid", "true");
     errors[field].textContent = message;
     errors[field].hidden = false;
@@ -285,6 +298,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   }
 
   function openForm(rule, from) {
+    invalidateTest(true);
     editing = rule ? rule.id : null;
     opener = from;
     clearErrors();
@@ -299,12 +313,135 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     for (const value of rule?.conditions?.length ? rule.conditions : [{}]) conditionHost.append(conditionRow(value).row);
     renderLiners(rule?.clip_ids || []);
     renderFolders(rule?.liner_folder || "");
+    patternInput.value = rule?.filename_pattern || "";
+    renderPatternFolders(rule?.liner_folder || "");
+    selectionMode.value = rule?.filename_pattern ? "pattern" : "specific";
+    updateSelectionMode();
+    testQuery.value = "";
+    testResults.replaceChildren();
+    testSelected.textContent = "";
     legend.textContent = rule ? `Edit intro rule ${ruleName(rule, indexOf(rule.id))}` : "Add intro rule";
     form.hidden = false;
     inputs.label.focus();
   }
 
+  function renderPatternFolders(chosen = "") {
+    const folders = [...data.liner_folders];
+    if (chosen && !folders.includes(chosen)) folders.push(chosen);
+    patternFolder.replaceChildren(...[["", "Choose a folder"], ...folders.map((path) => [path, path])].map(([value, text]) => {
+      const option = doc.createElement("option"); option.value = value; option.textContent = text; return option;
+    }));
+    patternFolder.value = chosen;
+  }
+
+  function updateSelectionMode() {
+    const pattern = selectionMode.value === "pattern";
+    specificLiners.hidden = pattern;
+    patternFields.hidden = !pattern;
+  }
+
+  function invalidateTest(clearSong = false) {
+    testGeneration += 1;
+    el("intro-rules-test").disabled = false;
+    testOutput.hidden = true;
+    testOutput.replaceChildren();
+    if (clearSong) {
+      delete testSelected.dataset.trackPath;
+      testSelected.textContent = "";
+      testResults.replaceChildren();
+    }
+  }
+
+  function ruleBody(conditions) {
+    const patternMode = selectionMode.value === "pattern";
+    const clipIds = linerBoxes().filter((box) => box.checked).map((box) => box.value);
+    const folder = patternMode ? patternFolder.value : inputs.folder.value;
+    return {
+      label: inputs.label.value.trim(), match: el("intro-rules-match").value, conditions,
+      clip_ids: patternMode ? [] : clipIds, filename_pattern: patternMode ? patternInput.value : null,
+      priority: el("intro-rules-priority").value, chance: Number(inputs.chance.value.trim()),
+      cooldown_minutes: Number(inputs.cooldown.value.trim()),
+      ...(folder ? { liner_folder: folder } : {}),
+      ...(inputs["not-before"].value ? { not_before: inputs["not-before"].value } : {}),
+      ...(inputs["not-after"].value ? { not_after: inputs["not-after"].value } : {}),
+    };
+  }
+
+  async function searchTestSong() {
+    invalidateTest(true);
+    const query = testQuery.value.trim();
+    if (query.length < 2) { showError("test-song", "Type at least two letters to search."); return; }
+    clearError("test-song");
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation, testMine = testGeneration;
+    try {
+      const answer = await request(`/api/search?q=${encodeURIComponent(query)}&limit=20`);
+      if (!current(epoch, mine) || testMine !== testGeneration) return;
+      testResults.replaceChildren(...(answer.results || []).map((song) => {
+        const item = doc.createElement("li"), pick = doc.createElement("button");
+        pick.type = "button";
+        pick.textContent = song.artist ? `${song.artist}, ${song.title || song.display_name}` : (song.title || song.display_name);
+        pick.addEventListener("click", () => {
+          invalidateTest();
+          testSelected.dataset.trackPath = song.path;
+          testSelected.textContent = `Selected: ${pick.textContent}`;
+          clearError("test-song");
+          el("intro-rules-test").focus();
+        });
+        item.append(pick); return item;
+      }));
+      say(answer.results?.length ? `${answer.results.length} songs found. Choose a song to test.` : `No songs match ${query}.`);
+    } catch (error) {
+      if (current(epoch, mine) && testMine === testGeneration) say(`Could not search songs: ${error.message}`, "error");
+    }
+  }
+
+  async function testPattern() {
+    if (!testSelected.dataset.trackPath) { showError("test-song", "Search for and choose a song first."); return; }
+    let conditions;
+    try { conditions = readForm(); } catch (error) { showError("conditions", error.message); return; }
+    clearError("test-song");
+    invalidateTest();
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation, testMine = testGeneration;
+    const control = el("intro-rules-test"); control.disabled = true;
+    try {
+      const answer = await request(`/api/intros/rules/test?path=${encodeURIComponent(testSelected.dataset.trackPath)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ruleBody(conditions)),
+      });
+      if (!current(epoch, mine) || testMine !== testGeneration) return;
+      const matches = answer.matches || [];
+      const eligible = matches.filter((item) => item.eligible).length;
+      const missing = answer.missing_fields || [];
+      const expansion = doc.createElement("p");
+      expansion.textContent = answer.expanded_pattern == null ? "Pattern did not expand." : `Expanded pattern: ${answer.expanded_pattern}`;
+      const missingText = doc.createElement("p");
+      missingText.textContent = missing.length ? `Missing song fields: ${missing.join(", ")}.` : "No song fields are missing.";
+      const linerList = doc.createElement("ul");
+      linerList.setAttribute("aria-label", "Filename pattern test results");
+      if (!matches.length) {
+        const none = doc.createElement("li"); none.textContent = "No matching liners."; linerList.append(none);
+      } else {
+        for (const item of matches) {
+          const row = doc.createElement("li");
+          row.textContent = `${item.label}: ${item.eligible ? "eligible" : item.reason || "not eligible"}`;
+          linerList.append(row);
+        }
+      }
+      const note = doc.createElement("p"); note.textContent = answer.note || "";
+      testOutput.replaceChildren(expansion, missingText, linerList, note);
+      testOutput.hidden = false;
+      say(`Pattern test complete: ${eligible} eligible, ${matches.length - eligible} excluded; ${missing.length} missing song fields.`);
+    } catch (error) {
+      if (!current(epoch, mine) || testMine !== testGeneration) return;
+      const field = error.field === "filename_pattern" ? "pattern"
+        : error.field === "liner_folder" ? (selectionMode.value === "pattern" ? "pattern-folder" : "folder")
+          : error.field === "path" ? "test-song" : SERVER_FIELDS[error.field];
+      if (field) showError(field, error.message);
+      else say(`Could not test the pattern: ${error.message}`, "error");
+    } finally { if (testMine === testGeneration) control.disabled = false; }
+  }
+
   function closeForm() {
+    invalidateTest(true);
     form.hidden = true;
     editing = null;
     clearErrors();
@@ -334,9 +471,10 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     let conditions;
     try { conditions = readForm(); }
     catch (error) { showError("conditions", error.message); return; }
+    const patternMode = selectionMode.value === "pattern";
     const values = {
       clipIds: linerBoxes().filter((box) => box.checked).map((box) => box.value),
-      folder: inputs.folder.value,
+      folder: patternMode ? patternFolder.value : inputs.folder.value,
       chance: inputs.chance.value,
       cooldown: inputs.cooldown.value,
       notBefore: inputs["not-before"].value,
@@ -349,20 +487,10 @@ export function installIntroRulesPanel({ document: doc = document, request = req
         return;
       }
     }
-    const refused = ruleFormError(values);
+    if (patternMode && !patternInput.value.trim()) { showError("pattern", "Enter a filename pattern."); return; }
+    const refused = ruleFormError({ ...values, patternMode });
     if (refused) { showError(refused[0], refused[1]); return; }
-    const body = {
-      label: inputs.label.value.trim(),
-      match: el("intro-rules-match").value,
-      conditions,
-      clip_ids: values.clipIds,
-      priority: el("intro-rules-priority").value,
-      chance: Number(values.chance.trim()),
-      cooldown_minutes: Number(values.cooldown.trim()),
-      ...(values.folder ? { liner_folder: values.folder } : {}),
-      ...(values.notBefore ? { not_before: values.notBefore } : {}),
-      ...(values.notAfter ? { not_after: values.notAfter } : {}),
-    };
+    const body = ruleBody(conditions);
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
     busy = true;
     try {
@@ -381,7 +509,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       say(`Saved intro rule ${nameOf(saved.id)}.`);
     } catch (error) {
       if (!current(epoch, mine)) return;
-      const field = SERVER_FIELDS[error.field];
+      const field = error.field === "liner_folder" && patternMode ? "pattern-folder" : SERVER_FIELDS[error.field];
       if (field) showError(field, error.message);
       else say(`Could not save the intro rule: ${error.message}`, "error");
     } finally {
@@ -432,6 +560,20 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   }
 
   form.addEventListener("submit", (event) => void save(event));
+  selectionMode.addEventListener("change", () => { invalidateTest(); updateSelectionMode(); });
+  el("intro-rules-pattern-insert").addEventListener("click", () => {
+    const token = `{${el("intro-rules-pattern-field").value}}`;
+    const start = patternInput.selectionStart ?? patternInput.value.length;
+    const end = patternInput.selectionEnd ?? start;
+    patternInput.setRangeText(token, start, end, "end");
+    invalidateTest();
+    patternInput.focus();
+  });
+  el("intro-rules-test-search").addEventListener("click", () => void searchTestSong());
+  el("intro-rules-test").addEventListener("click", () => void testPattern());
+  testQuery.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); void searchTestSong(); }
+  });
   addButton.addEventListener("click", () => openForm(null, addButton));
   el("intro-rules-cancel")?.addEventListener("click", () => {
     const back = editing ? rowControl(editing) : null;
@@ -451,6 +593,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   });
   // Changing a refused field takes its error away.
   const onInput = (event) => {
+    if ([patternInput, patternFolder, selectionMode].includes(event.target)) invalidateTest();
+    if (event.target === testQuery) invalidateTest(true);
     for (const [field, control] of marked) {
       const inField = field === "clips" ? linerHost.contains(event.target) || event.target === inputs.folder
         : field === "conditions" ? conditionHost.contains(event.target) : control === event.target;

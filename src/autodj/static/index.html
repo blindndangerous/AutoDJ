@@ -3661,13 +3661,47 @@
           <button type="button" id="intro-rules-condition-add">Add condition</button>
           <fieldset id="intro-rules-clips">
             <legend><h5>Voice liners to choose from</h5></legend>
-            <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
-            <div id="intro-rules-liners" class="intro-rule-liners"></div>
-            <p id="intro-rules-clips-error" class="field-error" hidden></p>
             <div class="settings-row tag-field">
-              <label for="intro-rules-folder">Liner folder</label>
-              <select id="intro-rules-folder"><option value="">None</option></select>
-              <p id="intro-rules-folder-error" class="field-error" hidden></p>
+              <label for="intro-rules-selection-mode">Choose liners by</label>
+              <select id="intro-rules-selection-mode"><option value="specific">Specific liners</option><option value="pattern">Match filenames</option></select>
+            </div>
+            <div id="intro-rules-specific-liners">
+              <p id="intro-rules-liners-empty">This station has no registered voice liners. Add a Voice liner folder under Music folders and Voice liner folders.</p>
+              <div id="intro-rules-liners" class="intro-rule-liners"></div>
+              <p id="intro-rules-clips-error" class="field-error" hidden></p>
+              <div class="settings-row tag-field">
+                <label for="intro-rules-folder">Liner folder</label>
+                <select id="intro-rules-folder"><option value="">None</option></select>
+                <p id="intro-rules-folder-error" class="field-error" hidden></p>
+              </div>
+            </div>
+            <div id="intro-rules-pattern-fields" hidden>
+              <div class="settings-row tag-field">
+                <label for="intro-rules-pattern">Filename pattern</label>
+                <input type="text" id="intro-rules-pattern" maxlength="240" autocomplete="off" spellcheck="false" aria-describedby="intro-rules-pattern-help">
+                <span class="setting-desc" id="intro-rules-pattern-help">Use {year}, {artist}, {title}, {album}, {genre} or {bpm}. * matches any text and ? matches one character; field text is literal. BPM rounds to the nearest whole number.</span>
+                <p id="intro-rules-pattern-error" class="field-error" hidden></p>
+              </div>
+              <div class="settings-row">
+                <label for="intro-rules-pattern-field">Song field</label>
+                <select id="intro-rules-pattern-field"><option value="year">Year</option><option value="artist">Artist</option><option value="title">Title</option><option value="album">Album</option><option value="genre">Genre</option><option value="bpm">BPM</option></select>
+                <button type="button" id="intro-rules-pattern-insert">Insert song field</button>
+              </div>
+              <div class="settings-row tag-field">
+                <label for="intro-rules-pattern-folder">Liner folder</label>
+                <select id="intro-rules-pattern-folder"><option value="">Choose a folder</option></select>
+                <p id="intro-rules-pattern-folder-error" class="field-error" hidden></p>
+              </div>
+              <div class="settings-row tag-field">
+                <label for="intro-rules-test-query">Test with a song</label>
+                <input type="search" id="intro-rules-test-query" autocomplete="off">
+                <button type="button" id="intro-rules-test-search">Search songs</button>
+                <p id="intro-rules-test-song-error" class="field-error" hidden></p>
+                <ul id="intro-rules-test-results" role="list" aria-label="Song search results"></ul>
+                <p id="intro-rules-test-selected"></p>
+                <button type="button" id="intro-rules-test">Test pattern</button>
+                <div id="intro-rules-test-output" hidden></div>
+              </div>
             </div>
           </fieldset>
           <h5>When it plays</h5>
