@@ -205,7 +205,7 @@ def load_or_create_secret(
 
 
 #: Held while a private JSON file is read, changed and written again, so two
-#: changes to one station's secrets.json never undo each other.
+#: changes to one station's secrets.json in this process never undo each other.
 private_json_lock = threading.RLock()
 
 
@@ -238,7 +238,7 @@ def update_private_json(path: Path, change: Callable[[dict[str, Any]], bool]) ->
     *change* returns whether it changed anything; only then is the file
     written, with :func:`write_private_file`, so everything else in it is
     kept.  A file left with nothing but its version is deleted.  The whole
-    read, change and write happens under :data:`private_json_lock`.
+    read, change and write happens under :data:`private_json_lock` in this process.
 
     Returns:
         Whether the file changed.

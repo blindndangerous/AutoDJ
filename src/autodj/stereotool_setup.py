@@ -807,11 +807,12 @@ def _set_station_key(key: str | None) -> Callable[[dict[str, Any]], bool]:
 def _move_old_station_key(state_dir: Path | str) -> None:
     """Move a station's key from its old ``.stereo-tool-license`` into its ``secrets.json``.
 
-    Done once, on the first read after an upgrade.  A key already in
+    Done once, on the first read after an upgrade.  A valid key already in
     ``secrets.json`` wins, and the old file is only deleted.  An old file
     that holds no key, or a ``secrets.json`` that cannot be changed, leaves
-    the old file where it is: :func:`license_state` reports it and Clear
-    deletes it.  The caller holds :data:`private_json_lock`.
+    the old file where it is.  An unusable old file is ignored when
+    ``secrets.json`` has a valid key; otherwise :func:`license_state` reports
+    it and Clear deletes it.  The caller holds :data:`private_json_lock`.
     """
     old = old_station_license_path(state_dir)
     if not _saved(old):
@@ -825,7 +826,15 @@ def _move_old_station_key(state_dir: Path | str) -> None:
     path = station_secrets_path(state_dir)
 
     def add(document: dict[str, Any]) -> bool:
-        return SECRETS_SECTION not in document and _set_station_key(key)(document)
+        section = document.get(SECRETS_SECTION)
+        if isinstance(section, dict):
+            try:
+                validate_key(section.get("license_key"))
+            except ValueError:
+                pass
+            else:
+                return False
+        return _set_station_key(key)(document)
 
     try:
         moved = update_private_json(path, add)
@@ -859,26 +868,47 @@ def _read_station_key(state_dir: Path | str, what: str) -> tuple[bool, str | Non
     with private_json_lock:
         _move_old_station_key(state_dir)
         old = old_station_license_path(state_dir)
+        old_problem: _Unreadable | None = None
         if _saved(old):
             # Not moved: it holds no key, or secrets.json could not be changed.
-            return True, _read_key(old, what)
+            try:
+                return True, _read_key(old, what)
+            except _Unreadable as exc:
+                old_problem = exc
         path = station_secrets_path(state_dir)
         try:
             document = read_private_json(path)
         except OSError as exc:
+            if old_problem is not None:
+                raise old_problem from None
             raise _Unreadable(
                 f"{what} cannot be read ({exc.strerror or type(exc).__name__})."
             ) from None
         except ValueError as exc:
+            if old_problem is not None:
+                raise old_problem from None
             raise _Unreadable(f"{what} cannot be read ({exc}).") from None
     if SECRETS_SECTION not in document:
+        if old_problem is not None:
+            raise old_problem
         return False, None
     section = document[SECRETS_SECTION]
     value = section.get("license_key") if isinstance(section, dict) else None
     try:
-        return True, validate_key(value)
+        key = validate_key(value)
     except ValueError:
+        if old_problem is not None:
+            raise old_problem from None
         raise _Unreadable(f"{what} does not hold a Stereo Tool licence key.") from None
+    if old_problem is not None:
+        with _warned_lock:
+            first = str(old) not in _ignored_old_warned
+            _ignored_old_warned.add(str(old))
+        if first:
+            logger.warning(
+                "Ignored unusable old Stereo Tool licence file %s; %s has a key.", old, path
+            )
+    return True, key
 
 
 @dataclass(frozen=True)
@@ -960,6 +990,7 @@ def license_key(*, index_dir: Path | str, state_dir: Path | str) -> str | None:
 _warned_lock = threading.Lock()
 _warned: dict[str, str | None] = {}
 _move_warned: dict[str, str] = {}
+_ignored_old_warned: set[str] = set()
 
 
 def save_license(path: Path, key: str) -> bool:

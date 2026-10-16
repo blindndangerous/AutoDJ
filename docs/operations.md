@@ -1998,6 +1998,8 @@ restoring on another machine. Older versions kept a station's own key in `.stere
 in the station's folder; AutoDJ moves it into `secrets.json` the first time it reads it, deletes
 the old file, and logs one line saying so, without the key. A saved key that cannot be read is
 reported on the page ("No licence. This station's saved licence cannot be read ...").
+An older AutoDJ version cannot read a station's `secrets.json` after it holds that key. If you go
+back to an older version after this move, save each station's own key again in that version.
 
 For an install without a browser, give the key in `AUTODJ_STEREOTOOL_LICENSE_KEY` instead. It
 is read when Stereo Tool starts and overrides the key saved for every station, which the page

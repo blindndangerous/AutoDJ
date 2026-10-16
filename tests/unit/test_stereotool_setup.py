@@ -902,6 +902,39 @@ def test_a_key_already_in_secrets_json_wins_over_an_old_key_file(tmp_path: Path)
     assert _secrets(station)["stereo_tool"] == {"license_key": "NEWER-KEY-1"}
 
 
+def test_an_old_valid_key_replaces_an_unusable_secrets_entry(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    _write_secrets(station, {**_OTHER_SECRETS, "stereo_tool": {"license_key": "bad key"}})
+    old = setup.old_station_license_path(station)
+    old.write_text("GOOD-KEY-1234", encoding="ascii")
+    with caplog.at_level(logging.INFO, logger="autodj.stereotool_setup"):
+        state = _state(tmp_path, station)
+    assert (state.source, state.key, state.problem) == ("station", "GOOD-KEY-1234", None)
+    assert _secrets(station) == {
+        "version": 1,
+        **_OTHER_SECRETS,
+        "stereo_tool": {"license_key": "GOOD-KEY-1234"},
+    }
+    assert not old.exists()
+    assert all("GOOD-KEY-1234" not in record.getMessage() for record in caplog.records)
+    assert not any("already in" in record.getMessage() for record in caplog.records)
+
+
+def test_an_unusable_old_file_does_not_hide_a_valid_secrets_key(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    setup.save_station_license(station, "GOOD-KEY-5678")
+    old = setup.old_station_license_path(station)
+    old.write_text("two words", encoding="ascii")
+    with caplog.at_level(logging.INFO, logger="autodj.stereotool_setup"):
+        for _ in range(3):
+            state = _state(tmp_path, station)
+            assert (state.source, state.key, state.problem) == ("station", "GOOD-KEY-5678", None)
+    assert _secrets(station)["stereo_tool"] == {"license_key": "GOOD-KEY-5678"}
+    assert len(caplog.records) == 1
+    assert "Ignored unusable old Stereo Tool licence file" in caplog.records[0].getMessage()
+    assert "GOOD-KEY-5678" not in caplog.records[0].getMessage()
+
+
 def test_saving_or_clearing_moves_or_deletes_an_old_key_file(tmp_path: Path) -> None:
     night, day = tmp_path / "night", tmp_path / "day"
     for station in (night, day):
