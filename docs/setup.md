@@ -5,7 +5,7 @@ and [Proposed setup/model decision](adr/0012-separate-runtime-setup-from-model-e
 The setup/model record documents current implementation for review; it
 does not announce new hardware support.
 
-Install Git and clone AutoDJ; the [README quick start](../README.md#quick-start) has the commands.
+Install Git and clone AutoDJ; the [README quick start](../README.md#start-in-five-minutes) has the commands.
 The launcher obtains Python 3.14 when needed. Node.js is not required to run the application.
 
 On Windows:

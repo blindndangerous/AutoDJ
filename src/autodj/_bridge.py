@@ -82,6 +82,27 @@ def _versions_note(player: Any, cur: Any) -> list[str]:
     return [f"One of {count} versions of this song, which count as one song."]
 
 
+def _library_problem(cfg: Any) -> str | None:
+    """Beets' songs matching none of the library's, in words; ``None`` when they match.
+
+    Only the latest check is read (:func:`autodj.beets_paths.latest`); the
+    categories, the clockwheel's Beets conditions and Library tools make it.
+    """
+    from autodj.beets_paths import latest
+
+    check = latest(cfg)
+    if check is None or not check.mismatch:
+        return None
+    if check.relative:
+        setting = (
+            f'Set music_dir = "{check.found.as_posix()}" under [library].'
+            if check.found is not None
+            else "Set [library] music_dir to the folder holding beets' music."
+        )
+        return f"{check.problem} {setting}"
+    return check.problem
+
+
 def _library_job_snapshot() -> dict:
     """Return current library-job state (``name`` is None before any job has run)."""
     from autodj.jobs import get_manager
@@ -554,14 +575,14 @@ class PlayerBridge(LibraryAccess):
         """
         self.liner_scheduler = scheduler
         self.player.liner_scheduler = scheduler
-        from autodj.station_log import CURRENT_STATION, enter_station, thread_name
+        from autodj.station_log import CURRENT_STATION, enter_station, station_scope, thread_name
 
         # Its thread works for this station, so its log lines name it.
         self._liner_worker = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix=thread_name("autodj-liner"),
             initializer=enter_station,
-            initargs=(CURRENT_STATION.get(),),
+            initargs=(CURRENT_STATION.get(), station_scope(CURRENT_STATION.get())),
         )
 
     def shutdown_liner_worker(self) -> None:
@@ -1493,6 +1514,8 @@ class PlayerBridge(LibraryAccess):
             if getattr(self.player, "_last_pick_mode", "") in {"clock", "seed"}
             else None,
             "library_job": _library_job_snapshot(),
+            # A library problem that changes what plays (#386), or None.
+            "library_problem": _library_problem(self.player._cfg),
             # Browser-side audio drives playback only when the server is
             # headless (dry_run: no --server-audio, or missing audio deps) and
             # not serving a stream.

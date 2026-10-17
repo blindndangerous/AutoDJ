@@ -10,6 +10,8 @@ import { lastSeenWords } from "./devices.js";
 import { formatPlayedAt } from "./history-format.js";
 import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
+import { installAdvancedLength } from "./advanced-length.js";
+import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
@@ -28,7 +30,13 @@ export function parsePointTime(value) {
     const seconds = Number(match[2]) * 60 + Number(match[3]);
     if (Number.isFinite(seconds)) return match[1] ? -seconds : seconds;
   }
-  throw new Error("Enter seconds or minutes:seconds, for example 5.3 or 1:05.");
+  // A point in an hour-long mix may be typed as hours:minutes:seconds.
+  const long = /^(-?)(\d+):([0-5]?\d):([0-5]?\d(?:\.\d+)?)$/.exec(text);
+  if (long) {
+    const seconds = Number(long[2]) * 3600 + Number(long[3]) * 60 + Number(long[4]);
+    if (Number.isFinite(seconds)) return long[1] ? -seconds : seconds;
+  }
+  throw new Error("Enter seconds, minutes:seconds or hours:minutes:seconds, for example 1:05:00");
 }
 
 export function formatPointTime(value) {
@@ -45,6 +53,27 @@ export function formatPointTime(value) {
 
 
 const NO_LANDMARKS = { load() {}, clear() {}, refresh() {} };
+
+const count = (n, one, many = `${one}s`) => `${Number(n || 0).toLocaleString("en-US")} ${Number(n) === 1 ? one : many}`;
+
+// One line about the library import: counts only, never the joined paths;
+// the files with errors are listed below it (renderErrors).
+export function importSummary(data) {
+  const job = data?.import || {};
+  const errors = job.errors?.length || 0;
+  const long = data?.too_long_for_analysis || 0;
+  const longNote = long
+    ? ` ${count(long, "song")} longer than ${data.advanced_max_minutes} minutes ${long === 1 ? "has" : "have"} basic analysis only.`
+    : "";
+  if (job.running) {
+    const where = job.current ? `; ${job.current}` : "";
+    const failed = errors ? `; ${count(errors, "error")} so far` : "";
+    return `Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${where}${failed}`;
+  }
+  const ready = `${count(data?.tracks_ready, "track")} ready; ${Number(data?.tracks_indexed || 0).toLocaleString("en-US")} indexed.`;
+  if (errors) return `Import finished with ${count(errors, "error")}; the list follows. ${ready}${longNote}`;
+  return `${ready}${longNote}`;
+}
 
 // landmarks: Track info's Song structure (modules/landmarks.js, #60).
 export function installLibraryFolders({ document: doc = document, request = requestJson, getCurrentTrack = () => null, getCurrentPosition = () => null, getStation = () => "default", onBackgroundError = () => {}, onFolders, landmarks = NO_LANDMARKS }) {
@@ -64,6 +93,26 @@ export function installLibraryFolders({ document: doc = document, request = requ
     progress = doc.createElement("p");
     progress.id = "source-folders-progress";
     status.insertAdjacentElement("afterend", progress);
+  }
+  // Files the last import could not read, listed on demand under the summary.
+  let errorList = doc.getElementById("source-folders-errors");
+  if (!errorList) {
+    errorList = doc.createElement("details");
+    errorList.id = "source-folders-errors";
+    errorList.hidden = true;
+    errorList.append(doc.createElement("summary"), doc.createElement("ul"));
+    progress.insertAdjacentElement("afterend", errorList);
+  }
+  let errorSignature = "";
+  let importRunning = false;
+  // Whether beets' songs match the library's: static text, not a live region,
+  // so the 3-second poll never repeats a problem that lasts.
+  let beetsPaths = doc.getElementById("source-folders-beets");
+  if (!beetsPaths) {
+    beetsPaths = doc.createElement("p");
+    beetsPaths.id = "source-folders-beets";
+    beetsPaths.hidden = true;
+    progress.insertAdjacentElement("afterend", beetsPaths);
   }
   const pathInput = doc.getElementById("source-folder-path");
   const kindInput = doc.getElementById("source-folder-kind");
@@ -241,14 +290,27 @@ export function installLibraryFolders({ document: doc = document, request = requ
         (replacement || doc.getElementById("source-folder-add")).focus();
       }
     }
-    if (data.import?.running) {
-      const job = data.import;
-      progress.textContent = `Importing tracks (${job.phase || "working"}): ${job.done || 0} of ${job.total || 0}${job.current ? `; ${job.current}` : ""}${job.errors?.length ? `; errors: ${job.errors.join("; ")}` : ""}`;
-    } else if (data.import?.errors?.length) {
-      progress.textContent = `Import finished with ${data.import.errors.length} error(s): ${data.import.errors.join("; ")}`;
-    } else {
-      progress.textContent = `${data.tracks_ready ?? 0} tracks ready; ${data.tracks_indexed ?? 0} indexed.`;
-    }
+    const summary = importSummary(data);
+    progress.textContent = summary;
+    if (importRunning && !data.import?.running) announceAction(summary);
+    importRunning = !!data.import?.running;
+    renderErrors(data.import?.errors || []);
+    showBeetsPaths(beetsPaths, data.beets_paths, { full: true });
+  }
+  // The real failures (unreadable or undecodable files, folders that could
+  // not be read), as a list that keeps its open state while polling.
+  function renderErrors(errors) {
+    const signature = JSON.stringify(errors);
+    if (signature === errorSignature) return;
+    errorSignature = signature;
+    errorList.hidden = errors.length === 0;
+    errorList.querySelector("summary").textContent = `Import errors (${errors.length})`;
+    errorList.querySelector("ul").replaceChildren(...errors.map((text) => {
+      const item = doc.createElement("li");
+      item.textContent = text;
+      return item;
+    }));
+    if (!errors.length) errorList.open = false;
   }
   async function refresh() {
     if (suspended || ((!panel || panel.closest("[hidden]")) && (!searchPanel || searchPanel.closest("[hidden]")))) return;
@@ -269,6 +331,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (visible() && timer == null) {
       void refresh();
       void autoRescan?.load();
+      void advancedLength?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -359,6 +422,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     }
   });
   const autoRescan = installAutoRescan({
+    document: doc,
+    request,
+    say: announceAction,
+    isCurrent: () => !suspended,
+  });
+  const advancedLength = installAdvancedLength({
     document: doc,
     request,
     say: announceAction,
@@ -781,6 +850,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     pathInput.value = "";
     clearAddError();
     autoRescan?.clear();
+    advancedLength?.clear();
+    errorSignature = "";
+    importRunning = false;
+    errorList.hidden = true;
+    errorList.open = false;
+    errorList.querySelector("ul").replaceChildren();
     status.textContent = "";
     progress.textContent = "";
     pointStatus.textContent = "";

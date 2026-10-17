@@ -66,7 +66,8 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   bounds how many stations it can add. The browser supplies a slug, never a path; all state
   paths come from `StationPaths`. Duplication copies only named settings and asset files and
   refuses links and junctions. It removes relay targets, listener credentials, and webhooks
-  from the new definition, which is backed up as `station.json` without secrets.
+  from the new definition, which is backed up as `station.json` without secrets. It never copies
+  `relays.json` or `secrets.json`, so the source's own Stereo Tool key stays with the source.
 - Machine tokens let a program on another computer use one narrow API without a browser. The
   only scope so far is "analysis worker" (`autodj worker`); see "Machine tokens and analysis
   workers" below.
@@ -1071,9 +1072,14 @@ the key. Saving the key already saved restarts nothing; a key for one station re
 station's Stereo Tool. A refused key is never repeated: the validation message is fixed text, and
 the 422 handler drops the rejected input. Keys are 4 to 2048 printable ASCII characters with no
 spaces. They are stored with `write_private_file`, the same as relay passwords: atomically, mode
-0600 on POSIX and a protected access list for the current user only on Windows, in
-`<index_dir>/.stereo-tool-license` and `<station folder>/.stereo-tool-license`. Backups name their
-files explicitly and include neither, and restore never writes them. The environment
+0600 on POSIX and a protected access list for the current user only on Windows: the key for
+every station in `<index_dir>/.stereo-tool-license`, and a station's own key under `stereo_tool`
+in `<station folder>/secrets.json`, with its other secrets. A change to `secrets.json` is a
+read, change and atomic write under one lock, so it never drops the listener login or webhooks,
+and a damaged `secrets.json` is reported and never written over. A station's own key in the old
+`<station folder>/.stereo-tool-license` is moved into `secrets.json` on first read, then that
+file is deleted. Backups name their files explicitly and include none of these, and restore
+never writes them. The environment
 (`AUTODJ_STEREOTOOL_LICENSE_KEY`) overrides the key saved for every station and is read-only in
 the page. A problem with a key is logged once, never the key or the file's contents.
 

@@ -88,11 +88,17 @@ def test_loader_does_not_read_legacy_station_tables_without_startup_migration(
     assert cfg.playback.crossfade_seconds == 3.0
 
 
+@pytest.mark.parametrize("relative_index", [None, "index", "index # station"])
 def test_default_station_migration_uses_definition_schema_and_saved_timezone(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_index: str | None,
 ) -> None:
     text = BASE.replace("[stream]\n", '[stream]\nenabled = true\ntrusted_proxies = ["10.0.0.1"]\n')
     text += '\n[server]\nstation_timezone = "UTC"\nliner_upload_max_mib = 20\n'
+    if relative_index is not None:
+        monkeypatch.chdir(tmp_path)
+        text += f'\n[index]\nindex_dir = "{relative_index}"\n'
     path = _write(tmp_path, text)
     cfg = load_config(path, environ={})
     catalog_path = cfg.index.library_dir / "library.db"
@@ -460,3 +466,28 @@ def test_a_station_without_a_name_is_called_by_its_slug(
         "Stations default and nightowl are both called" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_migration_drops_the_old_track_length_limit(tmp_path: Path, caplog) -> None:
+    """#391: tracks of any length play; a saved limit is removed, not warned about forever."""
+    from autodj.stations import StationPaths
+
+    text = BASE.replace(
+        "crossfade_seconds = 7\n", "crossfade_seconds = 7\nserver_max_track_minutes = 15.0\n"
+    )
+    cfg = _load(tmp_path, text, environ={})
+    definition = StationPaths.default(cfg).definition
+    document = json.loads(definition.read_text("utf-8"))
+    assert document["station"]["playback"] == {"crossfade_seconds": 7}
+    # A station file saved with the limit is cleaned the next time too.
+    document["station"]["playback"]["server_max_track_minutes"] = 30
+    definition.write_text(json.dumps(document), encoding="utf-8")
+    assert move_station_tables(load_config(tmp_path / "config.toml", environ={}))
+    caplog.clear()
+    reloaded = load_config(tmp_path / "config.toml", environ={})
+    assert (
+        "server_max_track_minutes"
+        not in json.loads(definition.read_text("utf-8"))["station"]["playback"]
+    )
+    assert reloaded.playback.crossfade_seconds == 7
+    assert "server_max_track_minutes" not in caplog.text

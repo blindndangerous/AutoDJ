@@ -7,11 +7,13 @@ and the "libraries" in the stand-in zips are only headers, never loaded.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import stat
 import subprocess
 import sys
+import threading
 import urllib.error
 import zipfile
 from email.message import Message
@@ -716,20 +718,17 @@ def test_a_station_key_restarts_only_that_station_and_an_unchanged_key_nothing(
         setup.generation(night),
         setup.generation(day),
     )
-    assert setup.save_license(setup.station_license_path(night), KEY, station_dir=night) is True
+    assert setup.save_station_license(night, KEY) is True
     assert setup.generation(night) > night_before
     assert (setup.generation(), setup.generation(day)) == (every, day_before)
     night_now = setup.generation(night)
-    assert (
-        setup.save_license(setup.station_license_path(night), f" {KEY} ", station_dir=night)
-        is False
-    )
+    assert setup.save_station_license(night, f" {KEY} ") is False
     assert setup.generation(night) == night_now
     # The key for every station restarts every station.
     setup.save_license(setup.install_license_path(tmp_path), KEY)
     assert setup.generation(day) > day_before
     assert setup.generation(night) > night_now
-    assert setup.clear_license(setup.station_license_path(night), station_dir=night) is True
+    assert setup.clear_station_license(night) is True
     assert setup.generation(day) == setup.generation()
 
 
@@ -737,11 +736,11 @@ def test_an_unreadable_saved_key_is_reported(tmp_path: Path) -> None:
     index, station = tmp_path, tmp_path / "night"
     station.mkdir()
     setup.save_license(setup.install_license_path(index), KEY)
-    setup.station_license_path(station).write_bytes(b"\xff\xfe not text")
+    setup.old_station_license_path(station).write_bytes(b"\xff\xfe not text")
     state = _state(index, station)
     assert (state.source, state.key, state.station) == ("station", None, "saved")
     assert state.problem == "This station's saved licence does not hold a Stereo Tool licence key."
-    setup.station_license_path(station).unlink()
+    setup.old_station_license_path(station).unlink()
     setup.install_license_path(index).write_text("two words")
     state = _state(index, station)
     assert (state.source, state.key, state.install) == ("install", None, "saved")
@@ -760,7 +759,7 @@ def test_the_install_key_is_shared_unless_a_station_has_its_own(tmp_path: Path) 
         "saved",
         None,
     )
-    setup.save_license(setup.station_license_path(station), "STATION-KEY-1")
+    setup.save_station_license(station, "STATION-KEY-1")
     state = _state(index, station)
     assert (state.source, state.key, state.station) == ("station", "STATION-KEY-1", "saved")
 
@@ -796,13 +795,248 @@ def test_the_key_never_appears_in_the_state_text_or_public_view(tmp_path: Path) 
 def test_a_licence_problem_is_logged_once_without_any_key(tmp_path: Path, caplog) -> None:
     night = tmp_path / "night"
     night.mkdir()
-    setup.station_license_path(night).write_text("bad key with spaces " + KEY)
+    setup.old_station_license_path(night).write_text("bad key with spaces " + KEY)
     with caplog.at_level(logging.WARNING, logger="autodj.stereotool_setup"):
         for _ in range(3):
             assert setup.license_key(index_dir=tmp_path, state_dir=night) is None
     messages = [record.getMessage() for record in caplog.records]
     assert len(messages) == 1
     assert KEY not in messages[0]
+
+
+# ---------------------------------------------------------------------------
+# A station's own key, in its secrets.json
+# ---------------------------------------------------------------------------
+
+_OTHER_SECRETS = {
+    "stream": {"listener_user": "dj", "listener_password": "listen-secret"},
+    "webhooks": [{"url": "https://example.com/hook"}],
+}
+
+
+def _write_secrets(station: Path, document: dict) -> Path:
+    station.mkdir(parents=True, exist_ok=True)
+    path = setup.station_secrets_path(station)
+    path.write_text(json.dumps({"version": 1, **document}), encoding="utf-8")
+    return path
+
+
+def _secrets(station: Path) -> dict:
+    return json.loads(setup.station_secrets_path(station).read_text(encoding="utf-8"))
+
+
+def test_a_station_key_is_kept_in_secrets_json_beside_its_other_secrets(tmp_path: Path) -> None:
+    station = tmp_path / "night"
+    path = _write_secrets(station, _OTHER_SECRETS)
+    assert setup.save_station_license(station, KEY) is True
+    assert _secrets(station) == {
+        "version": 1,
+        **_OTHER_SECRETS,
+        "stereo_tool": {"license_key": KEY},
+    }
+    if os.name != "nt":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    # Nothing else is left in the folder: no old key file, no temporary file.
+    assert [entry.name for entry in station.iterdir()] == [path.name]
+    assert _state(tmp_path, station).key == KEY
+    assert setup.clear_station_license(station) is True
+    assert setup.clear_station_license(station) is False
+    assert _secrets(station) == {"version": 1, **_OTHER_SECRETS}
+    assert _state(tmp_path, station).station is None
+
+
+def test_a_secrets_json_holding_only_the_key_is_deleted_when_it_is_cleared(
+    tmp_path: Path,
+) -> None:
+    station = tmp_path / "night"
+    assert setup.save_station_license(station, KEY) is True
+    assert _secrets(station) == {"version": 1, "stereo_tool": {"license_key": KEY}}
+    assert setup.clear_station_license(station) is True
+    assert not setup.station_secrets_path(station).exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows access lists")
+def test_a_station_secrets_json_is_private_on_windows(tmp_path: Path) -> None:
+    station = tmp_path / "night"
+    _write_secrets(station, _OTHER_SECRETS)
+    setup.save_station_license(station, KEY)
+    path = setup.station_secrets_path(station)
+    listing = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True)
+    user = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    entries = [line.replace(str(path), "").strip() for line in listing.stdout.splitlines()]
+    entries = [line for line in entries if line and ":" in line and "processed" not in line]
+    assert [line.lower() for line in entries] == [f"{user.lower()}:(f)"]
+
+
+def test_an_old_station_key_file_moves_into_secrets_json_once(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    _write_secrets(station, _OTHER_SECRETS)
+    old = setup.old_station_license_path(station)
+    old.write_text(KEY + "\n", encoding="ascii")
+    every, before = setup.generation(), setup.generation(station)
+    with caplog.at_level(logging.DEBUG, logger="autodj.stereotool_setup"):
+        for _ in range(3):
+            state = _state(tmp_path, station)
+            assert (state.source, state.key, state.station) == ("station", KEY, "saved")
+    assert not old.exists()
+    assert _secrets(station) == {
+        "version": 1,
+        **_OTHER_SECRETS,
+        "stereo_tool": {"license_key": KEY},
+    }
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert "Moved the Stereo Tool licence key" in messages[0]
+    assert KEY not in messages[0]
+    # The same key: Stereo Tool does not restart.
+    assert (setup.generation(), setup.generation(station)) == (every, before)
+
+
+def test_a_key_already_in_secrets_json_wins_over_an_old_key_file(tmp_path: Path) -> None:
+    station = tmp_path / "night"
+    setup.save_station_license(station, "NEWER-KEY-1")
+    old = setup.old_station_license_path(station)
+    old.write_text(KEY, encoding="ascii")
+    assert _state(tmp_path, station).key == "NEWER-KEY-1"
+    assert not old.exists()
+    assert _secrets(station)["stereo_tool"] == {"license_key": "NEWER-KEY-1"}
+
+
+def test_an_old_valid_key_replaces_an_unusable_secrets_entry(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    _write_secrets(station, {**_OTHER_SECRETS, "stereo_tool": {"license_key": "bad key"}})
+    old = setup.old_station_license_path(station)
+    old.write_text("GOOD-KEY-1234", encoding="ascii")
+    with caplog.at_level(logging.INFO, logger="autodj.stereotool_setup"):
+        state = _state(tmp_path, station)
+    assert (state.source, state.key, state.problem) == ("station", "GOOD-KEY-1234", None)
+    assert _secrets(station) == {
+        "version": 1,
+        **_OTHER_SECRETS,
+        "stereo_tool": {"license_key": "GOOD-KEY-1234"},
+    }
+    assert not old.exists()
+    assert all("GOOD-KEY-1234" not in record.getMessage() for record in caplog.records)
+    assert not any("already in" in record.getMessage() for record in caplog.records)
+
+
+def test_an_unusable_old_file_does_not_hide_a_valid_secrets_key(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    setup.save_station_license(station, "GOOD-KEY-5678")
+    old = setup.old_station_license_path(station)
+    old.write_text("two words", encoding="ascii")
+    with caplog.at_level(logging.INFO, logger="autodj.stereotool_setup"):
+        for _ in range(3):
+            state = _state(tmp_path, station)
+            assert (state.source, state.key, state.problem) == ("station", "GOOD-KEY-5678", None)
+    assert _secrets(station)["stereo_tool"] == {"license_key": "GOOD-KEY-5678"}
+    assert len(caplog.records) == 1
+    assert "Ignored unusable old Stereo Tool licence file" in caplog.records[0].getMessage()
+    assert "GOOD-KEY-5678" not in caplog.records[0].getMessage()
+
+
+def test_saving_or_clearing_moves_or_deletes_an_old_key_file(tmp_path: Path) -> None:
+    night, day = tmp_path / "night", tmp_path / "day"
+    for station in (night, day):
+        station.mkdir()
+        setup.old_station_license_path(station).write_text(KEY, encoding="ascii")
+    # Saving the same key moves the old file without restarting Stereo Tool.
+    assert setup.save_station_license(night, KEY) is False
+    assert not setup.old_station_license_path(night).exists()
+    assert _secrets(night)["stereo_tool"] == {"license_key": KEY}
+    assert setup.clear_station_license(day) is True
+    assert not setup.old_station_license_path(day).exists()
+    assert not setup.station_secrets_path(day).exists()
+
+
+def test_an_old_key_file_without_a_key_stays_until_it_is_replaced_or_cleared(
+    tmp_path: Path,
+) -> None:
+    night, day = tmp_path / "night", tmp_path / "day"
+    for station in (night, day):
+        station.mkdir()
+        setup.old_station_license_path(station).write_text("two words", encoding="ascii")
+        state = _state(tmp_path, station)
+        assert (state.source, state.key, state.station) == ("station", None, "saved")
+        assert setup.old_station_license_path(station).exists()
+        assert not setup.station_secrets_path(station).exists()
+    assert setup.save_station_license(night, KEY) is True
+    assert not setup.old_station_license_path(night).exists()
+    assert _state(tmp_path, night).key == KEY
+    assert setup.clear_station_license(day) is True
+    assert not setup.old_station_license_path(day).exists()
+    assert _state(tmp_path, day).station is None
+
+
+def test_a_damaged_secrets_json_is_reported_and_never_overwritten(tmp_path: Path, caplog) -> None:
+    station = tmp_path / "night"
+    station.mkdir()
+    path = setup.station_secrets_path(station)
+    path.write_text("{not json " + KEY, encoding="utf-8")
+    state = _state(tmp_path, station)
+    assert (state.source, state.key, state.station) == ("station", None, "saved")
+    assert (
+        state.problem
+        == "This station's saved licence cannot be read (secrets.json is not valid JSON)."
+    )
+    with pytest.raises(ValueError) as caught:
+        setup.save_station_license(station, "OTHER-KEY-1")
+    assert KEY not in str(caught.value)
+    with pytest.raises(ValueError):
+        setup.clear_station_license(station)
+    assert path.read_text(encoding="utf-8") == "{not json " + KEY
+    # An old key file that cannot be moved there is still used, and kept.
+    old = setup.old_station_license_path(station)
+    old.write_text("OLD-KEY-1234", encoding="ascii")
+    with caplog.at_level(logging.WARNING, logger="autodj.stereotool_setup"):
+        for _ in range(3):
+            assert _state(tmp_path, station).key == "OLD-KEY-1234"
+    assert old.exists()
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 1
+    assert "OLD-KEY-1234" not in messages[0] and KEY not in messages[0]
+
+
+def test_a_station_entry_without_a_usable_key_is_reported_and_can_be_cleared(
+    tmp_path: Path,
+) -> None:
+    station = tmp_path / "night"
+    _write_secrets(station, {**_OTHER_SECRETS, "stereo_tool": {"license_key": "bad key"}})
+    state = _state(tmp_path, station)
+    assert (state.source, state.key, state.station) == ("station", None, "saved")
+    assert state.problem == "This station's saved licence does not hold a Stereo Tool licence key."
+    assert setup.clear_station_license(station) is True
+    assert _secrets(station) == {"version": 1, **_OTHER_SECRETS}
+
+
+def test_station_key_changes_and_other_secret_changes_never_undo_each_other(
+    tmp_path: Path,
+) -> None:
+    from autodj.secret_files import update_private_json
+
+    station = tmp_path / "night"
+    path = _write_secrets(station, {})
+
+    def add_hook(number: int) -> None:
+        def change(document: dict) -> bool:
+            document.setdefault("webhooks", []).append({"url": f"https://example.com/{number}"})
+            return True
+
+        update_private_json(path, change)
+
+    workers = [
+        threading.Thread(target=add_hook, args=(n,))
+        if n % 2
+        else threading.Thread(target=setup.save_station_license, args=(station, f"KEY-{n:04}"))
+        for n in range(20)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    document = _secrets(station)
+    assert len(document["webhooks"]) == 10
+    assert document["stereo_tool"]["license_key"].startswith("KEY-")
 
 
 @pytest.mark.parametrize(

@@ -702,7 +702,9 @@ def _clock_beets(station: StationRuntime, library: Any) -> Any:
     from autodj.clock_condition_data import BeetsConditions
 
     if not hasattr(library, "clock_beets"):
-        library.clock_beets = BeetsConditions(station.cfg)
+        library.clock_beets = BeetsConditions(
+            station.cfg, getattr(library, "entries_snapshot", None)
+        )
     return library.clock_beets
 
 
@@ -1214,6 +1216,7 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
         station.intros._day_at,
         station.intros._rng,
         library=lambda: bridge.library,
+        paths=station.paths,
     )
     if bridge.player is not None:
         bridge.player.matched_intros = station.intros

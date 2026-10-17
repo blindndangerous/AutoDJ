@@ -30,6 +30,7 @@ import { installSeekController } from "./modules/seek-controller.js";
 import { tableRow } from "./modules/table-row.js";
 import { installTableNavigation } from "./modules/table-navigation.js";
 import { installLibraryFolders } from "./modules/library-folders.js";
+import { showStaticText } from "./modules/beets-paths.js";
 import { installCategoriesPanel } from "./modules/categories-panel.js";
 import { installIntroRulesPanel } from "./modules/intro-rules-panel.js";
 import { installShowsPanel } from "./modules/shows-panel.js";
@@ -50,6 +51,7 @@ import { installNowPlayingSettings } from "./modules/nowplaying-settings.js";
 import { createListenerControls } from "./modules/listener-controls.js";
 import { installStreamFormats } from "./modules/stream-formats.js";
 import { installListenerStats } from "./modules/listener-stats.js";
+import { installPublicSettings } from "./modules/public-settings.js";
 import { initSubtabs } from "./modules/subtabs.js";
 import { installCardState } from "./modules/card-state.js";
 import { installThemeSetting } from "./modules/theme.js";
@@ -246,7 +248,6 @@ const streamSettings = createStreamSettings({
   saveStationName: (value, control) =>
     postSettings("/api/stream/settings", { station_name: value }, control),
   setAvailable: (available) => {
-    settingsTabs.setTabHidden("stream", !available);
     relaySettings.setAvailable(available);
   },
   onRelays: (relays) => relaySettings.applyStatuses(relays),
@@ -263,6 +264,7 @@ const nowPlayingSettings = installNowPlayingSettings({
   srStatus: document.getElementById("sr-status"),
   settingsStatus,
 });
+const publicSettings = installPublicSettings();
 const listenerControls = createListenerControls(
   document, settingsStatus,
   (value, control) => postSettings(
@@ -424,6 +426,7 @@ function clearStationViews() {
   adsControls?.clear();
   listenerRequestControls?.clear();
   breakSettingsControls?.clear();
+  publicSettings.clear();
   linerControls?.clear();
   updateMediaSession({ current_track: null });
   lastNextKey = null;
@@ -812,6 +815,9 @@ function applyState(s, { announceTrack = true } = {}) {
     }
     if (handoffStatus.textContent !== message) handoffStatus.textContent = message;
   }
+  // Beets' songs matching none of the library's (#386): static text under
+  // Up Next, so a problem that lasts is found there and never announced.
+  showStaticText(document.getElementById("library-problem"), s.library_problem || "", true);
   // Shown under the Stereo Tool preset in Settings; the preset still plays.
   const presetWarning = document.getElementById("stereo-preset-warning");
   if (presetWarning) {
@@ -1795,6 +1801,7 @@ function refreshStationPanels() {
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void breakSettingsControls?.refresh();
+  void publicSettings.refresh();
   void voiceTrackerControls?.refresh();
   void liveSettings?.refresh();
   void adsControls?.refresh();
@@ -2342,7 +2349,8 @@ if (btnShortcuts) {
 if (btnShortcutsClose) {
   btnShortcutsClose.addEventListener("click", () => {
     const modal = document.getElementById("hotkey-help-modal");
-    if (modal && modal.open) modal.close();
+    // Closing through the toggle puts focus back on what opened the list.
+    if (modal && modal.open) toggleShortcutsModal();
   });
 }
 

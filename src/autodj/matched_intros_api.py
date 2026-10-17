@@ -144,6 +144,7 @@ _RULE_LABELS = {
     "cooldown_minutes": "Wait between plays",
     "not_before": "Not before",
     "not_after": "Do not play after",
+    "filename_pattern": "Filename pattern",
 }
 
 
@@ -420,6 +421,7 @@ def install_matched_intros(router: StationRouter) -> None:
             if library is not None
             else {"liners": [], "liner_folders": [], "sources": [], "genres": []}
         )
+
         ordered = sorted(rules.items(), key=lambda item: (item[1].created_at, item[0]))
         return JSONResponse(
             {
@@ -428,6 +430,81 @@ def install_matched_intros(router: StationRouter) -> None:
                 "max_rules": MAX_RULES,
                 "max_cooldown_minutes": MAX_COOLDOWN_MINUTES,
                 **choices,
+            },
+            headers=_NO_STORE,
+        )
+
+    @router.post("/intros/rules/test")
+    async def intro_rule_test(
+        station: SavedStationDep,
+        request: Request,
+        path: str = Query(..., min_length=1, max_length=4096),
+    ) -> JSONResponse:
+        """Preview a filename pattern against this station's registered liner pool."""
+        try:
+            rule = await rule_body(request, station)
+        except RuleRefused as exc:
+            return exc.response()
+        if rule.filename_pattern is None:
+            return _field_error(422, "filename_pattern", "Add a filename pattern to test")
+        filename_pattern = rule.filename_pattern
+        library = _library(station)
+        record = await asyncio.to_thread(library.catalog.record_for_path, path)
+        if record is None or record.get("kind", "music") != "music":
+            return _field_error(404, "path", "That song is not in the library")
+        song_entry = await asyncio.to_thread(library.entry_for_path, record["path"])
+        if song_entry is None:
+            return _field_error(404, "path", "That song is not in the library")
+        from autodj.intro_rules import resolve_filename_pattern
+
+        def scan() -> tuple[str | None, tuple[str, ...], list[dict[str, Any]]]:
+            expanded, matcher, missing = resolve_filename_pattern(filename_pattern, song_entry)
+            matches: list[dict[str, Any]] = []
+            if matcher is None or missing:
+                return expanded, missing, matches
+            pool = IntroRules._pool(rule.liner_folder, tuple(library.entries_snapshot("liner")))
+            now = time.time()
+            for liner_entry in pool:
+                name = Path(liner_entry.path).name
+                if matcher.fullmatch(name) is None:
+                    continue
+                liner = library.catalog.record_for_path(liner_entry.path)
+                if liner is None or liner.get("kind") != "liner":
+                    continue
+                liner_id = str(liner["id"])
+                reason = (
+                    station.liner_gate.refusal(liner_id, now)
+                    if Path(liner_entry.path).is_file()
+                    else "The liner file is missing"
+                )
+                eligible = reason is None
+                matches.append(
+                    {
+                        "id": liner_id,
+                        "label": name,
+                        "eligible": eligible,
+                        "reason": reason,
+                    }
+                )
+                if len(matches) == 100:
+                    break
+            return expanded, missing, matches
+
+        expanded, missing, matches = await asyncio.to_thread(scan)
+        return JSONResponse(
+            {
+                "expanded_pattern": expanded,
+                "missing_fields": list(missing),
+                "matches": matches,
+                "note": (
+                    "This checks filename matches only; conditions, chance and cooldown are "
+                    "not evaluated, and matches are not rolled or consumed."
+                    + (
+                        " Showing up to 100 matching files; narrow the pattern to inspect fewer results."
+                        if len(matches) == 100
+                        else ""
+                    )
+                ),
             },
             headers=_NO_STORE,
         )

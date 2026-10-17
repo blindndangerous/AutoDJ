@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
+from autodj.clip_dates import ClipDates
 from autodj.matched_intros import Intro, file_name
 from tests.unit._break_station import write_voice
 from tests.unit.test_matched_intros_api import ORIGIN, Station
@@ -181,3 +183,96 @@ def test_a_refused_rule_names_the_field_at_fault(tmp_path: Path) -> None:
         headers=SENT,
     )
     assert made.status_code == 201, made.text
+
+
+def test_filename_pattern_preview_is_read_only_and_respects_liner_dates(tmp_path: Path) -> None:
+    station, folder = _liner_station(tmp_path)
+    song = station.records["a" * 32]
+    song.update(year=2024, album="First", genre="Rock", bpm=101.6)
+    for key, name in (
+        ("d" * 32, "Example Artist - New Single.wav"),
+        ("e" * 32, "Example Artist - Other.wav"),
+        ("f" * 32, "Other Artist - New Single.wav"),
+    ):
+        path = folder / name
+        write_voice(path, 1)
+        station.records[key] = {"id": key, "kind": "liner", "path": str(path)}
+    station.station.bridge.library.entry_for_path = lambda path: next(
+        (
+            SimpleNamespace(**record)
+            for record in station.records.values()
+            if record["path"] == str(path)
+        ),
+        None,
+    )
+    station.station.liner_gate.store.set("e" * 32, ClipDates(not_after=date(2000, 1, 1)))
+    body = {
+        "conditions": [{"field": "genre", "operator": "is", "value": "Rock"}],
+        "clip_ids": [],
+        "liner_folder": str(folder),
+        "filename_pattern": "{artist} - *.wav",
+    }
+    dates_file = station.station.paths.state_dir / "liner_dates.json"
+    saved_dates = dates_file.read_bytes()
+    reply = station.client.post(
+        "/api/intros/rules/test",
+        params={"path": song["path"]},
+        json=body,
+        headers=SENT,
+    )
+    assert reply.status_code == 200, reply.text
+    preview = reply.json()
+    assert preview["expanded_pattern"] == "Example Artist - *.wav"
+    assert preview["missing_fields"] == []
+    assert {item["id"] for item in preview["matches"]} == {"d" * 32, "e" * 32}
+    expired = next(item for item in preview["matches"] if item["id"] == "e" * 32)
+    assert expired["eligible"] is False and expired["reason"].startswith("expired after")
+    assert next(item for item in preview["matches"] if item["id"] == "d" * 32)["eligible"]
+    assert "not rolled or consumed" in preview["note"]
+    assert not station.station.paths.state_dir.joinpath("intro_rules.json").exists()
+    assert dates_file.read_bytes() == saved_dates
+
+    Path(station.records["d" * 32]["path"]).unlink()
+    missing_file = station.client.post(
+        "/api/intros/rules/test", params={"path": song["path"]}, json=body, headers=SENT
+    )
+    missing_clip = next(item for item in missing_file.json()["matches"] if item["id"] == "d" * 32)
+    assert not missing_clip["eligible"] and "missing" in missing_clip["reason"]
+    song.pop("album")
+    missing = station.client.post(
+        "/api/intros/rules/test",
+        params={"path": song["path"]},
+        json={**body, "filename_pattern": "{album}.wav"},
+        headers=SENT,
+    )
+    assert missing.status_code == 200, missing.text
+    assert missing.json()["missing_fields"] == ["album"]
+    assert missing.json()["matches"] == []
+    without_pattern = station.client.post(
+        "/api/intros/rules/test",
+        params={"path": song["path"]},
+        json={key: value for key, value in body.items() if key != "filename_pattern"},
+        headers=SENT,
+    )
+    assert without_pattern.status_code == 422
+    assert without_pattern.json()["field"] == "filename_pattern"
+    invalid_song = station.client.post(
+        "/api/intros/rules/test",
+        params={"path": "/music/gone.flac"},
+        json=body,
+        headers=SENT,
+    )
+    assert invalid_song.status_code == 404 and invalid_song.json()["field"] == "path"
+    invalid_pattern = station.client.post(
+        "/api/intros/rules/test",
+        params={"path": song["path"]},
+        json={**body, "filename_pattern": "{unknown}"},
+        headers=SENT,
+    )
+    assert (
+        invalid_pattern.status_code == 422 and invalid_pattern.json()["field"] == "filename_pattern"
+    )
+    saved = station.client.post("/api/intros/rules", json=body, headers=SENT)
+    assert saved.status_code == 201, saved.text
+    listed = station.client.get("/api/intros/rules", headers=HOST).json()["rules"]
+    assert listed[0]["filename_pattern"] == body["filename_pattern"]

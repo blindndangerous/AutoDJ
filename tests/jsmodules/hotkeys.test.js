@@ -310,6 +310,26 @@ describe("page shortcut scope", () => {
     const closeEvent = keyEvent(document.activeElement, "?", { shiftKey: true });
     expect(closeEvent.defaultPrevented).toBe(true);
     expect(modal.open).toBe(false);
+    // Focus goes back to what opened the list, not where the browser puts it.
+    expect(document.activeElement).toBe(helpButton);
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "?" }));
+  });
+
+  it("puts focus back on the opener when Escape closes the help", () => {
+    const modal = document.querySelector("#hotkey-help-modal");
+    const helpButton = document.querySelector("#btn-shortcuts");
+    modal.close();
+    helpButton.focus();
+    keyEvent(document.activeElement, "?", { shiftKey: true });
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "?" }));
+    expect(document.activeElement).toBe(document.querySelector("#btn-shortcuts-close"));
+
+    // Escape: the browser fires cancel, closes the dialog, then fires close.
+    modal.dispatchEvent(new Event("cancel"));
+    expect(modal.contains(document.activeElement)).toBe(false);
+    modal.removeAttribute("open");
+    modal.dispatchEvent(new Event("close"));
+    expect(document.activeElement).toBe(helpButton);
   });
 
   it("speaks how the hour lands on Shift+H, from any tab", () => {

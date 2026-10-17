@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -898,8 +899,11 @@ async def _yield(_seconds: float) -> None:
     await asyncio.sleep(0.001)
 
 
-def _run_ticks_for(bridge: PlayerBridge, seconds: float, then=lambda: None) -> None:
+def _run_ticks_for(bridge: PlayerBridge, seconds: float, then=lambda: None, until=None) -> None:
     """Run the stream tick loops for *seconds* of wall time, cancel them, call *then*.
+
+    With *until*, stop as soon as it returns true, and allow up to *seconds*
+    for that, so a slow runner gets the ticks the test waits for.
 
     *then* runs before the event loop closes, so it can release a tick
     still blocked in a worker thread (``asyncio.run`` waits for those).
@@ -908,9 +912,23 @@ def _run_ticks_for(bridge: PlayerBridge, seconds: float, then=lambda: None) -> N
 
     from autodj.server import _tick_stream_workers
 
+    async def wait_until() -> None:
+        while not until():
+            await asyncio.sleep(0.01)
+
     async def main() -> None:
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(_tick_stream_workers(bridge, sleep=_yield), seconds)
+        if until is None:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(_tick_stream_workers(bridge, sleep=_yield), seconds)
+        else:
+            loops = asyncio.create_task(_tick_stream_workers(bridge, sleep=_yield))
+            try:
+                await asyncio.wait_for(wait_until(), seconds)
+            finally:
+                assert not loops.done()  # the loops run until cancelled
+                loops.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await loops
         then()
 
     asyncio.run(main())
@@ -919,7 +937,13 @@ def _run_ticks_for(bridge: PlayerBridge, seconds: float, then=lambda: None) -> N
 def test_tick_stream_workers_ticks_both_and_survives_failures(caplog) -> None:
     bridge, _stream = _stream_bridge(MagicMock())
     bridge.station.tick.side_effect = RuntimeError("station broke")
-    _run_ticks_for(bridge, 0.2)
+    _run_ticks_for(
+        bridge,
+        10,
+        until=lambda: (
+            bridge.station.tick.call_count >= 2 and bridge.liner_scheduler.tick.call_count >= 2
+        ),
+    )
     assert bridge.station.tick.call_count >= 2  # a failure does not end the loop
     assert bridge.liner_scheduler.tick.call_count >= 2
     assert "station tick failed" in caplog.text

@@ -73,7 +73,10 @@
 // localStorage and defaults to on; storage that is blocked or throws
 // simply means "on" and an unsaved choice.
 
-import { fmtTime, isTypingTarget, srSpeak } from "./dom-helpers.js";
+import {
+  dialogReturnPlace, fmtTime, focusAfterDialog, focusSteadyPlace, isTypingTarget,
+  releaseDialogFocus, srSpeak,
+} from "./dom-helpers.js";
 import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
@@ -130,12 +133,46 @@ function _queueSummary(queue) {
   return `${count}. First, ${_spokenTrack(queue[0])}`;
 }
 
+// Where focus goes back to when the shortcut list closes: the control that
+// opened it, or somewhere steady near it.  The list lets go of focus before
+// it closes, so the browser has nothing to put back; put back by the
+// browser, focus was not reported and NVDA read the skip link instead.
+let _shortcutsOpener = null;
+let _shortcutsPlace = null;
+let _shortcutsReturnPending = false;
+
+function _returnShortcutsFocus(modal) {
+  if (!_shortcutsReturnPending) return;
+  _shortcutsReturnPending = false;
+  const opener = _shortcutsOpener;
+  const place = _shortcutsPlace;
+  _shortcutsOpener = null;
+  _shortcutsPlace = null;
+  if (!focusAfterDialog(opener)) focusSteadyPlace(modal.ownerDocument, place);
+}
+
+// Escape closes the list natively: let go of focus as it starts to close,
+// and return it once it has.
+function _wireShortcutsModal(modal) {
+  if (modal.dataset.focusReturn) return;
+  modal.dataset.focusReturn = "on";
+  modal.addEventListener("cancel", () => releaseDialogFocus(modal));
+  modal.addEventListener("close", () => _returnShortcutsFocus(modal));
+}
+
 export function toggleShortcutsModal() {
   const modal = document.getElementById("hotkey-help-modal");
   if (!modal) return false;
+  _wireShortcutsModal(modal);
   if (modal.open) {
+    releaseDialogFocus(modal);
     modal.close();
+    _returnShortcutsFocus(modal);
   } else {
+    const active = document.activeElement;
+    _shortcutsOpener = active && active !== document.body ? active : null;
+    _shortcutsPlace = dialogReturnPlace(_shortcutsOpener);
+    _shortcutsReturnPending = true;
     modal.showModal();
     // Focus the Close button explicitly -- browsers vary on default focus.
     const closeBtn = document.getElementById("btn-shortcuts-close");

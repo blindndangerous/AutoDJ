@@ -735,3 +735,109 @@ def test_an_os_error_with_a_file_names_only_the_file() -> None:
 
     error = PermissionError(13, "Permission denied", "/srv/autodj/index/tools/stereo-tool/x.so")
     assert _unavailable("stereotool", error) == "x.so: Permission denied"
+
+
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
+def test_slow_start_trims_only_silence_and_reports_first_input(mode, caplog, monkeypatch):
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: mode
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    caplog.set_level("INFO", logger="autodj.mastering")
+    try:
+        with master._lock:
+            master._switch(True, mode)
+        for _ in range(_QUEUE_BLOCKS + 50):
+            assert not np.any(master.process(_block()))
+        assert len(master._input) == _QUEUE_BLOCKS
+        assert master._warmup_silent_drops == 50
+        assert master.error is None
+        assert master.restarts == 0
+        assert not caplog.records
+
+        # A delayed processor catches up while the bus still carries silence.
+        master._input.clear()
+        generation = master._generation
+        master._output.extend(
+            (generation, _block(1e-12)) for _ in range(master._output_guard_blocks + 1)
+        )
+        now[0] = 105.0
+        np.testing.assert_array_equal(master.process(_block()), _block(1e-12))
+        assert "ready after 5.000 s; discarded 50 silent and 0 non-silent" in caplog.text
+        assert "First non-silent master input" not in caplog.text
+        master._output.clear()
+        first_song = _block(0.025)
+        now[0] = 105.2
+        master._output.append((generation, _block()))
+        master.process(first_song)
+        now[0] = 105.7
+        master._output.append((generation, first_song))
+        np.testing.assert_array_equal(master.process(first_song), first_song)
+        assert "First non-silent master input after 5.200 s" in caplog.text
+        master._output.append((generation, first_song))
+        master.process(first_song)
+        assert caplog.text.count("First non-silent master input") == 1
+        assert master.error is None
+    finally:
+        master.close()
+
+
+@pytest.mark.parametrize("phase", ["quiet_music", "after_music", "ready", "recovering"])
+def test_warmup_does_not_hide_program_or_running_overflows(phase, caplog):
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        if phase == "after_music":
+            master.process(_block(0.1))
+            master._input.clear()
+        master._ready = phase == "ready"
+        master._recovering = phase == "recovering"
+        queued = _block(1e-12 if phase == "quiet_music" else 0).tobytes()
+        master._input.extend((master._generation, queued) for _ in range(_QUEUE_BLOCKS))
+        if master._ready:
+            master._output.append((master._generation, _block()))
+        master.process(_block(1e-12 if phase == "quiet_music" else 0))
+        assert "master input queue overflow; dropped oldest block" in caplog.text
+        assert master.error == "master input queue overflow; dropped oldest block"
+        assert master._warmup_audio_drops == (1 if phase == "quiet_music" else 0)
+        assert master._warmup_silent_drops == (1 if phase in {"after_music", "recovering"} else 0)
+        assert len(master._input) == _QUEUE_BLOCKS
+    finally:
+        master.close()
+
+
+@pytest.mark.parametrize("release", ["ready", "failed", "recovering", "disabled", "timeout"])
+def test_startup_hold_is_bounded_and_never_holds_recovery(release, monkeypatch):
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    now = [10.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        assert master.startup_pending
+        if release == "timeout":
+            now[0] += 5.0
+        elif release == "disabled":
+            master._enabled = False
+        else:
+            setattr(master, f"_{release}", True)
+        assert not master.startup_pending
+        if release == "timeout":
+            assert "exceeded 5 seconds" in master.error
+            # The processor continues receiving audio while bounded bypass plays.
+            for _ in range(25):
+                output = master.process(_block(0.01))
+            assert np.any(output)
+            assert len(master._input) == 25
+            assert not master.startup_pending
+    finally:
+        master.close()

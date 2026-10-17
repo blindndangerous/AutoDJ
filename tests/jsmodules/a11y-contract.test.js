@@ -870,7 +870,7 @@ function connectedStatusIsVisible({
 }
 
 function contractControls() {
-  if (!document.querySelector("textarea")) {
+  if (!document.getElementById("a11y-textarea-fixture")) {
     const textarea = document.createElement("textarea");
     textarea.id = "a11y-textarea-fixture";
     document.body.append(textarea);
@@ -1918,9 +1918,11 @@ describe("static accessibility contracts", () => {
     expect(fieldset.hidden).toBe(true);
     expect(fieldset.querySelector("legend").textContent.trim()).toBe("Stream");
     expect(fieldset.parentElement.matches("#panel-settings > #spanel-stream")).toBe(true);
-    expect(fieldset.previousElementSibling.tagName).toBe("H3");
-    expect(fieldset.previousElementSibling.textContent).toBe("Stream");
-    expect(document.querySelector("#stab-stream").hidden).toBe(true);
+    const panelHeading = fieldset.parentElement.querySelector(":scope > h3");
+    expect(panelHeading.textContent).toBe("Stream");
+    expect(panelHeading.nextElementSibling.id).toBe("public-page-form");
+    expect(fieldset.previousElementSibling.id).toBe("public-page-form");
+    expect(document.querySelector("#stab-stream").hidden).toBe(false);
     expect([...fieldset.querySelectorAll("h4")].map((heading) => heading.textContent.trim()))
       .toEqual(["Relays", "More formats", "Now-playing feed", "Listeners", "Bans",
         "Listener statistics"]);
