@@ -433,6 +433,7 @@ function clearStationViews() {
   lastNextKey = null;
   _lastWhyKey = "";
   _lastDuration = 0;
+  _betweenTracks = false;
   document.title = pageTitle([]);
 }
 
@@ -714,17 +715,16 @@ function applyState(s, { announceTrack = true } = {}) {
       elapsed = 0;
     }
   }
-  // The lyrics keep the real clock, which holds the song's last line.
-  const lyricElapsed = elapsed;
   // Between tracks (#428): the server mix keeps counting while a liner,
   // ID or break plays after the song has ended, so its clock passes the
   // song's length until the next song starts.  Show 0:00 / 0:00 then, and
-  // give the seek slider and the position keys no position to report.
-  if (dur > 0 && elapsed > dur) {
-    elapsed = 0;
-    dur = 0;
-  }
-  const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
+  // give the seek slider and the position keys no duration to work from.
+  // The real clock stays in `elapsed` and `_lastElapsed`: past the end, the
+  // landmark keys find no landmark left and the lyrics hold the last line.
+  _betweenTracks = dur > 0 && elapsed > dur;
+  const shownElapsed = _betweenTracks ? 0 : elapsed;
+  const shownDur = _betweenTracks ? 0 : dur;
+  const pct = shownDur > 0 ? Math.min(100, (shownElapsed / shownDur) * 100) : 0;
   // Nothing can seek a live stream, so the slider goes and the visible
   // clock (normally aria-hidden beside it) becomes the readable position.
   // It is plain text, never a live region, so the 1 Hz tick stays silent.
@@ -740,20 +740,20 @@ function applyState(s, { announceTrack = true } = {}) {
   // Cache for the seek slider — its keyboard / pointer handlers need
   // the current duration in seconds even when no deck is unlocked yet
   // (server-audio mode, pre-Play state).
-  _lastDuration = dur;
+  _lastDuration = shownDur;
   _lastElapsed = elapsed;
   // Suppress live progress updates while the user is actively
   // dragging the seek slider so the UI doesn't yo-yo between the
   // drag position and a stale server-broadcast position.
   if (!_seekController?.isDragging()) {
     progressFill.style.width = pct.toFixed(1) + "%";
-    const timeText = `${fmtTime(elapsed)} / ${fmtTime(dur)}`;
+    const timeText = `${fmtTime(shownElapsed)} / ${fmtTime(shownDur)}`;
     progressLbl.textContent  = timeText;
     // A11y C1: expose progressbar value + valuetext so NVDA users can query
     // track position (insert+T / NVDA+Tab).  pct is 0–100 — matches valuemax=100.
     const progressTrack = document.getElementById("progress-track");
     if (progressTrack) {
-      queueProgressValue(pct.toFixed(0), `${fmtTime(elapsed)} of ${fmtTime(dur)}`);
+      queueProgressValue(pct.toFixed(0), `${fmtTime(shownElapsed)} of ${fmtTime(shownDur)}`);
       flushProgressValue(progressTrack);
     }
   }
@@ -851,10 +851,10 @@ function applyState(s, { announceTrack = true } = {}) {
   // Lyrics \u2014 visible list highlight and aria-current; nothing is spoken
   // Under browser-driven playback the server's own clock never moves, so
   // hand the lyrics module the position the deck is actually at.
-  // `lyricElapsed` above is already the deck's currentTime in that mode,
-  // and the delayed server clock in stream mode.
+  // `elapsed` above is already the deck's currentTime in that mode, and
+  // the delayed server clock in stream mode.
   applyLyricsState(s, _lyricEls, {
-    elapsed: lyricElapsed,
+    elapsed,
     localClock: browserMode || inStream,
   });
 
@@ -2149,6 +2149,9 @@ let _lastDuration = 0;
 // restarted from wherever the slider stood when it was focused.
 let _lastElapsed = 0;
 let _keyboardSeek = null;
+// The song on air has ended and a liner, ID or break plays before the
+// next one (#428): the clock is past the song, so it has no position.
+let _betweenTracks = false;
 
 function _currentPositionSeconds() {
   if (_lastBrowserPlayback && playbackEnabled) {
@@ -2185,6 +2188,12 @@ function _seekByDelta(deltaSec) {
     return;
   }
   const dur = _seekTrackDuration();
+  // No song length (between tracks, or nothing playing): a seek would move
+  // the audio without a position to say, so say so and leave it.
+  if (!(dur > 0) && !_lastBrowserPlayback) {
+    srSpeak("Position unknown");
+    return;
+  }
   const target = Math.max(0, Math.min(dur, _currentPositionSeconds() + deltaSec));
   if (_lastBrowserPlayback && dur > 0) {
     try {
@@ -3093,7 +3102,9 @@ libraryFoldersControls = installLibraryFolders({
   getStation: currentStation,
   onBackgroundError: reportBackgroundRequestError,
   getCurrentTrack: () => _lastState?.current_track || null,
-  getCurrentPosition: () => _lastElapsed,
+  // Between tracks the clock is past the song, so "Set from current" says
+  // the track is not playing rather than set a time past its end.
+  getCurrentPosition: () => (_betweenTracks ? null : _lastElapsed),
   onFolders(folders) {
     registeredLibraryFolders = folders;
     updateLibraryFolderOptions();

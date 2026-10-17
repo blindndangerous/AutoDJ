@@ -1132,6 +1132,80 @@ describe("app request behavior", () => {
     expect(hotkeys.getPosition()).toEqual({ elapsed: 3, duration: 180 });
   });
 
+  it("finds no landmark ahead and does not seek between tracks (#428)", async () => {
+    const between = {
+      current_track: { path: "a.mp3", title: "A", bpm: 120 }, duration: 200, elapsed: 207,
+    };
+    const { fetchImpl, webSocket } = await setupApp({
+      initialState: between,
+      onRequest: (url) => url.includes("/landmarks?")
+        ? jsonResponse({
+          length: 200,
+          landmarks: [
+            { time_s: 12, major: true, kind: "drop", name: "Drop" },
+            { time_s: 150, major: true, kind: "outro", name: "Outro" },
+          ],
+        })
+        : jsonResponse({ ok: true }),
+    });
+    const hotkeysModule = await import("../../src/autodj/static/modules/hotkeys.js");
+    const hotkeys = hotkeysModule.installHotkeys.mock.calls[0][0];
+    // Bracket keys seek the song on air.
+    hotkeysModule.bracketSeekEnabled.mockReturnValue(true);
+    const status = document.querySelector("#sr-status");
+    const seeks = () => fetchImpl.mock.calls.filter(([url]) => url === "/api/seek");
+    webSocket.onmessage({ data: JSON.stringify(between) });
+
+    // Shift+U: the song is over, so nothing in it is coming next.
+    expect(await hotkeys.getUpcomingLandmark()).toBe("On air: No more landmarks in this song.");
+    // Right bracket: no landmark ahead, so the station is not moved back into the song.
+    await hotkeys.jumpLandmark(1);
+    await vi.waitFor(() => expect(status.textContent)
+      .toBe("On air: No more landmarks after this point in the song."));
+    // Comma / Period: no position to move from or to say.
+    hotkeys.seekDelta(5);
+    await vi.waitFor(() => expect(status.textContent).toBe("Position unknown"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seeks()).toEqual([]);
+  });
+
+  it("does not set a point from the clock between tracks (#428)", async () => {
+    window.location.hash = "#now";
+    try {
+      const playing = {
+        current_track: { path: "M:/song.flac", title: "Song" }, duration: 200, elapsed: 50,
+      };
+      const { webSocket } = await setupApp({
+        initialState: playing,
+        onRequest: (url) => url.includes("/library/points?")
+          ? jsonResponse({
+            path: "M:/song.flac", title: "Song", kind: "music", length: 200, points: {},
+          })
+          : jsonResponse({ ok: true }),
+      });
+      webSocket.onmessage({ data: JSON.stringify(playing) });
+      document.querySelector("#edit-current-points").click();
+      await vi.waitFor(() => expect(document.querySelector("#panel-track-info").hidden).toBe(false));
+      const outro = document.querySelector('[data-point="outro"]');
+      const setOutro = document.querySelector('[data-set-current="outro"]');
+      await vi.waitFor(() => expect(setOutro.closest("[hidden]")).toBeNull());
+      // Without the song in the preview, the button reads the station's clock.
+      document.getElementById("points-preview").removeAttribute("src");
+      setOutro.click();
+      expect(outro.value).toBe("0:50");
+
+      outro.value = "";
+      webSocket.onmessage({ data: JSON.stringify({ ...playing, elapsed: 207 }) });
+      setOutro.click();
+      expect(outro.value).toBe("");
+      expect(document.getElementById("points-status").textContent)
+        .toBe("This track is not playing in the preview or on the station.");
+    } finally {
+      window.location.hash = "";
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  });
+
   it("saves key notation without announcing into the hidden Now Playing panel", async () => {
     const { fetchImpl } = await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
     const notation = document.querySelector("#key-notation");
