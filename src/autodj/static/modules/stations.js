@@ -24,6 +24,22 @@ const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 // Relative to /api; {name} is one path segment.  The socket (/ws) and the
 // announcer's machine routes are not requested by this page.
 export const STATION_ROUTES = Object.freeze([
+  "/speech",
+  "/speech/preflight",
+  "/speech/batches",
+  "/speech/batches/{token}",
+  "/speech/batches/{token}/retry",
+  "/speech/batches/{token}/save",
+  "/speech/batches/{token}/samples/{index}",
+  "/speech/cancel",
+  "/speech/saved/{name}/publish",
+  "/speech/saved/{name}/audio",
+  "/speech/presets/{name}",
+  "/speech/default",
+  "/speech/time-inventory",
+  "/speech/time-sets",
+  "/speech/time-sets/{name}/samples/{minute}",
+  "/speech/active-set",
   "/status",
   "/settings",
   "/stereo-tool-presets",

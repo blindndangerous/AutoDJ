@@ -73,6 +73,7 @@ from autodj.time_check_files import (
     subfolders,
     sweep_leftovers,
 )
+from autodj.tts_command import TTS_TIMEOUT_S, run_command
 from autodj.voice_packs import JoinCache, coverage, join_voice, pieces_for, scan_pack, signature
 
 if TYPE_CHECKING:
@@ -81,7 +82,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 EXTENSIONS = (".wav", ".mp3", ".flac", ".ogg")
 STATE_VERSION = 1
-TTS_TIMEOUT_S = 20
 MIB = 1024 * 1024
 #: The time check routes that take an upload, for the request body caps.
 PACK_UPLOAD_PATH = "/api/time-checks/packs"
@@ -936,6 +936,9 @@ class TimeChecks:
         clips, used while none is chosen.
         """
         self.rescan()
+        from autodj.speech import load_state
+
+        generated_set = load_state(self.paths.speech).get("active_set")
         missing = missing_minutes(self.folder)
         tc = self.config
         return {
@@ -944,6 +947,7 @@ class TimeChecks:
             "missing_minutes": len(missing),
             "missing_examples": missing[:10],
             "tts_available": bool(tc.tts_command),
+            "generated_set": generated_set,
             "timezone": self.zone.key,
             "duck_db": self.cfg.playback.liners_duck_db,
             "folders": [folder.name for folder in subfolders(self.root)],
@@ -1106,6 +1110,20 @@ class TimeChecks:
             subprocess.TimeoutExpired: Decoding it took too long.
             LinerDecodeError: It could not be decoded.
         """
+        from autodj.speech import generated_clip
+
+        try:
+            selected, generated = generated_clip(self.paths.speech, local)
+            if selected:
+                if generated is None:
+                    logger.warning(
+                        "Generated time check audio is missing; skipping without synthesis"
+                    )
+                    return None
+                return decode_liner_path(generated), "generated set"
+        except (OSError, ValueError, LinerDecodeError):
+            logger.warning("Generated time check could not be read; skipping without synthesis")
+            return None
         self.rescan()
         for name in self._candidates(pack, local.date()):
             audio = self._pack_voice(name, local)
@@ -1134,20 +1152,9 @@ class TimeChecks:
             with tempfile.NamedTemporaryFile(dir=self.cache, suffix=".wav", delete=False) as handle:
                 temp = Path(handle.name)
             try:
-                argv = [
-                    part.replace("{out}", str(temp)).replace("{text}", text) for part in command
-                ]
-                result = subprocess.run(
-                    argv,
-                    input=text,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                    timeout=TTS_TIMEOUT_S,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )  # nosec B603
-                if result.returncode != 0:
-                    logger.warning("Time check TTS command failed (exit %s)", result.returncode)
+                returncode = run_command(command, text, temp, timeout=TTS_TIMEOUT_S)
+                if returncode != 0:
+                    logger.warning("Time check TTS command failed (exit %s)", returncode)
                     return None
                 if not _has_audio(temp):
                     # A WAV header alone: some voices (a screen reader's SAPI

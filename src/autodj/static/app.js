@@ -323,6 +323,7 @@ let hourPreviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
 let adsControls = null;
+let speechControls = null;
 let listenerRequestControls = null;
 let breakSettingsControls = null;
 let reconnectGeneration = 0;
@@ -477,6 +478,7 @@ function clearProtectedSessionData() {
 }
 
 function expireAuthenticatedSession() {
+  speechControls?.pause();
   if (!authExpiryHandled) {
     authExpiryHandled = true;
     invalidateAuthenticatedRequestEpoch();
@@ -1784,6 +1786,8 @@ async function requestStationState() {
 
 // Every panel that shows the station asks it again.
 function refreshStationPanels() {
+  speechControls?.pause();
+  void speechControls?.refresh();
   void timeSettings.load();
   streamSettings.retryIfMissing();
   void listenerControls.refresh();
@@ -3100,6 +3104,7 @@ hourPreviewControls = installHourPreview();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";
+import { installSpeechStudio } from "./modules/speech-studio.js";
 import { installListenerRequests } from "./modules/listener-requests.js";
 import { installBreakSettings } from "./modules/breaks-settings.js";
 
@@ -3233,6 +3238,7 @@ function startAuthenticatedApp(initialState) {
       playBrowserClip(arrayBuf, duckDb, activeLinerSources, epoch),
   };
   timeCheckControls = installTimeChecks(linerAudio);
+  speechControls = installSpeechStudio();
   listenerRequestControls = installListenerRequests();
   breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });

@@ -6,10 +6,6 @@ Music stays on your computer or server. A new library starts empty, so you choos
 
 ## Start in five minutes
 
-Developers: start with [Contributing](CONTRIBUTING.md) and the
-[architecture decision index](docs/adr/README.md). Coding agents should read
-[AGENTS.md](AGENTS.md) before changing the repository.
-
 On Windows, install [Git](https://git-scm.com/downloads), then run in PowerShell:
 
 ```powershell
@@ -57,6 +53,10 @@ You can use AutoDJ just for beatmatching and its library tools without running a
 ## For administrators
 
 The [install guide](docs/guides/install.md) covers Windows, Linux, Docker, and NAS storage. [Operations](docs/operations.md) has backup, restore, upgrade, network, and command details. Run `autodj doctor` to check an installation. Use **Settings**, **Profiles and access** for paired browsers and **Settings**, **Analysis workers** for machine tokens. Do not publish the control page without access controls.
+
+## For contributors
+
+Start with [Contributing](CONTRIBUTING.md) and the [architecture decision index](docs/adr/README.md). Coding agents should read [AGENTS.md](AGENTS.md) before changing the repository.
 
 ## Credits and licensing
 

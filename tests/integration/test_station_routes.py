@@ -24,6 +24,8 @@ _TOKEN = "station-routes-test-token-is-32-bytes"
 # audio files, Stereo Tool presets and the analysis workers.
 SHARED = frozenset(
     {
+        "/api/speech/providers",
+        "/api/speech/providers/{name}",
         "/",
         "/app.css",
         "/app.js",
@@ -104,6 +106,22 @@ SOURCE_MOUNTS = frozenset({"/live", "/stations/{slug}/live"})
 # /api/stations/{slug}<route>.
 STATION = frozenset(
     {
+        "/speech",
+        "/speech/preflight",
+        "/speech/batches",
+        "/speech/batches/{token}",
+        "/speech/batches/{token}/retry",
+        "/speech/batches/{token}/save",
+        "/speech/batches/{token}/samples/{index}",
+        "/speech/cancel",
+        "/speech/saved/{name}/publish",
+        "/speech/saved/{name}/audio",
+        "/speech/presets/{name}",
+        "/speech/default",
+        "/speech/time-inventory",
+        "/speech/time-sets",
+        "/speech/time-sets/{name}/samples/{minute}",
+        "/speech/active-set",
         "/status",
         "/settings",
         "/stereo-tool-presets",

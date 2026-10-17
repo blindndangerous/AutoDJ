@@ -97,8 +97,9 @@ INDEX_FILES = (
 # Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
 _LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
 #: Relay source passwords stay on the machine, including when restoring older archives.
-SECRET_STATE_FILES = frozenset({"relays.json", "secrets.json"})
+SECRET_STATE_FILES = frozenset({"relays.json", "secrets.json", "speech_providers.json"})
 _FOLDERS = (
+    "speech",
     "liners",
     "carts",
     "time_checks",
@@ -130,6 +131,7 @@ _STATE_FILES = (
 # Another station's state files, in ``stations/<slug>/``.
 STATION_FILES = _STATE_FILES
 STATION_FOLDERS = (
+    "speech",
     "liners",
     "carts",
     "time_checks",
@@ -166,6 +168,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "index": station.state_dir,
         "library": cfg.index.library_dir,
         "liners": station.liners,
+        "speech": station.speech,
         "carts": station.cart_uploads,
         "time_checks": station.time_check_clips,
         "profiles": station.profiles,
@@ -180,6 +183,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         prefix = f"stations/{spec.slug}"
         roots[f"{prefix}/index"] = paths.state_dir
         roots[f"{prefix}/liners"] = paths.liners
+        roots[f"{prefix}/speech"] = paths.speech
         roots[f"{prefix}/carts"] = paths.cart_uploads
         roots[f"{prefix}/time_checks"] = paths.time_check_clips
         roots[f"{prefix}/profiles"] = paths.profiles
@@ -579,7 +583,14 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
     folder_members: dict[str, Path] = {}
     for key, root in folders.items():
         pattern = "*.sts" if key == "stereo-tool-presets" else "**/*"
+        durable = None
+        if key.split("/")[-1] == "speech":
+            from autodj.speech import backup_files
+
+            durable = backup_files(root)
         for path in _folder_files(root, pattern):
+            if durable is not None and path not in durable:
+                continue
             folder_members[f"{key}/{path.relative_to(root).as_posix()}"] = path
     _check_backup_space(
         roots, list(folder_members.values()), Path(tempfile.gettempdir()), destination
@@ -589,6 +600,15 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
         with tempfile.TemporaryDirectory(prefix="autodj-backup-") as temp:
             members = _snapshot(cfg, roots, Path(temp))
             members.update(folder_members)
+            for name in list(members):
+                key, rest = _split(name)
+                if key.split("/")[-1] == "speech" and rest == ("speech.json",):
+                    from autodj.speech import export_state
+
+                    stripped = Path(temp) / name
+                    stripped.parent.mkdir(parents=True, exist_ok=True)
+                    stripped.write_text(json.dumps(export_state(roots[key])))
+                    members[name] = stripped
             with partial.open("xb") as handle:
                 with zipfile.ZipFile(handle, "w", zipfile.ZIP_DEFLATED) as archive:
                     for name, path in members.items():
@@ -723,6 +743,25 @@ def _target(roots: dict[str, Path], name: str) -> Path:
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in (*STATION_FILES, "station.db"):
             return roots[key] / rest[0]
+    elif key in roots and key.split("/")[-1] == "speech":
+        from autodj.speech_providers import ID
+
+        if (
+            rest == ("speech.json",)
+            or (
+                len(rest) == 2
+                and rest[0] == "saved"
+                and Path(rest[1]).suffix in (".wav", ".json")
+                and ID.fullmatch(Path(rest[1]).stem)
+            )
+            or (
+                len(rest) == 3
+                and rest[0] == "sets"
+                and ID.fullmatch(rest[1])
+                and re.fullmatch(r"[0-9a-f]{64}\.wav", rest[2])
+            )
+        ):
+            return roots[key].joinpath(*rest)
     elif key in roots and rest and (key in _FOLDERS or key.split("/")[-1] in STATION_FOLDERS):
         return roots[key].joinpath(*rest)
     raise BackupError(f"unknown file in archive: {name!r}")
@@ -1080,6 +1119,35 @@ def _restore(
                         if name == "library.db":
                             _check_catalog(database)
             for key, stage in stages.items():
+                if key.split("/")[-1] == "speech":
+                    from autodj.speech import backup_files, load_state
+                    from autodj.speech_providers import checked_audio
+
+                    try:
+                        speech = load_state(stage)
+                        expected = {f"{h:02d}_{m:02d}" for h in range(24) for m in range(60)}
+                        if (
+                            speech["batches"]
+                            or any(
+                                item.get("state") != "complete"
+                                or set(item.get("minutes", {})) != expected
+                                for item in speech["sets"].values()
+                            )
+                            or (
+                                speech.get("active_set")
+                                and speech["active_set"] not in speech["sets"]
+                            )
+                        ):
+                            raise ValueError("Incomplete speech state in archive")
+                        for file in backup_files(stage):
+                            if not file.is_file():
+                                raise ValueError("Missing saved speech audio in archive")
+                            if file.suffix == ".wav":
+                                checked_audio(file.read_bytes())
+                    except (OSError, ValueError) as exc:
+                        raise BackupError(
+                            "Saved speech could not be validated for restore"
+                        ) from exc
                 database = stage / "station.db"
                 if key != "library" and _is_files(key) and database.is_file():
                     _check_sqlite(database)

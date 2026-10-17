@@ -41,6 +41,45 @@ def _checks(tmp_path: Path) -> TimeChecks:
     return TimeChecks(cfg, "America/Denver")
 
 
+def test_generated_mode_never_calls_legacy_tts_when_audio_is_missing(tmp_path, monkeypatch):
+    """ADR-0013-07: missing generated audio skips instead of synthesizing."""
+    checks = _checks(tmp_path)
+    root = checks.paths.speech
+    root.mkdir(parents=True)
+    from autodj.speech import _empty
+
+    data = _empty()
+    data["active_set"] = "generated"
+    data["sets"]["generated"] = {"state": "complete", "minutes": {}}
+    (root / "speech.json").write_text(json.dumps(data))
+    monkeypatch.setattr(checks, "_synthesize", lambda text: pytest.fail("Unexpected synthesis"))
+    assert checks.render(datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)) is None
+
+
+def test_generated_set_forecast_reads_local_audio_without_synthesis(tmp_path, monkeypatch):
+    """ADR-0013-07: upstream forecasts reuse generated audio without running commands."""
+    from autodj.speech import _empty
+
+    checks = _checks(tmp_path)
+    checks.settings = _settings(enabled=True)
+    root = checks.paths.speech
+    folder = root / "sets" / "generated"
+    folder.mkdir(parents=True)
+    key = "a" * 64
+    sf.write(folder / f"{key}.wav", np.ones((441, 2), dtype=np.float32) * 0.1, 44100)
+    data = _empty()
+    data["active_set"] = "generated"
+    data["sets"]["generated"] = {"state": "complete", "minutes": {"03_05": key}}
+    manifest = root / "speech.json"
+    manifest.write_text(json.dumps(data))
+    before = manifest.read_bytes()
+    monkeypatch.setattr(checks, "_synthesize", lambda text: pytest.fail("Unexpected synthesis"))
+    when = datetime(2026, 10, 11, 3, 5, tzinfo=checks.zone)
+    assert checks.forecast_seconds(when, scheduled=True) == pytest.approx(0.01)
+    assert manifest.read_bytes() == before
+    assert not checks.cache.exists()
+
+
 def test_natural_speech_and_recording_names(tmp_path: Path) -> None:
     denver = ZoneInfo("America/Denver")
     at = datetime(2026, 10, 11, 3, 5, tzinfo=denver)

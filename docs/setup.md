@@ -6,6 +6,9 @@ The setup/model record documents current implementation for review; it
 does not announce new hardware support.
 
 Install Git and clone AutoDJ; the [README quick start](../README.md#start-in-five-minutes) has the commands.
+For optional speech generation, configure existing provider connections in the
+[speech studio](operations.md#speech-studio). AutoDJ does not install speech models
+or provision endpoints, and saved generated audio plays without provider access.
 The launcher obtains Python 3.14 when needed. Node.js is not required to run the application.
 
 On Windows:

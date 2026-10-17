@@ -1068,6 +1068,13 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
+            speech = getattr(app.state, "speech", None)
+            if speech is not None and not await asyncio.to_thread(
+                speech.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                logger.warning(
+                    "Speech worker is still stopping; pending requests will not be retried"
+                )
             # A rotation test reads the library: stop it before the library closes.
             rotation_tests = getattr(app.state, "rotation_tests", None)
             if rotation_tests is not None and not await asyncio.to_thread(
@@ -1141,6 +1148,8 @@ def create_app(
     )
     app.state.listener_access = listener_access
     app.state.stations = stations
+
+    from autodj.speech_api import SPEECH_BODY_LIMIT, WRITE_ROUTES, install_speech
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -1219,6 +1228,7 @@ def create_app(
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
     body_limits: dict[str, Callable[[], int]] = {
+        **{path: (lambda: SPEECH_BODY_LIMIT) for path in WRITE_ROUTES},
         "/api/stations": lambda: 4096,
         "/api/pair": lambda: PAIRING_BODY_MAX_BYTES,
         "/api/liners/upload": lambda: _liner_upload_max_bytes() + _MULTIPART_OVERHEAD_BYTES,
@@ -2170,6 +2180,7 @@ def create_app(
         return {"hours": hours, "minutes": minutes}
 
     station_router = StationRouter(app.router)
+    install_speech(app, station_router, cfg, stations)
 
     def _settings_slug(request: Request) -> str:
         slug = request.path_params.get("slug", DEFAULT_SLUG)

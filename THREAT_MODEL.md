@@ -9,6 +9,21 @@ Last reviewed: 2026-10-13. Re-review every major release.
 
 ## Scope and trust boundaries
 
+The [speech studio](docs/operations.md#speech-studio) adds browser-control routes
+for shared provider connections and station-local production. They use the same
+loopback/LAN authentication and Origin rules as other controls; machine, worker,
+announcer and listener credentials do not authorize production. JSON writes are
+capped at 64 KiB before parsing. Credentials live in an owner-only private file,
+are write-only to the browser and are excluded from backups and errors.
+Only configured endpoints can receive text. Addresses are checked and pinned for
+each connection; metadata/link-local destinations, redirects and remote result URLs
+are refused. Trusted-local HTTP is an explicit setting and does not encrypt traffic.
+Each operation runs in a bounded owned child with cancellation and a wall deadline;
+audio size, duration, temporary storage and admission are bounded. Generation and
+retries require explicit idempotent requests and can incur provider charges.
+Provider identity and health are separate from protocol compatibility; mocked
+checks do not certify third-party services or the intelligibility of their output.
+
 AutoDJ is a single-user local music player with these exposed surfaces:
 
 - CLI commands read local audio and configuration, then write index, profile, liner or backup

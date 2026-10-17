@@ -290,7 +290,9 @@ export function installTimeChecks({ doc = document, request = requestJson,
     showPacks(settings.packs || []);
     showClips();
     const recorded = MINUTES - settings.missing_minutes;
-    const fallback = settings.tts_available
+    const fallback = settings.generated_set
+      ? `Generated set ${settings.generated_set} supplies local audio. Missing generated clips are skipped.`
+      : settings.tts_available
       ? "Text to speech says the minutes without a clip."
       : "No text to speech is set up, so minutes without a clip are skipped.";
     clips.textContent = `${recorded} of ${MINUTES} minute clips recorded. ${fallback} `

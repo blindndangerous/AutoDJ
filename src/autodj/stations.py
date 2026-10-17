@@ -200,6 +200,11 @@ class StationPaths:
         return self.state_dir / "time_checks.json"
 
     @property
+    def speech(self) -> Path:
+        """Speech drafts, saved assets and generated time checks; never scanned as liners."""
+        return self.state_dir / "speech"
+
+    @property
     def time_checks_cache(self) -> Path:
         """Spoken time checks made by the text-to-speech program."""
         return self.state_dir / "time_checks_cache"

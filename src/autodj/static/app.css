@@ -861,6 +861,7 @@
     #ln-file-list { list-style: none; }
     #ln-file-list li {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 0.5rem;
       padding: 0.3rem 0;
@@ -1356,7 +1357,8 @@
       padding: 0 1.25rem 1rem;
     }
     /* Firefox draws audio controls wider than a 320 px card's content. */
-    details.card audio { max-width: 100%; }
+    details.card audio,
+    #speech-studio audio { max-width: 100%; }
     /* A button that is a direct child of the card was inheriting the
        card's block padding, which pinned its label to the top edge and
        shifted it 20 px left of everything around it. */
