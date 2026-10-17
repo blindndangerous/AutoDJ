@@ -130,3 +130,37 @@ def test_malformed_documented_configuration_is_rejected(tmp_path: Path) -> None:
         load_config(config, environ={})
     assert config.read_bytes() == before
     assert list(tmp_path.iterdir()) == [config]
+
+
+@pytest.mark.parametrize(
+    "variant", ["equivalent", "external", "relative", "wrong-type", "extra-key", "extra-table"]
+)
+def test_safe_fixture_validates_paths_and_exact_configuration(
+    tmp_path: Path, monkeypatch, variant: str
+) -> None:
+    def write_configuration(*args, cwd: Path, **kwargs) -> None:
+        recovery = cwd / "autodj-recovery-test"
+        recovery.mkdir()
+        # Native resolution accepts dot segments; Windows also accepts case/separator aliases.
+        index = str(recovery / "unused" / ".." / "index")
+        if os.name == "nt":
+            index = index.upper().replace("\\", "/")
+        if variant == "external":
+            index = str(tmp_path / "outside" / "index")
+        if variant == "relative":
+            index = "index"
+        text = f"[index]\nindex_dir = '{index}'\nmodel_dir = '{recovery / 'models'}'\n"
+        if variant == "wrong-type":
+            text = text.replace(f"index_dir = '{index}'", "index_dir = 123")
+        if variant == "extra-key":
+            text += "unexpected = 'value'\n"
+        if variant == "extra-table":
+            text += "[unexpected]\nvalue = true\n"
+        (recovery / "recovery.toml").write_text(text, encoding="utf-8")
+
+    monkeypatch.setattr(examples.subprocess, "run", write_configuration)
+    if variant == "equivalent":
+        examples.run_safe(ROOT, "powershell", "unused")
+    else:
+        with pytest.raises(ValueError, match="only to isolated scratch paths"):
+            examples.run_safe(ROOT, "powershell", "unused")

@@ -133,12 +133,25 @@ def run_safe(root: Path, shell: str, tool: str) -> None:
         values = tomllib.loads(config.read_text(encoding="utf-8"))
         expected = {
             "index": {
-                key: (config.parent / name).as_posix()
+                key: (config.parent / name).resolve()
                 for key, name in (("index_dir", "index"), ("model_dir", "models"))
             }
         }
-        if values != expected:
-            raise ValueError("Recovery configuration must point only to isolated scratch paths")
+        if (
+            set(values) != {"index"}
+            or not isinstance(values["index"], dict)
+            or set(values["index"]) != set(expected["index"])
+            or any(
+                not isinstance(value, str)
+                or not Path(value).is_absolute()
+                or Path(value).resolve() != expected["index"][key]
+                for key, value in values["index"].items()
+            )
+        ):
+            raise ValueError(
+                "Recovery configuration must point only to isolated scratch paths; "
+                f"actual: {values!r}; expected: {expected!r}"
+            )
         expected_files = {script, sentinel, config}
         if {
             path

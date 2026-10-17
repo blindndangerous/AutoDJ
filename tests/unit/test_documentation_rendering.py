@@ -48,11 +48,20 @@ def repository(tmp_path):
 
 def test_preview_and_clean_base_are_explicit(tmp_path):
     root = repository(tmp_path)
-    before = sorted(root.rglob("*"))
+
+    def working_tree_bytes():
+        # Git maintenance may change internal lock files independently of the preview.
+        return {
+            path.relative_to(root): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and ".git" not in path.relative_to(root).parts
+        }
+
+    before = working_tree_bytes()
     report, rendered = renderer.prepare(root)
     assert set(report["candidates"]) == {"README.md", "detail.md"}
     assert 'href="detail.md.html#details"' in rendered["README.md.html"]
-    assert sorted(root.rglob("*")) == before
+    assert working_tree_bytes() == before
     with pytest.raises(ValueError, match="no candidate"):
         renderer.prepare(root, "HEAD")
     (root / "detail.md").write_text("# Details\n\nChanged.\n")
