@@ -2135,10 +2135,10 @@ Every page has its own choice, so two browsers can control two stations at once.
 
 ### Logs
 
-A log line from a station other than the default one starts with its slug, such as
-`[nightowl] Stream station tick failed`, and that station's threads carry the slug in their
-names (`autodj-player-nightowl`, `autodj-stream-writer-nightowl`). The default station's lines
-and thread names are unchanged.
+A log line from a station starts with its slug, such as `[nightowl] Stream station tick failed`
+or `[default] Stream station tick failed`. Station threads carry extra station slugs in their
+names (`autodj-player-nightowl`, `autodj-stream-writer-nightowl`); default thread names are
+unchanged.
 
 ### Cost of each running station
 

@@ -111,7 +111,7 @@ See [Proposed ADR 8](0008-bound-background-work-outside-playout.md) for the
 reconstructed wider workload boundary. Multi-station load needs the documented
 [soak test](../operations.md#soak-test); unit tests are not a hardware timing
 certification. Revisit for a changed audio clock, mix topology, or output ownership.
-Actual checks are in [audit evidence](verification-2026-10-16.md).
+Record actual checks and their limits in the relevant PR.
 
 ## Current contracts
 

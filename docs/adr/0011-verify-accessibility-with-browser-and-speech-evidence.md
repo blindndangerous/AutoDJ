@@ -80,12 +80,12 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify announcement behavior with [live-region tests](../../tests/jsmodules/live-region.test.js).
-- [x] Verify dialog/focus and keyboard behavior with
+- [ ] Verify announcement behavior with [live-region tests](../../tests/jsmodules/live-region.test.js).
+- [ ] Verify dialog/focus and keyboard behavior with
   [dialog tests](../../tests/jsmodules/confirm-dialog.test.js) and
   [hotkey tests](../../tests/jsmodules/hotkeys.test.js).
 - [ ] Run the applicable [browser visual audit](../../tests/playwright/visual_audit.mjs)

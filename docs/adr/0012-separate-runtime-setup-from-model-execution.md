@@ -90,13 +90,13 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify saved setup selection and unattended behavior with
+- [ ] Verify saved setup selection and unattended behavior with
   [launcher tests](../../tests/unit/test_launcher.py).
-- [x] Verify identity and weight-file changes without loading the model with
+- [ ] Verify identity and weight-file changes without loading the model with
   [model identity tests](../../tests/unit/test_model_identity.py).
 - [ ] Verify supported compatibility handling with
   [MuQ compatibility tests](../../tests/integration/test_muq_transformers_compat.py).

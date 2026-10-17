@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import subprocess
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -143,6 +144,18 @@ def check(root: Path) -> tuple[list[str], list[str]]:
     root = root.resolve()
     errors = []
     reports = []
+    tracked = None
+    if (root / ".git").exists():
+        tracked = {
+            root / name
+            for name in subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
+            .decode("utf-8")
+            .split("\0")
+            if name
+        }
+
+    def included(path: Path) -> bool:
+        return tracked is None or path in tracked
 
     def error(path: Path, line: int, code: str, message: str) -> None:
         errors.append(f"{path.relative_to(root).as_posix()}:{line} [{code}] {message}")
@@ -151,7 +164,7 @@ def check(root: Path) -> tuple[list[str], list[str]]:
         return path.resolve().is_relative_to(root)
 
     adr_dir = root / "docs/adr"
-    files = sorted(p for p in adr_dir.glob("*.md") if ADR_FILE.fullmatch(p.name))
+    files = sorted(p for p in adr_dir.glob("*.md") if included(p) and ADR_FILE.fullmatch(p.name))
     numbers = Counter(path.name[:4] for path in files)
     for number, count in numbers.items():
         if count > 1:
@@ -284,12 +297,12 @@ def check(root: Path) -> tuple[list[str], list[str]]:
         p
         for pattern in ("test_*.py", "*_test.py")
         for p in (root / "tests").rglob(pattern)
-        if local(p) and "ADR-" in p.read_text(encoding="utf-8")
+        if included(p) and local(p) and "ADR-" in p.read_text(encoding="utf-8")
     )
     candidates.update(
         p
         for p in (root / "tests/jsmodules").rglob("*.test.js")
-        if local(p) and "ADR-" in p.read_text(encoding="utf-8")
+        if included(p) and local(p) and "ADR-" in p.read_text(encoding="utf-8")
     )
     for path in sorted(candidates):
         try:
@@ -309,7 +322,8 @@ def check(root: Path) -> tuple[list[str], list[str]]:
 
     documents = set(root.glob("*.md")) | set((root / "docs").rglob("*.md"))
     documents |= set((root / ".github").rglob("*.md")) | set((root / ".cursor/rules").glob("*.mdc"))
-    for path in sorted(documents):
+    anchor_cache = {}
+    for path in sorted(p for p in documents if included(p)):
         if not local(path):
             error(path, 1, "repository_escape", "document resolves outside repository")
             continue
@@ -317,17 +331,16 @@ def check(root: Path) -> tuple[list[str], list[str]]:
             parts = urlsplit(target)
             if parts.scheme or parts.netloc:
                 continue
-            destination = path.parent / unquote(parts.path) if parts.path else path
+            destination = (path.parent / unquote(parts.path) if parts.path else path).resolve()
             if not local(destination):
                 error(path, line, "repository_escape", "local link resolves outside repository")
-            elif not destination.is_file():
+            elif not (destination.is_file() or destination.is_dir()):
                 error(path, line, "local_link", f"target not found: {target}")
-            elif (
-                parts.fragment
-                and destination.suffix == ".md"
-                and unquote(parts.fragment) not in anchors(destination.read_text(encoding="utf-8"))
-            ):
-                error(path, line, "local_anchor", f"heading not found: {target}")
+            elif parts.fragment and destination.is_file() and destination.suffix == ".md":
+                if destination not in anchor_cache:
+                    anchor_cache[destination] = anchors(destination.read_text(encoding="utf-8"))
+                if unquote(parts.fragment) not in anchor_cache[destination]:
+                    error(path, line, "local_anchor", f"heading not found: {target}")
     return sorted(errors), sorted(reports)
 
 

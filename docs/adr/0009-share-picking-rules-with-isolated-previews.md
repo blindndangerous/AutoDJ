@@ -86,19 +86,19 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify live-state isolation and repeatability using `test_nothing_on_air_changes`
+- [ ] Verify live-state isolation and repeatability using `test_nothing_on_air_changes`
   and `test_the_same_seed_gives_the_same_run` in [simulation tests](../../tests/unit/test_rotation_sim.py).
-- [x] Verify `test_a_preview_changes_nothing_on_the_air`, cache invalidation,
+- [ ] Verify `test_a_preview_changes_nothing_on_the_air`, cache invalidation,
   fixed/predicted boundaries, and source/wall timing in
   [preview tests](../../tests/unit/test_hour_preview.py).
-- [x] Verify scheduled shows, DMCA checks, and inserted-content timing with
+- [ ] Verify scheduled shows, DMCA checks, and inserted-content timing with
   [show tests](../../tests/unit/test_shows.py), [DMCA tests](../../tests/unit/test_dmca.py),
   and [playout timing tests](../../tests/unit/test_playout_timing.py).
-- [x] Verify bounded/fallback speech sources with [time-check tests](../../tests/unit/test_time_checks.py).
+- [ ] Verify bounded/fallback speech sources with [time-check tests](../../tests/unit/test_time_checks.py).
 
 ## Evidence gaps
 

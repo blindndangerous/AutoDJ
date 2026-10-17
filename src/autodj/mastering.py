@@ -13,6 +13,7 @@ import subprocess  # nosec B404 -- processors use fixed argv pipelines, never a 
 import sys
 import tempfile
 import threading
+import time
 import weakref
 from collections.abc import Callable
 from pathlib import Path
@@ -86,6 +87,7 @@ logger = logging.getLogger(__name__)
 BLOCK_FRAMES: Final = 882
 BLOCK_SECONDS: Final = BLOCK_FRAMES / SAMPLE_RATE
 STARTUP_BLOCKS: Final = 12
+_STARTUP_TIMEOUT_SECONDS: Final = 5.0
 # Keep six jitter blocks above the FFmpeg filter's measured 14-block delay.
 # The extra cushion absorbs short Windows pipe/thread scheduling gaps, including
 # the first blocks after a restarted FFmpeg process.
@@ -283,6 +285,10 @@ class ContinuousMaster:
         self._proc: subprocess.Popen[bytes] | None = None
         self._post_proc: subprocess.Popen[bytes] | None = None
         self._ready = False
+        self._warmup_started = time.monotonic()
+        self._warmup_silent_drops = 0
+        self._warmup_audio_drops = 0
+        self._first_input_elapsed: float | None = None
         self._failed = False
         self._recovering = False
         self._recovery_outputs = 0
@@ -294,6 +300,18 @@ class ContinuousMaster:
         self._overflow_reported = False
         self._worker = station_thread(target=self._lifecycle, name="autodj-master", daemon=True)
         self._worker.start()
+
+    @property
+    def startup_pending(self) -> bool:
+        """Warm on silence before consuming the first track; never hold recovery."""
+        with self._lock:
+            if self._closed or not self._enabled or self._ready or self._failed or self._recovering:
+                return False
+            if time.monotonic() - self._warmup_started < _STARTUP_TIMEOUT_SECONDS:
+                return True
+            self._recovering = True
+            self._set_error("master startup exceeded 5 seconds; using bounded bypass while warming")
+            return False
 
     @property
     def latency_seconds(self) -> float:
@@ -349,12 +367,28 @@ class ContinuousMaster:
             data = np.ascontiguousarray(audio).tobytes()
             audio = np.frombuffer(data, dtype=np.float32).reshape(BLOCK_FRAMES, 2)
             self._fallback_delay.append(audio)
+            if self._first_input_elapsed is None and np.any(audio):
+                self._first_input_elapsed = time.monotonic() - self._warmup_started
+                logger.info("First non-silent master input after %.3f s", self._first_input_elapsed)
             if self._failed:
                 return self._delayed_fallback()
             generation = self._generation
             if len(self._input) >= _QUEUE_BLOCKS:
-                self._input.popleft()
-                self._set_error("master input queue overflow; dropped oldest block")
+                dropped = self._input.popleft()[1]
+                silent = not np.any(np.frombuffer(dropped, dtype=np.float32))
+                if not self._ready:
+                    if silent:
+                        self._warmup_silent_drops += 1
+                    else:
+                        self._warmup_audio_drops += 1
+                # Silence-only initial warmup is not an audio fault; later overflow still is.
+                if not (
+                    not self._ready
+                    and not self._recovering
+                    and self._first_input_elapsed is None
+                    and silent
+                ):
+                    self._set_error("master input queue overflow; dropped oldest block")
             self._input.append((generation, data))
             self._input_cond.notify()
             if (
@@ -367,6 +401,12 @@ class ContinuousMaster:
                 and len(self._fallback_delay) > _MEASURED_PIPELINE_BLOCKS
             ):
                 self._ready = True
+                logger.info(
+                    "Master processing ready after %.3f s; discarded %d silent and %d non-silent warmup input blocks",
+                    time.monotonic() - self._warmup_started,
+                    self._warmup_silent_drops,
+                    self._warmup_audio_drops,
+                )
             if self._ready and self._output and self._output[0][0] == generation:
                 output = self._output.popleft()[1]
                 self._output_cond.notify_all()
@@ -414,6 +454,10 @@ class ContinuousMaster:
         self._input.clear()
         self._output.clear()
         self._ready = False
+        self._warmup_started = time.monotonic()
+        self._warmup_silent_drops = 0
+        self._warmup_audio_drops = 0
+        self._first_input_elapsed = None
         self._failed = False
         self._recovering = changing_processor
         self._recovery_outputs = 0

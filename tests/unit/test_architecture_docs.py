@@ -78,6 +78,27 @@ def test_repository_architecture_contracts_are_consistent() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_directory_links_are_valid(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    _write(tmp_path, "README.md", "[Decisions](docs/adr/)\n")
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_git_checkout_ignores_untracked_drafts(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    _write(tmp_path, "docs/draft.md", "[Missing](missing.md)\n")
+    _write(tmp_path, "tests/test_draft.py", 'def test_draft():\n    """ADR-0001-99."""\n')
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run(["git", "-C", str(tmp_path), "add", "docs/draft.md"], check=True)
+    result = _run(tmp_path)
+    assert result.returncode == 1
+    assert "[local_link]" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("path", "before", "after", "error"),
     [

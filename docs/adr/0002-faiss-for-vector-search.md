@@ -69,8 +69,8 @@ search choice if measured library scale or representation changes justify it.
 Verification criteria: catalog-only startup remains playable; search uses the
 current catalog vectors; legacy import requires its supported explicit command.
 Run the linked tests for the changed surface and consult
-[selection](../track-selection.md), [migration operations](../operations.md#moved-files),
-and [audit evidence](verification-2026-10-16.md) for results and limits.
+[selection](../track-selection.md) and [migration operations](../operations.md#moved-files).
+Record actual results and limits in the relevant PR.
 
 ## Current contracts
 

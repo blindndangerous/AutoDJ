@@ -82,18 +82,18 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify atomic-write cleanup and filesystem error behavior with
+- [ ] Verify atomic-write cleanup and filesystem error behavior with
   [filesystem tests](../../tests/unit/test_fsutil.py).
-- [x] Verify invalid saved fields and valid-field preservation with
+- [ ] Verify invalid saved fields and valid-field preservation with
   [saved-state tests](../../tests/unit/test_runtime_state.py).
-- [x] Verify archive validation, secret exclusions, rollback/recovery, and serving
+- [ ] Verify archive validation, secret exclusions, rollback/recovery, and serving
   refusal with [backup tests](../../tests/unit/test_backup.py) and
   [station backup tests](../../tests/unit/test_station_backup.py).
-- [x] Verify current station databases are backed up coherently with
+- [ ] Verify current station databases are backed up coherently with
   [database backup tests](../../tests/unit/test_station_database_backup.py).
 
 ## Evidence gaps

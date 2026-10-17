@@ -83,7 +83,7 @@ with fake audio contexts do not prove every browser/device combination. Follow
 [listening operations](../operations.md#controls-while-streaming) and the
 [accessibility audit](../accessibility-testing.md) for live checks. Revisit for
 a changed default output or browser-delivery architecture. This amendment adds
-no new output path; actual checks are in [audit evidence](verification-2026-10-16.md).
+no new output path. Record actual checks and their limits in the relevant PR.
 
 ## Current contracts
 

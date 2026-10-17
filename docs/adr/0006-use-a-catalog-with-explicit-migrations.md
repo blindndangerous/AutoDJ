@@ -26,8 +26,10 @@ that catalog; FAISS files from older releases are migration inputs.
 - Basic scanning and playback must not require every track to have a vector.
 - Station-owned history/settings use `StationStore` and `StationLedger`; do not
   infer current ownership from the legacy tables still present in catalog code.
-- Normal startup must refuse data needing explicit index/state migration rather
-  than silently importing old generations or repairing a corrupt catalog.
+- Normal startup refuses FAISS-only libraries and v1 runtime state requiring
+  explicit `migrate-index` commands, and must not repair a corrupt catalog.
+  This does not prohibit automatic migration of the old index layout, station
+  history into `station.db`, or TOML station definitions into `station.json`.
 - Preview `migrate-index` before applying it; preserve recovery data and reject
   invalid/corrupt inputs before publishing replacements.
 - Remote vectors must match the server's model, resolved weight identity, analysis
@@ -81,17 +83,17 @@ or evidence limits. Narrative above retains rationale and scope.
 
 ## Verification
 
-Checked items refer to the scoped 2026-10-16 runs in
-[the audit evidence](verification-2026-10-16.md), including its platform limits.
-They do not change this record's Proposed status.
+Run the following checks for affected changes and record results and platform
+limits in the relevant PR. Test links do not establish execution or change this
+record's Proposed status.
 
-- [x] Verify catalog-only startup, unanalysed tracks, stale-index exclusion,
+- [ ] Verify catalog-only startup, unanalysed tracks, stale-index exclusion,
   corrupt-catalog preservation, and explicit legacy refusal with
   [catalog startup tests](../../tests/unit/test_catalog_startup.py).
-- [x] Verify migration preview, failure recovery, and metadata/vector preservation
+- [ ] Verify migration preview, failure recovery, and metadata/vector preservation
   with [migration tests](../../tests/unit/test_index_migration.py).
-- [x] Verify station history isolation with [ledger tests](../../tests/unit/test_station_ledger.py).
-- [x] Verify incompatible/stale worker result rejection with
+- [ ] Verify station history isolation with [ledger tests](../../tests/unit/test_station_ledger.py).
+- [ ] Verify incompatible/stale worker result rejection with
   [worker API tests](../../tests/unit/test_worker_api.py) and
   [model identity tests](../../tests/unit/test_model_identity.py).
 
