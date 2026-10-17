@@ -6,6 +6,10 @@ Music stays on your computer or server. A new library starts empty, so you choos
 
 ## Start in five minutes
 
+Developers: start with [Contributing](CONTRIBUTING.md) and the
+[architecture decision index](docs/adr/README.md). Coding agents should read
+[AGENTS.md](AGENTS.md) before changing the repository.
+
 On Windows, install [Git](https://git-scm.com/downloads), then run in PowerShell:
 
 ```powershell

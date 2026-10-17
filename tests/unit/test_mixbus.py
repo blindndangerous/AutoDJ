@@ -75,6 +75,7 @@ def test_plays_tracks_back_to_back_and_reports_starts() -> None:
 
 
 def test_pause_emits_silence_and_holds_position() -> None:
+    """ADR-0004-01."""
     bus, _, positions = _bus([_track(0.5, 5000)])
     bus.start_set()
     bus.render_block()

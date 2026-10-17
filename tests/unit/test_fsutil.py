@@ -26,6 +26,7 @@ def test_atomic_write_replaces_text_and_bytes_without_leaving_temp(tmp_path: Pat
 def test_failed_write_keeps_old_file_and_removes_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-0010-01."""
     path = tmp_path / "state.json"
     path.write_text("old", encoding="utf-8")
 

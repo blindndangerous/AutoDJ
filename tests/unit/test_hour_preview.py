@@ -593,6 +593,7 @@ def test_forecast_cache_signature_includes_music_speed(tmp_path: Path) -> None:
 
 
 def test_a_preview_changes_nothing_on_the_air(tmp_path: Path) -> None:
+    """ADR-0009-02."""
     source, power, gold = _station(tmp_path, dmca=True)
     player = source.player
     _playing(source, gold[0], NOW - 50)
@@ -631,6 +632,7 @@ def test_a_preview_changes_nothing_on_the_air(tmp_path: Path) -> None:
 
 
 def test_the_dry_run_stops_at_its_limits(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0008-04."""
     source, _power, gold = _station(tmp_path)
     _playing(source, gold[0], NOW - 50)
     monkeypatch.setattr(hour_preview, "MAX_PREDICTED", 3)
@@ -1059,6 +1061,7 @@ def test_a_preview_is_kept_while_nothing_new_is_fixed(tmp_path: Path, monkeypatc
 def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """ADR-0009-03."""
     source, _power, _gold = _station(tmp_path)
     decided = hour_preview.Decided(
         now=1000, handoff=1100, items=(Item("song", 900, 200, "on_air"),)
@@ -1124,6 +1127,7 @@ def test_category_signature_does_not_hold_the_category_pick_lock(
 
 
 def test_previews_run_on_their_own_worker_thread(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0008-04."""
     source, _power, gold = _station(tmp_path)
     _playing(source, gold[0], time.time() - 30)
     seen: list[str] = []

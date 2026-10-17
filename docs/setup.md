@@ -1,6 +1,11 @@
 # Set up AutoDJ
 
-Install Git and clone AutoDJ; the [README quick start](../README.md#quick-start) has the commands.
+For architecture and verification context, see the [ADR index](adr/README.md)
+and [Proposed setup/model decision](adr/0012-separate-runtime-setup-from-model-execution.md).
+The setup/model record documents current implementation for review; it
+does not announce new hardware support.
+
+Install Git and clone AutoDJ; the [README quick start](../README.md#start-in-five-minutes) has the commands.
 The launcher obtains Python 3.14 when needed. Node.js is not required to run the application.
 
 On Windows:

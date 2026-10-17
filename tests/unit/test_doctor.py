@@ -141,6 +141,7 @@ def test_healthy_report_is_read_only_and_redacts_tokens(tmp_path: Path) -> None:
 
 
 def test_import_and_empty_index_check_do_not_import_heavy_runtimes(tmp_path: Path) -> None:
+    """ADR-0012-03."""
     result = subprocess.run(
         [
             sys.executable,

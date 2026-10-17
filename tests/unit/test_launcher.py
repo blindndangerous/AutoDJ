@@ -235,6 +235,7 @@ def test_explicit_setup_bypasses_invalid_saved_selection(tmp_path: Path, monkeyp
 def test_unattended_fresh_bootstrap_does_not_install(
     tmp_path: Path, monkeypatch, argument, status
 ) -> None:
+    """ADR-0012-01."""
     root = _project(tmp_path, monkeypatch)
     (root / "scripts").mkdir()
     (root / "scripts/setup.py").touch()

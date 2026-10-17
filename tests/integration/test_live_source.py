@@ -114,6 +114,7 @@ class _FakeSource:
 def test_a_source_is_decoded_goes_on_the_air_and_hands_back(
     tmp_path, mime: str, container: str, codec: str
 ) -> None:
+    """ADR-0004-05."""
     audio = _encoded(1.0, codec, container)
     events: list[str] = []
     desk = LiveDesk(

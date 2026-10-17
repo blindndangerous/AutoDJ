@@ -42,6 +42,7 @@ def test_overrun_drops_oldest() -> None:
 
 
 def test_volume_and_mute_are_applied() -> None:
+    """ADR-0004-04."""
     state = PlayerState()
     state.volume = 0.5
     out = _output(state)

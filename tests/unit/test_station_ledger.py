@@ -70,6 +70,7 @@ def test_the_default_station_keeps_its_names() -> None:
 
 
 def test_two_ledgers_on_one_catalog_keep_history_last_played_and_clock_apart(catalog) -> None:
+    """ADR-0005-02."""
     library, (one, two) = catalog
     main = _ledger(library)
     owl = _ledger(library, "nightowl")

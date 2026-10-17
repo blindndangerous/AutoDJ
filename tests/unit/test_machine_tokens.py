@@ -162,6 +162,7 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
 
 
 def test_an_announcer_token_is_bound_to_one_station(store):
+    """ADR-0007-02."""
     tokens, _clock = store
     token, secret = tokens.create("news-bot", [SCOPE_ANNOUNCER], "nightowl")
     assert token.station == "nightowl"

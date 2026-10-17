@@ -14,3 +14,24 @@ body:
       label: Proposed solution
     validations:
       required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable outcomes that would show the problem is solved. These can be refined with maintainers before implementation.
+    validations:
+      required: false
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and scope exclusions
+      description: Compatibility, accessibility, security, or operational constraints, and anything this request should leave out.
+    validations:
+      required: false
+  - type: textarea
+    id: related-decisions
+    attributes:
+      label: Related decisions
+      description: Link relevant issues or records from docs/adr/README.md if known. No ADR knowledge or Beads installation is needed to request a feature.
+    validations:
+      required: false

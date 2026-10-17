@@ -1,5 +1,12 @@
 # AutoDJ operations
 
+For architectural constraints and implementation/test links, consult the
+[ADR index](adr/README.md), especially the current amendments to
+[playout](adr/0004-server-mix-bus-and-stream-mode.md) and
+[station ownership](adr/0005-a-station-owns-its-playout-chain.md).
+The index also identifies Proposed records for storage, trust, background
+work, scheduling, and recovery; those await maintainer acceptance.
+
 For everyday tasks, start with the [README guide list](../README.md#build-your-station): music, sound, schedules, live work, streaming, several stations, backups, keyboard access, and troubleshooting. Use the [settings reference](settings-reference.md) for values and defaults. This page keeps detailed commands and migration notes.
 
 Commands labeled Bash require a Linux host or WSL2. Native Windows operators should use the
@@ -7,6 +14,8 @@ PowerShell equivalents below. Run Linux container commands inside WSL2 with the 
 WSL filesystem so user IDs and POSIX modes have their documented meaning.
 
 ## Configuration precedence
+
+Architecture and verification context: [station ownership ADR](adr/0005-a-station-owns-its-playout-chain.md).
 
 Shared settings resolve from defaults, `config.toml`, sibling `config.local.toml`, environment
 variables, then explicit CLI flags. Station settings load from each station's
@@ -253,6 +262,8 @@ transition with a 6-second crossfade and a 6-second glide, against about 0.4 sec
 beatmatch alone. It is done ahead of time while the previous song plays.
 
 ## Local network access
+
+Architecture and verification context: [Proposed access-boundary ADR](adr/0007-separate-browser-worker-and-listener-access.md).
 
 Start the native server for other devices on your network with one switch:
 
@@ -2400,6 +2411,8 @@ then imports the published vectors into `library.db`.
 
 ## More than one machine
 
+Architecture and verification context: [Proposed catalog and migration ADR](adr/0006-use-a-catalog-with-explicit-migrations.md).
+
 The current `library.db` stores absolute paths. Each machine should use its own catalog and
 register folders using paths visible on that machine. Changing `music_dir` or copying a catalog
 does not rewrite those paths. Older published indexes store paths relative to `music_dir` and
@@ -2447,6 +2460,8 @@ destination, then let the first `serve` or `index` import the relative-path lega
 local catalog. This procedure does not relocate an existing catalog.
 
 ## Using a GPU machine
+
+Architecture and verification context: [Proposed background-work ADR](adr/0008-bound-background-work-outside-playout.md).
 
 Advanced analysis on a NAS processor is slow. A computer with a graphics card can do it for the
 server instead, over the network, with `autodj worker`. The worker asks the server for songs that
@@ -3510,6 +3525,8 @@ time of day, day after day. They read the station's own `station.timezone`. See
 
 ## Testing the rotation
 
+Architecture and verification context: [Proposed picking and preview ADR](adr/0009-share-picking-rules-with-isolated-previews.md).
+
 The rotation tester plays a span of time, or a number of songs, through the station's own song
 picker and reports what would happen, without changing anything on air. It answers questions such
 as "do a 720-minute song rule and a 240-minute artist rule starve my six-song Power category?"
@@ -3696,6 +3713,8 @@ window and prefers a song whose estimated handoff lands closest to it. See
 
 ## Backup
 
+Architecture and verification context: [Proposed state-recovery ADR](adr/0010-preserve-state-through-atomic-writes-and-recovery.md).
+
 `autodj backup` writes one ZIP file holding:
 
 - `dj_meta.db`, the intro, outro, beat grid and cue cache.
@@ -3703,8 +3722,9 @@ window and prefers a song whose estimated handoff lands closest to it. See
 - `related-artists.toml` and `related-tracks.toml` in the library folder.
 - `recording.json`, the broadcast recording settings and whether it was running. The recorded
   MP3 files are not included; archive the recordings folder yourself.
-- `library.db`, the station's registered folders, track data and cues, last-played times and
-  complete play history, and matching vectors.
+- `library.db`, the shared registered folders, track data and cues, and matching vectors.
+- Each station's `station.json` definition and `station.db`, including its last-played
+  values, clock state, and complete play history. Database snapshots include committed WAL data.
 - Every file in the station's liners and profiles folders (`index/stations/default/liners`
   and `profiles`), plus uploaded presets in `index/shared/stereo-tool-presets`.
 - `time_checks.json` and every recorded clip in `[time_checks] clips_folder` (or the default
@@ -3791,14 +3811,17 @@ folder.
 
 Without `--force`, restore refuses when anything it would replace already exists. With it:
 
-- The catalog in the archive replaces `library.db`, including its records, vectors and history.
+- The catalog in the archive replaces `library.db`, including its shared records and vectors.
+  Each archived `station.db` replaces that station's history, last-played values, and clock state.
   Archives containing old index generations are refused; migrate them with an older release first.
 - `dj_meta.db` and `web_state.json` are replaced when the archive has them.
 - The liners folder and `index/profiles` are replaced whole: files that are not in the backup are
   deleted. Parts the archive does not hold are left alone.
 - Each station's files and folders go back to that station's folder; a station the archive does
-  not hold is left alone. A station the configuration does not define is refused, and nothing is
-  restored.
+  not hold is left alone. A station absent from the destination configuration can be restored
+  from a valid archived `station.json`. A removed station's ledger-only `station.db` is also
+  preserved without creating a station definition. Other unknown-station contents are refused
+  before anything is replaced.
 
 Restore first checks that the archive fits: it refuses one that unpacks to more than 256 GiB,
 or to more than the free space beside its destinations. It unpacks every file into a temporary

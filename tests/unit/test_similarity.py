@@ -160,18 +160,21 @@ class TestFindNext:
             )
 
     def test_returns_closest_neighbor(self) -> None:
-        """With no exclusions, the top result should be closest (highest dot product)."""
-        sim, _ = _make_similarity_index(20)
-        # The query is vector[5] itself — second-highest scoring (first is self)
-        # We exclude track 5 so track 5's nearest neighbor comes through
-        excluded = deque([sim.entries[5].path])
+        """With other ranking inputs equal, choose the eligible highest cosine.
+
+        ADR-0002-01.
+        """
+        vectors = np.zeros((3, FEATURE_DIM), dtype=np.float32)
+        vectors[:, :2] = [(1.0, 0.0), (0.8, 0.6), (0.0, 1.0)]
+        index = faiss.IndexFlatIP(FEATURE_DIM)
+        index.add(vectors)
+        sim = SimilarityIndex(index, [_make_entry(i) for i in range(3)])
         result = sim.find_next_for_path(
-            current_path=sim.entries[5].path,
-            recently_played=excluded,
-            n_candidates=20,
+            current_path="song_0.flac",
+            recently_played=deque(["song_0.flac"]),
+            n_candidates=3,
         )
-        # Result should NOT be track 5 itself
-        assert result.path != sim.entries[5].path
+        assert result.path == "song_1.flac"
 
     def test_n_candidates_respected(self) -> None:
         """Only the top n_candidates results are considered."""

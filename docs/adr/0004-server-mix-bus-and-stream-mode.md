@@ -3,6 +3,9 @@
 Date: 2026-09-27
 Status: Accepted. Supersedes part of [ADR 3](0003-browser-driven-playback.md).
 
+> Current scope and implementation evidence are in the dated amendment
+> at the end of this record. Original sections below are retained as history.
+
 ## Context
 
 ADR 3 made the browser the default audio host and kept `--server-audio`
@@ -69,3 +72,59 @@ uses only the public `/stream.mp3` and `/stream.m3u` addresses, so the
 stream is no longer a second credential beside pairing. AutoDJ no longer
 creates or reads `index/.stream-secret`; an existing file is unused and
 can be deleted. `THREAT_MODEL.md` describes what public listening exposes.
+
+## Amendment, 2026-10-16: output, preparation, and lifecycle boundaries
+
+The bus/render-ahead decision remains accepted. The original single MP3 stream
+and listener-idle description records the initial implementation; current
+formats, continuous/idle policy, and public addresses are defined by
+[stream operations](../operations.md#radio-stream-sonos-vlc-and-other-players).
+The 2026-10-11 removal of keyed links above remains applicable.
+
+Current boundaries: server audio is stereo float32 at 44.1 kHz; expensive decode,
+beat matching, and track preparation happen outside the bus callback. The
+existing render-ahead soft-refresh path keeps a usable fallback while replacing
+stale prepared audio. This does not promise zero silence after a hard reset or
+under arbitrary resource pressure. Stream formats fan out encoded audio to
+listeners; slow consumers must not block other listeners. Sound-card volume/mute
+is device-local. Mastering, live input/talkover, relays, and recording are
+station-owned output-chain components under [ADR 5](0005-a-station-owns-its-playout-chain.md).
+
+Implementation: [mix bus](../../src/autodj/mixbus.py),
+[render ahead](../../src/autodj/render_ahead.py), [mastering](../../src/autodj/mastering.py),
+[stream output](../../src/autodj/stream.py), [format mounts](../../src/autodj/stream_mounts.py),
+[live source](../../src/autodj/live.py), and [recorder](../../src/autodj/recorder.py).
+Audio effects still have browser/server paths; changes must consider both.
+Scope excludes a new DSP backend or a hard real-time performance guarantee.
+
+Verification criteria: paused/idle bus behavior and track boundaries are stable;
+soft refresh preserves fallback; slow listeners are isolated; output formats and
+station lifecycle retain ownership. Evidence entrypoints are
+[bus tests](../../tests/unit/test_mixbus.py), [render tests](../../tests/unit/test_render_ahead.py),
+[stream tests](../../tests/unit/test_stream_output.py),
+[format tests](../../tests/unit/test_stream_output_formats.py),
+[live tests](../../tests/integration/test_live_source.py),
+[recording tests](../../tests/unit/test_recorder.py), and
+[station cleanup tests](../../tests/unit/test_station_runtime.py).
+
+See [Proposed ADR 8](0008-bound-background-work-outside-playout.md) for the
+reconstructed wider workload boundary. Multi-station load needs the documented
+[soak test](../operations.md#soak-test); unit tests are not a hardware timing
+certification. Revisit for a changed audio clock, mix topology, or output ownership.
+Record actual checks and their limits in the relevant PR.
+
+## Current contracts
+
+IDs are stable and are never recycled. Automated means an existing regression
+test is mapped; structural validation does not execute it, prove platform
+coverage, or accept this ADR. Manual and gap rows remain explicit obligations
+or evidence limits. Narrative above retains rationale and scope.
+
+| ID | Constraint | Method | Evidence |
+| --- | --- | --- | --- |
+| `ADR-0004-01` | Paused server playout emits silence while holding track position. | automated | `tests/unit/test_mixbus.py::test_pause_emits_silence_and_holds_position` |
+| `ADR-0004-02` | A soft refresh keeps the stale prepared track usable until its replacement is ready. | automated | `tests/unit/test_render_ahead.py::test_stale_ready_track_stays_available_until_replaced` |
+| `ADR-0004-03` | A slow stream listener is dropped without preventing other listeners receiving audio. | automated | `tests/unit/test_stream_output.py::test_slow_listener_is_dropped_others_continue` |
+| `ADR-0004-04` | Sound-card volume and mute are applied at the device output. | automated | `tests/unit/test_sound_output.py::test_volume_and_mute_are_applied` |
+| `ADR-0004-05` | Server-mode live input can air and hand control back to automated playout. | automated | `tests/integration/test_live_source.py::test_a_source_is_decoded_goes_on_the_air_and_hands_back` |
+| `ADR-0004-06` | Continuity under actual multi-station load requires measured soak evidence. | manual | Run the documented station soak test on the target hardware; report underruns and limits rather than promising hard real-time behavior. |

@@ -9,6 +9,7 @@ from tests.unit.test_station_backup import _config
 
 
 def test_station_backup_includes_live_wal_and_unconfigured_station(tmp_path):
+    """ADR-0010-03."""
     cfg = _config(tmp_path / "source")
     song = str(tmp_path / "song.flac")
     with ExitStack() as stack:
@@ -52,6 +53,7 @@ def test_station_backup_includes_live_wal_and_unconfigured_station(tmp_path):
 
 
 def test_failed_restore_rolls_back_station_database(tmp_path, monkeypatch):
+    """ADR-0010-02."""
     import pytest
 
     from autodj import backup

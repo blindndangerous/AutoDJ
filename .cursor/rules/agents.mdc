@@ -1,0 +1,8 @@
+---
+description: Repository discovery and optional agent task tracking
+alwaysApply: true
+---
+
+Read [AGENTS.md](../../AGENTS.md) at the repository root before working.
+It defines discovery, ADR consultation, verification, and optional Beads use.
+Shared requirements and status live in GitHub issues and PRs.
