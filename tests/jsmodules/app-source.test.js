@@ -1097,6 +1097,41 @@ describe("app request behavior", () => {
     expect(seek.getAttribute("aria-valuetext")).toBe("1:30 of 3:20");
   });
 
+  it("shows 0:00 / 0:00 between tracks instead of a time past the song (#428)", async () => {
+    const baseState = {
+      current_track: { path: "a.mp3", title: "A" }, duration: 200, elapsed: 150,
+    };
+    const { webSocket } = await setupApp({
+      initialState: baseState,
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const { installHotkeys } = await import("../../src/autodj/static/modules/hotkeys.js");
+    const hotkeys = installHotkeys.mock.calls[0][0];
+    const seek = document.querySelector("#progress-track");
+    const label = document.getElementById("progress-bar-label");
+    const fill = document.getElementById("progress-fill");
+    webSocket.onmessage({ data: JSON.stringify(baseState) });
+    expect(label.textContent).toBe("2:30 / 3:20");
+    expect(seek.getAttribute("aria-valuetext")).toBe("2:30 of 3:20");
+
+    // A liner plays after the song; the server clock passes its length.
+    webSocket.onmessage({ data: JSON.stringify({ ...baseState, elapsed: 207.4 }) });
+    expect(label.textContent).toBe("0:00 / 0:00");
+    expect(fill.style.width).toBe("0.0%");
+    expect(seek.getAttribute("aria-valuenow")).toBe("0");
+    expect(seek.getAttribute("aria-valuetext")).toBe("0:00 of 0:00");
+    expect(hotkeys.getPosition()).toBeNull();
+    expect(hotkeys.getRemaining()).toBeNull();
+
+    // The next song starts and its clock shows as usual.
+    webSocket.onmessage({ data: JSON.stringify({
+      current_track: { path: "b.mp3", title: "B" }, duration: 180, elapsed: 3,
+    }) });
+    expect(label.textContent).toBe("0:03 / 3:00");
+    expect(seek.getAttribute("aria-valuetext")).toBe("0:03 of 3:00");
+    expect(hotkeys.getPosition()).toEqual({ elapsed: 3, duration: 180 });
+  });
+
   it("saves key notation without announcing into the hidden Now Playing panel", async () => {
     const { fetchImpl } = await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
     const notation = document.querySelector("#key-notation");
@@ -2682,6 +2717,32 @@ describe("stream mode", () => {
       .toBe("Two");
     // Shift+L says the line the listener hears, not the server's.
     expect((await hotkeyOptions()).getLyricLine()).toBe("Two");
+  });
+
+  it("shows 0:00 / 0:00 once the listener passes the song's end (#428)", async () => {
+    const { webSocket } = await setupApp({
+      initialState: streamState,
+      onRequest: () => lyricsFor("a.mp3"),
+    });
+    await vi.waitFor(() => expect(
+      document.querySelectorAll("#lyrics-list li"),
+    ).toHaveLength(3));
+    const label = document.getElementById("progress-bar-label");
+    // The server has passed the end, but the listener is still in the song.
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, has_lyrics: true, elapsed: 202,
+    }) });
+    expect(label.textContent).toBe("3:19 / 3:20");
+    // A liner after the song: the clock runs on until the next song starts.
+    webSocket.onmessage({ data: JSON.stringify({
+      ...streamState, has_lyrics: true, elapsed: 204,
+    }) });
+    expect(label.textContent).toBe("0:00 / 0:00");
+    expect(label.hasAttribute("aria-hidden")).toBe(false);
+    expect((await hotkeyOptions()).getPosition()).toBeNull();
+    // The lyrics hold the song's last line rather than jump to its first.
+    expect(document.querySelector('#lyrics-list li[aria-current="true"]').textContent)
+      .toBe("Three");
   });
 
   it("starts and stops listening from the button with a fresh link", async () => {

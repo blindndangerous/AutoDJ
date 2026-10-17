@@ -714,6 +714,16 @@ function applyState(s, { announceTrack = true } = {}) {
       elapsed = 0;
     }
   }
+  // The lyrics keep the real clock, which holds the song's last line.
+  const lyricElapsed = elapsed;
+  // Between tracks (#428): the server mix keeps counting while a liner,
+  // ID or break plays after the song has ended, so its clock passes the
+  // song's length until the next song starts.  Show 0:00 / 0:00 then, and
+  // give the seek slider and the position keys no position to report.
+  if (dur > 0 && elapsed > dur) {
+    elapsed = 0;
+    dur = 0;
+  }
   const pct = dur > 0 ? Math.min(100, (elapsed / dur) * 100) : 0;
   // Nothing can seek a live stream, so the slider goes and the visible
   // clock (normally aria-hidden beside it) becomes the readable position.
@@ -841,10 +851,10 @@ function applyState(s, { announceTrack = true } = {}) {
   // Lyrics \u2014 visible list highlight and aria-current; nothing is spoken
   // Under browser-driven playback the server's own clock never moves, so
   // hand the lyrics module the position the deck is actually at.
-  // `elapsed` above is already the deck's currentTime in that mode, and
-  // the delayed server clock in stream mode.
+  // `lyricElapsed` above is already the deck's currentTime in that mode,
+  // and the delayed server clock in stream mode.
   applyLyricsState(s, _lyricEls, {
-    elapsed,
+    elapsed: lyricElapsed,
     localClock: browserMode || inStream,
   });
 
