@@ -86,6 +86,12 @@ in the PR or linked issue. Check the rendered document's heading navigation and
 links as well as the app steps. Structural checks, browser automation, and manual
 review are separate evidence; identify anything not performed.
 
+Use the [documentation verification guide](docs/contributor/documentation-verification.md)
+for executable checks, native platform rehearsals, all thirteen tutorial walkthroughs,
+rendered-document review, content-preservation review, independent reader journeys
+and the evidence record. Keep pending platform and reader evidence explicit;
+source checks do not establish runtime or screen-reader results.
+
 The [tutorial roadmap](docs/tutorials/README.md) distinguishes available lessons
 from planned ones. Add a lesson link only when its file exists. Planned lessons
 need an outcome and prerequisites, not empty lesson files.

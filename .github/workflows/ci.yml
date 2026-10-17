@@ -170,6 +170,16 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
       - run: npx --no-install playwright install --with-deps chromium firefox
+      - name: Check rendered documentation
+        shell: bash
+        env:
+          AUTODJ_BROWSERS: chromium,firefox
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/render_documentation.py \
+            --output "$RUNNER_TEMP/documentation-render" --write
+          node tests/playwright/documentation_audit.mjs \
+            "$RUNNER_TEMP/documentation-render" --write
       - name: Start empty-library server
         shell: bash
         run: |
@@ -224,6 +234,8 @@ jobs:
           path: |
             *_audit*.json
             ${{ runner.temp }}/autodj.log
+            ${{ runner.temp }}/documentation-render/manifest.json
+            ${{ runner.temp }}/documentation-render/report.json
 
   browser-stream:
     name: Browser assertions (stream, Chromium)
