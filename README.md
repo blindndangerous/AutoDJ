@@ -28,6 +28,11 @@ For a server or NAS, use the [Docker and NAS steps](docs/guides/install.md#docke
 
 ## Build your station
 
+New to running a station? [Build your first station](docs/tutorials/first-station.md)
+is a guided lesson: hear a song, build a simple rotation, and check what happens
+when you queue a song. Install AutoDJ first using the guide linked below.
+The [tutorial roadmap](docs/tutorials/README.md) shows the next learning steps.
+
 - [Install AutoDJ](docs/guides/install.md) on Windows, Linux, macOS, Docker, or a NAS.
 - [Add your music](docs/guides/add-your-music.md) and decide whether to run advanced analysis.
 - [Build your sound](docs/guides/build-your-sound.md) with categories, clockwheels, repeat rules, and transitions.
@@ -39,6 +44,10 @@ For a server or NAS, use the [Docker and NAS steps](docs/guides/install.md#docke
 - [Use the keyboard and a screen reader](docs/guides/keyboard-and-screen-reader.md).
 - [Troubleshoot AutoDJ](docs/guides/troubleshooting.md) when setup, playback, or streaming fails.
 - [Look up settings](docs/settings-reference.md) for values, defaults, and the controls shown in the page.
+
+To understand AutoDJ in more depth, read [how track selection works](docs/track-selection.md)
+and [why AutoDJ uses its music analysis model](docs/model-selection.md). These
+pages include technical detail; the task guides explain the everyday controls.
 
 Advanced analysis finds songs that sound alike and estimates key, energy, and tempo. Similarity picking and discovery use it. Without it, songs still play in queues, categories, and clockwheels; random and least recently played picking also work. Analysis can take hours on a large library, especially on a processor. You can start using the station before it finishes.
 

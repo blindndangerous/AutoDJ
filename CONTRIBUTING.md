@@ -45,6 +45,48 @@ To run every pre-push check by hand, use
 
 If a pre-push check fails, fix the cause and push again rather than bypassing the hook.
 
+## Writing documentation
+
+Use [Diátaxis](https://diataxis.fr/start-here/) to choose a page's primary purpose:
+
+- **Tutorial:** teach through a guided experience. Put lessons in `docs/tutorials/`
+  and start from the [author template](docs/tutorials/author-template.md).
+- **How-to guide:** help someone complete a task. Keep the existing
+  `docs/guides/` pages direct, with prerequisites, steps, and a result to check.
+- **Reference:** describe facts readers need to look up, including possible
+  values, defaults, and plain explanations. Preserve consequential edge cases.
+- **Explanation:** build understanding of how and why things work. Link it from
+  procedures rather than interrupting steps with long background discussions.
+
+Small explanations can support a procedure. Link to another page when the reader's
+purpose changes. Use reader goals in navigation; folders need not mirror all four
+categories. Keep architectural decisions and their history in ADRs.
+
+For tutorials, state the starting state and learning outcome. Keep one named
+example throughout, introduce terms when they become useful, and give fully
+worked steps before independent practice. Pair checkpoints with observable
+results and recovery steps. End with a small change or prediction exercise and
+an answer the reader can check. Explain how to stop and what saved state remains.
+
+Write for keyboard and screen-reader use: use descriptive headings in order,
+exact control names, short steps, and text results that do not depend on color,
+position, or hearing audio alone. Prefer prose and lists where they suffice.
+Keep required steps and recovery advice in the reading flow. Link to the
+[keyboard guide](docs/guides/keyboard-and-screen-reader.md) for navigation detail.
+
+Check instructions against the UI and implementation. Run the documentation
+checker described here; it excludes untracked drafts, so also check new pages
+explicitly before staging. A tutorial needs a manual keyboard and screen-reader
+walkthrough before it is described as fully verified. Record the revision,
+operating system, browser, screen reader, date, results, and unresolved findings
+in the PR or linked issue. Check the rendered document's heading navigation and
+links as well as the app steps. Structural checks, browser automation, and manual
+review are separate evidence; identify anything not performed.
+
+The [tutorial roadmap](docs/tutorials/README.md) distinguishes available lessons
+from planned ones. Add a lesson link only when its file exists. Planned lessons
+need an outcome and prerequisites, not empty lesson files.
+
 ## Branching + commits
 
 Trunk-based. Cut a topic branch off `master`, push, open a PR. No
