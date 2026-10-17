@@ -175,4 +175,8 @@ For daily operations and copying content, use
 [Run several stations](../guides/several-stations.md). The lesson demonstrated
 ownership; it did not establish how many concurrent streams your hardware can run.
 
+For background, read [how stations works](../explanation/stations.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

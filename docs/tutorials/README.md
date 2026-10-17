@@ -7,7 +7,7 @@ the default practice station and its category and clockwheel, both named
 does not rename it. Each lesson states
 which earlier work it needs and what it changes.
 
-For instructions on a particular job, use the [task guides](../../README.md#build-your-station).
+For instructions on a particular job, use the [task guides](../README.md#do-a-task).
 For a value or default, use the [settings reference](../settings-reference.md).
 
 ## Start with a simple station
@@ -23,6 +23,15 @@ For a value or default, use the [settings reference](../settings-reference.md).
 3. [Schedule and verify a short show](scheduled-show.md). Prepare a show,
    schedule it, and observe the handoff back to automatic picking. Begin with
    the practice rotation and check the lesson's output-mode and time prerequisites.
+
+## Explore analysis and recorded speech
+
+- [Use advanced analysis for similarity picking](similarity-picking.md). Analyze
+  suitable songs, observe similarity choices, and compare them with your category
+  rotation. This requires model setup and analysis time; musical outcomes vary.
+- [Record and place a browser voice track](voice-tracking.md). Record a short
+  break, preview it privately, then explicitly send it to the station. Read its
+  microphone, output-mode and browser prerequisites first.
 
 ## Learn mixing and station sound
 
@@ -67,6 +76,10 @@ liners and streaming. For DJ mixing, move from the first lesson to the beatmatch
 set. Recovery is useful before changing a setup you want to keep. The live and
 speech lessons introduce extra equipment or services; their prerequisites are
 part of the lesson, not requirements for the whole series.
+
+For definitions and background, use the [glossary](../glossary.md) and
+[operator explanations](../README.md#understand-autodj). Before relying on the
+practice settings, follow [Prepare a station for regular use](../guides/prepare-station.md).
 
 ## Write another tutorial
 

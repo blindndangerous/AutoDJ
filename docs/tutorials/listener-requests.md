@@ -6,10 +6,9 @@ different from a request accepted, and why acceptance is not an exact airtime.
 
 Start with [Build your first station](first-station.md) complete on a practice
 station with no audience: at least five analyzed songs, the Practice category
-and single-step Practice clockwheel, and Clockwheel pick mode. Browser output
-is enough for this lesson. If you kept Radio stream output after
-[listening on another device](stream-second-device.md), use its instructions
-to connect your test listener when it is time to hear the result.
+and single-step Practice clockwheel, and Clockwheel pick mode. Use **Browser**
+output for this lesson. If necessary, first follow the
+[stream lesson's restore steps](stream-second-device.md#stop-and-restore-browser-practice).
 
 ## Before you begin
 
@@ -30,9 +29,7 @@ turning requests off keeps waiting entries. Use invented names rather than
 personal information. Note your original request settings so you can restore
 them afterward.
 
-Keep **Play or Pause** paused while preparing the Browser station. In stream
-mode, stop your own listening with **Listen here** or your network player;
-closing a listener does not immediately stop the server's set. Use Tab to
+Keep **Play or Pause** paused while preparing the Browser station. Use Tab to
 reach controls, Enter or Space to operate them, and the
 [keyboard guide](../guides/keyboard-and-screen-reader.md) for table navigation.
 
@@ -75,9 +72,9 @@ the operator tab, check you selected the intended station, and save the checked
 **Take listener requests** control. Reload the listener page. Editing a checkbox
 without saving does not open the page.
 
-For a named station, the page would instead be
-`/stations/<station-id>/requests`; `/requests` always targets the default.
-Changing station in the control tab does not rewrite a listener tab's address.
+The `/requests` path always targets the default station. See the
+[request guide](../guides/going-live.md#take-listener-requests) for other station
+addresses; this lesson stays on the default station.
 
 ## Send and inspect your first request
 
@@ -111,15 +108,13 @@ waiting. If **Approve** is unavailable, read the reason, resolve the actual
 restriction, and use a different eligible song if necessary. Do not substitute
 **Play next** simply to bypass the lesson's placement check.
 
-Resume Browser playback with **Play or Pause**, or connect your stream test
-listener. Let the current song finish and watch for your requested title in
+Resume Browser playback with **Play or Pause**. Let the current song finish and watch for your requested title in
 **Now Playing**. Listen if possible and inspect **History** after it plays.
 Let another song follow to see Practice return to automatic rotation.
 
 The queue and History supply text evidence alongside listening. A paused
-Browser player will not consume the request until you resume it. In stream
-mode, an absent listener may leave the station idle. Check these states before
-treating a queued request as stuck. A request's placement can also change when
+Browser player will not consume the request until you resume it. Check this
+state before treating a queued request as stuck. A request's placement can also change when
 an operator adds songs or a show starts, so do not promise a precise airtime.
 
 ## Try it: close requests while one waits
@@ -146,9 +141,8 @@ remaining test entries first if you do not want them waiting for a later session
 Closing requests does not remove already queued songs; remove a remaining test
 song from the queue explicitly if it has not played.
 
-Pause Browser playback and check that elapsed time stops. For Radio stream,
-disconnect your test listeners and follow the
-[stream lesson's cleanup](stream-second-device.md#stop-and-restore-browser-practice).
+Pause Browser playback and check that elapsed time stops. For request handling
+in other output modes, use the [feature reference](../reference/feature-availability.md).
 Restore any request settings you changed, leaving requests closed for practice.
 Decision history remains saved; this lesson does not erase it or the songs.
 

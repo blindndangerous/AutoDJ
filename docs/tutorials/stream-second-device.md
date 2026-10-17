@@ -18,11 +18,11 @@ local network. Use a network audio player on that device; the worked example
 uses VLC's network-stream function. No relay, paid host, router port forwarding,
 or public Internet address is needed. Choose music you may share on this network.
 
-Know how you started AutoDJ and how to stop that instance. For a foreground
-launcher, Control+C in its terminal stops it; for Docker, use the existing
-Compose service. Do not start a second server over the first. The
-[installation guide](../guides/install.md#use-autodj-from-other-devices) describes
-LAN startup and pairing for each installation method.
+Start this lesson with AutoDJ already reachable in LAN mode and your control
+browser paired. If necessary, complete
+[LAN startup and pairing](../guides/install.md#use-autodj-from-other-devices)
+first, using the procedure for your installation. Do not start a second server
+over the existing instance.
 
 You will save an output change and enable LAN access. In LAN mode, browsers
 need pairing to control AutoDJ, but anyone who can reach the stream address can
@@ -48,12 +48,6 @@ Use Tab and Enter or Space for controls, and arrow keys in tab strips. The
 4. Press **Save station options**.
 5. In **Stations on this server**, use **Stop** for the default station, confirm
    **Stop station**, and wait for **Off air**. Then use its **Start** button.
-6. If AutoDJ is not already in LAN mode, stop and restart the existing server
-   in LAN mode. For the Linux or
-   macOS launcher, start it with `./autodj serve --lan`; on Windows use
-   `.\autodj.cmd serve --lan`. If LAN mode is already saved for your installation,
-   use your normal restart. Docker's existing service uses LAN mode; restart
-   with `docker compose restart autodj`.
 
 Saving the output does not convert the running player. The new output takes
 effect when the station next starts. Stop and Start apply it to that station.
@@ -141,8 +135,7 @@ without listeners** off and verify the count is zero and the set becomes idle.
 This leaves the server running and its stream address reachable; idle is not
 an access-control setting.
 
-For later streaming lessons, you may keep Radio stream output and LAN mode.
-To return to the first lesson's starting state, select **Browser** under
+Return to the first lesson's playback state: select **Browser** under
 **Settings**, **Stations**, press **Save station options**, then stop and start
 that station using its row and **Stop station** confirmation. Pause browser
 playback and confirm its elapsed time stops.

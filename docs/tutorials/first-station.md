@@ -167,4 +167,8 @@ to extend Practice with an alternating rotation. Use the
 [sound guide](../guides/build-your-sound.md) for individual adjustments or the
 [settings reference](../settings-reference.md) to look up a control.
 
+For background, read [how selection works](../explanation/selection.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

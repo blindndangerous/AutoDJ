@@ -28,7 +28,7 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 **Stereo Tool is unavailable.** Open **Settings**, **Sound** and follow its plugin library download steps after accepting Thimeo's terms. Check the panel's status message and run Doctor if the download or load fails.
 
-**Mastering startup messages.** The log reports the first non-silent input to the master and when processing is ready, measured from processor startup, restart, or a processing-mode change. Readiness includes counts of discarded silent and non-silent input blocks. Silence discarded before any non-silent input arrives is informational; overflow after audio begins, during recovery, or after readiness remains a warning even when the discarded block is silent. Non-silent discarded blocks may contain program audio. Processor output can be nonzero on silent input, so it is not used to identify the song opening. The initial mix bus feeds silence until processing is ready, while track preparation continues in parallel; tracks and liners retain their opening samples. A failed processor releases playback immediately to bounded bypass. If warmup exceeds five seconds, playback uses bounded bypass while the processor continues warming. Recovery during playback does not hold the song. Timings exclude encoder and listener buffering. Compare the timings and counts across restarts before changing buffering.
+**Mastering startup messages.** Compare processor readiness timings and discarded-input counts across restarts before changing buffering. Non-silent discarded blocks may contain program audio; startup silence and overload warnings have different meanings. See [Mastering startup diagnostics](../reference/operations/server-playback.md#mastering-startup-diagnostics) for the fields, bypass behavior and timing exclusions.
 
 ## Streaming
 
@@ -42,6 +42,6 @@ Start with the symptom you can see. Keep the terminal open while testing: AutoDJ
 
 ## Get more detail
 
-Run `autodj doctor --station nightowl` to check one named station, or `autodj doctor` for all of them. For backup, restore, network, and migration procedures, use [AutoDJ operations](../operations.md). When reporting an issue, include the command you ran, the visible error, your operating system, and whether you use browser or stream playback. Remove passwords and tokens before sharing logs.
+Run `autodj doctor --station nightowl` to check one named station, or `autodj doctor` for all of them. For backup, restore, network, and migration procedures, use [AutoDJ operations](../operations.md). Follow [Collect diagnostics and report a problem](collect-diagnostics.md) to gather read-only evidence, record a minimal reproduction and review private information before sharing. Report suspected vulnerabilities through the private security process linked there.
 
 AutoDJ and this page were developed with AI assistance.

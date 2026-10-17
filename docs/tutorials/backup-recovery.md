@@ -15,7 +15,7 @@ This worked example uses Bash on Linux, macOS, or WSL, a source checkout with
 its dependencies installed, and `uv`. Run commands from that checkout. Keep
 the same AutoDJ version throughout: restore accepts only the major and minor
 version that made the archive. For other installation styles, see the
-[backup guide](../guides/backups-and-updates.md).
+[native PowerShell and Bash procedures](../guides/core-operations.md).
 
 You need enough free disk space for the ZIP, restored data, and restore's
 temporary files. A **backup archive** is one ZIP containing saved application

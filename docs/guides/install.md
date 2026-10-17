@@ -10,7 +10,7 @@ shows how to open AutoDJ from other devices on your network.
   runs on the processor, not the graphics card.
 - **Docker**: for a home server or NAS that runs containers. Analysis runs on the processor.
 
-Whichever you choose, AutoDJ runs on your own computer. Your music is never uploaded anywhere.
+Whichever you choose, AutoDJ runs on your own computer and processes your music locally by default. If you configure a remote analysis worker, that worker receives the songs it analyses; see [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
 ## What you need
 

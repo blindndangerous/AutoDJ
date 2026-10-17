@@ -155,4 +155,8 @@ You can now shape a rotation using pool counts and ordered steps. Continue with
 [Schedule and verify a short show](scheduled-show.md), or use
 [Build your sound](../guides/build-your-sound.md) for repeat rules and larger pools.
 
+For background, read [how selection works](../explanation/selection.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

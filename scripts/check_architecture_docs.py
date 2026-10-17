@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import subprocess
 import unicodedata
@@ -139,7 +140,7 @@ def _tests(path: Path) -> dict[str, set[str]]:
     return found
 
 
-def check(root: Path) -> tuple[list[str], list[str]]:
+def check(root: Path, *, include_untracked: bool = False) -> tuple[list[str], list[str]]:
     """Return structural errors and explicit non-execution coverage reports."""
     root = root.resolve()
     errors = []
@@ -153,6 +154,16 @@ def check(root: Path) -> tuple[list[str], list[str]]:
             .split("\0")
             if name
         }
+        if include_untracked:
+            tracked.update(
+                root / name
+                for name in subprocess.check_output(
+                    ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root
+                )
+                .decode("utf-8")
+                .split("\0")
+                if name
+            )
 
     def included(path: Path) -> bool:
         return tracked is None or path in tracked
@@ -341,6 +352,21 @@ def check(root: Path) -> tuple[list[str], list[str]]:
                     anchor_cache[destination] = anchors(destination.read_text(encoding="utf-8"))
                 if unquote(parts.fragment) not in anchor_cache[destination]:
                     error(path, line, "local_anchor", f"heading not found: {target}")
+    published = root / "tests/fixtures/documentation/public-anchors.json"
+    if published.is_file() and included(published):
+        for name, fragments in json.loads(published.read_text(encoding="utf-8")).items():
+            path = (root / name).resolve()
+            if not local(path) or not path.is_file():
+                error(published, 1, "public_document", f"published document missing: {name}")
+                continue
+            known = anchors(path.read_text(encoding="utf-8"))
+            for fragment in sorted(set(fragments) - known):
+                error(path, 1, "public_anchor", f"published heading not found: #{fragment}")
+            if isinstance(fragments, dict):
+                destinations = {target for _, target in links(path.read_text(encoding="utf-8"))}
+                for fragment, target in fragments.items():
+                    if target and target not in destinations:
+                        error(path, 1, "public_destination", f"#{fragment} lost link to {target}")
     return sorted(errors), sorted(reports)
 
 
@@ -349,8 +375,11 @@ def main() -> int:
     parser.add_argument(
         "--root", type=Path, default=ROOT, help="repository root (default: this checkout)"
     )
+    parser.add_argument(
+        "--include-untracked", action="store_true", help="also check untracked candidate files"
+    )
     args = parser.parse_args()
-    errors, reports = check(args.root)
+    errors, reports = check(args.root, include_untracked=args.include_untracked)
     for item in reports:
         print(item)
     for item in errors:

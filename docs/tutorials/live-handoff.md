@@ -22,16 +22,16 @@ that source; you do not install a separate Icecast server or buy hosting.
 
 Use the operator page on the AutoDJ computer at its loopback address, such as
 `http://127.0.0.1:8080`. Use the actual port for your installation. This
-direct loopback HTTP connection is accepted by default. If your installation
-requires HTTPS, use its working HTTPS address and match the source settings
-to it instead; do not turn TLS off for this lesson.
+direct loopback HTTP connection is accepted by default. This is the worked
+path. If your installation requires HTTPS, use the
+[access guide](../guides/manage-access.md) to establish that source connection
+before following the handoff steps; keep its TLS settings intact.
 
-A source on another computer has different requirements: plain LAN listening
-does not automatically permit a plain HTTP DJ source. Remote sources normally
-need HTTPS and SSL/TLS enabled in the source program. The separate
-`live_plain_http_lan` option deliberately allows cleartext credentials on a
-trusted LAN; leave it unchanged here. A pairing code is for browser control,
-not a DJ password. See the [live-source security boundary](../../THREAT_MODEL.md#live-dj-source-mounts-and-talkover-48).
+Keep the source on the AutoDJ computer for this lesson. Other source locations
+have different access requirements; use the
+[feature reference](../reference/feature-availability.md) and
+[live-source security boundary](../../THREAT_MODEL.md#live-dj-source-mounts-and-talkover-48)
+for those cases. A pairing code is for browser control, not a DJ password.
 
 You will create one station-local account, `practice-dj`, with display name
 `Practice DJ`. Choose a unique password of 12 to 256 characters and keep it

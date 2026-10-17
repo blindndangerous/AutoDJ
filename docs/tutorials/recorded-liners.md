@@ -155,4 +155,8 @@ You can now audition, place and mix a recorded station ID. Use
 rotation, or [scheduling](../guides/schedule.md#schedule-music-liners-and-announcements)
 for timed events, which require a server output mode for liners.
 
+For background, read [how playback works](../explanation/playback.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

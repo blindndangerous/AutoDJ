@@ -1,6 +1,6 @@
 # Plan a schedule
 
-Use **Settings**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Stations**, under **Time for the selected station**. The default station needs an AutoDJ restart after a time zone change.
+Use **Settings**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Stations**, under **Time for the selected station**, then press **Save time settings**. The change takes effect when that station next starts. In **Stations on this server**, use its **Stop**, confirm **Stop station**, then **Start**. This applies to the default station too and disconnects its listeners.
 
 ## Add an event
 
@@ -9,7 +9,7 @@ Use **Settings**, **Schedule** to change a station at set times. Events use the 
 3. Choose **Repeat**: **Once**, **Every day**, **Weekdays, Monday to Friday**, **On chosen days**, or **Every few minutes**. Enter the date, time, days, or interval that appears.
 4. For a repeating event, use **Date range** when it should run only during a season. An interval event can also have **Active from** and **Active until** times.
 5. Choose **Timing**. **Soft** waits for a song change. **Hard** acts at the event time and may fade out the current song. **Wait up to seconds** lets a hard event wait briefly for a song that is nearly finished.
-6. Save the event. Check **Next events** for its next run. Use **Run now** to test its action, then read **Recent runs** for the result.
+6. Save the event. Check **Next events** for its next run. **Run now** performs the real action immediately; use it only when you intend that on the selected station, then read **Recent runs** for the result. Use a private practice station for rehearsal.
 
 An event due while AutoDJ is stopped does not run later. A one-time event missed during an outage appears as missed. A date range and an overnight interval window use the station's local date and time.
 

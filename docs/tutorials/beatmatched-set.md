@@ -150,4 +150,8 @@ other stations. Use [Build your sound](../guides/build-your-sound.md#set-the-tra
 for further mixing tasks and the [settings reference](../settings-reference.md)
 for control ranges.
 
+For background, read [how playback works](../explanation/playback.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

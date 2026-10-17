@@ -153,4 +153,8 @@ You can now prepare a finite list, schedule its start, and verify its return to
 rotation. Continue with [Back up and recover Practice safely](backup-recovery.md),
 or use the [schedule guide](../guides/schedule.md) for recurring events.
 
+For background, read [how scheduling works](../explanation/scheduling.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

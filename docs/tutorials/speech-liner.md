@@ -171,4 +171,8 @@ tasks, use the [speech studio operations guide](../operations.md#speech-studio).
 Leave **Generate time checks** alone: generating a full minute set is a separate,
 potentially much larger request.
 
+For background, read [how playback works](../explanation/playback.md).
+Before using a practice setup regularly, follow
+[Prepare a station](../guides/prepare-station.md).
+
 AutoDJ and this page were developed with AI assistance.

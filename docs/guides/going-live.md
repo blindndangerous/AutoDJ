@@ -8,6 +8,8 @@ Use radio stream output and open **Settings**, **Live DJ**. Under **DJ accounts*
 
 Under **Connect a DJ program**, copy **Source address**. Set a source program such as BUTT or Mixxx to Icecast 2, then use the **Address**, **Port**, **Mount**, and DJ account credentials shown on the page. The page lists accepted audio formats and whether the connection is encrypted. When the DJ sends audio, AutoDJ fades its music out. When the source disconnects, AutoDJ starts a new song and resumes automatic playout. Test the handoff before announcing a show.
 
+Use HTTPS for a remote DJ connection; the server refuses DJ passwords over plain HTTP except on loopback or with the explicit trusted-LAN exception. Browser **Talk** needs a secure context too. Follow [network and TLS setup](../operations.md#local-network-access) before connecting from another device.
+
 For brief speech over music from the control page, use **Talk** on **Now Playing**. **Duck amount (dB)** and **Return time (seconds)** are in **Settings**, **Live DJ**. The button can latch briefly; holding Alt+M talks only while the keys are held.
 
 ## Take listener requests
@@ -20,12 +22,12 @@ Share this station's request page, `/requests` for the default station or `/stat
 
 ## Take breaks from an announcer program
 
-An announcer program can submit a recorded break, such as news or weather, for the next song change. In **Settings**, **Breaks**, turn on **Take breaks on this station** and choose where a DJ break plays. **Talk up the next song** uses the next intro when possible; **Between the songs** keeps it separate. Set **Shortest intro to talk up (seconds)** and **Music under a break (decibels)** as needed, then press **Save break settings**.
+An announcer program can submit a recorded break, such as news or weather, for an open song change. This needs **Server sound card** or **Radio stream** output and **Use saved segue points** in **Settings**, **Transitions**. In **Settings**, **Breaks**, turn on **Take breaks on this station** and choose where a DJ break plays. **Talk up the next song** uses the next intro when possible; **Between the songs** keeps it separate. Set **Shortest intro to talk up (seconds)** and **Music under a break (decibels)** as needed, then press **Save break settings**.
 
 Give the announcer program its own token through **Settings**, **Analysis workers**. Follow the program's instructions to send audio to AutoDJ. AutoDJ queues the break and joins it at a song change. The [announcer breaks reference](../operations.md#announcer-breaks-dj-breaks-news-and-weather) gives API details and expiry rules.
 
 ## Record a voice track in the browser
 
-Open **Voice tracks** and allow microphone access when the browser asks. Record and preview the break there, then send it to the station. The voice track joins a coming song change like an announcer break. Use **Preview output device** in **Settings**, **Sound** if you need headphones separate from the main output. Alt+R starts or stops recording while **Voice tracks** is showing. For microphone access from another device, use HTTPS.
+Voice tracks need the same output, saved-point mode and enabled breaks as an announcer program. Open **Voice tracks** and press **Record**; allow microphone access when the browser asks. Stop recording, use **Listen back** to audition privately, then press **Book voice track** to upload and commit the take to station playback. A local take alone is not booked. Use **Preview output device** in **Settings**, **Sound** if you need headphones separate from the main output. Alt+R starts or stops recording while **Voice tracks** is showing. For microphone access from another device, use HTTPS. Follow [the voice-tracking lesson](../tutorials/voice-tracking.md) for a private practice run, checkpoints and stopping instructions.
 
 AutoDJ and this page were developed with AI assistance.

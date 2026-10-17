@@ -75,9 +75,12 @@ Keep required steps and recovery advice in the reading flow. Link to the
 [keyboard guide](docs/guides/keyboard-and-screen-reader.md) for navigation detail.
 
 Check instructions against the UI and implementation. Run the documentation
-checker described here; it excludes untracked drafts, so also check new pages
-explicitly before staging. A tutorial needs a manual keyboard and screen-reader
-walkthrough before it is described as fully verified. Record the revision,
+checker with `uv run --frozen --no-sync python scripts/check_architecture_docs.py`.
+Its normal mode excludes untracked drafts. Before staging new pages, also run
+`uv run --frozen --no-sync python scripts/check_architecture_docs.py --include-untracked`
+to check the candidate documentation, including new files. This is a structural
+link/contract check; it does not run app procedures or fetch external links.
+A tutorial needs a manual keyboard and screen-reader walkthrough before it is described as fully verified. Record the revision,
 operating system, browser, screen reader, date, results, and unresolved findings
 in the PR or linked issue. Check the rendered document's heading navigation and
 links as well as the app steps. Structural checks, browser automation, and manual
@@ -86,6 +89,18 @@ review are separate evidence; identify anything not performed.
 The [tutorial roadmap](docs/tutorials/README.md) distinguishes available lessons
 from planned ones. Add a lesson link only when its file exists. Planned lessons
 need an outcome and prerequisites, not empty lesson files.
+
+Before a release, review the affected documentation against the release candidate:
+
+- Follow changed install, update and recovery commands, checking native PowerShell
+  and Bash differences where both are documented. Record commands actually run.
+- Check UI labels, CLI flags, defaults, dependencies and output-mode restrictions
+  against the candidate; update the [feature reference](docs/reference/feature-availability.md).
+- Check navigation and local links, including newly added pages; remove links to
+  unavailable procedures. Reconcile supported-version wording in [SECURITY.md](SECURITY.md)
+  when the release becomes the latest tag.
+- Record manual keyboard/screen-reader results and untested platforms separately
+  from structural checks. Carry unresolved user-facing limits into the release notes.
 
 ## Branching + commits
 
@@ -188,7 +203,8 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
    else. Leave out fixes to changes that were never released.
    Update the link references at the bottom of the
    file.
-3. Record the manual screen-reader sample that
+3. Complete the documentation review in [Writing documentation](#writing-documentation).
+   Record the manual screen-reader sample that
    [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
    notes.
 4. Commit, then check that the artifacts build: `uv build --sdist --wheel`.
