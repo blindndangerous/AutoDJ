@@ -1644,8 +1644,8 @@ client for a running server.
 
 ## Several stations
 
-One AutoDJ server can play several stations. Named stations have Start/Stop controls; the
-default station starts with AutoDJ and cannot be stopped separately. Stop releases a named
+One AutoDJ server can play several stations. Every station has Start/Stop controls; the
+default station starts with AutoDJ and can also be stopped separately. Stop releases a
 station's audio resources; Start begins fresh playback. Pause holds playback
 position. Stopping one station does not stop another. Scheduled events missed while stopped are
 skipped when the station next starts.

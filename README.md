@@ -31,7 +31,8 @@ For a server or NAS, use the [Docker and NAS steps](docs/guides/install.md#docke
 New to running a station? [Build your first station](docs/tutorials/first-station.md)
 is a guided lesson: hear a song, build a simple rotation, and check what happens
 when you queue a song. Install AutoDJ first using the guide linked below.
-The [tutorial roadmap](docs/tutorials/README.md) shows the next learning steps.
+The [tutorial index](docs/tutorials/README.md) includes mixing, shows, streaming,
+station voices, live work, and recovery lessons.
 
 - [Install AutoDJ](docs/guides/install.md) on Windows, Linux, macOS, Docker, or a NAS.
 - [Add your music](docs/guides/add-your-music.md) and decide whether to run advanced analysis.

@@ -6,8 +6,8 @@ reader-facing prose, and remove unused sections. Do not publish empty sections
 or author notes in a lesson.
 
 Follow [Writing documentation](../../CONTRIBUTING.md#writing-documentation).
-For the next planned lesson, use the outcome and prerequisites in the
-[tutorial roadmap](README.md). Extend the same Practice station rather than
+When extending the series, agree the outcome and prerequisites and add them to
+the [tutorial index](README.md). Extend the same Practice station rather than
 starting an unrelated example.
 
 ## State what the reader will learn

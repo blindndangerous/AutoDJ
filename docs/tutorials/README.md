@@ -1,58 +1,79 @@
 # Learn to run a station
 
-These tutorials build one practice station a step at a time. Use a fresh station
-that is not broadcasting to listeners. Each lesson adds one capability to the
-same example, named Practice.
+Build a practice station, then choose lessons for the work you want to learn.
+Use a fresh station that is not broadcasting to listeners. The examples reuse
+the default practice station and its category and clockwheel, both named
+`Practice`. The station's displayed name may still be AutoDJ; the first lesson
+does not rename it. Each lesson states
+which earlier work it needs and what it changes.
 
 For instructions on a particular job, use the [task guides](../../README.md#build-your-station).
 For a value or default, use the [settings reference](../settings-reference.md).
 
-## Build your first station
+## Start with a simple station
 
-[Start the first-station tutorial](first-station.md).
+1. [Build your first station](first-station.md). Import a small folder, hear a
+   queued song, and run a category-based clockwheel. Start with AutoDJ installed,
+   an empty station using Browser output, and at least five music files on the
+   AutoDJ computer. Advanced analysis is optional.
+2. [Shape a rotation with two categories](two-categories.md). Divide Practice
+   into two song pools and alternate them. Predict the pool for the next pick,
+   then inspect the result. Begin with the first lesson's working station and
+   music that can be divided into two nonempty pools.
+3. [Schedule and verify a short show](scheduled-show.md). Prepare a show,
+   schedule it, and observe the handoff back to automatic picking. Begin with
+   the practice rotation and check the lesson's output-mode and time prerequisites.
 
-You will import a small music folder, hear a queued song, and run a category-based
-clockwheel. You will then test how the queue takes priority over automatic picks.
+## Learn mixing and station sound
 
-Start with AutoDJ installed and open in a local browser, a fresh empty station
-using browser playback, and at least five music files on that computer.
-Advanced analysis is optional.
+- [Build a short beatmatched set](beatmatched-set.md). Inspect song timing and
+  compare a transition with beatmatching off and on. Use the lesson's suitable
+  tracks, timing analysis, and FFmpeg. The lesson temporarily uses Radio stream
+  output and listens in the same browser; it needs no second device.
+- [Add your station's voice](recorded-liners.md). Import a recorded liner,
+  preview it, and hear it in rotation. Bring a short audio clip you may use;
+  no speech provider is needed.
+- [Compare speech voices and publish a liner](speech-liner.md). Use an existing
+  speech connection, compare samples, save a liner, and separately assign it to
+  rotation. This branch requires a configured provider and may incur charges.
+  Learn recorded liners first.
 
-## Planned: shape a rotation with two categories
+## Reach listeners and work live
 
-Outcome: extend Practice with two song pools and a clockwheel that alternates
-between them. Predict which pool supplies the next automatic pick, then check it.
+- [Stream your station to a second device](stream-second-device.md). Change to
+  Radio stream output, listen on a trusted local network, and restore Browser
+  output. Begin with the first lesson's station, FFmpeg, and a second device.
+- [Handle a listener request](listener-requests.md). Submit a request from the
+  listener page, approve it, and observe playback. Follow the lesson's streaming
+  prerequisites; an accepted request is not a promise of an exact start time.
+- [Take over live and return to automation](live-handoff.md). Connect a DJ
+  source, verify takeover, disconnect, and observe automatic playout resume.
+  Prepare the practice stream and the source program named in the lesson.
 
-Prerequisites: complete the first tutorial and have music that can be divided
-into two nonempty categories. No advanced analysis is required.
+## Protect and extend your setup
 
-## Planned: schedule and verify a short show
+- [Back up and recover the practice station](backup-recovery.md). Inspect a
+  backup and restore into an isolated destination. Begin with the saved practice
+  setup and space for a separate recovery copy. Keep music and credentials safe
+  separately; a station backup does not include everything.
+- [Run two independent stations](two-stations.md). Reuse the shared music library
+  while keeping rotation and settings separate. Begin with the practice station;
+  use the lesson's distinct second-station ID and output requirements.
 
-Outcome: prepare a short Practice show and schedule it. Check when the scheduled
-show takes over and what happens when it ends.
+## Choose a path
 
-Prerequisites: the two-category practice rotation, a working local clock and
-station time zone, and enough time to observe the scheduled start and finish.
-
-## Planned: stream your station to a second device
-
-Outcome: change Practice to radio stream output and listen from another device.
-Distinguish station playback from listening in a browser, then stop the lesson's
-stream and restore the practice setup.
-
-Prerequisites: the practice station from the earlier lessons, FFmpeg, and a second
-device on a trusted local network. This lesson will cover the access changes it
-needs; public hosting is outside its scope.
-
-These three lessons are planned, not available instructions. Use the existing
-[sound](../guides/build-your-sound.md), [schedule](../guides/schedule.md), and
-[streaming](../guides/streaming-and-relays.md) guides for those tasks today.
+For an automatic station, work through the first three lessons, then add recorded
+liners and streaming. For DJ mixing, move from the first lesson to the beatmatched
+set. Recovery is useful before changing a setup you want to keep. The live and
+speech lessons introduce extra equipment or services; their prerequisites are
+part of the lesson, not requirements for the whole series.
 
 ## Write another tutorial
 
 Use the [author template](author-template.md) and the
 [contributor guidance](../../CONTRIBUTING.md#writing-documentation).
-Keep the Practice example consistent across lessons. The roadmap describes
-learning goals, not a promise of a delivery date.
+Keep the Practice example consistent across lessons. If proposing a future
+lesson, give its outcome and prerequisites and mark it planned until its file
+exists. Do not link to an empty lesson.
 
 AutoDJ and this page were developed with AI assistance.

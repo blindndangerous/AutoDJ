@@ -15,8 +15,9 @@ and macOS, install it yourself (see [Install AutoDJ](install.md)).
 
 For the selected station, open **Settings**, **Stations**. Under **Output for the selected station**,
 set **Playback output** to **Radio stream**, then press **Save station options**. The change takes
-effect when that station next starts. You can edit a named station while it is stopped. The
-default station cannot be stopped separately, so restart AutoDJ to apply its output change.
+effect when that station next starts. In **Stations on this server**, use that station's
+**Stop**, confirm **Stop station**, then **Start**. This disconnects its listeners.
+You can edit any station while it is stopped, including the default station.
 The **Stream** tab and its stream settings appear when the selected station uses **Radio stream**.
 Start that station to obtain a working stream address.
 

@@ -9,6 +9,10 @@ station with **Playback output** set to **Browser**, and no listeners.
 If you have not installed AutoDJ, follow [Install AutoDJ](../guides/install.md)
 first. This lesson changes saved station settings; do not follow it on a live station.
 
+In this series, Practice means your default practice station. Its displayed name
+may still be AutoDJ; note that name when choosing its row in Settings. The
+category and clockwheel you create below are both named `Practice`.
+
 ## Before you begin
 
 Prepare a folder containing at least five MP3, FLAC, or M4A songs on the computer
@@ -158,9 +162,9 @@ step's disabled repeat rules. No deletion is needed. To remove the imported
 folder later, use [Change or remove a folder](../guides/add-your-music.md#change-or-remove-a-folder).
 
 You can now build a song pool, run an automatic rotation, and explain queue
-priority. Next, the [planned two-category lesson](README.md#planned-shape-a-rotation-with-two-categories)
-will extend Practice with an alternating rotation. Until then, use the
-[sound guide](../guides/build-your-sound.md) for further adjustments or the
+priority. Next, [shape a rotation with two categories](two-categories.md)
+to extend Practice with an alternating rotation. Use the
+[sound guide](../guides/build-your-sound.md) for individual adjustments or the
 [settings reference](../settings-reference.md) to look up a control.
 
 AutoDJ and this page were developed with AI assistance.
