@@ -38,6 +38,7 @@ import { installClockwheelPanel } from "./modules/clockwheel-panel.js";
 import { describeStep } from "./modules/clockwheel-step.js";
 import { installRotationTest } from "./modules/rotation-test.js";
 import { installHourPreview } from "./modules/hour-preview.js";
+import { installProgrammeReview } from "./modules/programme-review.js";
 import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
@@ -320,6 +321,7 @@ let showsPanelControls = null;
 let schedulerPanelControls = null;
 let rotationTestControls = null;
 let hourPreviewControls = null;
+let programmeReviewControls = null;
 let cartWallControls = null;
 let voiceTrackerControls = null;
 let adsControls = null;
@@ -419,6 +421,7 @@ function clearStationViews() {
   schedulerPanelControls?.clear();
   rotationTestControls?.clear();
   hourPreviewControls?.clear();
+  programmeReviewControls?.clear();
   cartWallControls?.clear();
   timeCheckControls?.clear();
   // Signing out or switching stations stops a recording and lets the
@@ -1802,6 +1805,7 @@ function refreshStationPanels() {
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
   void hourPreviewControls?.refresh();
+  void programmeReviewControls?.refresh();
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void breakSettingsControls?.refresh();
@@ -3101,6 +3105,7 @@ showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();
 hourPreviewControls = installHourPreview();
+programmeReviewControls = installProgrammeReview();
 
 import { installLiners, bumpLinerTrackCount } from "./modules/liners.js";
 import { installTimeChecks } from "./modules/time-checks.js";

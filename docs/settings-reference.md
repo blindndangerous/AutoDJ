@@ -17,6 +17,35 @@ otherwise. Each station's private `relays.json` holds its relays and passwords. 
 Each entry gives possible values, the default, and what the setting does. A page label appears in **bold**. Blank means unset unless its entry says otherwise.
 
 
+## Programme review
+
+**Now Playing**, **Programme review** settings apply to the next explicit
+generation. They are review request values, not new `config.toml` or station
+playback settings. Existing snapshots retain the settings used to make them.
+
+| Control | Default | Supported values and effect |
+| --- | --- | --- |
+| Source | Saved show | Saved show, Current queue or Forecast; Show chooses the saved list |
+| Intended start | Blank | Optional browser-local date/time; blank means now; automatic eligibility uses station time |
+| Programme minutes | 60 | Whole number 1–180; full programme span before shortening |
+| Range start/end (seconds) | Blank | Both blank for the programme, or nonnegative start and greater end; measured from captured programme start |
+| Opening (seconds) | 10 | Positive, at most 3600; minimum retained opening per selected item |
+| Ending (seconds) | 10 | Positive, at most 3600; minimum retained ending per selected item |
+| Long clip (seconds) | 300 | Positive, at most 86400; non-song clips at or below this threshold remain complete |
+| Skip tone (seconds) | 0.25 | Positive, at most 10; duration of the generated edit marker |
+
+The browser timing controls accept values from 0.001 seconds. The API accepts
+finite values greater than zero within the maxima above and rounds retained
+windows and tones to at least one audio frame. Songs shorten regardless of
+length; required transitions, overlays and explicit keep-complete targets can
+extend windows without a retained-duration cap. These validation maxima do not
+authorize truncating required content.
+
+Placeholder speech reuses `time_checks.tts_command`. There is no additional
+provider configuration and no implicit generation of missing programme content.
+See [Programme review and export](operations.md#programme-review-and-export) for
+listening, downloads, incomplete results and storage limits.
+
 ## Shared settings in config.toml
 
 These sections apply to the whole server. `config.local.toml` can hold private shared values.

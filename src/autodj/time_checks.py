@@ -1048,7 +1048,11 @@ class TimeChecks:
         return clone
 
     def forecast_seconds(
-        self, now: datetime | None = None, *, scheduled: bool = False
+        self,
+        now: datetime | None = None,
+        *,
+        scheduled: bool = False,
+        on_audio: Callable[[np.ndarray], None] | None = None,
     ) -> float | None:
         """Duration of an automatic or scheduled check without changing live state or using TTS.
 
@@ -1056,7 +1060,7 @@ class TimeChecks:
         needed to know the duration.
         """
         if not getattr(self, "_forecast_only", False):
-            return self.snapshot().forecast_seconds(now, scheduled=scheduled)
+            return self.snapshot().forecast_seconds(now, scheduled=scheduled, on_audio=on_audio)
         now = (now or datetime.now(self.zone)).astimezone(self.zone)
         if not self.settings.enabled:
             return 0.0
@@ -1072,6 +1076,10 @@ class TimeChecks:
         if rendered is not None:
             with self._lock:
                 self._aired_hour = _hour_key(now)
+        if rendered is not None and on_audio is not None:
+            from autodj.stereo import copy_audio
+
+            on_audio(copy_audio(rendered.audio))
         return None if rendered is None else len(rendered.audio) / SAMPLE_RATE
 
     def _pack_voice(self, name: str, local: datetime) -> np.ndarray | None:

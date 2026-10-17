@@ -1107,6 +1107,12 @@ def create_app(
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            review_jobs = getattr(app.state, "review_jobs", None)
+            if review_jobs is not None and not await asyncio.to_thread(
+                review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error("A review renderer is still reading; the library remains open")
             writers_quiesced, cache_closed = await stations.shutdown(
                 library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
             )

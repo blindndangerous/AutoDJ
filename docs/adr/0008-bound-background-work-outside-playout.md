@@ -67,6 +67,10 @@ compatibility assessment.
 
 ## Current contracts
 
+The separate [programme review proposal](0014-isolate-programme-review-and-export.md)
+defines its render-slot, artifact and cancellation boundary. This retrospective
+record remains Proposed.
+
 IDs are stable and are never recycled. Automated means an existing regression
 test is mapped; structural validation does not execute it, prove platform
 coverage, or accept this ADR. Manual and gap rows remain explicit obligations

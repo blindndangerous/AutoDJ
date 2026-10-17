@@ -1122,6 +1122,7 @@ class Forecast:
     seconds: float
     detail: str
     own_point: bool = True
+    spots: tuple[tuple[str, Spot], ...] = ()
 
 
 AIR_OFF = "Ad breaks are off for this station: set [ads] enabled = true in config.toml."
@@ -1902,7 +1903,14 @@ class AdDesk:
         label = f"Ad break: clockwheel step {step['number']}"
         if not choice.spots:
             label += f" ({choice.reason})"
-        return Forecast(at, label, choice.seconds, detail, False)
+        return Forecast(
+            at,
+            label,
+            choice.seconds,
+            detail,
+            False,
+            tuple((key, spot.model_copy(deep=True)) for key, spot in choice.spots),
+        )
 
     def _outcomes(self, now: float) -> list[PlayRecord]:
         """What became of the booked spots: aired, cut off on the air, or missed and why."""
@@ -2086,7 +2094,14 @@ class AdDesk:
                 else choice.reason
             )
             found_runs.append(
-                Forecast(moment, f"Ad break: {item.name}", choice.seconds, detail, own)
+                Forecast(
+                    moment,
+                    f"Ad break: {item.name}",
+                    choice.seconds,
+                    detail,
+                    own,
+                    tuple((key, spot.model_copy(deep=True)) for key, spot in choice.spots),
+                )
             )
         return found_runs
 

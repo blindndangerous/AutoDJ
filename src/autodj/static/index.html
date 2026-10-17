@@ -350,6 +350,48 @@
     <p id="library-problem" hidden></p>
   </details>
 
+  <details class="card" id="review-card">
+    <summary><h2>Programme review</h2></summary>
+    <p class="setting-desc">Privately review planned audio before broadcast mastering; future broadcast choices can differ.</p>
+    <form id="review-form" novalidate>
+      <div class="setting-row"><label for="review-source">Source</label>
+        <select id="review-source"><option value="show">Saved show</option><option value="queue">Current queue</option><option value="forecast">Forecast</option></select>
+      </div>
+      <div class="setting-row" id="review-show-row"><label for="review-show">Show</label><select id="review-show"></select></div>
+      <div class="setting-row"><label for="review-start">Intended start</label><input id="review-start" type="datetime-local"></div>
+      <p class="setting-desc">Optional browser-local time; automatic content uses station time. Blank starts now.</p>
+      <div class="setting-row"><label for="review-minutes">Programme minutes</label><input id="review-minutes" type="number" min="1" max="180" step="1" value="60" required></div>
+      <div class="setting-row"><label for="review-selection-start">Range start (seconds)</label><input id="review-selection-start" type="number" min="0" step="any"></div>
+      <div class="setting-row"><label for="review-selection-end">Range end (seconds)</label><input id="review-selection-end" type="number" min="0" step="any"></div>
+      <p class="setting-desc">Leave both blank for the full programme; boundaries expand to preserve complete clips and joins.</p>
+      <details><summary>Review timing</summary>
+        <div class="setting-row"><label for="review-head">Opening (seconds)</label><input id="review-head" type="number" min="0.001" max="3600" step="any" value="10" required></div>
+        <div class="setting-row"><label for="review-tail">Ending (seconds)</label><input id="review-tail" type="number" min="0.001" max="3600" step="any" value="10" required></div>
+        <div class="setting-row"><label for="review-threshold">Long clip (seconds)</label><input id="review-threshold" type="number" min="0.001" max="86400" step="any" value="300" required></div>
+        <div class="setting-row"><label for="review-tone">Skip tone (seconds)</label><input id="review-tone" type="number" min="0.001" max="10" step="any" value="0.25" required></div>
+      </details>
+      <button type="submit" id="review-generate">Generate review</button>
+      <button type="button" id="review-cancel" hidden>Cancel generation</button>
+    </form>
+    <p id="review-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div class="setting-row"><label for="review-snapshots">Saved review</label><select id="review-snapshots"></select></div>
+    <button type="button" id="review-refresh">Refresh reviews</button>
+    <button type="button" id="review-load">Load review</button>
+    <button type="button" id="review-delete">Delete review</button>
+    <section id="review-result" hidden aria-labelledby="review-heading">
+      <h3 id="review-heading" tabindex="-1">Review result</h3>
+      <p id="review-summary"></p>
+      <ul id="review-omissions" role="list"></ul>
+      <audio id="review-audio" controls preload="none" aria-label="Private programme review" data-preview-output></audio>
+      <div role="group" aria-label="Review navigation">
+        <button type="button" id="review-previous">Previous item</button><button type="button" id="review-next">Next item</button>
+      </div>
+      <ol id="review-items" role="list"></ol>
+      <a id="review-mp3" download>Download MP3</a>
+      <a id="review-wav" download>Download WAV</a>
+    </section>
+  </details>
+
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
        expected to start, and how the hour lands against the top of the
        hour, clockwheel restarts and scheduled events.  Closed until opened,
@@ -1502,7 +1544,7 @@
         </select>
         <button type="button" id="preview-device-choose">Show preview device names</button>
       </div>
-      <span class="setting-desc" id="preview-device-desc">Audio device for previews in Track info and Voice tracks.</span>
+      <span class="setting-desc" id="preview-device-desc">Audio device for private previews.</span>
       <p class="setting-desc" id="preview-device-note" hidden></p>
       <div class="settings-check">
         <input type="checkbox" id="pb-prefetch" checked>

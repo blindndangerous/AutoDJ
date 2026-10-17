@@ -2460,6 +2460,9 @@ def install_station_routes(router: StationRouter) -> None:
     install_requests(router)
     install_matched_intros(router)
     install_shows(router)
+    from autodj.review_api import install_reviews
+
+    install_reviews(router)
     install_rotation_test(router)
     install_hour_preview(router)
     install_landmarks(router)

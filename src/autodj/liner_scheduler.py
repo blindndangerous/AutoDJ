@@ -369,6 +369,7 @@ class LinerScheduler:
         *,
         track: RenderedTrack | None = None,
         track_start: bool = True,
+        on_audio: Callable[[float, str, np.ndarray], None] | None = None,
     ) -> list[tuple[float, str, float]]:
         """Forecast automatic liners from one track start through *end*.
 
@@ -415,6 +416,10 @@ class LinerScheduler:
                 at_time = now[0] + (at.frame / SAMPLE_RATE if at is not None else 0.0)
                 if at_time < end:
                     events.append((at_time, name, len(audio) / SAMPLE_RATE))
+                    if on_audio is not None:
+                        from autodj.stereo import copy_audio
+
+                        on_audio(at_time, name, copy_audio(audio))
                     if at is not None:
                         at.started = True
 

@@ -14,6 +14,11 @@ On Windows, use `.\autodj.cmd backup backups\night-owl.zip`. If you run the inst
 
 The archive does not include music files, recordings, external playlist files, downloaded model weights, `config.toml`, or `config.local.toml`. It also leaves out `secrets.json`, `relays.json`, Stereo Tool licence keys, pairing secrets, live DJ passwords, and other credentials. Keep separate secure copies of configuration, passwords, music, playlists, and recordings that you need to restore.
 
+Derived [programme review snapshots](../operations.md#programme-review-and-export)
+are also excluded. Download MP3/WAV exports separately when they must survive a
+restore; a completed review otherwise remains in its station folder until you
+explicitly delete it.
+
 ## Restore a backup
 
 1. Install the same AutoDJ major and minor version that made the backup. A backup from 0.19.x restores on 0.19.x, for example.

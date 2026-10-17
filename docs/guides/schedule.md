@@ -19,6 +19,10 @@ In **Library tools**, open **Shows**, press **Add show**, and enter a **Name**. 
 
 To schedule it, add an event whose **Action** is **Play a show**. Select the show. Soft timing puts its songs in the queue after the current song; hard timing starts its first song at the chosen time. **Start after this song** in the show list starts it now. **Stop show** removes its waiting songs. After its last song, normal picking resumes. Each station keeps its own shows.
 
+Use [Programme review](../operations.md#programme-review-and-export) to listen
+privately to a shortened mix and export it before airing. Select **Saved show**;
+review generation does not start or schedule the show.
+
 ## Schedule music, liners, and announcements
 
 An event can **Change song picking** to a saved clockwheel, switch a profile or preset, turn discovery on or off, or play a voice liner or station ID. For a seasonal clockwheel, create one event to select it and a second event to return to the usual clockwheel. See [Build your sound](build-your-sound.md) for clockwheels and voice liners.

@@ -411,6 +411,95 @@ See [Configuration precedence and repeat settings — Repeat settings](reference
 
 See [Test rotation and preview an hour — Testing the rotation](guides/operations/rotation-preview.md#testing-the-rotation).
 
+## Programme review and export
+
+Use **Now Playing**, **Programme review** to hear a shortened planned mix of a
+transition, section or programme and download the same result as MP3 or WAV.
+This is private audio before final broadcast mastering. It neither starts nor
+changes station playout and does not record what actually aired. Automatic
+broadcast choices can differ later. The [architecture proposal](adr/0014-isolate-programme-review-and-export.md)
+defines ownership and evidence limits.
+
+### Generate and listen
+
+1. Select the station. Open **Programme review** and press **Refresh reviews** to
+   load its saved shows and retained results.
+2. Choose **Source**: **Saved show**, **Current queue**, or **Forecast**. For a
+   saved show, choose **Show**; it can be reviewed while the station is stopped.
+   Set **Programme minutes** from 1 to 180.
+3. Optionally set **Intended start** in this browser's local time. Blank means
+   now. Automatic content is resolved against that full programme time in the
+   station's time zone, before song middles are removed.
+4. For a transition or section, enter **Range start (seconds)** and **Range end
+   (seconds)** relative to the captured programme. Leave both blank for the full
+   programme. The effective range can expand to preserve complete short clips,
+   transitions and ducking.
+5. Open **Review timing** to change the opening/ending windows, long-clip
+   threshold or skip-tone length. See the [values and defaults](settings-reference.md#programme-review).
+6. Press **Generate review**. Generation runs separately from playout; **Cancel
+   generation** abandons that job and preserves existing results.
+7. When ready, choose the result under **Saved review** and press **Load review**.
+   Read its date, effective range and complete/incomplete status. Use the native
+   **Private programme review** audio controls to listen. Audio never starts
+   automatically. **Settings**, **Playback**, **Preview output device** selects
+   the same private device used by other previews; browser/device fallback advice
+   remains applicable.
+8. Use **Previous item**, **Next item**, or an item button to seek without starting
+   playback. Each item gives both its full programme and shortened preview times.
+   **Download MP3** and **Download WAV** contain the same frozen edits, skip tones
+   and placeholders heard in the player.
+
+Songs retain their first and last 10 seconds by default. Non-song clips lasting
+five minutes or less remain complete; longer interviews and other clips shorten
+like songs. Actual joins, overlapping voice and ducking can extend these windows.
+Overlapping windows merge rather than repeat audio. A quiet generated skip tone
+marks each removed middle; it is a review edit, not a broadcast segue.
+
+### Incomplete or out-of-date results
+
+An unresolved item appears in the omission list and is replaced by spoken audio
+using the configured default TTS command (`time_checks.tts_command`). This does
+not generate the missing programme content. If that command is unset or fails,
+reviews needing placeholders fail with an error; complete content still renders.
+Configure or repair the existing command and generate again. Where a source
+duration is unknown, downstream programme times say **Unknown**; the placeholder
+does not establish broadcast duration.
+
+Press **Refresh reviews** after editing a show, audio, cues or relevant settings.
+Affected results say **Out of date** and remain playable/exportable with their
+original audio. Generate explicitly to create a new result. Editing or hearing a
+review does not approve pending speech for broadcast. Prepared editions and their
+approval workflow are a separate feature.
+
+### Storage and availability
+
+| Capability | Availability |
+| --- | --- |
+| Saved-show private review | Available without running station playout |
+| Queue/forecast review | Captures the selected station's current planned material |
+| Listening and MP3/WAV export | Operator browser; same frozen pre-mastering result |
+| Public/listener or limited DJ/announcer/worker access | No review access |
+| Actual-air recording or final Stereo Tool processing | Outside programme review |
+
+One render runs across the server at a time, with a cooperative 120-second work
+limit. Each station retains up to 20 results and 512 MiB; reaching either limit
+refuses generation instead of deleting older reviews. These are resource limits,
+not a promise that every admitted job completes. Reduce the requested span or
+delete unwanted snapshots and retry after a capacity/storage error.
+
+Working audio has a separate 2 GiB scratch allocation budget, including decoded
+sources and copies, and leaves at least 64 MiB free. A long source can exceed
+that budget even if its shortened export would be small. Generation fails
+actionably rather than spilling outside its owned workspace. These service
+limits are separate from the review timing controls.
+
+Results live under the station's state folder in `reviews/`. Completed results
+survive restart; interrupted jobs fail and their partial files are cleaned up.
+Recovery never starts the station. Results have no automatic expiry. Select an
+unwanted **Saved review** and press **Delete review** to remove it explicitly.
+AutoDJ backups exclude these derived files: download and separately retain MP3/WAV
+exports that you need to keep. Source audio remains under its existing ownership.
+
 ## Hour preview and backtiming
 
 See [Test rotation and preview an hour — Hour preview and backtiming](guides/operations/rotation-preview.md#hour-preview-and-backtiming).
@@ -470,6 +559,10 @@ See [Build rotation categories and repair beets paths — Example: Remembering t
 ## Shows
 
 See [Prepare and air a show — Shows](guides/operations/shows.md#shows).
+
+To hear its joins privately before airing, use [Programme review](#programme-review-and-export)
+with **Saved show** as the source. This creates a separate review snapshot and
+does not change the saved list or schedule it.
 
 ### Planning a show
 
