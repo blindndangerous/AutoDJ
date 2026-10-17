@@ -15,12 +15,20 @@ const moduleMocks = [
 // listeners and their timers outlived the test, so by the middle of this
 // file one click on a Track info button was answered by forty apps at
 // once, and opening it ran past vi.waitFor's one second on a busy CI
-// runner.  setupApp records what each copy installs; afterEach removes it.
+// runner. The cached microphone PermissionStatus and MutationObservers also
+// retain app closures and their DOM. Track those through public APIs too;
+// afterEach releases every resource installed by this fixture.
 const appCleanups = [];
 
-function trackAppGlobals() {
+async function trackAppGlobals() {
   if (appCleanups.length) return;
-  for (const target of [window, document]) {
+  let permission;
+  try {
+    permission = await navigator.permissions?.query?.({ name: "microphone" });
+  } catch {
+    // A browser may not support querying microphone permission.
+  }
+  for (const target of [window, document, permission].filter(Boolean)) {
     const own = Object.hasOwn(target, "addEventListener");
     const original = target.addEventListener;
     const tracked = function (type, listener, options) {
@@ -34,6 +42,17 @@ function trackAppGlobals() {
       else delete target.addEventListener;
     });
   }
+  const prototype = window.MutationObserver.prototype;
+  const observe = prototype.observe;
+  const trackedObserve = function (...args) {
+    const result = observe.apply(this, args);
+    appCleanups.push(() => this.disconnect());
+    return result;
+  };
+  prototype.observe = trackedObserve;
+  appCleanups.push(() => {
+    if (prototype.observe === trackedObserve) prototype.observe = observe;
+  });
   for (const [set, clear] of [["setTimeout", "clearTimeout"], ["setInterval", "clearInterval"]]) {
     const original = globalThis[set];
     const cancel = globalThis[clear];
@@ -91,7 +110,7 @@ async function setupApp({
   version = { version: "test", commit: "test", built_at: "2026-01-01T00:00:00Z" },
 } = {}) {
   vi.resetModules();
-  trackAppGlobals();
+  await trackAppGlobals();
   const dialog = installDocument();
   const linerModule = await vi.importActual(moduleMocks[1]);
   const stopAllDecks = audio.stopAllDecks || vi.fn();
@@ -225,7 +244,7 @@ async function setupApp({
   };
 }
 
-afterEach(() => {
+function cleanupApp() {
   // A switch remembers its station per browser (#70); every test starts fresh.
   try {
     globalThis.localStorage?.removeItem("autodj.station");
@@ -245,6 +264,36 @@ afterEach(() => {
   vi.unstubAllGlobals();
   for (const modulePath of moduleMocks) vi.doUnmock(modulePath);
   document.body.replaceChildren();
+}
+
+afterEach(cleanupApp);
+
+describe("app fixture cleanup", () => {
+  it("removes microphone permission callbacks from the discarded app", async () => {
+    const permission = await navigator.permissions.query({ name: "microphone" });
+    await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const button = document.getElementById("audio-device-refresh");
+    button.textContent = "Discarded app";
+    cleanupApp();
+    permission.dispatchEvent(new window.Event("change"));
+    expect(button.textContent).toBe("Discarded app");
+  });
+
+  it("disconnects observers before discarding their DOM", async () => {
+    await setupApp({ onRequest: () => jsonResponse({ ok: true }) });
+    const target = document.getElementById("settings-status");
+    const changed = vi.fn();
+    const observer = new window.MutationObserver(changed);
+    observer.observe(target, { attributes: true });
+    try {
+      cleanupApp();
+      target.setAttribute("data-cleanup-probe", "changed");
+      await Promise.resolve();
+      expect(changed).not.toHaveBeenCalled();
+    } finally {
+      observer.disconnect();
+    }
+  });
 });
 
 describe("durable playback semantics", () => {
