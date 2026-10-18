@@ -1,12 +1,35 @@
 import numpy as np
 import pytest
 
-from autodj.playout import liner_chain_placement, render_handoff
+from autodj.playout import liner_chain_placement, liner_chain_timing, render_handoff
 from autodj.stereo import SAMPLE_RATE
 
 
 def audio(seconds, value=1.0):
     return np.full((round(seconds * SAMPLE_RATE), 2), value, dtype=np.float32)
+
+
+@pytest.mark.parametrize(
+    "clips,intro,main,delay,outro_limit",
+    [
+        ([], 4, 0, 0, None),
+        ([(3, 2, -1, True)], 5, 2, -1, None),
+        ([(3, 2, -1, False)], 0.75, 2, 1.25, 0),
+        ([(3, 2, None, True), (2, 1, 0, False)], 5, 4, 2, 3),
+        ([(3, 2, -1, True), (2, 0, 1, True)], 5, 3, 0, None),
+    ],
+)
+def test_chain_timing_keeps_tails_and_later_outro_restrictions(
+    clips, intro, main, delay, outro_limit
+):
+    frames = [
+        (round(length * SAMPLE_RATE), round(speech * SAMPLE_RATE), cue, allow)
+        for length, speech, cue, allow in clips
+    ]
+    actual_main, actual_delay, actual_limit = liner_chain_timing(frames, intro)
+    assert actual_main == round(main * SAMPLE_RATE)
+    assert actual_delay == pytest.approx(delay)
+    assert actual_limit == outro_limit
 
 
 def test_fade_starts_a_third_length_before_segue_and_keeps_one_second_tail():
