@@ -1650,10 +1650,10 @@ def test_browser_forecast_uses_live_position_after_seek(tmp_path: Path, percent:
 
 
 @pytest.mark.parametrize("filename_pattern", [None, "year-{year}.wav"])
-@pytest.mark.parametrize("talk_up", [False, True])
-@pytest.mark.parametrize("registered_liner", [False, True])
+@pytest.mark.parametrize("incoming_intro", [0.0, 0.75, 5.0])
+@pytest.mark.parametrize("saved_segue", [None, 2.0])
 def test_year_intro_rules_are_predicted_without_consuming_live_state(
-    tmp_path, monkeypatch, talk_up, filename_pattern, registered_liner
+    tmp_path, incoming_intro, saved_segue, filename_pattern
 ):
     from autodj.intro_rules import IntroRule, IntroRules
     from autodj.matched_intros import MatchedIntros
@@ -1681,13 +1681,10 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     lookup = source.library.entry_for_path
     catalog.record_for_path = lambda path: (
         {"id": "song", "kind": "music"}
-        if path not in clips_by_path
-        else {"kind": "liner" if registered_liner else "voice"}
+        if str(path) not in clips_by_path
+        else {"kind": "liner", "allow_outro": False}
     )
-    catalog_entry_lookup = getattr(catalog, "entry_for_path", lookup)
-    catalog.entry_for_path = lambda path: (
-        clips_by_path.get(str(path)) if registered_liner else catalog_entry_lookup(path)
-    )
+    catalog.entry_for_path = lambda path: clips_by_path.get(str(path)) or lookup(path)
     source.library.record_for_id = lambda key: (
         {"path": clip.path, "kind": "liner"} if key == "year" else None
     )
@@ -1710,20 +1707,31 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
         ),
         create=True,
     )
-    points = {"start": 0, "intro": 5 if talk_up else 0, "segue": 200, "end": 200}
-    catalog.points = lambda path: points if path != clip.path else {}
+    music_points = {"start": 0, "intro": incoming_intro, "segue": 200, "end": 200}
+    liner_points = {
+        "start": 0,
+        "segue": saved_segue,
+        "end": 2,
+        "overlap_start": -1,
+    }
+    catalog.points = lambda path: liner_points if path in clips_by_path else music_points
     before = store.rules.path.read_bytes()
     rng = store._rng.getstate()
     items, _, stopped = hour_preview.predict(
         source, snapshot_player(player), decided, NOW + 900, seed=1, budget=30
     )
     assert stopped is None
-    [intro] = [item for item in items if item.kind == "intro"]
-    following = next(item for item in items if item.kind == "song")
+    intro = next(
+        item for item in items if item.kind == "intro" and item.label == "Matched intro: Year 2000"
+    )
+    following = next(item for item in items if item.kind == "song" and item.status == "predicted")
     assert intro.label == "Matched intro: Year 2000"
     assert intro.asset_id
-    if talk_up:
-        assert intro.starts == pytest.approx(following.starts)
+    if incoming_intro >= intro.seconds:
+        assert intro.starts == pytest.approx(following.starts + 1.0)
+    elif incoming_intro > 0:
+        assert intro.starts < following.starts < intro.starts + intro.seconds
+        assert intro.starts + intro.seconds == pytest.approx(following.starts + incoming_intro)
     else:
         assert intro.starts + intro.seconds <= following.starts + 0.02
     assert store.rules.path.read_bytes() == before
@@ -1744,28 +1752,23 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     [voice_row] = [row for row in view["items"] if row["kind"] == "intro"]
     assert voice_row["asset_id"] == intro.asset_id
     assert voice_row["path"] is None
-    assert voice_row["title"] == "Matched intro: Year 2000"
-    if registered_liner:
-        assert intro.details_entry is not None
-        assert voice_row["details_path"] == intro.details_entry.path
-        assert voice_row["details_path"] in {entry.path for entry in clips}
-        assert voice_row["details_kind"] == "liner"
-    else:
-        assert voice_row["details_path"] is None
-        assert voice_row["details_kind"] is None
+    assert voice_row["title"] == intro.label
+    assert intro.details_entry is not None
+    assert voice_row["details_path"] == intro.details_entry.path
+    assert voice_row["details_path"] in {entry.path for entry in clips}
+    assert voice_row["details_kind"] == "liner"
     assert queued_row["path"] == gold[1].path
-    assert datetime.fromisoformat(voice_row["starts_at"]) <= datetime.fromisoformat(
-        queued_row["starts_at"]
-    )
     assert not store.rules._reserved
 
-    monkeypatch.setattr(type(player), "_add_intro", lambda *_args: [])
+    catalog.entry_for_path = lambda _path: None
     missing, _, _ = hour_preview.predict(
         source, snapshot_player(player), decided, NOW + 900, seed=1, budget=30
     )
     missing_intro = next(item for item in missing if item.kind == "intro")
     assert missing_intro.asset_id == intro.asset_id
     assert missing_intro.label.startswith("Matched intro unavailable:")
+    assert missing_intro.seconds == 0
+    assert missing_intro.details_entry is None
 
 
 def test_fixed_matched_intro_keeps_its_safe_asset_identity():

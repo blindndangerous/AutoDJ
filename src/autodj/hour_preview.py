@@ -257,7 +257,7 @@ def _preview_liner_group(
     *,
     outgoing_rate: float | None = None,
     incoming_rate: float | None = None,
-    voice: tuple[Any, dict[str, Any]] | None = None,
+    voice: tuple[Any, dict[str, Any], bool] | None = None,
 ) -> tuple[list[tuple[Any, float, float]], float]:
     """Place cue-trimmed liner rows and return the incoming song's extra delay."""
     from autodj.playout import liner_chain_placement, liner_release_frames
@@ -305,8 +305,10 @@ def _preview_liner_group(
         if cue == 0:
             fit_main_frames = max(fit_main_frames, main_frames)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
-        allow_outro = bool(record and record.get("allow_outro", False)) and not (
-            voice and entry is voice[0]
+        allow_outro = (
+            bool(voice[2])
+            if voice and entry is voice[0]
+            else bool(record and record.get("allow_outro", False))
         )
         chain.append((entry, offset, clip_frames, allow_outro))
         frames += clip_frames
@@ -1511,7 +1513,7 @@ def _predict(
             added, liner_key, intro = player._transition_voice(
                 current, entry, added, breaks, handoff
             )
-        voice: tuple[Any, dict[str, Any]] | None = None
+        voice: tuple[Any, dict[str, Any], bool] | None = None
         intro_label = intro.label if intro is not None else ""
         if intro is not None:
             intro_liner = _registered_liner(player, intro.path)
@@ -1520,13 +1522,27 @@ def _predict(
                 _audio: Any,
                 cues: dict[str, Any],
                 length: float,
-                _allow_outro: bool,
+                allow_outro: bool,
                 chosen: Any = intro,
             ) -> tuple[int, int]:
                 nonlocal voice
-                clip = SimpleNamespace(path=str(chosen.path), length=length)
-                voice = (clip, cues)
-                return 0, round((float(cues["segue"]) - float(cues["start"])) * SAMPLE_RATE)
+                start = max(0.0, float(cues.get("start") or 0.0))
+                end = min(float(length), float(cues.get("end") or length))
+                first, last = round(start * SAMPLE_RATE), round(end * SAMPLE_RATE)
+                clip_frames = max(0, last - first)
+                segue = cues.get("segue")
+                speech_frames = (
+                    clip_frames
+                    if segue is None
+                    else min(clip_frames, max(0, round(float(segue) * SAMPLE_RATE) - first))
+                )
+                clip = SimpleNamespace(
+                    path=str(chosen.path),
+                    length=length,
+                    speech_seconds=speech_frames / SAMPLE_RATE,
+                )
+                voice = (clip, cues, allow_outro)
+                return 0, speech_frames
 
             points = player.saved_points(entry)
             from autodj.player import _music_output_points
@@ -1563,7 +1579,7 @@ def _predict(
             for liner, starts, length in rows:
                 if voice and liner is voice[0]:
                     assert intro is not None
-                    speech = float(voice[1]["segue"]) - float(voice[1]["start"])
+                    speech = float(voice[0].speech_seconds)
                     found.append(
                         Item(
                             "intro",

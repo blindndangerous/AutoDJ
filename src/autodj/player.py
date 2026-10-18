@@ -4725,7 +4725,7 @@ class Player:
             return load_processed_audio(source, measurement, kind)
         # First play: measure in the same FFmpeg run as the decode.
         audio, measurement = load_and_measure_audio(source, kind)
-        if record:
+        if record and not getattr(self, "_dry_run", False):
             self._library.catalog.set_loudness(source, measurement)
         return audio
 
@@ -5215,10 +5215,10 @@ class Player:
     ) -> list[tuple[int, str, int, str]]:
         """Decode the matched intro and append it to the handoff's voice chain (#127).
 
-        It talks up the next song (its speech ends as the vocal starts) when
-        the song's intro, Start to Intro, holds the whole speech, and
-        otherwise plays just before the song.  One that cannot be decoded is
-        left out and the music plays on.
+        A registered liner chosen by an intro rule uses its saved liner cues.
+        A private song or artist upload is trimmed as speech, talks up the
+        next song when its Start-to-Intro span holds the whole speech, and
+        otherwise plays just before it.  An unavailable clip is left out.
 
         Returns:
             ``[(first frame, intro id, end of speech, label)]`` in the chain,
@@ -5229,22 +5229,42 @@ class Player:
         start = incoming_points.get("start") or 0.0
         point = incoming_points.get("intro")
         intro_s = None if point is None else max(0.0, float(point) - float(start))
+        rule_liner = intro.intro_id.startswith("rule:")
         try:
-            audio = self._load_voice_audio(intro.path, MAX_INTRO_SECONDS)
-            cues = speech_cues(audio)
+            if rule_liner:
+                library = self._library
+                if library is None:
+                    return []
+                record = library.catalog.record_for_path(intro.path)
+                entry = library.catalog.entry_for_path(intro.path)
+                if (
+                    record is None
+                    or record.get("kind") != "liner"
+                    or entry is None
+                    or str(entry.path) != str(intro.path)
+                ):
+                    return []
+                audio = self._load_playout_audio(entry)
+                cues = self.saved_points(entry)
+                allow_outro = bool(record.get("allow_outro", False))
+                clip_length = entry.length
+                placement = "uses its saved liner cues"
+            else:
+                audio = self._load_voice_audio(intro.path, MAX_INTRO_SECONDS)
+                spoken = speech_cues(audio)
+                talk_up = intro_s is not None and intro_s >= spoken.speech
+                cues = spoken.points(talk_up)
+                allow_outro = False
+                clip_length = spoken.length
+                placement = "talks up the song" if talk_up else "plays before it"
         except Exception:
-            logger.exception("Cannot decode matched intro %s; the music plays on", intro.label)
+            logger.exception("Cannot prepare matched intro %s; the music plays on", intro.label)
             return []
-        talk_up = intro_s is not None and intro_s >= cues.speech
-        added = add_clip(audio, cues.points(talk_up), cues.length, False)
+        added = add_clip(audio, cues, clip_length, allow_outro)
         if added is None:
             return []
         at, speech = added
-        logger.info(
-            "Matched intro %s %s",
-            intro.label,
-            "talks up the song" if talk_up else "plays before it",
-        )
+        logger.info("Matched intro %s %s", intro.label, placement)
         return [(at, intro.intro_id, at + speech, intro.label)]
 
     def _break_duck_db(self) -> float:
