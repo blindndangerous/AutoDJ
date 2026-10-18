@@ -2590,6 +2590,7 @@ installHotkeys({
   btnSkip,
   btnShuffle,
   btnMute,
+  btnTrackInfo: document.getElementById("edit-current-points"),
   volSlider,
   seekDelta:   _seekByDelta,
   // The deck caches exist only in browser mode; elsewhere the server's
