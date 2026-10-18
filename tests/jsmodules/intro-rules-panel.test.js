@@ -9,7 +9,7 @@ import {
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
-const status = () => byId("intro-rules-status").textContent;
+const status = () => (byId("intro-rules-form-dialog")?.open ? byId("intro-rules-form-status") : byId("intro-rules-status")).textContent;
 const items = () => [...byId("intro-rules-list").querySelectorAll("li")];
 const button = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
 
@@ -363,6 +363,9 @@ describe("intro rules list and form", () => {
     expect(document.activeElement).toBe(rows()[0].querySelector("select"));
     await vi.waitFor(() => expect(status()).toBe("Condition 1 removed, 1 condition left."));
     byId("intro-rules-cancel").click();
+    expect(byId("confirm-dialog").open).toBe(true);
+    byId("confirm-accept").click();
+    await Promise.resolve();
     expect(byId("intro-rules-form").hidden).toBe(true);
     expect(document.activeElement).toBe(byId("intro-rules-add"));
   });
@@ -375,5 +378,40 @@ describe("intro rules list and form", () => {
     server.rules = [copy(ROCK)];
     controls.refresh();
     await vi.waitFor(() => expect(items()).toHaveLength(1));
+  });
+});
+
+
+describe("intro modal lifecycle", () => {
+  it("keeps the editor open on a refused save with the error next to its field", async () => {
+    const server = await open();
+    button(0, "edit").click();
+    server.refuse = Object.assign(new Error("Label was refused"), { field: "label" });
+    byId("intro-rules-save").click();
+    await vi.waitFor(() => expect(byId("intro-rules-label").getAttribute("aria-invalid")).toBe("true"));
+    expect(byId("intro-rules-form-dialog").open).toBe(true);
+    expect(document.activeElement).toBe(byId("intro-rules-label"));
+    expect(byId("intro-rules-label").nextElementSibling.textContent).toBe("Label was refused");
+  });
+
+  it("ignores a pending save after station clear and prevents duplicate submissions", async () => {
+    const server = fakeServer();
+    const request = server.request;
+    let settle;
+    server.request = vi.fn((url, options) => options?.method === "PUT"
+      ? new Promise((resolve) => { settle = resolve; }) : request(url, options));
+    await open(server);
+    button(0, "edit").click();
+    const form = byId("intro-rules-form");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(server.request.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(1);
+    controls.clear();
+    settle(server.rules[0]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(byId("intro-rules-form-dialog").open).toBe(false);
+    expect(items()).toHaveLength(0);
+    expect(status()).toBe("");
   });
 });

@@ -598,7 +598,40 @@ async function openHourFit(page, visit) {
 
 // Schedule: a hard event's Wait up to seconds refused in the browser, the
 // field marked invalid and focused, the error shown and linked.  Nothing
-// is saved; Cancel closes the form.
+// is saved; Cancel and Discard close the modal.
+async function inspectEditorModal(page, formId, visit, target) {
+  const dialog = page.locator(`#${formId}-dialog`);
+  await dialog.waitFor({ state: "visible" });
+  const name = await dialog.evaluate((element) => {
+    const heading = document.getElementById(element.getAttribute("aria-labelledby"));
+    return { open: element.open, modal: element.matches(":modal"), labelled: Boolean(heading && element.contains(heading) && heading.textContent.trim()) };
+  });
+  if (!name.open || !name.modal || !name.labelled) throw new Error(`${formId} is not an accessible native modal`);
+  const viewport = page.viewportSize() || { width: 1280, height: 800 };
+  await page.setViewportSize({ width: 320, height: 640 });
+  await settle(page);
+  const bounds = await dialog.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, width: rect.width, viewport: document.documentElement.clientWidth };
+  });
+  await page.setViewportSize(viewport);
+  if (bounds.width > bounds.viewport || bounds.left < 0 || bounds.right > bounds.viewport) {
+    throw new Error(`${formId} exceeds the 320 px viewport: ${JSON.stringify(bounds)}`);
+  }
+  await visit(target);
+}
+
+async function cancelEditor(page, formId, cancelId) {
+  const dialog = page.locator(`#${formId}-dialog`);
+  await page.locator(`#${cancelId}`).click();
+  const confirm = page.locator("#confirm-dialog");
+  if (await confirm.isVisible()) {
+    await page.locator("#confirm-accept").click();
+    await confirm.waitFor({ state: "hidden" });
+  }
+  await dialog.waitFor({ state: "hidden" });
+}
+
 async function openScheduleWaitError(page, visit) {
   await page.locator("#schedule-add").click();
   await page.locator("#schedule-name").fill("News");
@@ -614,8 +647,8 @@ async function openScheduleWaitError(page, visit) {
     && input.getAttribute("aria-describedby").split(/\s+/).includes("schedule-form-error"));
   if (!linked) throw new Error("Wait up to seconds error is not focused and linked");
   await settle(page);
-  await visit("settings/schedule/wait-error");
-  await page.locator("#schedule-cancel").click();
+  await inspectEditorModal(page, "schedule-form", visit, "settings/schedule/wait-error");
+  await cancelEditor(page, "schedule-form", "schedule-cancel");
 }
 
 async function standInForTimeChecks(page) {
@@ -663,8 +696,8 @@ async function openDaypartErrors(page, visit) {
   await page.locator("#categories-not-after").fill("2026-12-01");
   await page.locator("#categories-save").click();
   await page.locator("#categories-form-error").waitFor({ state: "visible" });
-  await visit("library/category-dates-error");
-  await page.locator("#categories-cancel").click();
+  await inspectEditorModal(page, "categories-form", visit, "library/category-dates-error");
+  await cancelEditor(page, "categories-form", "categories-cancel");
   await page.locator("#clock-name").fill("Audit");
   await page.locator("#clock-create").click();
   await page.locator("#clock-new-step").click();
@@ -749,10 +782,11 @@ async function openIntroRuleError(page, visit) {
   await page.locator("#intro-rules-list li").first().waitFor({ state: "visible" });
   await page.locator("#intro-rules-add").click();
   await page.locator("#intro-rules-form").waitFor({ state: "visible" });
+  await page.locator("#intro-rules-label").fill("Audit draft");
   await page.locator("#intro-rules-save").click();
   await page.locator("#intro-rules-clips-error").waitFor({ state: "visible" });
-  await visit("library/intro-rule-error");
-  await page.locator("#intro-rules-cancel").click();
+  await inspectEditorModal(page, "intro-rules-form", visit, "library/intro-rule-error");
+  await cancelEditor(page, "intro-rules-form", "intro-rules-cancel");
 }
 
 // Library tools > Shows (#106): the server's answers are stood in for, so a
@@ -1118,11 +1152,14 @@ async function openAdsStates(page, visit) {
   await page.locator("#ads-spot-add").click();
   await page.locator("#ads-spot-save").click();
   await page.locator("#ads-spot-error").waitFor({ state: "visible" });
-  await visit("ads/spot-error");
-  await page.locator("#ads-spot-cancel").click();
+  await page.locator("#ads-spot-title").fill("Audit spot");
+  await page.locator("#ads-spot-advertiser").fill("Audit advertiser");
+  await inspectEditorModal(page, "ads-spot-form", visit, "ads/spot-error");
+  await cancelEditor(page, "ads-spot-form", "ads-spot-cancel");
   await page.locator("#ads-break-add").click();
-  await visit("ads/break-form");
-  await page.locator("#ads-break-cancel").click();
+  await page.locator("#ads-break-name").fill("Audit break");
+  await inspectEditorModal(page, "ads-break-form", visit, "ads/break-form");
+  await cancelEditor(page, "ads-break-form", "ads-break-cancel");
   await page.locator("#ads-report-show").click();
   await page.locator("#ads-rows-wrap").waitFor({ state: "visible" });
   await visit("ads/report");
@@ -1141,10 +1178,12 @@ async function adsProblems(page) {
   const problems = [];
   await page.evaluate(() => {
     window.__adsSaid = [];
-    const region = document.getElementById("ads-status");
-    new window.MutationObserver(() => {
-      if (region.textContent) window.__adsSaid.push(region.textContent);
-    }).observe(region, { childList: true, characterData: true, subtree: true });
+    for (const id of ["ads-status", "ads-spot-form-status", "ads-break-form-status"]) {
+      const region = document.getElementById(id);
+      new window.MutationObserver(() => {
+        if (region.textContent) window.__adsSaid.push(region.textContent);
+      }).observe(region, { childList: true, characterData: true, subtree: true });
+    }
   });
   const focusId = () => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName.toLowerCase());
   await page.locator("#ads-spot-add").focus();
@@ -1165,7 +1204,7 @@ async function adsProblems(page) {
   if (refused.invalid !== "true") problems.push("the file field is not marked invalid");
   if (!refused.linked.includes("ads-spot-error")) problems.push("the error is not linked to the file field");
   if (refused.focus !== "ads-spot-file") problems.push(`a refused save moved focus to ${refused.focus}`);
-  if (refused.said.length !== 1) problems.push(`a refused save said ${JSON.stringify(refused.said)}`);
+  if (refused.said.length) problems.push(`a refused save duplicated its focused field error: ${JSON.stringify(refused.said)}`);
   await page.locator("#ads-spot-cancel").focus();
   await page.keyboard.press("Enter");
   if (await focusId() !== "ads-spot-add") problems.push(`Cancel moved focus to ${await focusId()}`);

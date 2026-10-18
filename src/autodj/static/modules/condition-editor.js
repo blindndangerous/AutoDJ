@@ -1,7 +1,20 @@
-import { NUMERIC_OPERATORS, TEXT_OPERATORS } from "./clockwheel-step.js";
-
-const NUMERIC_FIELDS = ["year", "bpm", "duration"];
-const BEETS_NUMERIC_OPERATORS = new Set(["eq", "not_eq", "lt", "lte", "gt", "gte", "between", "outside"]);
+export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
+export const TEXT_OPERATORS = [["is", "is"], ["is_not", "is not"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
+const BEETS_NUMERIC_OPERATORS = new Set(NUMERIC_OPERATORS.map(([value]) => value));
+const CONDITION_FIELD_DEFINITIONS = {
+  folder: { label: "Folder", valueType: "folder", operators: "folder", help: "Choose a library folder; optionally limit it to a subfolder." },
+  year: { label: "Year", valueType: "number", operators: "numeric", help: "Match the track year." },
+  bpm: { label: "BPM", valueType: "number", operators: "numeric", help: "Match beats per minute." },
+  duration: { label: "Duration", valueType: "duration", operators: "numeric", help: "Enter seconds or minutes:seconds." },
+  artist: { label: "Artist", valueType: "text", operators: "text", help: "Match the artist name." },
+  title: { label: "Title", valueType: "text", operators: "text", help: "Match the track title." },
+  album: { label: "Album", valueType: "text", operators: "text", help: "Match the album name." },
+  genre: { label: "Genre", valueType: "genre", operators: "folder", help: "Choose a saved genre." },
+  beets: { label: "Beets", valueType: "beets", operators: "beets", help: "Choose a Beets field, then compare its value." },
+  category: { label: "Category", valueType: "category", operators: "folder", help: "Choose a saved music category." },
+};
+export const CONDITION_FIELDS = Object.keys(CONDITION_FIELD_DEFINITIONS);
+const ROW_CONTROLS = new WeakMap();
 
 function optionsWithMissing(options, selected, label = selected) {
   const result = [...options];
@@ -24,7 +37,7 @@ export function createConditionRow({
   nextId,
   index,
   value = {},
-  fields,
+  allowCategory = false,
   sourceChoices = [],
   genreChoices = [],
   beetsChoices = [],
@@ -42,6 +55,7 @@ export function createConditionRow({
     const id = nextId();
     const label = doc.createElement("label");
     const node = doc.createElement(tag);
+    node.dataset.conditionControl = labelText.toLowerCase().replaceAll(" ", "-");
     label.htmlFor = id;
     label.textContent = labelText;
     node.id = id;
@@ -50,7 +64,11 @@ export function createConditionRow({
     return node;
   };
 
-  const field = control("Condition type", "select", fields.map((item) => [item, item === "bpm" ? "BPM" : item[0].toUpperCase() + item.slice(1)]));
+  const fields = allowCategory ? CONDITION_FIELDS : CONDITION_FIELDS.filter((item) => item !== "category");
+  const field = control("Condition type", "select", fields.map((item) => [item, CONDITION_FIELD_DEFINITIONS[item].label]));
+  const help = doc.createElement("p");
+  help.className = "setting-desc condition-help";
+  row.append(help);
   const source = control("Library folder", "select", optionsWithMissing(sourceChoices, value.source));
   const folder = control("Subfolder");
   folder.type = "text";
@@ -79,20 +97,21 @@ export function createConditionRow({
 
   const sync = () => {
     const current = field.value;
+    help.textContent = CONDITION_FIELD_DEFINITIONS[current]?.help || "";
     const isFolder = current === "folder";
     const isGenre = current === "genre";
     const isCategory = current === "category";
     const isBeets = current === "beets";
-    const numeric = NUMERIC_FIELDS.includes(current);
     for (const node of [source, folder, recursive]) node.hidden = node.previousElementSibling.hidden = !isFolder;
     genre.hidden = genre.previousElementSibling.hidden = !isGenre;
     name.hidden = name.previousElementSibling.hidden = !isBeets;
     if (category) category.hidden = category.previousElementSibling.hidden = !isCategory;
 
     let choices = TEXT_OPERATORS;
-    if (isFolder || isGenre || isCategory) choices = [["is", "is"], ["is_not", "is not"]];
-    else if (numeric) choices = NUMERIC_OPERATORS;
-    else if (isBeets) choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
+    const family = CONDITION_FIELD_DEFINITIONS[current]?.operators;
+    if (family === "folder") choices = [["is", "is"], ["is_not", "is not"]];
+    else if (family === "numeric") choices = NUMERIC_OPERATORS;
+    else if (family === "beets") choices = [["is", "Is (text)"], ["is_not", "Is not (text)"], ...TEXT_OPERATORS.slice(2), ["eq", "Equals (number)"], ...NUMERIC_OPERATORS.slice(1)];
     const previous = operator.value || selectedOperator;
     optionList(doc, operator, choices);
     operator.value = choices.some(([item]) => item === previous) ? previous : choices[0][0];
@@ -110,8 +129,9 @@ export function createConditionRow({
   remove.textContent = `Remove condition ${index}`;
   row.append(remove);
   remove.addEventListener("click", () => onRemove(row));
+  ROW_CONTROLS.set(row, { field, source, folder, recursive, operator, input, upper, genre, name, category });
   sync();
-  return { row, field, source, folder, recursive, operator, input, upper, genre, name, category };
+  return { row, field, source, folder, recursive, operator, input, upper, genre, name, category, help };
 }
 
 /**
@@ -155,23 +175,24 @@ export function readConditionRows(rows, {
       control?.focus();
     }
     const error = new Error(message);
+    error.control = control;
     if (errorField) error.field = errorField;
     throw error;
   };
   for (const row of rows) row.querySelectorAll("[aria-invalid]").forEach((control) => control.removeAttribute("aria-invalid"));
   return rows.map((row) => {
-    const selects = [...row.querySelectorAll("select")];
-    const [fieldSelect, sourceSelect, operatorSelect, genreSelect, beetsSelect, categorySelect] = selects;
+    const controls = ROW_CONTROLS.get(row);
+    const { field: fieldSelect, source: sourceSelect, operator: operatorSelect, genre: genreSelect, name: beetsSelect, category: categorySelect } = controls;
     const field = fieldSelect.value;
     const operator = operatorSelect.value;
     if (field === "folder") {
-      const folderInput = row.querySelector('input[type="text"]');
+      const folderInput = controls.folder;
       const folder = folderInput.value.trim().replaceAll("\\", "/").replace(/^[/\\]+|[/\\]+$/g, "");
       if (!sourceSelect.value) invalid(sourceSelect, folderRequired);
       if (folder && (folder.split("/").some((part) => !part || part === "." || part === "..") || folder.includes(":"))) {
         invalid(folderInput, 'The subfolder must stay inside its library folder, with no "..".');
       }
-      return { field, source: sourceSelect.value, folder, recursive: row.querySelector('input[type="checkbox"]').checked, ...(operator === "is_not" ? { operator } : {}) };
+      return { field, source: sourceSelect.value, folder, recursive: controls.recursive.checked, ...(operator === "is_not" ? { operator } : {}) };
     }
     if (field === "genre") {
       if (!genreSelect.value) invalid(genreSelect, "Choose a genre.");
@@ -182,24 +203,25 @@ export function readConditionRows(rows, {
       return { field, category: categorySelect.value, ...(operator === "is_not" ? { operator } : {}) };
     }
 
-    const inputs = [...row.querySelectorAll('input[type="text"]')];
-    const raw = inputs[1].value.trim();
-    if (!raw) invalid(inputs[1], `Enter a value for ${field}.`);
-    const numeric = NUMERIC_FIELDS.includes(field) || (field === "beets" && BEETS_NUMERIC_OPERATORS.has(operator));
+    const raw = controls.input.value.trim();
+    if (!raw) invalid(controls.input, `Enter a value for ${field}.`);
+    const definition = CONDITION_FIELD_DEFINITIONS[field];
+    const numeric = definition?.valueType === "number" || definition?.valueType === "duration"
+      || (definition?.valueType === "beets" && BEETS_NUMERIC_OPERATORS.has(operator));
     const parse = (text, control) => {
       let value;
-      try { value = field === "duration" ? parsePointTime(text) : Number(text); }
+      try { value = definition?.valueType === "duration" ? parsePointTime(text) : Number(text); }
       catch { invalid(control, durationError); }
       if (!Number.isFinite(value)) invalid(control, numberError(field));
       if (field !== "beets" && value < 0) invalid(control, negativeError(field));
       return value;
     };
-    const result = { field, ...(field === "beets" ? { name: beetsSelect.value } : {}), operator, value: numeric ? parse(raw, inputs[1]) : raw };
+    const result = { field, ...(field === "beets" ? { name: beetsSelect.value } : {}), operator, value: numeric ? parse(raw, controls.input) : raw };
     if (field === "beets" && !beetsAvailable(result.name)) invalid(beetsSelect, beetsError(result.name));
     if (["between", "outside"].includes(operator)) {
-      const high = inputs[2].value.trim();
-      if (!high) invalid(inputs[2], upperRequired);
-      result.upper = numeric ? parse(high, inputs[2]) : high;
+      const high = controls.upper.value.trim();
+      if (!high) invalid(controls.upper, upperRequired);
+      result.upper = numeric ? parse(high, controls.upper) : high;
     }
     return result;
   });

@@ -255,15 +255,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function conditionRow(value = {}) {
-    const fields = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"];
-    if (typeSelect.value === "music") fields.push("category");
     const sourceList = data.sources.filter((s) => s.kind === (typeSelect.value === "liner" ? "liner" : "music"));
     return createConditionRow({
       document: doc,
       nextId: () => `clock-condition-${++conditionId}`,
       index: el("clock-step-conditions").children.length + 1,
       value,
-      fields,
+      allowCategory: typeSelect.value === "music",
       sourceChoices: sourceList.map((item) => [item.id, item.path]),
       genreChoices: (data.genres || []).map((item) => [item, item]),
       beetsChoices: (data.beets_fields || []).map((item) => [item, item]),

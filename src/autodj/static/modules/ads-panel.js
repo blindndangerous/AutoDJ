@@ -1,3 +1,4 @@
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // Ads tab (#51): spots, scheduled ad breaks, their rules and the ad report.
 //
 // Everything is found inside #ads-panel.  The panel loads when its tab
@@ -15,7 +16,7 @@
 
 import { requestFile, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusRevealed, stationDay } from "./dom-helpers.js";
+import { focusAfterDialog, stationDay } from "./dom-helpers.js";
 import { exportFilename, saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
 
@@ -113,11 +114,15 @@ export function installAdsPanel({
   let generation = 0;
   let rulesStation = null;
   let datesShown = false;
-  let savingSpot = false;
+
+  const spotEditor = createEditorDialog({ form: spotForm, heading: get("spot-legend"), cancel: get("spot-cancel"),
+    fallback: spotAdd, save: saveSpot, onCancel: closeSpotForm });
+  const breakEditor = createEditorDialog({ form: breakForm, heading: get("break-legend"), cancel: get("break-cancel"),
+    fallback: breakAdd, save: saveBreak, onCancel: closeBreakForm });
 
   const shown = () => !panel.hidden;
   function say(message, tone = "info") {
-    announceStatus(shown() ? status : (doc.getElementById("sr-status") || status), message, {
+    announceStatus(spotEditor.region(shown() ? status : (doc.getElementById("sr-status") || status)), message, {
       force: true, dwellMs: tone === "error" ? 6000 : 3000, tone,
     });
   }
@@ -164,16 +169,18 @@ export function installAdsPanel({
   }
 
   function showError(form, controls, message) {
+    if (!controls.length) return false;
     clearError(form);
     const error = form.querySelector(".field-error");
     error.textContent = message;
     error.hidden = false;
-    for (const control of controls) {
+    for (const control of controls.slice(1)) {
       control.setAttribute("aria-invalid", "true");
       linkError(control, error, true);
     }
-    say(message, "error");
-    focusRevealed(controls[0]);
+    const targetStatus = form === spotForm && spotEditor.dialog.open ? spotEditor.status
+      : form === breakForm && breakEditor.dialog.open ? breakEditor.status : status;
+    showEditorError(controls[0], message, error, targetStatus);
     return controls.length > 0;
   }
 
@@ -235,7 +242,7 @@ export function installAdsPanel({
     const row = doc.createElement("li");
     row.dataset.id = spot.id;
     row.append(doc.createElement("span"));
-    row.append(rowButton("Edit", () => openSpotForm(spotById(row.dataset.id))));
+    row.append(rowButton("Edit", (button) => openSpotForm(spotById(row.dataset.id), button)));
     row.append(rowButton("Delete", (button) => deleteSpot(spotById(row.dataset.id), button)));
     return row;
   }
@@ -251,7 +258,7 @@ export function installAdsPanel({
     const row = doc.createElement("li");
     row.dataset.id = item.id;
     row.append(doc.createElement("span"));
-    row.append(rowButton("Edit", () => openBreakForm(breakById(row.dataset.id))));
+    row.append(rowButton("Edit", (button) => openBreakForm(breakById(row.dataset.id), button)));
     const run = rowButton("Run now", (button) => runBreak(breakById(row.dataset.id), button));
     // Run now changes what is on air at the station the page controls.
     row.append(run);
@@ -320,12 +327,12 @@ export function installAdsPanel({
 
   function focusRow(list, id, fallback) {
     const row = [...list.children].find((item) => item.dataset.id === id);
-    (row?.querySelector('[data-role="edit"]') || fallback).focus();
+    focusAfterDialog(row?.querySelector('[data-role="edit"]') || fallback);
   }
 
   // ---- Spots ----
 
-  function openSpotForm(spot = null) {
+  function openSpotForm(spot = null, opener = doc.activeElement) {
     editingSpot = spot?.id ?? null;
     clearError(spotForm);
     setText(get("spot-legend"), spot ? `Edit spot ${spot.title}` : "Add spot");
@@ -341,12 +348,11 @@ export function installAdsPanel({
     get("spot-day").value = String(spot?.max_per_day ?? 0);
     get("spot-hour").value = String(spot?.max_per_hour ?? 0);
     get("spot-enabled").checked = spot ? spot.enabled : true;
-    spotForm.hidden = false;
-    (spot ? get("spot-title") : get("spot-file")).focus();
+    spotEditor.open(spot ? get("spot-title") : get("spot-file"), opener);
   }
 
   function closeSpotForm() {
-    spotForm.hidden = true;
+    spotEditor.close();
     editingSpot = null;
     clearError(spotForm);
   }
@@ -389,9 +395,8 @@ export function installAdsPanel({
     };
   }
 
-  async function saveSpot(event) {
+  async function saveSpot(event, active) {
     event.preventDefault();
-    if (savingSpot) return;
     const problem = spotProblem();
     if (problem) {
       showError(spotForm, fieldControls(SPOT_FIELDS, problem[0]), problem[1]);
@@ -402,8 +407,6 @@ export function installAdsPanel({
     const id = editingSpot;
     const fields = spotFields();
     let saved;
-    savingSpot = true;
-    spotForm.setAttribute("aria-busy", "true");
     if (!id) say("Uploading the spot");
     try {
       if (id) {
@@ -417,15 +420,12 @@ export function installAdsPanel({
         saved = await request("/api/ads/spots", { method: "POST", body: form });
       }
     } catch (error) {
-      if (current === session) refused(spotForm, SPOT_FIELDS, error, "the spot");
+      if (current === session && active()) refused(spotForm, SPOT_FIELDS, error, "the spot");
       return;
-    } finally {
-      savingSpot = false;
-      spotForm.removeAttribute("aria-busy");
     }
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     await load().catch(() => false);
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     closeSpotForm();
     focusRow(spotList, saved.id, spotAdd);
     say(`Spot ${saved.title} saved`);
@@ -466,7 +466,7 @@ export function installAdsPanel({
 
   // ---- Breaks ----
 
-  function openBreakForm(item = null) {
+  function openBreakForm(item = null, opener = doc.activeElement) {
     editingBreak = item?.id ?? null;
     clearError(breakForm);
     setText(get("break-legend"), item ? `Edit ad break ${item.name}` : "Add ad break");
@@ -480,12 +480,11 @@ export function installAdsPanel({
     get("break-spots").value = String(item?.max_spots ?? 3);
     get("break-seconds").value = String(item?.max_seconds ?? 0);
     get("break-enabled").checked = item ? item.enabled : true;
-    breakForm.hidden = false;
-    get("break-name").focus();
+    breakEditor.open(get("break-name"), opener);
   }
 
   function closeBreakForm() {
-    breakForm.hidden = true;
+    breakEditor.close();
     editingBreak = null;
     clearError(breakForm);
   }
@@ -524,7 +523,7 @@ export function installAdsPanel({
     };
   }
 
-  async function saveBreak(event) {
+  async function saveBreak(event, active) {
     event.preventDefault();
     const problem = breakProblem();
     if (problem) {
@@ -540,12 +539,12 @@ export function installAdsPanel({
         method: id ? "PUT" : "POST", headers: JSON_HEADERS, body: JSON.stringify(breakFields()),
       });
     } catch (error) {
-      if (current === session) refused(breakForm, BREAK_FIELDS, error, "the ad break");
+      if (current === session && active()) refused(breakForm, BREAK_FIELDS, error, "the ad break");
       return;
     }
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     await load().catch(() => false);
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     closeBreakForm();
     focusRow(breakList, saved.id, breakAdd);
     say(`Ad break ${saved.name} saved`);
@@ -738,25 +737,13 @@ export function installAdsPanel({
 
   // ---- Wiring ----
 
-  spotAdd.addEventListener("click", () => openSpotForm());
-  breakAdd.addEventListener("click", () => openBreakForm());
-  get("spot-cancel").addEventListener("click", () => {
-    const id = editingSpot;
-    closeSpotForm();
-    focusRow(spotList, id, spotAdd);
-  });
-  get("break-cancel").addEventListener("click", () => {
-    const id = editingBreak;
-    closeBreakForm();
-    focusRow(breakList, id, breakAdd);
-  });
-  spotForm.addEventListener("submit", (event) => void saveSpot(event));
-  breakForm.addEventListener("submit", (event) => void saveBreak(event));
+  spotAdd.addEventListener("click", () => openSpotForm(null, spotAdd));
+  breakAdd.addEventListener("click", () => openBreakForm(null, breakAdd));
   rulesForm.addEventListener("submit", (event) => void saveRules(event));
   reportForm.addEventListener("submit", (event) => void showReport(event));
   get("report-export").addEventListener("click", () => void exportReport());
   // A field the user changes is no longer marked as the bad one.
-  root.addEventListener("input", (event) => {
+  const clearInvalid = (event) => {
     const control = event.target;
     if (!control.getAttribute?.("aria-invalid")) return;
     const form = control.closest("form");
@@ -766,7 +753,10 @@ export function installAdsPanel({
       item.removeAttribute("aria-invalid");
       if (error) linkError(item, error, false);
     }
-  });
+  };
+  root.addEventListener("input", clearInvalid);
+  spotForm.addEventListener("input", clearInvalid);
+  breakForm.addEventListener("input", clearInvalid);
   if (typeof globalThis.MutationObserver === "function") {
     new globalThis.MutationObserver(() => {
       if (shown()) void refresh();
