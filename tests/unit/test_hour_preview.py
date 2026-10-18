@@ -1102,6 +1102,21 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     previews.get(source, 60)
     assert len(builds) == 8
 
+    details = SimpleNamespace(path="/library/liners/shared.wav")
+    intro = Item(
+        "intro", 1000, 4, "picked", asset_id="intro-a", label="Year 2000", details_entry=details
+    )
+    decided = replace(decided, items=(intro,))
+    previews.get(source, 60)
+    previews.get(source, 60)
+    assert len(builds) == 9
+    decided = replace(decided, items=(replace(intro, asset_id="intro-b"),))
+    previews.get(source, 60)
+    assert len(builds) == 10
+    decided = replace(decided, items=(replace(intro, asset_id="intro-b", label="Year 2001"),))
+    previews.get(source, 60)
+    assert len(builds) == 11
+
 
 def test_category_signature_does_not_hold_the_category_pick_lock(
     tmp_path: Path, monkeypatch

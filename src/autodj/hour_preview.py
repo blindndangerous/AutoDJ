@@ -225,7 +225,8 @@ class Decided:
                 if item.details_entry is not None
                 else item.asset_id or item.label
             )
-            parts.append(f"{item.kind}:{item.status}:{identity}")
+            intro_identity = repr((item.asset_id, item.label)) if item.kind == "intro" else ""
+            parts.append(f"{item.kind}:{item.status}:{identity}{intro_identity}")
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
         parts.append(f"speed:{self.speed_signature}")
         return "\n".join(parts)
