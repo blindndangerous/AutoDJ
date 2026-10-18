@@ -1544,12 +1544,7 @@ def _predict(
                 voice = (clip, cues, allow_outro)
                 return 0, speech_frames
 
-            points = player.saved_points(entry)
-            from autodj.player import _music_output_points
-
-            rendered_intro = player._add_intro(
-                intro, _music_output_points(points, music_rate(player, entry)), capture_voice
-            )
+            rendered_intro = player._add_intro(intro, capture_voice)
             if not rendered_intro:
                 found.append(
                     Item(
