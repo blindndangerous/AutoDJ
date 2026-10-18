@@ -16,7 +16,8 @@
 // Down arrows, which scroll the page on the other tabs and so only act
 // while Now Playing is showing.  Text fields and dropdowns keep all keys.
 //
-// Key conflicts: lowercase k = pause, uppercase K (Shift+K) = speak key.
+// Key conflicts: lowercase k = pause, lowercase t = open current Track info,
+// uppercase K (Shift+K) = speak key.
 // Lowercase n = skip, uppercase N (Shift+N) = speak next track.
 // Shift+L speaks the current lyric line; lowercase l is unused.
 // s/S and m/M are shuffle and mute in either case, so no status key may
@@ -230,7 +231,7 @@ function installBracketSeekToggle(checkbox) {
 const _pressed = new Set();
 
 export function installHotkeys({
-  btnSkip, btnShuffle, btnMute, volSlider,
+  btnSkip, btnShuffle, btnMute, btnTrackInfo, volSlider,
   seekDelta, getBpm,
   getTrack, getNextTrack, getRemaining, getLyricLine,
   getPosition, getQueue, getJobStatus,
@@ -324,6 +325,15 @@ export function installHotkeys({
       case "n":
         if (btnSkip) btnSkip.click();
         break;
+      case "t": {
+        const track = getTrack && getTrack();
+        if (!track?.path) {
+          srSpeak("No track currently playing");
+          break;
+        }
+        if (btnTrackInfo) btnTrackInfo.click();
+        break;
+      }
       case "s":
       case "S":
         if (btnShuffle) btnShuffle.click();
