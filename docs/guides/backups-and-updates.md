@@ -18,26 +18,26 @@ The archive does not include music files, recordings, external playlist files, d
 
 1. Install the same AutoDJ major and minor version that made the backup. A backup from 0.19.x restores on 0.19.x, for example.
 2. Stop AutoDJ and any library jobs started from another terminal. Restore refuses while AutoDJ is serving.
-3. Restore the archive with `autodj restore --force backups/night-owl.zip`. On a source checkout, use `./autodj restore --force backups/night-owl.zip` or `.\autodj.cmd restore --force backups\night-owl.zip` on Windows.
+3. First rehearse the restore in a new, isolated destination using the [PowerShell or Bash recovery procedure](core-operations.md#rehearse-recovery-into-a-new-destination). Restore with `autodj restore backups/night-owl.zip`; on a source checkout, use `./autodj restore backups/night-owl.zip` or `.\autodj.cmd restore backups\night-owl.zip` on Windows. Keep the default refusal to overwrite existing files.
 4. Restore your music, configuration files, external playlists, and secrets separately. Check that their paths still match the new computer.
 5. Run `autodj doctor`, then start AutoDJ. Re-pair browsers on a new machine. Set live DJ passwords again. Check a station's settings, queue, liners, and playback before discarding the archive.
 
-Restore with `--force` replaces files held in the archive. A station absent from the archive stays in place. Recordings stay outside the backup. If you use Docker, stop the Compose service before restoring and bring it back afterward. Run backup and restore against the same data mount.
+Only add `--force` when deliberately replacing known destination data after preserving its backup and configuration. It replaces files held in the archive. A station absent from the archive stays in place. Recordings stay outside the backup. If you use Docker, stop the Compose service before restoring and bring it back afterward. Run backup and restore against the same data mount.
 
 ## Update a source checkout
 
 1. Make a backup and stop AutoDJ.
 2. Check `git status --short`. Save local changes before switching versions.
-3. Fetch the release and switch to its tag, then update dependencies:
+3. Fetch the release and switch to its tag, then let launcher setup verify or adopt its runtime. Do not sync a GPU runtime against the CPU development lock:
 
 ```bash
 git fetch --tags origin
 git switch --detach vX.Y.Z
-uv sync --frozen --all-extras
-uv run autodj doctor
+./autodj setup
+./autodj doctor --no-fix
 ```
 
-Read the changes since your version in [CHANGELOG.md](../../CHANGELOG.md), especially removed settings. Start AutoDJ and confirm the version in the page footer. For a wheel installation, replace `X.Y.Z` with the new release and use either command in the same environment:
+On Windows, use `.\autodj.cmd setup` and `.\autodj.cmd doctor --no-fix`. The [core operations guide](core-operations.md#update-and-keep-a-rollback-path) gives both shell paths and rollback precautions. Read the changes since your version in [CHANGELOG.md](../../CHANGELOG.md), especially removed settings. Start AutoDJ and confirm the version in the page footer. For a wheel installation, replace `X.Y.Z` with the new release and use either command in the same environment:
 
 ```bash
 uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"

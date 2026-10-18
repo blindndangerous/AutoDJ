@@ -52,14 +52,14 @@ shows, intros, profiles and liners. Set those up again for the new station.
 ## Start and stop stations
 
 The **Stations on this server** table in Settings, Stations lists every station with what it is
-playing and how many people are listening. For a named station:
+playing and how many people are listening. For each station:
 
 - **Start with the server** sets whether it starts when AutoDJ starts.
-- **Start or stop** starts or stops it now.
+- **Start** or **Stop** starts or stops it now. Confirm **Stop station** to take it off air.
 
-The default station starts with the server. You can stop a named station and still select it
+The default station starts with the server. You can stop any station and still select it
 to edit its saved settings and content. Its stream is unavailable. Enabled public pages report
-that it is off air. The default station cannot be stopped separately from the server.
+that it is off air. Stopping one station leaves the server and other stations running.
 
 ## Switch which station the page controls
 

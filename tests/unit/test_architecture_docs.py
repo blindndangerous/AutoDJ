@@ -47,9 +47,9 @@ def _fixture(root: Path) -> None:
     )
 
 
-def _run(root: Path) -> subprocess.CompletedProcess[str]:
+def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(CHECKER), "--root", str(root)],
+        [sys.executable, str(CHECKER), "--root", str(root), *args],
         cwd=root,
         capture_output=True,
         text=True,
@@ -290,3 +290,63 @@ def test_orphan_annotations_are_found_in_all_native_test_paths(
     result = _run(tmp_path)
     assert result.returncode == 1
     assert "[test_annotation]" in result.stdout
+
+
+def test_untracked_candidate_check_is_explicit(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    _write(tmp_path, "docs/draft.md", "[Missing](missing.md)\n")
+    assert _run(tmp_path).returncode == 0
+    result = _run(tmp_path, "--include-untracked")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "[local_link]" in result.stdout
+
+
+def test_public_anchor_without_incoming_links_is_preserved(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    _write(tmp_path, "guide.md", "# Guide\n\n## Published heading\n")
+    _write(
+        tmp_path,
+        "tests/fixtures/documentation/public-anchors.json",
+        '{"guide.md": ["published-heading"]}\n',
+    )
+    assert _run(tmp_path).returncode == 0
+    _write(tmp_path, "guide.md", "# Guide\n\n## Renamed heading\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "[public_anchor]" in result.stdout
+
+
+def test_public_anchor_migration_destination_is_checked(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    _write(
+        tmp_path,
+        "guide.md",
+        "# Guide\n\n## Published heading\n\n[Read the procedure](destination.md#steps)\n",
+    )
+    _write(tmp_path, "destination.md", "# Destination\n\n## Steps\n")
+    _write(
+        tmp_path,
+        "tests/fixtures/documentation/public-anchors.json",
+        '{"guide.md": {"published-heading": "destination.md#steps"}}\n',
+    )
+    assert _run(tmp_path).returncode == 0
+    _write(tmp_path, "destination.md", "# Destination\n\n## Different\n")
+    result = _run(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "[local_anchor]" in result.stdout
+
+
+def test_public_destination_link_cannot_silently_disappear(tmp_path: Path) -> None:
+    _fixture(tmp_path)
+    _write(tmp_path, "guide.md", "# Guide\n\n## Published heading\n")
+    _write(tmp_path, "destination.md", "# Destination\n\n## Steps\n")
+    _write(
+        tmp_path,
+        "tests/fixtures/documentation/public-anchors.json",
+        '{"guide.md": {"published-heading": "destination.md#steps"}}\n',
+    )
+    result = _run(tmp_path)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "[public_destination]" in result.stdout

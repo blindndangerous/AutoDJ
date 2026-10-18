@@ -45,6 +45,69 @@ To run every pre-push check by hand, use
 
 If a pre-push check fails, fix the cause and push again rather than bypassing the hook.
 
+## Writing documentation
+
+Use [Diátaxis](https://diataxis.fr/start-here/) to choose a page's primary purpose:
+
+- **Tutorial:** teach through a guided experience. Put lessons in `docs/tutorials/`
+  and start from the [author template](docs/tutorials/author-template.md).
+- **How-to guide:** help someone complete a task. Keep the existing
+  `docs/guides/` pages direct, with prerequisites, steps, and a result to check.
+- **Reference:** describe facts readers need to look up, including possible
+  values, defaults, and plain explanations. Preserve consequential edge cases.
+- **Explanation:** build understanding of how and why things work. Link it from
+  procedures rather than interrupting steps with long background discussions.
+
+Small explanations can support a procedure. Link to another page when the reader's
+purpose changes. Use reader goals in navigation; folders need not mirror all four
+categories. Keep architectural decisions and their history in ADRs.
+
+For tutorials, state the starting state and learning outcome. Keep one named
+example throughout, introduce terms when they become useful, and give fully
+worked steps before independent practice. Pair checkpoints with observable
+results and recovery steps. End with a small change or prediction exercise and
+an answer the reader can check. Explain how to stop and what saved state remains.
+
+Write for keyboard and screen-reader use: use descriptive headings in order,
+exact control names, short steps, and text results that do not depend on color,
+position, or hearing audio alone. Prefer prose and lists where they suffice.
+Keep required steps and recovery advice in the reading flow. Link to the
+[keyboard guide](docs/guides/keyboard-and-screen-reader.md) for navigation detail.
+
+Check instructions against the UI and implementation. Run the documentation
+checker with `uv run --frozen --no-sync python scripts/check_architecture_docs.py`.
+Its normal mode excludes untracked drafts. Before staging new pages, also run
+`uv run --frozen --no-sync python scripts/check_architecture_docs.py --include-untracked`
+to check the candidate documentation, including new files. This is a structural
+link/contract check; it does not run app procedures or fetch external links.
+A tutorial needs a manual keyboard and screen-reader walkthrough before it is described as fully verified. Record the revision,
+operating system, browser, screen reader, date, results, and unresolved findings
+in the PR or linked issue. Check the rendered document's heading navigation and
+links as well as the app steps. Structural checks, browser automation, and manual
+review are separate evidence; identify anything not performed.
+
+Use the [documentation verification guide](docs/contributor/documentation-verification.md)
+for executable checks, native platform rehearsals, all thirteen tutorial walkthroughs,
+rendered-document review, content-preservation review, independent reader journeys
+and the evidence record. Keep pending platform and reader evidence explicit;
+source checks do not establish runtime or screen-reader results.
+
+The [tutorial roadmap](docs/tutorials/README.md) distinguishes available lessons
+from planned ones. Add a lesson link only when its file exists. Planned lessons
+need an outcome and prerequisites, not empty lesson files.
+
+Before a release, review the affected documentation against the release candidate:
+
+- Follow changed install, update and recovery commands, checking native PowerShell
+  and Bash differences where both are documented. Record commands actually run.
+- Check UI labels, CLI flags, defaults, dependencies and output-mode restrictions
+  against the candidate; update the [feature reference](docs/reference/feature-availability.md).
+- Check navigation and local links, including newly added pages; remove links to
+  unavailable procedures. Reconcile supported-version wording in [SECURITY.md](SECURITY.md)
+  when the release becomes the latest tag.
+- Record manual keyboard/screen-reader results and untested platforms separately
+  from structural checks. Carry unresolved user-facing limits into the release notes.
+
 ## Branching + commits
 
 Trunk-based. Cut a topic branch off `master`, push, open a PR. No
@@ -146,7 +209,8 @@ The maintainer cuts releases from `master`. For version `X.Y.Z`:
    else. Leave out fixes to changes that were never released.
    Update the link references at the bottom of the
    file.
-3. Record the manual screen-reader sample that
+3. Complete the documentation review in [Writing documentation](#writing-documentation).
+   Record the manual screen-reader sample that
    [Accessibility testing](docs/accessibility-testing.md) requires, and link it from the release
    notes.
 4. Commit, then check that the artifacts build: `uv build --sdist --wheel`.

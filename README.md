@@ -28,17 +28,14 @@ For a server or NAS, use the [Docker and NAS steps](docs/guides/install.md#docke
 
 ## Build your station
 
-- [Install AutoDJ](docs/guides/install.md) on Windows, Linux, macOS, Docker, or a NAS.
-- [Add your music](docs/guides/add-your-music.md) and decide whether to run advanced analysis.
-- [Build your sound](docs/guides/build-your-sound.md) with categories, clockwheels, repeat rules, and transitions.
-- [Plan a schedule](docs/guides/schedule.md) for shows, ads, announcements, and time checks.
-- [Go live](docs/guides/going-live.md) with a DJ, listener requests, and voice tracks.
-- [Stream and relay a station](docs/guides/streaming-and-relays.md) to listeners or a hosted server.
-- [Run several stations](docs/guides/several-stations.md) from one shared music library.
-- [Back up and update](docs/guides/backups-and-updates.md) a station.
-- [Use the keyboard and a screen reader](docs/guides/keyboard-and-screen-reader.md).
-- [Troubleshoot AutoDJ](docs/guides/troubleshooting.md) when setup, playback, or streaming fails.
-- [Look up settings](docs/settings-reference.md) for values, defaults, and the controls shown in the page.
+New to running a station? [Build your first station](docs/tutorials/first-station.md)
+is a guided lesson: hear a song, build a simple rotation, and check what happens
+when you queue a song. Install AutoDJ first.
+
+The [documentation home](docs/README.md) helps you choose a tutorial, complete a
+task, look up a setting, or understand AutoDJ. It also links to administration,
+troubleshooting, accessibility and contributor material. For further guided
+practice, choose from the [tutorials](docs/tutorials/README.md).
 
 Advanced analysis finds songs that sound alike and estimates key, energy, and tempo. Similarity picking and discovery use it. Without it, songs still play in queues, categories, and clockwheels; random and least recently played picking also work. Analysis can take hours on a large library, especially on a processor. You can start using the station before it finishes.
 

@@ -2,8 +2,10 @@
 
 ## Supported versions
 
-Only the latest tagged release on `master` receives security updates. The current supported line is
-`0.19.x`. Versions before 0.19 no longer receive security fixes.
+Only the latest tagged release on `master` receives security updates. As of
+2026-10-17, that release is **v0.21.0**, published on 2026-10-15. Earlier releases
+no longer receive security fixes. Check the [latest release](https://github.com/blindndangerous/AutoDJ/releases/latest)
+before reporting a version-specific problem; a newer tag replaces the supported release.
 
 ## Reporting a vulnerability
 

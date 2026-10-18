@@ -170,6 +170,16 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
       - run: npx --no-install playwright install --with-deps chromium firefox
+      - name: Check rendered documentation
+        shell: bash
+        env:
+          AUTODJ_BROWSERS: chromium,firefox
+        run: |
+          set -euo pipefail
+          uv run --frozen --no-sync python scripts/render_documentation.py \
+            --output "$RUNNER_TEMP/documentation-render" --write
+          node tests/playwright/documentation_audit.mjs \
+            "$RUNNER_TEMP/documentation-render" --write
       - name: Start empty-library server
         shell: bash
         run: |
@@ -207,8 +217,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          for pid_file in "$RUNNER_TEMP/autodj.pid"; do
-            test -f "$pid_file" || continue
+          pid_file="$RUNNER_TEMP/autodj.pid"
+          if test -f "$pid_file"; then
             server_pid=$(cat "$pid_file")
             kill "$server_pid" 2>/dev/null || true
             for _attempt in $(seq 1 10); do
@@ -216,7 +226,7 @@ jobs:
               sleep 1
             done
             kill -KILL "$server_pid" 2>/dev/null || true
-          done
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -224,6 +234,8 @@ jobs:
           path: |
             *_audit*.json
             ${{ runner.temp }}/autodj.log
+            ${{ runner.temp }}/documentation-render/manifest.json
+            ${{ runner.temp }}/documentation-render/report.json
 
   browser-stream:
     name: Browser assertions (stream, Chromium)
@@ -283,8 +295,8 @@ jobs:
         if: always()
         shell: bash
         run: |
-          for pid_file in "$RUNNER_TEMP/autodj-stream.pid"; do
-            test -f "$pid_file" || continue
+          pid_file="$RUNNER_TEMP/autodj-stream.pid"
+          if test -f "$pid_file"; then
             server_pid=$(cat "$pid_file")
             kill "$server_pid" 2>/dev/null || true
             for _attempt in $(seq 1 10); do
@@ -292,7 +304,7 @@ jobs:
               sleep 1
             done
             kill -KILL "$server_pid" 2>/dev/null || true
-          done
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
