@@ -417,3 +417,81 @@ def test_prepared_handoff_keeps_approved_leading_and_trailing_silence(tmp_path, 
     assert points["end"] == 3
     assert retained is audio
     assert spoken == [(0, take.take_id, 3 * SR)]
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_stopping_another_show_preserves_interrupted_edition_and_restart_marker(tmp_path, pending):
+    runner, _source, bridge, editions, station = setup(tmp_path)
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    interrupted = {
+        "id": "older",
+        "edition_id": "older",
+        "name": "Earlier edition",
+        "interrupted": True,
+        "resume_occurrence": "saved",
+    }
+    runner._interrupted = interrupted
+    if pending:
+        runner._on_air = None
+        runner._resume = {"name": "Unrelated ordinary Show"}
+    asyncio.run(runner.stop())
+    assert runner.status() == interrupted
+    restarted = ShowRunner(
+        bridge,
+        runner._store,
+        runner._publish,
+        state_path=tmp_path / "show_on_air.json",
+        edition_store=editions,
+        edition_station=station,
+    )
+    assert restarted.status() == interrupted
+    asyncio.run(restarted.stop())
+    assert restarted.status() is None
+
+
+def test_render_guard_validates_outside_settings_lock_and_rejects_settings_race(
+    tmp_path, monkeypatch
+):
+    from contextlib import contextmanager
+
+    runner, source, _, editions, _ = setup(tmp_path)
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    token = runner.prepared_render_token()
+    held = False
+    race_at_commit = False
+
+    @contextmanager
+    def settings():
+        nonlocal held
+        if race_at_commit:
+            source.player._cfg.playback.crossfade_seconds += 1
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    original = editions.runtime_plan
+    changed = False
+
+    def plan(*args, **kwargs):
+        assert not held, "file validation must not hold the process-wide settings lock"
+        value = original(*args, **kwargs)
+        if changed:
+            source.player._cfg.playback.crossfade_seconds += 1
+        return value
+
+    monkeypatch.setattr(source.player, "settings_lock", settings(), raising=False)
+    monkeypatch.setattr(editions, "runtime_plan", plan)
+    with runner.prepared_render_guard(token) as valid:
+        assert held and valid
+    changed = True
+    monkeypatch.setattr(source.player, "settings_lock", settings())
+    with runner.prepared_render_guard(token) as valid:
+        assert not valid
+    changed = False
+    token = runner.prepared_render_token()
+    race_at_commit = True
+    monkeypatch.setattr(source.player, "settings_lock", settings())
+    with runner.prepared_render_guard(token) as valid:
+        assert not valid

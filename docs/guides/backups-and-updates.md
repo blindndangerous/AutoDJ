@@ -55,7 +55,7 @@ On first start, the current catalog's older layout moves into shared and station
 
 Prepared editions and their source recordings are included in normal backups.
 Their derived programme-review files are excluded; download exports that need
-independent retention. See [edition retention](../operations.md#retention-and-backup).
+independent retention. See [edition retention](operations/prepared-editions.md#retention-and-backup).
 
 ## Uninstall
 

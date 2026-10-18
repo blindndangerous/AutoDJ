@@ -999,8 +999,18 @@ class ShowRunner:
         from autodj.player import settings_lock
 
         lock = getattr(self._edition_store, "_lock", contextlib.nullcontext())
-        with lock, settings_lock(self._bridge.player):
-            yield token == self.prepared_render_token()
+        cfg = self._bridge.player._cfg
+        with lock:
+            settings = repr((cfg.playback, cfg.breaks, cfg.replaygain))
+            validated = self.prepared_render_token()
+            # Only in-memory comparisons and the caller's bus swap hold the
+            # process-wide settings lock; validation above may read large files.
+            with settings_lock(self._bridge.player):
+                yield (
+                    token == validated
+                    and cfg is self._bridge.player._cfg
+                    and settings == repr((cfg.playback, cfg.breaks, cfg.replaygain))
+                )
 
     def prepared_editable(self, edition_id: str) -> bool:
         """Edits cannot retract a prepared voice already committed to the bus."""
@@ -1474,16 +1484,18 @@ class ShowRunner:
         """
         async with self._turn:
             with self._state_lock:
-                interrupted, self._interrupted = self._interrupted, None
+                interrupted = self._interrupted
                 air = self._on_air
                 saved, self._resume = self._resume, None
+                if air is None and saved is None:
+                    self._interrupted = None
             if air is None:
                 if saved is None:
                     if interrupted is not None:
                         await asyncio.to_thread(self._forget_state)
                         return {"name": interrupted["name"], "done": True}
                     return None
-                await asyncio.to_thread(self._forget_state)
+                await asyncio.to_thread(self._write_state, None)
                 logger.info("Show %r will not resume: stopped by the operator", saved["name"])
                 await self._publish()
                 return {"name": str(saved["name"]), "done": True}

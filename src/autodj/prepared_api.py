@@ -14,7 +14,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
-from autodj.breaks_api import decode_gate
+from autodj.breaks_api import BODY_DEADLINE_SECONDS, MIN_BODY_BYTES_PER_SECOND, decode_gate
 from autodj.prepared_editions import (
     ID,
     MAX_UPLOAD_BYTES,
@@ -120,10 +120,11 @@ def _view(station: Any, edition: Edition) -> dict[str, Any]:
         )
         row["missing"] = entry is None if item.kind == "song" else asset is None
         estimate += row["seconds"]
+    hashes: dict[Path, str] = {}
     for take, row in zip(edition.takes, value["takes"], strict=True):
-        row["status"] = store.take_status(edition, take, station)
+        row["status"] = store.take_status(edition, take, station, hashes=hashes)
         try:
-            row["dependency_hash"] = relevant_signature(edition, take, station)
+            row["dependency_hash"] = relevant_signature(edition, take, station, hashes=hashes)
         except (ValueError, OSError):
             row["dependency_hash"] = None
         if take.position != "segment":
@@ -261,7 +262,10 @@ def install_prepared(
         with tempfile.TemporaryDirectory(prefix=".upload-", dir=store.audio) as scratch:
             source = Path(scratch) / f"source{suffix}"
             try:
-                async with asyncio.timeout(120):
+                size = int(declared) if declared else MAX_UPLOAD_BYTES
+                async with asyncio.timeout(
+                    BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND
+                ):
                     total = 0
                     with source.open("wb") as output:
                         async for chunk in request.stream():

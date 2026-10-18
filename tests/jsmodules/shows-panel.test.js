@@ -367,7 +367,7 @@ describe("editing a list", () => {
     const server = await open();
     await openList(server);
     byId("shows-close").click();
-    expect(byId("shows-editor").hidden).toBe(true);
+    await vi.waitFor(() => expect(byId("shows-editor").hidden).toBe(true));
     expect(document.activeElement).toBe(rowButton(0, "open"));
   });
 });

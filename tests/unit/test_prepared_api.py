@@ -1,5 +1,6 @@
 """Stopped-station edition production and trusted review approval over real routes."""
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -280,3 +281,53 @@ def test_start_route_queues_and_resumes_real_runner_on_both_station_aliases(tmp_
             refused.status_code == 409 and "server audio or streaming" in refused.json()["detail"]
         )
         assert source.player._state.queue == []
+
+
+@pytest.mark.parametrize("known_size", [True, False])
+def test_upload_deadline_scales_with_body_and_excludes_decode(tmp_path, monkeypatch, known_size):
+    import contextlib
+
+    import autodj.prepared_api as module
+    from autodj.breaks_api import BODY_DEADLINE_SECONDS, MIN_BODY_BYTES_PER_SECOND
+
+    client, station, show_id, _, _ = production(tmp_path)
+    edition = client.post("/api/editions", json={"show_id": show_id}).json()
+    body = voice(tmp_path).read_bytes()
+    deadlines = []
+    active = False
+    timeout = module.asyncio.timeout
+
+    @contextlib.asynccontextmanager
+    async def tracked(seconds):
+        nonlocal active
+        deadlines.append(seconds)
+        async with timeout(seconds):
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+
+    store = edition_store(station)
+    original = store.import_take
+
+    def decode(*args, **kwargs):
+        assert not active, "body deadline must not include decoding"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module.asyncio, "timeout", tracked)
+    monkeypatch.setattr(store, "import_take", decode)
+    response = client.post(
+        f"/api/editions/{edition['id']}/takes",
+        params={
+            "expected_revision": edition["revision"],
+            "filename": "voice.wav",
+            "position": "opening",
+            "after_id": edition["occurrences"][0]["id"],
+        },
+        content=body,
+        headers={} if known_size else {"content-length": ""},
+    )
+    assert response.status_code == 201, response.text
+    size = len(body) if known_size else module.MAX_UPLOAD_BYTES
+    assert deadlines == [BODY_DEADLINE_SECONDS + size / MIN_BODY_BYTES_PER_SECOND]

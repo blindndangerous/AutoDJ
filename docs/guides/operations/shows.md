@@ -117,3 +117,5 @@ the show's name, taking no time, as on the air.
 - [Matched intro, ad and show APIs and storage](../../reference/operations/station-content-api.md)
 - [Schedule timed station events](scheduler.md)
 - [Test rotation and preview an hour](rotation-preview.md)
+
+For production-specific speech, follow [Prepared show editions](prepared-editions.md).

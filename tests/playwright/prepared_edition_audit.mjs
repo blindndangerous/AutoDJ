@@ -90,6 +90,39 @@ try {
   assert.equal(asset.status(), 200);
   assert.equal((await asset.body()).subarray(0, 4).toString(), "RIFF");
   report.steps.push("import real WAV, listen through native audio, retrieve source asset; audition never approves");
+  // Stub only microphone capture; exercise the production recording/dialog UI.
+  await page.evaluate((bytes) => {
+    navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+    window.MediaRecorder = class extends window.EventTarget {
+      mimeType = "audio/wav";
+      start() {}
+      stop() {
+        const event = new Event("dataavailable");
+        event.data = new window.Blob([new Uint8Array(bytes)], { type: "audio/wav" });
+        this.dispatchEvent(event); this.dispatchEvent(new Event("stop"));
+      }
+    };
+  }, [...source]);
+  await page.locator("#edition-record").click();
+  await expect(page.locator("#edition-record")).toHaveText("Stop recording");
+  await page.locator("#edition-record").click();
+  await expect(page.locator("#edition-save-take")).toBeEnabled();
+  await page.locator("#edition-takes button[data-action='listen']").click();
+  await expect(page.locator("#edition-save-take")).toBeEnabled();
+  await page.locator("#edition-takes button[data-action='rerecord']").click();
+  await expect(page.locator("#confirm-title")).toHaveText("Discard unsaved recording?");
+  await expect(page.locator("#confirm-cancel")).toBeFocused();
+  await page.locator("#confirm-cancel").click();
+  await expect(page.locator("#edition-save-take")).toBeEnabled();
+  await page.locator("#shows-close").click();
+  await expect(page.locator("#confirm-dialog")).toBeVisible();
+  await page.locator("#confirm-cancel").click();
+  await expect(page.locator("#edition-editor")).toBeVisible();
+  await expect(page.locator("#edition-save-take")).toBeEnabled();
+  await page.locator("#edition-discard").click();
+  await page.locator("#confirm-accept").click();
+  await expect(page.locator("#edition-save-take")).toBeDisabled();
+  report.steps.push("synthetic recording survives saved-take listening and cancelled re-record/Close show; explicit discard confirms with safe focus");
   await page.locator("#edition-takes button[data-action='review']").click();
   await expect(page.locator("#review-status")).toContainText("Review ready", { timeout: 20000 });
   await expect(page.locator("#review-summary")).toContainText("Pending speech included");
@@ -117,6 +150,7 @@ try {
   await page.locator("#edition-save-name").click();
   await expect(page.locator("#edition-status")).toContainText("reload");
   await expect(page.locator("#edition-load")).toBeFocused();
+  await expect(page.locator("#edition-load")).not.toHaveAttribute("aria-invalid");
   assert.equal((await view()).name, "External edition edit");
   await page.locator("#edition-load").click();
   await expect(page.locator("#edition-name")).toHaveValue("External edition edit");

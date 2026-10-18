@@ -116,7 +116,7 @@ Station backup includes these source assets and edition state, while downloaded
 review exports must be retained separately.
 
 This lesson ends before scheduling or starting the edition. You can now prepare
-speech independently of playout. Follow [Prepared show editions](../operations.md#prepared-show-editions)
+speech independently of playout. Follow [Prepared show editions](../guides/operations/prepared-editions.md)
 for scheduling, re-air confirmation, explicit interrupted-run resume and importing
 standalone interviews up to 30:00. An interview's approval review must retain its
 full target, even above the ordinary five-minute shortening threshold.

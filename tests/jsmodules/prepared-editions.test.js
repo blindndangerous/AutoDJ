@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { installIndexMarkup } from "./helpers.js";
 import { installPreparedEditions } from "../../src/autodj/static/modules/prepared-editions.js";
@@ -26,7 +27,11 @@ function harness(options = {}) {
   return { request, controls, say };
 }
 beforeEach(() => { installIndexMarkup(); document.getElementById("panel-library").hidden = false; });
-afterEach(() => { for (const controls of installed.splice(0)) controls.destroy(); });
+afterEach(async () => {
+  for (const controls of installed.splice(0)) controls.destroy();
+  // Let HappyDOM release WeakRef targets between full-page fixtures.
+  await setImmediate();
+});
 
 it("loads editions separately from the reusable show and preserves occurrence identities on reorder", async () => {
   const { controls, request } = harness();
@@ -238,4 +243,113 @@ it("shows interrupted run state and waits for explicit resumption", async () => 
   expect(get("run-status").textContent).toBe("Interrupted. Choose an item and explicitly resume.");
   expect([...get("resume-item").options].map((item) => item.value)).toEqual(["first", "second"]);
   expect(request.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(false);
+});
+
+it("keeps an unsaved recording when listening and confirms before replacing it", async () => {
+  class Recorder extends EventTarget {
+    mimeType = "audio/webm";
+    start() {}
+    stop() {
+      const event = new Event("dataavailable"); event.data = new Blob(["voice"]);
+      this.dispatchEvent(event); this.dispatchEvent(new Event("stop"));
+    }
+  }
+  const value = { ...edition, takes: [take], assets: { asset: { id: "asset", seconds: 8 } } };
+  const request = vi.fn(async (url) => url.includes("?") ? { editions: [value] } : value);
+  const confirm = vi.fn(async () => false), revokeUrl = vi.fn();
+  const { controls } = harness({ request, confirm, revokeUrl, objectUrl: () => "blob:unsaved",
+    media: () => ({ getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) }),
+    Recorder: () => Recorder });
+  await controls.openShow(show); get("load").click(); await settle();
+  get("record").click(); await settle(); get("record").click(); await settle();
+  expect(get("save-take").disabled).toBe(false);
+  get("takes").querySelector("[data-action='listen']").click(); await settle();
+  expect(revokeUrl).not.toHaveBeenCalled();
+  expect(get("save-take").disabled).toBe(false);
+  get("takes").querySelector("[data-action='rerecord']").click(); await settle();
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(get("save-take").disabled).toBe(false);
+  expect(revokeUrl).not.toHaveBeenCalled();
+  confirm.mockResolvedValue(true);
+  get("takes").querySelector("[data-action='rerecord']").click(); await settle();
+  expect(revokeUrl).toHaveBeenCalledWith("blob:unsaved");
+  expect(get("save-take").disabled).toBe(true);
+});
+
+it("starts resume choices at the saved occurrence, preserves a choice and refuses a missing one", async () => {
+  let value = { ...edition, run: { interrupted: true, resume_occurrence: "second" } };
+  const request = vi.fn(async (url) => url.includes("?") ? { editions: [value] } : value);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  expect(get("resume-item").value).toBe("second");
+  get("resume-item").value = "first";
+  get("save-name").click(); await settle();
+  expect(get("resume-item").value).toBe("first");
+  value = { ...value, occurrences: [edition.occurrences[1]] };
+  get("load").click(); await settle();
+  expect(get("resume-item").selectedIndex).toBe(-1);
+  get("resume").click(); await settle();
+  expect(request.mock.calls.some(([url]) => url.endsWith("/start"))).toBe(false);
+});
+
+it("focuses Open edition on a stale save without invalid-state markup on the button", async () => {
+  const { controls, request } = harness();
+  await controls.openShow(show); get("load").click(); await settle();
+  request.mockRejectedValueOnce(Object.assign(new Error("Edition changed"), { status: 409 }));
+  get("save-name").click(); await settle();
+  expect(document.activeElement).toBe(get("load"));
+  expect(get("load").hasAttribute("aria-invalid")).toBe(false);
+});
+
+it.each(["record", "load", "create", "import", "discard", "switch Show"])("cancelling %s keeps the unsaved recording and performs no replacement", async (action) => {
+  class Recorder extends EventTarget {
+    mimeType = "audio/webm";
+    start() {}
+    stop() {
+      const event = new Event("dataavailable"); event.data = new Blob(["voice"]);
+      this.dispatchEvent(event); this.dispatchEvent(new Event("stop"));
+    }
+  }
+  const confirm = vi.fn(async () => false), revokeUrl = vi.fn();
+  const media = vi.fn(async () => ({ getTracks: () => [{ stop() {} }] }));
+  const { controls, request } = harness({ confirm, revokeUrl, objectUrl: () => "blob:unsaved",
+    media: () => ({ getUserMedia: media }), Recorder: () => Recorder });
+  await controls.openShow(show); get("load").click(); await settle();
+  get("record").click(); await settle(); get("record").click(); await settle();
+  Object.defineProperty(get("file"), "files", { value: [new File(["replacement"], "take.wav")] });
+  request.mockClear();
+  if (action === "switch Show") await controls.openShow({ ...show, id: "other-show" });
+  else get(action).click();
+  await settle();
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(request).not.toHaveBeenCalled();
+  expect(media).toHaveBeenCalledOnce();
+  expect(get("save-take").disabled).toBe(false);
+  expect(get("audio").getAttribute("src")).toBe("blob:unsaved");
+  expect(revokeUrl).not.toHaveBeenCalled();
+});
+
+
+it("refreshes the started edition rather than a different dropdown selection", async () => {
+  const other = { ...edition, id: "other", name: "Other edition" };
+  const request = vi.fn(async (url) => {
+    if (url.includes("?")) return { editions: [edition, other] };
+    return url === "/api/editions/other" ? other : edition;
+  });
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  get("list").value = other.id;
+  get("start").click(); await settle();
+  expect(get("name").value).toBe(edition.name);
+  expect(request.mock.calls.some(([url]) => url === "/api/editions/other")).toBe(false);
+});
+
+it("reports a superseded Show open so the parent editor cannot apply stale context", async () => {
+  const replies = new Map();
+  const request = vi.fn((url) => new Promise((done) => replies.set(new URL(url, "http://test").searchParams.get("show_id"), done)));
+  const { controls } = harness({ request });
+  const first = controls.openShow({ ...show, id: "older" }); await settle();
+  const second = controls.openShow({ ...show, id: "newer" }); await settle();
+  replies.get("newer")({ editions: [] }); expect(await second).toBe(true);
+  replies.get("older")({ editions: [] }); expect(await first).toBe(false);
 });

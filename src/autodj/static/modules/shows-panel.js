@@ -367,6 +367,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const show = byId(id);
     if (!show) return;
     const index = data.shows.indexOf(show);
+    if (open?.id === id && !await editions.confirmLeave()) return;
     const events = show.events || [];
     let done = false;
     await confirmAction(doc, {
@@ -533,10 +534,10 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     try {
       const show = await request(url(id));
       if (!current(epoch, mine)) return;
+      if (await editions.openShow(show, { refresh: false }) === false || !current(epoch, mine)) return;
       songsSignature = "";
       results.replaceChildren();
       applyOpen(show);
-      void editions.openShow(show, { refresh: false });
       editor.hidden = false;
       el("shows-editor-heading")?.focus();
       say(`Opened ${show.name}. ${summaryText(show)}`);
@@ -788,8 +789,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   selectOnFocus(searchInput);
   el("shows-play-now")?.addEventListener("click", () => void startNow());
   stopButton?.addEventListener("click", () => void stopShow());
-  el("shows-close")?.addEventListener("click", () => {
-    const id = open?.id;
+  el("shows-close")?.addEventListener("click", async () => {
+    const id = open?.id, epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    if (!await editions.confirmLeave() || !current(epoch, mine)) return;
     closeEditor();
     ((id && rowFor(id)) || addButton).focus();
   });

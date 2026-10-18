@@ -26,7 +26,7 @@ review generation does not start or schedule the show.
 For production-specific recordings, expand **Prepared editions** inside the show
 list. Record or import speech while stopped, review each pending take in context,
 and approve explicitly before airing. Schedule the production through **Play a
-show**. See [Prepared show editions](../operations.md#prepared-show-editions) for
+show**. See [Prepared show editions](operations/prepared-editions.md) for
 recording, approval, re-air warnings and explicit interrupted-edition resumption.
 
 ## Schedule music, liners, and announcements

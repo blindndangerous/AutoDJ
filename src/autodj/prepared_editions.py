@@ -165,6 +165,12 @@ def _hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _content_hash(path: Path, hashes: dict[Path, str]) -> str:
+    if path not in hashes:
+        hashes[path] = _hash(path)
+    return hashes[path]
+
+
 def _bound(edition: Edition, take: Take) -> tuple[Occurrence, ...]:
     rows = edition.occurrences
     by_id = {row.id: index for index, row in enumerate(rows)}
@@ -196,10 +202,14 @@ def _bound(edition: Edition, take: Take) -> tuple[Occurrence, ...]:
     return tuple(selected)
 
 
-def relevant_signature(edition: Edition, take: Take, station: Any) -> str:
+def relevant_signature(
+    edition: Edition, take: Take, station: Any, *, hashes: dict[Path, str] | None = None
+) -> str:
     """Only the reviewed take, its neighbours and effective rendering inputs."""
     from autodj.review_render import _Metadata
 
+    if hashes is None:
+        hashes = {}
     rows = _bound(edition, take)
     library = station.bridge.library
     entries = [SimpleNamespace(path=row.path) for row in rows if row.kind == "song"]
@@ -213,7 +223,11 @@ def relevant_signature(edition: Edition, take: Take, station: Any) -> str:
             if asset is None:
                 raise EditionError("Adjacent segment audio is missing or invalid")
             source = Path(station.paths.edition_audio) / asset.file
-            if not source.is_file() or source.is_symlink() or _hash(source) != asset.sha256:
+            if (
+                not source.is_file()
+                or source.is_symlink()
+                or _content_hash(source, hashes) != asset.sha256
+            ):
                 raise EditionError("Adjacent segment audio is missing or invalid")
             dependencies.append((row.id, "segment", asset.sha256))
             continue
@@ -229,12 +243,12 @@ def relevant_signature(edition: Edition, take: Take, station: Any) -> str:
             (
                 row.id,
                 row.path,
-                _hash(path),
+                _content_hash(path, hashes),
                 library.catalog.points(row.path),
                 asdict(metadata.get(row.path)),
                 tuple(record.get(name) for name in ("kind", "loudness", "intro_lift_db")),
                 tuple(getattr(entry, name, None) for name in ("length", "bpm", "key", "mode")),
-                _hash(lyrics) if lyrics.is_file() else None,
+                _content_hash(lyrics, hashes) if lyrics.is_file() else None,
             )
         )
     playback = station.cfg.playback
@@ -265,7 +279,7 @@ def relevant_signature(edition: Edition, take: Take, station: Any) -> str:
     )
     asset = edition.assets[take.asset_id]
     source = Path(station.paths.edition_audio) / asset.file
-    if not source.is_file() or source.is_symlink() or _hash(source) != asset.sha256:
+    if not source.is_file() or source.is_symlink() or _content_hash(source, hashes) != asset.sha256:
         raise EditionError("The take audio is missing or invalid")
     value = (
         take.asset_id,
@@ -289,7 +303,7 @@ class EditionStore:
 
     def _read(self) -> dict[str, Edition]:
         try:
-            data = _File.model_validate_json(self.path.read_text())
+            data = _File.model_validate_json(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except ValueError as exc:
@@ -552,16 +566,20 @@ class EditionStore:
                     destination.unlink(missing_ok=True)
                 raise
 
-    def take_status(self, edition: Edition, take: Take, station: Any) -> str:
+    def take_status(
+        self, edition: Edition, take: Take, station: Any, *, hashes: dict[Path, str] | None = None
+    ) -> str:
+        if hashes is None:
+            hashes = {}
         asset = edition.assets.get(take.asset_id)
         if asset is None or not (self.audio / asset.file).is_file():
             return "missing"
         try:
-            if (self.audio / asset.file).is_symlink() or _hash(
-                self.audio / asset.file
+            if (self.audio / asset.file).is_symlink() or _content_hash(
+                self.audio / asset.file, hashes
             ) != asset.sha256:
                 return "invalid"
-            signature = relevant_signature(edition, take, station)
+            signature = relevant_signature(edition, take, station, hashes=hashes)
         except (EditionError, OSError, ValueError):
             return "needs_review"
         return (
@@ -670,8 +688,9 @@ class EditionStore:
         valid_ids = {row.id for row in selected}
         omissions: list[str] = []
         available: dict[str, PreparedSpeech] = {}
+        hashes: dict[Path, str] = {}
         for take in edition.takes:
-            status = self.take_status(edition, take, station)
+            status = self.take_status(edition, take, station, hashes=hashes)
             try:
                 _bound(edition, take)
             except EditionError:

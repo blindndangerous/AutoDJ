@@ -18,6 +18,7 @@ source recordings, approval, backup, scheduling and interrupted-run recovery.
 review and export; this feature consumes that engine rather than defining another
 mixer or review service. The OVC base is [PR 450](https://github.com/blindndangerous/AutoDJ/pull/450).
 Contributor-visible G05 requirements and verification belong in its separate PR.
+Operational steps are in [Prepared show editions](../guides/operations/prepared-editions.md).
 The optional execution bead is `autodj-44r`.
 
 Accepted [ADR 4](0004-server-mix-bus-and-stream-mode.md),

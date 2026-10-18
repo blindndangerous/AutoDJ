@@ -234,3 +234,47 @@ def test_persisted_duplicate_binding_is_invalid_and_never_overwritten(tmp_path):
     with pytest.raises(EditionError, match="state is invalid"):
         store.get(edition.id)
     assert store.path.read_bytes() == original
+
+
+def test_manifest_is_utf8_even_when_platform_default_is_cp1252(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    _station, store, edition, _ = edition_store(tmp_path)
+    edition = store.edit(edition.id, edition.revision, name="Ángel Café")
+    read_text = Path.read_text
+
+    def local_read(path, encoding=None, *args, **kwargs):
+        return read_text(path, encoding or "cp1252", *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", local_read)
+    assert store.get(edition.id).name == "Ángel Café"
+    assert store.edit(edition.id, edition.revision, name="Édition").name == "Édition"
+
+
+def test_runtime_validation_hashes_each_source_once_but_rechecks_next_pass(tmp_path, monkeypatch):
+    import os
+    from collections import Counter
+
+    import autodj.prepared_editions as module
+
+    station, store, edition, _ = edition_store(tmp_path)
+    edition = add_take(station, store, edition, tmp_path)
+    take = edition.takes[0]
+    edition = store.approve(edition.id, take.id, receipt(station, store, edition, take), station)
+    calls = Counter()
+    original = module._hash
+
+    def counted(path):
+        calls[path] += 1
+        return original(path)
+
+    monkeypatch.setattr(module, "_hash", counted)
+    assert store.runtime_plan(edition.id, station).handoffs
+    assert max(calls.values()) == 1
+    path = store.audio / edition.assets[take.asset_id].file
+    stamp = path.stat()
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 1
+    path.write_bytes(data)
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    assert not store.runtime_plan(edition.id, station).handoffs

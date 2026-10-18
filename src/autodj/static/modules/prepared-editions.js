@@ -20,7 +20,7 @@ export function installPreparedEditions({
 } = {}) {
   const get = (id) => doc.getElementById(`edition-${id}`);
   const root = get("card"), panel = doc.getElementById("panel-library");
-  if (!root) return { openShow: async () => {}, clear() {}, active: () => false, addSong: async () => {}, destroy() {} };
+  if (!root) return { openShow: async () => {}, confirmLeave: async () => true, clear() {}, active: () => false, addSong: async () => {}, destroy() {} };
   let show = null, edition = null, generation = 0, recording = null, starting = false, localTake = null;
   let busy = false, rerecord = null, timer = null, clock = null;
   let loadNumber = 0, refreshNumber = 0;
@@ -40,7 +40,10 @@ export function installPreparedEditions({
   });
   function fail(error, ticket, control = null) {
     if (!current(ticket)) return;
-    if (control) { control.setAttribute("aria-invalid", "true"); control.focus(); }
+    if (control) {
+      if (control.matches("input, select, textarea")) control.setAttribute("aria-invalid", "true");
+      control.focus();
+    }
     say(error.message || "The edition request failed. Reload the edition and try again.");
   }
   function button(action, label, handler) {
@@ -64,6 +67,14 @@ export function installPreparedEditions({
   function dropLocal() {
     if (localTake) { revokeUrl(localTake.url); localTake = null; }
     get("save-take").disabled = true;
+  }
+  async function confirmRecordingReplacement() {
+    if (!localTake && !recording && !starting) return true;
+    const ticket = context(), take = localTake;
+    const accepted = await confirm({ title: "Discard unsaved recording?",
+      message: "This action will discard the local recording. Save recording first if you want to keep it. Saved takes are unchanged.",
+      confirmLabel: "Discard recording" });
+    return accepted && current(ticket) && localTake === take;
   }
   function release(session) {
     if (session.released) return;
@@ -111,6 +122,9 @@ export function installPreparedEditions({
     get("insert-row").hidden = get("position").value !== "segment";
   }
   function render(value) {
+    const sameEdition = edition?.id === value.id;
+    const hadResumeChoice = sameEdition && get("resume-item").options.length > 0;
+    const resumeChoice = hadResumeChoice ? get("resume-item").value : value.run?.resume_occurrence;
     edition = value;
     root.querySelectorAll("[aria-invalid]").forEach((control) => control.removeAttribute("aria-invalid"));
     for (const [id, receipt] of receipts) {
@@ -158,7 +172,8 @@ export function installPreparedEditions({
     if ([...get("insert").options].some((item) => item.value === insert)) get("insert").value = insert;
     else get("insert").selectedIndex = get("insert").options.length - 1;
     get("resume-item").replaceChildren(...edition.occurrences.map((item, index) => option(item.id, `${index + 1}. ${label(item, index)}`)));
-    get("resume-item").selectedIndex = edition.occurrences.length ? 0 : -1;
+    if (resumeChoice && edition.occurrences.some((item) => item.id === resumeChoice)) get("resume-item").value = resumeChoice;
+    else get("resume-item").selectedIndex = hadResumeChoice || run?.interrupted || resumeChoice ? -1 : edition.occurrences.length ? 0 : -1;
     renderTakes(); positions(); onChange();
   }
   function renderTakes() {
@@ -177,9 +192,10 @@ export function installPreparedEditions({
       li.dataset.takeId = take.id;
       text.textContent = `${description}. ${take.status === "needs_review" ? "Needs review" : take.status}.`;
       const listen = button("listen", "Listen to take", () => {
-        stopAudio(); dropLocal(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
+        stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
       });
-      const record = button("rerecord", "Re-record", () => {
+      const record = button("rerecord", "Re-record", async () => {
+        if (!await confirmRecordingReplacement()) return;
         stopRecording(true); dropLocal(); rerecord = take; get("position").value = take.position;
         get("placement").value = take.placement || "auto"; get("allow-outro").checked = Boolean(take.allow_outro);
         const index = edition.occurrences.findIndex((item) => item.id === take.before_id);
@@ -257,14 +273,17 @@ export function installPreparedEditions({
       else get("list").selectedIndex = value.editions.length ? 0 : -1;
     } catch (error) { if (number === refreshNumber) fail(error, ticket); }
   }
-  async function load() {
-    const id = get("list").value; if (!id) return;
+  async function load({ preserveRecording = false } = {}) {
+    const id = preserveRecording ? edition?.id : get("list").value; if (!id) return;
+    if (!preserveRecording && !await confirmRecordingReplacement()) return;
     const ticket = context(), number = ++loadNumber;
     try {
       const value = await request(`/api/editions/${encodeURIComponent(id)}`);
       if (!current(ticket) || number !== loadNumber) return;
       if (edition?.id !== value.id) { generation += 1; busy = false; receipts.clear(); requested.clear(); }
-      starting = false; stopRecording(true); stopAudio(); dropLocal(); rerecord = null;
+      if (!preserveRecording) {
+        starting = false; stopRecording(true); stopAudio(); dropLocal(); rerecord = null;
+      }
       render(value); get("heading").focus(); say(`Opened ${value.name}.`);
     } catch (error) { if (number === loadNumber) fail(error, ticket); }
   }
@@ -277,6 +296,7 @@ export function installPreparedEditions({
     if (globalThis.isSecureContext === false) { say(INSECURE_TEXT); return; }
     const devices = media(), Rec = Recorder();
     if (typeof devices?.getUserMedia !== "function" || typeof Rec !== "function") { say(NO_RECORDER_TEXT); return; }
+    if (!await confirmRecordingReplacement() || starting || recording) return;
     starting = true;
     let stream;
     try { stream = await devices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); }
@@ -316,11 +336,14 @@ export function installPreparedEditions({
   async function start(resume = false, now = false) {
     if (!edition) return;
     const ticket = context();
+    if (resume && !get("resume-item").value) {
+      fail(new Error("Choose an occurrence to resume this edition."), ticket, get("resume-item")); return;
+    }
     const confirmed = !edition.previously_started || await confirm({ title: "Air this edition again?", message: "This edition has started before. Its speech may refer to an earlier date.", confirmLabel: "Air again" });
     if (!current(ticket) || !confirmed) return;
     try {
       await send(endpoint("/start"), "POST", { now, confirm_reair: Boolean(edition.previously_started), from_occurrence: resume ? get("resume-item").value : null });
-      if (current(ticket)) { say(resume ? "Explicit edition resumption requested." : "Edition start requested."); await load(); }
+      if (current(ticket)) { say(resume ? "Explicit edition resumption requested." : "Edition start requested."); await load({ preserveRecording: true }); }
     } catch (error) { fail(error, ticket); }
   }
   async function schedule() {
@@ -349,7 +372,7 @@ export function installPreparedEditions({
   get("refresh").addEventListener("click", () => void refresh());
   get("load").addEventListener("click", () => void load());
   get("create").addEventListener("click", () => void withDisabled(get("create"), async () => {
-    if (!show) return; const ticket = context();
+    if (!show || !await confirmRecordingReplacement()) return; const ticket = context();
     try {
       const value = await send("/api/editions", "POST", { show_id: show.id, name: get("new-name").value.trim() || undefined });
       if (current(ticket)) {
@@ -385,9 +408,10 @@ export function installPreparedEditions({
   get("import").addEventListener("click", () => void withDisabled(get("import"), async () => {
     const ticket = context(), file = get("file").files?.[0];
     if (!file) { fail(new Error("Choose an audio file to import."), ticket, get("file")); return; }
+    if (!await confirmRecordingReplacement()) return;
     try { await upload(file, binding(), file.name, get("file")); } catch (error) { fail(error, ticket); }
   }));
-  get("discard").addEventListener("click", () => { stopRecording(true); stopAudio(); dropLocal(); rerecord = null; say("Local recording discarded; saved takes are unchanged."); });
+  get("discard").addEventListener("click", async () => { if (!await confirmRecordingReplacement()) return; stopRecording(true); stopAudio(); dropLocal(); rerecord = null; say("Local recording discarded; saved takes are unchanged."); });
   get("review").addEventListener("click", () => reviewTake());
   get("start").addEventListener("click", () => void start());
   get("start-now").addEventListener("click", () => void start(false, true));
@@ -400,10 +424,16 @@ export function installPreparedEditions({
   const observer = new globalThis.MutationObserver(visible);
   if (panel) observer.observe(panel, { attributes: true, attributeFilter: ["hidden"] });
   return {
-    active: () => Boolean(edition), refresh,
+    active: () => Boolean(edition), refresh, confirmLeave: confirmRecordingReplacement,
     async openShow(value, { refresh: loadNow = true } = {}) {
-      if (show?.id !== value.id) clear(); show = value;
+      if (show?.id !== value.id) {
+        if (!await confirmRecordingReplacement()) return false;
+        clear();
+      }
+      show = value;
+      const ticket = context();
       if (loadNow || root.open) await refresh();
+      return current(ticket) && show?.id === value.id;
     },
     async addSong(song) {
       if (!edition) return;
