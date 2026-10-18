@@ -2,6 +2,7 @@
 
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -85,3 +86,22 @@ def test_backup_freezes_manifest_before_concurrent_import(tmp_path, monkeypatch)
         assert saved["revision"] == edition.revision
         assert len(saved["assets"]) == 1
         assert len([name for name in bundle.namelist() if name.startswith("edition_audio/")]) == 1
+
+
+def test_edition_snapshot_preserves_bytes_with_windows_text_newlines(tmp_path, monkeypatch):
+    cfg, store, _edition = prepared(tmp_path)
+    original = store.path.read_bytes()
+    write_text = Path.write_text
+
+    def windows_text(path, text, *args, **kwargs):
+        if path.name == "editions.json":
+            kwargs["newline"] = "\r\n"
+        return write_text(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", windows_text)
+    archive = create_backup(cfg, tmp_path / "windows-edition.zip", force=False)
+    with zipfile.ZipFile(archive) as bundle:
+        assert bundle.read("index/editions.json") == original
+    store.path.unlink()
+    restore_backup(cfg, archive, force=True)
+    assert store.path.read_bytes() == original

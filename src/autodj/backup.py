@@ -617,7 +617,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             for name, document in edition_documents.items():
                 frozen = Path(temp) / name
                 frozen.parent.mkdir(parents=True, exist_ok=True)
-                frozen.write_text(document)
+                frozen.write_bytes(document.encode("utf-8"))
                 members[name] = frozen
             for name in list(members):
                 key, rest = _split(name)
