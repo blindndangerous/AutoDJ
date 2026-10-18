@@ -75,7 +75,7 @@ exact controls.
 
 | Step | Expected observation |
 | --- | --- |
-| With the target station stopped, open Programme review; refresh, choose Saved show and generate. | Start/range hints are associated with their inputs; Generate is disabled while busy; the station stays stopped; one completion announcement without moving focus or starting playback. |
+| With the target station stopped, open Programme review; refresh, choose Saved show and generate. | Start/range hints are associated with their inputs; Keyboard focus moves from Generate to Cancel before Generate is disabled. Completion returns focus to Generate only when focus remains on Cancel; focus elsewhere is preserved. The station stays stopped; one completion announcement and no automatic playback. |
 | Select a saved result and press Load review; play it and tab through item buttons, Previous item and Next item. | Loading moves focus to Review result; labels identify items and both time axes; keyboard seeks retain usable focus; short clips and the actual joins/ducking sound complete. |
 | Review a range that cuts a join or short clip. | Effective range explains expansion; no clipped speech or repeated overlapping section. |
 | Change opening/ending and tone duration; generate again, then review a long interview. | Song/long-clip middles are omitted, short clips stay complete, skip tones are distinctive and follow the chosen duration. |

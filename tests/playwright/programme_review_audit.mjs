@@ -48,25 +48,27 @@ try {
   await page.locator("#review-card details > summary").click();
   await page.locator("#review-head").fill("0.2");
   await page.locator("#review-tail").fill("0.2");
-  async function generate() {
+  async function generate({ moveFocus = false } = {}) {
     const submitted = page.waitForResponse((response) => response.url() === `${base}/api/reviews`
       && response.request().method() === "POST");
-    await page.getByRole("button", { name: "Generate review", exact: true }).click();
+    await page.getByRole("button", { name: "Generate review", exact: true }).focus();
+    await page.keyboard.press("Enter");
     const response = await submitted;
     assert.equal(response.status(), 200, await response.text());
     const job = await response.json();
     await expect(page.locator("#review-generate")).toBeDisabled();
-    await page.locator("#review-head").focus();
+    await expect(page.locator("#review-cancel")).toBeFocused();
+    if (moveFocus) await page.locator("#review-head").focus();
     await expect(page.locator("#review-audio")).toHaveAttribute("src", new RegExp(job.id), { timeout: 20000 });
     await expect(page.locator("#review-status")).toContainText("Review ready", { timeout: 20000 });
     await expect(page.locator("#review-result")).toBeVisible();
-    await expect(page.locator("#review-head")).toBeFocused();
+    await expect(page.locator(moveFocus ? "#review-head" : "#review-generate")).toBeFocused();
     await expect(page.locator("#review-generate")).toBeEnabled();
   }
   await generate();
   await page.getByRole("button", { name: "Load review", exact: true }).click();
   await expect(page.locator("#review-heading")).toBeFocused();
-  report.steps.push("busy generation is disabled; completion preserves focus; explicit loading focuses the result");
+  report.steps.push("keyboard Generate moves focus to enabled Cancel; completion returns focus unless moved elsewhere; explicit loading focuses the result");
   const original = await page.locator("#review-audio").getAttribute("src");
   assert.ok(original?.endsWith("/audio/mp3"));
   await expect(page.locator("#review-audio")).not.toHaveAttribute("autoplay");
@@ -94,7 +96,7 @@ try {
   report.steps.push("actual MP3/WAV downloads decoded and compared with identifiable source frequencies");
   await page.locator("#review-selection-start").fill("3.7");
   await page.locator("#review-selection-end").fill("3.8");
-  await generate();
+  await generate({ moveFocus: true });
   const detailURL = (await page.locator("#review-audio").getAttribute("src")).replace(/\/audio\/mp3$/, "");
   const detail = await (await page.request.get(`${base}${detailURL}`)).json();
   assert.ok(detail.effective_range[0] < 3.7 || detail.effective_range[1] > 3.8);

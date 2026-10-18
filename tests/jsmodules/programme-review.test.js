@@ -222,3 +222,40 @@ it("does not announce ready when station context clears during completed-result 
   expect(spoken.some((text) => text.startsWith("Review ready"))).toBe(false);
   expect(get("audio").hasAttribute("src")).toBe(false);
 });
+
+it.each(["done", "cancelled", "failed"])("moves keyboard focus to Cancel and back after %s", async (status) => {
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "POST") return { id: "job", status: "running" };
+    if (url.includes("/jobs/")) return { id: "job", status, result_id: result.id, error: "Review timed out" };
+    if (url === "/api/reviews") return { results: [result], job: null };
+    if (url === "/api/shows") return { shows: [] };
+    return result;
+  });
+  const { timers } = harness({ request });
+  get("source").value = "forecast";
+  get("generate").focus();
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  expect(document.activeElement).toBe(get("cancel"));
+  expect(get("generate").disabled).toBe(true);
+  await timers[0](); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(document.activeElement).toBe(get("generate"));
+});
+
+it.each([false, true])("leaves focus elsewhere untouched during generation, moved after start: %s", async (moveAfterStart) => {
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "POST") return { id: "job", status: "running" };
+    if (url.includes("/jobs/")) return { id: "job", status: "done", result_id: result.id };
+    if (url === "/api/reviews") return { results: [result], job: null };
+    if (url === "/api/shows") return { shows: [] };
+    return result;
+  });
+  const { timers } = harness({ request });
+  get("source").value = "forecast";
+  (moveAfterStart ? get("generate") : get("head")).focus();
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  if (moveAfterStart) get("head").focus();
+  expect(document.activeElement).toBe(get("head"));
+  await timers[0](); await settle();
+  expect(document.activeElement).toBe(get("head"));
+});

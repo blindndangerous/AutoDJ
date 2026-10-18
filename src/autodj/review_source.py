@@ -477,6 +477,8 @@ def capture_review(
                     capture_audio=True,
                     cancelled=cancelled,
                 )
+                if cancelled():
+                    raise InterruptedError("Review interrupted")
                 if stopped and stopped != "it reached its limit of songs":
                     raise ReviewError(f"The queue could not be captured: {stopped}")
                 rows = (*fixed, *predicted)

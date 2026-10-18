@@ -45,10 +45,15 @@ export function installProgrammeReview({
     audio.pause(); audio.removeAttribute("src"); audio.load();
   }
   function busy(value) {
-    get("cancel").hidden = !value;
-    get("generate").classList.toggle("is-pending", value);
-    get("generate").disabled = value || submitting;
-    if (!value && doc.activeElement === get("cancel")) get("generate").focus();
+    const generate = get("generate"), cancel = get("cancel");
+    if (value) {
+      cancel.hidden = false;
+      if (doc.activeElement === generate) cancel.focus();
+    }
+    generate.classList.toggle("is-pending", value);
+    generate.disabled = value;
+    if (!value && doc.activeElement === cancel) generate.focus();
+    cancel.hidden = !value;
   }
   function showResult(value) {
     stopAudio(); result = value; selected = 0;

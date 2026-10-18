@@ -428,3 +428,41 @@ def test_worker_reports_capture_interruption_reason_and_cleans_up(tmp_path, reas
     assert status["state"] == ("cancelled" if reason == "cancelled" else "failed")
     assert not list(root.glob(".staging-*"))
     assert jobs.shutdown()
+
+
+@pytest.mark.parametrize("reason", ["cancelled", "timed out", "storage limit"])
+def test_queue_prediction_interruption_keeps_worker_reason(tmp_path, monkeypatch, reason):
+    from autodj import hour_preview
+    from autodj.review_jobs import ReviewJobs
+    from tests.unit.test_review_jobs import wait
+
+    station, identity, entries = station_content(tmp_path)
+    _live(station, identity, entries)
+    jobs = ReviewJobs()
+
+    def predict(*args, **kwargs):
+        run = jobs._active
+        assert run is not None
+        if reason == "cancelled":
+            run.cancel.set()
+        elif reason == "timed out":
+            run.deadline = 0
+        else:
+            run.storage_exceeded = True
+        assert kwargs["cancelled"]()
+        return (), 0, "review cancelled"
+
+    monkeypatch.setattr(hour_preview, "predict", predict)
+    root = tmp_path / "reviews"
+    job = jobs.submit(
+        root,
+        "inputs",
+        lambda stage, cancelled: capture_review(
+            station, {"source": "queue", "start": "2026-10-18T12:00:00Z"}, cancelled=cancelled
+        ),
+    )
+    status = wait(jobs, root, job["id"])
+    assert reason in status["error"].lower()
+    assert status["state"] == ("cancelled" if reason == "cancelled" else "failed")
+    assert not list(root.glob(".staging-*"))
+    assert jobs.shutdown()

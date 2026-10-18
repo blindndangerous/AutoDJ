@@ -195,7 +195,10 @@ def test_symlink_result_and_audio_are_never_served(tmp_path):
     root = tmp_path / "reviews"
     root.mkdir()
     identity = "b" * 32
-    (root / identity).symlink_to(outside, target_is_directory=True)
+    try:
+        (root / identity).symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
     jobs = ReviewJobs()
     assert jobs.results(root) == []
     with pytest.raises(FileNotFoundError):
@@ -409,3 +412,14 @@ def test_audio_publication_flushes_writable_handles_before_rename(tmp_path, monk
     assert jobs.audio_path(tmp_path, job["id"], "mp3").read_bytes() == b"mp3"
     assert not list(tmp_path.glob(".staging-*"))
     assert jobs.shutdown()
+
+
+def test_symlink_safety_case_skips_when_symlinks_are_unavailable(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    def refused(*args, **kwargs):
+        raise OSError("symlink privilege unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", refused)
+    with pytest.raises(pytest.skip.Exception, match="symlinks unavailable"):
+        test_symlink_result_and_audio_are_never_served(tmp_path)
