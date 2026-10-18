@@ -294,6 +294,28 @@ def test_liner_segue_analysis_handles_silence_and_short_buffers() -> None:
     assert processing._suggest_liner_segue(np.zeros(rate // 10), rate) is None
 
 
+@pytest.mark.parametrize("detector", [processing._suggest_liner_segue, processing._suggest_segue])
+@pytest.mark.parametrize("padding", [20, 90])
+def test_segue_reference_ignores_long_quiet_padding(detector, padding):
+    rate = 1000
+    content = np.full(20 * rate, 0.2, dtype=np.float32)
+    content[2 * rate : 3 * rate] = 0  # An interior pause is not the final drop.
+    content[14 * rate :] = 0.003  # Audible reverb belongs after Segue.
+    padded = np.concatenate((content, np.full(padding * rate, 0.00005, dtype=np.float32)))
+    assert detector(content, rate) == pytest.approx(14.0)
+    assert detector(padded, rate) == pytest.approx(14.0)
+
+
+def test_music_padding_keeps_reference_before_the_same_tail():
+    rate = 1000
+    content = np.full(12 * rate, 0.2, dtype=np.float32)
+    content[2 * rate : 3 * rate] = 0
+    content[6 * rate :] = 0.003
+    padded = np.concatenate((content, np.zeros(90 * rate, dtype=np.float32)))
+    assert processing._suggest_segue(content, rate) == pytest.approx(6.0)
+    assert processing._suggest_segue(padded, rate) == pytest.approx(6.0)
+
+
 def test_recovered_decode_reports_diagnostics(tmp_path: Path, monkeypatch, caplog) -> None:
     source = _source(tmp_path / "song.wav")
     measurement = processing.analyze_loudness(source)
