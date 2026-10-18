@@ -40,6 +40,7 @@ import concurrent.futures
 import hashlib
 import logging
 import random
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -174,6 +175,8 @@ class Item:
     entry: Any = None
     label: str = ""
     playback_rate: float = 1.0
+    asset_id: str | None = None
+    details_entry: Any = None
 
     @property
     def fixed(self) -> bool:
@@ -213,10 +216,16 @@ class Decided:
 
     def signature(self) -> str:
         """What is fixed, without the times: the same while nothing new is decided."""
-        parts = [
-            f"{item.kind}:{item.status}:{item.entry.path if item.entry is not None else item.label}"
-            for item in (*self.items, *self.waiting)
-        ]
+        parts = []
+        for item in (*self.items, *self.waiting):
+            identity = (
+                item.entry.path
+                if item.entry is not None
+                else item.details_entry.path
+                if item.details_entry is not None
+                else item.asset_id or item.label
+            )
+            parts.append(f"{item.kind}:{item.status}:{identity}")
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
         parts.append(f"speed:{self.speed_signature}")
         return "\n".join(parts)
@@ -366,6 +375,22 @@ def _break_label(desk: Any, break_id: str) -> str:
     return f"{kind} break: {item.label}" if item.label else f"{kind} break"
 
 
+def _registered_liner(player: Any, path: Any) -> Any:
+    """Return the catalog liner for this exact file, never a private intro path."""
+    library = getattr(player, "_library", None)
+    if library is None or not path:
+        return None
+    try:
+        path = str(path)
+        record = library.catalog.record_for_path(path)
+        if record is None or record.get("kind") != "liner":
+            return None
+        entry = library.catalog.entry_for_path(path)
+        return entry if entry is not None and str(entry.path) == str(path) else None
+    except (AttributeError, OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+
+
 def _mixed_in(
     track: Any,
     base: float,
@@ -373,6 +398,8 @@ def _mixed_in(
     desk: Any,
     status: str,
     queued: list[Any],
+    *,
+    player: Any = None,
 ) -> list[Item]:
     """The liners, breaks and matched intros mixed into *track*, whose audio starts at *base*.
 
@@ -395,13 +422,24 @@ def _mixed_in(
             continue
         label = _break_label(desk, break_id)
         found.append(Item("break", at, length, "on_air" if at <= now else status, label=label))
-    for frame, _intro_id, end, intro_label in getattr(track, "intro_events", ()):
+    assets = dict(getattr(track, "intro_assets", ()))
+    for frame, intro_id, end, intro_label in getattr(track, "intro_events", ()):
         at = base + frame / SAMPLE_RATE
         length = max(0.0, (end - frame) / SAMPLE_RATE)
         if at + length <= now:
             continue
         label = f"Matched intro: {intro_label}" if intro_label else "Matched intro"
-        found.append(Item("intro", at, length, "on_air" if at <= now else status, label=label))
+        found.append(
+            Item(
+                "intro",
+                at,
+                length,
+                "on_air" if at <= now else status,
+                label=label,
+                asset_id=intro_id,
+                details_entry=_registered_liner(player, assets.get(intro_id)),
+            )
+        )
     return found
 
 
@@ -976,7 +1014,7 @@ def _read_bus(
             playback_rate=playback_rate,
         )
     )
-    items.extend(_mixed_in(playing, base, now, desk, "ready", queued))
+    items.extend(_mixed_in(playing, base, now, desk, "ready", queued, player=player))
     clock = (live.cursor, live.clock_name, live.boundary)
     if following is None:
         return items, unplayed, queued, playing.entry, base + total, clock
@@ -1031,7 +1069,7 @@ def _read_bus(
         )
     )
     unplayed.append((following, enters))
-    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued))
+    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued, player=player))
     after_starts = ready_at + len(ready.audio) / SAMPLE_RATE
     handoff = after_starts + _remaining(
         player, after, live.offset / SAMPLE_RATE, average, rate=after_rate
@@ -1476,6 +1514,7 @@ def _predict(
         voice: tuple[Any, dict[str, Any]] | None = None
         intro_label = intro.label if intro is not None else ""
         if intro is not None:
+            intro_liner = _registered_liner(player, intro.path)
 
             def capture_voice(
                 _audio: Any,
@@ -1492,9 +1531,21 @@ def _predict(
             points = player.saved_points(entry)
             from autodj.player import _music_output_points
 
-            player._add_intro(
+            rendered_intro = player._add_intro(
                 intro, _music_output_points(points, music_rate(player, entry)), capture_voice
             )
+            if not rendered_intro:
+                found.append(
+                    Item(
+                        "intro",
+                        moment,
+                        0.0,
+                        "predicted",
+                        label=f"Matched intro unavailable: {intro_label or 'Matched intro'}",
+                        asset_id=intro.intro_id,
+                        details_entry=intro_liner,
+                    )
+                )
             if voice is None:
                 player.matched_intros.release((intro.intro_id,))
         next_rate = music_rate(player, entry)
@@ -1519,6 +1570,8 @@ def _predict(
                             speech,
                             "predicted",
                             label=f"Matched intro: {intro_label}",
+                            asset_id=intro.intro_id,
+                            details_entry=intro_liner,
                         )
                     )
                 else:
@@ -2134,6 +2187,9 @@ def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
         "status_text": _status_text(item),
         "title": item_title(item),
         "path": str(path) if path else None,
+        "asset_id": item.asset_id if item.kind == "intro" else None,
+        "details_path": str(item.details_entry.path) if item.details_entry is not None else None,
+        "details_kind": "liner" if item.details_entry is not None else None,
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
         "seconds": round(item.seconds, 1),

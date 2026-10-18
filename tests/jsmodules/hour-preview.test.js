@@ -204,6 +204,39 @@ describe("hour preview card", () => {
     });
   });
 
+  it("opens the liner cue editor for the exact registered matched intro", async () => {
+    const intro = {
+      ...item("Matched intro: Year 2000", "predicted", false),
+      kind: "intro", asset_id: "abc123", path: null,
+      details_path: "/library/liners/year.wav", details_kind: "liner",
+    };
+    harness([view({ items: [intro] })]);
+    await open();
+    const button = byId("hour-preview-tbody").querySelector("button");
+    expect(button.getAttribute("aria-label")).toBe("Track info for Matched intro: Year 2000");
+    const opened = vi.fn();
+    document.addEventListener("autodj:edit-points", opened, { once: true });
+    const cell = button.closest("td");
+    cell.focus();
+    cell.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(opened.mock.calls[0][0].detail).toEqual({
+      path: "/library/liners/year.wav", kind: "liner", opener: button,
+    });
+    expect(document.activeElement).toBe(cell);
+  });
+
+  it("does not expose a private matched intro path as music", () => {
+    const tbody = document.createElement("tbody");
+    renderRows(document, tbody, [{
+      ...item("Matched intro: Artist upload", "predicted", false),
+      kind: "intro",
+      asset_id: "private-id",
+      path: null,
+    }]);
+    expect(tbody.children[0].lastElementChild.querySelector("button")).toBeNull();
+    expect(tbody.children[0].lastElementChild.textContent).toBe("Track info unavailable");
+  });
+
   it("refreshes on its timer without speaking or moving focus", async () => {
     const { request, timers } = harness([view(), view({ summary: "Changed." })]);
     await open();
