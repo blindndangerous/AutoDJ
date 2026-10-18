@@ -15,16 +15,71 @@ Existing contributor and release verification requirements still apply.
 
 ## Choose the evidence
 
-| Coverage | Procedure | What it establishes | Initial status |
-| --- | --- | --- | --- |
-| Local links, published anchors and ADR mappings | Structural commands below | Candidate links and declared mappings resolve, including old public entry points | pending |
-| Changed configuration and command examples | Example commands below, then native execution protocol | Parsing/source agreement separately from execution | pending |
-| Rendered documentation | Render protocol below | Headings, link names, code and tables remain navigable in the rendered document | pending |
-| All 13 lessons | Tutorial protocol and individual matrix below | End-to-end results on one declared OS/browser/real screen-reader combination | pending |
-| Changed install, diagnosis, backup, isolated restore and update procedures | Native execution protocol on Linux/Bash and Windows/PowerShell | Actual commands and effects on each named platform | pending |
-| Unchanged content moved into 48 destination pages | Preservation protocol below | Source preservation and review, without claiming those procedures ran | pending |
-| Learn, Do, Look up, Understand navigation | Independent reader protocol below | An unfamiliar reader can find the intended page and observable answer | pending |
-| Listening, physical devices, real services | Named tutorial prerequisites and evidence record | Only the specific equipment, service and listening observation used | pending |
+- Local links, published anchors and ADR mappings
+
+  Procedure: Structural commands below
+
+  What it establishes: Candidate links and declared mappings resolve, including old public entry
+  points
+
+  Initial status: pending
+
+- Changed configuration and command examples
+
+  Procedure: Example commands below, then native execution protocol
+
+  What it establishes: Parsing/source agreement separately from execution
+
+  Initial status: pending
+
+- Rendered documentation
+
+  Procedure: Render protocol below
+
+  What it establishes: Headings, link names, code and tables remain navigable in the rendered
+  document
+
+  Initial status: pending
+
+- All 13 lessons
+
+  Procedure: Tutorial protocol and individual matrix below
+
+  What it establishes: End-to-end results on one declared OS/browser/real screen-reader combination
+
+  Initial status: pending
+
+- Changed install, diagnosis, backup, isolated restore and update procedures
+
+  Procedure: Native execution protocol on Linux/Bash and Windows/PowerShell
+
+  What it establishes: Actual commands and effects on each named platform
+
+  Initial status: pending
+
+- Unchanged content moved into 48 destination pages
+
+  Procedure: Preservation protocol below
+
+  What it establishes: Source preservation and review, without claiming those procedures ran
+
+  Initial status: pending
+
+- Learn, Do, Look up, Understand navigation
+
+  Procedure: Independent reader protocol below
+
+  What it establishes: An unfamiliar reader can find the intended page and observable answer
+
+  Initial status: pending
+
+- Listening, physical devices, real services
+
+  Procedure: Named tutorial prerequisites and evidence record
+
+  What it establishes: Only the specific equipment, service and listening observation used
+
+  Initial status: pending
 
 A source test, mock, screenshot, browser DOM assertion or accessibility-tree
 snapshot cannot substitute for native execution or real screen-reader speech.
@@ -180,15 +235,80 @@ stdout/stderr, exit status and resulting state. Do not use only the safe checker
 as evidence for these rows. The existing guides supply executable shell blocks;
 the observations below make the verification repeatable without copying them.
 
-| Operation and source | Actions and expected evidence | Failure/recovery and cleanup |
-| --- | --- | --- |
-| [Install](../guides/install.md), [setup](../setup.md), [native install](../guides/core-operations.md#install-and-diagnose) | In a fresh checkout run the appropriate launcher, review the plan, complete CPU setup, decline optional import; retain verified tensor/import checks, saved runtime selection and printed loopback URL. Open the page and verify an empty library. | Capture a refused/missing prerequisite and its instructions before correcting it; do not report a dry-run as installation. Stop the process and retain setup logs/snapshot. |
-| [Diagnosis](../guides/operations/diagnose.md), [collect diagnostics](../guides/collect-diagnostics.md) | Run the documented no-fix and JSON forms with the same configuration/environment. Retain exit codes and required findings, including expected empty-library findings; compare source state before/after read-only checks. | Separate no-fix preflight from repair offers. Apply a repair only to the disposable copy after recording the proposed action and expected effect; rerun Doctor and retain both reports. Redact secrets before sharing. |
-| [Backup](../guides/operations/backup.md), [native archive](../guides/core-operations.md#capture-diagnostics-and-create-a-backup) | With the sentinel state present, create a new archive; inspect ZIP members and integrity as in the recovery lesson. Confirm declared inclusions and exclusions; retain archive hash, manifest and source version. | Repeat the same destination to observe no-clobber refusal and verify its hash unchanged. Never add `--force`. Retain the archive and separately protected excluded assets. |
-| [Restore](../guides/operations/restore.md), [native rehearsal](../guides/core-operations.md#rehearse-recovery-into-a-new-destination) | Stop serving and jobs. Restore the same archive/version into a new isolated destination; retain effective paths, restored-file count, Doctor findings and recovered sentinel state. Run the recovery lesson's simulation against that copy; verify source and outside sentinel unchanged. | Try the documented existing-destination refusal in the disposable copy and confirm no overwrite. Keep failures/journals for diagnosis; use documented rollback advice rather than removing a journal. Retain the recovered copy and archive. |
-| [Update](../guides/operations/upgrade.md), [native update](../guides/core-operations.md#update-and-keep-a-rollback-path) | Record old and target revision/version, stop jobs, take final backup and preserve config/assets; check clean status, fetch/select the named target, run launcher setup and no-fix Doctor, then loopback playback and footer-version checks. | Retain and review migration previews before any `--apply`; do not repair production. Rehearse rollback into another isolated destination using the matching old-version archive, not newer data. Stop the test server and retain both environments. |
-| [Station output, restart and time zone](../guides/several-stations.md), [station setup](../guides/prepare-station.md), [schedule](../guides/schedule.md) | On each native platform record selected station and initial settings; save output, stop/start that station and verify the running mode with its relevant controls and real audio path. Save a test station time zone, restart the server as instructed, and verify Next events against that zone without changing the system clock. | Inspect startup errors before retrying; distinguish station restart from server restart. Restore output/time zone, disable test events, restart as required and retain final state. Never restart a server serving other listeners. |
-| [Access creation, revocation and recovery](../guides/manage-access.md) | On each native platform use the documented launcher/configuration for device list/pair/revoke and token list/create/revoke with disposable IDs. Pair a second test browser, verify revocation ends its access, and check a replacement token's intended scope using only the private local test client. After isolated restore verify credentials excluded from backup, reset a rehearsal DJ password, and pair again as documented. | Retain redacted outcomes, never raw tokens/passwords; use only throwaway access. Review reset-all consequences before any reset. Restore separate private credentials only in the disposable copy; external provider/relay authentication remains pending without separately authorized services. Revoke every rehearsal credential and stop test clients. |
+- [Install](../guides/install.md), [setup](../setup.md), [native install](../guides/core-operations.md#install-and-diagnose)
+
+  Actions and expected evidence: In a fresh checkout run the appropriate launcher, review the plan,
+  complete CPU setup, decline optional import; retain verified tensor/import checks, saved runtime
+  selection and printed loopback URL. Open the page and verify an empty library.
+
+  Failure/recovery and cleanup: Capture a refused/missing prerequisite and its instructions before
+  correcting it; do not report a dry-run as installation. Stop the process and retain setup
+  logs/snapshot.
+
+- [Diagnosis](../guides/operations/diagnose.md), [collect diagnostics](../guides/collect-diagnostics.md)
+
+  Actions and expected evidence: Run the documented no-fix and JSON forms with the same
+  configuration/environment. Retain exit codes and required findings, including expected
+  empty-library findings; compare source state before/after read-only checks.
+
+  Failure/recovery and cleanup: Separate no-fix preflight from repair offers. Apply a repair only to
+  the disposable copy after recording the proposed action and expected effect; rerun Doctor and
+  retain both reports. Redact secrets before sharing.
+
+- [Backup](../guides/operations/backup.md), [native archive](../guides/core-operations.md#capture-diagnostics-and-create-a-backup)
+
+  Actions and expected evidence: With the sentinel state present, create a new archive; inspect ZIP
+  members and integrity as in the recovery lesson. Confirm declared inclusions and exclusions;
+  retain archive hash, manifest and source version.
+
+  Failure/recovery and cleanup: Repeat the same destination to observe no-clobber refusal and verify
+  its hash unchanged. Never add `--force`. Retain the archive and separately protected excluded
+  assets.
+
+- [Restore](../guides/operations/restore.md), [native rehearsal](../guides/core-operations.md#rehearse-recovery-into-a-new-destination)
+
+  Actions and expected evidence: Stop serving and jobs. Restore the same archive/version into a new
+  isolated destination; retain effective paths, restored-file count, Doctor findings and recovered
+  sentinel state. Run the recovery lesson's simulation against that copy; verify source and outside
+  sentinel unchanged.
+
+  Failure/recovery and cleanup: Try the documented existing-destination refusal in the disposable
+  copy and confirm no overwrite. Keep failures/journals for diagnosis; use documented rollback
+  advice rather than removing a journal. Retain the recovered copy and archive.
+
+- [Update](../guides/operations/upgrade.md), [native update](../guides/core-operations.md#update-and-keep-a-rollback-path)
+
+  Actions and expected evidence: Record old and target revision/version, stop jobs, take final
+  backup and preserve config/assets; check clean status, fetch/select the named target, run launcher
+  setup and no-fix Doctor, then loopback playback and footer-version checks.
+
+  Failure/recovery and cleanup: Retain and review migration previews before any `--apply`; do not
+  repair production. Rehearse rollback into another isolated destination using the matching
+  old-version archive, not newer data. Stop the test server and retain both environments.
+
+- [Station output, restart and time zone](../guides/several-stations.md), [station setup](../guides/prepare-station.md), [schedule](../guides/schedule.md)
+
+  Actions and expected evidence: On each native platform record selected station and initial
+  settings; save output, stop/start that station and verify the running mode with its relevant
+  controls and real audio path. Save a test station time zone, restart the server as instructed, and
+  verify Next events against that zone without changing the system clock.
+
+  Failure/recovery and cleanup: Inspect startup errors before retrying; distinguish station restart
+  from server restart. Restore output/time zone, disable test events, restart as required and retain
+  final state. Never restart a server serving other listeners.
+
+- [Access creation, revocation and recovery](../guides/manage-access.md)
+
+  Actions and expected evidence: On each native platform use the documented launcher/configuration
+  for device list/pair/revoke and token list/create/revoke with disposable IDs. Pair a second test
+  browser, verify revocation ends its access, and check a replacement token's intended scope using
+  only the private local test client. After isolated restore verify credentials excluded from
+  backup, reset a rehearsal DJ password, and pair again as documented.
+
+  Failure/recovery and cleanup: Retain redacted outcomes, never raw tokens/passwords; use only
+  throwaway access. Review reset-all consequences before any reset. Restore separate private
+  credentials only in the disposable copy; external provider/relay authentication remains pending
+  without separately authorized services. Revoke every rehearsal credential and stop test clients.
 
 
 Use a prior released version and the candidate as the declared update pair when
@@ -226,21 +346,120 @@ with mocked responses or simulated playback.
 Each row inherits the full protocol above. The distinctive checks below are
 waypoints, not replacements for lesson instructions. **All rows initially pending.**
 
-| Lesson | Distinctive checkpoint and exercise | Recovery to inspect/run; final state to record |
-| --- | --- | --- |
-| [First station](../tutorials/first-station.md) | Import finishes; category count at least five; saved active one-step wheel and Clockwheel mode; empty-queue automatic titles/History; queued song wins then rotation resumes. | Correct unreadable folder/zero count or unsaved activation using lesson advice; leave Browser paused with Practice saved. |
-| [Two categories](../tutorials/two-categories.md) | Anchor count 1 plus other count equals Practice; observe four automatic picks and wheel wrap; three-step exercise changes song-step share, not guaranteed airtime. | Correct Match any to Match all or wrong category; leave paused and record which wheel is active. |
-| [Scheduled show](../tutorials/scheduled-show.md) | Two-song list; future event in station time zone; Recent runs, soft handoff, ordered titles and return to rotation; disabled event's Run now still acts. | Reschedule past time or fix empty list without changing system clock; leave event disabled, show stopped and Browser paused. |
-| [Similarity picking](../tutorials/similarity-picking.md) | Each practice track's Advanced analysis Complete; empty queue/Similarity mode and no fallback; automatic follow-up then queued override and resumed picking. | Inspect failed/skipped analysis or problem message; leave paused, jobs finished/stopped, record restored Clockwheel mode if returning to Practice. |
-| [Voice tracking](../tutorials/voice-tracking.md) | Real microphone take is not booked; private preview; explicit booking reaches aired; discarded second take creates no booking. | Recover microphone refusal/insecure context or stale pair; stop capture/previews, discard draft, stop server audio and restore Browser/break/transition settings. |
-| [Beatmatched set](../tutorials/beatmatched-set.md) | Real A/B BPM/structure; natural A-to-B plain and matched transitions, ratio when applicable; zero stretch comparison for unequal tempos. | Fix missing structure or choose suitable tracks/encoder; retain actual listening judgment separately from plan text; restore recorded settings and Browser paused. |
-| [Recorded liners](../tutorials/recorded-liners.md) | Upload and local audition precede placement; queued liner and ducking comparison; explicit queue still acts with automatic liners disabled. | Resolve filename collision without overwrite or refused Test now; stop previews and retain asset with lesson's final automatic-liner state. |
-| [Speech liner](../tutorials/speech-liner.md) | Check two explicit candidates before synthesis; independent sample results, explicit retry, saved audio separate from assignment; assignment with automatic playback off. | Use actual failed-result advice without automatic resubmission; cancel/wait and stop previews; retain selected liner and record enable state. Without authorized provider access this row stays pending, including listening. |
-| [Stream to second device](../tutorials/stream-second-device.md) | Actual second device plays copied LAN stream address; controller versus listener behavior; last listener leaves and set ends after grace period with continuous playback off. | Correct localhost address/firewall only in trusted test network; stop VLC/Listen here and restore Browser paused. |
-| [Listener requests](../tutorials/listener-requests.md) | Listener submits, operator approves, request reaches playback; turning off requests leaves waiting request unapproved, then reject and verify no queue entry. | Handle Already on the way using a different song; restore request/rotation/output settings and pause Practice. |
-| [Live handoff](../tutorials/live-handoff.md) | Real BUTT source takes over, Live line identifies source; disconnect returns to automation; second segment tests disconnect rather than pausing a song. | Follow failed connection/login guidance with correct mount/port/account; stop BUTT, remove rehearsal credential and restore practice output. |
-| [Backup recovery](../tutorials/backup-recovery.md) | New ZIP passes inspection; explicit isolated config/paths; recovered Practice and six seeded picks; seed change never alters original History. | Correct source config or choose fresh destination on refusal, no force; retain archive/copy and verify original station intact. |
-| [Two stations](../tutorials/two-stations.md) | Off-air creation, shared music without reimport; separate queue marker/history/wheel; page switch versus stopping runtime. | Stop on existing ID/folder, inspect station selection/FFmpeg; leave Practice Two off air with autostart off, remove original marker, Browser paused. |
+- [First station](../tutorials/first-station.md)
+
+  Distinctive checkpoint and exercise: Import finishes; category count at least five; saved active
+  one-step wheel and Clockwheel mode; empty-queue automatic titles/History; queued song wins then
+  rotation resumes.
+
+  Recovery to inspect/run; final state to record: Correct unreadable folder/zero count or unsaved
+  activation using lesson advice; leave Browser paused with Practice saved.
+
+- [Two categories](../tutorials/two-categories.md)
+
+  Distinctive checkpoint and exercise: Anchor count 1 plus other count equals Practice; observe four
+  automatic picks and wheel wrap; three-step exercise changes song-step share, not guaranteed
+  airtime.
+
+  Recovery to inspect/run; final state to record: Correct Match any to Match all or wrong category;
+  leave paused and record which wheel is active.
+
+- [Scheduled show](../tutorials/scheduled-show.md)
+
+  Distinctive checkpoint and exercise: Two-song list; future event in station time zone; Recent
+  runs, soft handoff, ordered titles and return to rotation; disabled event's Run now still acts.
+
+  Recovery to inspect/run; final state to record: Reschedule past time or fix empty list without
+  changing system clock; leave event disabled, show stopped and Browser paused.
+
+- [Similarity picking](../tutorials/similarity-picking.md)
+
+  Distinctive checkpoint and exercise: Each practice track's Advanced analysis Complete; empty
+  queue/Similarity mode and no fallback; automatic follow-up then queued override and resumed
+  picking.
+
+  Recovery to inspect/run; final state to record: Inspect failed/skipped analysis or problem
+  message; leave paused, jobs finished/stopped, record restored Clockwheel mode if returning to
+  Practice.
+
+- [Voice tracking](../tutorials/voice-tracking.md)
+
+  Distinctive checkpoint and exercise: Real microphone take is not booked; private preview; explicit
+  booking reaches aired; discarded second take creates no booking.
+
+  Recovery to inspect/run; final state to record: Recover microphone refusal/insecure context or
+  stale pair; stop capture/previews, discard draft, stop server audio and restore
+  Browser/break/transition settings.
+
+- [Beatmatched set](../tutorials/beatmatched-set.md)
+
+  Distinctive checkpoint and exercise: Real A/B BPM/structure; natural A-to-B plain and matched
+  transitions, ratio when applicable; zero stretch comparison for unequal tempos.
+
+  Recovery to inspect/run; final state to record: Fix missing structure or choose suitable
+  tracks/encoder; retain actual listening judgment separately from plan text; restore recorded
+  settings and Browser paused.
+
+- [Recorded liners](../tutorials/recorded-liners.md)
+
+  Distinctive checkpoint and exercise: Upload and local audition precede placement; queued liner and
+  ducking comparison; explicit queue still acts with automatic liners disabled.
+
+  Recovery to inspect/run; final state to record: Resolve filename collision without overwrite or
+  refused Test now; stop previews and retain asset with lesson's final automatic-liner state.
+
+- [Speech liner](../tutorials/speech-liner.md)
+
+  Distinctive checkpoint and exercise: Check two explicit candidates before synthesis; independent
+  sample results, explicit retry, saved audio separate from assignment; assignment with automatic
+  playback off.
+
+  Recovery to inspect/run; final state to record: Use actual failed-result advice without automatic
+  resubmission; cancel/wait and stop previews; retain selected liner and record enable state.
+  Without authorized provider access this row stays pending, including listening.
+
+- [Stream to second device](../tutorials/stream-second-device.md)
+
+  Distinctive checkpoint and exercise: Actual second device plays copied LAN stream address;
+  controller versus listener behavior; last listener leaves and set ends after grace period with
+  continuous playback off.
+
+  Recovery to inspect/run; final state to record: Correct localhost address/firewall only in trusted
+  test network; stop VLC/Listen here and restore Browser paused.
+
+- [Listener requests](../tutorials/listener-requests.md)
+
+  Distinctive checkpoint and exercise: Listener submits, operator approves, request reaches
+  playback; turning off requests leaves waiting request unapproved, then reject and verify no queue
+  entry.
+
+  Recovery to inspect/run; final state to record: Handle Already on the way using a different song;
+  restore request/rotation/output settings and pause Practice.
+
+- [Live handoff](../tutorials/live-handoff.md)
+
+  Distinctive checkpoint and exercise: Real BUTT source takes over, Live line identifies source;
+  disconnect returns to automation; second segment tests disconnect rather than pausing a song.
+
+  Recovery to inspect/run; final state to record: Follow failed connection/login guidance with
+  correct mount/port/account; stop BUTT, remove rehearsal credential and restore practice output.
+
+- [Backup recovery](../tutorials/backup-recovery.md)
+
+  Distinctive checkpoint and exercise: New ZIP passes inspection; explicit isolated config/paths;
+  recovered Practice and six seeded picks; seed change never alters original History.
+
+  Recovery to inspect/run; final state to record: Correct source config or choose fresh destination
+  on refusal, no force; retain archive/copy and verify original station intact.
+
+- [Two stations](../tutorials/two-stations.md)
+
+  Distinctive checkpoint and exercise: Off-air creation, shared music without reimport; separate
+  queue marker/history/wheel; page switch versus stopping runtime.
+
+  Recovery to inspect/run; final state to record: Stop on existing ID/folder, inspect station
+  selection/FFmpeg; leave Practice Two off air with autostart off, remove original marker, Browser
+  paused.
 
 Physical microphone capture, server sound card playback, second-device listening,
 source-client handoff, model execution and actual musical/speech quality need the
@@ -276,12 +495,29 @@ the links/headings they choose, wrong turns, help requests, completion and their
 words at a failure. The expected paths are for the observer. Perform these
 journeys independently of the author/agent's source review.
 
-| Reader purpose and task prompt | Observer's expected observable path/result |
-| --- | --- |
-| Learn: “Build a small automatic station, then learn one further skill of your choice.” | Find the tutorial index, complete first-station and one later lesson from its prerequisites; explain its prediction exercise, recover from encountered problems and stop safely. |
-| Do: “Make a backup and rehearse recovery without replacing this station.” | Find backup/update or core-operations guidance; inspect archive and restore to isolated paths, identify exclusions and retain the source station intact. |
-| Look up: “Find what this output mode supports and the default/value range of a setting it uses.” | Reach feature availability and the named settings reference; report the exact value/restriction with its heading/link, without treating a tutorial example as the default. |
-| Understand: “Explain why changing the control page's station does not stop another station and what they share.” | Reach station explanation and, if needed, station operations; distinguish station-owned queue/playout/settings from shared library/server, citing the relevant text. |
+- Learn: “Build a small automatic station, then learn one further skill of your choice.”
+
+  Observer's expected observable path/result: Find the tutorial index, complete first-station and
+  one later lesson from its prerequisites; explain its prediction exercise, recover from encountered
+  problems and stop safely.
+
+- Do: “Make a backup and rehearse recovery without replacing this station.”
+
+  Observer's expected observable path/result: Find backup/update or core-operations guidance;
+  inspect archive and restore to isolated paths, identify exclusions and retain the source station
+  intact.
+
+- Look up: “Find what this output mode supports and the default/value range of a setting it uses.”
+
+  Observer's expected observable path/result: Reach feature availability and the named settings
+  reference; report the exact value/restriction with its heading/link, without treating a tutorial
+  example as the default.
+
+- Understand: “Explain why changing the control page's station does not stop another station and what they share.”
+
+  Observer's expected observable path/result: Reach station explanation and, if needed, station
+  operations; distinguish station-owned queue/playout/settings from shared library/server, citing
+  the relevant text.
 
 For the Learn journey, one uncoached unfamiliar reader must complete
 first-station and one later lesson, not just find their links. Record where

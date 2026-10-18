@@ -209,6 +209,7 @@ build = [
 ]
 dev = [
     "bandit>=1.9.4",
+    "markdown-it-py>=4.0.0",  # documentation renderer
     "mypy>=2.0.0",
     "pip-audit>=2.10.0",
     "pre-commit>=4.5.1",

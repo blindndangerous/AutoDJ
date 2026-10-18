@@ -1,6 +1,6 @@
 # AutoDJ operations
 
-For everyday tasks, start with the [README guide list](../README.md#build-your-station): music, sound, schedules, live work, streaming, several stations, backups, keyboard access, and troubleshooting. Use the [settings reference](settings-reference.md) for values and defaults. This index routes detailed commands and migration notes to focused guides, reference pages and explanations.
+For everyday tasks, start with the [documentation home](README.md): music, sound, schedules, live work, streaming, several stations, backups, keyboard access, and troubleshooting. Use the [settings reference](settings-reference.md) for values and defaults. This index routes detailed commands and migration notes to focused guides, reference pages and explanations.
 
 For architectural constraints and implementation/test links, consult the
 [ADR index](adr/README.md), especially the current amendments to
