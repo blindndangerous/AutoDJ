@@ -54,15 +54,17 @@ def desk(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_speech_cues_trim_the_silence_around_the_speech_only():
-    audio = np.zeros((5 * SR, 2), dtype=np.float32)
+@pytest.mark.parametrize("length", [5, 30])
+@pytest.mark.parametrize("noise", [0.0, 0.00005])
+def test_speech_cues_trim_the_silence_around_the_speech_only(length, noise):
+    audio = np.full((length * SR, 2), noise, dtype=np.float32)
     audio[SR : 2 * SR, 0] = 0.3
     audio[round(2.5 * SR) : 3 * SR, 1] = 0.3  # a pause inside the speech stays
     cues = speech_cues(audio)
     assert cues.start == pytest.approx(0.95, abs=0.021)
     assert cues.segue == pytest.approx(3.0, abs=0.021)
     assert cues.end == pytest.approx(cues.segue + 0.4, abs=1e-3)
-    assert cues.length == 5.0
+    assert cues.length == length
     assert cues.speech == pytest.approx(2.05, abs=0.03)
     assert cues.points(True)["overlap_start"] == 0.0
     assert cues.points(False)["overlap_start"] is None
