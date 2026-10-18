@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createEditorDialog, showEditorError } from "../../src/autodj/static/modules/editor-dialog.js";
+import { installIndexMarkup } from "./helpers.js";
 
 const byId = (id) => document.getElementById(id);
 
@@ -39,6 +40,24 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 afterEach(() => document.body.replaceChildren());
 
 describe("editor dialog controller", () => {
+  it("keeps each production editor title as a level-one heading when its text changes", () => {
+    installIndexMarkup();
+    for (const [formId, titleId, cancelId] of [
+      ["categories-form", "categories-form-legend", "categories-cancel"],
+      ["intro-rules-form", "intro-rules-form-legend", "intro-rules-cancel"],
+      ["schedule-form", "schedule-form-legend", "schedule-cancel"],
+      ["ads-spot-form", "ads-spot-legend", "ads-spot-cancel"],
+      ["ads-break-form", "ads-break-legend", "ads-break-cancel"],
+    ]) {
+      const heading = byId(titleId);
+      const editor = createEditorDialog({ form: byId(formId), heading, cancel: byId(cancelId), save: vi.fn() });
+      heading.textContent = "Edit example";
+      expect(heading.tagName, formId).toBe("H1");
+      expect(editor.dialog.getAttribute("aria-labelledby"), formId).toBe(titleId);
+      expect(editor.dialog.querySelector("h1, h2, h3, h4, h5, h6"), formId).toBe(heading);
+    }
+  });
+
   it("moves forms out of their tab panel into a document-level modal", () => {
     const panel = document.createElement("section");
     panel.setAttribute("role", "tabpanel");

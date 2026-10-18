@@ -15,6 +15,9 @@ is pending; the detailed interaction and release-sampling rules remain here.
 
 AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
+Each modal dialog starts with an H1 title referenced by its `aria-labelledby`.
+Verify level-one heading navigation inside the dialog as well as its initial field focus.
+
 ## Published evidence
 
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).
