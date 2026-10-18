@@ -147,6 +147,10 @@ def source_fingerprint(
     shared: dict | None = None,
 ) -> str:
     """Hash inputs, sharing library reads only within one result-list request."""
+    if request.get("source") == "edition":
+        from autodj.prepared_review import edition_fingerprint
+
+        return edition_fingerprint(station, dict(request))
     if station.bridge.library is None:
         raise ReviewError("The review needs the music library")
     if shared is None:
@@ -385,6 +389,10 @@ def capture_review(
 ) -> ReviewPlan:
     parameters: dict[str, Any] = copy.deepcopy(dict(request))
     kind = parameters.get("source")
+    if kind == "edition":
+        from autodj.prepared_review import capture_edition
+
+        return capture_edition(station, parameters, cancelled=cancelled)
     if kind not in {"show", "queue", "forecast"}:
         raise ReviewError("Choose a saved show, queue or forecast")
     if cancelled():

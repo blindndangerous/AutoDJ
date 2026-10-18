@@ -17,10 +17,19 @@ export function installProgrammeReview({
 } = {}) {
   const get = (id) => doc.getElementById(`review-${id}`);
   if (!get("card")) return { clear() {}, refresh: async () => {} };
+  const card = get("card");
   const audio = get("audio"), snapshots = get("snapshots"), form = get("form");
   let generation = 0, timer = null, job = null, result = null, selected = 0, submitting = false;
   let refreshNumber = 0, loadNumber = 0;
   let reviewsLoaded = false;
+  let editionRequest = null, editionOpener = null;
+  const returnButton = doc.createElement("button");
+  returnButton.type = "button"; returnButton.textContent = "Return to edition"; returnButton.hidden = true;
+  get("result").append(returnButton);
+  returnButton.addEventListener("click", () => {
+    doc.getElementById("tab-library")?.click();
+    if (editionOpener?.isConnected) editionOpener.focus();
+  });
   const context = () => [generation, stationEpoch(), captureAuthenticatedRequestEpoch()];
   const current = ([mine, station, auth]) => mine === generation && station === stationEpoch()
     && isAuthenticatedRequestCurrent(auth);
@@ -63,6 +72,7 @@ export function installProgrammeReview({
       value.incomplete ? "Incomplete." : "Complete.", `Preview ${time(value.duration)}.`,
       `Effective programme range ${time(value.effective_range?.[0])} to ${time(value.effective_range?.[1])}.`,
       "Before broadcast mastering.",
+      value.includes_pending_speech ? "Pending speech included for review; approval is explicit." : "",
     ].join(" ");
     get("omissions").replaceChildren(...(value.omissions || []).map((omission) => {
       const li = doc.createElement("li");
@@ -80,6 +90,12 @@ export function installProgrammeReview({
     }));
     get("previous").disabled = !value.items?.length;
     get("next").disabled = !value.items?.length;
+    if (value.source === "edition" && value.target_take_id && value.approval_review_complete) {
+      doc.dispatchEvent(new CustomEvent("autodj:edition-review-ready", { detail: {
+        edition_id: value.edition_id, take_id: value.target_take_id,
+        review_id: value.id, revision: value.edition_revision,
+      } }));
+    }
   }
   function jump(index) {
     const items = result?.items || [];
@@ -179,10 +195,11 @@ export function installProgrammeReview({
       head_seconds: Number(get("head").value), tail_seconds: Number(get("tail").value),
       clip_threshold_seconds: Number(get("threshold").value), tone_seconds: Number(get("tone").value),
       keep_complete: [],
+      ...(editionRequest || {}),
     };
   }
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault(); if (submitting || job) return;
+  async function generate() {
+    if (submitting || job) return;
     const value = body(); if (!value) return;
     const ticket = context(); submitting = true;
     await withDisabled(get("generate"), async () => {
@@ -193,6 +210,23 @@ export function installProgrammeReview({
       finally { if (current(ticket)) submitting = false; }
     });
     if (current(ticket)) busy(Boolean(job));
+  }
+  form.addEventListener("submit", (event) => { event.preventDefault(); void generate(); });
+  doc.addEventListener("autodj:review-edition", (event) => {
+    if (!card.isConnected) return;
+    if (submitting || job) { say("Wait for the current review, or cancel it first."); return; }
+    const detail = event.detail;
+    editionRequest = { source: "edition", show_id: null, edition_id: detail.edition_id,
+      target_take_id: detail.take_id || null, include_pending: detail.include_pending === true };
+    editionOpener = detail.opener; returnButton.hidden = false;
+    if (![...get("source").options].some((option) => option.value === "edition")) {
+      const option = doc.createElement("option"); option.value = "edition";
+      option.textContent = "Prepared edition"; get("source").append(option);
+    }
+    get("source").value = "edition"; get("show-row").hidden = true;
+    get("selection-start").value = ""; get("selection-end").value = "";
+    doc.getElementById("tab-now")?.click(); card.open = true;
+    get("generate").focus(); void generate();
   });
   get("cancel").addEventListener("click", async () => {
     if (!job) return;
@@ -238,13 +272,18 @@ export function installProgrammeReview({
     const index = items.findLastIndex((item) => item.preview_start <= audio.currentTime);
     if (index >= 0) selected = index;
   });
-  get("source").addEventListener("change", () => { get("show-row").hidden = get("source").value !== "show"; });
+  get("source").addEventListener("change", () => {
+    get("show-row").hidden = get("source").value !== "show";
+    if (get("source").value !== "edition") editionRequest = null;
+  });
   get("card").addEventListener("toggle", () => { if (get("card").open) void refresh(); });
   return {
     refresh,
     clear() {
       generation += 1; refreshNumber += 1; loadNumber += 1;
       reviewsLoaded = false;
+      editionRequest = null; editionOpener = null; returnButton.hidden = true;
+      get("source").querySelector('option[value="edition"]')?.remove();
       if (timer) clearTimer(timer); timer = null; job = null; result = null; submitting = false;
       stopAudio(); busy(false); get("result").hidden = true;
       snapshots.replaceChildren(); get("show").replaceChildren(); get("items").replaceChildren();

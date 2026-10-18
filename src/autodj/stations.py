@@ -257,6 +257,16 @@ class StationPaths:
         return self.state_dir / "shows.json"
 
     @property
+    def editions(self) -> Path:
+        """Prepared show editions and their occurrence-bound speech approvals."""
+        return self.state_dir / "editions.json"
+
+    @property
+    def edition_audio(self) -> Path:
+        """Immutable source audio owned by prepared editions, never liner rotation."""
+        return self.state_dir / "edition_audio"
+
+    @property
     def reviews(self) -> Path:
         """Private, derived programme review snapshots, never scanned as library audio."""
         return self.state_dir / "reviews"

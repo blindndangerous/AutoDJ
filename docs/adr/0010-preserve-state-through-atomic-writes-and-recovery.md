@@ -107,3 +107,7 @@ Platform-specific private-file semantics, network shares, and real power-loss
 recovery need their own environment evidence. This record does not claim a
 backup exists on an operator's machine. Historical rationale and acceptance
 remain pending.
+
+## Related proposal — 2026-10-17
+
+Prepared editions preserve source assets in backups and require explicit resumption after interruption, while ordinary saved Shows retain automatic resume. The focused proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.

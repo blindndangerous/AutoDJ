@@ -56,6 +56,7 @@ from pydantic import (
 )
 
 from autodj.fsutil import atomic_write, file_signature, set_aside
+from autodj.identity_map import attached
 from autodj.timefmt import length_text
 
 logger = logging.getLogger(__name__)
@@ -660,6 +661,68 @@ class ShowGenerations:
 # ---------------------------------------------------------------------------
 
 
+def prepared_entry(item: Any, library: Any) -> Any:
+    """One owned occurrence, shared by edition playout and contextual review."""
+    from autodj.indexer import IndexEntry
+
+    entry: Any
+    if item.kind == "song":
+        original = library.entry_for_path(str(item.path))
+        if original is None:
+            return None
+        entry = copy.copy(original)
+    else:
+        if not 0 < item.seconds <= 1800:
+            raise ValueError("A standalone speech segment must be at most 30 minutes")
+        entry = IndexEntry(
+            path=str(item.path),
+            title=item.label or "Speech segment",
+            artist="",
+            album="",
+            genre="",
+            bpm=0,
+            year=0,
+            length=item.seconds,
+            energy=0.1,
+            key=-1,
+            mode=-1,
+            tempo_confidence=0,
+        )
+        entry._prepared_clip = True
+        entry._prepared_points = {
+            "start": 0.0,
+            "segue": item.seconds,
+            "end": item.seconds,
+        }
+    entry._prepared_occurrence_id = item.occurrence_id
+    return entry
+
+
+def prepared_break(speech: Any) -> Any:
+    """A validated local handoff take; no reservation, provider or live-slot state."""
+    from autodj.breaks import Break, BreakCues
+
+    return Break(
+        break_id=speech.take_id,
+        kind="dj",
+        slot_id="",
+        ending="",
+        upcoming="",
+        placement=speech.placement,
+        allow_outro=speech.allow_outro,
+        path=speech.path,
+        size=0,
+        cues=BreakCues(0, speech.seconds, speech.seconds, speech.seconds),
+        label=speech.label or "Prepared speech",
+        token_name="",  # nosec B106 — local asset attribution, not an authentication secret
+        created_at=0,
+        expires_at=0,
+        source="prepared_edition",
+        keep_file=True,
+        limit_s=speech.seconds,
+    )
+
+
 @dataclass
 class _OnAir:
     """The show on the air: its list as it was when it started, and how far it has got."""
@@ -681,6 +744,12 @@ class _OnAir:
     skipped_count: int = 0
     # Stop was asked for, but some of the show's entries are still queued.
     stopping: bool = False
+    edition_id: str | None = None
+    prepared: Any = None
+    prepared_entries: tuple[Any, ...] = ()
+    confirm_reair: bool = False
+    marked_started: bool = False
+    committed_audio_notice: str | None = None
 
     def resume_index(self) -> int:
         """The first place in the list that has not played: the earliest waiting copy's."""
@@ -742,16 +811,27 @@ class ShowRunner:
         *,
         state_path: Path | None = None,
         clock: Callable[[], float] = time.time,
+        edition_store: Any = None,
+        edition_station: Any = None,
     ) -> None:
         self._bridge = bridge
         self._store = store
         self._publisher = publish
         self._clock = clock
         self._state_path = state_path
+        self._edition_start_lock = threading.Lock()
+        self._edition_refresh_lock = threading.Lock()
+        self._prepared_signature: str | None = None
+        self._prepared_loop: asyncio.AbstractEventLoop | None = None
+        self._prepared_refresh_task: asyncio.Task[None] | None = None
+        self._prepared_refresh_requested = False
         self._turn = asyncio.Lock()
         # Guards _on_air for the preview and the request desk, which read it
         # from their own threads.
         self._state_lock = threading.Lock()
+        self._edition_store = edition_store
+        self._edition_station = edition_station
+        self._interrupted: dict[str, Any] | None = None
         self._on_air: _OnAir | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume: dict[str, Any] | None = self._read_state()
@@ -771,7 +851,7 @@ class ShowRunner:
             saved = self._resume
             if air is None:
                 if saved is None:
-                    return None
+                    return copy.deepcopy(self._interrupted)
                 total = len(saved["songs"])
                 return {
                     "id": saved["show_id"],
@@ -790,6 +870,7 @@ class ShowRunner:
             total = len(air.songs)
             return {
                 "id": air.show_id,
+                "edition_id": air.edition_id,
                 "name": air.name,
                 "pending_resume": False,
                 "total": total,
@@ -800,6 +881,11 @@ class ShowRunner:
                 "skipped_count": air.skipped_count,
                 "started_at": air.started_at,
                 "stopping": air.stopping,
+                "estimated_seconds": air.prepared.estimated_seconds
+                if air.prepared is not None
+                else None,
+                "interrupted_edition": copy.deepcopy(self._interrupted),
+                "committed_audio_notice": air.committed_audio_notice,
             }
 
     def upcoming(self) -> tuple[str, tuple[str, ...]] | None:
@@ -840,6 +926,186 @@ class ShowRunner:
         with self._state_lock:
             return self._on_air is not None and self._on_air.holds(entry)
 
+    def edition_active(self, edition_id: str) -> bool:
+        with self._state_lock:
+            return self._on_air is not None and self._on_air.edition_id == edition_id
+
+    def prepared_handoff(self, current: Any, upcoming: Any) -> tuple[Any, ...]:
+        """Only the exact adjacent edition occurrences receive their approved take."""
+        if upcoming is None or self._edition_store is None:
+            return ()
+        marks = attached(self._bridge.player, "_edition_occurrences")
+        before, after = marks.get(current), marks.get(upcoming)
+        with self._state_lock:
+            air = self._on_air
+        if air is None or air.edition_id is None or before is None or after is None:
+            return ()
+        # Approval/cue/media inputs are rechecked on the render worker, outside
+        # queue and audio locks, rather than trusting admission-time approval.
+        plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+        with self._state_lock:
+            for reason in plan.omissions:
+                if not any(row["reason"] == reason for row in air.skipped):
+                    air.skip("", "Prepared speech", reason)
+        return tuple(
+            prepared_break(take)
+            for take in plan.handoffs.get((before.occurrence_id, after.occurrence_id), ())
+        )
+
+    @staticmethod
+    def _plan_signature(plan: Any) -> str:
+        return repr((plan.items, dict(plan.handoffs), plan.omissions))
+
+    def request_prepared_refresh(self) -> None:
+        """Queue-held callers only wake the existing event-loop control worker."""
+        loop = self._prepared_loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(self._schedule_prepared_refresh)
+
+    def _schedule_prepared_refresh(self) -> None:
+        self._prepared_refresh_requested = True
+        if self._prepared_refresh_task is None or self._prepared_refresh_task.done():
+            self._prepared_refresh_task = asyncio.create_task(self._refresh_prepared_control())
+            self._tasks.add(self._prepared_refresh_task)
+            self._prepared_refresh_task.add_done_callback(self._tasks.discard)
+
+    async def _refresh_prepared_control(self) -> None:
+        while self._prepared_refresh_requested:
+            self._prepared_refresh_requested = False
+            try:
+                await asyncio.to_thread(self.prepared_changed)
+            except (OSError, ValueError, RuntimeError):
+                logger.exception("Prepared audio refresh failed after an edit")
+                self.prepared_speech_failed(
+                    "", "Prepared audio refresh failed; check edition before airing"
+                )
+
+    def prepared_render_token(self) -> str:
+        with self._state_lock:
+            air = self._on_air
+        if air is None or air.edition_id is None:
+            return ""
+        plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+        cfg = self._bridge.player._cfg
+        return repr((self._plan_signature(plan), cfg.playback, cfg.breaks, cfg.replaygain))
+
+    @contextlib.contextmanager
+    def prepared_render_guard(self, token: str) -> Any:
+        """Hold model/settings writers out between dependency check and bus swap.
+
+        Reads and fingerprinting finish before acquiring bus/set locks. API
+        mutations use this same edition-store lock and notify only after release.
+        """
+        from autodj.player import settings_lock
+
+        lock = getattr(self._edition_store, "_lock", contextlib.nullcontext())
+        with lock, settings_lock(self._bridge.player):
+            yield token == self.prepared_render_token()
+
+    def prepared_editable(self, edition_id: str) -> bool:
+        """Edits cannot retract a prepared voice already committed to the bus."""
+        if not self.edition_active(edition_id):
+            return True
+        player = self._bridge.player
+        track = player._playing_render
+        if track is None or player.bus is None:
+            return True
+        boundary = player.prepared_tail_boundary(track)
+        return player.bus.can_replace_unheard_tail(track, before_frame=boundary)
+
+    def prepared_changed(self) -> None:
+        """Revalidate changed editions off the audio thread, including future PCM."""
+        with self._edition_refresh_lock:
+            with self._state_lock:
+                air = self._on_air
+            if air is None or air.edition_id is None:
+                return
+            plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+            signature = self._plan_signature(plan)
+            if signature == self._prepared_signature:
+                return
+            valid = {row.occurrence_id for row in plan.items}
+            player = self._bridge.player
+            marks = attached(player, "_edition_occurrences")
+            with player._state.queue_lock:
+                player._state.queue[:] = [
+                    entry
+                    for entry in player._state.queue
+                    if not (
+                        getattr(entry, "_prepared_clip", False)
+                        and (mark := marks.get(entry)) is not None
+                        and mark.occurrence_id not in valid
+                    )
+                ]
+                queued = player._state.queued_next
+                if (
+                    getattr(queued, "_prepared_clip", False)
+                    and (mark := marks.get(queued)) is not None
+                    and mark.occurrence_id not in valid
+                ):
+                    player._state.queued_next = None
+            for omission in plan.omissions:
+                self.prepared_speech_failed("", omission)
+            player.refresh_prepared_tail()
+            self._prepared_signature = signature
+
+    def prepared_primary_valid(self, entry: Any) -> bool:
+        """Recheck approval and the immutable asset at the last render boundary."""
+        mark = attached(self._bridge.player, "_edition_occurrences").get(entry)
+        with self._state_lock:
+            air = self._on_air
+        if mark is None or air is None or air.edition_id is None:
+            return False
+        try:
+            plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+            valid = any(
+                row.occurrence_id == mark.occurrence_id
+                and row.take_id == mark.take_id
+                and row.path == mark.path
+                for row in plan.items
+            )
+        except (OSError, ValueError):
+            valid = False
+        if not valid:
+            self.prepared_speech_failed(
+                mark.take_id or mark.occurrence_id,
+                f"{mark.label}: changed, unapproved or missing; speech skipped",
+            )
+        return valid
+
+    def prepared_render_committed(self, *entries: Any) -> None:
+        """Persist a conservative may-have-aired guard before PCM can escape."""
+        marks = attached(self._bridge.player, "_edition_occurrences")
+        if not any(marks.get(entry) is not None for entry in entries if entry is not None):
+            return
+        with self._edition_start_lock:
+            with self._state_lock:
+                air = self._on_air
+            if air is None or air.edition_id is None or air.marked_started:
+                return
+            self._edition_store.mark_started(air.edition_id, confirm_reair=air.confirm_reair)
+            self._write_state(air, strict=True)
+            air.marked_started = True
+
+    def prepared_audio_committed(self) -> None:
+        """An edit cannot revoke the prior approval of already committed PCM."""
+        with self._state_lock:
+            if self._on_air is not None and self._on_air.edition_id is not None:
+                self._on_air.committed_audio_notice = (
+                    "The current transition crossed its playout commit boundary under its "
+                    "previous approval. Saved changes apply to future audio; current "
+                    "committed audio continues."
+                )
+
+    def prepared_speech_failed(self, take_id: str, reason: str) -> None:
+        with self._state_lock:
+            if (
+                self._on_air is not None
+                and self._on_air.edition_id is not None
+                and not any(row["reason"] == reason for row in self._on_air.skipped)
+            ):
+                self._on_air.skip("", take_id, reason)
+
     # -- the saved place --------------------------------------------------
 
     def _read_state(self) -> dict[str, Any] | None:
@@ -854,6 +1120,7 @@ class ShowRunner:
             logger.warning("The saved show on the air in %s cannot be read; not resumed", path)
             return None
         if isinstance(saved, dict) and saved.get("stopped") is True:
+            self._interrupted = saved.get("interrupted_edition")
             return None
         fields_ok = (
             isinstance(saved, dict)
@@ -868,7 +1135,29 @@ class ShowRunner:
         if not fields_ok:
             logger.warning("The saved show on the air in %s is not valid; not resumed", path)
             return None
+        self._interrupted = saved.get("interrupted_edition")
+        if saved.get("edition_id"):
+            self._interrupted = self._interrupted_status(saved)
+            return None
         return dict(saved)
+
+    @staticmethod
+    def _interrupted_status(saved: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "id": saved["edition_id"],
+            "edition_id": saved["edition_id"],
+            "name": saved["name"],
+            "interrupted": True,
+            "pending_resume": False,
+            "resume_occurrence": saved.get("resume_occurrence"),
+            "occurrences": list(saved.get("occurrences", ())),
+            "total": len(saved.get("songs", ())),
+            "played": saved.get("played", 0),
+            "waiting": 0,
+            "to_come": 0,
+            "skipped": [],
+            "skipped_count": 0,
+        }
 
     def _forget_state(self) -> bool:
         """Remove the saved show, or leave a stopped marker; whether that worked.
@@ -896,12 +1185,28 @@ class ShowRunner:
         self._forget_later = True
         return False
 
-    def _write_state(self, air: _OnAir | None) -> None:
+    def _write_state(self, air: _OnAir | None, *, strict: bool = False) -> None:
         """Save the show on the air (or forget it); a failure is logged, never raised."""
         path = self._state_path
         if path is None:
             return
         if air is None:
+            if self._interrupted is not None:
+                try:
+                    atomic_write(
+                        path,
+                        json.dumps(
+                            {
+                                "version": ON_AIR_VERSION,
+                                "stopped": True,
+                                "interrupted_edition": self._interrupted,
+                            }
+                        )
+                        + "\n",
+                    )
+                except OSError:
+                    logger.exception("Could not save the interrupted edition to %s", path)
+                return
             self._forget_state()
             return
         try:
@@ -918,11 +1223,25 @@ class ShowRunner:
                     "skipped_count": air.skipped_count,
                     "started_at": air.started_at,
                     "ends_by": air.ends_by,
+                    "interrupted_edition": self._interrupted,
                 }
+                if air.edition_id is not None:
+                    rows = air.prepared.items
+                    index = min(air.resume_index(), max(0, len(rows) - 1))
+                    document.update(
+                        edition_id=air.edition_id,
+                        occurrences=[
+                            {"id": row.occurrence_id, "label": row.label, "kind": row.kind}
+                            for row in rows
+                        ],
+                        resume_occurrence=rows[index].occurrence_id if rows else None,
+                    )
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(path, json.dumps(document, ensure_ascii=False) + "\n")
         except OSError:
             logger.exception("Could not save the show on the air to %s", path)
+            if strict:
+                raise
 
     def _ends_by(self, songs: Sequence[str], start: float) -> float:
         """When a list started at *start* would have ended, plus the resume grace."""
@@ -940,6 +1259,111 @@ class ShowRunner:
             await self._publisher({"type": "shows_changed"})
         except Exception:
             logger.exception("Could not tell the web pages about a show change")
+
+    async def start_edition(
+        self,
+        edition_id: str,
+        *,
+        now: bool = False,
+        confirm_reair: bool = False,
+        from_occurrence: str | None = None,
+    ) -> str:
+        """Queue a frozen local edition; restart resumption always names an item."""
+        if self._edition_store is None or not self._plays_now_on_bus():
+            raise ValueError("Prepared editions require server audio or streaming")
+        if (
+            self._interrupted is not None
+            and self._interrupted.get("edition_id") == edition_id
+            and from_occurrence is None
+        ):
+            raise ValueError("Choose an occurrence to resume this interrupted edition")
+        plan = await asyncio.to_thread(
+            self._edition_store.runtime_plan,
+            edition_id,
+            self._edition_station,
+            from_occurrence=from_occurrence,
+        )
+        if plan.previously_started and not confirm_reair:
+            raise ValueError("Confirm re-airing this edition; its speech has aired before")
+        entries = tuple(prepared_entry(row, self._bridge.library) for row in plan.items)
+        if not any(entry is not None for entry in entries):
+            raise ValueError("This edition has no playable items")
+        started = self._clock()
+        air = _OnAir(
+            edition_id,
+            plan.name,
+            tuple(str(row.path) for row in plan.items),
+            started,
+            started + plan.estimated_seconds + RESUME_GRACE_S,
+            edition_id=edition_id,
+            prepared=plan,
+            prepared_entries=entries,
+            confirm_reair=confirm_reair,
+        )
+        for omission in plan.omissions:
+            air.skip("", "Prepared speech", str(omission))
+        async with self._turn:
+            await asyncio.to_thread(self._interrupt_edition)
+            if not await asyncio.to_thread(self._clear_blocking):
+                raise ValueError("The previous show is still being taken out of the queue")
+            with self._state_lock:
+                self._resume = None
+                if (
+                    self._interrupted is not None
+                    and self._interrupted.get("edition_id") == edition_id
+                ):
+                    self._interrupted = None
+            attached(self._bridge.player, "_edition_occurrences", create=True).clear()
+            self._prepared_signature = self._plan_signature(plan)
+            self._prepared_loop = asyncio.get_running_loop()
+            self._bridge.player.request_prepared_refresh = self.request_prepared_refresh
+            self._bridge.player.prepared_render_token = self.prepared_render_token
+            self._bridge.player.prepared_render_guard = self.prepared_render_guard
+            self._bridge.player.prepared_primary_valid = self.prepared_primary_valid
+            self._bridge.player.prepared_render_committed = self.prepared_render_committed
+            self._bridge.player.prepared_handoff = self.prepared_handoff
+            self._bridge.player.prepared_speech_failed = self.prepared_speech_failed
+            self._bridge.player.prepared_audio_committed = self.prepared_audio_committed
+            queued, _skipped = await self._begin(
+                air, now=now or self._bridge.player._state.current_track is None
+            )
+        await self._tell_started(plan.name)
+        await self._publish()
+        return f"Prepared edition {plan.name} queued ({queued} items)"
+
+    def _interrupt_edition(self) -> None:
+        with self._state_lock:
+            air = self._on_air
+            if air is None or air.edition_id is None:
+                return
+            rows = air.prepared.items
+            index = min(air.resume_index(), max(0, len(rows) - 1))
+            self._interrupted = self._interrupted_status(
+                {
+                    "edition_id": air.edition_id,
+                    "name": air.name,
+                    "songs": air.songs,
+                    "played": air.played,
+                    "resume_occurrence": rows[index].occurrence_id if rows else None,
+                    "occurrences": [
+                        {"id": row.occurrence_id, "label": row.label, "kind": row.kind}
+                        for row in rows
+                    ],
+                }
+            )
+
+    def _entry_at(self, air: _OnAir, index: int) -> Any:
+        if air.edition_id is None:
+            return self._bridge.entry_for_path(air.songs[index])
+        return air.prepared_entries[index]
+
+    def _own_entry(self, air: _OnAir, entry: Any, index: int) -> Any:
+        own = copy.copy(entry)
+        if air.edition_id is not None:
+            attached(self._bridge.player, "_edition_occurrences", create=True)[own] = (
+                air.prepared.items[index]
+            )
+        return own
 
     def _plays_now_on_bus(self) -> bool:
         bridge = self._bridge
@@ -975,6 +1399,7 @@ class ShowRunner:
         ends_by = await asyncio.to_thread(self._ends_by, songs, started)
         air = _OnAir(show_id, show.name, songs, started, ends_by)
         async with self._turn:
+            await asyncio.to_thread(self._interrupt_edition)
             with self._state_lock:
                 self._resume = None
             if not await asyncio.to_thread(self._clear_blocking):
@@ -1015,7 +1440,11 @@ class ShowRunner:
         await asyncio.to_thread(self._feed_blocking)
         if first is not None:
             # Play now leaves a "play next" song where it is: it plays next.
-            await asyncio.to_thread(self._bridge.play_next, first.path, True)
+            if air.edition_id is not None:
+                await asyncio.to_thread(self.prepared_render_committed, first)
+                await asyncio.to_thread(self._bridge.play_next_entry, first, True)
+            else:
+                await asyncio.to_thread(self._bridge.play_next, first.path, True)
         elif now and not on_bus:
             with self._state_lock:
                 started = bool(air.waiting)
@@ -1045,10 +1474,14 @@ class ShowRunner:
         """
         async with self._turn:
             with self._state_lock:
+                interrupted, self._interrupted = self._interrupted, None
                 air = self._on_air
                 saved, self._resume = self._resume, None
             if air is None:
                 if saved is None:
+                    if interrupted is not None:
+                        await asyncio.to_thread(self._forget_state)
+                        return {"name": interrupted["name"], "done": True}
                     return None
                 await asyncio.to_thread(self._forget_state)
                 logger.info("Show %r will not resume: stopped by the operator", saved["name"])
@@ -1148,16 +1581,24 @@ class ShowRunner:
         bridge = self._bridge
         while air.next_index < len(air.songs):
             path = air.songs[air.next_index]
-            entry = bridge.entry_for_path(path)
+            entry = self._entry_at(air, air.next_index)
             if entry is None:
                 reason, title = "it is not in the library", _file_name(path)
             else:
-                broken = bridge.dmca_queue_limits(entry, now=True, append=False)
+                broken = (
+                    ()
+                    if getattr(entry, "_prepared_clip", False)
+                    else bridge.dmca_queue_limits(entry, now=True, append=False)
+                )
                 if not broken:
                     with self._state_lock:
                         air.next_index += 1
                         air.played += 1
-                    return entry
+                    return (
+                        self._own_entry(air, entry, air.next_index - 1)
+                        if air.edition_id is not None
+                        else entry
+                    )
                 reason, title = (
                     "it would break the DMCA limit: " + "; ".join(broken),
                     song_title(entry),
@@ -1215,7 +1656,7 @@ class ShowRunner:
         with self._state_lock:
             if self._on_air is air:
                 self._on_air = None
-        self._forget_state()
+        self._write_state(None)
         return True
 
     def _account(self, air: _OnAir, view: Any) -> bool:
@@ -1268,7 +1709,9 @@ class ShowRunner:
                 (
                     (index, entry, broken)
                     for index, entry in enumerate(view.queue)
-                    if mine[index] and (broken := dmca_limits_at(bridge, entry, view, index))
+                    if mine[index]
+                    and not getattr(entry, "_prepared_clip", False)
+                    and (broken := dmca_limits_at(bridge, entry, view, index))
                 ),
                 None,
             )
@@ -1286,7 +1729,7 @@ class ShowRunner:
             if len(air.waiting) >= AHEAD or air.next_index >= len(air.songs):
                 break
             path = air.songs[air.next_index]
-            entry = bridge.entry_for_path(path)
+            entry = self._entry_at(air, air.next_index)
             if entry is None:
                 logger.warning("Show %r: %s skipped: it is not in the library", air.name, path)
                 with self._state_lock:
@@ -1297,7 +1740,11 @@ class ShowRunner:
             # After the show's last waiting song, or first in the queue: ahead
             # of songs queued before the show, listener requests included.
             position = max((index + 1 for index, held in enumerate(mine) if held), default=0)
-            broken = dmca_limits_at(bridge, entry, view, position)
+            broken = (
+                ()
+                if getattr(entry, "_prepared_clip", False)
+                else dmca_limits_at(bridge, entry, view, position)
+            )
             if broken:
                 reason = "it would break the DMCA limit: " + "; ".join(broken)
                 logger.warning("Show %r: %s skipped: %s", air.name, entry.display_name, reason)
@@ -1308,7 +1755,7 @@ class ShowRunner:
                 continue
             # The show's own copy, so it is told apart from a listener's
             # request or the operator's song for the same file.
-            own = copy.copy(entry)
+            own = self._own_entry(air, entry, air.next_index)
             if bridge.queue_insert_if(own, position, view):
                 with self._state_lock:
                     air.places[id(own)] = air.next_index
@@ -1317,7 +1764,19 @@ class ShowRunner:
                 changed = True
         ended = False
         with self._state_lock:
-            if self._on_air is air and air.next_index >= len(air.songs) and not air.waiting:
+            prepared_playing = (
+                air.edition_id is not None
+                and attached(self._bridge.player, "_edition_occurrences").get(
+                    self._bridge.player._state.current_track
+                )
+                is not None
+            )
+            if (
+                self._on_air is air
+                and air.next_index >= len(air.songs)
+                and not air.waiting
+                and not prepared_playing
+            ):
                 self._on_air = None
                 ended = True
                 logger.info(
@@ -1332,7 +1791,7 @@ class ShowRunner:
         return changed
 
 
-def show_action(runner: ShowRunner, store: ShowStore) -> Any:
+def show_action(runner: ShowRunner, store: ShowStore, editions: Any = None) -> Any:
     """The scheduler's "Play a show" action.
 
     Hard timing plays the show's first song at once, fading out the song
@@ -1343,16 +1802,33 @@ def show_action(runner: ShowRunner, store: ShowStore) -> Any:
 
     def choices() -> list[tuple[str, str]]:
         shows = store.all()
-        return sorted(
-            ((show_id, show.name) for show_id, show in shows.items()),
-            key=lambda pair: pair[1].casefold(),
-        )
+        found = [(show_id, show.name) for show_id, show in shows.items()]
+        if editions is not None:
+            for identity, edition in editions.all().items():
+                found.append((f"edition:{identity}", f"Prepared edition: {edition.name}"))
+                if edition.previously_started:
+                    found.append(
+                        (
+                            f"edition-confirmed:{identity}",
+                            f"Re-air prepared edition: {edition.name} (speech may have aired)",
+                        )
+                    )
+        return sorted(found, key=lambda pair: pair[1].casefold())
+
+    async def start(value: str, *, now: bool = False) -> None:
+        prefix, _, identity = value.partition(":")
+        if prefix in {"edition", "edition-confirmed"}:
+            await runner.start_edition(
+                identity, now=now, confirm_reair=prefix == "edition-confirmed"
+            )
+        else:
+            await runner.start(value, now=now)
 
     async def play(params: dict[str, str]) -> None:
-        await runner.start(params["show"])
+        await start(params["show"])
 
     async def play_now(params: dict[str, str]) -> None:
-        await runner.start(params["show"], now=True)
+        await start(params["show"], now=True)
 
     return Action(
         "show",

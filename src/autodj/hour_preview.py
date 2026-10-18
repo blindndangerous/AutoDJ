@@ -272,6 +272,7 @@ def _preview_liner_group(
     outgoing_rate: float | None = None,
     incoming_rate: float | None = None,
     voice: tuple[Any, dict[str, Any]] | None = None,
+    extra_voices: Sequence[tuple[Any, dict[str, Any], bool]] = (),
 ) -> tuple[list[tuple[Any, float, float]], float]:
     """Place cue-trimmed liner rows and return the incoming song's extra delay."""
     from autodj.playout import liner_chain_placement, liner_release_frames
@@ -290,8 +291,11 @@ def _preview_liner_group(
     frames = main_frames = fit_main_frames = 0
     release = 0.0
     ordinary = False
-    for entry in (*liners, *((voice[0],) if voice else ())):
-        cues = voice[1] if voice and entry is voice[0] else player.saved_points(entry)
+    spoken = {id(clip): (cues, allow) for clip, cues, allow in extra_voices}
+    if voice:
+        spoken[id(voice[0])] = (voice[1], False)
+    for entry in (*liners, *(clip for clip, _, _ in extra_voices), *((voice[0],) if voice else ())):
+        cues = spoken[id(entry)][0] if id(entry) in spoken else player.saved_points(entry)
         start = max(0.0, float(cues.get("start") or 0.0))
         end = min(float(entry.length or 0.0), float(cues.get("end") or entry.length or 0.0))
         first, last = round(start * sr), round(end * sr)
@@ -319,8 +323,10 @@ def _preview_liner_group(
         if cue == 0:
             fit_main_frames = max(fit_main_frames, main_frames)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
-        allow_outro = bool(record and record.get("allow_outro", False)) and not (
-            voice and entry is voice[0]
+        allow_outro = (
+            spoken[id(entry)][1]
+            if id(entry) in spoken
+            else bool(record and record.get("allow_outro", False))
         )
         chain.append((entry, offset, clip_frames, allow_outro))
         frames += clip_frames
@@ -1457,6 +1463,8 @@ def _predict(
         else 1.0
     )
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
+    # The callback resolves stable prepared occurrences, never track paths.
+    player.prepared_handoff = getattr(source.player, "prepared_handoff", None)  # type: ignore[attr-defined]
     live_intros = getattr(source.player, "matched_intros", None)
     if live_intros is not None and getattr(source.player, "bus", None) is not None:
         player.matched_intros = live_intros.snapshot()
@@ -1528,6 +1536,21 @@ def _predict(
         if time.perf_counter() - began > budget:
             stopped = "it reached its time limit"
             break
+        # A prepared pair uses the saved-cue mixer even when ordinary music
+        # joins use another mode. Resolve this finite queued edge before
+        # dispatching events, so its real segue is the scheduling boundary.
+        queued_next = next((row.entry for row in waiting if row.kind == "song"), None)
+        queued_breaks = (
+            player._prepared_breaks(current, queued_next)
+            if current is not None and queued_next is not None
+            else ()
+        )
+        if queued_breaks and player._cfg.playback.transition_mode != "saved_points":
+            previous = next((row for row in reversed(found) if row.kind == "song"), None)
+            if previous is not None and previous.entry is current and previous.cut_at is None:
+                begin, segue = player._clock_music_span(current)
+                handoff = previous.starts + max(0.0, segue - begin) / current_rate
+                found[found.index(previous)] = replace(previous, seconds=handoff - previous.starts)
         # As the station does: the pick reads the clock at the playing song's
         # start, and dayparting the hours at the next song's.
         player._sim_now = (
@@ -1589,7 +1612,11 @@ def _predict(
                 continue
             if event.action == "show":
                 # As on the air: a show replaces the one before it.
-                show_name, entries = scheduled.get(str(event.params.get("show", "")), ("", ()))
+                show_id = str(event.params.get("show", ""))
+                if show_id.startswith(("edition:", "edition-confirmed:")):
+                    stopped = f"scheduled prepared edition {event.name} cannot yet be predicted"
+                    break
+                show_name, entries = scheduled.get(show_id, ("", ()))
                 show_songs = list(entries)
             else:
                 refusal = _apply_event(player, bridge, event)
@@ -1674,8 +1701,20 @@ def _predict(
                     moment += forecast.seconds
         intro = None
         liner_key = ""
-        if player._cfg.playback.transition_mode == "saved_points":
-            breaks: tuple[Any, ...] = (SimpleNamespace(kind="ad"),) if moment > handoff else ()
+        prepared_breaks = (
+            queued_breaks
+            if entry is queued_next
+            else player._prepared_breaks(current, entry)
+            if current is not None
+            else ()
+        )
+        saved_handoff = player._cfg.playback.transition_mode == "saved_points" or bool(
+            prepared_breaks
+        )
+        if saved_handoff:
+            breaks: tuple[Any, ...] = prepared_breaks + (
+                (SimpleNamespace(kind="ad"),) if moment > handoff else ()
+            )
             if current is None:
                 intro = player._matched_intro(entry, breaks, handoff) if not added else None
             else:
@@ -1683,7 +1722,9 @@ def _predict(
                     current, entry, added, breaks, handoff
                 )
         selected_handoff = (
-            IncomingHandoff(tuple(added), intro, tuple(ad_spots)) if capture_audio else None
+            IncomingHandoff(tuple(added), intro, tuple(ad_spots), prepared_breaks)
+            if capture_audio
+            else None
         )
         voice: tuple[Any, dict[str, Any]] | None = None
         intro_label = intro.label if intro is not None else ""
@@ -1709,8 +1750,47 @@ def _predict(
             )
             if voice is None:
                 player.matched_intros.release((intro.intro_id,))
+        prepared_voices: list[tuple[Any, dict[str, Any], bool]] = []
+        if prepared_breaks:
+            from autodj.player import _music_output_points
+
+            def capture_prepared(
+                _audio: Any,
+                cues: dict[str, Any],
+                length: float,
+                allow_outro: bool,
+                captured: list[tuple[Any, dict[str, Any], bool]] = prepared_voices,
+            ) -> tuple[int, int]:
+                clip = SimpleNamespace(path="", length=length)
+                captured.append((clip, cues, allow_outro))
+                return 0, round((float(cues["segue"]) - float(cues["start"])) * SAMPLE_RATE)
+
+            spoken = player._add_breaks(
+                prepared_breaks,
+                _music_output_points(player.saved_points(entry), music_rate(player, entry)),
+                capture_prepared,
+            )
+            by_id = {item.break_id: item for item in prepared_breaks}
+            for (clip, _cues, _allow), (_at, break_id, _end) in zip(
+                prepared_voices, spoken, strict=True
+            ):
+                clip.path = str(by_id[break_id].path)
+                clip.label = by_id[break_id].label
+            decoded = {break_id for _at, break_id, _end in spoken}
+            for item in prepared_breaks:
+                if item.break_id not in decoded:
+                    found.append(
+                        Item(
+                            "break",
+                            moment,
+                            0.0,
+                            "predicted",
+                            label=f"Unavailable prepared speech: {item.label}",
+                            duration_unknown=True,
+                        )
+                    )
         next_rate = music_rate(player, entry)
-        if (added or voice) and player._cfg.playback.transition_mode == "saved_points":
+        if (added or voice or prepared_voices) and saved_handoff:
             rows, delay = _preview_liner_group(
                 player,
                 current,
@@ -1720,9 +1800,16 @@ def _predict(
                 outgoing_rate=current_rate,
                 incoming_rate=next_rate,
                 voice=voice,
+                extra_voices=prepared_voices,
             )
             for liner, starts, length in rows:
-                if voice and liner is voice[0]:
+                if any(liner is clip for clip, _, _ in prepared_voices):
+                    found.append(
+                        Item(
+                            "break", starts, length, "predicted", label=liner.label, in_handoff=True
+                        )
+                    )
+                elif voice and liner is voice[0]:
                     speech = float(voice[1]["segue"]) - float(voice[1]["start"])
                     found.append(
                         Item(

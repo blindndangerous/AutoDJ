@@ -110,3 +110,7 @@ record's Proposed status.
 Forecast accuracy on an actual station needs observed playback evidence.
 The simulation's documented omissions are intentional limits, not complete
 end-to-end parity. Historical alternatives and policy acceptance remain pending.
+
+## Related proposal — 2026-10-17
+
+Prepared editions bind local speech to stable song occurrences and consume the isolated programme review engine. Their identity and approval proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.

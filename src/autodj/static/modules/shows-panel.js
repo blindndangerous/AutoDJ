@@ -23,6 +23,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { fmtTime, placeRows, selectOnFocus } from "./dom-helpers.js";
+import { installPreparedEditions } from "./prepared-editions.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
@@ -48,6 +49,9 @@ export function describeShow(show) {
 // The show on the air, in words.
 export function describeOnAir(onAir) {
   if (!onAir) return "No show is on the air.";
+  if (onAir.interrupted) {
+    return `${onAir.name} was interrupted. Normal automation continues. Open its prepared edition, choose an item, and Resume edition explicitly.`;
+  }
   if (onAir.pending_resume) {
     return `${onAir.name} was on the air before AutoDJ restarted and will resume at the next song, `
       + `from song ${number(onAir.resume_at)} of ${number(onAir.total)}. Stop show cancels it.`;
@@ -134,6 +138,19 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const source = () => (el("shows-source-clockwheel")?.checked ? "clockwheel" : "category");
   const byId = (id) => data.shows.find((show) => show.id === id);
   const url = (id, tail = "") => `/api/shows/${encodeURIComponent(id)}${tail}`;
+  const editions = installPreparedEditions({ doc, request, onChange: updateEditionSearch });
+
+  function updateEditionSearch() {
+    for (const add of results.querySelectorAll("button[data-action='add']")) {
+      const existing = add.parentElement.querySelector("[data-edition-add]");
+      if (!editions.active()) { existing?.remove(); continue; }
+      if (existing) continue;
+      const control = namedButton("edition-add", "Add to edition", add.dataset.title);
+      control.dataset.editionAdd = "";
+      control.addEventListener("click", () => void editions.addSong({ path: add.dataset.path, title: add.dataset.title }));
+      add.parentElement.append(control);
+    }
+  }
 
   // A button whose visible word starts its name; the hidden words say which.
   function namedButton(action, title, which, extra = {}) {
@@ -519,6 +536,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       songsSignature = "";
       results.replaceChildren();
       applyOpen(show);
+      void editions.openShow(show, { refresh: false });
       editor.hidden = false;
       el("shows-editor-heading")?.focus();
       say(`Opened ${show.name}. ${summaryText(show)}`);
@@ -528,6 +546,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   function closeEditor() {
+    editions.clear();
     editor.hidden = true;
     open = null;
     songs = [];
@@ -674,6 +693,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
         item.append(row);
         return item;
       }));
+      updateEditionSearch();
       say(found.length ? `${plural(found.length, "song", "songs")} found${found.length === SEARCH_LIMIT ? `; the first ${SEARCH_LIMIT} are listed` : ""}.` : `No songs match ${query}.`);
     } catch (error) {
       if (current(epoch, mine)) say(`Could not search: ${error.message}`, true);
@@ -836,6 +856,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     resume() { suspended = false; updatePolling(); },
     destroy() {
       clearProtectedData();
+      editions.destroy();
       window.removeEventListener("hashchange", updatePolling);
       doc.removeEventListener("visibilitychange", updatePolling);
     },

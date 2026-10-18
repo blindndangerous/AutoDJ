@@ -11,6 +11,7 @@ or the stream encoder in 20 ms blocks.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -1373,7 +1374,7 @@ class Player:
 
     def music_playback_rate(self, entry: IndexEntry | None) -> float:
         """The configured pitch-changing playback rate for music, or unity for voice."""
-        if entry is None or self._is_liner(entry):
+        if entry is None or getattr(entry, "_prepared_clip", False) or self._is_liner(entry):
             return 1.0
         playback = getattr(self._cfg, "playback", None)
         raw_percent = getattr(playback, "music_speed_percent", 0.0)
@@ -2641,6 +2642,8 @@ class Player:
         at: float | None,
     ) -> tuple[tuple[tuple[IndexEntry, bool], ...], str, Any]:
         """Choose handoff voice using the same precedence for playback and preview."""
+        if getattr(current, "_prepared_clip", False) or getattr(upcoming, "_prepared_clip", False):
+            return liners, "", None
         key = ""
         if self._cfg.playback.matched_intro_only_without_liner:
             if not breaks and not liners:
@@ -2969,7 +2972,7 @@ class Player:
                     next_clock_revision = getattr(plan, "clock_revision", None)
                     next_clock_name = plan.clock_name
                     next_clock_boundary = plan.boundary_after
-                    breaks = self._take_breaks(plan)
+                    breaks = self._prepared_breaks(current, next_entry) + self._take_breaks(plan)
                     liners, liner_key, intro = self._transition_voice(
                         current, next_entry, liners, breaks, context.at
                     )
@@ -2983,12 +2986,18 @@ class Player:
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
                         next_clock_boundary = self._pending_clock_boundary
+                    breaks = self._prepared_breaks(current, next_entry)
                     liners, liner_key, intro = self._transition_voice(
-                        current, next_entry, liners, (), context.at
+                        current, next_entry, liners, breaks, context.at
                     )
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
                     unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
+                    breaks = self._prepared_breaks(current, next_entry)
+                    if breaks:
+                        liners, liner_key, intro = self._transition_voice(
+                            current, next_entry, liners, breaks, context.at
+                        )
             except Exception as exc:
                 logger.warning(
                     "No track can follow %s (%s); it plays out alone.", current.path, exc
@@ -3053,9 +3062,19 @@ class Player:
                 clock_revision=next_clock_revision,
             )
             if rendered is not None:
+                committed = getattr(self, "prepared_render_committed", None)
+                if committed is not None:
+                    committed(current, next_entry)
                 return replace(
                     rendered,
-                    start_offset=rendered.start_offset if station_mode else offset,
+                    start_offset=rendered.start_offset
+                    if (
+                        station_mode
+                        or breaks
+                        or getattr(current, "_prepared_clip", False)
+                        or getattr(next_entry, "_prepared_clip", False)
+                    )
+                    else offset,
                     pick_mode=pick_mode,
                     from_queue=current_from_queue,
                     next_pick_mode=next_mode,
@@ -3184,6 +3203,18 @@ class Player:
         if desk is not None:
             # A slot whose last waiting break went is unpinned again.
             desk.on_slot_empty = self._unpin_slot
+
+    def _prepared_breaks(
+        self, current: IndexEntry, upcoming: IndexEntry | None
+    ) -> tuple[Break, ...]:
+        callback = getattr(self, "prepared_handoff", None)
+        if callback is None or upcoming is None:
+            return ()
+        try:
+            return callback(current, upcoming)
+        except (OSError, ValueError):
+            logger.warning("Prepared speech is unavailable; music continues", exc_info=True)
+            return ()
 
     def _unpin_slot(self, slot_id: str) -> None:
         """Let the queue move the open slot again once no break waits in it."""
@@ -3635,6 +3666,115 @@ class Player:
         self.reset_render_ahead(None, reason="the station stopped")
         return cut_short
 
+    @staticmethod
+    def prepared_tail_boundary(track: RenderedTrack) -> int:
+        """First potentially affected frame, including saved-point duck ramps."""
+        from autodj.playout import DUCK_RAMP_SECONDS
+
+        if getattr(track.entry, "_prepared_clip", False):
+            return 0
+        boundaries = [len(track.audio)]
+        if track.overlap_frames:
+            boundaries.append(len(track.audio) - track.overlap_frames)
+        boundaries.extend(
+            at - round(DUCK_RAMP_SECONDS * SAMPLE_RATE)
+            for at, _identity, _end in track.break_events
+        )
+        return max(0, min(boundaries))
+
+    def refresh_prepared_tail(self) -> None:
+        """Replace a prepared future handoff; decoding never runs on the bus thread.
+
+        Unlike ordinary queue refresh, an invalid prepared render is never kept
+        as a fallback. A voice that crossed its commit boundary keeps playing.
+        """
+        with self._clock_selection_lock:
+            track = self._playing_render
+            if track is None or self.bus is None:
+                self._render_ahead.invalidate_prepared()
+                return
+            boundary = self.prepared_tail_boundary(track)
+            if not self.bus.can_replace_unheard_tail(track, before_frame=boundary):
+                committed_notice = getattr(self, "prepared_audio_committed", None)
+                if committed_notice is not None:
+                    committed_notice()
+                # Following audio still must be rebuilt without invalid speech.
+                self._render_ahead.reset(lambda: self._skip_past_render(track))
+                return
+            token_for = getattr(self, "prepared_render_token", None)
+            token = token_for() if token_for is not None else ""
+            next_entry = track.next_entry
+            if not self._prepared_primary_valid(next_entry):
+                with self._state.queue_lock:
+                    next_entry = self._peek_user_queue(track.entry)
+            breaks = self._prepared_breaks(track.entry, next_entry)
+            if self.break_desk is not None:
+                ordinary = tuple(
+                    item
+                    for _at, identity, _end in track.break_events
+                    if (item := self.break_desk.get(identity)) is not None
+                    and item.source != "prepared_edition"
+                )
+                breaks += ordinary
+            rendered = self._render_track(
+                track.entry,
+                next_entry,
+                track.start_offset,
+                glide_in=track.glide_in,
+                liners=tuple((entry, queued) for _at, entry, queued in track.liner_events),
+                breaks=breaks,
+                intro=track.incoming_intro,
+            )
+            if rendered is None or rendered.playback_rate != track.playback_rate:
+                self._render_ahead.reset(lambda: self._skip_past_render(track))
+                return
+            boundary = min(boundary, self.prepared_tail_boundary(rendered), len(rendered.audio))
+            from autodj.stereo import audio_buffer
+
+            owned = audio_buffer(len(rendered.audio))
+            for first in range(0, len(owned), 65536):
+                owned[first : first + 65536] = rendered.audio[first : first + 65536]
+            for first in range(0, boundary, 65536):
+                end = min(boundary, first + 65536)
+                owned[first:end] = track.audio[first:end]
+            replacement = replace(
+                track,
+                audio=owned,
+                next_entry=rendered.next_entry,
+                next_start_offset=rendered.next_start_offset,
+                next_glide=rendered.next_glide,
+                overlap_frames=rendered.overlap_frames,
+                next_entry_offset=rendered.next_entry_offset,
+                break_events=rendered.break_events,
+                liner_events=rendered.liner_events,
+                intro_events=rendered.intro_events,
+                full_audio=rendered.full_audio,
+                transition_fx=rendered.transition_fx,
+                beatmatch_ratio=rendered.beatmatch_ratio,
+            )
+            guard_for = getattr(self, "prepared_render_guard", None)
+            guard = guard_for(token) if guard_for is not None else contextlib.nullcontext(True)
+            with guard as unchanged:
+                if not unchanged:
+                    requested = getattr(self, "request_prepared_refresh", None)
+                    if requested is not None:
+                        requested()
+                    return
+                with self._set_lock:
+                    swapped = self._playing_render is track and self.bus.replace_unheard_tail(
+                        track, replacement, before_frame=boundary
+                    )
+                    if swapped:
+                        self._playing_render = replacement
+                        self._state.next_track = replacement.next_entry
+            self._render_ahead.reset(
+                lambda: self._skip_past_render(replacement if swapped else track)
+            )
+            if not swapped:
+                committed_notice = getattr(self, "prepared_audio_committed", None)
+                if committed_notice is not None:
+                    committed_notice()
+
     def refresh_render_ahead(self) -> None:
         """Re-check the rendered next track after a queue or picking edit.
 
@@ -3644,6 +3784,11 @@ class Player:
         dead air; if the bus needs it first, the edit lands a track later.
         Call after editing the queue or song-picking settings.
         """
+        # Queue-edit callers hold queue_lock. Only enqueue a coalesced control
+        # task here; validation/rendering must never run while that lock is held.
+        requested = getattr(self, "request_prepared_refresh", None)
+        if requested is not None:
+            requested()
         with self._state.queue_lock:
             self._render_ahead.refresh()
         self._recheck_slot_plan()
@@ -4704,6 +4849,12 @@ class Player:
             return audio
         return (audio * gain).astype(np.float32)
 
+    def _prepared_primary_valid(self, entry: IndexEntry | None) -> bool:
+        if not getattr(entry, "_prepared_clip", False):
+            return True
+        validate = getattr(self, "prepared_primary_valid", None)
+        return validate is None or validate(entry)
+
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
         """Decode originals on the render worker, preserving source cue positions.
 
@@ -4711,6 +4862,15 @@ class Player:
         :data:`~autodj.stereo.SPILL_FRAMES` is kept in a temporary file
         mapped into memory, not in ordinary memory.
         """
+        if getattr(entry, "_prepared_clip", False):
+            if not self._prepared_primary_valid(entry):
+                return np.empty((0, 2), dtype=np.float32)
+            if self._cfg.playback.loudness_processing in {"smooth", "stereotool"}:
+                from autodj.processing import load_and_measure_audio
+
+                audio, _measurement = load_and_measure_audio(Path(entry.path), "voice", 1801)
+                return audio
+            return load_stereo(entry.path, SAMPLE_RATE, max_seconds=1800)
         if self._cfg.playback.loudness_processing not in {"smooth", "stereotool"}:
             audio = load_stereo(entry.path, SAMPLE_RATE)
             return self._lift_intro(self._apply_replaygain(audio, entry.path), entry)
@@ -4856,6 +5016,9 @@ class Player:
 
     def saved_points(self, entry: IndexEntry) -> dict[str, Any]:
         """Source-file cue times, with no assumed safe talk-over space."""
+        prepared = getattr(entry, "_prepared_points", None)
+        if prepared is not None:
+            return dict(prepared)
         points = self._library.catalog.points(entry.path) if self._library else {}
         return {"start": 0.0, "end": entry.length, **points}
 
@@ -5141,7 +5304,7 @@ class Player:
             ``(first frame, break id, end of speech)`` in the chain, per break.
         """
         desk = self.break_desk
-        config = desk.config
+        config = desk.config if desk is not None else self._cfg.breaks
         start = incoming_points.get("start") or 0.0
         intro = incoming_points.get("intro")
         intro_s = None if intro is None else max(0.0, float(intro) - float(start))
@@ -5162,22 +5325,37 @@ class Player:
                 # Found again in the audio that plays: processing can move the
                 # speech's edges, and its level decides where they are.
                 cues = speech_cues(audio)
+                if item.source == "prepared_edition":
+                    # Audibility is still validated above; prepared reviews and
+                    # playout retain the complete approved source, including padding.
+                    cues = item.cues
             except Exception:
                 logger.exception("Cannot decode break %s; the music plays on", item.break_id[:8])
-                desk.drop(item.break_id, "its file could not be decoded or holds no speech")
+                self._drop_prepared_or_break(
+                    item, "its file could not be decoded or holds no speech"
+                )
                 continue
             added = add_clip(
                 audio, cues.points(placement == "talk_up"), cues.length, item.allow_outro
             )
             if added is None:
-                desk.drop(item.break_id, "it holds no audio")
+                self._drop_prepared_or_break(item, "it holds no audio")
                 continue
             at, speech = added
-            desk.mixed_as(item.break_id, placement)
+            if desk is not None:
+                desk.mixed_as(item.break_id, placement)
             if note:
                 logger.info("Break %s plays standalone: %s", item.break_id[:8], note)
             spoken.append((at, item.break_id, at + speech))
         return spoken
+
+    def _drop_prepared_or_break(self, item: Break, reason: str) -> None:
+        if item.source == "prepared_edition":
+            callback = getattr(self, "prepared_speech_failed", None)
+            if callback is not None:
+                callback(item.break_id, reason)
+        elif self.break_desk is not None:
+            self.break_desk.drop(item.break_id, reason)
 
     def _load_break_audio(self, item: Break) -> np.ndarray:
         """A break's audio, lightly compressed and leveled when processing is on."""
@@ -6609,12 +6787,16 @@ class Player:
         """
         # This track's decode, when the previous render mixed it in, and the
         # next track's, started now so it runs alongside this one's.
+        if not self._prepared_primary_valid(current):
+            return None
+        if not self._prepared_primary_valid(next_entry):
+            next_entry = None
         source_decode = self._take_prefetched(current)
         incoming_decode = (
             self._prefetch_playout_audio(next_entry) if next_entry is not None else None
         )
         try:
-            return self._render_decoded(
+            rendered = self._render_decoded(
                 current,
                 next_entry,
                 start_offset,
@@ -6625,6 +6807,40 @@ class Player:
                 source_decode=source_decode,
                 incoming_decode=incoming_decode,
             )
+            selected_prepared = tuple(
+                item for item in breaks if getattr(item, "source", None) == "prepared_edition"
+            )
+            if selected_prepared and getattr(self, "prepared_handoff", None) is not None:
+                fresh = self._prepared_breaks(current, next_entry)
+
+                def identity(item: Break) -> tuple:
+                    return (
+                        item.break_id,
+                        item.path,
+                        repr(item.cues),
+                        item.placement,
+                        item.allow_outro,
+                    )
+
+                if {identity(item) for item in selected_prepared} != {
+                    identity(item) for item in fresh
+                }:
+                    return self._render_track(
+                        current,
+                        next_entry,
+                        start_offset,
+                        glide_in=glide_in,
+                        liners=liners,
+                        breaks=tuple(item for item in breaks if item not in selected_prepared),
+                        intro=intro,
+                    )
+            if not self._prepared_primary_valid(current):
+                return None
+            if not self._prepared_primary_valid(next_entry):
+                return self._render_track(
+                    current, None, start_offset, glide_in=glide_in, liners=liners, breaks=breaks
+                )
+            return replace(rendered, incoming_intro=intro) if rendered is not None else None
         finally:
             # The next render takes this decode; never leave it running on.
             if incoming_decode is not None:
@@ -6645,7 +6861,12 @@ class Player:
     ) -> RenderedTrack | None:
         """:meth:`_render_track` with the two decodes under way."""
         try:
-            if self._cfg.playback.transition_mode == "saved_points":
+            if (
+                self._cfg.playback.transition_mode == "saved_points"
+                or getattr(current, "_prepared_clip", False)
+                or getattr(next_entry, "_prepared_clip", False)
+                or any(getattr(item, "source", None) == "prepared_edition" for item in breaks)
+            ):
                 return self._render_saved_track(
                     current,
                     next_entry,
