@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,19 +10,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "scripts" / "check_architecture_docs.py"
-
-
-@pytest.fixture(autouse=True)
-def _no_hook_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep git calls in the temporary fixture repo.
-
-    A git hook (pre-push runs this suite) exports GIT_DIR, GIT_INDEX_FILE and
-    friends. Inherited, they make ``git init`` and ``git add`` in tmp_path act on
-    the real repository: its index fills with fixture files and core.bare turns on.
-    """
-    for name in list(os.environ):
-        if name.startswith("GIT_"):
-            monkeypatch.delenv(name)
 
 
 def _write(root: Path, path: str, text: str) -> None:
