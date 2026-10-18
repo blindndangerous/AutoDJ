@@ -80,6 +80,9 @@ def _fill(cfg: AutoDJConfig) -> dict[Path, bytes]:
         for name in STATION_FILES:
             if name == "station.json":
                 continue
+            if name == "editions.json":
+                put(base / name, b'{\n  "schema_version": 1,\n  "editions": {}\n}\n')
+                continue
             put(base / name, b'{"station": "' + who + b'", "file": "' + name.encode() + b'"}')
         # Not in *written*: a backup never holds it, so a restore never brings it.
         (base / "relays.json").write_bytes(b'{"password": "' + who + b'-relay-secret"}')
@@ -1388,3 +1391,19 @@ def test_default_station_definition_is_backed_up_and_restored(tmp_path: Path) ->
     path.write_text(json.dumps(changed), encoding="utf-8")
     restore_backup(cfg, archive, force=True)
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("slug", ["default", "nightowl"])
+def test_invalid_edition_manifest_refuses_backup_without_overwriting_state(tmp_path, slug):
+    from autodj.prepared_editions import EditionError
+
+    cfg = _config(tmp_path)
+    _fill(cfg)
+    manifest = _station_dir(cfg, slug) / "editions.json"
+    malformed = b'{"station":"invalid edition schema"}'
+    manifest.write_bytes(malformed)
+    destination = tmp_path / "invalid-edition.zip"
+    with pytest.raises(EditionError, match="state is invalid"):
+        create_backup(cfg, destination, force=False)
+    assert manifest.read_bytes() == malformed
+    assert not destination.exists()

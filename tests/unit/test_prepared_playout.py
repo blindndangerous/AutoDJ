@@ -50,6 +50,8 @@ def item(identity, entry, *, kind="song"):
 
 def setup(tmp_path, entries=None, *, omissions=()):
     entries = entries or [song(1, "One"), song(2, "Two"), song(3, "Three")]
+    # This fake catalog uses exact keys; real Library normalizes native paths.
+    entries = [replace(entry, path=str(Path(entry.path))) for entry in entries]
     source = make_station(
         tmp_path / "station",
         entries,
