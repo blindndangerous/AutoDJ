@@ -1216,7 +1216,7 @@
       padding: 0 0.4rem;
       font-weight: 600;
     }
-    fieldset legend > :is(h3, h4, h5) { font-size: inherit; margin: 0; }
+    fieldset legend > :is(h1, h3, h4, h5) { font-size: inherit; margin: 0; }
     /* `hidden` attribute must win over author display rules
        (settings-row uses flex, setting-desc uses block; both beat the
        UA [hidden] {display:none} on specificity). */
@@ -2240,8 +2240,9 @@
 #live-talkover {
   margin-top: 1rem;
 }
-#confirm-dialog h2,
-#device-rename-dialog h2 {
+dialog h1 { font-size: 1.5em; }
+#confirm-dialog h1,
+#device-rename-dialog h1 {
   margin-top: 0;
 }
 #confirm-dialog p {
@@ -2261,7 +2262,7 @@
   justify-content: flex-end;
   gap: 0.75rem;
 }
-#track-info-dialog h2 { margin-top: 0; }
+#track-info-dialog h1 { margin-top: 0; }
 /* Save, Discard and Keep editing wrap onto a second line rather than run
    off a 320 px screen or 200 % text, and the dialog never grows wider than
    the window. */
