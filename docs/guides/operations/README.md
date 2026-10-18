@@ -26,6 +26,7 @@ Choose the task you need to complete. Each guide retains detailed commands, chec
 - [Add matched intros and conditional intro rules](matched-intros.md)
 - [Schedule ad breaks and read the ad report](ad-breaks.md)
 - [Export play logs and webcasting reports](play-log-export.md)
+- [Review and export a programme](programme-review.md)
 - [Test rotation and preview an hour](rotation-preview.md)
 - [Restore an archive and recover interrupted restores](restore.md)
 - [Upgrade or return to an older release](upgrade.md)

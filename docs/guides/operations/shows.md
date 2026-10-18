@@ -6,6 +6,10 @@ Generate and edit a prepared song list, schedule or start it, and handle queue p
 
 ## Shows
 
+To hear its joins privately before airing, use [Programme review](programme-review.md#programme-review-and-export)
+with **Saved show** as the source. This creates a separate review snapshot and
+does not change the saved list or schedule it.
+
 A show is a list of songs prepared ahead of time, such as "Remembering the 2000s", that airs at
 a scheduled time. Clockwheels pick songs as they play; a show fixes them in advance, so you can
 read the list, change it, and know what will air. Shows are in **Library tools**, **Shows**,

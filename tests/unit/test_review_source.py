@@ -147,7 +147,7 @@ def test_capture_cancellation_and_changed_input_are_rejected(tmp_path, monkeypat
 
     station, identity, _ = station_content(tmp_path)
     request = {"source": "show", "show_id": identity}
-    with pytest.raises(ValueError, match="cancelled"):
+    with pytest.raises(InterruptedError, match="interrupted"):
         capture_review(station, request, cancelled=lambda: True)
     original = hour_preview.predict
 
@@ -307,3 +307,124 @@ def test_capture_freezes_private_dj_paths_without_accepting_them_from_browser(tm
     assert plan.fingerprint == source_fingerprint(station, plan.request)
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ReviewBody.model_validate({**request, "_review_dj_paths": [entries[2].path]})
+
+
+def test_fingerprinting_does_not_fill_live_metadata_cache(tmp_path):
+    from autodj.dj_meta import DjMeta, DjMetaCache
+
+    station, identity, entries = station_content(tmp_path)
+    with DjMetaCache(station.cfg.index.library_dir / "dj_meta.db") as cache:
+        for entry in entries:
+            cache.set(entry.path, DjMeta(intro_end_s=1.0, analysed=True))
+        cache.flush(force=True)
+        cache._mem_cache.clear()
+        station.player = SimpleNamespace(_dj_cache=cache)
+        source_fingerprint(station, {"source": "show", "show_id": identity})
+        assert cache._mem_cache == {}
+        assert cache._misses == {}
+
+
+def test_metadata_snapshot_preserves_a_live_cached_miss_until_it_expires(tmp_path):
+    from autodj.dj_meta import DjMeta, DjMetaCache
+    from autodj.review_render import _Metadata
+
+    station, _, entries = station_content(tmp_path)
+    clock = [100.0]
+    database = station.cfg.index.library_dir / "dj_meta.db"
+    with DjMetaCache(database, clock=lambda: clock[0]) as cache:
+        assert cache.get(entries[0].path).analysed is False
+        with DjMetaCache(database) as writer:
+            writer.set(entries[0].path, DjMeta(intro_end_s=1.25, analysed=True))
+        assert _Metadata(cache, entries[:1], station.cfg).get(entries[0].path).analysed is False
+        clock[0] += cache.MISS_TTL_S + 1
+        assert _Metadata(cache, entries[:1], station.cfg).get(entries[0].path).intro_end_s == 1.25
+        assert cache._mem_cache == {}
+
+
+def test_result_fingerprints_share_library_reads_only_within_one_request(tmp_path, monkeypatch):
+    station, identity, entries = station_content(tmp_path)
+    catalog = station.bridge.library.catalog
+    original = catalog.record_for_path
+    reads = []
+    monkeypatch.setattr(
+        catalog, "record_for_path", lambda path: (reads.append(path), original(path))[1]
+    )
+    request = {"source": "show", "show_id": identity}
+    shared = {}
+    first = source_fingerprint(station, request, shared=shared)
+    source_fingerprint(station, {**request, "_review_dj_paths": [entries[0].path]}, shared=shared)
+    assert len(reads) == len(entries)
+    station.cfg.playback.music_speed_percent = 2
+    assert source_fingerprint(station, request, shared={}) != first
+
+
+def test_result_fingerprints_share_legacy_windows_metadata_lookup(tmp_path, monkeypatch):
+    import os
+    import sqlite3
+
+    from autodj import dj_meta
+
+    station, identity, entries = station_content(tmp_path)
+    with dj_meta.DjMetaCache(station.cfg.index.library_dir / "dj_meta.db") as cache:
+        for entry in entries:
+            cache.set(entry.path, dj_meta.DjMeta(intro_end_s=1.0, analysed=True))
+        cache.flush(force=True)
+        cache._conn.execute("UPDATE dj_meta SET path=upper(path)")
+    monkeypatch.setattr(dj_meta, "os", SimpleNamespace(name="nt", path=os.path, fspath=os.fspath))
+    queries = []
+    connect = sqlite3.connect
+
+    def traced(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        conn.set_trace_callback(queries.append)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
+    shared = {}
+    request = {"source": "show", "show_id": identity}
+    source_fingerprint(station, request, shared=shared)
+    source_fingerprint(station, {**request, "_review_dj_paths": [entries[0].path]}, shared=shared)
+    assert queries.count("SELECT path FROM dj_meta") == 1
+
+
+def test_capture_interruption_is_not_a_public_cancelled_error(tmp_path):
+    station, identity, _ = station_content(tmp_path)
+    with pytest.raises(InterruptedError):
+        capture_review(station, {"source": "show", "show_id": identity}, cancelled=lambda: True)
+
+
+@pytest.mark.parametrize("reason", ["cancelled", "timed out", "storage limit"])
+def test_worker_reports_capture_interruption_reason_and_cleans_up(tmp_path, reason):
+    import threading
+    import time
+
+    from autodj.review_jobs import ReviewJobs
+    from tests.unit.test_review_jobs import wait
+
+    station, identity, _ = station_content(tmp_path)
+    entered, proceed = threading.Event(), threading.Event()
+    jobs = ReviewJobs(
+        max_seconds=0.02 if reason == "timed out" else 5,
+        max_scratch_bytes=1 if reason == "storage limit" else 1024,
+    )
+
+    def render(stage, cancelled):
+        if reason == "storage limit":
+            (stage / "capture").write_bytes(b"over budget")
+        entered.set()
+        assert proceed.wait(1)
+        return capture_review(station, {"source": "show", "show_id": identity}, cancelled=cancelled)
+
+    root = tmp_path / "reviews"
+    job = jobs.submit(root, "inputs", render)
+    assert entered.wait(1)
+    if reason == "cancelled":
+        jobs.cancel(root, job["id"])
+    elif reason == "timed out":
+        time.sleep(0.03)
+    proceed.set()
+    status = wait(jobs, root, job["id"])
+    assert reason in status["error"].lower()
+    assert status["state"] == ("cancelled" if reason == "cancelled" else "failed")
+    assert not list(root.glob(".staging-*"))
+    assert jobs.shutdown()

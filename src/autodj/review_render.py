@@ -64,16 +64,26 @@ class _Catalog:
 
 
 class _Metadata:
-    def __init__(self, real: Any, entries: Sequence[Any], cfg: Any) -> None:
+    def __init__(
+        self, real: Any, entries: Sequence[Any], cfg: Any, *, shared: dict | None = None
+    ) -> None:
         from autodj.dj_meta import DjMeta, DjMetaCache
 
         self._empty = DjMeta
         self._values = {}
+        if shared is None:
+            shared = {}
         if real is not None:
-            for entry in entries:
-                with suppress(ValueError):
-                    self._values[entry.path] = copy.deepcopy(real.get(entry.path))
-        else:
+            with real._lock:
+                for entry in entries:
+                    key = real._key(entry.path)
+                    value = real._buf.get(key, real._mem_cache.get(key))
+                    miss = real._misses.get(key)
+                    if value is None and miss is not None and real._clock() < miss[0]:
+                        value = miss[1]
+                    if value is not None:
+                        self._values[entry.path] = copy.deepcopy(value)
+        if len(self._values) < len({entry.path for entry in entries}):
             path = cfg.index.library_dir / "dj_meta.db"
             if not path.is_file():
                 return
@@ -87,8 +97,15 @@ class _Metadata:
             ):
                 conn.execute("BEGIN")
                 decoder._conn = conn
-                decoder._normalized_paths = None
+                # Legacy Windows keys need a table-wide path lookup. Reuse it
+                # across this response's results, never across browser requests.
+                decoder._normalized_paths = shared.get("dj_normalized_paths")
+                decoder._normalized_paths_version = int(
+                    conn.execute("PRAGMA data_version").fetchone()[0]
+                )
                 for entry in entries:
+                    if entry.path in self._values:
+                        continue
                     keys = (
                         decoder._key(entry.path),
                         decoder._absolute_alias(entry.path),
@@ -108,6 +125,7 @@ class _Metadata:
                         if row is not None:
                             self._values[entry.path] = decoder._row_to_meta(row)
                             break
+                shared["dj_normalized_paths"] = decoder._normalized_paths
 
     def get(self, path: str) -> Any:
         return copy.deepcopy(self._values.get(path, self._empty()))

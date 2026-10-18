@@ -241,6 +241,48 @@ def test_cooperative_wall_limit_fails_and_allows_retry(tmp_path):
     assert jobs.shutdown()
 
 
+def test_frequent_cancellation_polls_do_not_rescan_storage(tmp_path, monkeypatch):
+    from autodj import review_jobs
+
+    clock = [100.0]
+    monkeypatch.setattr(review_jobs.time, "monotonic", lambda: clock[0])
+    run = review_jobs._Run(tmp_path, "a" * 32, "inputs", 0, 220, 1024, 2048)
+    scans = []
+    original = review_jobs._bytes
+    monkeypatch.setattr(review_jobs, "_bytes", lambda path: (scans.append(path), original(path))[1])
+    for _ in range(10_000):
+        assert not run.cancelled()
+    assert len(scans) == 1
+    clock[0] += 0.3
+    assert not run.cancelled()
+    assert len(scans) == 2
+    run.cancel.set()
+    assert run.cancelled()
+    assert len(scans) == 2
+    run.cancel.clear()
+    clock[0] = 220
+    assert run.cancelled()
+
+
+def test_publication_rechecks_storage_after_a_throttled_poll(tmp_path):
+    from autodj.review_jobs import ReviewJobs
+
+    def oversized(stage, cancelled):
+        assert not cancelled()
+        (stage / "scratch").write_bytes(b"over budget")
+        (stage / "review.wav").write_bytes(b"wave")
+        (stage / "review.mp3").write_bytes(b"mp3")
+        return {}
+
+    jobs = ReviewJobs(max_scratch_bytes=2)
+    job = jobs.submit(tmp_path, "large", oversized)
+    status = wait(jobs, tmp_path, job["id"])
+    assert status["state"] == "failed"
+    assert "storage limit" in status["error"]
+    assert not list(tmp_path.glob(".staging-*"))
+    assert jobs.shutdown()
+
+
 def test_manifest_disk_failure_cleans_partial_and_preserves_old_result(tmp_path, monkeypatch):
     from autodj import review_jobs
 

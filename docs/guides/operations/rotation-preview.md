@@ -91,6 +91,9 @@ songs) in about two minutes, and in a little over three with the DMCA limits on.
 
 ## Hour preview and backtiming
 
+For audible shortened mixes and exports, use [Programme review](programme-review.md#programme-review-and-export).
+Hour preview remains the forecast and backtiming display described below.
+
 Now Playing > **Hour preview** lists what the station plays next, with the time each item is
 expected to start, and says how the hour lands: how early or late the song changes fall against
 each clockwheel restart and each scheduled event, and the top of the hour when **Fit songs to

@@ -63,8 +63,17 @@ class _Run:
     cancel: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     storage_exceeded: bool = False
+    next_storage_check: float = 0
 
-    def cancelled(self) -> bool:
+    def cancelled(self, *, force_storage: bool = False) -> bool:
+        now = time.monotonic()
+        if self.cancel.is_set() or now >= self.deadline or self.storage_exceeded:
+            return True
+        if not force_storage and now < self.next_storage_check:
+            return False
+        # PCM allocations enforce their budget before writing. Poll external
+        # capture/encoder files periodically, and force a final check at publication.
+        self.next_storage_check = now + 0.25
         stage = self.root / f".staging-{self.identity}"
         artifacts = sum(
             path.stat().st_size
@@ -74,7 +83,7 @@ class _Run:
         self.storage_exceeded = self.storage_exceeded or (
             artifacts > self.max_stage_bytes or _bytes(stage) - artifacts > self.max_scratch_bytes
         )
-        return self.storage_exceeded or self.cancel.is_set() or time.monotonic() >= self.deadline
+        return self.storage_exceeded
 
 
 class ReviewJobs:
@@ -213,9 +222,10 @@ class ReviewJobs:
         }
         try:
             metadata = render(stage, run.cancelled)
+            interrupted = run.cancelled(force_storage=True)
             if run.storage_exceeded:
                 raise ReviewError("Review storage limit exceeded; delete an old result")
-            if run.cancelled():
+            if interrupted:
                 raise InterruptedError(
                     "Review cancelled" if run.cancel.is_set() else "Review timed out"
                 )
@@ -235,13 +245,13 @@ class ReviewJobs:
             manifest = {
                 "id": run.identity,
                 "created_at": time.time(),
-                "fingerprint": run.fingerprint,
+                "fingerprint": metadata.get("_fingerprint", run.fingerprint),
                 "metadata": metadata,
             }
             atomic_write(stage / "manifest.json", json.dumps(manifest, allow_nan=False), mode=0o600)
             size = sum(path.stat().st_size for path in stage.iterdir())
             with self._lock:
-                if run.cancelled():
+                if run.cancelled(force_storage=True):
                     raise InterruptedError("Review cancelled or timed out")
                 if self._used_bytes(run.root) + size > self.max_bytes:
                     raise ReviewError("Review storage limit exceeded; delete an old result")

@@ -70,13 +70,13 @@ preview device when testing output routing.
 
 Perform every essential action with keyboard and NVDA; record speech and focus
 observations, not just whether the control responded. Follow
-[Programme review and export](operations.md#programme-review-and-export) for the
+[Programme review and export](guides/operations/programme-review.md#programme-review-and-export) for the
 exact controls.
 
 | Step | Expected observation |
 | --- | --- |
-| With the target station stopped, open Programme review; refresh, choose Saved show and generate. | Show selection and status are independently usable; the station stays stopped; one completion announcement; no automatic playback. |
-| Play the result; tab through item buttons, Previous item and Next item. | Labels identify items and both time axes; keyboard seeks retain usable focus; short clips and the actual joins/ducking sound complete. |
+| With the target station stopped, open Programme review; refresh, choose Saved show and generate. | Start/range hints are associated with their inputs; Generate is disabled while busy; the station stays stopped; one completion announcement without moving focus or starting playback. |
+| Select a saved result and press Load review; play it and tab through item buttons, Previous item and Next item. | Loading moves focus to Review result; labels identify items and both time axes; keyboard seeks retain usable focus; short clips and the actual joins/ducking sound complete. |
 | Review a range that cuts a join or short clip. | Effective range explains expansion; no clipped speech or repeated overlapping section. |
 | Change opening/ending and tone duration; generate again, then review a long interview. | Song/long-clip middles are omitted, short clips stay complete, skip tones are distinctive and follow the chosen duration. |
 | Download MP3 and WAV and play both outside the page. | Both contain the same ordered sections, joins, skip tones and placeholders as the reviewed result; audible codec quality is acceptable. |
@@ -86,7 +86,7 @@ exact controls.
 | Repeat the missing-input case with default TTS unavailable; cancel another generation. | Actionable failure/cancellation is announced once; prior review remains available; retry works after repair. |
 | Switch stations during a request and while preview audio is playing. | Old audio stops and delayed results do not populate the new station; download addresses follow the selected station. |
 | Use a separate preview output, then exercise an unavailable-device fallback. | Sound reaches the chosen private device; actual routing and fallback announcements match the settings and hearing observations. |
-| Restart AutoDJ, load a completed review, then delete an unwanted review. | Completed audio/exports survive restart without starting broadcast; explicit deletion removes only the selected result. |
+| Restart AutoDJ, load a completed review, cancel its deletion, then delete an unwanted review. | Completed audio/exports survive restart without starting broadcast; confirmation identifies the selected date and warns that reviews are excluded from backups; focus starts on Cancel; cancellation keeps the result; confirmed deletion removes only that result and leaves no replacement selected. |
 
 Record the evidence in the PR using this form. Fill in the candidate commit at
 execution; do not reuse a prior revision's result after a relevant change.

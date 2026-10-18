@@ -92,14 +92,16 @@ def _job_view(job: dict | None) -> dict | None:
     }
 
 
-def _result_view(station: Any, result: dict) -> dict:
+def _result_view(station: Any, result: dict, shared: dict | None = None) -> dict:
     from autodj.review_source import fingerprint
 
     metadata = result["metadata"]
     stale = True
     with contextlib.suppress(OSError, ValueError, KeyError):
         stale = (
-            fingerprint(station, metadata["_request"], metadata.get("_source_paths", ()))
+            fingerprint(
+                station, metadata["_request"], metadata.get("_source_paths", ()), shared=shared
+            )
             != metadata["_fingerprint"]
         )
     return {
@@ -116,7 +118,8 @@ def install_reviews(router: StationRouter) -> None:
         service = _jobs(request)
         root = station.paths.reviews
         results = await _call(service.results, root)
-        views = await _call(lambda: [_result_view(station, result) for result in results])
+        shared: dict = {}
+        views = await _call(lambda: [_result_view(station, result, shared) for result in results])
         return {"results": views, "job": _job_view(await _call(service.current, root))}
 
     @router.post("/reviews")
@@ -126,7 +129,6 @@ def install_reviews(router: StationRouter) -> None:
 
         service = _jobs(request)
         parameters = body.model_dump(mode="json")
-        initial = await _call(fingerprint, station, parameters)
         settings = ReviewSettings(
             body.head_seconds, body.tail_seconds, body.clip_threshold_seconds, body.tone_seconds
         )
@@ -167,7 +169,9 @@ def install_reviews(router: StationRouter) -> None:
                 metadata["source"] = body.source
                 return metadata
 
-        return _job_view(await _call(service.submit, station.paths.reviews, initial, render))
+        # Admit the job before any source work; capture fingerprints inside the
+        # single bounded worker, so repeated clicks cannot scan the library.
+        return _job_view(await _call(service.submit, station.paths.reviews, "", render))
 
     @router.get("/reviews/jobs/{job_id}")
     async def review_status(station: SavedStationDep, request: Request, job_id: str) -> dict:

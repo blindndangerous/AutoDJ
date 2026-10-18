@@ -24,6 +24,8 @@ For a value or default, use the [settings reference](../settings-reference.md).
    schedule it, and observe the handoff back to automatic picking. Begin with
    the practice rotation and check the lesson's output-mode and time prerequisites.
 
+- [Listen to and export a shortened programme review](programme-review.md). Review a saved show privately, inspect transitions, and keep matching MP3/WAV exports.
+
 ## Explore analysis and recorded speech
 
 - [Use advanced analysis for similarity picking](similarity-picking.md). Analyze

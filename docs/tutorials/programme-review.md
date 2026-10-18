@@ -105,7 +105,9 @@ cut required transition audio merely to reach five seconds.
 Pause any player still running. If generation is active, press **Cancel generation**
 and wait for its status to settle. Keep the Show and downloads for later practice.
 To remove only a review, select it in **Saved review**, press **Delete review**,
-and check that it disappears from the list. This does not delete the Show or songs.
+check the dated result in the confirmation, and confirm **Delete review**.
+Check that it disappears from the list and no replacement is selected.
+This does not delete the Show or songs.
 
 You can now review a saved programme without airing it. For a single transition,
 try the range controls described in [Programme review and export](../operations.md#programme-review-and-export).

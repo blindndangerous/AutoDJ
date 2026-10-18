@@ -55,11 +55,18 @@ try {
     const response = await submitted;
     assert.equal(response.status(), 200, await response.text());
     const job = await response.json();
+    await expect(page.locator("#review-generate")).toBeDisabled();
+    await page.locator("#review-head").focus();
     await expect(page.locator("#review-audio")).toHaveAttribute("src", new RegExp(job.id), { timeout: 20000 });
     await expect(page.locator("#review-status")).toContainText("Review ready", { timeout: 20000 });
     await expect(page.locator("#review-result")).toBeVisible();
+    await expect(page.locator("#review-head")).toBeFocused();
+    await expect(page.locator("#review-generate")).toBeEnabled();
   }
   await generate();
+  await page.getByRole("button", { name: "Load review", exact: true }).click();
+  await expect(page.locator("#review-heading")).toBeFocused();
+  report.steps.push("busy generation is disabled; completion preserves focus; explicit loading focuses the result");
   const original = await page.locator("#review-audio").getAttribute("src");
   assert.ok(original?.endsWith("/audio/mp3"));
   await expect(page.locator("#review-audio")).not.toHaveAttribute("autoplay");
@@ -119,6 +126,20 @@ try {
   await expect(page.locator("#review-status")).toContainText(/TTS|text.to.speech/i, { timeout: 10000 });
   assert.equal(await page.locator("#review-audio").getAttribute("src"), incompleteURL);
   report.steps.push("unresolved content uses configured local TTS fixture; missing TTS fails and preserves previous result");
+  const selected = await page.locator("#review-snapshots").inputValue();
+  const selectedLabel = await page.locator("#review-snapshots option:checked").textContent();
+  await page.getByRole("button", { name: "Delete review", exact: true }).click();
+  await expect(page.locator("#confirm-title")).toContainText(selectedLabel);
+  await expect(page.locator("#confirm-message")).toContainText("backups");
+  await expect(page.locator("#confirm-cancel")).toBeFocused();
+  await page.locator("#confirm-cancel").click();
+  await expect(page.locator("#review-snapshots")).toHaveValue(selected);
+  await page.getByRole("button", { name: "Delete review", exact: true }).click();
+  await page.locator("#confirm-accept").click();
+  await expect(page.locator("#review-status")).toContainText("Review deleted.");
+  await expect(page.locator("#review-snapshots")).toHaveValue("");
+  await expect(page.locator("#review-result")).toBeHidden();
+  report.steps.push("dated deletion confirms irrecoverable audio loss; cancelling preserves it; deletion leaves no replacement selected");
   assert.deepEqual(report.page_errors, []);
   report.passed = true;
 } catch (error) {

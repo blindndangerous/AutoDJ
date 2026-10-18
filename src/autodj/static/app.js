@@ -1805,7 +1805,7 @@ function refreshStationPanels() {
   void rotationTestControls?.refresh();
   hourPreviewControls?.resume();
   void hourPreviewControls?.refresh();
-  void programmeReviewControls?.refresh();
+  void programmeReviewControls?.refresh({ ifOpen: true });
   void cartWallControls?.refresh();
   void timeCheckControls?.refresh();
   void breakSettingsControls?.refresh();

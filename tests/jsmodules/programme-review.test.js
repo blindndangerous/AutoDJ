@@ -45,6 +45,7 @@ it("loads saved snapshots without generating audio and navigates matching downlo
   expect(get("wav").getAttribute("href")).toContain("/reviews/snapshot-1/audio/wav");
   expect(get("audio").autoplay).toBe(false);
   expect(get("audio").hasAttribute("data-preview-output")).toBe(true);
+  expect(document.activeElement).toBe(get("heading"));
   get("next").click();
   expect(get("audio").currentTime).toBe(12);
   expect(get("items").textContent).toContain("Programme 5:00");
@@ -67,11 +68,13 @@ it("generates explicitly, polls, and preserves the old snapshot after cancellati
   const body = JSON.parse(request.mock.calls.find(([, o]) => o?.method === "POST")[1].body);
   expect(body).toMatchObject({ source: "show", show_id: "show-1", head_seconds: 10, tail_seconds: 10, clip_threshold_seconds: 300, tone_seconds: .25 });
   expect(timers.length).toBe(1);
+  expect(get("generate").disabled).toBe(true);
   await timers[0](); await settle();
   get("cancel").click(); await settle();
   expect(cancelled).toBe(true);
   expect(get("audio").getAttribute("src")).toContain("snapshot-1");
   expect(get("cancel").hidden).toBe(true);
+  expect(get("generate").disabled).toBe(false);
 });
 
 it("rejects invalid timing with focus and announces server TTS failure once", async () => {
@@ -128,14 +131,65 @@ it("loads the completed frozen result and refresh marks it stale without changin
   expect(request.mock.calls.every(([url]) => url.startsWith("/api/reviews") || url === "/api/shows")).toBe(true);
 });
 
-it("deletion is explicit and does not generate a replacement", async () => {
-  const { controls, request } = harness();
+it("confirms the dated deletion and leaves no replacement selected", async () => {
+  let deleted = false;
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "DELETE") { deleted = true; return {}; }
+    if (url === "/api/reviews") return { results: deleted ? [{ ...result, id: "other" }] : [result], job: null };
+    if (url === "/api/shows") return { shows: [] };
+    return result;
+  });
+  const { controls } = harness({ request });
   await controls.refresh();
   get("load").click(); await settle();
   get("delete").click(); await settle();
+  expect(request.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(0);
+  expect(document.getElementById("confirm-title").textContent).toContain(result.created_at);
+  expect(document.getElementById("confirm-message").textContent).toContain("backups");
+  document.getElementById("confirm-cancel").click(); await settle();
+  expect(deleted).toBe(false);
+  get("delete").click(); await settle();
+  document.getElementById("confirm-accept").click(); await settle();
   expect(request.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(1);
   expect(request.mock.calls.some(([, options]) => options?.method === "POST")).toBe(false);
   expect(get("audio").hasAttribute("src")).toBe(false);
+  expect(get("snapshots").selectedIndex).toBe(-1);
+  await controls.refresh();
+  expect(get("snapshots").selectedIndex).toBe(-1);
+});
+
+it("associates start and range format hints with their inputs", () => {
+  for (const name of ["start", "selection-start", "selection-end"]) {
+    const ids = get(name).getAttribute("aria-describedby");
+    expect(ids).toBeTruthy();
+    for (const id of ids.split(/\s+/)) expect(document.getElementById(id)?.textContent.trim()).toBeTruthy();
+  }
+});
+
+it("does not scan reviews when a station refreshes with its card closed", async () => {
+  const { controls, request } = harness();
+  await controls.refresh({ ifOpen: true });
+  expect(request).not.toHaveBeenCalled();
+});
+
+it("discards a pending load when its review is deleted", async () => {
+  let finishLoad, deleted = false;
+  const pending = new Promise((resolve) => { finishLoad = resolve; });
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "DELETE") { deleted = true; return {}; }
+    if (url === "/api/reviews") return { results: deleted ? [] : [result], job: null };
+    if (url === "/api/shows") return { shows: [] };
+    return pending;
+  });
+  const { controls } = harness({ request });
+  await controls.refresh();
+  get("load").click(); await settle();
+  get("delete").click(); await settle();
+  document.getElementById("confirm-accept").click(); await settle();
+  finishLoad(result); await settle();
+  expect(get("result").hidden).toBe(true);
+  expect(get("audio").hasAttribute("src")).toBe(false);
+  expect(get("snapshots").selectedIndex).toBe(-1);
 });
 
 it("does not announce ready after completed-result loading fails", async () => {

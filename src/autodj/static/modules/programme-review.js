@@ -3,6 +3,7 @@ import {
   requestJson, withDisabled,
 } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
+import { confirmAction } from "./confirm-dialog.js";
 import { stationApi, stationEpoch } from "./stations.js";
 
 function time(seconds) {
@@ -19,6 +20,7 @@ export function installProgrammeReview({
   const audio = get("audio"), snapshots = get("snapshots"), form = get("form");
   let generation = 0, timer = null, job = null, result = null, selected = 0, submitting = false;
   let refreshNumber = 0, loadNumber = 0;
+  let reviewsLoaded = false;
   const context = () => [generation, stationEpoch(), captureAuthenticatedRequestEpoch()];
   const current = ([mine, station, auth]) => mine === generation && station === stationEpoch()
     && isAuthenticatedRequestCurrent(auth);
@@ -45,6 +47,7 @@ export function installProgrammeReview({
   function busy(value) {
     get("cancel").hidden = !value;
     get("generate").classList.toggle("is-pending", value);
+    get("generate").disabled = value || submitting;
     if (!value && doc.activeElement === get("cancel")) get("generate").focus();
   }
   function showResult(value) {
@@ -80,11 +83,15 @@ export function installProgrammeReview({
     audio.currentTime = items[selected].preview_start;
     say(`${items[selected].label}. Programme ${time(items[selected].programme_start)}; preview ${time(items[selected].preview_start)}.`);
   }
-  async function load(id) {
+  async function load(id, focus = false) {
     const ticket = context(), number = ++loadNumber;
     try {
       const value = await request(`/api/reviews/${encodeURIComponent(id)}`);
-      if (current(ticket) && number === loadNumber) { showResult(value); return true; }
+      if (current(ticket) && number === loadNumber) {
+        showResult(value); snapshots.value = id;
+        if (focus) get("heading").focus();
+        return true;
+      }
     } catch (error) { if (number === loadNumber) fail(error, ticket); }
     return false;
   }
@@ -112,7 +119,8 @@ export function installProgrammeReview({
       if (current(ticket) && loaded) say("Review ready. Listening and downloads use the same snapshot.");
     }
   }
-  async function refresh() {
+  async function refresh({ ifOpen = false } = {}) {
+    if (ifOpen && !get("card").open) return;
     const ticket = context(), number = ++refreshNumber;
     try {
       const [value, shows] = await Promise.all([request("/api/reviews"), request("/api/shows")]);
@@ -124,7 +132,8 @@ export function installProgrammeReview({
         return option;
       }));
       if ([...snapshots.options].some((o) => o.value === chosen)) snapshots.value = chosen;
-      else snapshots.selectedIndex = snapshots.options.length ? 0 : -1;
+      else snapshots.selectedIndex = !reviewsLoaded && snapshots.options.length ? 0 : -1;
+      reviewsLoaded = true;
       get("show").replaceChildren(...(shows.shows || []).map((item) => {
         const option = doc.createElement("option"); option.value = item.id; option.textContent = item.name;
         return option;
@@ -178,6 +187,7 @@ export function installProgrammeReview({
       } catch (error) { fail(error, ticket); }
       finally { if (current(ticket)) submitting = false; }
     });
+    if (current(ticket)) busy(Boolean(job));
   });
   get("cancel").addEventListener("click", async () => {
     if (!job) return;
@@ -192,16 +202,29 @@ export function installProgrammeReview({
   get("delete").addEventListener("click", async () => {
     const id = snapshots.value; if (!id) return;
     const ticket = context();
-    await withDisabled(get("delete"), async () => {
-      try {
-        await send(`/api/reviews/${encodeURIComponent(id)}`, "DELETE");
-        if (!current(ticket)) return;
-        if (result?.id === id) { stopAudio(); result = null; get("result").hidden = true; }
-        await refresh(); if (current(ticket)) say("Review deleted.");
-      } catch (error) { fail(error, ticket); }
+    let outcome = "";
+    const confirmed = await confirmAction(doc, {
+      title: `Delete review ${snapshots.selectedOptions[0].textContent}?`,
+      message: "The review and its audio will be permanently deleted. Reviews are excluded from backups. Keep downloaded exports if you need a copy.",
+      confirmLabel: "Delete review", pendingText: "Deleting review…",
+      onConfirm: async () => {
+        if (!current(ticket)) return null;
+        try {
+          await send(`/api/reviews/${encodeURIComponent(id)}`, "DELETE");
+          if (!current(ticket)) return null;
+          loadNumber += 1;
+          if (result?.id === id) { stopAudio(); result = null; get("result").hidden = true; }
+          await refresh(); outcome = "Review deleted.";
+          return get("snapshots");
+        } catch (error) {
+          outcome = error.message || "Could not delete the review.";
+          return get("delete");
+        }
+      },
     });
+    if (confirmed && current(ticket) && outcome) say(outcome);
   });
-  get("load").addEventListener("click", () => { if (snapshots.value) void load(snapshots.value); });
+  get("load").addEventListener("click", () => { if (snapshots.value) void load(snapshots.value, true); });
   get("refresh").addEventListener("click", () => void refresh());
   get("previous").addEventListener("click", () => jump(selected - 1));
   get("next").addEventListener("click", () => jump(selected + 1));
@@ -216,6 +239,7 @@ export function installProgrammeReview({
     refresh,
     clear() {
       generation += 1; refreshNumber += 1; loadNumber += 1;
+      reviewsLoaded = false;
       if (timer) clearTimer(timer); timer = null; job = null; result = null; submitting = false;
       stopAudio(); busy(false); get("result").hidden = true;
       snapshots.replaceChildren(); get("show").replaceChildren(); get("items").replaceChildren();

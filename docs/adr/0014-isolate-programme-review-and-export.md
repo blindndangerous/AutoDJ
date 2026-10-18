@@ -134,7 +134,7 @@ revisit the plan/capture distinction if actual-broadcast review becomes a requir
   [station API](../../src/autodj/review_api.py) own the new boundary.
 - [Browser controls](../../src/autodj/static/modules/programme-review.js) reuse the
   native private audio player and existing preview-device routing.
-- [Programme review operations](../operations.md#programme-review-and-export),
+- [Programme review operations](../guides/operations/programme-review.md#programme-review-and-export),
   [settings reference](../settings-reference.md#programme-review), and
   [manual rehearsal](../accessibility-testing.md#programme-review-rehearsal) define
   controls, limits and evidence. No new package or provider configuration is added.

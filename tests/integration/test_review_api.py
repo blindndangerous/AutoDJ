@@ -55,6 +55,87 @@ def test_review_download_rejects_invalid_identity_and_format(bridge, tmp_path):
     assert not hasattr(app.state, "review_jobs")
 
 
+def test_busy_review_refuses_before_reading_programme_inputs(bridge, tmp_path, monkeypatch):
+    import threading
+
+    from autodj import review_source
+    from autodj.review_jobs import ReviewJobs
+
+    point_index(bridge.player._cfg.index, tmp_path)
+    app = create_app(bridge)
+    service = app.state.review_jobs = ReviewJobs()
+    release = threading.Event()
+
+    def render(stage, cancelled):
+        assert release.wait(2)
+        raise InterruptedError()
+
+    service.submit(tmp_path / "busy", "inputs", render)
+    reads = []
+    monkeypatch.setattr(review_source, "fingerprint", lambda *args, **kwargs: reads.append(args))
+    try:
+        reply = TestClient(app).post("/api/reviews", json={"source": "forecast"})
+        assert reply.status_code == 409
+        assert reads == []
+    finally:
+        release.set()
+        assert service.shutdown(2)
+
+
+def test_result_list_scans_library_once_and_refreshes_on_the_next_request(
+    bridge, tmp_path, monkeypatch
+):
+    from autodj.review_jobs import ReviewJobs
+    from autodj.review_source import source_fingerprint
+    from tests.unit.test_review_jobs import wait, write_audio
+    from tests.unit.test_review_source import station_content
+
+    (tmp_path / "content").mkdir()
+    station, show_id, entries = station_content(tmp_path / "content")
+    point_index(bridge.player._cfg.index, tmp_path / "server")
+    app = create_app(bridge)
+    real_editable = app.state.stations.editable
+    monkeypatch.setattr(
+        app.state.stations,
+        "editable",
+        lambda slug: station if slug == "default" else real_editable(slug),
+    )
+    service = app.state.review_jobs = ReviewJobs()
+    parameters = {"source": "show", "show_id": show_id}
+    fingerprint = source_fingerprint(station, parameters)
+
+    def render(stage, cancelled):
+        return {
+            **write_audio(stage, cancelled),
+            "_request": parameters,
+            "_fingerprint": fingerprint,
+        }
+
+    try:
+        for _ in range(2):
+            job = service.submit(station.paths.reviews, fingerprint, render)
+            assert wait(service, station.paths.reviews, job["id"])["state"] == "done"
+        reads = []
+        catalog = station.bridge.library.catalog
+        original = catalog.record_for_path
+        monkeypatch.setattr(
+            catalog, "record_for_path", lambda path: (reads.append(path), original(path))[1]
+        )
+        client = TestClient(app)
+        reply = client.get("/api/reviews")
+        assert reply.status_code == 200
+        assert len(reply.json()["results"]) == 2
+        assert all(not result["stale"] for result in reply.json()["results"])
+        assert len(reads) == len(entries)
+        reads.clear()
+        station.cfg.playback.music_speed_percent = 2
+        reply = client.get("/api/reviews")
+        assert all(result["stale"] for result in reply.json()["results"])
+        assert len(reads) == len(entries)
+    finally:
+        assert service.shutdown(2)
+
+
 def test_review_generation_download_and_stale_snapshot_journey(bridge, tmp_path, monkeypatch):
     import time
 
