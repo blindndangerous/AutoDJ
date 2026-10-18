@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 import signal
 import subprocess  # nosec B404
+import sys
 import tempfile
 import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import BinaryIO
+from typing import IO
 
 from autodj.child_jobs import bind_to_autodj
 
@@ -38,7 +39,7 @@ def run_command(
 
 def _run(
     argv: list[str],
-    source: BinaryIO,
+    source: IO[bytes],
     output: Path,
     timeout: float,
     cancel: threading.Event | None,
@@ -69,7 +70,7 @@ def _run(
                 except subprocess.TimeoutExpired:
                     continue
         finally:
-            if os.name != "nt":
+            if sys.platform != "win32":
                 with suppress(ProcessLookupError):
                     os.killpg(child.pid, signal.SIGKILL)
             elif child.poll() is None:
