@@ -72,19 +72,26 @@ export function renderRows(doc, tbody, items) {
       if (td.textContent !== cell) td.textContent = cell;
     });
     const actionCell = row.children[4];
-    const path = item.kind === "song" || item.kind === "liner" ? item.path : null;
+    const path = item.kind === "song" || item.kind === "liner"
+      ? item.path
+      : item.kind === "intro" && item.details_kind === "liner" ? item.details_path : null;
     let button = actionCell.querySelector("button");
     if (!path) {
       button?.remove();
+      const unavailable = item.kind === "intro" ? "Track info unavailable" : "";
+      if (actionCell.textContent !== unavailable) actionCell.textContent = unavailable;
     } else {
       if (!button) {
+        actionCell.textContent = "";
         button = doc.createElement("button");
         button.type = "button";
         button.textContent = "Track info";
         actionCell.append(button);
       }
       button.dataset.path = path;
-      button.dataset.kind = item.kind === "liner" ? "liner" : "music";
+      button.dataset.kind = item.kind === "intro"
+        ? item.details_kind
+        : item.kind === "liner" ? "liner" : "music";
       button.setAttribute("aria-label", `Track info for ${item.title}`);
     }
   });

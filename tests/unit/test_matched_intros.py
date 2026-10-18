@@ -674,9 +674,15 @@ def test_the_hour_preview_lists_a_mixed_intro(tmp_path: Path) -> None:
     from autodj.hour_preview import _mixed_in, item_title
 
     player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
-    render = player._render_track(a, b, 0, intro=_chosen(tmp_path, 1.5))
-    items = _mixed_in(render, NOW, NOW, None, "ready", [])
+    intro = _chosen(tmp_path, 1.5)
+    render = player._render_track(a, b, 0, intro=intro)
+    player._library.catalog.record_for_path = lambda _path: {"kind": "liner"}
+    player._library.catalog.entry_for_path = lambda path: SimpleNamespace(path=str(path))
+    items = _mixed_in(render, NOW, NOW, None, "ready", [], player=player)
     assert [(item.kind, item.status) for item in items] == [("intro", "ready")]
     assert items[0].seconds == pytest.approx(1.5, abs=1e-3)
+    assert items[0].asset_id == intro.intro_id
+    assert items[0].details_entry.path == str(intro.path)
     assert item_title(items[0]) == "Matched intro: New single"
+    assert render.intro_assets == ((intro.intro_id, str(intro.path)),)
     assert np.isfinite(items[0].starts)

@@ -106,6 +106,8 @@ class RenderedTrack:
         intro_events: ``(start, intro_id, end, label)`` for the intro
             matched to *next_entry* (#127) mixed into the handoff: where its
             voice starts and its speech ends in *audio*, and its label.
+        intro_assets: ``(intro_id, path)`` for exact selected audio files;
+            paths stay internal unless the catalog identifies one as a liner.
     """
 
     entry: IndexEntry
@@ -130,6 +132,7 @@ class RenderedTrack:
     liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
     break_events: tuple[tuple[int, str, int], ...] = ()
     intro_events: tuple[tuple[int, str, int, str], ...] = ()
+    intro_assets: tuple[tuple[str, str], ...] = ()
     reserved_liners: tuple[IndexEntry, ...] = ()
     next_reserved_liners: tuple[IndexEntry, ...] = ()
     loudness_processing: str = ""

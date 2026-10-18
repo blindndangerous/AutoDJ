@@ -5117,6 +5117,9 @@ class Player:
                 (liner_start + at, intro_id, liner_start + end, label)
                 for at, intro_id, end, label in introduced
             ),
+            intro_assets=(
+                ((intro.intro_id, str(intro.path)),) if introduced and intro is not None else ()
+            ),
             next_reserved_liners=tuple(entry for _, entry, queued in events if queued),
             loudness_processing=processing,
             full_audio=full_audio,
