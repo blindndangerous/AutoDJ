@@ -279,11 +279,14 @@ def test_configured_default_tts_generates_real_placeholder_audio(tmp_path):
 
 
 def test_encoder_failure_is_actionable_and_does_not_publish_mp3(tmp_path, monkeypatch):
+    import sys
+
     from autodj import review_render
     from autodj.review_jobs import ReviewError
 
     source, rows = station(tmp_path)
-    monkeypatch.setattr(review_render.shutil, "which", lambda _: "/bin/false")
+    # Python rejects the FFmpeg-only argv on every supported platform.
+    monkeypatch.setattr(review_render.shutil, "which", lambda _: sys.executable)
     output = tmp_path / "result"
     output.mkdir()
     with pytest.raises(ReviewError, match="MP3 export failed"):
