@@ -429,12 +429,14 @@ See [Review and export a programme — Storage and availability](guides/operatio
 
 ## Prepared show editions
 
+For a guided first production, follow [Prepare tomorrow's speech while the station is stopped](tutorials/prepared-show-edition.md).
+
 In **Library tools**, open **Shows**, open a saved show list, then expand
 **Prepared editions**. Enter a distinct edition name and press **Create edition
 from show**. The edition starts with its own copy of the song order. Each repeated
 song is a separate occurrence. Editing the reusable Show later does not replace
 this production's list or recordings. Keep one active take at each opening, closing,
-transition or segment position; use **Record again** to replace its audio while
+transition or segment position; use **Re-record** to replace its audio while
 retaining the previous source asset.
 
 Use **Move up**, **Move down**, **Remove**, and the library search's **Add to
