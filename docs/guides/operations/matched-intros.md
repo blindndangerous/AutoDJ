@@ -70,7 +70,7 @@ before songs first released in the 1980s. Each station keeps its own rules. Mana
 **Library tools**, **Intro rules**, below Shows. Each rule is listed in words with an
 **Edit** and a **Delete** button; Delete asks first and leaves the liners in the library.
 
-**Add intro rule** (or Edit) opens one form:
+**Add intro rule** (or Edit) opens the same modal form:
 
 - **Label**: optional words to tell rules apart, shown in the list.
 - **Match conditions** and the conditions themselves: the same 1 to 32 condition rows as clockwheel

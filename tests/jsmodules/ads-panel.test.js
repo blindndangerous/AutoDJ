@@ -15,11 +15,20 @@ import {
 
 const { Blob, File, Headers } = globalThis;
 const byId = (id) => document.getElementById(id);
-const status = () => byId("ads-status").textContent;
+const status = () => (byId("ads-break-form-dialog")?.open
+  ? byId("ads-break-form-status")?.textContent
+  : byId("ads-spot-form-dialog")?.open
+    ? byId("ads-spot-form-status")?.textContent : byId("ads-status").textContent);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function installIndex() {
   installIndexMarkup();
+  globalThis.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; };
+  globalThis.HTMLDialogElement.prototype.close = function close(value = "") {
+    this.returnValue = value;
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  };
   byId("panel-ads").hidden = false;
   const dialog = byId("confirm-dialog");
   dialog.showModal = () => { dialog.open = true; };
@@ -195,11 +204,14 @@ describe("the Ads tab", () => {
     const error = byId("ads-spot-error");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("Choose the spot's audio file");
+    expect(byId("ads-spot-form-dialog").open).toBe(true);
+    expect(byId("ads-panel").contains(byId("ads-spot-form"))).toBe(false);
     const file = byId("ads-spot-file");
     expect(file.getAttribute("aria-invalid")).toBe("true");
-    expect(file.getAttribute("aria-describedby").split(" ")).toEqual(["ads-spot-error", "ads-spot-file-desc"]);
+    expect(file.getAttribute("aria-describedby").split(" ")).toEqual(["ads-spot-file-desc", "ads-spot-error"]);
     expect(document.activeElement).toBe(file);
     await vi.waitFor(() => expect(status()).toBe("Choose the spot's audio file"));
+    await flush();
     // A file, but no advertiser.
     Object.defineProperty(file, "files", { value: [new File(["x"], "spot.wav")], configurable: true });
     file.dispatchEvent(new Event("input", { bubbles: true }));
@@ -207,6 +219,7 @@ describe("the Ads tab", () => {
     byId("ads-spot-title").value = "Fall sale";
     byId("ads-spot-form").requestSubmit();
     expect(document.activeElement).toBe(byId("ads-spot-advertiser"));
+    await flush();
     byId("ads-spot-advertiser").value = "Example Motors";
     byId("ads-spot-form").requestSubmit();
     await vi.waitFor(() => expect(byId("ads-spot-form").hidden).toBe(true));
@@ -231,6 +244,53 @@ describe("the Ads tab", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Edit spot Fall sale, Example Motors");
   });
 
+  it("keeps a pending spot save modal open, ignores duplicate submits, and drops a stale save on clear", async () => {
+    await start();
+    let resolveSave;
+    let postCount = 0;
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation((url, options) => {
+      if (url === "/api/ads/spots" && options?.method === "POST") {
+        postCount += 1;
+        return new Promise((resolve) => { resolveSave = resolve; });
+      }
+      return request(url, options);
+    });
+    byId("ads-spot-add").click();
+    Object.defineProperty(byId("ads-spot-file"), "files", { value: [new File(["x"], "spot.wav")], configurable: true });
+    byId("ads-spot-title").value = "Pending spot";
+    byId("ads-spot-advertiser").value = "Example Motors";
+    byId("ads-spot-form").requestSubmit();
+    await vi.waitFor(() => expect(resolveSave).toBeTypeOf("function"));
+    byId("ads-spot-form").requestSubmit();
+    expect(postCount).toBe(1);
+    expect(byId("ads-spot-form").getAttribute("aria-busy")).toBe("true");
+    controls.clear();
+    expect(byId("ads-spot-form-dialog").open).toBe(false);
+    resolveSave({ ...SPOT, id: "pending", title: "Pending spot" });
+    await flush();
+    expect(byId("ads-spots").textContent).toBe("");
+    expect(status()).toBe("");
+  });
+
+  it("uses Escape to confirm spot discard and returns focus to Add spot", async () => {
+    await start();
+    const opener = byId("ads-spot-add");
+    opener.click();
+    byId("ads-spot-title").value = "Unsaved spot";
+    const dialog = byId("ads-spot-form-dialog");
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(dialog.open).toBe(true);
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("deletes a spot after asking, then focuses the next row", async () => {
     await start({ spots: [SPOT, { ...SPOT, id: "9".repeat(32), title: "Winter sale" }] });
     byId("ads-spots").querySelector('[data-role="delete"]').click();
@@ -250,11 +310,13 @@ describe("the Ads tab", () => {
     byId("ads-break-form").requestSubmit();
     expect(document.activeElement).toBe(byId("ads-break-minutes"));
     expect(byId("ads-break-error").textContent).toMatch(/0 to 59/);
+    await flush();
     byId("ads-break-minutes").value = "15, 45";
     byId("ads-break-from").value = "20";
     byId("ads-break-until").value = "6";
     byId("ads-break-form").requestSubmit();
     expect(document.activeElement).toBe(byId("ads-break-until"));
+    await flush();
     byId("ads-break-until").value = "24";
     byId("ads-break-day-0").checked = true;
     byId("ads-break-form").requestSubmit();
@@ -264,6 +326,51 @@ describe("the Ads tab", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Edit ad break Quarter past");
     byId("ads-breaks").querySelector('[data-role="run-now"]').click();
     await vi.waitFor(() => expect(status()).toMatch(/airs at the next song change/));
+  });
+
+  it("keeps a pending break save modal open, ignores duplicate submits, and drops a stale save on clear", async () => {
+    await start();
+    let resolveSave;
+    let postCount = 0;
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation((url, options) => {
+      if (url === "/api/ads/breaks" && options?.method === "POST") {
+        postCount += 1;
+        return new Promise((resolve) => { resolveSave = resolve; });
+      }
+      return request(url, options);
+    });
+    byId("ads-break-add").click();
+    byId("ads-break-name").value = "Pending break";
+    byId("ads-break-form").requestSubmit();
+    await vi.waitFor(() => expect(resolveSave).toBeTypeOf("function"));
+    byId("ads-break-form").requestSubmit();
+    expect(postCount).toBe(1);
+    expect(byId("ads-break-form").getAttribute("aria-busy")).toBe("true");
+    controls.clear();
+    expect(byId("ads-break-form-dialog").open).toBe(false);
+    resolveSave({ ...BREAK, id: "pending", name: "Pending break" });
+    await flush();
+    expect(byId("ads-breaks").textContent).toBe("");
+    expect(status()).toBe("");
+  });
+
+  it("uses Escape to confirm break discard and returns focus to Add ad break", async () => {
+    await start();
+    const opener = byId("ads-break-add");
+    opener.click();
+    byId("ads-break-name").value = "Unsaved break";
+    const dialog = byId("ads-break-form-dialog");
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(dialog.open).toBe(true);
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(document.activeElement).toBe(opener);
   });
 
   it("saves the rules and refuses a missed time shorter than the late one", async () => {

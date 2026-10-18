@@ -7,7 +7,9 @@ import { installSchedulerPanel } from "../../src/autodj/static/modules/scheduler
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
 
 const byId = (id) => document.getElementById(id);
-const status = () => byId("schedule-status").textContent;
+const status = () => (byId("schedule-form-dialog")?.open
+  ? byId("schedule-form-status")?.textContent : byId("schedule-status").textContent);
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const NOW = Date.parse("2026-10-11T12:00:00Z");
 
 const ACTIONS = [
@@ -20,6 +22,12 @@ const ACTIONS = [
 
 function installIndex() {
   installIndexMarkup();
+  globalThis.HTMLDialogElement.prototype.showModal = function showModal() { this.open = true; };
+  globalThis.HTMLDialogElement.prototype.close = function close(value = "") {
+    this.returnValue = value;
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  };
   // The Settings view, as the section router shows it.
   byId("settings-tabs").closest("section").hidden = false;
   const dialog = byId("confirm-dialog");
@@ -243,7 +251,7 @@ describe("Schedule panel", () => {
     byId("schedule-add").click();
     byId("schedule-save").focus();
     submit();
-    await vi.waitFor(() => expect(status()).toBe("Enter a name"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Enter a name"));
     const name = byId("schedule-name");
     expect(document.activeElement).toBe(name);
     expect(name.getAttribute("aria-invalid")).toBe("true");
@@ -257,7 +265,7 @@ describe("Schedule panel", () => {
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));
     byId("schedule-time").value = "09:00";
     submit();
-    await vi.waitFor(() => expect(status()).toBe("Choose at least one day"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Choose at least one day"));
     expect(document.activeElement).toBe(byId("schedule-day-0"));
     expect([...byId("schedule-days").querySelectorAll("input")].every((box) => box.getAttribute("aria-invalid") === "true")).toBe(true);
 
@@ -265,7 +273,7 @@ describe("Schedule panel", () => {
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));
     byId("schedule-window-start").value = "22:00";
     submit();
-    await vi.waitFor(() => expect(status()).toBe("Enter both Active from and Active until, or leave both empty"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Enter both Active from and Active until, or leave both empty"));
     expect(document.activeElement).toBe(byId("schedule-window-end"));
     expect(byId("schedule-day-0").hasAttribute("aria-invalid")).toBe(false);
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
@@ -317,7 +325,7 @@ describe("Schedule panel", () => {
     wait.value = "301";
     submit();
     const message = "Wait up to seconds must be a whole number from 0 to 300";
-    await vi.waitFor(() => expect(status()).toBe(message));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe(message));
     expect(document.activeElement).toBe(wait);
     expect(wait.getAttribute("aria-invalid")).toBe("true");
     expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc schedule-form-error");
@@ -350,7 +358,7 @@ describe("Schedule panel", () => {
     byId("schedule-start-date").value = "2026-12-26";
     byId("schedule-end-date").value = "2026-11-27";
     submit();
-    await vi.waitFor(() => expect(status()).toBe("End date must be on or after the start date"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date"));
     const end = byId("schedule-end-date");
     expect(document.activeElement).toBe(end);
     expect(end.getAttribute("aria-invalid")).toBe("true");
@@ -365,7 +373,7 @@ describe("Schedule panel", () => {
     byId("schedule-repeat").dispatchEvent(new Event("change", { bubbles: true }));
     byId("schedule-date").value = "2027-01-02";
     submit();
-    await vi.waitFor(() => expect(status()).toBe("Date must be within the start and end dates"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Date must be within the start and end dates"));
     expect(document.activeElement).toBe(byId("schedule-date"));
     expect(byId("schedule-date").getAttribute("aria-describedby")).toBe("schedule-form-error");
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
@@ -373,7 +381,7 @@ describe("Schedule panel", () => {
     byId("schedule-date").value = "2026-12-30";
     server.fail = new FakeError("The event has no run left before its end date", { field: "end_date" });
     submit();
-    await vi.waitFor(() => expect(status()).toBe("The event has no run left before its end date"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("The event has no run left before its end date"));
     expect(document.activeElement).toBe(end);
     expect(byId("schedule-date").hasAttribute("aria-describedby")).toBe(false);
   });
@@ -435,7 +443,7 @@ describe("Schedule panel", () => {
     byId("schedule-add").click();
     byId("schedule-name").value = "Morning";
     submit();
-    await vi.waitFor(() => expect(status()).toBe("No profile to choose yet"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("No profile to choose yet"));
     expect(document.activeElement).toBe(byId("schedule-param-name"));
   });
 
@@ -447,7 +455,7 @@ describe("Schedule panel", () => {
     byId("schedule-time").value = "23:00";
     server.fail = new FakeError("Profile Night was not found", { field: "params.name" });
     submit();
-    await vi.waitFor(() => expect(status()).toBe("Profile Night was not found"));
+    await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe("Profile Night was not found"));
     expect(document.activeElement).toBe(byId("schedule-param-name"));
     expect(byId("schedule-param-name").getAttribute("aria-invalid")).toBe("true");
 
@@ -455,6 +463,77 @@ describe("Schedule panel", () => {
     submit();
     await vi.waitFor(() => expect(status()).toBe("Could not save: The AutoDJ server is not reachable."));
     expect(byId("schedule-form").hidden).toBe(false);
+    expect(byId("schedule-form-dialog").open).toBe(true);
+  });
+
+  it("keeps a pending save modal open, ignores duplicate submits, and drops a stale save on clear", async () => {
+    const server = fakeServer();
+    const { controls } = await openPanel(server);
+    let resolveSave;
+    let postCount = 0;
+    const request = server.request.getMockImplementation();
+    server.request.mockImplementation((url, options) => {
+      if (url === "/api/schedule" && options?.method === "POST") {
+        postCount += 1;
+        return new Promise((resolve) => { resolveSave = resolve; });
+      }
+      return request(url, options);
+    });
+    byId("schedule-add").click();
+    byId("schedule-name").value = "Pending event";
+    byId("schedule-time").value = "09:00";
+    submit();
+    await vi.waitFor(() => expect(resolveSave).toBeTypeOf("function"));
+    submit();
+    expect(postCount).toBe(1);
+    expect(byId("schedule-form").getAttribute("aria-busy")).toBe("true");
+    controls.clear();
+    expect(byId("schedule-form-dialog").open).toBe(false);
+    resolveSave({ ...event("Pending event"), id: "pending" });
+    await flush();
+    expect(byId("schedule-events").textContent).toBe("");
+    expect(status()).toBe("");
+  });
+
+  it("announces an unmapped server refusal once inside the dialog", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show"));
+    await openPanel(server);
+    rowButton("Morning show", "edit").click();
+    const messages = [];
+    const region = byId("schedule-form-status");
+    const observer = new window.MutationObserver(() => {
+      if (region.textContent) messages.push(region.textContent);
+    });
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    server.fail = Object.assign(new Error("Refused by server"), { field: "unknown_field" });
+    byId("schedule-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Could not save: Refused by server"));
+    observer.disconnect();
+    expect(messages).toEqual(["Could not save: Refused by server"]);
+    expect(byId("schedule-form-dialog").open).toBe(true);
+  });
+
+  it("handles Escape as an unsaved-change prompt and returns focus after discard", async () => {
+    const server = fakeServer();
+    server.events.push(event("Morning show"));
+    await openPanel(server);
+    const edit = rowButton("Morning show", "edit");
+    edit.click();
+    const dialog = byId("schedule-form-dialog");
+    byId("schedule-name").value = "Changed name";
+    const escape = new Event("cancel", { cancelable: true });
+    dialog.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-cancel").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(false));
+    expect(dialog.open).toBe(true);
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(dialog.open).toBe(false));
+    expect(document.activeElement).toBe(edit);
   });
 
   it("edits an event in place and Cancel returns focus to its Edit button", async () => {

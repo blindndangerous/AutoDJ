@@ -1,8 +1,7 @@
 import { stepHoursText } from "./step-hours.js";
+import { NUMERIC_OPERATORS, TEXT_OPERATORS } from "./condition-editor.js";
 
 const FOLDER_TYPES = new Set(["music", "liner"]);
-export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
-export const TEXT_OPERATORS = [["is", "is"], ["is_not", "is not"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
 
 function lastPart(path) {
   const parts = String(path).split(/[\\/]/).filter(Boolean);

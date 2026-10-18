@@ -10,6 +10,8 @@ Use Tab to move to a tab strip, then Left Arrow and Right Arrow to change tabs; 
 
 In NVDA, shortcuts work in focus mode. Press NVDA+Space to switch modes. Browse mode intercepts letter keys; press NVDA+F2 and then a shortcut to pass one key to the page. JAWS can pass a key with Insert+3. When a button has focus, Space activates the button. Arrows operate a focused slider, tab strip, or list instead of a page shortcut.
 
+Add/Edit dialogs for intro rules, categories, scheduled events and ads return to the saved item's Edit button after Save. Cancel or Escape returns to the opener and asks before discarding changed fields. While a save is pending, wait for its result before closing the dialog.
+
 ## Playback and navigation shortcuts
 
 - `Space` or `k`: play or pause. In stream mode, start or stop listening in this browser.
