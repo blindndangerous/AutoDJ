@@ -420,6 +420,8 @@ changes station playout and does not record what actually aired. Automatic
 broadcast choices can differ later. The [architecture proposal](adr/0014-isolate-programme-review-and-export.md)
 defines ownership and evidence limits.
 
+For a guided first run, follow [Listen to and export a shortened programme review](tutorials/programme-review.md).
+
 ### Generate and listen
 
 1. Select the station. Open **Programme review** and press **Refresh reviews** to
@@ -441,7 +443,7 @@ defines ownership and evidence limits.
 7. When ready, choose the result under **Saved review** and press **Load review**.
    Read its date, effective range and complete/incomplete status. Use the native
    **Private programme review** audio controls to listen. Audio never starts
-   automatically. **Settings**, **Playback**, **Preview output device** selects
+   automatically. **Settings**, **Sound**, **Preview output device** selects
    the same private device used by other previews; browser/device fallback advice
    remains applicable.
 8. Use **Previous item**, **Next item**, or an item button to seek without starting
