@@ -37,6 +37,43 @@ def station(tmp_path, *, mode="fixed"):
     return source, rows
 
 
+def test_sixty_minute_programme_renders_with_default_scratch_budget(tmp_path):
+    """ADR-0014-08: freed decodes must not accumulate against the scratch cap."""
+    import time
+
+    from autodj.review_render import render_review
+    from autodj.stereo import audio_workspace
+
+    path = tmp_path / "silence.wav"
+    # A sparse two-minute source avoids a large in-memory test fixture.
+    with sf.SoundFile(path, "w", samplerate=SR, channels=2, subtype="FLOAT") as source_file:
+        source_file.seek(120 * SR - 1)
+        source_file.write(np.zeros((1, 2), np.float32))
+    entry = replace(song(0, "Artist", length=120), path=str(path))
+    source = make_station(
+        tmp_path / "station",
+        [entry],
+        playback={
+            "transition_mode": "fixed",
+            "crossfade_seconds": 0,
+            "loudness_processing": "off",
+        },
+    )
+    rows = [Item("song", 100 + number * 120, 120, "show", entry) for number in range(30)]
+    output = tmp_path / "result"
+    output.mkdir()
+    deadline = time.monotonic() + 120
+    with audio_workspace(tmp_path / "scratch"):
+        metadata = render_review(
+            source, rows, output, cancelled=lambda: time.monotonic() >= deadline
+        )
+    assert metadata["incomplete"] is False
+    assert metadata["effective_range"][1] == pytest.approx(3600, abs=0.1)
+    assert len(metadata["items"]) == 30
+    assert sf.info(output / "review.wav").duration < 700
+    assert (output / "review.mp3").stat().st_size > 100
+
+
 def test_real_render_exports_matching_wav_mp3_and_does_not_touch_live_state(tmp_path):
     """ADR-0014-01: review uses isolated state and matching real audio exports."""
     from autodj.review_render import render_review

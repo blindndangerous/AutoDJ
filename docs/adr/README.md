@@ -29,7 +29,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [11: Accessible browser UI](0011-verify-accessibility-with-browser-and-speech-evidence.md) | Proposed; retrospective | Native controls, announcements, keyboard access, release evidence |
 | [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release |
 | [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
-| [14: Programme review](0014-isolate-programme-review-and-export.md) | Proposed; explicit maintainer acceptance pending | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
+| [14: Programme review](0014-isolate-programme-review-and-export.md) | Accepted | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

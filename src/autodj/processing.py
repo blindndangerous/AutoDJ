@@ -276,7 +276,9 @@ def load_processed_audio(source: Path, measurement: dict, kind: str = "music") -
             "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
         )
     # The buffer is writable, so the samples use it in place with no copy.
-    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
+    if len(output) % 8:
+        raise ValueError("Incomplete stereo PCM frame")
+    audio = np.ndarray((len(output) // 8, 2), dtype="<f4", buffer=output)
     after = source.stat()
     if (after.st_size, after.st_mtime_ns) != (measurement["size"], measurement["mtime_ns"]):
         raise RuntimeError(f"source changed during audio decode: {source}")
@@ -379,7 +381,9 @@ def load_and_measure_audio(
         logger.warning(
             "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}
         )
-    audio = np.frombuffer(output, dtype="<f4").reshape(-1, 2)
+    if len(output) % 8:
+        raise ValueError("Incomplete stereo PCM frame")
+    audio = np.ndarray((len(output) // 8, 2), dtype="<f4", buffer=output)
     if max_seconds is not None and len(audio) > max_seconds * SAMPLE_RATE:
         raise TrackTooLongError(str(source), len(audio) / SAMPLE_RATE)
     after = source.stat()

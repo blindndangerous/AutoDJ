@@ -81,6 +81,315 @@ def test_fingerprint_changes_for_audio_and_config_but_not_wall_clock(tmp_path):
     assert second != source_fingerprint(station, request)
 
 
+def test_play_during_capture_and_render_does_not_invalidate_saved_review(tmp_path, monkeypatch):
+    from autodj import hour_preview
+    from autodj.catalog import LibraryCatalog
+    from autodj.review_render import render_review
+
+    station, identity, entries = station_content(tmp_path)
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(tmp_path)
+        for entry in entries:
+            catalog.put_entry(entry)
+        station.bridge.library.catalog = catalog
+        request = {"source": "show", "show_id": identity}
+        before = source_fingerprint(station, request)
+        predict = hour_preview.predict
+
+        def play_during_capture(*args, **kwargs):
+            catalog.remember_play(entries[0].path, 100)
+            return predict(*args, **kwargs)
+
+        monkeypatch.setattr(hour_preview, "predict", play_during_capture)
+        plan = capture_review(station, request)
+        assert source_fingerprint(station, request) == before
+        output = tmp_path / "result"
+        output.mkdir()
+        played = False
+
+        def play_during_render():
+            nonlocal played
+            if not played:
+                catalog.remember_play(entries[1].path, 200)
+                played = True
+            return False
+
+        render_review(plan.source, plan.items, output, cancelled=play_during_render)
+        assert played
+        assert plan.fingerprint == source_fingerprint(station, plan.request)
+
+
+def test_unrelated_analysis_during_render_keeps_saved_review_fresh(tmp_path):
+    """ADR-0014-09: unrelated entry analysis preserves saved and running reviews."""
+    from autodj.catalog import LibraryCatalog
+    from autodj.indexer import FEATURE_DIM
+    from autodj.review_api import _result_view
+    from autodj.review_render import render_review
+
+    station, identity, entries = station_content(tmp_path)
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(tmp_path)
+        for entry in entries:
+            catalog.put_entry(entry)
+        station.bridge.library.catalog = catalog
+        plan = capture_review(station, {"source": "show", "show_id": identity})
+        result = {
+            "id": "a" * 32,
+            "created_at": 100,
+            "metadata": {"_request": plan.request, "_fingerprint": plan.fingerprint},
+        }
+        assert _result_view(station, result)["stale"] is False
+        before = source_fingerprint(station, plan.request, include_live_state=False)
+        target = catalog.record_for_path(entries[2].path)
+        written = False
+
+        def analyze_unrelated_track():
+            nonlocal written
+            if not written:
+                assert catalog.store_analysis(
+                    target["path"],
+                    target["size"],
+                    target["fingerprint"],
+                    {"energy": 0.25, "key": 5, "mode": 0, "bpm": 125, "tempo_confidence": 0.95},
+                    np.ones(FEATURE_DIM, np.float32),
+                )
+                written = True
+            return False
+
+        output = tmp_path / "result"
+        output.mkdir()
+        metadata = render_review(plan.source, plan.items, output, cancelled=analyze_unrelated_track)
+        assert written and metadata["duration"] > 0
+        assert (output / "review.wav").is_file() and (output / "review.mp3").is_file()
+        assert before == source_fingerprint(station, plan.request, include_live_state=False)
+        assert _result_view(station, result)["stale"] is False
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("energy", 0.25), ("key", 5), ("mode", 0), ("bpm", 125), ("tempo_confidence", 0.95)],
+)
+def test_selected_track_analysis_marks_saved_review_stale(tmp_path, field, value):
+    """ADR-0014-09: changes to selected entry analysis remain relevant."""
+    from autodj.catalog import LibraryCatalog
+    from autodj.indexer import FEATURE_DIM
+    from autodj.review_api import _result_view
+
+    station, identity, entries = station_content(tmp_path)
+    entries[0].bpm = 0  # Analysis fills an unknown BPM; it preserves an existing source BPM.
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(tmp_path)
+        for entry in entries:
+            catalog.put_entry(entry)
+        station.bridge.library.catalog = catalog
+        plan = capture_review(station, {"source": "show", "show_id": identity})
+        result = {
+            "id": "a" * 32,
+            "created_at": 100,
+            "metadata": {"_request": plan.request, "_fingerprint": plan.fingerprint},
+        }
+        assert _result_view(station, result)["stale"] is False
+        target = catalog.record_for_path(entries[0].path)
+        analysis = {
+            key: target[key] for key in ("energy", "key", "mode", "bpm", "tempo_confidence")
+        }
+        analysis[field] = value
+        assert catalog.store_analysis(
+            target["path"],
+            target["size"],
+            target["fingerprint"],
+            analysis,
+            np.ones(FEATURE_DIM, np.float32),
+        )
+        assert _result_view(station, result)["stale"] is True
+
+
+@pytest.mark.parametrize("first_play", [False, True])
+def test_loudness_cache_write_during_render_keeps_saved_review_fresh(tmp_path, first_play):
+    """ADR-0014-09: unrelated and first-play analysis are not source edits."""
+    from pathlib import Path
+
+    from autodj.catalog import LibraryCatalog
+    from autodj.processing import analyze_loudness
+    from autodj.review_api import _result_view
+    from autodj.review_render import render_review
+
+    station, identity, entries = station_content(tmp_path)
+    station.cfg.playback.loudness_processing = "smooth" if first_play else "off"
+    samples = 0.1 * np.sin(2 * np.pi * 220 * np.arange(44100) / 44100)
+    for entry in entries:
+        sf.write(entry.path, np.repeat(samples[:, None], 2, axis=1), 44100)
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(tmp_path)
+        for entry in entries:
+            catalog.put_entry(entry)
+        station.bridge.library.catalog = catalog
+        target = entries[0] if first_play else entries[2]
+        measurement = analyze_loudness(Path(target.path))
+        plan = capture_review(station, {"source": "show", "show_id": identity})
+        before = source_fingerprint(station, plan.request, include_live_state=False)
+        written = False
+
+        def write_measurement():
+            nonlocal written
+            if not written:
+                catalog.set_loudness(target.path, measurement)
+                written = True
+            return False
+
+        output = tmp_path / "result"
+        output.mkdir()
+        metadata = render_review(plan.source, plan.items, output, cancelled=write_measurement)
+        assert written
+        assert before == source_fingerprint(station, plan.request, include_live_state=False)
+        metadata.update(_request=plan.request, _fingerprint=plan.fingerprint)
+        result = {"id": "a" * 32, "created_at": 100, "metadata": metadata}
+        assert _result_view(station, result)["stale"] is False
+        catalog.set_points(entries[2].path, {"start": 0.01})
+        assert _result_view(station, result)["stale"] is False
+        catalog.set_points(entries[0].path, {"start": 0.01})
+        assert _result_view(station, result)["stale"] is True
+
+
+@pytest.mark.parametrize("mode, stale", [("off", False), ("smooth", True)])
+def test_only_loudness_used_by_selected_audio_invalidates_review(tmp_path, mode, stale):
+    """ADR-0014-09: selected cached gain matters only when the review uses it."""
+    from pathlib import Path
+
+    from autodj.catalog import LibraryCatalog
+    from autodj.processing import PREPARATION_VERSION
+
+    station, identity, entries = station_content(tmp_path)
+    station.cfg.playback.loudness_processing = mode
+    path = Path(entries[0].path)
+    stamp = path.stat()
+    measurement = {
+        "version": PREPARATION_VERSION,
+        "kind": "music",
+        "size": stamp.st_size,
+        "mtime_ns": stamp.st_mtime_ns,
+        "lufs": -30,
+        "gain_db": 2,
+    }
+    with LibraryCatalog(tmp_path / "catalog.db") as catalog:
+        catalog.add_source(tmp_path)
+        for entry in entries:
+            catalog.put_entry(entry)
+        station.bridge.library.catalog = catalog
+        catalog.set_loudness(path, measurement)
+        plan = capture_review(station, {"source": "show", "show_id": identity})
+        catalog.set_loudness(path, {**measurement, "lufs": -29, "gain_db": 1})
+        assert (source_fingerprint(station, plan.request) != plan.fingerprint) is stale
+
+
+@pytest.mark.parametrize("kind", ["show", "queue"])
+@pytest.mark.parametrize("selection", [False, True])
+def test_long_programme_is_rejected_before_decode_even_with_a_short_range(
+    tmp_path, monkeypatch, kind, selection
+):
+    """ADR-0014-10: a range cannot bypass full-programme admission."""
+    from autodj.player import Player
+    from autodj.review_jobs import ReviewError
+
+    station, identity, entries = station_content(tmp_path)
+    player = _live(station, identity, entries) if kind == "queue" else None
+    long_entry = replace(entries[0], length=61 * 60)
+    library = station.bridge.library
+    library._by_path[long_entry.path] = long_entry
+    library._music = (long_entry, *entries[1:])
+    station.shows.update(
+        identity, lambda show: show.model_copy(update={"songs": [long_entry.path]})
+    )
+    if player is not None:
+        player._state.queue[:] = [long_entry]
+
+    def refuse_decode(*args, **kwargs):
+        pytest.fail("oversized programme reached audio decoding")
+
+    monkeypatch.setattr(Player, "_load_playout_audio", refuse_decode)
+    parameters = {"source": kind, "show_id": identity, "start": "2026-10-18T12:00:00Z"}
+    if selection:
+        parameters.update(selection_start=0, selection_end=1)
+    with pytest.raises(ReviewError, match=r"60 minutes.*shorter saved show or queue"):
+        capture_review(station, parameters)
+
+
+def test_fingerprint_only_stats_selected_audio_and_still_detects_edits(tmp_path, monkeypatch):
+    from autodj import review_source
+
+    station, identity, entries = station_content(tmp_path)
+    signatures = []
+    original = review_source._signature
+    monkeypatch.setattr(
+        review_source, "_signature", lambda path: (signatures.append(str(path)), original(path))[1]
+    )
+    request = {"source": "show", "show_id": identity}
+    before = source_fingerprint(station, request)
+    assert entries[2].path not in signatures
+    assert entries[0].path in signatures
+    with open(entries[0].path, "ab") as output:
+        output.write(b"edit")
+    assert source_fingerprint(station, request) != before
+
+
+def test_queue_capture_rejects_media_changed_during_prediction(tmp_path, monkeypatch):
+    from autodj import hour_preview
+
+    station, identity, entries = station_content(tmp_path)
+    _live(station, identity, entries)
+    predict = hour_preview.predict
+
+    def edit_media(*args, **kwargs):
+        answer = predict(*args, **kwargs)
+        with open(entries[0].path, "ab") as output:
+            output.write(b"changed")
+        return answer
+
+    monkeypatch.setattr(hour_preview, "predict", edit_media)
+    with pytest.raises(ValueError, match="changed"):
+        capture_review(station, {"source": "queue", "start": "2026-10-18T12:00:00Z"})
+
+
+def test_review_with_handoff_liner_is_fresh_until_its_audio_changes(tmp_path):
+    from autodj.review_api import _result_view
+
+    station, identity, entries = station_content(tmp_path)
+    station.bridge.library._liners = (entries[1],)
+    plan = capture_review(station, {"source": "show", "show_id": identity})
+    assert any(row.in_handoff and row.entry == entries[1] for row in plan.items)
+    metadata = {
+        "_source_paths": [entries[0].path, entries[1].path],
+        "_request": plan.request,
+        "_fingerprint": plan.fingerprint,
+    }
+    result = {"id": "a" * 32, "created_at": 100, "metadata": metadata}
+    assert _result_view(station, result)["stale"] is False
+    with open(entries[1].path, "ab") as audio:
+        audio.write(b"edited")
+    assert _result_view(station, result)["stale"] is True
+
+
+@pytest.mark.parametrize(
+    "parameters, field",
+    [
+        ({"source": "show", "show_id": "0" * 32}, "show_id"),
+        ({"source": "forecast", "start": "invalid"}, "start"),
+    ],
+)
+def test_capture_error_keeps_field_in_worker_status(tmp_path, parameters, field):
+    from autodj.review_jobs import ReviewJobs
+    from tests.unit.test_review_jobs import wait
+
+    station, _, _ = station_content(tmp_path)
+    jobs = ReviewJobs()
+    root = tmp_path / "reviews"
+    job = jobs.submit(root, "", lambda stage, cancelled: capture_review(station, parameters))
+    status = wait(jobs, root, job["id"])
+    assert status["state"] == "failed"
+    assert status["field"] == field
+    assert jobs.shutdown()
+
+
 @pytest.mark.parametrize("start", ["2026-03-08T02:30", "2026-11-01T01:30"])
 def test_ambiguous_or_nonexistent_wall_time_is_rejected(tmp_path, start):
     station, identity, _ = station_content(tmp_path)
@@ -341,7 +650,7 @@ def test_metadata_snapshot_preserves_a_live_cached_miss_until_it_expires(tmp_pat
         assert cache._mem_cache == {}
 
 
-def test_result_fingerprints_share_library_reads_only_within_one_request(tmp_path, monkeypatch):
+def test_result_fingerprints_share_only_selected_catalog_reads(tmp_path, monkeypatch):
     station, identity, entries = station_content(tmp_path)
     catalog = station.bridge.library.catalog
     original = catalog.record_for_path
@@ -353,7 +662,7 @@ def test_result_fingerprints_share_library_reads_only_within_one_request(tmp_pat
     shared = {}
     first = source_fingerprint(station, request, shared=shared)
     source_fingerprint(station, {**request, "_review_dj_paths": [entries[0].path]}, shared=shared)
-    assert len(reads) == len(entries)
+    assert sorted(reads) == sorted({entries[0].path, entries[1].path})
     station.cfg.playback.music_speed_percent = 2
     assert source_fingerprint(station, request, shared={}) != first
 

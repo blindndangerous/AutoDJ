@@ -6,13 +6,13 @@ import asyncio
 import contextlib
 import re
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, overload
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from autodj.review_audio import ReviewSettings
 from autodj.review_jobs import ReviewError, ReviewJobs
@@ -28,7 +28,7 @@ class ReviewBody(BaseModel):
     source: Literal["show", "queue", "forecast"]
     show_id: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
     start: datetime | None = None
-    minutes: Annotated[int, Field(strict=True, ge=1, le=180)] = 60
+    minutes: Annotated[int, Field(strict=True, ge=1, le=60)] = 60
     selection_start: Annotated[Finite, Field(ge=0)] | None = None
     selection_end: Annotated[Finite, Field(gt=0)] | None = None
     head_seconds: Annotated[Finite, Field(gt=0, le=3600)] = 10
@@ -37,10 +37,27 @@ class ReviewBody(BaseModel):
     tone_seconds: Annotated[Finite, Field(gt=0, le=10)] = 0.25
     keep_complete: Annotated[list[Target], Field(max_length=500)] = []
 
+    @field_validator("start", mode="before")
+    @classmethod
+    def valid_start(cls, value: Any) -> datetime | None:
+        if value is None or isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            with contextlib.suppress(ValueError):
+                return datetime.fromisoformat(value)
+        raise ReviewError("Enter a valid intended start time", field="start")
+
+    @field_validator("show_id", mode="before")
+    @classmethod
+    def valid_show_id(cls, value: Any) -> str | None:
+        if value is None or (isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value)):
+            return value
+        raise ReviewError("Choose a saved show", field="show_id")
+
     @model_validator(mode="after")
     def valid_range(self) -> ReviewBody:
         if self.source == "show" and self.show_id is None:
-            raise ValueError("Choose a saved show")
+            raise ReviewError("Choose a saved show", field="show_id")
         if self.selection_end is not None and self.selection_end <= (self.selection_start or 0):
             raise ValueError("Review end must follow review start")
         return self
@@ -87,6 +104,11 @@ def _job_view(job: dict | None) -> dict | None:
         return None
     return {
         **job,
+        **{
+            key: datetime.fromtimestamp(job[key], UTC).isoformat()
+            for key in ("started_at", "finished_at")
+            if key in job
+        },
         "status": job["state"],
         **({"result_id": job["id"]} if job["state"] == "done" else {}),
     }
@@ -107,7 +129,7 @@ def _result_view(station: Any, result: dict, shared: dict | None = None) -> dict
     return {
         **{key: value for key, value in metadata.items() if not key.startswith("_")},
         "id": result["id"],
-        "created_at": result["created_at"],
+        "created_at": datetime.fromtimestamp(result["created_at"], UTC).isoformat(),
         "stale": stale,
     }
 

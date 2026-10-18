@@ -1,7 +1,7 @@
 # 14. Isolate programme review and export from broadcast state
 
 Date: 2026-10-17
-Status: Proposed; explicit maintainer acceptance pending.
+Status: Accepted; maintainer approval in conversation on 2026-10-18 (PR #450 merged after review fixes).
 Decision authority: Project maintainer. Agreed feature scope is separate from ADR acceptance.
 
 ## Context and scope
@@ -43,6 +43,24 @@ metadata must not write catalog measurements or mutate live queues, RNG state,
 reservations, history or ad accounting. Concurrent ordinary playout may advance;
 review must cause no additional live mutations.
 
+Fingerprint catalog source revisions and selected media signatures, entry metadata,
+cues, cue sources, intro lift and outro permissions. Selected entry metadata includes
+kind, descriptive tags, length, energy, BPM, key, mode and tempo confidence. Exclude
+global entry/record/vector counters and index bookkeeping stamps: unrelated analysis
+or cue updates must not invalidate a saved review or abort a running render.
+Changes to selected entry metadata remain relevant, including analysis results.
+Freeze selected records for the isolated renderer. Include a cached loudness value
+only when selected audio uses that valid value in smooth or Stereo Tool mode.
+If capture has no usable measurement, render measures privately; later first-play
+or background cache fills do not change that frozen input. Play-history writes
+are excluded; a change to a selected cached gain actually used by review remains
+a relevant change. Live queue changes remain relevant to queue/forecast results.
+
+Share station and selected-record reads within a result-list response rather than
+querying every library record. Queue/forecast capture checks candidate media
+signatures before and after selection, when selected paths are not yet known.
+Polling checks selected media; source edits discovered during capture fail it.
+
 Review represents a plan at capture time, not what actually aired or a promise of
 future automatic selections. Render before final broadcast mastering. Live DJs,
 unrecorded microphone contributions, final Stereo Tool processing and actual-air
@@ -79,7 +97,13 @@ credentials grant no review generation, status, media or download access. Paired
 browser permissions remain server-wide; this feature introduces no operator roles.
 
 Admission defaults to 20 completed results and 512 MiB per station, with a
-120-second cooperative render deadline. These bound work and retained artifacts;
+120-second cooperative deadline covering capture, rendering and encoding.
+Saved shows and queues admit at most 60 minutes of known source audio, using
+conservative indexed lengths before decode and checking the captured span before
+mixing. Forecast requests offer 1–60 minutes. A range selects retained output;
+it cannot reduce admission work because the full captured programme is mixed.
+A show or queue whose known source lengths exceed the limit fails before
+decoding with advice to choose a shorter source list. These limits bound work and retained artifacts;
 they do not promise completion latency or real-time performance. A worker that has
 not stopped retains its slot. Cancellation, deadline, decode/TTS/encoding/write
 failure and shutdown must clean partial work and release capacity only when its
@@ -87,8 +111,13 @@ owner exits. Failures must not replace a valid completed snapshot.
 
 Source capture, decoded spills, working arrays and encoding use an owned scratch
 workspace with a separate 2 GiB allocation budget and checks that leave 64 MiB
-free. The budget includes copies and may reject a review whose final shortened
-files would be small. Do not fall back to an unowned global temporary directory
+free. Reservations include live copies and follow mapping lifetimes, including
+array views. Spool reservations transfer to mapped buffers; freed buffers release
+their reservations. Finalizer release must be safe during GC inside allocation
+locks, so it cannot deadlock the server's one render slot. Scope exit closes active
+mappings, including on Windows. A 180-minute full mix alone exceeds this budget;
+large individual sources or mostly complete audio can exceed it below 60 minutes.
+Do not fall back to an unowned global temporary directory
 when its workspace is full. These are service resource bounds, not new public
 configuration keys.
 
@@ -99,6 +128,15 @@ are removed only by explicit deletion. Reaching a limit refuses generation rathe
 than evicting reviewed audio. Derived reviews are excluded from station backups;
 download files that need independent retention. Source recordings remain owned by
 their existing catalog or future prepared-edition owner.
+
+API review/job timestamps use ISO 8601 UTC; persistence retains numeric timestamps.
+Display dates in the browser's locale/time zone, including seconds to distinguish
+regenerations within a minute. Review generation bodies are capped at 64 KiB at
+both station addresses, allowing 500 keep-complete targets. Start/show errors
+identify the input in synchronous validation and failed worker status. Announce
+errors and mark invalid fields; late failures move focus only while the operator
+remains in programme review or focus is on the document body. Load/Delete without
+a saved selection announces the missing selection.
 
 Relevant source changes mark a retained result Out of date, preserving its audio
 and exports. Regeneration is explicit and creates another result. A future G05
@@ -153,6 +191,9 @@ Manual and gap rows remain obligations, separate from ADR acceptance.
 | `ADR-0014-05` | Station changes discard delayed UI replies and remove private audio access from the previous context. | automated | `tests/jsmodules/programme-review.test.js::clears audio and drops delayed replies when station context changes` |
 | `ADR-0014-06` | Operator access applies to all review routes and derived reviews stay outside station backups. | automated | `tests/integration/test_review_api.py::test_review_access_needs_paired_browser_and_origin`; `tests/integration/test_review_api.py::test_machine_credentials_cannot_generate_or_download_reviews`; `tests/unit/test_review_backup.py::test_backup_keeps_saved_shows_but_excludes_derived_reviews` |
 | `ADR-0014-07` | Independent Windows/Chrome/NVDA operation and audible joins are demonstrated on the candidate. | manual | Follow the programme review rehearsal in accessibility-testing.md; record commit, versions, devices, steps, speech/focus observations and listening findings. Pending; missing evidence blocks feature closure. |
+| `ADR-0014-08` | Freed buffers release scratch capacity without GC deadlock; a synthetic 60-minute song programme fits the default budget. | automated | `tests/unit/test_review_render.py::test_sixty_minute_programme_renders_with_default_scratch_budget`; `tests/unit/test_review_workspace.py::test_mapping_finalizer_can_release_budget_during_locked_gc` |
+| `ADR-0014-09` | Unrelated entry analysis and first-play cache fills preserve saved and running reviews; selected entry metadata, cues and cached gains actually used remain relevant. | automated | `tests/unit/test_review_source.py::test_unrelated_analysis_during_render_keeps_saved_review_fresh`; `tests/unit/test_review_source.py::test_selected_track_analysis_marks_saved_review_stale`; `tests/unit/test_review_source.py::test_loudness_cache_write_during_render_keeps_saved_review_fresh`; `tests/unit/test_review_source.py::test_only_loudness_used_by_selected_audio_invalidates_review` |
+| `ADR-0014-10` | Shows and queues above the 60-minute source limit fail before decode, including requests for short retained ranges. | automated | `tests/unit/test_review_source.py::test_long_programme_is_rejected_before_decode_even_with_a_short_range` |
 
 ## Verification and remaining evidence
 

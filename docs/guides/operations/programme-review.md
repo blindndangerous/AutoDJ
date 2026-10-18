@@ -21,7 +21,8 @@ For a guided first run, follow [Listen to and export a shortened programme revie
    load its saved shows and retained results.
 2. Choose **Source**: **Saved show**, **Current queue**, or **Forecast**. For a
    saved show, choose **Show**; it can be reviewed while the station is stopped.
-   Set **Programme minutes** from 1 to 180.
+   For a forecast, set **Programme minutes** from 1 to 60. Saved shows and queues
+   use their captured content.
 3. Optionally set **Intended start** in this browser's local time. Blank means
    now. Automatic content is resolved against that full programme time in the
    station's time zone, before song middles are removed.
@@ -34,7 +35,8 @@ For a guided first run, follow [Listen to and export a shortened programme revie
 6. Press **Generate review**. Generation runs separately from playout; **Cancel
    generation** abandons that job and preserves existing results.
 7. When ready, choose the result under **Saved review** and press **Load review**.
-   Read its date, effective range and complete/incomplete status. Use the native
+   Read its date in this browser's locale and time zone, effective range and
+   complete/incomplete status. Use the native
    **Private programme review** audio controls to listen. Audio never starts
    automatically. **Settings**, **Sound**, **Preview output device** selects
    the same private device used by other previews; browser/device fallback advice
@@ -66,6 +68,12 @@ original audio. Generate explicitly to create a new result. Editing or hearing a
 review does not approve pending speech for broadcast. Prepared editions and their
 approval workflow are a separate feature.
 
+Play-history updates and unrelated loudness measurements do not invalidate saved
+reviews. First-play cache fills are ignored when the review did not use a cached
+measurement; changes to selected cached gain used by processed review can mark
+it out of date. Queue and forecast reviews can become out of date as their
+captured live queue advances.
+
 ### Storage and availability
 
 - **Saved-show private review:** available without running station playout.
@@ -75,13 +83,22 @@ approval workflow are a separate feature.
 - **Actual-air recording or final Stereo Tool processing:** outside programme review.
 
 One render runs across the server at a time, with a cooperative 120-second work
-limit. Each station retains up to 20 results and 512 MiB; reaching either limit
+limit covering capture, rendering and encoding. Each station retains up to 20
+results and 512 MiB; reaching either limit
 refuses generation instead of deleting older reviews. These are resource limits,
-not a promise that every admitted job completes. Reduce the requested span or
-delete unwanted snapshots and retry after a capacity/storage error.
+not a promise that every admitted job completes. Choose a shorter saved show or
+queue, reduce forecast minutes, or delete unwanted snapshots after a capacity
+error. Selecting a range does not reduce the programme captured and mixed.
 
 Working audio has a separate 2 GiB scratch allocation budget, including decoded
-sources and copies, and leaves at least 64 MiB free. A long source can exceed
+sources and copies, and leaves at least 64 MiB free. Reservations are released
+when decoded buffers are freed; active views keep their reservation. Forecasts
+offer at most 60 minutes. Saved shows and queues admit at most 60 minutes of known
+source audio, conservatively estimated from indexed lengths before decode; their
+captured span must fit that limit too. A longer show or queue fails with advice
+to choose a shorter source list, even when a short range is selected. A 180-minute
+unshortened mix alone exceeds the scratch budget. A long individual source or
+mostly complete audio below 60 minutes can still exceed
 that budget even if its shortened export would be small. Generation fails
 actionably rather than spilling outside its owned workspace. These service
 limits are separate from the review timing controls.
