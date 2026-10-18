@@ -260,7 +260,7 @@ def _preview_liner_group(
     voice: tuple[Any, dict[str, Any], bool] | None = None,
 ) -> tuple[list[tuple[Any, float, float]], float]:
     """Place cue-trimmed liner rows and return the incoming song's extra delay."""
-    from autodj.playout import liner_chain_placement, liner_release_frames
+    from autodj.playout import liner_chain_placement, liner_chain_timing, liner_main_frames
 
     sr = SAMPLE_RATE
     if outgoing_rate is None:
@@ -269,76 +269,38 @@ def _preview_liner_group(
         incoming_rate = music_rate(player, incoming)
     outgoing_rate = max(0.01, float(outgoing_rate))
     incoming_rate = max(0.01, float(incoming_rate))
-    chain: list[tuple[Any, int, int, bool]] = []
-    negative: list[tuple[int, float, int]] = []
-    zero: list[tuple[int, int]] = []
-    first_negative = False
-    frames = main_frames = fit_main_frames = 0
-    release = 0.0
-    ordinary = False
+    chain: list[tuple[Any, int, int]] = []
+    timing: list[tuple[int, int, float | None, bool]] = []
+    frames = 0
     for entry in (*liners, *((voice[0],) if voice else ())):
         cues = voice[1] if voice and entry is voice[0] else player.saved_points(entry)
         start = max(0.0, float(cues.get("start") or 0.0))
         end = min(float(entry.length or 0.0), float(cues.get("end") or entry.length or 0.0))
         first, last = round(start * sr), round(end * sr)
         clip_frames = max(0, last - first)
-        segue = cues.get("segue")
-        speech = (
-            clip_frames
-            if segue is None
-            else min(clip_frames, max(0, round(float(segue) * sr) - first))
-        )
+        speech = liner_main_frames(first, clip_frames, cues.get("segue"))
         offset = frames
-        main_frames = frames + speech
-        cue = cues.get("overlap_start")
-        overlap = speech / sr if cue is None else min(float(cue), speech / sr)
-        if cue is not None and cue < 0:
-            negative.append((offset, cue, speech))
-        elif cue == 0:
-            zero.append((offset, speech))
-        else:
-            ordinary = True
-        if not chain:
-            first_negative = cue is not None and cue < 0
-        if overlap > 0 or cue is None:
-            release = max(release, offset / sr + overlap)
-        if cue == 0:
-            fit_main_frames = max(fit_main_frames, main_frames)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
         allow_outro = (
             bool(voice[2])
             if voice and entry is voice[0]
             else bool(record and record.get("allow_outro", False))
         )
-        chain.append((entry, offset, clip_frames, allow_outro))
+        timing.append((clip_frames, speech, cues.get("overlap_start"), allow_outro))
+        chain.append((entry, offset, clip_frames))
         frames += clip_frames
 
     incoming_points = player.saved_points(incoming)
     incoming_start = float(incoming_points.get("start") or 0.0)
     intro = max(0.0, float(incoming_points.get("intro") or incoming_start) - incoming_start)
     intro_frames = round(intro * sr / incoming_rate)
-    if negative:
-        constraints = [
-            offset + liner_release_frames(speech, intro_frames, cue)
-            for offset, cue, speech in negative
-        ]
-        constraints.extend(offset + speech - intro_frames for offset, speech in zero)
-        if ordinary:
-            constraints.append(round(release * sr))
-        if not first_negative:
-            constraints.append(0)
-        release_frames = max(constraints)
-    elif fit_main_frames:
-        release_frames = max(round(release * sr), fit_main_frames - intro_frames)
-    else:
-        release_frames = round(release * sr)
-    release_frames = max(release_frames, main_frames - intro_frames)
+    main_frames, release, limit = liner_chain_timing(timing, intro_frames / sr)
+    release = round(release * sr) / sr
 
     if outgoing is None:
         return [
-            (entry, moment + offset / sr, clip_frames / sr)
-            for entry, offset, clip_frames, _ in chain
-        ], release_frames / sr
+            (entry, moment + offset / sr, clip_frames / sr) for entry, offset, clip_frames in chain
+        ], release
     outgoing_start, segue = player._clock_music_span(outgoing)
     points = player.saved_points(outgoing)
     start_frame = round(outgoing_start * sr / outgoing_rate)
@@ -351,21 +313,17 @@ def _preview_liner_group(
             round(float(outro) * sr / outgoing_rate) if outro is not None else segue_frame,
         ),
     )
-    limit = None
-    for _entry, offset, _length, allow_outro in chain:
-        if not allow_outro:
-            limit = offset / sr if limit is None else min(limit, offset / sr)
     liner_start, incoming_frame = liner_chain_placement(
         start_frame,
         segue_frame,
         safe_outro,
         main_frames,
         intro_frames,
-        release_frames / sr,
+        release,
         limit,
     )
     base = moment + (liner_start - segue_frame) / sr
-    rows = [(entry, base + offset / sr, length / sr) for entry, offset, length, _ in chain]
+    rows = [(entry, base + offset / sr, length / sr) for entry, offset, length in chain]
     return rows, max(0, incoming_frame - segue_frame) / sr
 
 
@@ -1530,12 +1488,9 @@ def _predict(
                 end = min(float(length), float(cues.get("end") or length))
                 first, last = round(start * SAMPLE_RATE), round(end * SAMPLE_RATE)
                 clip_frames = max(0, last - first)
-                segue = cues.get("segue")
-                speech_frames = (
-                    clip_frames
-                    if segue is None
-                    else min(clip_frames, max(0, round(float(segue) * SAMPLE_RATE) - first))
-                )
+                from autodj.playout import liner_main_frames
+
+                speech_frames = liner_main_frames(first, clip_frames, cues.get("segue"))
                 clip = SimpleNamespace(
                     path=str(chosen.path),
                     length=length,

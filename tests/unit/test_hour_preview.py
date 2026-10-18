@@ -1256,6 +1256,7 @@ def test_the_preview_and_the_rotation_tester_time_songs_alike(tmp_path: Path) ->
 @pytest.mark.parametrize("first_overlap,second_overlap", [(None, 0), (0, -1), (2, 1), (-2, 0)])
 @pytest.mark.parametrize("incoming_intro", [None, 0.0, 4.0])
 @pytest.mark.parametrize("allow_outro", [False, True])
+@pytest.mark.parametrize("rate,missing_segue", [(1.0, False), (0.9, True), (1.1, True)])
 def test_preview_liner_chain_matches_synthetic_live_render(
     tmp_path: Path,
     monkeypatch,
@@ -1263,10 +1264,13 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     second_overlap: float,
     incoming_intro: float | None,
     allow_outro: bool,
+    rate: float,
+    missing_segue: bool,
 ) -> None:
     source, _power, gold = _station(tmp_path)
     player = source.player
     liners = source.library.entries_snapshot("liner")
+    monkeypatch.setattr(player, "music_playback_rate", lambda entry: rate)
     points = {
         gold[0].path: {"start": 0, "outro": 4, "segue": 8, "end": 12},
         liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": first_overlap},
@@ -1275,6 +1279,8 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     }
     if incoming_intro is not None:
         points[gold[1].path]["intro"] = incoming_intro
+    if missing_segue:
+        points[liners[0].path].pop("segue")
     monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
     monkeypatch.setattr(
         source.library.catalog, "record_for_path", lambda _path: {"allow_outro": allow_outro}
@@ -1289,11 +1295,13 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     actual = player._render_saved_track(
         gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
     )
-    rows, delay = hour_preview._preview_liner_group(player, gold[0], gold[1], liners, NOW + 8)
+    rows, delay = hour_preview._preview_liner_group(
+        player, gold[0], gold[1], liners, NOW + 8 / rate
+    )
     actual_incoming = len(actual.audio) - actual.overlap_frames
-    assert delay == pytest.approx(actual_incoming / SR - 8)
-    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
-    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
+    assert delay == pytest.approx(actual_incoming / SR - 8 / rate, abs=2 / SR)
+    assert rows[0][1] - NOW == pytest.approx(actual.liner_events[0][0] / SR, abs=2 / SR)
+    assert rows[1][1] - NOW == pytest.approx(actual.liner_events[1][0] / SR, abs=2 / SR)
 
 
 def test_the_snapshot_shares_nothing_of_the_clockwheel(tmp_path: Path) -> None:
