@@ -446,6 +446,48 @@ def test_an_intro_longer_than_the_songs_intro_plays_before_it(tmp_path: Path) ->
     assert render.audio[round(12.0 * SR)][0] == 0.0  # a has faded, b has not started
 
 
+@pytest.mark.parametrize("overlap_start", [-1.0, 0.0, 0.5])
+@pytest.mark.parametrize("incoming_intro", [0.0, 0.75, 5.0])
+def test_an_intro_rule_uses_registered_liner_cues_like_a_liner(
+    tmp_path: Path, overlap_start: float, incoming_intro: float
+) -> None:
+    player, (a, b, _c, _d), points, _desk = make_station(tmp_path)
+    points[b.path]["intro"] = points[b.path]["start"] + incoming_intro
+    liner_path = tmp_path / "year-2000.wav"
+    liner = SimpleNamespace(path=str(liner_path), length=4.0)
+    audio = np.zeros((round(liner.length * SR), 2), dtype=np.float32)
+    audio[: round(3.0 * SR), 1] = 0.5
+    points[liner.path] = {
+        "start": 0.5,
+        "segue": 2.5,
+        "end": 3.5,
+        "overlap_start": overlap_start,
+    }
+    player._library.catalog.entry_for_path = lambda path: liner if str(path) == liner.path else None
+    player._library.catalog.record_for_path = lambda path: (
+        {"id": "registered-year", "kind": "liner", "allow_outro": True}
+        if str(path) == liner.path
+        else {"id": f"song-{Path(path).stem}", "kind": "music"}
+    )
+    load_playout_audio = player._load_playout_audio
+
+    def load(entry):
+        return audio.copy() if entry.path == liner.path else load_playout_audio(entry)
+
+    player._load_playout_audio = load  # type: ignore[method-assign]
+
+    ordinary = player._render_saved_track(a, b, 0, ((liner, False),))
+    chosen = Chosen(f"rule:{'a' * 32}", liner_path, "Year 2000")
+    matched = player._render_saved_track(a, b, 0, intro=chosen)
+
+    assert ordinary is not None and matched is not None
+    assert matched.intro_events[0][0] == ordinary.liner_events[0][0]
+    assert matched.intro_events[0][2] - matched.intro_events[0][0] == round(2.0 * SR)
+    assert matched.overlap_frames == ordinary.overlap_frames
+    assert matched.next_start_offset == ordinary.next_start_offset
+    assert matched.intro_assets == ((chosen.intro_id, str(liner_path)),)
+
+
 def test_an_intro_follows_a_news_break(tmp_path: Path) -> None:
     player, (a, b, _c, _d), _points, desk = make_station(tmp_path)
     item = make_break(desk, new_id(), kind="news", seconds=2.0)

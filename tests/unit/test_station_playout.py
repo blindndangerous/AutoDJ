@@ -468,13 +468,16 @@ def test_master_processing_uses_originals_and_cached_measurements(
     assert result.loudness_processing == mode
 
 
+@pytest.mark.parametrize("mode", ["smooth", "stereotool"])
 @pytest.mark.parametrize("record_exists", [True, False])
+@pytest.mark.parametrize("dry_run", [False, True])
 def test_missing_or_stale_measurement_is_measured_in_the_decode(
-    station, record_exists, monkeypatch
+    station, record_exists, dry_run, mode, monkeypatch
 ):
     """A first play decodes and measures in one FFmpeg run, then caches the measurement."""
     player, (entry, *_), _points = station
-    player._cfg.playback.loudness_processing = "smooth"
+    player._cfg.playback.loudness_processing = mode
+    player._dry_run = dry_run
     player._library.catalog.record_for_path = lambda _path: (
         {"kind": "music", "loudness": {"version": "old"}} if record_exists else None
     )
@@ -490,7 +493,7 @@ def test_missing_or_stale_measurement_is_measured_in_the_decode(
     monkeypatch.setattr("autodj.processing.load_processed_audio", load)
     assert Player._load_playout_audio(player, entry) is audio
     measure.assert_called_once_with(Path(entry.path), "music")
-    if record_exists:
+    if record_exists and not dry_run:
         update.assert_called_once_with(Path(entry.path), measurement)
     else:
         update.assert_not_called()
