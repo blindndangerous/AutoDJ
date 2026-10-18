@@ -1562,6 +1562,7 @@ def _predict(
             )
             for liner, starts, length in rows:
                 if voice and liner is voice[0]:
+                    assert intro is not None
                     speech = float(voice[1]["segue"]) - float(voice[1]["start"])
                     found.append(
                         Item(
