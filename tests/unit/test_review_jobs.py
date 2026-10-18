@@ -338,3 +338,32 @@ def test_scratch_budget_is_separate_from_published_artifact_quota(tmp_path):
     job = jobs.submit(tmp_path, "scratch", with_scratch)
     assert wait(jobs, tmp_path, job["id"])["state"] == "done"
     assert jobs.shutdown()
+
+
+def test_audio_publication_flushes_writable_handles_before_rename(tmp_path, monkeypatch):
+    """Windows requires writable handles for FlushFileBuffers behind os.fsync."""
+    import os
+    import stat
+
+    from autodj import review_jobs
+
+    fsync = os.fsync
+    flushed_files = []
+
+    def require_writable(descriptor):
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            # A zero-byte write checks handle access without changing the file.
+            # POSIX otherwise permits fsync on read-only files, unlike Windows.
+            os.write(descriptor, b"")
+            flushed_files.append(os.fstat(descriptor).st_size)
+        fsync(descriptor)
+
+    monkeypatch.setattr(review_jobs.os, "fsync", require_writable)
+    jobs = review_jobs.ReviewJobs()
+    job = jobs.submit(tmp_path, "portable", write_audio)
+    assert wait(jobs, tmp_path, job["id"])["state"] == "done"
+    assert 4 in flushed_files and 3 in flushed_files
+    assert jobs.audio_path(tmp_path, job["id"], "wav").read_bytes() == b"wave"
+    assert jobs.audio_path(tmp_path, job["id"], "mp3").read_bytes() == b"mp3"
+    assert not list(tmp_path.glob(".staging-*"))
+    assert jobs.shutdown()

@@ -228,7 +228,9 @@ class ReviewJobs:
                 path = stage / name
                 if path.is_symlink() or not path.is_file() or not path.stat().st_size:
                     raise ReviewError("Review audio is missing or unsafe")
-                with path.open("rb") as handle:
+                # Windows' FlushFileBuffers requires a writable handle. Close
+                # it before publishing the directory so rename remains portable.
+                with path.open("r+b") as handle:
                     os.fsync(handle.fileno())
             manifest = {
                 "id": run.identity,
