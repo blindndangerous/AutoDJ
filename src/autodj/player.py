@@ -4965,9 +4965,7 @@ class Player:
         if breaks:
             spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
         # The matched intro leads into the song and keeps its native voice speed.
-        introduced = (
-            self._add_intro(intro, incoming_points_out, add_clip) if intro is not None else []
-        )
+        introduced = self._add_intro(intro, add_clip) if intro is not None else []
         voiced = [*spoken, *((at, intro_id, end) for at, intro_id, end, _label in introduced)]
         duck_db = self._break_duck_db() if voiced else 0.0
         incoming_intro = max(
@@ -5141,15 +5139,14 @@ class Player:
     def _add_intro(
         self,
         intro: Any,
-        incoming_points: dict[str, Any],
         add_clip: Callable[[np.ndarray, dict[str, Any], float, bool], tuple[int, int] | None],
     ) -> list[tuple[int, str, int, str]]:
         """Decode the matched intro and append it to the handoff's voice chain (#127).
 
         A registered liner chosen by an intro rule uses its saved liner cues.
-        A private song or artist upload is trimmed as speech, talks up the
-        next song when its Start-to-Intro span holds the whole speech, and
-        otherwise plays just before it.  An unavailable clip is left out.
+        A private song or artist upload uses detected speech cues and the
+        same liner placement, allowing outgoing outro and incoming intro
+        overlap. An unavailable clip is left out.
 
         Returns:
             ``[(first frame, intro id, end of speech, label)]`` in the chain,
@@ -5157,9 +5154,6 @@ class Player:
         """
         from autodj.matched_intros import MAX_INTRO_SECONDS
 
-        start = incoming_points.get("start") or 0.0
-        point = incoming_points.get("intro")
-        intro_s = None if point is None else max(0.0, float(point) - float(start))
         rule_liner = intro.intro_id.startswith("rule:")
         try:
             if rule_liner:
@@ -5183,11 +5177,10 @@ class Player:
             else:
                 audio = self._load_voice_audio(intro.path, MAX_INTRO_SECONDS)
                 spoken = speech_cues(audio)
-                talk_up = intro_s is not None and intro_s >= spoken.speech
-                cues = spoken.points(talk_up)
-                allow_outro = False
+                cues = spoken.points(True)
+                allow_outro = True
                 clip_length = spoken.length
-                placement = "talks up the song" if talk_up else "plays before it"
+                placement = "uses detected speech cues with liner placement"
         except Exception:
             logger.exception("Cannot prepare matched intro %s; the music plays on", intro.label)
             return []

@@ -54,9 +54,13 @@ for the change. With the option off, queued and clockwheel liners still play bef
 do news, weather and music news breaks. A DJ break booked for the change, from an announcer program
 or the Voice tracks tab, wins: the DJ already talks the song up, so no intro is added.
 
-For an intro uploaded in Track info, when the song's intro (Start to Intro) is at least as long as
-the speech, the voice starts with the song and ends before the singing. If the intro is shorter, or
-the song has no Intro point, the clip plays just before the song, which starts as the speech ends.
+For an intro uploaded in Track info, AutoDJ detects the speech's Start, Segue and End, trimming
+leading and trailing silence while keeping pauses inside the speech. It then places the clip like
+a liner with Overlap start 0 and Allow start over outro enabled. The speech can span the ending
+song's Outro and the upcoming song's Intro, including partial overlap when the intro is short.
+If the available space is too short, the upcoming song waits so the speech ends before its vocals.
+Without an Intro point, the upcoming song waits until the speech ends; without an Outro point,
+the speech cannot start before the ending song's Segue. No additional settings are needed.
 The music ducks under uploaded speech as it does under a break (`[breaks] duck_db`, or
 `[playback] liners_duck_db` when that is unset). With Smooth or Stereo Tool processing the upload
 gets the voice liner processing.
@@ -123,8 +127,8 @@ rules. Among the rules of one priority whose dates, wait and conditions allow th
 longest ago is tried first, and its chance is rolled on the matched intros' own random source, so
 the rotation tester and the hour preview keep predicting the same songs. A chosen clip is placed
 as a registered liner, using its saved Start, Segue, End, and Overlap start cues; it can therefore
-overlap the incoming song's Intro. Track-info song and artist uploads still use automatic talk-up
-fitting. Rule clips follow the registered liner's **Allow start over outro** setting too. See
+overlap the incoming song's Intro. Track-info song and artist uploads use detected speech cues
+with the same liner placement. Rule clips follow the registered liner's **Allow start over outro** setting too. See
 [liner cue points](carts-and-liners.md#liner-cue-points). A chosen clip takes the automatic liner's
 place in the same way, and gives way in the same way to a DJ break and to **Only when no liner is
 scheduled**. A song change that is rendered again, or that ended before its intro aired, gives the
