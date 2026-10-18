@@ -158,7 +158,8 @@ def read_manifest(index_dir: Path) -> IndexManifest | None:
             remedy=(
                 "Preview conversion with `autodj migrate-index`, then run "
                 "`autodj migrate-index --apply` using the same --config and --name. "
-                f"The legacy `{CONVERT_SCRIPT}` entry point also works. See docs/operations.md."
+                f"The legacy `{CONVERT_SCRIPT}` entry point also works. "
+                "See docs/guides/operations/catalog-migration.md."
                 if version == SCHEMA_VERSION - 1
                 else None
             ),

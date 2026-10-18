@@ -19,12 +19,10 @@ failed. Check the queue and the selected pick mode together.
 
 ## Each pick mode answers a different question
 
-| Pick mode | Question it answers |
-| --- | --- |
-| Similarity | What eligible song sounds close to the selection being followed? |
-| Random walk | What eligible song can I choose at random? |
-| Least recently played | What eligible song has waited longest? |
-| Clockwheel | What does the current step of my repeating pattern ask for? |
+- **Similarity:** What eligible song sounds close to the selection being followed?
+- **Random walk:** What eligible song can I choose at random?
+- **Least recently played:** What eligible song has waited longest?
+- **Clockwheel:** What does the current step of my repeating pattern ask for?
 
 A **category** is a named pool of songs. A **clockwheel** repeats an ordered
 list of steps, such as choosing from one category and then another. Saving a

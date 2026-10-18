@@ -89,11 +89,18 @@ def test_output_and_links_fail_before_writes(tmp_path):
     for output in (root / "docs" / "generated", tmp_path):
         with pytest.raises(ValueError, match="new directory"):
             renderer.output_path(root, output)
-    (tmp_path / "shortcut").symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(ValueError, match="symlinks"):
-        renderer.output_path(root, tmp_path / "shortcut" / "render")
     (root / "detail.md").write_text("# Details\n\n[Missing](gone.md#nope)\n")
     assert "missing/unsafe" in renderer.prepare(root)[0]["errors"][0]
+
+
+def test_output_refuses_symlinked_parents(tmp_path):
+    root = repository(tmp_path)
+    try:
+        (tmp_path / "shortcut").symlink_to(tmp_path, target_is_directory=True)
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"symlinks unavailable: {exc}")
+    with pytest.raises(ValueError, match="symlinks"):
+        renderer.output_path(root, tmp_path / "shortcut" / "render")
 
 
 def test_malformed_cli_has_no_output(tmp_path):

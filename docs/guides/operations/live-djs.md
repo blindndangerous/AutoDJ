@@ -72,8 +72,6 @@ but AutoDJ does not put its own audio over a live DJ:
 - A voice break (#88) waiting for the next song change misses its slot: it is dropped and
   logged as missed, "live DJ on air". (The missed and late rules being designed in #215 will
   decide this in time.)
-- **Stop playing** stops automation behind the DJ; the DJ stays on, and when they leave the
-  station is idle.
 
 **When a source is cut off.** A connection is closed when it sends nothing for 10 seconds,
 waits on standby (only silence) for 30 minutes, sends faster than 512 kbit/s over five seconds
