@@ -148,6 +148,7 @@ class RenderedTrack:
     next_clock_revision: int | None = None
     next_clock_name: str | None = None
     liner_plan_key: str = ""
+    incoming_intro: object | None = None
     full_audio: np.ndarray | None = None
     source_start_offset: int = 0
     playback_rate: float = 1.0
@@ -580,6 +581,47 @@ class MixBus:
         mix = np.linspace(0.0, 1.0, blend, dtype=np.float32)[:, None]
         audio[:blend] = dry * (1.0 - mix) + audio[:blend] * mix
         return SkipTail(tail.track, self._pos, audio)
+
+    def can_replace_unheard_tail(self, expected: RenderedTrack, *, before_frame: int) -> bool:
+        """A control-thread preflight; the replacement repeats this atomic check."""
+        with self._lock:
+            return (
+                self._current is expected
+                and self._pos < before_frame
+                and not self._skip_fade
+                and self._tail is None
+            )
+
+    def replace_unheard_tail(
+        self, expected: RenderedTrack, replacement: RenderedTrack, *, before_frame: int
+    ) -> bool:
+        """Swap a prepared future tail without seeking or replaying its prefix.
+
+        The control thread renders the replacement and preserves the original
+        prefix through ``before_frame`` before calling. No audio work or callbacks
+        run under this lock. A raced track change, skip, or reached boundary keeps
+        the original audio intact; already committed speech cannot be revoked.
+        """
+        if (
+            replacement.entry is not expected.entry
+            or replacement.start_offset != expected.start_offset
+            or before_frame < 0
+            or len(replacement.audio) < before_frame
+        ):
+            return False
+        with self._lock:
+            if (
+                self._current is not expected
+                or self._pos >= before_frame
+                or self._skip_fade
+                or self._tail is not None
+            ):
+                return False
+            self._current = replacement
+            cue = self._liner_cue
+            if cue is not None and cue.track is expected and not cue.started:
+                cue.track = replacement
+            return True
 
     def seek(self, frames: int) -> None:
         """Jump to *frames* into the current track.

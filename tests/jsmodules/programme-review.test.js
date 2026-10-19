@@ -32,6 +32,41 @@ function harness(overrides = {}) {
 
 beforeEach(() => installIndexMarkup());
 
+it("requests a complete pending edition target and exposes explicit approval readiness", async () => {
+  const ready = vi.fn();
+  document.addEventListener("autodj:edition-review-ready", ready, { once: true });
+  const request = vi.fn(async (url, options) => {
+    if (options?.method === "POST") return { id: "job", status: "done", result_id: "review" };
+    if (url === "/api/shows") return { shows: [] };
+    if (url === "/api/reviews") return { results: [], job: null };
+    return { ...result, id: "review", source: "edition", edition_id: "edition", target_take_id: "take",
+      edition_revision: 3, incomplete: false, approval_review_complete: true };
+  });
+  harness({ request });
+  document.dispatchEvent(new CustomEvent("autodj:review-edition", { detail: {
+    edition_id: "edition", take_id: "take", include_pending: true,
+  } }));
+  await settle();
+  const submitted = JSON.parse(request.mock.calls.find(([, options]) => options?.method === "POST")[1].body);
+  expect(submitted).toMatchObject({ source: "edition", edition_id: "edition", target_take_id: "take",
+    include_pending: true, selection_start: null, selection_end: null });
+  expect(ready).toHaveBeenCalledOnce();
+  expect(ready.mock.calls[0][0].detail).toMatchObject({ edition_id: "edition", take_id: "take", review_id: "review", revision: 3 });
+  expect(request.mock.calls.some(([url]) => url.includes("/approve"))).toBe(false);
+});
+
+it("does not expose approval readiness for an incomplete target review", async () => {
+  const ready = vi.fn();
+  document.addEventListener("autodj:edition-review-ready", ready, { once: true });
+  const request = vi.fn(async (url) => url === "/api/reviews" ? { results: [result], job: null }
+    : url === "/api/shows" ? { shows: [] }
+      : { ...result, source: "edition", target_take_id: "take", approval_review_complete: false });
+  const { controls } = harness({ request });
+  await controls.refresh(); get("load").click(); await settle();
+  expect(ready).not.toHaveBeenCalled();
+  document.removeEventListener("autodj:edition-review-ready", ready);
+});
+
 it.each(["load", "delete"])("announces when %s has no saved review selected", async (name) => {
   const { controls, spoken } = harness();
   await controls.refresh();

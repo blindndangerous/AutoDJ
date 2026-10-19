@@ -445,6 +445,7 @@ def render_review(
     omissions: list[dict[str, Any]] = []
     unknown_at: list[int] = []
     source_paths = {entry.path for entry in _entries(items)}
+    source_extents: dict[str, tuple[int, int]] = {}
     cursor, offset, glide = 0, 0, None
     previous_overlap = 0
 
@@ -563,6 +564,22 @@ def render_review(
                 protected.append((cursor + max(0, cut_frame), cursor + len(chunk)))
                 offset, glide, previous_overlap = 0, None, 0
             end = cursor + len(chunk)
+            if (
+                rendered is not None
+                and getattr(item.entry, "_prepared_clip", False)
+                and not hard
+                and rendered.playback_rate == 1
+            ):
+                # A primary's navigation span also includes its outgoing join.
+                # Prove retention against the actual normalized source instead.
+                info = sf.info(item.entry.path)
+                source_frames = round(info.frames * SAMPLE_RATE / info.samplerate)
+                source_start = cursor - rendered.start_offset
+                if source_start == positions[index] and source_start + source_frames <= end:
+                    source_extents[identity(index, item)] = (
+                        source_start,
+                        source_start + source_frames,
+                    )
             if index >= 0:
                 spans.append(
                     ReviewSpan(
@@ -618,7 +635,13 @@ def render_review(
                 for event_number, (start, key, stop, kind, label) in enumerate(voice_events):
                     at, until = cursor + max(0, start), cursor + min(len(chunk), stop)
                     if until > at:
-                        event_id = f"{identity(index, item)}-voice-{event_number}"
+                        prepared = any(
+                            part.break_id == key and part.source == "prepared_edition"
+                            for part in breaks
+                        )
+                        event_id = (
+                            key if prepared else f"{identity(index, item)}-voice-{event_number}"
+                        )
                         spans.append(
                             ReviewSpan(
                                 event_id,
@@ -766,11 +789,29 @@ def render_review(
             span_position = retained.item_positions.get(span.id)
             if span_position is None:
                 continue
+            source_proof = {}
+            if (extent := source_extents.get(span.id)) is not None:
+                source_first, source_last = extent
+                covered = sum(
+                    max(
+                        0,
+                        min(source_last, piece.programme_end)
+                        - max(source_first, piece.programme_start),
+                    )
+                    for piece in retained.pieces
+                    if piece.programme_start is not None and piece.programme_end is not None
+                )
+                source_proof = {
+                    "source_seconds": (source_last - source_first) / SAMPLE_RATE,
+                    "source_complete": covered == source_last - source_first,
+                }
             rows.append(
                 {
                     "id": span.id,
                     "label": span.label,
                     "kind": span.kind,
+                    "complete": span.keep_complete,
+                    **source_proof,
                     "programme_start": None
                     if any(at <= span.start_frame for at in unknown_at)
                     else span.start_frame / SAMPLE_RATE,

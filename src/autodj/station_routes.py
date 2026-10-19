@@ -1164,14 +1164,26 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
     station.time_checks = TimeChecks(station.cfg, station.timezone, station.paths)
     schedule.register(time_check_action(station.time_checks, bridge))
 
+    from autodj.prepared_editions import edition_store
     from autodj.shows import ShowRunner, ShowStore, show_action
 
     # Shows (#106): a list of songs prepared ahead that a schedule event airs.
     station.shows = ShowStore(station.paths.shows)
     station.show_runner = ShowRunner(
-        bridge, station.shows, publish, state_path=station.paths.show_on_air
+        bridge,
+        station.shows,
+        publish,
+        state_path=station.paths.show_on_air,
+        edition_store=edition_store(station),
+        edition_station=station,
     )
-    schedule.register(show_action(station.show_runner, station.shows))
+    schedule.register(show_action(station.show_runner, station.shows, edition_store(station)))
+    if bridge.player is not None:
+        bridge.player.prepared_handoff = station.show_runner.prepared_handoff
+        bridge.player.prepared_preview_handoff = functools.partial(
+            station.show_runner.prepared_handoff, report_omissions=False
+        )
+        bridge.player.prepared_speech_failed = station.show_runner.prepared_speech_failed
 
     def show_starts_within(within_s: float) -> str | None:
         # Called from the request desk's threads: only show events, copied
@@ -2460,6 +2472,18 @@ def install_station_routes(router: StationRouter) -> None:
     install_requests(router)
     install_matched_intros(router)
     install_shows(router)
+    from autodj.prepared_api import install_prepared
+    from autodj.prepared_review import prepared_review_receipt
+
+    install_prepared(
+        router,
+        receipt=prepared_review_receipt,
+        active=lambda station, identity: (
+            runner.edition_active(identity)
+            if (runner := getattr(station, "show_runner", None)) is not None
+            else False
+        ),
+    )
     from autodj.review_api import install_reviews
 
     install_reviews(router)

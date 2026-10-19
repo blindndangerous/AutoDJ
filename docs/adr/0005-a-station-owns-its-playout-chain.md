@@ -157,3 +157,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0005-03` | Stopped settings load/edit/save without a Player and retain running-setter validation. | automated | `tests/unit/test_station_settings.py::test_offline_settings_load_edit_save_without_player`; `tests/unit/test_station_settings.py::test_offline_settings_use_running_setter_validation` |
 | `ADR-0005-04` | Every route declares shared/station ownership and named station operations target that station. | automated | `tests/integration/test_station_routes.py::test_every_route_is_classified_as_shared_or_station`; `tests/integration/test_station_routes.py::test_a_named_station_route_acts_on_that_station` |
 | `ADR-0005-05` | A station whose Player will not stop retains ownership of its mastering process and licence. | automated | `tests/unit/test_station_runtime.py::test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence` |
+
+## Related proposal — 2026-10-17
+
+Prepared edition manifests and immutable source recordings are station-owned through StationPaths. Their source-asset and lifecycle proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.

@@ -1242,6 +1242,8 @@ def create_app(
     # serve() asks for the first code when no browser is paired yet.
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
+    from autodj.prepared_editions import MAX_UPLOAD_BYTES as EDITION_UPLOAD_BYTES
+
     body_limits: dict[str, Callable[[], int]] = {
         **{path: (lambda: SPEECH_BODY_LIMIT) for path in WRITE_ROUTES},
         "/api/stations": lambda: 4096,
@@ -1282,6 +1284,12 @@ def create_app(
         "/api/shows/{show_id}/songs": lambda: SHOWS_SONGS_BODY_MAX_BYTES,
         "/api/shows/{show_id}/generate": lambda: SMALL_BODY_MAX_BYTES,
         "/api/shows/{show_id}/start": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/editions": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/editions/{edition_id}": lambda: SHOWS_SONGS_BODY_MAX_BYTES,
+        "/api/editions/{edition_id}/takes": lambda: EDITION_UPLOAD_BYTES,
+        "/api/editions/{edition_id}/takes/{take_id}/approve": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/editions/{edition_id}/takes/{take_id}/reattach": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/editions/{edition_id}/start": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,
         **{

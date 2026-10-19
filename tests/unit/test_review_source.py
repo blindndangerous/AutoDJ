@@ -15,12 +15,12 @@ from autodj.stations import StationPaths
 from tests.unit._rotation_station import make_station, song
 
 
-def station_content(tmp_path):
+def station_content(tmp_path, *, seconds=0.1):
     entries = []
     for number in range(3):
         path = tmp_path / f"{number}.wav"
-        sf.write(path, np.zeros((4410, 2), np.float32), 44100)
-        entries.append(replace(song(number, f"Artist {number}", length=0.1), path=str(path)))
+        sf.write(path, np.zeros((round(seconds * 44100), 2), np.float32), 44100)
+        entries.append(replace(song(number, f"Artist {number}", length=seconds), path=str(path)))
     source = make_station(tmp_path / "index", entries, playback={"pick_mode": "random"})
     paths = StationPaths.default(source.player._cfg)
     settings = StationSettings(source.player._cfg, source.library, source.player._sim, paths)

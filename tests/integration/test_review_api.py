@@ -207,6 +207,17 @@ def test_review_body_cap_allows_all_targets_but_rejects_oversized_json(bridge, t
         ({"start": "invalid"}, "start", "Enter a valid intended start time"),
         ({"source": "show"}, "show_id", "Choose a saved show"),
         ({"source": "show", "show_id": "invalid"}, "show_id", "Choose a saved show"),
+        ({"source": "edition"}, "edition_id", "Choose a prepared edition"),
+        (
+            {"target_take_id": "a" * 32},
+            "source",
+            "Pending speech and approval targets require a prepared edition",
+        ),
+        (
+            {"include_pending": True},
+            "source",
+            "Pending speech and approval targets require a prepared edition",
+        ),
     ],
 )
 def test_review_validation_identifies_the_input(bridge, tmp_path, change, field, message):

@@ -97,6 +97,7 @@ class RenderAhead:
         self._rendering = False
         self._revalidate = False
         self._generation = 0
+        self._prepared_invalidated_generation: int | None = None
         self._deferred: list[Callable[[], None]] = []
         self._stopped = True
         self._thread: threading.Thread | None = None
@@ -220,6 +221,26 @@ class RenderAhead:
             self._cond.notify_all()
         for track in dropped:
             self._thrown_away(track)
+
+    def invalidate_prepared(self) -> None:
+        """Discard prepared ready/fallback PCM and rewind before rendering again.
+
+        An in-flight render is rejected when it finishes and rewound from its
+        own metadata. Ordinary queue refresh keeps its existing fallback policy.
+        """
+        dropped = []
+        with self._cond:
+            track = self._ready if self._ready is not None else self._fallback
+            if track is not None:
+                dropped = [item for item in (self._ready, self._fallback) if item is not None]
+                self._ready = self._fallback = None
+                self._generation += 1
+                self._apply(functools.partial(self._rewind, track))
+                self._cond.notify_all()
+            elif self._rendering:
+                self._prepared_invalidated_generation = self._generation
+        for item in dropped:
+            self._thrown_away(item)
 
     def refresh(self) -> None:
         """Soft re-check after a queue edit; never causes dead air.
@@ -346,6 +367,14 @@ class RenderAhead:
                     self._rendering = False  # a reset or fallback pop made it stale
                     if track is not None:
                         thrown.append(track)
+                    done = True
+                elif self._prepared_invalidated_generation == generation:
+                    self._prepared_invalidated_generation = None
+                    self._rendering = False
+                    if track is not None:
+                        thrown.append(track)
+                        self._apply(functools.partial(self._rewind, track))
+                    self._cond.notify_all()
                     done = True
                 elif track is None or not self._revalidate:
                     self._rendering = False
