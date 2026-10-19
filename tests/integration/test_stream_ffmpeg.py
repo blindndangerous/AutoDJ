@@ -37,7 +37,7 @@ def test_two_seconds_encode_to_valid_mp3() -> None:
     # draining it.
     def feed() -> None:
         encoder.write(pcm.tobytes())
-        encoder.close_input()
+        encoder._proc.stdin.close()  # end of input: ffmpeg flushes and exits
 
     writer = threading.Thread(target=feed)
     writer.start()
@@ -58,7 +58,7 @@ def _encode(fmt, bitrate: int, seconds: float = 3.0) -> bytes:
 
     def feed() -> None:
         encoder.write(pcm.tobytes())
-        encoder.close_input()
+        encoder._proc.stdin.close()  # end of input: ffmpeg flushes and exits
 
     writer = threading.Thread(target=feed)
     writer.start()
@@ -129,7 +129,7 @@ def test_an_encoder_keeps_what_ffmpeg_said_when_it_fails() -> None:
         # writer sees it.
         with contextlib.suppress(OSError):
             encoder.write(bytes(44100 // 10 * 2 * 4))
-            encoder.close_input()
+            encoder._proc.stdin.close()  # end of input: ffmpeg flushes and exits
         assert encoder.read(4096) == b""
         deadline = time.monotonic() + 5
         while not encoder.errors and time.monotonic() < deadline:

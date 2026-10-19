@@ -18,6 +18,7 @@ from autodj.library import LibraryManager
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
 from autodj.server import create_app
 from autodj.worker_api import RateLimiter, decode_vector
+from tests.unit._catalog_vectors import vectors_snapshot
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 HTTPS = "https://127.0.0.1:8080"
@@ -260,7 +261,7 @@ def test_a_valid_result_goes_into_the_live_catalog(server):
     assert server.manager._changed()
     server.manager.refresh()
     assert server.manager.snapshot()["tracks_indexed"] == before + 1
-    _entries, vectors = catalog.vectors_snapshot()
+    _entries, vectors = vectors_snapshot(catalog)
     np.testing.assert_array_equal(vectors[0], vector)
     (worker,) = server.manager.analysis_queue.workers()
     assert worker["songs_done"] == 1

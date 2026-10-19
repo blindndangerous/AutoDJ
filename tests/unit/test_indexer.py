@@ -18,10 +18,8 @@ from autodj.indexer import (
     IndexEntry,
     _combine_features,
     _extract_librosa_features,
-    _resolve_beets_path,
     build_faiss_index,
     load_index,
-    walk_music_dir,
 )
 from autodj.model import EMBEDDING_DIM
 from tests.unit._legacy_index import save_index
@@ -47,36 +45,6 @@ def _fake_track(path: str, title: str = "Song", artist: str = "Artist") -> Track
 def _random_embedding(dim: int = EMBEDDING_DIM) -> np.ndarray:
     v = np.random.randn(dim).astype(np.float32)
     return v / np.linalg.norm(v)
-
-
-# ---------------------------------------------------------------------------
-# walk_music_dir
-# ---------------------------------------------------------------------------
-
-
-class TestWalkMusicDir:
-    def test_finds_mp3_files(self, tmp_path: Path) -> None:
-        (tmp_path / "a.mp3").touch()
-        (tmp_path / "b.flac").touch()
-        (tmp_path / "c.txt").touch()
-        paths = list(walk_music_dir(tmp_path, ["mp3", "flac"]))
-        assert Path(tmp_path / "a.mp3") in paths
-        assert Path(tmp_path / "b.flac") in paths
-        assert Path(tmp_path / "c.txt") not in paths
-
-    def test_recurses_subdirectories(self, tmp_path: Path) -> None:
-        sub = tmp_path / "Artist" / "Album"
-        sub.mkdir(parents=True)
-        (sub / "song.flac").touch()
-        paths = list(walk_music_dir(tmp_path, ["flac"]))
-        assert sub / "song.flac" in paths
-
-    def test_empty_dir_returns_empty_list(self, tmp_path: Path) -> None:
-        assert list(walk_music_dir(tmp_path, ["mp3"])) == []
-
-    def test_raises_if_dir_missing(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError):
-            walk_music_dir(tmp_path / "nonexistent", ["mp3"])
 
 
 # ---------------------------------------------------------------------------
@@ -302,65 +270,6 @@ class TestSaveLoadIndex:
 
         with pytest.raises(UnsupportedIndexError, match=r"absolute path Z:/Music/song_0.flac"):
             load_index(tmp_path, music_dir=tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# _resolve_beets_path — relative path resolution against music_dir
-# ---------------------------------------------------------------------------
-
-
-class TestResolveBeetsPath:
-    """Tests for resolving beets-stored paths against the local music_dir.
-
-    Recent beets versions store paths *relative* to the library ``directory``.
-    AutoDJ resolves them by prepending ``music_dir``; absolute paths pass through.
-    """
-
-    def test_relative_path_is_prepended_with_music_dir(self) -> None:
-        path = Path("10 Years/2001 - Into the Half Moon - flac/01 Fallaway.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        result_str = str(result).replace("\\", "/")
-        assert result_str.startswith("Z:/Music/")
-        assert result_str.endswith("/01 Fallaway.flac")
-        assert "10 Years" in result_str
-
-    def test_posix_absolute_path_returned_unchanged(self) -> None:
-        path = Path("/volume1/Library/music/Hollow Front/01.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        assert str(result).replace("\\", "/") == "/volume1/Library/music/Hollow Front/01.flac"
-
-    def test_windows_absolute_path_returned_unchanged(self) -> None:
-        path = Path("Z:/OtherMount/song.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        assert str(result).replace("\\", "/") == "Z:/OtherMount/song.flac"
-
-    def test_relative_path_with_backslashes(self) -> None:
-        """A relative path stored with backslashes (Windows beets) works."""
-        path = Path("Artist\\Album\\song.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        result_str = str(result).replace("\\", "/")
-        assert result_str.startswith("Z:/Music/")
-        assert "song.flac" in result_str
-
-    def test_deep_nested_relative_path(self) -> None:
-        path = Path("A/B/C/D/song.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        parts = str(result).replace("\\", "/").split("/")
-        assert "A" in parts
-        assert "song.flac" in parts
-        assert parts[0] == "Z:" or parts[1] == "Music"
-
-    def test_returns_path_object(self) -> None:
-        path = Path("Artist/song.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        assert isinstance(result, Path)
-
-    def test_leading_slash_relative_treated_as_absolute(self) -> None:
-        """A POSIX-rooted path (starts with /) is treated as absolute, not relative."""
-        path = Path("/Artist/song.flac")
-        result = _resolve_beets_path(path, Path("Z:/Music"))
-        # Should be left alone as absolute; not prepended with music_dir
-        assert "Z:/Music" not in str(result).replace("\\", "/")
 
 
 # ---------------------------------------------------------------------------

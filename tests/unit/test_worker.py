@@ -28,6 +28,7 @@ from autodj.worker import (
     release_gpu,
     run_hook,
 )
+from tests.unit._catalog_vectors import vectors_snapshot
 from tests.unit.test_library import Similarity, make_config, make_entry
 from tests.unit.test_worker_api import Server
 
@@ -103,7 +104,7 @@ def make_worker(server, *, analyse=None, **kwargs):
 
 
 def stored_vectors(manager: LibraryManager) -> dict[str, np.ndarray]:
-    entries, vectors = manager.catalog.vectors_snapshot()
+    entries, vectors = vectors_snapshot(manager.catalog)
     return {Path(e.path).name: v for e, v in zip(entries, vectors, strict=True)}
 
 

@@ -61,7 +61,6 @@ from autodj.timefmt import length_text
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: Literal[1] = 1
-SHOWS_FILE = "shows.json"
 #: The most shows one station keeps.
 MAX_SHOWS = 200
 #: The most songs one show's list holds.
@@ -505,14 +504,12 @@ def generate(
     picked: list[str] = []
     seen: set[str] = set()
     total = 0.0
-    outside = 0
 
     def on_pick(_at: float, entry: Any) -> None:
-        nonlocal total, outside
+        nonlocal total
         if entry.path in liners:
             return
         if (members is not None and entry.path not in members) or entry.path in seen:
-            outside += 1
             return
         if total >= target or len(picked) >= MAX_SONGS:
             return

@@ -347,7 +347,8 @@ def test_a_malformed_form_is_refused(station, data, files_, status):
     assert reply.status_code == status, reply.text
     assert files(station.desk) == []
     # Nothing stays reserved.
-    station.desk.check_room(slot["slot_id"])
+    station.desk.reserve("probe", slot["slot_id"], 0, "probe")
+    station.desk.release("probe")
 
 
 def test_an_eight_channel_upload_is_refused_before_it_is_decoded(station):

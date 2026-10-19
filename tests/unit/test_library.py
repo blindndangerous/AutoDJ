@@ -25,6 +25,7 @@ from autodj.indexer import FEATURE_DIM, FINGERPRINT_BYTES, IndexEntry, file_fing
 from autodj.library import LibraryManager, analyse_library
 from autodj.station_store import StationStore
 from autodj.stations import DEFAULT_SLUG
+from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 
 
 class _Faiss:
@@ -652,7 +653,7 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
     manager = manager_factory(music=music)
     manager.catalog.put_entry(make_entry(song))
     manager.catalog.set_points(song, {"start": 0, "outro": 170, "end": 180}, source=point_source)
-    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
@@ -697,7 +698,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     manager.catalog.put_entry(original, points={"start": 0, "segue": 150, "end": 170})
     manager.catalog.set_loudness(old, fake_loudness(old))
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
-    manager.catalog.set_vector(old, vector)
+    set_vector(manager.catalog, old, vector)
     manager.ledger.remember_play(old, 42.0)
     manager.tick()
     record_id = manager.catalog.record_for_path(old)["id"]
@@ -715,7 +716,7 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     assert manager.ledger.last_played()[os.path.normcase(str(new))] == 42.0
     assert analyze.call_count == 0
     measure.assert_not_called()
-    np.testing.assert_array_equal(manager.catalog.vectors_snapshot()[1][0], vector)
+    np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1][0], vector)
 
 
 def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory, tmp_path):
@@ -828,7 +829,7 @@ def test_advanced_analysis_obeys_source_choice_and_uses_vector_presence(manager_
     manager.catalog.update_source(source["id"], recursive=True, advanced=False)
     assert manager.analysis_pending() == []
     manager.catalog.update_source(source["id"], recursive=True, advanced=True)
-    manager.catalog.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, song, np.zeros(FEATURE_DIM, dtype=np.float32))
     assert manager.analysis_pending() == []
 
 
@@ -1049,14 +1050,6 @@ def test_failed_scan_thread_start_releases_worker_for_retry(manager_factory):
     assert manager.snapshot()["import"]["phase"] == "complete"
 
 
-def test_snapshot_uses_cached_counts(manager_factory):
-    manager = manager_factory()
-    with patch.object(manager.catalog, "count_entries", side_effect=AssertionError("disk count")):
-        snapshot = manager.snapshot()
-    assert snapshot["tracks_ready"] == 0
-    assert snapshot["tracks_indexed"] == 0
-
-
 def test_discovery_rejects_file_symlink_outside_source(manager_factory, tmp_path):
     root = tmp_path / "Music"
     root.mkdir()
@@ -1192,7 +1185,7 @@ def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp
         manager.catalog.set_intro_lift(song, 2.0)
         vector = np.zeros(FEATURE_DIM, np.float32)
         vector[0] = 1
-        manager.catalog.set_vector(song, vector)
+        set_vector(manager.catalog, song, vector)
         cue = Cue(0.3, type="user", label="My cue", source="user")
         cache = manager._dj_cache()
         cache.set(str(song), DjMeta(analysed=True, beats=[0.3], cues=[cue]))
@@ -1325,7 +1318,7 @@ def test_plays_history_settings_cues_and_loudness_do_not_reload_library(
     song.write_bytes(b"music")
     manager = manager_factory(music=music)
     manager.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 170.0})
-    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
     manager.tick()
     loaded = manager.sim.replaced
     reads = _count_reads(manager, monkeypatch)
@@ -1374,7 +1367,7 @@ def test_vectors_written_by_another_process_reach_the_similarity_index(manager_f
 
     vector = np.full(FEATURE_DIM, 0.25, dtype=np.float32)
     with LibraryCatalog(manager.catalog.path) as worker:  # e.g. the analysis job
-        worker.set_vector(song, vector)
+        set_vector(worker, song, vector)
     manager.tick()
 
     entries, vectors = manager.sim.replaced
@@ -1395,7 +1388,7 @@ def test_metadata_change_keeps_the_faiss_index_and_updates_its_entries(tmp_path)
     manager.catalog.add_source(music)
     try:
         manager.catalog.put_entry(make_entry(song, title="Old"))
-        manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
         manager.tick()
         index = sim.faiss_index
         assert index.ntotal == 1
@@ -1585,7 +1578,7 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
     song.write_bytes(b"music")
     manager = manager_factory(music=music)
     manager.catalog.put_entry(make_entry(song))
-    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
     started = []
 
     class Jobs:
@@ -1730,12 +1723,12 @@ def test_write_through_another_connection_reloads_on_the_next_tick(other_connect
 def test_vector_and_folder_changes_from_another_connection_reload(other_connection, change):
     manager, other, song = other_connection
     if change in {"vector_update", "vector_delete"}:
-        other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+        set_vector(other, song, np.zeros(FEATURE_DIM, dtype=np.float32))
     manager.tick()
     before = manager.sim.replaced
     vector = np.ones(FEATURE_DIM, dtype=np.float32)
     if change in {"vector_add", "vector_update"}:
-        other.set_vector(song, vector)
+        set_vector(other, song, vector)
     elif change == "vector_delete":
         other._db().execute("DELETE FROM catalog_vectors")
         other._db().commit()
@@ -1762,7 +1755,7 @@ def test_cue_loudness_setting_and_play_writes_from_another_connection_do_not_rel
     other_connection, monkeypatch, change
 ):
     manager, other, song = other_connection
-    other.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+    set_vector(other, song, np.zeros(FEATURE_DIM, dtype=np.float32))
     manager.tick()
     before = manager.sim.replaced
     reads = _count_reads(manager, monkeypatch)

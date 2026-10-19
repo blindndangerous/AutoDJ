@@ -15,6 +15,7 @@ from autodj.audio_meta import read_file_tags, read_reporting_tags
 from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager
 from autodj.server import PlayerBridge, create_app
+from tests.unit._catalog_vectors import set_vector
 from tests.unit._tagged_audio import make_audio
 from tests.unit.test_library import Similarity, make_config, make_entry
 
@@ -30,7 +31,7 @@ def tagged(tmp_path: Path):
     song = make_audio(cfg.library.music_dir, ".flac")
     entry = make_entry(song, title="Old Title")
     manager.catalog.put_entry(entry, points={"start": 0.0, "end": 0.1}, point_source="user")
-    manager.catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
     manager.refresh()
     bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
     bridge.library = manager

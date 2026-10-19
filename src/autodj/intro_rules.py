@@ -52,7 +52,6 @@ from autodj.fsutil import atomic_write, confirm_missing
 from autodj.matched_intros import MAX_COOLDOWN_MINUTES, Chosen
 
 logger = logging.getLogger(__name__)
-RULES_FILE = "intro_rules.json"
 MAX_RULES = 2000
 #: How often the station's tick checks folder-rule clip pools, in seconds.
 WARM_SECONDS = 5.0

@@ -5,8 +5,10 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -25,6 +27,18 @@ pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="FFmpeg i
 
 # The advertised pipeline delay in blocks; processed audio is due from here on.
 _LATENCY_BLOCKS = 24
+
+
+def _spawning() -> tuple[list[subprocess.Popen[bytes]], Callable[..., subprocess.Popen[bytes]]]:
+    """A Popen factory that keeps every process it starts, in order."""
+    spawned: list[subprocess.Popen[bytes]] = []
+
+    def factory(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        proc = subprocess.Popen(*args, **kwargs)  # nosec B603 -- the master's own argv
+        spawned.append(proc)
+        return proc
+
+    return spawned, factory
 
 
 def _block(value: float = 0.0) -> np.ndarray:
@@ -69,7 +83,8 @@ def _live_step(
 
 
 def test_live_pipeline_processes_continuously_and_closes() -> None:
-    master = ContinuousMaster()
+    spawned, factory = _spawning()
+    master = ContinuousMaster(popen_factory=factory)
     output = []
     try:
         deadline = time.monotonic()
@@ -83,7 +98,7 @@ def test_live_pipeline_processes_continuously_and_closes() -> None:
         assert all(np.isfinite(sample).all() for sample in audible)
         assert max(float(np.max(np.abs(sample))) for sample in audible) <= 0.871
         assert master.error is None
-        assert master.restarts == 0
+        assert len(spawned) == 1  # never restarted
         assert master.latency_seconds == pytest.approx(_LATENCY_BLOCKS * BLOCK_SECONDS)
     finally:
         start = time.monotonic()
@@ -118,7 +133,6 @@ def test_failed_ffmpeg_uses_limited_fallback_and_reports_status() -> None:
         source = _block(0.5)
         result = master.process(source)
         assert master.error and "unavailable" in master.error
-        assert master.restarts >= 1
         assert np.max(np.abs(result)) <= 0.871
         assert np.isfinite(result).all()
     finally:
@@ -126,7 +140,8 @@ def test_failed_ffmpeg_uses_limited_fallback_and_reports_status() -> None:
 
 
 def test_killed_ffmpeg_recovers_without_dropping_the_live_timeline() -> None:
-    master = ContinuousMaster()
+    spawned, factory = _spawning()
+    master = ContinuousMaster(popen_factory=factory)
     outputs = []
     try:
         deadline = time.monotonic()
@@ -141,7 +156,7 @@ def test_killed_ffmpeg_recovers_without_dropping_the_live_timeline() -> None:
             outputs.append(_live_step(master, _block(0.04)))
             deadline = max(deadline, time.monotonic()) + BLOCK_SECONDS
             time.sleep(max(0, deadline - time.monotonic()))
-        assert master.restarts == 1
+        assert len(spawned) == 2  # restarted once
         assert master.error is None
         assert all(np.isfinite(block).all() for block in outputs)
         assert all(np.any(np.abs(block) > 1e-7) for block in outputs[_LATENCY_BLOCKS:])
@@ -288,7 +303,6 @@ def test_output_cushion_absorbs_jitter_then_recovers_from_real_underrun(mode) ->
             assert master.error is None
             assert np.any(master.process(_block(0.03)))
             assert master.error == "master output underrun; restarting processor"
-            assert master.restarts == 1
             assert master._generation == generation + 1
     finally:
         master.close()
@@ -317,7 +331,10 @@ def test_installed_stereotool_preserves_tone_without_periodic_gaps() -> None:
     library = os.environ.get("AUTODJ_TEST_STEREOTOOL_LIBRARY")
     if not library:
         pytest.skip("Set AUTODJ_TEST_STEREOTOOL_LIBRARY to test Thimeo's Stereo Tool library")
-    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=library)
+    spawned, factory = _spawning()
+    master = ContinuousMaster(
+        mode=lambda: "stereotool", stereotool_path=library, popen_factory=factory
+    )
     outputs = []
     try:
         started = time.monotonic()
@@ -327,7 +344,7 @@ def test_installed_stereotool_preserves_tone_without_periodic_gaps() -> None:
             outputs.append(master.process(np.column_stack((tone, tone))))
             time.sleep(max(0, started + (index + 1) * BLOCK_SECONDS - time.monotonic()))
         assert master.error is None
-        assert master.restarts == 0
+        assert len(spawned) == 2  # never restarted
         assert all(np.any(block) for block in outputs[30:])
         audio = np.concatenate(outputs)
         assert np.isfinite(audio).all()
@@ -434,26 +451,27 @@ def test_installed_stereotool_recovers_when_output_limiter_exits() -> None:
     library = os.environ.get("AUTODJ_TEST_STEREOTOOL_LIBRARY")
     if not library:
         pytest.skip("Set AUTODJ_TEST_STEREOTOOL_LIBRARY to test Thimeo's Stereo Tool library")
-    master = ContinuousMaster(mode=lambda: "stereotool", stereotool_path=library)
+    spawned, factory = _spawning()
+    master = ContinuousMaster(
+        mode=lambda: "stereotool", stereotool_path=library, popen_factory=factory
+    )
     outputs = []
     try:
         started = time.monotonic()
         for index in range(220):
             if index == 90:
-                assert master._post_proc is not None
-                master._post_proc.kill()
+                spawned[1].kill()  # the output limiter, started after Stereo Tool's host
             t = np.arange(BLOCK_FRAMES) + index * BLOCK_FRAMES
             tone = (0.03 * np.sin(2 * np.pi * 997 * t / 44100)).astype(np.float32)
             outputs.append(master.process(np.column_stack((tone, tone))))
             time.sleep(max(0, started + (index + 1) * BLOCK_SECONDS - time.monotonic()))
-        assert master.restarts == 1
+        assert len(spawned) == 4  # both processes restarted once
         assert master.error is None
         assert all(np.max(np.abs(block)) > 1e-5 for block in outputs[40:])
         assert np.isfinite(np.concatenate(outputs)).all()
-        processes = (master._proc, master._post_proc)
     finally:
         master.close()
-    assert all(proc is not None and proc.poll() is not None for proc in processes)
+    assert all(proc.poll() is not None for proc in spawned)
 
 
 def test_a_second_close_returns_at_once() -> None:
@@ -754,7 +772,6 @@ def test_slow_start_trims_only_silence_and_reports_first_input(mode, caplog, mon
         assert len(master._input) == _QUEUE_BLOCKS
         assert master._warmup_silent_drops == 50
         assert master.error is None
-        assert master.restarts == 0
         assert not caplog.records
 
         # A delayed processor catches up while the bus still carries silence.

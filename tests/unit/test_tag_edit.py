@@ -27,6 +27,7 @@ from autodj.tag_edit import (
     validate_tags,
     write_tags,
 )
+from tests.unit._catalog_vectors import set_vector
 from tests.unit._tagged_audio import SUFFIXES, make_audio
 from tests.unit.test_library import make_entry
 
@@ -404,7 +405,7 @@ def test_catalog_retag_keeps_vector_points_and_loudness(tmp_path: Path) -> None:
         entry.embedded_at = song.stat().st_mtime
         catalog.put_entry(entry, points={"start": 0.0, "end": 0.1}, point_source="user")
         vector = np.arange(FEATURE_DIM, dtype=np.float32)
-        catalog.set_vector(song, vector)
+        set_vector(catalog, song, vector)
         stat = song.stat()
         catalog.set_loudness(
             song,
@@ -808,7 +809,7 @@ def test_a_scan_during_an_edit_leaves_the_record_alone(tmp_path: Path) -> None:
     catalog = LibraryCatalog(tmp_path / "library.db")
     try:
         catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 0.1}, point_source="user")
-        catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
         with catalog.editing(song), catalog.editing(song):
             write_tags(song, validate_tags({"title": "Mid edit"}))
             # A scan reads the rewritten file before retag stores it.

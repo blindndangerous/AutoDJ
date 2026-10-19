@@ -2027,47 +2027,6 @@ def _legacy_station_environment(environ: Mapping[str, str]) -> dict[str, Any]:
     }
 
 
-def _relay_password_overlay(raw: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
-    """Build an overlay of relay passwords from ``AUTODJ_STREAM_RELAY_<NAME>_PASSWORD``.
-
-    Only relays already named in the loaded TOML are looked up, so a
-    variable cannot create a relay on its own.
-
-    Args:
-        raw: The merged TOML tables loaded so far.
-        environ: The process environment.
-
-    Returns:
-        ``{"stream": {"relays": {name: {"password": ...}}}}`` for every
-        relay whose variable is set, or an empty dict.
-
-    Raises:
-        ValueError: Two relays read the same variable (``a-b`` and ``a_b``,
-            or ``Main`` and ``main``) and it is set, which would send one
-            server's source password to the other.  Unset, each keeps the
-            password from its own TOML table.
-    """
-    stream = raw.get("stream")
-    relays = stream.get("relays") if isinstance(stream, Mapping) else None
-    if not isinstance(relays, Mapping):
-        return {}
-    owners: dict[str, str] = {}
-    found: dict[str, Any] = {}
-    for name in relays:
-        if not isinstance(name, str):
-            continue
-        variable = relay_password_variable(name)
-        if variable in owners and variable in environ:
-            raise ValueError(
-                f"[stream.relays.{name}] and [stream.relays.{owners[variable]}] would both "
-                f"read {variable}, which is set; rename one of them"
-            )
-        owners[variable] = name
-        if variable in environ:
-            found[name] = {"password": environ[variable]}
-    return {"stream": {"relays": found}} if found else {}
-
-
 def station_relay_password_variable(slug: str, name: str) -> str:
     """Return the environment variable that overrides a station relay's password.
 
@@ -2083,44 +2042,6 @@ def station_relay_password_variable(slug: str, name: str) -> str:
         f"AUTODJ_STATION_{slug.upper().replace('-', '_')}"
         f"_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
     )
-
-
-def _station_relay_password_overlay(
-    raw: Mapping[str, Any], environ: Mapping[str, str]
-) -> dict[str, Any]:
-    """Build an overlay of station relay passwords from the environment.
-
-    Only relays already named in the loaded TOML are looked up, as for the
-    default station's relays.
-
-    Raises:
-        ValueError: Two station relays read the same variable and it is set.
-    """
-    stations = raw.get("stations")
-    if not isinstance(stations, Mapping):
-        return {}
-    owners: dict[str, str] = {}
-    overlay: dict[str, Any] = {}
-    for slug, table in stations.items():
-        stream = table.get("stream") if isinstance(table, Mapping) else None
-        relays = stream.get("relays") if isinstance(stream, Mapping) else None
-        if not isinstance(slug, str) or not isinstance(relays, Mapping):
-            continue
-        for name in relays:
-            if not isinstance(name, str):
-                continue
-            variable = station_relay_password_variable(slug, name)
-            where = f"stations.{slug}.stream.relays.{name}"
-            if variable in owners and variable in environ:
-                raise ValueError(
-                    f"[{where}] and [{owners[variable]}] would both read {variable}, "
-                    "which is set; rename one of them"
-                )
-            owners[variable] = where
-            if variable in environ:
-                station = overlay.setdefault(slug, {"stream": {"relays": {}}})
-                station["stream"]["relays"][name] = {"password": environ[variable]}
-    return {"stations": overlay} if overlay else {}
 
 
 _SECTION_TYPES: tuple[type[_Section], ...] = (
@@ -2292,15 +2213,6 @@ def _secrets_of(table: Mapping[str, Any]) -> dict[str, Any]:
             if found:
                 out[section] = found
     return out
-
-
-def _station_tables(path: Path) -> Mapping[str, Any]:
-    """The ``[stations.<slug>]`` tables of the TOML file at *path*, if any."""
-    if not path.is_file():
-        return {}
-    with path.open("rb") as fh:
-        tables = tomllib.load(fh).get("stations", {})
-    return tables if isinstance(tables, Mapping) else {}
 
 
 def _toml_document(path: Path) -> dict[str, Any]:
@@ -2960,64 +2872,6 @@ def _project_default_station(cfg: AutoDJConfig) -> None:
     assert cfg.default_station is not None
     for section in STATION_SECTION_TYPES:
         setattr(cfg, section.SECTION, getattr(cfg.default_station.cfg, section.SECTION))
-
-
-def reload_web_stations(cfg: AutoDJConfig) -> None:
-    """Load the web-created stations again, from the index ``cfg`` now names.
-
-    ``--name`` changes ``[index] name`` after loading, and web-created stations
-    live in their index's ``stations`` folder, so the ones read for the
-    configured index are dropped and the selected index's are read instead.
-    Stations from config.toml are kept.
-    """
-    cfg.stations = tuple(spec for spec in cfg.stations if spec.defined_in != "web")
-    cfg.skipped_definitions = ()
-    _load_web_stations(cfg)
-
-
-def _build_stations(raw: Any, root: AutoDJConfig) -> tuple[StationSpec, ...]:
-    """Read named station tables into specs (used only by legacy migration tools).
-
-    Raises:
-        TypeError: ``stations`` is not a table of tables.
-        ValueError: A name is invalid or reserved, there are too many
-            stations, or two stations would write the same recording folder
-            or push to the same relay target.
-        KeyError: A required key is missing; the message names the station.
-    """
-    from autodj.stations import DEFAULT_SLUG, SLUG_PATTERN
-
-    if not isinstance(raw, Mapping):
-        raise TypeError("stations must be named tables such as [stations.nightowl]")
-    if len(raw) > MAX_STATIONS:
-        raise ValueError(f"stations allows at most {MAX_STATIONS} stations besides the default")
-    specs = []
-    for slug, table in raw.items():
-        if slug == DEFAULT_SLUG:
-            raise ValueError("[stations.default] is represented by stations/default/station.json")
-        if not isinstance(slug, str) or not SLUG_PATTERN.match(slug):
-            raise ValueError(
-                f"[stations.{slug}]: a station name uses lower-case letters, digits and "
-                "inner hyphens, at most 32 characters, such as nightowl"
-            )
-        if not isinstance(table, Mapping):
-            raise TypeError(f"[stations.{slug}] must be a table")
-        token = _TABLE_PREFIX.set(f"stations.{slug}.")
-        try:
-            specs.append(_build_station(slug, table, root))
-        except (TypeError, ValueError, KeyError) as exc:
-            # Re-raised as the plain kind, since subclasses (pydantic's
-            # ValidationError) cannot be built from a message.
-            kind: type[Exception]
-            if isinstance(exc, KeyError):
-                kind, message = KeyError, exc.args[0] if exc.args else str(exc)
-            else:
-                kind, message = (TypeError if isinstance(exc, TypeError) else ValueError), str(exc)
-            raise kind(f"[stations.{slug}] {message}") from exc
-        finally:
-            _TABLE_PREFIX.reset(token)
-    _check_station_conflicts(root, specs)
-    return tuple(specs)
 
 
 def _build_station(slug: str, table: Mapping[str, Any], root: AutoDJConfig) -> StationSpec:

@@ -283,7 +283,6 @@ class ContinuousMaster:
         # would take the GIL every few milliseconds even with nothing to do.
         self._input_cond = threading.Condition(self._lock)
         self._proc: subprocess.Popen[bytes] | None = None
-        self._post_proc: subprocess.Popen[bytes] | None = None
         self._ready = False
         self._warmup_started = time.monotonic()
         self._warmup_silent_drops = 0
@@ -296,7 +295,6 @@ class ContinuousMaster:
         self._error: str | None = None
         # Not an error: the chosen preset plays, but without the AGC drive edit.
         self._preset_warning: str | None = None
-        self._restarts = 0
         self._overflow_reported = False
         self._worker = station_thread(target=self._lifecycle, name="autodj-master", daemon=True)
         self._worker.start()
@@ -333,11 +331,6 @@ class ContinuousMaster:
     def preset_warning(self) -> str | None:
         with self._lock:
             return self._preset_warning
-
-    @property
-    def restarts(self) -> int:
-        with self._lock:
-            return self._restarts
 
     def process(self, block: np.ndarray, enabled: bool = True) -> np.ndarray:
         """Queue one bus block and return processed audio or safe warmup audio."""
@@ -435,7 +428,6 @@ class ContinuousMaster:
                 return output
             if self._ready:
                 self._set_error("master output underrun; restarting processor")
-                self._restarts += 1
                 self._switch(True)
             if self._recovering:
                 return self._delayed_fallback()
@@ -693,7 +685,6 @@ class ContinuousMaster:
                         self._input.clear()
                         self._output.clear()
                         self._error = f"{name} master unavailable: {_unavailable(mode, exc, missing=starting_program)}"
-                        self._restarts += 1
                     self._changed.wait(0.5)
                     self._changed.clear()
                     continue
@@ -715,7 +706,6 @@ class ContinuousMaster:
                 with self._lock:
                     if active_generation == self._generation and self._enabled:
                         self._proc = proc
-                        self._post_proc = post_proc
                         self._ready = False
                         self._failed = False
                         self._overflow_reported = False
@@ -741,7 +731,7 @@ class ContinuousMaster:
             if exited is not None:
                 self._stop_pipeline(proc, writer, reader, stop, post_proc)
                 with self._lock:
-                    self._proc = self._post_proc = None
+                    self._proc = None
                     self._ready = False
                     self._failed = True
                     self._recovering = True
@@ -762,7 +752,6 @@ class ContinuousMaster:
                         self._error = (
                             f"{name} master exited ({exited.returncode}); using limited bypass"
                         )
-                    self._restarts += 1
                 proc = post_proc = writer = reader = None
                 stop = None
                 active_generation = -1

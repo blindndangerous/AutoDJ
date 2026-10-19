@@ -80,25 +80,6 @@ def test_to_stereo_duplicates_mono_and_keeps_stereo() -> None:
     np.testing.assert_array_equal(stereo.to_stereo(many), both)
 
 
-def test_per_channel_matches_mono_for_identical_channels() -> None:
-    mono = _tone()
-    out = stereo.per_channel(lambda ch: ch * 2.0, stereo.to_stereo(mono))
-    np.testing.assert_allclose(out[:, 0], mono * 2.0)
-    np.testing.assert_allclose(out[:, 1], mono * 2.0)
-    np.testing.assert_array_equal(stereo.per_channel(lambda ch: ch + 1, mono), mono + 1)
-
-
-def test_per_channel_equalises_column_lengths() -> None:
-    two = stereo.to_stereo(_tone(10))
-    calls = iter([np.ones(10, np.float32), np.ones(12, np.float32)])
-    out = stereo.per_channel(lambda _ch: next(calls), two)
-    assert out.shape == (10, 2)
-    calls = iter([np.ones(10, np.float32), np.ones(7, np.float32)])
-    out = stereo.per_channel(lambda _ch: next(calls), two)
-    assert out.shape == (10, 2)
-    assert out[9, 1] == 0.0
-
-
 def test_envelope_broadcasts_for_stereo() -> None:
     env = np.linspace(0, 1, 5, dtype=np.float32)
     assert stereo.envelope(env, np.zeros(5)).shape == (5,)

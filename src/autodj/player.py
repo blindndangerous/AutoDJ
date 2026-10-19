@@ -3484,7 +3484,7 @@ class Player:
         Raises:
             BreakError: 409 when *item*'s slot is no longer the open one,
                 or the desk has no room (see
-                :meth:`~autodj.breaks.BreakDesk.check_room`).
+                :meth:`~autodj.breaks.BreakDesk.reserve`).
         """
         desk = self.break_desk
         if desk is None:

@@ -4,12 +4,9 @@ Reads track metadata from a beets ``library.db`` SQLite database without
 requiring beets itself to be installed at runtime. Beets stores file paths
 as UTF-8-encoded bytes, which this module decodes transparently.
 
-If the beets database is unavailable, callers should fall back to
-:func:`autodj.indexer.walk_music_dir`.
-
 Example:
-    >>> from autodj.beets import get_all_tracks
-    >>> tracks = get_all_tracks("C:/Users/you/.config/beets/library.db")
+    >>> from autodj.beets import search_tracks
+    >>> tracks = search_tracks("C:/Users/you/.config/beets/library.db", "Portishead")
     >>> print(tracks[0].display_name)
     Portishead — Mysterons
 """
@@ -269,42 +266,6 @@ def _select_clause(present_cols: set[str]) -> str:
     """Build a column list for SELECT — always cores, optionals when present."""
     cols = list(_CORE_COLS) + [c for c in _OPTIONAL_COLS if c in present_cols]
     return ", ".join(cols)
-
-
-def get_all_tracks(db_path: str | Path) -> list[Track]:
-    """Return every track in the beets library database.
-
-    Reads the eight core fields plus two optional plugin fields
-    (``initial_key`` and ``lyrics``) if those columns exist in the
-    schema.  Older beets installs without those plugins are handled
-    transparently — the optional fields default to empty strings.
-
-    Args:
-        db_path: Path to the beets ``library.db`` SQLite file.
-
-    Returns:
-        A list of :class:`Track` objects, one per row in the beets ``items``
-        table.  Returns an empty list if the library has no tracks.
-
-    Raises:
-        BeetsNotFoundError: If the database file does not exist.
-        sqlite3.DatabaseError: If the file is corrupt or not a SQLite database.
-
-    Example:
-        >>> tracks = get_all_tracks("~/.config/beets/library.db")
-        >>> len(tracks)
-        12483
-    """
-    db_path = Path(db_path)
-    conn = _open_db(db_path)
-    try:
-        cols = _items_columns(conn)
-        # _select_clause returns a hardcoded internal column whitelist.
-        sql = f"SELECT {_select_clause(cols)} FROM items"  # nosec B608
-        rows = conn.execute(sql).fetchall()
-        return [_row_to_track(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def _has_table(conn: sqlite3.Connection, name: str) -> bool:

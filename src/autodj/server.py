@@ -2837,7 +2837,6 @@ def _extra_station(
         player.on_track_started = bridge.on_track_started
         bridge.load_persistent_state()
         player.configure_clock()
-        registry.mark_starting(slug, cfg)
         # The mastering process and the player thread start from here; a
         # failure after that stops them again before it is raised.
         player_thread: threading.Thread | None = None
