@@ -3878,7 +3878,7 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("np-url").value).toMatch(/\/api\/stations\/nightowl\/nowplaying$/);
     expect(document.getElementById("np-status-open").getAttribute("href")).toBe("/stations/nightowl/status");
     await vi.waitFor(() => expect(said.join(" | ")).toContain(
-      "Now controlling Night Owl Radio. On air, 3 listeners. Playing Owl"));
+      "Night Owl Radio. Playing Owl — Hoot. On air, 3 listeners."));
   });
 
   it("says a dropped link that comes inside the switch's quiet second (#327)", async () => {
@@ -3927,7 +3927,7 @@ describe("several stations (#70)", () => {
 
     chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
-    await vi.waitFor(() => expect(said.join(" | ")).toContain("Now controlling Night Owl Radio."));
+    await vi.waitFor(() => expect(said.join(" | ")).toContain("Night Owl Radio. Playing Owl — Hoot. On air, 3 listeners."));
     expect(document.getElementById("now-playing-title").textContent).toContain("Owl — Hoot");
     sockets[0].onopen();
     await vi.waitFor(() => expect(written).toEqual([["Live", "off"]]));
