@@ -20,6 +20,7 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { clearFormErrors } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
@@ -858,15 +859,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (event.target.closest?.("button[data-remove-condition]")) scheduleStepCount();
   });
   function clearStepError() {
-    const error = stepError;
-    error.hidden = true;
-    error.textContent = "";
-    for (const control of el("clock-step-form").querySelectorAll('[aria-describedby]')) {
-      const ids = control.getAttribute("aria-describedby").split(/\s+/).filter((id) => id !== error.id);
-      if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-      else control.removeAttribute("aria-describedby");
-    }
-    el("clock-step-form").querySelectorAll('[aria-invalid]').forEach((control) => control.removeAttribute("aria-invalid"));
+    clearFormErrors(el("clock-step-form"), stepError);
   }
   function saveStep() {
     clearStepError();
