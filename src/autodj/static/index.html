@@ -3841,6 +3841,7 @@
 <dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
 <fieldset id="clock-step-form" class="flow-form">
   <legend><h1 id="clock-step-legend">Add a step</h1></legend>
+  <p id="clock-step-form-error" class="field-error" hidden></p>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">
     <option value="music">Music matching conditions</option>
@@ -3934,7 +3935,6 @@
     </div>
     <p id="clock-step-hours-error" class="field-error" hidden></p>
   </fieldset>
-  <p id="clock-step-form-error" class="field-error" hidden></p>
   <button type="button" id="clock-add-step">Add step</button>
   <button type="button" id="clock-cancel-edit">Cancel</button>
 </fieldset>
