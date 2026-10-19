@@ -34,6 +34,10 @@ Ctrl+Home and Ctrl+End move to the first or last step. The same keys work in the
 Delete removes the step immediately, just like its Delete button. Tab leaves the step list.
 Alt+Up and Alt+Down reorder the focused step, and focus moves with it.
 
+**New step** and a step's **Edit** action use the shared modal editor. Cancel or Escape
+asks before discarding changed step fields. **Add step** or **Update step** changes
+only the working copy; **Save clockwheel** still saves the wheel to disk.
+
 **Undo step change** or **Ctrl+Z** restores the last step you added, edited, moved, duplicated or
 deleted. Delete and Undo are unavailable while a step is being edited; update or cancel the edit
 first. You can undo several changes in order, until you save or open another clockwheel.

@@ -40,6 +40,20 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 afterEach(() => document.body.replaceChildren());
 
 describe("editor dialog controller", () => {
+  it("reuses an existing dialog and finishes a synchronous step save immediately", () => {
+    document.body.innerHTML = '<dialog id="step"><fieldset id="step-form"><h1 id="title">Step</h1><input id="value"><button id="save" type="button">Add step</button><button id="cancel">Cancel</button></fieldset></dialog>';
+    const save = vi.fn();
+    const editor = createEditorDialog({ form: byId("step-form"), heading: byId("title"),
+      dialog: byId("step"), submit: byId("save"), cancel: byId("cancel"), save });
+    modal(editor.dialog);
+    editor.open(byId("value"));
+    byId("save").click();
+    byId("save").click();
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(editor.region(null)).toBe(editor.status);
+    expect(document.querySelectorAll("dialog")).toHaveLength(1);
+    expect(byId("save").disabled).toBe(false);
+  });
   it("keeps each production editor title as a level-one heading when its text changes", () => {
     installIndexMarkup();
     for (const [formId, titleId, cancelId] of [
