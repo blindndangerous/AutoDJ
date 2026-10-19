@@ -19,9 +19,19 @@ export function installActionListNavigation(list) {
   function refresh() {
     const buttons = allButtons(list);
     const active = list.ownerDocument.activeElement;
-    const chosen = buttons.includes(active) && !active.disabled
+    const focused = buttons.includes(active);
+    const chosen = focused && !active.disabled
       ? active : buttons.find((button) => !button.disabled);
-    for (const button of buttons) button.tabIndex = button === chosen ? 0 : -1;
+    for (const button of buttons) {
+      const tabIndex = button === chosen ? 0 : -1;
+      if (button.tabIndex !== tabIndex) button.tabIndex = tabIndex;
+    }
+    if (focused && active.disabled) {
+      const row = active.parentElement;
+      (rowButtons(row).find((button) => (button.dataset.action || button.dataset.role)
+        === (active.dataset.action || active.dataset.role))
+        || rowButtons(row)[0] || chosen)?.focus();
+    }
   }
 
   list.addEventListener("focusin", (event) => {

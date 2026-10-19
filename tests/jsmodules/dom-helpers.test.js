@@ -1,7 +1,7 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
-import { describe, it, expect } from "vitest";
-import { clearFormErrors, fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
+import { describe, it, expect, vi } from "vitest";
+import { clearFormErrors, fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows, reconcileRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
@@ -157,6 +157,80 @@ describe("placeRows (#328)", () => {
     fresh.dataset.name = "z";
     placeRows(ul, [fresh, ul.querySelector("li")]);
     expect(names(ul)).toEqual(["z", "a"]);
+  });
+});
+
+describe("reconcileRows", () => {
+  it("reuses keyed rows and focused controls through updates, inserts, deletes and reorder", () => {
+    document.body.innerHTML = "<ul></ul>";
+    const list = document.querySelector("ul");
+    const render = (items) => reconcileRows(list, items, (item) => item.id,
+      () => {
+        const row = document.createElement("li");
+        row.innerHTML = "<span></span><button></button>";
+        return row;
+      }, (row, item) => {
+        row.querySelector("span").textContent = item.name;
+        row.querySelector("button").textContent = "Edit";
+      });
+    render([{ id: "a", name: "A" }, { id: "b", name: "B" }]);
+    const b = list.children[1];
+    const control = b.querySelector("button");
+    control.focus();
+    render([{ id: "b", name: "B updated" }, { id: "c", name: "C" }]);
+    expect(list.children[0]).toBe(b);
+    expect(list.children[1]).not.toBe(b);
+    expect(b.querySelector("span").textContent).toBe("B updated");
+    expect(document.activeElement).toBe(control);
+  });
+
+  it("moves focus to the next same action or fallback and reports only displaced focus", () => {
+    document.body.innerHTML = '<ul></ul><button id="add">Add item</button>';
+    const list = document.querySelector("ul");
+    const add = document.getElementById("add");
+    const onFocusLost = vi.fn();
+    const render = (items) => reconcileRows(list, items, (item) => item.id,
+      () => {
+        const row = document.createElement("li");
+        row.innerHTML = '<button data-action="edit">Edit</button><button data-action="remove">Remove</button>';
+        return row;
+      }, (row, item) => {
+        const text = item.name;
+        if (row.dataset.name !== text) row.dataset.name = text;
+      }, { fallback: add, onFocusLost });
+    render([{ id: "a", name: "A" }, { id: "b", name: "B" }]);
+    const [a, b] = list.children;
+    b.querySelector('[data-action="edit"]').focus();
+    render([{ id: "a", name: "A" }]);
+    expect(document.activeElement).toBe(a.querySelector('[data-action="edit"]'));
+    expect(onFocusLost).toHaveBeenCalledOnce();
+    render([{ id: "a", name: "A" }]);
+    expect(onFocusLost).toHaveBeenCalledOnce();
+    a.querySelector('[data-action="edit"]').focus();
+    render([]);
+    expect(document.activeElement).toBe(add);
+    expect(onFocusLost).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not write unchanged row text on a no-change refresh", async () => {
+    document.body.innerHTML = "<ul></ul>";
+    const list = document.querySelector("ul");
+    const render = (items) => reconcileRows(list, items, (item) => item.id,
+      () => {
+        const row = document.createElement("li");
+        row.innerHTML = "<span></span>";
+        return row;
+      }, (row, item) => {
+        if (row.firstElementChild.textContent !== item.name) row.firstElementChild.textContent = item.name;
+      });
+    render([{ id: "a", name: "A" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const observer = new MutationObserver(() => {});
+    observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
+    render([{ id: "a", name: "A" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
   });
 });
 

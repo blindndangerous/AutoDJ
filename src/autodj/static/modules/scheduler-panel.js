@@ -16,7 +16,8 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 
 import { requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog } from "./dom-helpers.js";
+import { focusAfterDialog, reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { clockText } from "./time-format.js";
 
@@ -31,6 +32,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   const get = (id) => doc.getElementById(`schedule-${id}`);
   const status = get("status");
   const list = get("events");
+  const listNavigation = installActionListNavigation(list);
   const form = get("form");
   const formError = get("form-error");
   const nameInput = get("name");
@@ -38,6 +40,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   const paramsBox = get("params");
   const repeatSelect = get("repeat");
   const addButton = get("add");
+  let listFocusAnnouncementSuppressed = false;
   const dayBoxes = [...form.querySelectorAll('#schedule-days input[type="checkbox"]')];
   let data = emptyData();
   let editing = null; // the ID of the event in the form, or null when adding
@@ -161,25 +164,12 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   // Keep the rows that still exist, so focus on one of their buttons
   // survives a refresh; remove the gone ones and add the new ones in order.
   function renderEvents() {
-    const ids = new Set(data.events.map((item) => item.id));
-    for (const row of [...list.children]) {
-      if (!ids.has(row.dataset.eventId)) row.remove();
-    }
-    data.events.forEach((event, index) => {
-      const at = list.children[index];
-      if (at?.dataset.eventId === event.id) {
-        fillRow(at, event);
-        return;
-      }
-      const existing = [...list.children].find((row) => row.dataset.eventId === event.id);
-      if (existing) {
-        list.insertBefore(existing, at || null);
-        fillRow(existing, event);
-      } else {
-        list.insertBefore(newRow(event), at || null);
-      }
-    });
-    if (!data.events.length) list.replaceChildren(textItem("No events yet.", "no-results"));
+    const hasRows = !!list.querySelector(":scope > li[data-row-key]");
+    if (data.events.length || hasRows) reconcileRows(list, data.events, (item) => item.id, newRow, fillRow, { fallback: addButton, onFocusLost: ({ target }) => {
+      if (!listFocusAnnouncementSuppressed) say(`The schedule changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add event"}.`);
+    } });
+    if (!data.events.length && !list.querySelector(":scope > li.no-results")) list.append(textItem("No events yet.", "no-results"));
+    listNavigation.refresh();
   }
 
   function renderUpcoming() {
@@ -274,7 +264,8 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
           await request(`/api/schedule/${encodeURIComponent(event.id)}`, { method: "DELETE" });
           if (current !== session) return null;
           if (editing === event.id) closeForm();
-          await load();
+          listFocusAnnouncementSuppressed = true;
+          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           if (current !== session) return null;
           result = [`Event ${event.name} deleted`];
           const edits = list.querySelectorAll('[data-role="edit"]');
@@ -578,7 +569,11 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       get("timezone").textContent = "";
       actionSelect.replaceChildren();
       paramsBox.replaceChildren();
-      list.replaceChildren();
+      listFocusAnnouncementSuppressed = true;
+      try { reconcileRows(list, [], (event) => event.id, () => null, () => {}, { fallback: addButton, onFocusLost: ({ target }) => {
+        if (!listFocusAnnouncementSuppressed) say(`The schedule changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add event"}.`);
+      } }); }
+      finally { listFocusAnnouncementSuppressed = false; }
       get("upcoming").replaceChildren();
       get("runs").replaceChildren();
     },

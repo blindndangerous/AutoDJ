@@ -8,6 +8,8 @@ Use `Alt+1` through `Alt+9` to open, in order: **Now Playing**, **Queue & Search
 
 Use Tab to move to a tab strip, then Left Arrow and Right Arrow to change tabs; Home and End jump to its ends. Use the same keys in Settings' tab strip. Headings and landmarks let a screen reader jump to the page area you need. Lists and tables have named controls for each item. In grid tables, arrow keys move between cells; Tab moves to a control. A dialog keeps focus inside it until you close it. Press Escape to close the shortcut dialog or a message you can dismiss.
 
+Editable lists such as intro rules, categories, scheduled events, ads and shows use one Tab stop for their row actions. Up Arrow and Down Arrow move between items; Left Arrow and Right Arrow move between actions in an item. Home and End move to the first or last action in the current item, and Ctrl+Home and Ctrl+End move to the first or last item while keeping the same action when available. Press Enter or Space to activate the focused button. Disabled actions are skipped.
+
 In NVDA, shortcuts work in focus mode. Press NVDA+Space to switch modes. Browse mode intercepts letter keys; press NVDA+F2 and then a shortcut to pass one key to the page. JAWS can pass a key with Insert+3. When a button has focus, Space activates the button. Arrows operate a focused slider, tab strip, or list instead of a page shortcut.
 
 Add/Edit dialogs for intro rules, categories, scheduled events and ads return to the saved item's Edit button after Save. Cancel or Escape returns to the opener and asks before discarding changed fields. While a save is pending, wait for its result before closing the dialog.

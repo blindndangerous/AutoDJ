@@ -310,6 +310,46 @@ export function placeRows(list, rows) {
   }
 }
 
+// Reuse direct-child rows by stable item key, update them in place, then
+// order them without moving the row that currently contains focus.
+export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallback = null, onFocusLost = null } = {}) {
+  const active = list.ownerDocument.activeElement;
+  const focusedRow = active?.closest?.("li");
+  const focusedIndex = focusedRow && focusedRow.parentElement === list ? [...list.children].indexOf(focusedRow) : -1;
+  const focusedKey = focusedRow?.dataset.rowKey;
+  const focusedAction = active?.dataset?.action || active?.dataset?.role;
+  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll("button")].indexOf(active) : -1;
+  const existing = new Map([...list.children]
+    .filter((row) => row.dataset.rowKey !== undefined)
+    .map((row) => [row.dataset.rowKey, row]));
+  const rows = items.map((item, index) => {
+    const key = String(keyOf(item));
+    let row = existing.get(key);
+    if (!row) row = createRow(item);
+    if (row.dataset.rowKey !== key) row.dataset.rowKey = key;
+    updateRow(row, item, index);
+    return row;
+  });
+  placeRows(list, rows);
+  const focused = focusedIndex >= 0 && (!active.isConnected || active.disabled);
+  let target = null;
+  if (focused) {
+    const candidates = (row) => [...row.querySelectorAll(":scope > button:not(:disabled)")];
+    const choose = (row) => {
+      const buttons = candidates(row);
+      return buttons.find((button) => (button.dataset.action || button.dataset.role) === focusedAction)
+        || buttons[Math.min(Math.max(focusedColumn, 0), buttons.length - 1)] || buttons[0] || null;
+    };
+    const same = rows.find((row) => row.dataset.rowKey === focusedKey);
+    target = same && choose(same);
+    if (!target && rows.length) target = choose(rows[Math.min(focusedIndex, rows.length - 1)]);
+    if (!target) target = typeof fallback === "function" ? fallback() : fallback;
+    target?.focus?.();
+    onFocusLost?.({ key: focusedKey, action: focusedAction, target });
+  }
+  return { rows, focusLost: focused, target };
+}
+
 // The station's calendar day at *now*, as YYYY-MM-DD, or "" when the page
 // does not know the station time zone.  Pages left open past midnight use it
 // to see that the station's day has changed (liners, carts).

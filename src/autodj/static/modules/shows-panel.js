@@ -22,7 +22,8 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
-import { clearFieldError, fmtTime, placeRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
+import { clearFieldError, fmtTime, placeRows, reconcileRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
@@ -93,9 +94,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("shows-list");
+  const listNavigation = installActionListNavigation(list);
   const status = el("shows-status");
   const form = el("shows-form");
   const addButton = el("shows-add");
+  let listFocusAnnouncementSuppressed = false;
   const nameInput = el("shows-name");
   const categorySelect = el("shows-category");
   const clockSelect = el("shows-clockwheel");
@@ -133,6 +136,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
+  const listFocusLost = ({ target }) => {
+    if (!listFocusAnnouncementSuppressed) say(`The show list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add show"}.`);
+  };
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => (el("shows-source-clockwheel")?.checked ? "clockwheel" : "category");
   const byId = (id) => data.shows.find((show) => show.id === id);
@@ -154,39 +160,30 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const signature = JSON.stringify(data.shows);
     if (signature === listSignature) return;
     listSignature = signature;
-    const rows = [...list.querySelectorAll(":scope > li[data-id]")];
-    if (rows.length && rows.length === data.shows.length
-        && rows.every((row, i) => row.dataset.id === data.shows[i].id && row.dataset.name === data.shows[i].name)) {
-      // The same shows in the same order: change only the words.
-      rows.forEach((row, i) => {
-        const text = describeShow(data.shows[i]);
-        const span = row.firstElementChild;
-        if (span && span.textContent !== text) span.textContent = text;
-      });
-      return;
-    }
-    const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset : null;
     if (!data.shows.length) {
       const none = doc.createElement("li");
       none.textContent = "No shows yet. Press Add show to plan one.";
-      list.replaceChildren(none);
+      reconcileRows(list, [], () => "", () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
+      list.append(none);
       return;
     }
-    list.replaceChildren(...data.shows.map((show) => {
+    reconcileRows(list, data.shows, (show) => show.id, () => {
       const item = doc.createElement("li");
-      item.dataset.id = show.id;
-      item.dataset.name = show.name;
-      const text = doc.createElement("span");
-      text.textContent = describeShow(show);
-      item.append(
-        text, " ",
-        namedButton("open", "Open list", show.name, { id: show.id }), " ",
-        namedButton("edit", "Edit", show.name, { id: show.id }), " ",
-        namedButton("delete", "Delete", show.name, { id: show.id }),
-      );
+      item.append(doc.createElement("span"), " ", namedButton("open", "Open list", ""), " ",
+        namedButton("edit", "Edit", ""), " ", namedButton("delete", "Delete", ""));
       return item;
-    }));
-    if (focused?.id) rowFor(focused.id, focused.action)?.focus();
+    }, (item, show) => {
+      if (item.dataset.id !== show.id) item.dataset.id = show.id;
+      if (item.dataset.name !== show.name) item.dataset.name = show.name;
+      const description = describeShow(show);
+      if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
+      for (const button of item.querySelectorAll("button")) {
+        if (button.dataset.id !== show.id) button.dataset.id = show.id;
+        const label = `${button.textContent} ${show.name}`;
+        if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
+      }
+    }, { fallback: addButton, onFocusLost: listFocusLost });
+    listNavigation.refresh();
   }
 
   function rowFor(id, action = "open") {
@@ -375,7 +372,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           if (!current(epoch, mine)) return null;
           if (editing === id) closeForm();
           if (open?.id === id) closeEditor();
-          await load();
+          listFocusAnnouncementSuppressed = true;
+          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           done = true;
           const next = data.shows[Math.min(index, data.shows.length - 1)];
           return (next && rowFor(next.id)) || addButton;
@@ -836,7 +834,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     timer = null;
     data = empty();
     listSignature = "";
-    list.replaceChildren();
+    listFocusAnnouncementSuppressed = true;
+    try { reconcileRows(list, [], (show) => show.id, () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost }); }
+    finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     closeEditor();
     nameInput.value = "";

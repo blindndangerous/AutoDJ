@@ -17,7 +17,8 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { describeConditions } from "./clockwheel-step.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog, nextRowControl, rowButton } from "./dom-helpers.js";
+import { focusAfterDialog, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { parsePointTime } from "./library-folders.js";
 import { announceStatus } from "./live-region.js";
 
@@ -110,6 +111,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   const section = el("intro-rules");
   const form = el("intro-rules-form");
   const list = el("intro-rules-list");
+  const listNavigation = installActionListNavigation(list);
   const addButton = el("intro-rules-add");
   if (!panel || !section || !form || !list || !addButton) return NO_PANEL;
   const status = el("intro-rules-status");
@@ -142,6 +144,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   let suspended = false;
   let conditionId = 0;
   let listSignature = "";
+  let listFocusAnnouncementSuppressed = false;
   // The control each shown error is linked to.
   const marked = new Map();
 
@@ -197,25 +200,31 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     const signature = JSON.stringify([data.rules, data.liners, data.sources, data.categories]);
     if (signature === listSignature) return;
     listSignature = signature;
-    const active = doc.activeElement;
-    const focused = list.contains(active) ? { id: active.dataset.rule, action: active.dataset.action } : null;
-    list.replaceChildren(...data.rules.map((rule, index) => {
+    reconcileRows(list, data.rules, (rule) => rule.id, () => {
       const row = doc.createElement("li");
       const text = doc.createElement("span");
       text.className = "intro-text";
-      text.textContent = describeRule(rule, index, data);
-      const name = ruleName(rule, index);
-      const edit = rowButton(doc, "Edit", `Edit intro rule ${name}`, (button) => openForm(rule, button));
-      const drop = rowButton(doc, "Delete", `Delete intro rule ${name}`, (button) => void remove(rule.id, button));
-      for (const [button, action] of [[edit, "edit"], [drop, "delete"]]) {
-        button.dataset.rule = rule.id;
-        button.dataset.action = action;
-      }
-      row.append(text, edit, drop);
+      row.append(text, rowButton(doc, "Edit", "", (button) => {
+        const rule = data.rules.find((item) => item.id === button.dataset.rule);
+        if (rule) openForm(rule, button);
+      }), rowButton(doc, "Delete", "", (button) => void remove(button.dataset.rule, button)));
       return row;
-    }));
-    empty.hidden = data.rules.length > 0;
-    if (focused) rowControl(focused.id, focused.action)?.focus();
+    }, (row, rule, index) => {
+      const name = ruleName(rule, index);
+      const description = describeRule(rule, index, data);
+      if (row.firstElementChild.textContent !== description) row.firstElementChild.textContent = description;
+      const [edit, drop] = row.querySelectorAll("button");
+      for (const button of [edit, drop]) if (button.dataset.rule !== rule.id) button.dataset.rule = rule.id;
+      if (edit.dataset.action !== "edit") edit.dataset.action = "edit";
+      if (drop.dataset.action !== "delete") drop.dataset.action = "delete";
+      if (edit.getAttribute("aria-label") !== `Edit intro rule ${name}`) edit.setAttribute("aria-label", `Edit intro rule ${name}`);
+      if (drop.getAttribute("aria-label") !== `Delete intro rule ${name}`) drop.setAttribute("aria-label", `Delete intro rule ${name}`);
+    }, { fallback: addButton, onFocusLost: ({ target }) => {
+      if (!listFocusAnnouncementSuppressed) say(`The intro rule list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add intro rule"}.`);
+    } });
+    listNavigation.refresh();
+    const emptyHidden = data.rules.length > 0;
+    if (empty.hidden !== emptyHidden) empty.hidden = emptyHidden;
   }
 
   function rowControl(id, action = "edit") {
@@ -542,7 +551,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
         if (!current(epoch, mine)) return null;
         if (editing === id) closeForm();
         result = `Deleted intro rule ${name}.`;
-        await refresh().catch(() => {});
+        listFocusAnnouncementSuppressed = true;
+        try { await refresh().catch(() => {}); } finally { listFocusAnnouncementSuppressed = false; }
         return nextRowControl(list, "button[data-action='delete']", Math.max(0, index), addButton);
       },
     });
@@ -607,8 +617,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     generation += 1;
     data = blank();
     listSignature = "";
-    list.replaceChildren();
-    empty.hidden = false;
+    listFocusAnnouncementSuppressed = true;
+    try { renderList(); } finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     if (problem) { problem.textContent = ""; problem.hidden = true; }
     if (status) status.textContent = "";

@@ -162,6 +162,11 @@ describe("Schedule panel", () => {
       ["Delete", "Delete Morning show"],
     ]);
     expect(rows[1].querySelector('[data-role="toggle"]').getAttribute("aria-label")).toBe("Enable Overnight");
+    const actions = [...byId("schedule-events").querySelectorAll("button")];
+    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    actions[0].focus();
+    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(actions[1]);
     const next = byId("schedule-upcoming").textContent;
     expect(next).toContain("Morning show. Switch profile: Morning.");
     expect(next).toContain("in 2 hours");

@@ -136,6 +136,11 @@ describe("categories list", () => {
     expect(rowButton(1, "edit").getAttribute("aria-label")).toBe("Edit A");
     expect(rowButton(1, "delete").getAttribute("aria-label")).toBe("Delete A");
     expect(status()).toBe("");
+    const actions = [...byId("categories-list").querySelectorAll("button")];
+    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    actions[0].focus();
+    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(actions[1]);
     expect(byId("categories-playlist").options).toHaveLength(3);
     expect(byId("categories-folder").textContent).toBe("D:\\Radio\\playlists");
   });

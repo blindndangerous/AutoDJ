@@ -12,7 +12,8 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // aria-invalid, the error text as part of its description, and focus; the
 // words stay visible in the form.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
-import { focusAfterDialog } from "./dom-helpers.js";
+import { focusAfterDialog, reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { showBeetsPaths } from "./beets-paths.js";
@@ -71,6 +72,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("categories-list");
+  const listNavigation = installActionListNavigation(list);
   const status = el("categories-status");
   const form = el("categories-form");
   const addButton = el("categories-add");
@@ -89,6 +91,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   let data = empty();
   let editing = null; // the ID being edited, or null when adding
   let listSignature = "";
+  let listFocusAnnouncementSuppressed = false;
   let playlistSignature = "";
   let timer = null;
   let generation = 0;
@@ -110,20 +113,11 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
+  const listFocusLost = ({ target }) => {
+    if (!listFocusAnnouncementSuppressed) say(`The category list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add category"}.`);
+  };
 
   // ---- The list --------------------------------------------------------
-  function rowButton(category, action, title) {
-    const button = doc.createElement("button");
-    button.type = "button";
-    button.dataset.action = action;
-    button.dataset.id = category.id;
-    // The visible word starts the name, which says which category.  An
-    // aria-label, not hidden text: NVDA reads hidden text as a second line.
-    button.textContent = title;
-    button.setAttribute("aria-label", `${title} ${category.name}`);
-    return button;
-  }
-
   function renderList() {
     const signature = JSON.stringify([data.categories, data.folders]);
     if (signature === listSignature) return;
@@ -131,34 +125,32 @@ export function installCategoriesPanel({ document: doc = document, request = req
     // The same categories in the same order: change only the words of each
     // row, so a poll that finds a category now outside its hours, days or
     // dates (at the station's midnight, say) moves no focus and says nothing.
-    const rows = [...list.querySelectorAll(":scope > li[data-id]")];
-    if (rows.length && rows.length === data.categories.length
-        && rows.every((row, i) => row.dataset.id === data.categories[i].id
-          && row.dataset.name === data.categories[i].name)) {
-      rows.forEach((row, i) => {
-      const text = describeCategory(data.categories[i], data.folders);
-        const span = row.firstElementChild;
-        if (span && span.textContent !== text) span.textContent = text;
-      });
-      return;
-    }
-    const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset : null;
     if (!data.categories.length) {
       const none = doc.createElement("li");
       none.textContent = "No categories yet. Press Add category to make one.";
-      list.replaceChildren(none);
+      reconcileRows(list, [], () => "", () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
+      list.append(none);
       return;
     }
-    list.replaceChildren(...data.categories.map((category) => {
+    reconcileRows(list, data.categories, (category) => category.id, () => {
       const item = doc.createElement("li");
-      item.dataset.id = category.id;
-      item.dataset.name = category.name; // the buttons' names say it
-      const text = doc.createElement("span");
-      text.textContent = describeCategory(category, data.folders);
-      item.append(text, " ", rowButton(category, "edit", "Edit"), " ", rowButton(category, "delete", "Delete"));
+      item.append(doc.createElement("span"), " ", doc.createElement("button"), " ", doc.createElement("button"));
       return item;
-    }));
-    if (focused?.id) focusRow(focused.id, focused.action);
+    }, (item, category) => {
+      if (item.dataset.id !== category.id) item.dataset.id = category.id;
+      if (item.dataset.name !== category.name) item.dataset.name = category.name;
+      const description = describeCategory(category, data.folders);
+      if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
+      const [edit, drop] = item.querySelectorAll("button");
+      for (const [button, action, title] of [[edit, "edit", "Edit"], [drop, "delete", "Delete"]]) {
+        button.type = "button";
+        if (button.dataset.action !== action) button.dataset.action = action;
+        if (button.dataset.id !== category.id) button.dataset.id = category.id;
+        if (button.textContent !== title) button.textContent = title;
+        if (button.getAttribute("aria-label") !== `${title} ${category.name}`) button.setAttribute("aria-label", `${title} ${category.name}`);
+      }
+    }, { fallback: addButton, onFocusLost: listFocusLost });
+    listNavigation.refresh();
   }
 
   function rowFor(id, action = "edit") {
@@ -540,7 +532,8 @@ export function installCategoriesPanel({ document: doc = document, request = req
           const result = await send(`/api/categories/${encodeURIComponent(id)}`, "DELETE");
           if (!current(epoch, mine)) return null;
           if (editing === id) closeForm();
-          apply(result);
+          listFocusAnnouncementSuppressed = true;
+          try { apply(result); } finally { listFocusAnnouncementSuppressed = false; }
           onChange();
           done = true;
           const next = data.categories[Math.min(index, data.categories.length - 1)];
@@ -624,7 +617,10 @@ export function installCategoriesPanel({ document: doc = document, request = req
     data = empty();
     listSignature = "";
     playlistSignature = "";
-    list.replaceChildren();
+    listFocusAnnouncementSuppressed = true;
+    try {
+      reconcileRows(list, [], (category) => category.id, () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
+    } finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     nameInput.value = "";
     queryInput.value = "";

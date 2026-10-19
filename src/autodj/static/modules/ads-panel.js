@@ -16,7 +16,8 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 
 import { requestFile, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { focusAfterDialog, stationDay } from "./dom-helpers.js";
+import { focusAfterDialog, reconcileRows, stationDay } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { exportFilename, saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
 
@@ -100,6 +101,8 @@ export function installAdsPanel({
   const status = get("status");
   const spotList = get("spots");
   const breakList = get("breaks");
+  const listNavigation = [spotList, breakList].map(installActionListNavigation);
+  let listFocusAnnouncementSuppressed = false;
   const spotForm = get("spot-form");
   const breakForm = get("break-form");
   const rulesForm = get("rules-form");
@@ -225,17 +228,14 @@ export function installAdsPanel({
 
   // Keep the rows that still exist so focus on their buttons survives.
   function renderRows(list, items, emptyText, build, fill) {
-    const ids = new Set(items.map((item) => item.id));
-    for (const row of [...list.children]) {
-      if (!ids.has(row.dataset.id)) row.remove();
-    }
-    items.forEach((item, index) => {
-      let row = [...list.children].find((child) => child.dataset.id === item.id);
-      if (!row) row = build(item);
-      if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
-      fill(row, item);
-    });
-    if (!items.length) list.replaceChildren(textItem(emptyText, "no-results"));
+    const controls = list === spotList ? listNavigation[0] : listNavigation[1];
+    const fallback = list === spotList ? spotAdd : breakAdd;
+    const hasRows = !!list.querySelector(":scope > li[data-row-key]");
+    if (items.length || hasRows) reconcileRows(list, items, (item) => item.id, build, fill, { fallback, onFocusLost: ({ target }) => {
+      if (!listFocusAnnouncementSuppressed) say(`The ad list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "the Add control"}.`);
+    } });
+    if (!items.length && !list.querySelector(":scope > li.no-results")) list.append(textItem(emptyText, "no-results"));
+    controls.refresh();
   }
 
   function spotRow(spot) {
@@ -250,8 +250,10 @@ export function installAdsPanel({
   function fillSpot(row, spot) {
     const [text, edit, remove] = row.children;
     setText(text, spotText(spot));
-    edit.setAttribute("aria-label", `Edit spot ${spot.title}, ${spot.advertiser}`);
-    remove.setAttribute("aria-label", `Delete spot ${spot.title}, ${spot.advertiser}`);
+    const editName = `Edit spot ${spot.title}, ${spot.advertiser}`;
+    const deleteName = `Delete spot ${spot.title}, ${spot.advertiser}`;
+    if (edit.getAttribute("aria-label") !== editName) edit.setAttribute("aria-label", editName);
+    if (remove.getAttribute("aria-label") !== deleteName) remove.setAttribute("aria-label", deleteName);
   }
 
   function breakRow(item) {
@@ -269,9 +271,9 @@ export function installAdsPanel({
   function fillBreak(row, item) {
     const [text, edit, run, remove] = row.children;
     setText(text, breakText(item));
-    edit.setAttribute("aria-label", `Edit ad break ${item.name}`);
-    run.setAttribute("aria-label", `Run now, ad break ${item.name}`);
-    remove.setAttribute("aria-label", `Delete ad break ${item.name}`);
+    const labels = [[edit, `Edit ad break ${item.name}`], [run, `Run now, ad break ${item.name}`],
+      [remove, `Delete ad break ${item.name}`]];
+    for (const [button, name] of labels) if (button.getAttribute("aria-label") !== name) button.setAttribute("aria-label", name);
   }
 
   const spotById = (id) => data?.spots.find((spot) => spot.id === id) || null;
@@ -445,7 +447,8 @@ export function installAdsPanel({
           await request(`/api/ads/spots/${encodeURIComponent(spot.id)}`, { method: "DELETE" });
           if (current !== session) return null;
           if (editingSpot === spot.id) closeSpotForm();
-          await load();
+          listFocusAnnouncementSuppressed = true;
+          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           if (current !== session) return null;
           result = [`Spot ${spot.title} deleted`];
           const edits = spotList.querySelectorAll('[data-role="edit"]');
@@ -577,7 +580,8 @@ export function installAdsPanel({
           await request(`/api/ads/breaks/${encodeURIComponent(item.id)}`, { method: "DELETE" });
           if (current !== session) return null;
           if (editingBreak === item.id) closeBreakForm();
-          await load();
+          listFocusAnnouncementSuppressed = true;
+          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           if (current !== session) return null;
           result = [`Ad break ${item.name} deleted`];
           const edits = breakList.querySelectorAll('[data-role="edit"]');
@@ -774,8 +778,14 @@ export function installAdsPanel({
       closeSpotForm();
       closeBreakForm();
       status.textContent = "";
-      spotList.replaceChildren();
-      breakList.replaceChildren();
+      listFocusAnnouncementSuppressed = true;
+      try {
+        for (const [list, fallback] of [[spotList, spotAdd], [breakList, breakAdd]]) {
+          reconcileRows(list, [], (item) => item.id, () => null, () => {}, { fallback, onFocusLost: ({ target }) => {
+            if (!listFocusAnnouncementSuppressed) say(`The ad list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "the Add control"}.`);
+          } });
+        }
+      } finally { listFocusAnnouncementSuppressed = false; }
       get("pending").replaceChildren();
       get("recent").replaceChildren();
       get("totals").replaceChildren();

@@ -81,6 +81,33 @@ describe("native table grid navigation", () => {
     expect(body.querySelector("h3").textContent).toBe("13 Oct 2026");
   });
 
+  it("keeps Home, End and Ctrl+Home/End after refresh with sparse rows and controls", () => {
+    document.body.innerHTML = '<table><tbody id="rows"><tr><td role="gridcell">Old</td></tr></tbody></table>';
+    const body = document.getElementById("rows");
+    const navigation = installTableNavigation(body);
+    body.innerHTML = `<tr><td role="rowheader">One</td><td role="gridcell"><button>Play</button></td></tr>
+      <tr><td role="rowheader">Two</td></tr>
+      <tr><td role="rowheader">Three</td><td role="gridcell"><input type="checkbox"></td></tr>`;
+    navigation.refresh();
+    const [one, playCell] = body.querySelectorAll("td[role]");
+    const play = playCell.querySelector("button");
+    const checkbox = body.querySelector("input");
+    play.focus();
+    const home = new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true });
+    play.dispatchEvent(home);
+    expect(home.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(one);
+    const end = new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true });
+    one.dispatchEvent(end);
+    expect(document.activeElement).toBe(playCell);
+    const lastRow = new KeyboardEvent("keydown", { key: "End", ctrlKey: true, bubbles: true, cancelable: true });
+    play.dispatchEvent(lastRow);
+    expect(document.activeElement).toBe(checkbox);
+    const firstRow = new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true, cancelable: true });
+    checkbox.dispatchEvent(firstRow);
+    expect(document.activeElement).toBe(playCell);
+  });
+
   it("leaves modifiers alone and activates the cell's native checkbox by Space", () => {
     document.body.innerHTML = `<table><tbody id="rows"><tr><td role="gridcell" tabindex="-1"><input type="checkbox" tabindex="-1"></td></tr></tbody></table>`;
     const body = document.getElementById("rows");
