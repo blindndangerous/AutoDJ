@@ -300,3 +300,7 @@ For structural validation, run
 `uv run --frozen --no-sync python scripts/check_architecture_docs.py` and inspect
 `git diff --check`. Report structural results separately from runtime, paid-provider,
 platform, audio and usability evidence. No provider requests are needed to structurally validate this record.
+
+## Related proposal — 2026-10-17
+
+Preparing a particular show edition does not transfer source-asset ownership to Speech Studio. Its local recording, imported-segment and explicit-approval proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.

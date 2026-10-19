@@ -13,6 +13,7 @@
     "audit:health": "node tests/playwright/health_audit.mjs",
     "audit:visual": "node tests/playwright/visual_audit.mjs",
     "audit:reviews": "node tests/playwright/programme_review_audit.mjs",
+    "audit:editions": "node tests/playwright/prepared_edition_audit.mjs",
     "audit:ci": "npm run audit:health && npm run audit:transitions && npm run audit:visual"
   },
   "devDependencies": {

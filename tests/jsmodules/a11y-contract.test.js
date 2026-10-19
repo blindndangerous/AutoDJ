@@ -10,6 +10,10 @@ import { THEMES, cssForTheme, themeTokens } from "./theme-css.js";
 // contention on Windows without changing the timeout for other test files.
 vi.setConfig({ testTimeout: 60000 });
 
+// Happy DOM caches nodes and computed styles through WeakRef. A task boundary
+// releases their kept-alive targets between cases; microtasks alone do not.
+afterEach(async () => { await setImmediate(); });
+
 const staticPath = (...parts) => join(
   process.cwd(), "src", "autodj", "static", ...parts,
 );
@@ -18,10 +22,6 @@ const htmlSource = readFileSync(staticPath("index.html"), "utf8");
 const appSource = readFileSync(staticPath("app.js"), "utf8");
 const tokensByTheme = new Map(THEMES.map((theme) => [theme, themeTokens(cssSource, theme)]));
 const token = (theme, name) => tokensByTheme.get(theme).get(name);
-
-// Happy DOM's WeakRef caches keep detached pages alive until the next event-loop
-// turn. Let those pages become collectible between synchronous contract checks.
-afterEach(async () => { await setImmediate(); });
 
 function stripCssComments(source) {
   let result = "";
@@ -3107,11 +3107,15 @@ describe("static accessibility contracts", () => {
       expect(document.getElementById(id).getAttribute("type"), id).toBe("button");
     }
     expect(document.getElementById("shows-save").getAttribute("type")).toBe("submit");
-    // One polite status, not nested in another live region.
-    const live = [...card.querySelectorAll("[aria-live], [role='status'], [role='alert']")];
-    expect(live.map((node) => node.id)).toEqual(["shows-status"]);
-    expect(live[0].getAttribute("aria-live")).toBe("polite");
-    expect(live[0].getAttribute("aria-atomic")).toBe("true");
+    // Show and nested edition actions each own one independent polite status.
+    const live = [...card.querySelectorAll("[aria-live]:not([aria-live='off']), [role='status'], [role='alert']")];
+    expect(live.map((node) => node.id)).toEqual(["shows-status", "edition-status"]);
+    expect(document.getElementById("edition-elapsed").getAttribute("aria-live")).toBe("off");
+    for (const status of live) {
+      expect(status.getAttribute("aria-live")).toBe("polite");
+      expect(status.getAttribute("aria-atomic")).toBe("true");
+      expect(status.parentElement.closest("[aria-live], [role='status'], [role='alert']")).toBeNull();
+    }
     // Colours come from the theme tokens only, so both themes follow.
     const rules = stripCssComments(cssSource).match(/[^{}]*#shows-[^{}]*\{[^{}]*\}/g);
     expect(rules.length).toBeGreaterThan(0);
@@ -3153,7 +3157,7 @@ describe("static accessibility contracts", () => {
     // Programme review, the cue point player, Listen on a matched intro and
     // the voice tracker's Listen back are previews; decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["review-audio", "points-preview", "intro-playback", "vt-playback"]);
+      .toEqual(["review-audio", "points-preview", "intro-playback", "vt-playback", "edition-audio"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);

@@ -10,11 +10,12 @@ import pytest
 
 from autodj import player as player_mod
 from autodj.dj_meta import DjMeta
+from autodj.indexer import IndexEntry
 from autodj.mixbus import RenderedTrack
 
 
 def _entry(name: str, length: float = 10.0) -> MagicMock:
-    entry = MagicMock()
+    entry = MagicMock(spec=IndexEntry)
     entry.path = Path(f"/music/{name}.flac")
     entry.length = length
     entry.bpm = 120.0

@@ -92,6 +92,7 @@ INDEX_FILES = (
     "intro_rules.json",
     "ads.json",
     "shows.json",
+    "editions.json",
     "live_djs.json",
 )
 # Kept readable only to validate and refuse old archives that may still hold unmigrated vectors.
@@ -100,6 +101,7 @@ _LEGACY_INDEX_FILES = frozenset({im.MANIFEST_NAME})
 SECRET_STATE_FILES = frozenset({"relays.json", "secrets.json", "speech_providers.json"})
 _FOLDERS = (
     "speech",
+    "edition_audio",
     "liners",
     "carts",
     "time_checks",
@@ -126,12 +128,14 @@ _STATE_FILES = (
     "intro_rules.json",
     "ads.json",
     "shows.json",
+    "editions.json",
     "live_djs.json",
 )
 # Another station's state files, in ``stations/<slug>/``.
 STATION_FILES = _STATE_FILES
 STATION_FOLDERS = (
     "speech",
+    "edition_audio",
     "liners",
     "carts",
     "time_checks",
@@ -169,6 +173,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         "library": cfg.index.library_dir,
         "liners": station.liners,
         "speech": station.speech,
+        "edition_audio": station.edition_audio,
         "carts": station.cart_uploads,
         "time_checks": station.time_check_clips,
         "profiles": station.profiles,
@@ -184,6 +189,7 @@ def _roots(cfg: AutoDJConfig) -> dict[str, Path]:
         roots[f"{prefix}/index"] = paths.state_dir
         roots[f"{prefix}/liners"] = paths.liners
         roots[f"{prefix}/speech"] = paths.speech
+        roots[f"{prefix}/edition_audio"] = paths.edition_audio
         roots[f"{prefix}/carts"] = paths.cart_uploads
         roots[f"{prefix}/time_checks"] = paths.time_check_clips
         roots[f"{prefix}/profiles"] = paths.profiles
@@ -581,6 +587,7 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
         if destination.is_relative_to(root.resolve()):
             raise BackupError(f"write the backup outside the {key} folder {root}")
     folder_members: dict[str, Path] = {}
+    edition_documents: dict[str, str] = {}
     for key, root in folders.items():
         pattern = "*.sts" if key == "stereo-tool-presets" else "**/*"
         durable = None
@@ -588,6 +595,13 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
             from autodj.speech import backup_files
 
             durable = backup_files(root)
+        elif key.split("/")[-1] == "edition_audio":
+            from autodj.prepared_editions import backup_snapshot
+
+            document, durable = backup_snapshot(root)
+            if document is not None:
+                prefix = key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+                edition_documents[f"{prefix}index/editions.json"] = document
         for path in _folder_files(root, pattern):
             if durable is not None and path not in durable:
                 continue
@@ -600,6 +614,11 @@ def create_backup(cfg: AutoDJConfig, destination: Path, *, force: bool) -> Path:
         with tempfile.TemporaryDirectory(prefix="autodj-backup-") as temp:
             members = _snapshot(cfg, roots, Path(temp))
             members.update(folder_members)
+            for name, document in edition_documents.items():
+                frozen = Path(temp) / name
+                frozen.parent.mkdir(parents=True, exist_ok=True)
+                frozen.write_bytes(document.encode("utf-8"))
+                members[name] = frozen
             for name in list(members):
                 key, rest = _split(name)
                 if key.split("/")[-1] == "speech" and rest == ("speech.json",):
@@ -742,6 +761,9 @@ def _target(roots: dict[str, Path], name: str) -> Path:
             return roots[key] / rest[0]
     elif _is_files(key):
         if len(rest) == 1 and rest[0] in (*STATION_FILES, "station.db"):
+            return roots[key] / rest[0]
+    elif key in roots and key.split("/")[-1] == "edition_audio":
+        if len(rest) == 1 and re.fullmatch(r"[0-9a-f]{32}\.wav", rest[0]):
             return roots[key] / rest[0]
     elif key in roots and key.split("/")[-1] == "speech":
         from autodj.speech_providers import ID

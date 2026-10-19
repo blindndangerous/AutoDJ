@@ -12,7 +12,15 @@ from typing import Annotated, Any, Literal, overload
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from autodj.review_audio import ReviewSettings
 from autodj.review_jobs import ReviewError, ReviewJobs
@@ -25,8 +33,11 @@ Target = Annotated[StrictStr, Field(pattern=r"^[A-Za-z0-9:_-]{1,80}$")]
 class ReviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["show", "queue", "forecast"]
+    source: Literal["show", "queue", "forecast", "edition"]
     show_id: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
+    edition_id: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
+    target_take_id: Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")] | None = None
+    include_pending: StrictBool = False
     start: datetime | None = None
     minutes: Annotated[int, Field(strict=True, ge=1, le=60)] = 60
     selection_start: Annotated[Finite, Field(ge=0)] | None = None
@@ -58,6 +69,12 @@ class ReviewBody(BaseModel):
     def valid_range(self) -> ReviewBody:
         if self.source == "show" and self.show_id is None:
             raise ReviewError("Choose a saved show", field="show_id")
+        if self.source == "edition" and self.edition_id is None:
+            raise ReviewError("Choose a prepared edition", field="edition_id")
+        if self.source != "edition" and (self.target_take_id is not None or self.include_pending):
+            raise ReviewError(
+                "Pending speech and approval targets require a prepared edition", field="source"
+            )
         if self.selection_end is not None and self.selection_end <= (self.selection_start or 0):
             raise ValueError("Review end must follow review start")
         return self
@@ -151,6 +168,10 @@ def install_reviews(router: StationRouter) -> None:
 
         service = _jobs(request)
         parameters = body.model_dump(mode="json")
+        if body.target_take_id is not None:
+            parameters["keep_complete"] = list(
+                dict.fromkeys([*body.keep_complete, body.target_take_id])
+            )
         settings = ReviewSettings(
             body.head_seconds, body.tail_seconds, body.clip_threshold_seconds, body.tone_seconds
         )
@@ -176,7 +197,7 @@ def install_reviews(router: StationRouter) -> None:
                     output,
                     settings=settings,
                     selection=selection,
-                    keep_complete=body.keep_complete,
+                    keep_complete=parameters["keep_complete"],
                     cancelled=cancelled,
                 )
                 if fingerprint(station, plan.request, include_live_state=False) != static_before:
@@ -189,6 +210,22 @@ def install_reviews(router: StationRouter) -> None:
                 metadata["_fingerprint"] = plan.fingerprint
                 metadata["notes"] = list(plan.notes)
                 metadata["source"] = body.source
+                if body.source == "edition":
+                    from autodj.prepared_review import review_receipts
+
+                    metadata["_prepared_receipts"] = review_receipts(
+                        plan.request, metadata, output.name.removeprefix(".staging-")
+                    )
+                    metadata["approval_review_complete"] = any(
+                        receipt["keep_complete"] and not receipt["omitted"]
+                        for receipt in metadata["_prepared_receipts"]
+                    )
+                    metadata["edition_id"] = body.edition_id
+                    metadata["target_take_id"] = body.target_take_id
+                    metadata["edition_revision"] = plan.request.get("_prepared_target", {}).get(
+                        "reviewed_revision"
+                    )
+                    metadata["includes_pending_speech"] = body.include_pending
                 return metadata
 
         # Admit the job before any source work; capture fingerprints inside the

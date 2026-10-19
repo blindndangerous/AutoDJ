@@ -25,6 +25,7 @@ _.regex
 _.to_string
 _.file_response
 # Pydantic and dataclass fields: part of a request body, saved file or record.
+_.reviewed_revision
 _.last_scheduled
 _.published_at
 _.segue_s

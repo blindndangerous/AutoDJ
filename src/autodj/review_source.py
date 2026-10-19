@@ -166,6 +166,10 @@ def source_fingerprint(
     shared: dict | None = None,
 ) -> str:
     """Hash source revisions and selected records/media, sharing reads per response."""
+    if request.get("source") == "edition":
+        from autodj.prepared_review import edition_fingerprint
+
+        return edition_fingerprint(station, dict(request), paths=paths, shared=shared)
     if station.bridge.library is None:
         raise ReviewError("The review needs the music library")
     if shared is None:
@@ -441,6 +445,10 @@ def capture_review(
 ) -> ReviewPlan:
     parameters: dict[str, Any] = copy.deepcopy(dict(request))
     kind = parameters.get("source")
+    if kind == "edition":
+        from autodj.prepared_review import capture_edition
+
+        return capture_edition(station, parameters, cancelled=cancelled)
     if kind not in {"show", "queue", "forecast"}:
         raise ReviewError("Choose a saved show, queue or forecast")
     if cancelled():
@@ -616,17 +624,26 @@ def capture_review(
         named.append(replace(row, occurrence_id=row.occurrence_id or f"item-{number}"))
     named.sort(key=lambda row: row.starts)
     origin = min((row.starts for row in named), default=start)
+    _freeze_review_inputs(station, source, named, parameters)
+    captured_fingerprint = source_fingerprint(station, parameters)
+    return ReviewPlan(source, tuple(named), origin, captured_fingerprint, parameters, tuple(notes))
+
+
+def _freeze_review_inputs(
+    station: Any, source: SimulationSource, items: Sequence[Item], parameters: dict[str, Any]
+) -> None:
+    """Freeze selected inputs for both ordinary and prepared-edition reviews."""
     parameters["_review_dj_paths"] = sorted(
         {
             row.entry.path
-            for row in named
+            for row in items
             if row.entry is not None and not row.in_handoff and row.kind in {"song", "liner"}
         }
     )
     from autodj.review_render import _ad_breaks, _entries
 
-    media_paths = {entry.path for entry in _entries(named)}
-    for row in named:
+    media_paths = {entry.path for entry in _entries(items)}
+    for row in items:
         handoff = row.incoming_handoff
         if handoff is not None:
             media_paths.update(str(clip.path) for clip in _ad_breaks(source, handoff))
@@ -637,7 +654,7 @@ def capture_review(
 
     cached_catalog = source.library.catalog
     loudness_paths = set()
-    for row in named:
+    for row in items:
         cfg = row.playback_config or source.player._cfg
         if (
             row.entry is not None
@@ -661,8 +678,6 @@ def capture_review(
             and cached_catalog._points[path] != station.bridge.library.catalog.points(path)
         ):
             raise ReviewError("Programme inputs changed while capturing; generate the review again")
-    captured_fingerprint = source_fingerprint(station, parameters)
-    return ReviewPlan(source, tuple(named), origin, captured_fingerprint, parameters, tuple(notes))
 
 
 # Public name used by routes when checking retained snapshots.

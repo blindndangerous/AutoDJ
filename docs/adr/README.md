@@ -30,6 +30,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release |
 | [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
 | [14: Programme review](0014-isolate-programme-review-and-export.md) | Accepted | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
+| [15: Prepared editions](0015-prepare-speech-for-specific-show-editions.md) | Accepted | Occurrence-bound recordings, full-target review receipts, explicit approval, local playout and interrupted-edition recovery |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

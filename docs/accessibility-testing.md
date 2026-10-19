@@ -55,6 +55,43 @@ from the top of the page when the page's confirmation dialog closes) is accepted
 It covers only those pairings and flows. This repository has no sampling record for earlier
 releases.
 
+## Prepared-edition rehearsal
+
+The operator will run Windows/Google Chrome/NVDA and listening checks **after both
+OVC and G05 PRs are submitted**. Keep the feature tracking open pending that
+evidence; PR publication does not establish manual acceptance. Use the exact G05
+candidate, which includes the linked OVC base, and record both commits. A combined
+rehearsal can supply both features' evidence when its inputs, configuration,
+environment and required workflow coverage match; identify the covered rows for
+each feature rather than assuming all prior evidence transfers.
+
+Follow [Prepared show editions](guides/operations/prepared-editions.md). Use copied
+known audio, a Show with repeated songs and saved cues, one short microphone take,
+and an externally edited interview up to 30:00. Keep another station playing and
+use a distinguishable private preview device. Avoid live provider requests; no
+provider is needed for recording/import or local approved playout.
+
+| Step | Expected observation |
+| --- | --- |
+| With the target station stopped, create a named edition from a Show and reorder repeated occurrences. | Edition, song positions and recording targets are independently understandable with NVDA; repeated songs remain distinct; station stays stopped. |
+| Record, stop, listen privately and save an opening, transition and closing take; cancel/discard and re-record. | Microphone permission/failure is actionable; 3:00 bound is visible; tracks stop on leaving/signing out; previous saved recordings survive cancellation or failure. Listening preserves an unsaved recording; decline replacement/discard confirmations and verify it remains saveable. |
+| Import a long standalone interview, including a 30:00 boundary sample; try an invalid or oversized copy. | Valid segment is a primary item; duration and Needs review status are readable; refusal preserves the last edition. Record actual decode time, disk use and any limit reached without claiming general performance. |
+| Explicitly review a pending short take and the full long target; navigate and listen, then return and approve. | Target remains complete above the ordinary shortening threshold; song middles may shorten; joins, speech and ducking sound intact. Listening does not approve; explicit approval changes only the selected take. |
+| Try to approve a shortened ordinary interview review or a review containing missing/placeholder target material. | Actionable refusal; source recordings and prior review audio remain available. |
+| Move an intact bound pair, edit an unrelated item, then change an adjacent occurrence/cue or replace the take. | First changes preserve relevant approval; relevant changes expose Needs review without losing audio. Stale/conflicting saves do not overwrite another page. |
+| Edit a relevant take before a prepared transition, then repeat close to its commit boundary. | Future uncommitted audio is rebuilt. If audio was already committed, the saved result visibly reports and announces that prior approved audio continues for the current occurrence while changes apply to future audio. |
+| Schedule or start a previously aired edition, first declining and then confirming. | Speech-may-have-aired warning and explicit confirmation are usable; declining leaves the schedule/queue unchanged. |
+| Air approved short takes and a long segment using server/stream output; leave another take pending or unavailable. | Correct occurrence gets the take, normal-speed interview stays complete, unusable speech is reported/skipped while music continues; no provider access or private-preview leakage. |
+| Interrupt with a hard event and restart AutoDJ during a prepared edition; choose a resume item explicitly. | Automation returns; Interrupted stays visible even after stopping another Show; no automatic edition resume. The saved occurrence is selected when available, an operator choice survives refresh, and a removed choice requires another explicit selection. Selected resume starts only after explicit action. Confirm ordinary saved Show automatic resume still works separately. |
+| Back up, restore to an isolated station and reopen the edition. | Source recordings and approval state survive; derived reviews are excluded; restored playback does not start by itself. |
+| Switch station or sign out during recording, import, review and approval. | Microphone/audio stop; delayed replies do not populate or modify the new station context; focus and error announcements remain usable. |
+
+Use the evidence form under [Programme review rehearsal](#programme-review-rehearsal),
+adding edition IDs/occurrence positions, full-target duration, explicit approval
+results, recovery/backup steps and measured resource observations. Report each
+omitted step and failure. Browser automation, waveform checks and a successful
+export do not replace actual hearing or NVDA speech/focus observations.
+
 ## Programme review rehearsal
 
 Programme review requires a separate Windows/Google Chrome/NVDA rehearsal and
