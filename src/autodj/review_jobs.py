@@ -38,6 +38,12 @@ type Renderer = Callable[[Path, Callable[[], bool]], dict[str, Any]]
 class ReviewError(ValueError):
     """An actionable, explicitly public error without paths or provider secrets."""
 
+    reports_field = True
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        super().__init__(message)
+        self.field = field
+
 
 def _identity(value: str) -> str:
     if not isinstance(value, str) or not _ID.fullmatch(value):
@@ -282,6 +288,8 @@ class ReviewJobs:
                 if isinstance(exc, ReviewError)
                 else "Review rendering failed; check available storage and source audio, then retry"
             )
+            if isinstance(exc, ReviewError) and exc.field:
+                status["field"] = exc.field
         finally:
             try:
                 self._remove_stage(stage)

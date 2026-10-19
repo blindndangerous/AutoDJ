@@ -11,6 +11,13 @@ function time(seconds) {
   return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
 }
 
+function createdDate(value) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(date)
+    : "Unknown date";
+}
+
 export function installProgrammeReview({
   doc = document, request = requestJson, announce = null,
   setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = (id) => clearTimeout(id),
@@ -41,13 +48,13 @@ export function installProgrammeReview({
     method, headers: { "Content-Type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  function fail(error, ticket) {
+  function fail(error, ticket, moveFocus = true) {
     if (!current(ticket) || isStaleStationReply(error)) return;
     const fields = { head_seconds: "head", tail_seconds: "tail", clip_threshold_seconds: "threshold",
       tone_seconds: "tone", show_id: "show", start: "start", selection_start: "selection-start",
       selection_end: "selection-end", minutes: "minutes" };
     const field = get(fields[error.field]);
-    if (field) { field.setAttribute("aria-invalid", "true"); field.focus(); }
+    if (field) { field.setAttribute("aria-invalid", "true"); if (moveFocus) field.focus(); }
     say(error.message || "Could not complete the review request.");
   }
   function stopAudio() {
@@ -68,7 +75,7 @@ export function installProgrammeReview({
     stopAudio(); result = value; selected = 0;
     get("result").hidden = false;
     get("summary").textContent = [
-      `Created ${value.created_at}.`, value.stale ? "Out of date." : "Snapshot of planned audio.",
+      `Created ${createdDate(value.created_at)}.`, value.stale ? "Out of date." : "Snapshot of planned audio.",
       value.incomplete ? "Incomplete." : "Complete.", `Preview ${time(value.duration)}.`,
       `Effective programme range ${time(value.effective_range?.[0])} to ${time(value.effective_range?.[1])}.`,
       "Before broadcast mastering.",
@@ -130,7 +137,9 @@ export function installProgrammeReview({
       return;
     }
     job = null;
-    if (value.status === "failed" || value.status === "error") say(value.error || "Review generation failed.");
+    if (value.status === "failed" || value.status === "error")
+      fail({ message: value.error || "Review generation failed.", field: value.field }, ticket,
+        get("card").contains(doc.activeElement) || doc.activeElement === doc.body);
     else if (value.status === "cancelled") say("Review generation cancelled. Previous results are retained.");
     else {
       await refresh();
@@ -149,7 +158,7 @@ export function installProgrammeReview({
       const chosen = snapshots.value, show = get("show").value;
       snapshots.replaceChildren(...(value.results || []).map((item) => {
         const option = doc.createElement("option"); option.value = item.id;
-        option.textContent = `${item.created_at}${item.stale ? " — Out of date" : ""}${item.incomplete ? " — Incomplete" : ""}`;
+        option.textContent = `${createdDate(item.created_at)}${item.stale ? " — Out of date" : ""}${item.incomplete ? " — Incomplete" : ""}`;
         return option;
       }));
       if ([...snapshots.options].some((o) => o.value === chosen)) snapshots.value = chosen;
@@ -239,7 +248,8 @@ export function installProgrammeReview({
     });
   });
   get("delete").addEventListener("click", async () => {
-    const id = snapshots.value; if (!id) return;
+    const id = snapshots.value;
+    if (!id) { say("Choose a saved review first."); return; }
     const ticket = context();
     let outcome = "";
     const confirmed = await confirmAction(doc, {
@@ -263,7 +273,10 @@ export function installProgrammeReview({
     });
     if (confirmed && current(ticket) && outcome) say(outcome);
   });
-  get("load").addEventListener("click", () => { if (snapshots.value) void load(snapshots.value, true); });
+  get("load").addEventListener("click", () => {
+    if (snapshots.value) void load(snapshots.value, true);
+    else say("Choose a saved review first.");
+  });
   get("refresh").addEventListener("click", () => void refresh());
   get("previous").addEventListener("click", () => jump(selected - 1));
   get("next").addEventListener("click", () => jump(selected + 1));

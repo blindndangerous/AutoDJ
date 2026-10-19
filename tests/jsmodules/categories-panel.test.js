@@ -7,7 +7,7 @@ import { countsText, describeCategory, installCategoriesPanel } from "../../src/
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
-const status = () => byId("categories-status").textContent;
+const status = () => (byId("categories-form-dialog")?.open ? byId("categories-form-status") : byId("categories-status")).textContent;
 const items = () => [...byId("categories-list").querySelectorAll("li[data-id]")];
 const rowButton = (index, action) => items()[index].querySelector(`button[data-action="${action}"]`);
 
@@ -374,11 +374,13 @@ describe("categories form", () => {
     until.value = "22:00";
     until.dispatchEvent(new Event("input", { bubbles: true }));
     expect(until.hasAttribute("aria-describedby")).toBe(false);
+    await Promise.resolve();
     byId("categories-save").click();
     expect(byId("categories-form-error").textContent).toBe("Allowed until must differ from Allowed from.");
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
 
     until.value = "02:00";
+    await Promise.resolve();
     server.refuse = new FieldError("Days must be numbered 0 (Monday) to 6 (Sunday)", "days");
     byId("categories-save").click();
     await vi.waitFor(() => expect(document.activeElement).toBe(byId("categories-day-0")));
@@ -467,5 +469,59 @@ describe("categories form", () => {
     expect(byId("categories-form").hidden).toBe(true);
     expect(byId("categories-name").value).toBe("");
     expect(byId("categories-playlist").options).toHaveLength(0);
+  });
+});
+
+
+describe("category modal lifecycle", () => {
+  it("keeps unsaved edits on Escape until discard is confirmed", async () => {
+    await open();
+    byId("categories-add").focus();
+    byId("categories-add").click();
+    const dialog = byId("categories-form-dialog");
+    expect(dialog.open).toBe(true);
+    expect(dialog.getAttribute("aria-labelledby")).toBe("categories-form-legend");
+    byId("categories-name").value = "Unfinished";
+    dialog.dispatchEvent(new Event("cancel", { cancelable: true }));
+    expect(byId("confirm-dialog").open).toBe(true);
+    byId("confirm-cancel").click();
+    await Promise.resolve();
+    expect(dialog.open).toBe(true);
+    expect(byId("categories-name").value).toBe("Unfinished");
+    byId("categories-cancel").click();
+    byId("confirm-accept").click();
+    await Promise.resolve();
+    expect(dialog.open).toBe(false);
+    expect(document.activeElement).toBe(byId("categories-add"));
+  });
+
+  it("ignores a pending save after station clear and prevents duplicate submissions", async () => {
+    const server = fakeServer();
+    const request = server.request;
+    let settle;
+    server.request = vi.fn((url, options) => options?.method === "PUT"
+      ? new Promise((resolve) => { settle = resolve; }) : request(url, options));
+    await open(server);
+    rowButton(0, "edit").click();
+    const form = byId("categories-form");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(server.request.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(1);
+    controls.clearProtectedData();
+    settle({ categories: [DECADE], category: DECADE });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(byId("categories-form-dialog").open).toBe(false);
+    expect(items()).toHaveLength(0);
+    expect(status()).toBe("");
+  });
+
+  it("retains a missing playlist choice rather than saving a different playlist", async () => {
+    const server = fakeServer();
+    server.categories[1].playlist = "Missing.m3u";
+    await open(server);
+    rowButton(1, "edit").click();
+    expect(byId("categories-playlist").value).toBe("Missing.m3u");
+    expect(byId("categories-playlist").selectedOptions[0].textContent).toContain("unavailable");
   });
 });

@@ -15,6 +15,9 @@ is pending; the detailed interaction and release-sampling rules remain here.
 
 AutoDJ uses automated checks and requires a screen-reader sample before release to catch accessibility regressions. The results apply only to the paths that the checks exercise. They do not certify the whole application.
 
+Each modal dialog starts with an H1 title referenced by its `aria-labelledby`.
+Verify level-one heading navigation inside the dialog as well as its initial field focus.
+
 ## Published evidence
 
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).
@@ -161,6 +164,28 @@ normal model/hardware startup and does not establish normal-startup, physical
 output-routing, speech or Windows/NVDA evidence.
 
 ## Continuous integration
+
+Add/Edit forms for categories, intro rules, scheduled events, ad spots and ad
+breaks use `editor-dialog.js`. Keep feature validation and API operations in
+their panel; pass the save callback the controller's current-request guard and
+check it after every await before changing the UI. Close the controller when
+station or authentication state is cleared. Save closes onto the saved row's
+Edit control; Cancel and Escape return to the opener, asking before discarding
+changed fields. A pending save prevents another submission or dismissal.
+
+Use the dialog's own status region while it is open. `showEditorError` places
+the error beside its field and links and focuses it; it announces separately
+only when focus cannot convey the error. Each editor owns its dialog and draft,
+so opening a second editor preserves the first. Test this with nested dialogs,
+including Escape, discarded edits, missing return controls and stale replies.
+Nested Add category entry points are not currently provided.
+
+Condition rows use the definitions and named controls in `condition-editor.js`.
+Category conditions are enabled only for music clockwheel steps and intro rules.
+Use `renumberConditionRows` after removal so changed group numbers replace the
+legend node. Shared condition help is browsable text, not a repeated field
+description. Date and time inputs retain each feature's existing validation and
+saved-data semantics.
 
 CI includes selected static accessibility contracts and JavaScript behavior checks. These checks cover live-region markup, durable descriptions, keyboard interactions, color boundaries, reduced-motion styles, and forced-colors styles. Passing CI does not establish WCAG conformance and does not prove what a screen reader will speak.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -10,11 +11,21 @@ from autodj.prepared_editions import edition_store
 from autodj.review_jobs import ReviewError
 
 
-def edition_fingerprint(station: Any, request: dict[str, Any]) -> str:
+def edition_fingerprint(
+    station: Any,
+    request: dict[str, Any],
+    *,
+    paths: Sequence[str] = (),
+    shared: dict | None = None,
+) -> str:
     from autodj.review_source import _signature, source_fingerprint
 
     edition = edition_store(station).get(request["edition_id"])
-    base = source_fingerprint(station, {**request, "source": "forecast"}, include_live_state=False)
+    inputs = {**request, "source": "forecast"}
+    inputs.setdefault(
+        "_review_dj_paths", sorted({row.path for row in edition.occurrences if row.kind == "song"})
+    )
+    base = source_fingerprint(station, inputs, paths, include_live_state=False, shared=shared)
     assets = [
         (
             take.asset_id,
@@ -26,11 +37,20 @@ def edition_fingerprint(station: Any, request: dict[str, Any]) -> str:
 
 
 def capture_edition(station: Any, request: dict[str, Any], *, cancelled: Any) -> Any:
-    from autodj.review_source import ReviewPlan, _finite, _source, _start
+    from autodj.review_source import (
+        ReviewPlan,
+        _check_programme_length,
+        _finite,
+        _freeze_review_inputs,
+        _source,
+        _span,
+        _start,
+    )
     from autodj.shows import prepared_break, prepared_entry
 
     parameters = dict(request)
-    before = edition_fingerprint(station, parameters)
+    capture_paths = tuple(entry.path for entry in station.bridge.library.entries_snapshot("liner"))
+    before = edition_fingerprint(station, parameters, paths=capture_paths)
     plan = edition_store(station).runtime_plan(
         parameters["edition_id"], station, include_pending=parameters.get("include_pending", False)
     )
@@ -39,6 +59,10 @@ def capture_edition(station: Any, request: dict[str, Any], *, cancelled: Any) ->
     entries = [prepared_entry(item, source.library) for item in plan.items]
     if any(entry is None for entry in entries):
         raise ReviewError("An edition item is unavailable; repair it before contextual review")
+    _check_programme_length(
+        sum(max(0, float(entry.length or 0)) for entry in entries)
+        + sum(take.seconds for group in plan.handoffs.values() for take in group)
+    )
     identities = {id(entry): item for entry, item in zip(entries, plan.items, strict=True)}
 
     def handoff(current: Any, upcoming: Any) -> tuple[Any, ...]:
@@ -67,6 +91,8 @@ def capture_edition(station: Any, request: dict[str, Any], *, cancelled: Any) ->
         )
     if cancelled():
         raise ReviewError("Review cancelled")
+    _check_programme_length(_span(rows))
+    _freeze_review_inputs(station, source, rows, parameters)
     target = parameters.get("target_take_id")
     if target:
         from autodj.prepared_editions import relevant_signature
@@ -87,7 +113,7 @@ def capture_edition(station: Any, request: dict[str, Any], *, cancelled: Any) ->
             take for group in plan.handoffs.values() for take in group if take.take_id == target
         )
         parameters["_prepared_target_seconds"] = targets[0].seconds if targets else None
-    if edition_fingerprint(station, request) != before:
+    if edition_fingerprint(station, request, paths=capture_paths) != before:
         raise ReviewError("Edition inputs changed while capturing; generate again")
     captured = edition_fingerprint(station, parameters)
     return ReviewPlan(source, tuple(rows), start, captured, parameters, plan.omissions)

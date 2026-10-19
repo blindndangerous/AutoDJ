@@ -102,6 +102,10 @@ Liner folders accept MP3, WAV, OGG, M4A, FLAC and AAC files. AutoDJ suggests a S
 End point for each liner, but does not run advanced analysis on them. You can also upload single
 liners in Settings, **Voice liners**; uploads go to the station's own liner folder.
 
+For both music and liners, automatic Segue suggestions look for a sustained final drop in level.
+Trailing silence is excluded from the reference level so padded files do not push the suggestion
+into the quiet tail. Updating AutoDJ does not recalculate existing saved cues or overwrite manual cues.
+
 ## Change or remove a folder
 
 Each folder in the table has its own **Add subfolders** and **Perform advanced analysis** boxes.

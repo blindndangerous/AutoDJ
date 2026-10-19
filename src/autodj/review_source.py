@@ -21,6 +21,26 @@ from autodj.hour_preview import Decided, Item
 from autodj.review_jobs import ReviewError
 from autodj.rotation_sim import SimulationSource, _copy_player, snapshot_player, snapshot_settings
 
+# Playback and selection inputs, excluding index bookkeeping and play history.
+_REVIEW_RECORD_FIELDS = (
+    "kind",
+    "title",
+    "artist",
+    "album",
+    "genre",
+    "bpm",
+    "year",
+    "length",
+    "energy",
+    "key",
+    "mode",
+    "tempo_confidence",
+    "points",
+    "point_sources",
+    "intro_lift_db",
+    "allow_outro",
+)
+
 
 @dataclass(frozen=True)
 class ReviewPlan:
@@ -51,12 +71,14 @@ def _start(value: Any, timezone: str) -> float:
         }
         if len(candidates) != 1:
             raise ReviewError(
-                "Start time is ambiguous or does not exist; include an explicit UTC offset"
+                "Start time is ambiguous or does not exist; include an explicit UTC offset",
+                field="start",
             )
         return candidates.pop()
     except (ValueError, OverflowError, OSError) as exc:
         raise ReviewError(
-            "Start time is invalid, ambiguous or does not exist; include an explicit UTC offset"
+            "Start time is invalid, ambiguous or does not exist; include an explicit UTC offset",
+            field="start",
         ) from exc
 
 
@@ -64,7 +86,7 @@ def _show(station: Any, request: Mapping[str, Any]) -> Any:
     store = getattr(station, "shows", None)
     show = store.get(str(request.get("show_id", ""))) if store is not None else None
     if show is None:
-        raise ReviewError("That saved show is no longer available")
+        raise ReviewError("That saved show is no longer available", field="show_id")
     return show
 
 
@@ -77,11 +99,10 @@ def _signature(path: Path) -> Any:
 
 def _fingerprint_base(station: Any) -> str:
     library = station.bridge.library
-    selected = {
-        entry.path for kind in ("music", "liner") for entry in library.entries_snapshot(kind)
-    }
     catalog = library.catalog
     versions = getattr(catalog, "change_versions", lambda: None)()
+    if versions is not None:
+        versions = {"sources": versions["sources"]}
     cfg = (
         station.cfg.model_dump(mode="json")
         if hasattr(station.cfg, "model_dump")
@@ -131,10 +152,8 @@ def _fingerprint_base(station: Any) -> str:
             for child in sorted(folder.rglob("*"))
             if child.is_file()
         )
-    records = [
-        (path, _signature(Path(path)), catalog.record_for_path(path)) for path in sorted(selected)
-    ]
-    data = (cfg, versions, content, records, [event.model_dump(mode="json") for event in events])
+    # Per-record cue/gain inputs are selected below; analysis caches are not global edits.
+    data = (cfg, versions, content, [event.model_dump(mode="json") for event in events])
     return hashlib.sha256(repr(data).encode()).hexdigest()
 
 
@@ -146,11 +165,11 @@ def source_fingerprint(
     include_live_state: bool = True,
     shared: dict | None = None,
 ) -> str:
-    """Hash inputs, sharing library reads only within one result-list request."""
+    """Hash source revisions and selected records/media, sharing reads per response."""
     if request.get("source") == "edition":
         from autodj.prepared_review import edition_fingerprint
 
-        return edition_fingerprint(station, dict(request))
+        return edition_fingerprint(station, dict(request), paths=paths, shared=shared)
     if station.bridge.library is None:
         raise ReviewError("The review needs the music library")
     if shared is None:
@@ -192,12 +211,29 @@ def source_fingerprint(
             with cache._lock:
                 pending = repr(cache._buf)
         dj_values = (_signature(database), _signature(Path(str(database) + "-wal")), pending)
+    selected = sorted(set(metadata_paths or ()) | set(request.get("_review_media_paths", ())))
+    records = shared.setdefault("records", {})
+    record_values = []
+    for path in selected:
+        if path not in records:
+            records[path] = station.bridge.library.catalog.record_for_path(path) or {}
+        keys = list(_REVIEW_RECORD_FIELDS)
+        if path in request.get("_review_loudness_paths", ()):
+            keys.append("loudness")
+        record_values.append((path, {key: records[path].get(key) for key in keys}))
     data = (
         dict(request),
         shared["base"],
         show.model_dump(mode="json") if show is not None else None,
         queue_state,
         dj_values,
+        record_values,
+        [
+            (path, _signature(Path(path)))
+            for path in sorted(
+                set(paths) | set(metadata_paths or ()) | set(request.get("_review_media_paths", ()))
+            )
+        ],
     )
     return hashlib.sha256(repr(data).encode()).hexdigest()
 
@@ -207,15 +243,21 @@ class _ReadOnlyCatalog:
 
     def __init__(self, real: Any) -> None:
         self._real = real
+        self._records: dict[str, Any] = {}
+        self._points: dict[str, Any] = {}
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
     def record_for_path(self, path: str) -> Any:
-        return copy.deepcopy(self._real.record_for_path(path))
+        if path not in self._records:
+            self._records[path] = copy.deepcopy(self._real.record_for_path(path))
+        return copy.deepcopy(self._records[path])
 
     def points(self, path: str) -> Any:
-        return copy.deepcopy(self._real.points(path))
+        if path not in self._points:
+            self._points[path] = copy.deepcopy(self._real.points(path))
+        return copy.deepcopy(self._points[path])
 
     def set_loudness(self, path: Path, measurement: Any) -> None:
         pass
@@ -384,6 +426,20 @@ def _finite(
     return tuple(rows)
 
 
+def _check_programme_length(seconds: float) -> None:
+    if seconds > 60 * 60:
+        raise ReviewError(
+            "Programme reviews allow at most 60 minutes of source audio; "
+            "choose a shorter saved show or queue. A range does not reduce the full mix."
+        )
+
+
+def _span(items: Sequence[Item]) -> float:
+    return max((row.starts + row.seconds for row in items), default=0) - min(
+        (row.starts for row in items), default=0
+    )
+
+
 def capture_review(
     station: Any, request: Mapping[str, Any], *, cancelled: Callable[[], bool] = lambda: False
 ) -> ReviewPlan:
@@ -398,7 +454,18 @@ def capture_review(
     if cancelled():
         raise InterruptedError("Review interrupted")
     start = _start(parameters.get("start"), station.timezone)
-    before = source_fingerprint(station, parameters)
+    # Forecast picks are unknown until capture; check candidate media only here,
+    # while result polling hashes the selected paths rather than the whole library.
+    capture_paths = (
+        tuple(
+            entry.path
+            for media_kind in ("music", "liner")
+            for entry in station.bridge.library.entries_snapshot(media_kind)
+        )
+        if kind != "show" and station.bridge.library is not None
+        else ()
+    )
+    before = source_fingerprint(station, parameters, capture_paths)
     source = _source(station, start)
     assert source.snapshot is not None
     notes: list[str] = []
@@ -419,10 +486,23 @@ def capture_review(
                     f"Saved programme item {len(entries) + 1} is unavailable; its duration is unknown"
                 )
             entries.append(entry)
+        _check_programme_length(sum(max(0, float(entry.length or 0)) for entry in entries))
         rows = _finite(source, entries, start, cancelled)
     elif kind == "queue":
         if station.player is None:
             raise ReviewError("The current queue requires a running station; choose a saved show")
+        with station.player._state.queue_lock:
+            queued_seconds = sum(
+                max(0, float(entry.length or 0)) for entry in station.player._state.queue
+            )
+        _check_programme_length(queued_seconds)
+        _check_programme_length(
+            _span(
+                hour_preview.read_station(
+                    station.player, getattr(station, "breaks", None), now=start
+                ).items
+            )
+        )
         decided = hour_preview.read_station(
             station.player, getattr(station, "breaks", None), now=start, capture_audio=True
         )
@@ -500,8 +580,8 @@ def capture_review(
             raise ReviewError("A forecast requires a running station; choose a saved show")
         rows_list: list[Item] = []
         minutes = int(parameters.get("minutes", 60))
-        if not 1 <= minutes <= 180:
-            raise ReviewError("Forecast length must be between 1 and 180 minutes")
+        if not 1 <= minutes <= 60:
+            raise ReviewError("Forecast length must be between 1 and 60 minutes", field="minutes")
         # The existing public forecast has a 15-minute minimum; crop its rich rows for shorter reviews.
         view = hour_preview.build_preview(
             source,
@@ -526,7 +606,9 @@ def capture_review(
             notes.append(view["stopped"])
     if cancelled():
         raise InterruptedError("Review interrupted")
-    if source_fingerprint(station, parameters) != before:
+    if kind in {"show", "queue"}:
+        _check_programme_length(_span(rows))
+    if source_fingerprint(station, parameters, capture_paths) != before:
         raise ReviewError("Programme inputs changed while capturing; generate the review again")
     named = []
     for number, row in enumerate(rows):
@@ -542,15 +624,60 @@ def capture_review(
         named.append(replace(row, occurrence_id=row.occurrence_id or f"item-{number}"))
     named.sort(key=lambda row: row.starts)
     origin = min((row.starts for row in named), default=start)
+    _freeze_review_inputs(station, source, named, parameters)
+    captured_fingerprint = source_fingerprint(station, parameters)
+    return ReviewPlan(source, tuple(named), origin, captured_fingerprint, parameters, tuple(notes))
+
+
+def _freeze_review_inputs(
+    station: Any, source: SimulationSource, items: Sequence[Item], parameters: dict[str, Any]
+) -> None:
+    """Freeze selected inputs for both ordinary and prepared-edition reviews."""
     parameters["_review_dj_paths"] = sorted(
         {
             row.entry.path
-            for row in named
+            for row in items
             if row.entry is not None and not row.in_handoff and row.kind in {"song", "liner"}
         }
     )
-    captured_fingerprint = source_fingerprint(station, parameters)
-    return ReviewPlan(source, tuple(named), origin, captured_fingerprint, parameters, tuple(notes))
+    from autodj.review_render import _ad_breaks, _entries
+
+    media_paths = {entry.path for entry in _entries(items)}
+    for row in items:
+        handoff = row.incoming_handoff
+        if handoff is not None:
+            media_paths.update(str(clip.path) for clip in _ad_breaks(source, handoff))
+            if handoff.intro is not None:
+                media_paths.add(str(handoff.intro.path))
+    parameters["_review_media_paths"] = sorted(media_paths)
+    from autodj.processing import loudness_matches
+
+    cached_catalog = source.library.catalog
+    loudness_paths = set()
+    for row in items:
+        cfg = row.playback_config or source.player._cfg
+        if (
+            row.entry is not None
+            and row.audio is None
+            and cfg.playback.loudness_processing in {"smooth", "stereotool"}
+        ):
+            record = cached_catalog.record_for_path(row.entry.path) or {}
+            if loudness_matches(
+                record.get("loudness"), Path(row.entry.path), record.get("kind", "music")
+            ):
+                loudness_paths.add(row.entry.path)
+    parameters["_review_loudness_paths"] = sorted(loudness_paths)
+    for path in media_paths:
+        frozen = cached_catalog.record_for_path(path) or {}
+        current = station.bridge.library.catalog.record_for_path(path) or {}
+        keys = list(_REVIEW_RECORD_FIELDS)
+        if path in loudness_paths:
+            keys.append("loudness")
+        if any(frozen.get(key) != current.get(key) for key in keys) or (
+            path in cached_catalog._points
+            and cached_catalog._points[path] != station.bridge.library.catalog.points(path)
+        ):
+            raise ReviewError("Programme inputs changed while capturing; generate the review again")
 
 
 # Public name used by routes when checking retained snapshots.

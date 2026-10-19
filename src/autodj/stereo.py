@@ -20,6 +20,7 @@ import shutil
 import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
 import tempfile
 import threading
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -54,18 +55,30 @@ class AudioWorkspace:
     max_bytes: int
     reserve_bytes: int
     allocated: int = 0
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    mappings: list[mmap.mmap] = field(default_factory=list)
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    mappings: weakref.WeakSet[mmap.mmap] = field(default_factory=weakref.WeakSet)
 
     def reserve(self, nbytes: int) -> None:
         with self.lock:
             if nbytes < 0 or self.allocated + nbytes > self.max_bytes:
-                raise OSError("Review scratch allocation limit exceeded; review a shorter range")
+                raise OSError(
+                    "Review scratch allocation limit exceeded; choose a shorter programme"
+                )
             if shutil.disk_usage(self.directory).free < nbytes + self.reserve_bytes:
                 raise OSError(
-                    "Not enough scratch space for review; free disk space or shorten the range"
+                    "Not enough scratch space for review; free disk space or choose a shorter programme"
                 )
             self.allocated += nbytes
+
+    def release(self, nbytes: int) -> None:
+        with self.lock:
+            self.allocated -= nbytes
+
+    def track(self, mapping: mmap.mmap, nbytes: int) -> None:
+        # Views keep the mapping alive; the workspace must not retain freed PCM.
+        with self.lock:
+            self.mappings.add(mapping)
+        weakref.finalize(mapping, self.release, nbytes)
 
 
 _AUDIO_WORKSPACE: contextvars.ContextVar[AudioWorkspace | None] = contextvars.ContextVar(
@@ -79,7 +92,7 @@ def audio_workspace(
 ) -> Iterator[AudioWorkspace]:
     """Keep offline PCM on owned scratch storage; normal playout is unchanged.
 
-    Accounting is conservative for the whole job, including temporary copies.
+    Accounting bounds live allocations, including temporary copies.
     Nested render helpers and station decode threads share the same budget.
     All allocated PCM is valid only inside this scope; mappings close before
     the caller removes the scratch directory, including on Windows.
@@ -98,7 +111,7 @@ def audio_workspace(
         yield workspace
     finally:
         _AUDIO_WORKSPACE.reset(token)
-        for mapping in workspace.mappings:
+        for mapping in list(workspace.mappings):
             mapping.close()
 
 
@@ -141,6 +154,15 @@ def _mapped(nbytes: int) -> mmap.mmap:
     workspace = _AUDIO_WORKSPACE.get()
     if workspace is not None:
         workspace.reserve(nbytes)
+    try:
+        return _map_file(nbytes, workspace)
+    except BaseException:
+        if workspace is not None:
+            workspace.release(nbytes)
+        raise
+
+
+def _map_file(nbytes: int, workspace: AudioWorkspace | None) -> mmap.mmap:
     with _temporary_file() as handle:
         if hasattr(os, "posix_fallocate"):
             # Reserve the space now: a full disk is an OSError here, not a
@@ -156,8 +178,7 @@ def _mapped(nbytes: int) -> mmap.mmap:
             handle.flush()
         mapping = mmap.mmap(handle.fileno(), nbytes)
         if workspace is not None:
-            with workspace.lock:
-                workspace.mappings.append(mapping)
+            workspace.track(mapping, nbytes)
         return mapping
 
 
@@ -225,10 +246,11 @@ class AudioSpool:
         self._memory = bytearray()
         self._file: IO[bytes] | None = None
         self._size = 0
+        self._workspace = _AUDIO_WORKSPACE.get()
 
     def write(self, data: bytes) -> None:
         """Append *data*."""
-        workspace = _AUDIO_WORKSPACE.get()
+        workspace = self._workspace
         if workspace is not None:
             workspace.reserve(len(data))
         if self._file is None and (
@@ -255,14 +277,23 @@ class AudioSpool:
             handle.flush()
             usable = self._size - self._size % frame_bytes
             if usable == 0:
+                self.close()
                 return bytearray()
-            return mmap.mmap(handle.fileno(), usable)
+            mapping = mmap.mmap(handle.fileno(), usable)
+            if self._workspace is not None:
+                self._workspace.track(mapping, usable)
+                self._workspace.release(self._size - usable)
+            self._size = 0
+            return mapping
 
     def close(self) -> None:
         """Drop a temporary file :meth:`buffer` did not take."""
         if self._file is not None:
             self._file.close()
             self._file = None
+        if self._workspace is not None:
+            self._workspace.release(self._size)
+        self._size = 0
 
 
 def all_finite_and_audible(audio: np.ndarray, block: int = SAMPLE_RATE * 60) -> bool:

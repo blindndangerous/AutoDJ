@@ -4885,7 +4885,7 @@ class Player:
             return load_processed_audio(source, measurement, kind)
         # First play: measure in the same FFmpeg run as the decode.
         audio, measurement = load_and_measure_audio(source, kind)
-        if record:
+        if record and not getattr(self, "_dry_run", False):
             self._library.catalog.set_loudness(source, measurement)
         return audio
 
@@ -5034,7 +5034,7 @@ class Player:
         source_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
         incoming_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
     ) -> RenderedTrack | None:
-        from autodj.playout import render_handoff
+        from autodj.playout import liner_chain_timing, liner_main_frames, render_handoff
 
         source = self._playout_audio(current, source_decode)
         points = self.saved_points(current)
@@ -5064,88 +5064,39 @@ class Player:
                 playback_rate=rate_a,
             )
         is_liner = self._is_liner(current)
-        clips, events, release = [], [], 0.0
+        clips, events = [], []
         liner_spans = []
-        negative_constraints, zero_constraints = [], []
-        has_negative_overlap = has_ordinary_overlap = False
-        first_overlap_negative = False
-        outro_lead_limit = None
+        timing: list[tuple[int, int, float | None, bool]] = []
         frames = 0
-        main_frames = 0
-        fit_main_frames = 0
         if is_liner:
             clips.append(source[source_start:end])
             frames = end - source_start
             liner_spans.append((0.0, frames / SAMPLE_RATE))
-            segue = points.get("segue")
-            main_frames = (
-                frames
-                if segue is None
-                else min(frames, max(0, round(segue * SAMPLE_RATE) - source_start))
+            timing.append(
+                (
+                    frames,
+                    liner_main_frames(source_start, frames, points.get("segue")),
+                    points.get("overlap_start"),
+                    False,
+                )
             )
-            overlap_point = points.get("overlap_start")
-            has_negative_overlap = overlap_point is not None and overlap_point < 0
-            has_ordinary_overlap = overlap_point is None or overlap_point > 0
-            first_overlap_negative = has_negative_overlap
-            if has_negative_overlap:
-                negative_constraints.append((0, overlap_point, main_frames))
-            elif overlap_point == 0:
-                zero_constraints.append((0, main_frames))
-            release = (
-                main_frames / SAMPLE_RATE
-                if overlap_point is None
-                else min(float(overlap_point), main_frames / SAMPLE_RATE)
-            )
-            if overlap_point == 0:
-                fit_main_frames = main_frames
-            outro_lead_limit = 0.0
 
         def add_clip(
             audio: np.ndarray, cues: dict[str, Any], length: float, allow_outro: bool
         ) -> tuple[int, int] | None:
             """Append one voice to the chain; its first frame and its speech's frames."""
-            nonlocal frames, main_frames, release, fit_main_frames, outro_lead_limit
-            nonlocal has_negative_overlap, has_ordinary_overlap, first_overlap_negative
+            nonlocal frames
             first = round((cues.get("start") or 0) * SAMPLE_RATE)
             last = round((cues.get("end") or length) * SAMPLE_RATE)
             clip = audio[first:last]
             if not len(clip):
                 return None
-            segue = cues.get("segue")
-            main_frames = frames + (
-                len(clip)
-                if segue is None
-                else min(len(clip), max(0, round(segue * SAMPLE_RATE) - first))
-            )
-            overlap_point = cues.get("overlap_start")
-            overlap = (
-                (main_frames - frames) / SAMPLE_RATE
-                if overlap_point is None
-                else min(float(overlap_point), (main_frames - frames) / SAMPLE_RATE)
-            )
-            if overlap_point is not None and overlap_point < 0:
-                has_negative_overlap = True
-                negative_constraints.append((frames, overlap_point, main_frames - frames))
-            elif overlap_point == 0:
-                zero_constraints.append((frames, main_frames - frames))
-            else:
-                has_ordinary_overlap = True
-            if not clips:
-                first_overlap_negative = overlap_point is not None and overlap_point < 0
-            if overlap > 0 or overlap_point is None:
-                release = max(release, frames / SAMPLE_RATE + overlap)
-            if overlap_point == 0:
-                fit_main_frames = max(fit_main_frames, main_frames)
-            if not allow_outro:
-                # A later ID also limits how early the preceding voice can start.
-                limit = frames / SAMPLE_RATE
-                outro_lead_limit = (
-                    limit if outro_lead_limit is None else min(outro_lead_limit, limit)
-                )
+            main = liner_main_frames(first, len(clip), cues.get("segue"))
+            timing.append((len(clip), main, cues.get("overlap_start"), allow_outro))
             at = frames
             clips.append(clip)
             frames += len(clip)
-            return at, main_frames - at
+            return at, main
 
         for liner_entry, queued in liners:
             try:
@@ -5177,36 +5128,14 @@ class Player:
         if breaks:
             spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
         # The matched intro leads into the song and keeps its native voice speed.
-        introduced = (
-            self._add_intro(intro, incoming_points_out, add_clip) if intro is not None else []
-        )
+        introduced = self._add_intro(intro, add_clip) if intro is not None else []
         voiced = [*spoken, *((at, intro_id, end) for at, intro_id, end, _label in introduced)]
         duck_db = self._break_duck_db() if voiced else 0.0
         incoming_intro = max(
             0.0,
             (incoming_points_out.get("intro") or 0.0) - (incoming_points_out.get("start") or 0.0),
         )
-        if has_negative_overlap:
-            from autodj.playout import liner_release_frames
-
-            intro_frames = round(incoming_intro * SAMPLE_RATE)
-            constraints = [
-                offset / SAMPLE_RATE
-                + liner_release_frames(main, intro_frames, overlap) / SAMPLE_RATE
-                for offset, overlap, main in negative_constraints
-            ]
-            constraints.extend(
-                (offset + main - intro_frames) / SAMPLE_RATE for offset, main in zero_constraints
-            )
-            if has_ordinary_overlap:
-                constraints.append(release)
-            if not first_overlap_negative:
-                constraints.append(0.0)
-            release = max(constraints)
-        elif fit_main_frames:
-            release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
-        # Every clip's main content must finish before the incoming vocals.
-        release = max(release, main_frames / SAMPLE_RATE - incoming_intro)
+        main_frames, release, outro_lead_limit = liner_chain_timing(timing, incoming_intro)
         handoff = render_handoff(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,
             {"start": 0, "end": 0, "segue": 0} if is_liner else points_out,
@@ -5279,6 +5208,9 @@ class Player:
             intro_events=tuple(
                 (liner_start + at, intro_id, liner_start + end, label)
                 for at, intro_id, end, label in introduced
+            ),
+            intro_assets=(
+                ((intro.intro_id, str(intro.path)),) if introduced and intro is not None else ()
             ),
             next_reserved_liners=tuple(entry for _, entry, queued in events if queued),
             loudness_processing=processing,
@@ -5385,15 +5317,14 @@ class Player:
     def _add_intro(
         self,
         intro: Any,
-        incoming_points: dict[str, Any],
         add_clip: Callable[[np.ndarray, dict[str, Any], float, bool], tuple[int, int] | None],
     ) -> list[tuple[int, str, int, str]]:
         """Decode the matched intro and append it to the handoff's voice chain (#127).
 
-        It talks up the next song (its speech ends as the vocal starts) when
-        the song's intro, Start to Intro, holds the whole speech, and
-        otherwise plays just before the song.  One that cannot be decoded is
-        left out and the music plays on.
+        A registered liner chosen by an intro rule uses its saved liner cues.
+        A private song or artist upload uses detected speech cues and the
+        same liner placement, allowing outgoing outro and incoming intro
+        overlap. An unavailable clip is left out.
 
         Returns:
             ``[(first frame, intro id, end of speech, label)]`` in the chain,
@@ -5401,25 +5332,41 @@ class Player:
         """
         from autodj.matched_intros import MAX_INTRO_SECONDS
 
-        start = incoming_points.get("start") or 0.0
-        point = incoming_points.get("intro")
-        intro_s = None if point is None else max(0.0, float(point) - float(start))
+        rule_liner = intro.intro_id.startswith("rule:")
         try:
-            audio = self._load_voice_audio(intro.path, MAX_INTRO_SECONDS)
-            cues = speech_cues(audio)
+            if rule_liner:
+                library = self._library
+                if library is None:
+                    return []
+                record = library.catalog.record_for_path(intro.path)
+                entry = library.catalog.entry_for_path(intro.path)
+                if (
+                    record is None
+                    or record.get("kind") != "liner"
+                    or entry is None
+                    or str(entry.path) != str(intro.path)
+                ):
+                    return []
+                audio = self._load_playout_audio(entry)
+                cues = self.saved_points(entry)
+                allow_outro = bool(record.get("allow_outro", False))
+                clip_length = entry.length
+                placement = "uses its saved liner cues"
+            else:
+                audio = self._load_voice_audio(intro.path, MAX_INTRO_SECONDS)
+                spoken = speech_cues(audio)
+                cues = spoken.points(True)
+                allow_outro = True
+                clip_length = spoken.length
+                placement = "uses detected speech cues with liner placement"
         except Exception:
-            logger.exception("Cannot decode matched intro %s; the music plays on", intro.label)
+            logger.exception("Cannot prepare matched intro %s; the music plays on", intro.label)
             return []
-        talk_up = intro_s is not None and intro_s >= cues.speech
-        added = add_clip(audio, cues.points(talk_up), cues.length, False)
+        added = add_clip(audio, cues, clip_length, allow_outro)
         if added is None:
             return []
         at, speech = added
-        logger.info(
-            "Matched intro %s %s",
-            intro.label,
-            "talks up the song" if talk_up else "plays before it",
-        )
+        logger.info("Matched intro %s %s", intro.label, placement)
         return [(at, intro.intro_id, at + speech, intro.label)]
 
     def _break_duck_db(self) -> float:

@@ -1,7 +1,7 @@
 # 15. Prepare speech for specific show editions
 
 Date: 2026-10-17
-Status: Proposed; explicit maintainer acceptance pending.
+Status: Accepted; maintainer approval in conversation on 2026-10-18 (PR #451 merged after review fixes).
 Decision authority: Project maintainer. Operator agreement on feature scope does not accept this ADR.
 
 ## Context and scope

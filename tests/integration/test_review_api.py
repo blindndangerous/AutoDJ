@@ -19,6 +19,7 @@ from tests._layout import point_index
         {"clip_threshold_seconds": float("inf")},
         {"tone_seconds": float("nan")},
         {"minutes": 0},
+        {"minutes": 61},
         {"selection_start": -1},
         {"selection_start": 10, "selection_end": 5},
         {"source": "path", "path": "/etc/passwd"},
@@ -82,7 +83,7 @@ def test_busy_review_refuses_before_reading_programme_inputs(bridge, tmp_path, m
         assert service.shutdown(2)
 
 
-def test_result_list_scans_library_once_and_refreshes_on_the_next_request(
+def test_result_list_reads_selected_records_once_and_refreshes_on_the_next_request(
     bridge, tmp_path, monkeypatch
 ):
     from autodj.review_jobs import ReviewJobs
@@ -126,12 +127,12 @@ def test_result_list_scans_library_once_and_refreshes_on_the_next_request(
         assert reply.status_code == 200
         assert len(reply.json()["results"]) == 2
         assert all(not result["stale"] for result in reply.json()["results"])
-        assert len(reads) == len(entries)
+        assert sorted(reads) == sorted({entries[0].path, entries[1].path})
         reads.clear()
         station.cfg.playback.music_speed_percent = 2
         reply = client.get("/api/reviews")
         assert all(result["stale"] for result in reply.json()["results"])
-        assert len(reads) == len(entries)
+        assert sorted(reads) == sorted({entries[0].path, entries[1].path})
     finally:
         assert service.shutdown(2)
 
@@ -153,6 +154,9 @@ def test_review_generation_download_and_stale_snapshot_journey(bridge, tmp_path,
     client = TestClient(app)
     submitted = client.post("/api/reviews", json={"source": "show", "show_id": show_id})
     assert submitted.status_code == 200, submitted.text
+    from datetime import datetime
+
+    assert datetime.fromisoformat(submitted.json()["started_at"]).tzinfo is not None
     job_id = submitted.json()["id"]
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
@@ -162,6 +166,8 @@ def test_review_generation_download_and_stale_snapshot_journey(bridge, tmp_path,
         time.sleep(0.02)
     assert job["status"] == "done", job
     result = client.get("/api/reviews/" + job_id).json()
+    assert datetime.fromisoformat(result["created_at"]).tzinfo is not None
+    assert datetime.fromisoformat(job["finished_at"]).tzinfo is not None
     assert result["stale"] is False
     assert result["items"]
     assert not any(key.startswith("_") for key in result)
@@ -176,6 +182,52 @@ def test_review_generation_download_and_stale_snapshot_journey(bridge, tmp_path,
     assert client.delete("/api/reviews/" + job_id).status_code == 200
     assert client.get("/api/reviews").json()["results"] == []
     assert app.state.review_jobs.shutdown(1)
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/api/stations/default"])
+def test_review_body_cap_allows_all_targets_but_rejects_oversized_json(bridge, tmp_path, prefix):
+    from autodj.review_jobs import ReviewJobs
+
+    point_index(bridge.player._cfg.index, tmp_path)
+    app = create_app(bridge)
+    service = app.state.review_jobs = ReviewJobs()
+    service.shutdown()
+    client = TestClient(app)
+    response = client.post(
+        prefix + "/reviews", json={"source": "forecast", "keep_complete": ["a" * 80] * 500}
+    )
+    assert response.status_code == 409  # Valid body reaches admission.
+    response = client.post(prefix + "/reviews", json={"source": "forecast", "padding": "x" * 65536})
+    assert response.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "change, field, message",
+    [
+        ({"start": "invalid"}, "start", "Enter a valid intended start time"),
+        ({"source": "show"}, "show_id", "Choose a saved show"),
+        ({"source": "show", "show_id": "invalid"}, "show_id", "Choose a saved show"),
+        ({"source": "edition"}, "edition_id", "Choose a prepared edition"),
+        (
+            {"target_take_id": "a" * 32},
+            "source",
+            "Pending speech and approval targets require a prepared edition",
+        ),
+        (
+            {"include_pending": True},
+            "source",
+            "Pending speech and approval targets require a prepared edition",
+        ),
+    ],
+)
+def test_review_validation_identifies_the_input(bridge, tmp_path, change, field, message):
+    point_index(bridge.player._cfg.index, tmp_path)
+    client = TestClient(create_app(bridge))
+    for prefix in ("/api", "/api/stations/default"):
+        response = client.post(prefix + "/reviews", json={"source": "forecast", **change})
+        assert response.status_code == 422
+        assert response.json()["field"] == field
+        assert response.json()["detail"] == message
 
 
 @pytest.mark.parametrize("path", ["/api/reviews", "/api/stations/default/reviews"])

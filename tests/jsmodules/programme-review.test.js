@@ -67,6 +67,71 @@ it("does not expose approval readiness for an incomplete target review", async (
   document.removeEventListener("autodj:edition-review-ready", ready);
 });
 
+it.each(["load", "delete"])("announces when %s has no saved review selected", async (name) => {
+  const { controls, spoken } = harness();
+  await controls.refresh();
+  get("snapshots").selectedIndex = -1;
+  get(name).click();
+  await settle();
+  expect(get("status").textContent).toBe("Choose a saved review first.");
+  expect(spoken).toContain("Choose a saved review first.");
+});
+
+it("formats saved dates for display", async () => {
+  const created_at = "2024-10-17T12:00:00Z";
+  const dated = { ...result, created_at };
+  const request = vi.fn(async (url) => url === "/api/reviews" ? { results: [dated], job: null }
+    : url === "/api/shows" ? { shows: [] } : dated);
+  const { controls } = harness({ request });
+  const expected = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" })
+    .format(new Date("2024-10-17T12:00:00Z"));
+  await controls.refresh();
+  expect(get("snapshots").options[0].textContent).toContain(expected);
+  get("load").click(); await settle();
+  expect(get("summary").textContent).toContain(expected);
+  get("delete").click(); await settle();
+  expect(document.getElementById("confirm-title").textContent).toContain(expected);
+});
+
+it("distinguishes reviews created in the same minute", async () => {
+  const request = vi.fn(async (url) => url === "/api/reviews" ? { results: [
+    { ...result, created_at: "2026-10-17T12:00:01Z" },
+    { ...result, id: "snapshot-2", created_at: "2026-10-17T12:00:45Z" },
+  ], job: null } : { shows: [] });
+  const { controls } = harness({ request });
+  await controls.refresh();
+  const labels = [...get("snapshots").options].map((option) => option.textContent);
+  expect(labels[0]).not.toBe(labels[1]);
+});
+
+it("announces a late field error without stealing focus outside programme review", async () => {
+  const request = vi.fn(async (url, options) => options?.method === "POST"
+    ? { id: "job", status: "running" }
+    : { id: "job", status: "failed", error: "Correct the intended start", field: "start" });
+  const { timers, spoken } = harness({ request });
+  get("source").value = "forecast";
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  const outside = document.createElement("button");
+  outside.textContent = "Other control"; document.body.append(outside); outside.focus();
+  await timers[0](); await settle();
+  expect(document.activeElement).toBe(outside);
+  expect(get("start").getAttribute("aria-invalid")).toBe("true");
+  expect(spoken).toContain("Correct the intended start");
+});
+
+it.each(["start", "show_id"])("focuses the %s field after a worker validation error", async (field) => {
+  const request = vi.fn(async (url, options) => options?.method === "POST"
+    ? { id: "job", status: "failed", error: "Correct the input", field }
+    : url === "/api/shows" ? { shows: [{ id: "show-1", name: "Tomorrow" }] } : { results: [], job: null });
+  const { controls } = harness({ request });
+  await controls.refresh();
+  get("source").value = field === "show_id" ? "show" : "forecast";
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  const input = get(field === "show_id" ? "show" : "start");
+  expect(input.getAttribute("aria-invalid")).toBe("true");
+  expect(document.activeElement).toBe(input);
+});
+
 it("loads saved snapshots without generating audio and navigates matching download content", async () => {
   const { controls, request } = harness();
   await controls.refresh();
@@ -179,7 +244,9 @@ it("confirms the dated deletion and leaves no replacement selected", async () =>
   get("load").click(); await settle();
   get("delete").click(); await settle();
   expect(request.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(0);
-  expect(document.getElementById("confirm-title").textContent).toContain(result.created_at);
+  expect(document.getElementById("confirm-title").textContent).toContain(
+    new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(result.created_at)),
+  );
   expect(document.getElementById("confirm-message").textContent).toContain("backups");
   document.getElementById("confirm-cancel").click(); await settle();
   expect(deleted).toBe(false);

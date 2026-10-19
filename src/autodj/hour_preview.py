@@ -41,6 +41,7 @@ import copy
 import hashlib
 import logging
 import random
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -197,6 +198,8 @@ class Item:
     occurrence_id: str = ""
     cut_at: float | None = None
     absolute_timing: bool = False
+    asset_id: str | None = None
+    details_entry: Any = None
 
     @property
     def fixed(self) -> bool:
@@ -236,10 +239,17 @@ class Decided:
 
     def signature(self) -> str:
         """What is fixed, without the times: the same while nothing new is decided."""
-        parts = [
-            f"{item.kind}:{item.status}:{item.entry.path if item.entry is not None else item.label}"
-            for item in (*self.items, *self.waiting)
-        ]
+        parts = []
+        for item in (*self.items, *self.waiting):
+            identity = (
+                item.entry.path
+                if item.entry is not None
+                else item.details_entry.path
+                if item.details_entry is not None
+                else item.asset_id or item.label
+            )
+            intro_identity = repr((item.asset_id, item.label)) if item.kind == "intro" else ""
+            parts.append(f"{item.kind}:{item.status}:{identity}{intro_identity}")
         parts.append(f"clock:{self.clock_name}:{self.clock_cursor}")
         parts.append(f"speed:{self.speed_signature}")
         return "\n".join(parts)
@@ -271,11 +281,11 @@ def _preview_liner_group(
     *,
     outgoing_rate: float | None = None,
     incoming_rate: float | None = None,
-    voice: tuple[Any, dict[str, Any]] | None = None,
+    voice: tuple[Any, dict[str, Any], bool] | None = None,
     extra_voices: Sequence[tuple[Any, dict[str, Any], bool]] = (),
 ) -> tuple[list[tuple[Any, float, float]], float]:
     """Place cue-trimmed liner rows and return the incoming song's extra delay."""
-    from autodj.playout import liner_chain_placement, liner_release_frames
+    from autodj.playout import liner_chain_placement, liner_chain_timing, liner_main_frames
 
     sr = SAMPLE_RATE
     if outgoing_rate is None:
@@ -284,79 +294,41 @@ def _preview_liner_group(
         incoming_rate = music_rate(player, incoming)
     outgoing_rate = max(0.01, float(outgoing_rate))
     incoming_rate = max(0.01, float(incoming_rate))
-    chain: list[tuple[Any, int, int, bool]] = []
-    negative: list[tuple[int, float, int]] = []
-    zero: list[tuple[int, int]] = []
-    first_negative = False
-    frames = main_frames = fit_main_frames = 0
-    release = 0.0
-    ordinary = False
+    chain: list[tuple[Any, int, int]] = []
+    timing: list[tuple[int, int, float | None, bool]] = []
+    frames = 0
     spoken = {id(clip): (cues, allow) for clip, cues, allow in extra_voices}
     if voice:
-        spoken[id(voice[0])] = (voice[1], False)
+        spoken[id(voice[0])] = (voice[1], voice[2])
     for entry in (*liners, *(clip for clip, _, _ in extra_voices), *((voice[0],) if voice else ())):
         cues = spoken[id(entry)][0] if id(entry) in spoken else player.saved_points(entry)
         start = max(0.0, float(cues.get("start") or 0.0))
         end = min(float(entry.length or 0.0), float(cues.get("end") or entry.length or 0.0))
         first, last = round(start * sr), round(end * sr)
         clip_frames = max(0, last - first)
-        segue = cues.get("segue")
-        speech = (
-            clip_frames
-            if segue is None
-            else min(clip_frames, max(0, round(float(segue) * sr) - first))
-        )
+        speech = liner_main_frames(first, clip_frames, cues.get("segue"))
         offset = frames
-        main_frames = frames + speech
-        cue = cues.get("overlap_start")
-        overlap = speech / sr if cue is None else min(float(cue), speech / sr)
-        if cue is not None and cue < 0:
-            negative.append((offset, cue, speech))
-        elif cue == 0:
-            zero.append((offset, speech))
-        else:
-            ordinary = True
-        if not chain:
-            first_negative = cue is not None and cue < 0
-        if overlap > 0 or cue is None:
-            release = max(release, offset / sr + overlap)
-        if cue == 0:
-            fit_main_frames = max(fit_main_frames, main_frames)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
         allow_outro = (
             spoken[id(entry)][1]
             if id(entry) in spoken
             else bool(record and record.get("allow_outro", False))
         )
-        chain.append((entry, offset, clip_frames, allow_outro))
+        timing.append((clip_frames, speech, cues.get("overlap_start"), allow_outro))
+        chain.append((entry, offset, clip_frames))
         frames += clip_frames
 
     incoming_points = player.saved_points(incoming)
     incoming_start = float(incoming_points.get("start") or 0.0)
     intro = max(0.0, float(incoming_points.get("intro") or incoming_start) - incoming_start)
     intro_frames = round(intro * sr / incoming_rate)
-    if negative:
-        constraints = [
-            offset + liner_release_frames(speech, intro_frames, cue)
-            for offset, cue, speech in negative
-        ]
-        constraints.extend(offset + speech - intro_frames for offset, speech in zero)
-        if ordinary:
-            constraints.append(round(release * sr))
-        if not first_negative:
-            constraints.append(0)
-        release_frames = max(constraints)
-    elif fit_main_frames:
-        release_frames = max(round(release * sr), fit_main_frames - intro_frames)
-    else:
-        release_frames = round(release * sr)
-    release_frames = max(release_frames, main_frames - intro_frames)
+    main_frames, release, limit = liner_chain_timing(timing, intro_frames / sr)
+    release = round(release * sr) / sr
 
     if outgoing is None:
         return [
-            (entry, moment + offset / sr, clip_frames / sr)
-            for entry, offset, clip_frames, _ in chain
-        ], release_frames / sr
+            (entry, moment + offset / sr, clip_frames / sr) for entry, offset, clip_frames in chain
+        ], release
     outgoing_start, segue = player._clock_music_span(outgoing)
     points = player.saved_points(outgoing)
     start_frame = round(outgoing_start * sr / outgoing_rate)
@@ -369,21 +341,17 @@ def _preview_liner_group(
             round(float(outro) * sr / outgoing_rate) if outro is not None else segue_frame,
         ),
     )
-    limit = None
-    for _entry, offset, _length, allow_outro in chain:
-        if not allow_outro:
-            limit = offset / sr if limit is None else min(limit, offset / sr)
     liner_start, incoming_frame = liner_chain_placement(
         start_frame,
         segue_frame,
         safe_outro,
         main_frames,
         intro_frames,
-        release_frames / sr,
+        release,
         limit,
     )
     base = moment + (liner_start - segue_frame) / sr
-    rows = [(entry, base + offset / sr, length / sr) for entry, offset, length, _ in chain]
+    rows = [(entry, base + offset / sr, length / sr) for entry, offset, length in chain]
     return rows, max(0, incoming_frame - segue_frame) / sr
 
 
@@ -395,6 +363,22 @@ def _break_label(desk: Any, break_id: str) -> str:
     return f"{kind} break: {item.label}" if item.label else f"{kind} break"
 
 
+def _registered_liner(player: Any, path: Any) -> Any:
+    """Return the catalog liner for this exact file, never a private intro path."""
+    library = getattr(player, "_library", None)
+    if library is None or not path:
+        return None
+    try:
+        path = str(path)
+        record = library.catalog.record_for_path(path)
+        if record is None or record.get("kind") != "liner":
+            return None
+        entry = library.catalog.entry_for_path(path)
+        return entry if entry is not None and str(entry.path) == str(path) else None
+    except (AttributeError, OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+
+
 def _mixed_in(
     track: Any,
     base: float,
@@ -402,6 +386,8 @@ def _mixed_in(
     desk: Any,
     status: str,
     queued: list[Any],
+    *,
+    player: Any = None,
 ) -> list[Item]:
     """The liners, breaks and matched intros mixed into *track*, whose audio starts at *base*.
 
@@ -424,13 +410,24 @@ def _mixed_in(
             continue
         label = _break_label(desk, break_id)
         found.append(Item("break", at, length, "on_air" if at <= now else status, label=label))
-    for frame, _intro_id, end, intro_label in getattr(track, "intro_events", ()):
+    assets = dict(getattr(track, "intro_assets", ()))
+    for frame, intro_id, end, intro_label in getattr(track, "intro_events", ()):
         at = base + frame / SAMPLE_RATE
         length = max(0.0, (end - frame) / SAMPLE_RATE)
         if at + length <= now:
             continue
         label = f"Matched intro: {intro_label}" if intro_label else "Matched intro"
-        found.append(Item("intro", at, length, "on_air" if at <= now else status, label=label))
+        found.append(
+            Item(
+                "intro",
+                at,
+                length,
+                "on_air" if at <= now else status,
+                label=label,
+                asset_id=intro_id,
+                details_entry=_registered_liner(player, assets.get(intro_id)),
+            )
+        )
     return [replace(item, in_handoff=True) for item in found]
 
 
@@ -1055,7 +1052,7 @@ def _read_bus(
             **(_captured_render(playing, base, player) if capture_audio else {}),
         )
     )
-    items.extend(_mixed_in(playing, base, now, desk, "ready", queued))
+    items.extend(_mixed_in(playing, base, now, desk, "ready", queued, player=player))
     clock = (live.cursor, live.clock_name, live.boundary)
     if following is None:
         return items, unplayed, queued, playing.entry, base + total, clock
@@ -1113,7 +1110,7 @@ def _read_bus(
         )
     )
     unplayed.append((following, enters))
-    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued))
+    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued, player=player))
     after_starts = ready_at + len(ready.audio) / SAMPLE_RATE
     handoff = after_starts + _remaining(
         player, after, live.offset / SAMPLE_RATE, average, rate=after_rate
@@ -1726,28 +1723,47 @@ def _predict(
             if capture_audio
             else None
         )
-        voice: tuple[Any, dict[str, Any]] | None = None
+        voice: tuple[Any, dict[str, Any], bool] | None = None
         intro_label = intro.label if intro is not None else ""
         if intro is not None:
+            intro_liner = _registered_liner(player, intro.path)
 
             def capture_voice(
                 _audio: Any,
                 cues: dict[str, Any],
                 length: float,
-                _allow_outro: bool,
+                allow_outro: bool,
                 chosen: Any = intro,
             ) -> tuple[int, int]:
                 nonlocal voice
-                clip = SimpleNamespace(path=str(chosen.path), length=length)
-                voice = (clip, cues)
-                return 0, round((float(cues["segue"]) - float(cues["start"])) * SAMPLE_RATE)
+                start = max(0.0, float(cues.get("start") or 0.0))
+                end = min(float(length), float(cues.get("end") or length))
+                first, last = round(start * SAMPLE_RATE), round(end * SAMPLE_RATE)
+                clip_frames = max(0, last - first)
+                from autodj.playout import liner_main_frames
 
-            points = player.saved_points(entry)
-            from autodj.player import _music_output_points
+                speech_frames = liner_main_frames(first, clip_frames, cues.get("segue"))
+                clip = SimpleNamespace(
+                    path=str(chosen.path),
+                    length=length,
+                    speech_seconds=speech_frames / SAMPLE_RATE,
+                )
+                voice = (clip, cues, allow_outro)
+                return 0, speech_frames
 
-            player._add_intro(
-                intro, _music_output_points(points, music_rate(player, entry)), capture_voice
-            )
+            rendered_intro = player._add_intro(intro, capture_voice)
+            if not rendered_intro:
+                found.append(
+                    Item(
+                        "intro",
+                        moment,
+                        0.0,
+                        "predicted",
+                        label=f"Matched intro unavailable: {intro_label or 'Matched intro'}",
+                        asset_id=intro.intro_id,
+                        details_entry=intro_liner,
+                    )
+                )
             if voice is None:
                 player.matched_intros.release((intro.intro_id,))
         prepared_voices: list[tuple[Any, dict[str, Any], bool]] = []
@@ -1810,7 +1826,8 @@ def _predict(
                         )
                     )
                 elif voice and liner is voice[0]:
-                    speech = float(voice[1]["segue"]) - float(voice[1]["start"])
+                    assert intro is not None
+                    speech = float(voice[0].speech_seconds)
                     found.append(
                         Item(
                             "intro",
@@ -1819,6 +1836,8 @@ def _predict(
                             "predicted",
                             label=f"Matched intro: {intro_label}",
                             in_handoff=True,
+                            asset_id=intro.intro_id,
+                            details_entry=intro_liner,
                         )
                     )
                 else:
@@ -2487,6 +2506,9 @@ def _item_view(item: Item, zone: ZoneInfo) -> dict[str, Any]:
         "status_text": _status_text(item),
         "title": item_title(item),
         "path": str(path) if path else None,
+        "asset_id": item.asset_id if item.kind == "intro" else None,
+        "details_path": str(item.details_entry.path) if item.details_entry is not None else None,
+        "details_kind": "liner" if item.details_entry is not None else None,
         "starts_at": _wall(item.starts, zone).isoformat(),
         "starts_text": clock_text(item.starts, zone),
         "seconds": round(item.seconds, 1),

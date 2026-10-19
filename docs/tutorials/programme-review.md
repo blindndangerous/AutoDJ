@@ -36,7 +36,7 @@ listening.
 1. Open **Now Playing**, then expand **Programme review**.
 2. Press **Refresh reviews**. Set **Source** to **Saved show**, then choose
    `Practice review` in **Show**.
-3. Leave **Intended start** blank for now. Set **Programme minutes** to `10`.
+3. Leave **Intended start** blank for now.
    Leave both **Range start (seconds)** and **Range end (seconds)** blank so
    the review covers the captured show rather than one selected section.
 4. Expand **Review timing**. Keep **Opening (seconds)** and **Ending (seconds)**
