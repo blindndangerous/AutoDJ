@@ -132,6 +132,51 @@ export function focusRevealed(control, options) {
   control.focus(options);
 }
 
+// Keep field errors associated with their control without dropping its help.
+export function clearFieldError(control, error) {
+  control?.removeAttribute("aria-invalid");
+  if (!control || !error?.id) return;
+  const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
+  if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+  else control.removeAttribute("aria-describedby");
+  error.textContent = "";
+  error.hidden = true;
+}
+
+export function clearFormErrors(form, error = null) {
+  if (!form) return;
+  const errors = error ? [error] : [...form.querySelectorAll(".field-error")];
+  form.querySelectorAll("[aria-describedby]").forEach((control) => {
+    let ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    for (const item of errors) ids = ids.filter((id) => id !== item.id);
+    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+    else control.removeAttribute("aria-describedby");
+  });
+  form.querySelectorAll("[aria-invalid='true']").forEach((control) => control.removeAttribute("aria-invalid"));
+  errors.forEach((item) => {
+    item.textContent = "";
+    item.hidden = true;
+  });
+}
+
+export function showFieldError(control, message, error, status) {
+  error.textContent = message;
+  error.hidden = false;
+  if (!control) { announceStatus(status, message, { force: true, tone: "error" }); return; }
+  control.setAttribute("aria-invalid", "true");
+  const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+  if (error.id) ids.add(error.id);
+  if (ids.size) control.setAttribute("aria-describedby", [...ids].join(" "));
+  const following = control.nextElementSibling;
+  const label = control.closest("label") || (following?.htmlFor === control.id ? following : null);
+  (label || control).after(error);
+  const before = control.ownerDocument.activeElement;
+  focusRevealed(control);
+  if (before === control || control.ownerDocument.activeElement !== control) {
+    announceStatus(status, message, { force: true, tone: "error" });
+  }
+}
+
 // ----------------------------------------------------------------
 // Closing a modal <dialog> (#385).  The browser puts focus back on the
 // control that opened a dialog while the dialog is still closing, when the

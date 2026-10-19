@@ -25,8 +25,10 @@
 // error linked to the field and shown under it, and focus; the result of a
 // save is said once through #requests-status.
 
-import { requestJson, staleActionText } from "./api-client.js";
+import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, staleActionText } from "./api-client.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
+import { stationEpoch } from "./stations.js";
 import { clockText } from "./time-format.js";
 
 const POLL_MS = 15000;
@@ -222,28 +224,16 @@ export function installListenerRequests({
   const thresholdError = doc.getElementById("requests-threshold-error");
   let settingsDirty = false;
   let saving = false;
-
-  function linkThresholdError(linked) {
-    if (!threshold || !thresholdError) return;
-    const ids = (threshold.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== thresholdError.id);
-    if (linked) ids.push(thresholdError.id);
-    threshold.setAttribute("aria-describedby", ids.join(" "));
-  }
+  let settingsGeneration = 0;
+  let settingsSaveId = 0;
+  let refreshGeneration = 0;
 
   function clearThresholdError() {
-    threshold?.removeAttribute("aria-invalid");
-    linkThresholdError(false);
-    if (thresholdError) { thresholdError.textContent = ""; thresholdError.hidden = true; }
+    clearFieldError(threshold, thresholdError);
   }
 
   function showThresholdError(message) {
-    threshold.setAttribute("aria-invalid", "true");
-    linkThresholdError(true);
-    thresholdError.textContent = message;
-    thresholdError.hidden = false;
-    threshold.focus();
-    say(message, "error");
+    showFieldError(threshold, message, thresholdError, status);
   }
 
   function noSmoothChoice() {
@@ -295,16 +285,27 @@ export function installListenerRequests({
         no_smooth_spot: noSmoothChoice(),
       };
       const before = lastState;
+      const mine = settingsGeneration;
+      const saveId = ++settingsSaveId;
+      const epoch = captureAuthenticatedRequestEpoch();
+      const station = stationEpoch();
+      const currentSave = () => mine === settingsGeneration && epoch === captureAuthenticatedRequestEpoch()
+        && station === stationEpoch();
       // saving holds off another press; aria-busy, not aria-disabled (#331).
       saving = true;
       saveButton?.classList.add("is-pending");
       saveButton?.setAttribute("aria-busy", "true");
       try {
-        const reply = await request("/api/requests/settings", {
+        const stopPending = sayIfStillPending((message) => {
+          if (currentSave() && isAuthenticatedRequestCurrent(epoch)) say(message);
+        }, "Saving request settings…");
+        let reply;
+        try { reply = await request("/api/requests/settings", {
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        });
+        }); } finally { stopPending(); }
+        if (!currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
         settingsDirty = false;
         saving = false;
         lastJson = null;
@@ -312,14 +313,17 @@ export function installListenerRequests({
         render(state);
         say(savedText(before, state));
       } catch (error) {
+        if (!currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
         // Answered after a station switch: the form is the new station's (#70).
         const left = staleActionText(error);
         if (left) say(left, error?.actionDone ? "info" : "error");
         else say(`Could not save the request settings: ${error?.message || "no answer"}`, "error");
       } finally {
-        saving = false;
-        saveButton?.classList.remove("is-pending");
-        saveButton?.removeAttribute("aria-busy");
+        if (saveId === settingsSaveId) {
+          saving = false;
+          saveButton?.classList.remove("is-pending");
+          saveButton?.removeAttribute("aria-busy");
+        }
       }
     });
   }
@@ -358,12 +362,16 @@ export function installListenerRequests({
   });
 
   async function refresh() {
+    const mine = ++refreshGeneration;
+    const station = stationEpoch();
+    const epoch = captureAuthenticatedRequestEpoch();
     let state;
     try {
       state = await request("/api/requests", { headers: { Accept: "application/json" } });
     } catch {
       return;
     }
+    if (mine !== refreshGeneration || station !== stationEpoch() || !isAuthenticatedRequestCurrent(epoch)) return;
     if (!state || typeof state !== "object") return;
     // Shown off or on: Take listener requests is here.
     card.hidden = false;
@@ -437,6 +445,12 @@ export function installListenerRequests({
   // Switching stations (#70) or signing out: drop the other station's
   // requests at once, then ask the station now controlled.
   function clear() {
+    settingsGeneration++;
+    settingsSaveId++;
+    saving = false;
+    saveButton?.classList.remove("is-pending");
+    saveButton?.removeAttribute("aria-busy");
+    refreshGeneration++;
     lastJson = null;
     lastState = null;
     settingsDirty = false;
