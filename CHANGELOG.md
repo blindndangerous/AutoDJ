@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj worker --idle-release MINUTES` keeps a GPU worker running between batches without
+  holding the graphics card. It loads the model, and runs `--before-command`, only when songs
+  arrive, and frees it and runs `--after-command` once the queue has been empty that long. Its
+  heartbeat keeps the server's own CPU analysis paused, so a machine left running as a service
+  analyses new songs whenever it is up, and the server analyses them itself when it is off.
 - A related tracks entry can name its artist as `*` to mean every track with that title (#411).
   A medley written with `"* - Let It Snow! Let It Snow! Let It Snow!"` holds back every recording
   of the song in the library, including ones added later, instead of a line that names each one.

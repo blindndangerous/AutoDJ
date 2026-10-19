@@ -1,6 +1,6 @@
 # Run analysis on a GPU worker
 
-Prepare HTTPS and a machine token, install the worker environment, and run bounded remote analysis against the server.
+Prepare HTTPS and a machine token, install the worker environment, and run remote analysis against the server.
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
@@ -94,6 +94,11 @@ uv run autodj worker --server https://nas.local:8080
   for that many minutes, asking again every half minute. Use it when the server may still be
   scanning new music as the worker starts. New songs during the wait start the count again.
   `--once` is the same as `--idle-exit 0`; given both, `--idle-exit` sets the wait.
+- `--idle-release MINUTES` waits for songs before loading the model. After the queue stays
+  empty for that many minutes, it frees the model and keeps polling. The minimum is 1 minute.
+  New songs load the model again. Heartbeats continue while the model loads and while it is
+  released, so the server's CPU analysis stays paused. If `--idle-exit` and `--idle-release`
+  both expire, exit wins.
 - `--batch N` claims N songs at a time (default 4, at most 16).
 - `--device cuda` insists on the GPU and stops if PyTorch sees none; `--device cpu` forces the
   processor. The default uses the GPU whenever PyTorch sees one, and the worker says which it uses
@@ -132,10 +137,11 @@ uv run autodj worker --server https://nas.local:8080 --idle-exit 10 `
 The worker logs "Queue empty; waiting up to 10 minutes for new songs." when it runs out of work,
 and "Queue empty for 10 minutes; stopping." when it gives up.
 
-- `--before-command` runs once, after the worker has checked the token and the model with the
-  server and before it loads the model.
-- `--after-command` runs once, when the worker stops for any reason: the queue stayed empty for the
-  `--idle-exit` wait (or was empty with `--once`), Ctrl+C, a revoked token or another error. The
+- Without `--idle-release`, `--before-command` runs once, after the worker has checked the token
+  and the model with the server and before it loads the model.
+- Without `--idle-release`, `--after-command` runs once, when the worker stops for any reason:
+  the queue stayed empty for the `--idle-exit` wait (or was empty with `--once`), Ctrl+C,
+  a revoked token or another error. The
   other program stays stopped while the worker waits for new songs; neither command runs between
   empty polls. The worker moves the model off the graphics card and
   frees its memory first.
@@ -144,8 +150,82 @@ and "Queue empty for 10 minutes; stopping." when it gives up.
   two minutes. The worker logs the command, its output and its exit code, and goes on even if it
   fails.
 
-Without `--once` or `--idle-exit` the worker keeps the other program stopped for as long as it
-runs.
+Without `--once`, `--idle-exit` or `--idle-release`, the worker keeps the other program stopped
+for as long as it runs.
+
+Use `--idle-release` to keep the worker available while letting the other program use the GPU
+between batches:
+
+```bash
+uv run autodj worker --server https://nas.local:8080 --idle-release 5 \
+  --before-command "podman stop tts-service" --after-command "podman start tts-service"
+```
+
+The worker checks its identity and starts polling without loading the model or running either
+command. The first songs trigger `--before-command` and model loading. Heartbeats renew the
+claims while loading. After five minutes of empty claims, the worker frees the model and runs
+`--after-command`. It logs "Queue empty for 5 minutes; released analysis resources." and keeps
+polling. New songs repeat the cycle. On exit, it runs `--after-command` only if the current
+cycle has not already released the model. If loading fails after `--before-command`, it still
+runs `--after-command` to restore the other program.
+
+## Keep the worker running as a systemd user service
+
+On Linux, install AutoDJ with GPU support in `~/autodj/.venv` and put its configuration in
+`~/autodj/config.toml`. Check the worker command in a terminal first.
+
+Create the configuration and service directories:
+
+```bash
+mkdir -p ~/.config/autodj ~/.config/systemd/user
+```
+
+Save your token in `~/.config/autodj/worker.env`:
+
+```ini
+AUTODJ_WORKER_TOKEN=adj1.REPLACE_WITH_YOUR_TOKEN
+```
+
+Restrict access:
+
+```bash
+chmod 600 ~/.config/autodj/worker.env
+```
+
+Save this as `~/.config/systemd/user/autodj-worker.service`. Replace the server address and
+commands as needed. Use a hostname covered by the server's TLS certificate.
+
+```ini
+[Unit]
+Description=AutoDJ GPU analysis worker
+
+[Service]
+WorkingDirectory=%h/autodj
+EnvironmentFile=%h/.config/autodj/worker.env
+ExecStart=%h/autodj/.venv/bin/autodj --config %h/autodj/config.toml worker --server https://nas.local:8080 --idle-release 5 --before-command "podman stop tts-service" --after-command "podman start tts-service"
+Restart=on-failure
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=300
+
+[Install]
+WantedBy=default.target
+```
+
+Start the service and read its log:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now autodj-worker.service
+journalctl --user -u autodj-worker.service -f
+```
+
+The service keeps polling after releasing the model. Its heartbeats keep server CPU analysis
+paused. To keep the user service running after logout, enable lingering with
+`loginctl enable-linger "$USER"`; this may need administrator approval.
+Stop it with `systemctl --user stop autodj-worker.service`. The service sends SIGINT so the
+worker can finish its current song and restore the other program. Systemd forces shutdown
+after five minutes if cleanup has not finished.
 
 ## Adding new music
 

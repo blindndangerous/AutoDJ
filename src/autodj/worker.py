@@ -20,6 +20,11 @@ long, for a server whose scan may still be finding new songs.
 ``--before-command`` and ``--after-command`` run a program (no shell)
 before the model is loaded and after the worker stops, for example to stop
 and restart another program that shares the GPU.
+
+``--idle-release MINUTES`` defers those commands and model loading until
+songs are claimed. After that long with an empty queue, it frees the model
+and runs the after-command, but keeps polling and sending heartbeats.
+New songs load the model again. If both idle timers expire, exit wins.
 """
 
 from __future__ import annotations
@@ -336,6 +341,12 @@ class Worker:
         idle_seconds: How long an empty queue waits before asking again.
         idle_exit: Stop once the queue has been empty for this many seconds.
             ``None`` (and not *once*) keeps working until stopped.
+        idle_release: Release prepared resources after this many empty seconds.
+            An expired *idle_exit* takes precedence.
+        prepare: Acquire resources before processing the first nonempty batch,
+            and again after an idle release. Heartbeats renew leases during preparation.
+        release: Free prepared resources on idle release. The caller owns exit cleanup,
+            including cleanup after a failed preparation.
     """
 
     def __init__(
@@ -350,6 +361,9 @@ class Worker:
         stop: threading.Event | None = None,
         idle_seconds: float = IDLE_POLL_SECONDS,
         idle_exit: float | None = None,
+        idle_release: float | None = None,
+        prepare: Callable[[], None] | None = None,
+        release: Callable[[], None] | None = None,
     ) -> None:
         self.api = api
         self.analyse = analyse
@@ -359,6 +373,9 @@ class Worker:
         self.device = device
         self.stop = stop or threading.Event()
         self.idle_seconds = idle_seconds
+        self.idle_release = idle_release
+        self.prepare = prepare
+        self.release = release
         self.stats = WorkerStats()
         self._backoff = 0.0
         self._heartbeat_every = 30.0
@@ -552,6 +569,7 @@ class Worker:
         beat.start()
         held: list[str] = []
         empty_since: float | None = None
+        prepared = False
         try:
             with tempfile.TemporaryDirectory(prefix="autodj-worker-") as folder:
                 while not self.stop.is_set():
@@ -569,10 +587,26 @@ class Worker:
                         pause = self._idle_pause(empty_since, now)
                         if pause is None:
                             break
+                        if prepared and self.idle_release is not None:
+                            left = empty_since + self.idle_release - now
+                            if left <= 0:
+                                if self.release is not None:
+                                    self.release()
+                                prepared = False
+                                logger.info(
+                                    "Queue empty for %s; released analysis resources.",
+                                    _minutes(self.idle_release),
+                                )
+                            else:
+                                pause = min(pause, left)
                         self._wait(pause)
                         continue
                     empty_since = None
                     held = [str(song["lease"]) for song in songs]
+                    if not prepared:
+                        if self.prepare is not None:
+                            self.prepare()
+                        prepared = True
                     waiting = int(claim.get("waiting", 0))
                     for position, song in enumerate(songs, 1):
                         if self.stop.is_set():

@@ -524,12 +524,19 @@ def test_worker_command_runs_the_after_command_on_errors(tmp_path):
     assert order == ["Before-command", "release", "After-command"]
 
 
-def _run_idle_command(tmp_path, api, order, *args):
+def _run_idle_command(tmp_path, api, order, *args, record_model=False, load_error=None):
     """Run ``autodj worker`` with a real Worker against *api*, noting hooks in *order*."""
     clock = [0.0]
 
     def wait(self, seconds):
         clock[0] += seconds
+
+    def load(*args, **kwargs):
+        if record_model:
+            order.append("load")
+        if load_error is not None:
+            raise load_error
+        return FakeModel()
 
     with (
         patch("autodj.worker.ServerApi", return_value=api),
@@ -541,7 +548,7 @@ def _run_idle_command(tmp_path, api, order, *args):
         patch("autodj.worker.run_hook", side_effect=lambda cmd, label: order.append(label)),
         patch("autodj.worker.release_gpu", side_effect=lambda w: order.append("release")),
         patch("autodj.model.download_model_if_needed", return_value=tmp_path),
-        patch("autodj.model.load_model", return_value=Mock()),
+        patch("autodj.model.load_model", side_effect=load),
     ):
         result = CliRunner().invoke(
             cli,
@@ -559,6 +566,112 @@ def _run_idle_command(tmp_path, api, order, *args):
             ],
         )
     return result
+
+
+def test_idle_release_keeps_an_empty_worker_unloaded(server, tmp_path):
+    order = []
+    api = QueueApi(server.identity(), on_claim=lambda n: order.append("claim"))
+    result = _run_idle_command(
+        tmp_path, api, order, "--idle-release", "1", "--idle-exit", "2", record_model=True
+    )
+    assert result.exit_code == 0, result.output
+    assert order == ["claim"] * 5
+
+
+def test_idle_release_frees_the_model_and_reloads_for_new_songs(server, tmp_path):
+    order = []
+    song = {"lease": "a" * 32}
+    api = QueueApi(
+        server.identity(),
+        [[], [song], [], [], [], [], [song]],
+        on_claim=lambda n: order.append("claim"),
+    )
+    with patch.object(Worker, "_process", side_effect=lambda *args: order.append("analyse")):
+        result = _run_idle_command(
+            tmp_path, api, order, "--idle-release", "1", "--idle-exit", "2", record_model=True
+        )
+    assert result.exit_code == 0, result.output
+    cycle = ["Before-command", "load", "analyse", *["claim"] * 3, "release", "After-command"]
+    assert order == ["claim", "claim", *cycle, "claim", "claim", *cycle, "claim", "claim"]
+    assert result.output.count("Queue empty for 1 minute; released analysis resources.") == 2
+
+
+@pytest.mark.parametrize("exit_args", [("--once",), ("--idle-exit", "1")])
+def test_idle_exit_wins_over_release_and_cleans_up_once(server, tmp_path, exit_args):
+    order = []
+    api = QueueApi(server.identity(), [[{"lease": "a" * 32}]])
+    with patch.object(Worker, "_process", side_effect=lambda *args: order.append("analyse")):
+        result = _run_idle_command(
+            tmp_path, api, order, "--idle-release", "1", *exit_args, record_model=True
+        )
+    assert result.exit_code == 0, result.output
+    assert order == ["Before-command", "load", "analyse", "release", "After-command"]
+    assert "released analysis resources" not in result.output
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), WorkerError("token revoked")])
+def test_idle_release_exit_only_restores_an_acquired_model(server, tmp_path, loaded, error):
+    order = []
+
+    def fail(count):
+        if count == (2 if loaded else 1):
+            raise error
+
+    api = QueueApi(server.identity(), [[{"lease": "a" * 32}]] if loaded else [], fail)
+    with patch.object(Worker, "_process", side_effect=lambda *args: order.append("analyse")):
+        result = _run_idle_command(tmp_path, api, order, "--idle-release", "1", record_model=True)
+    assert result.exit_code == (0 if isinstance(error, KeyboardInterrupt) else 1), result.output
+    assert order == (
+        ["Before-command", "load", "analyse", "release", "After-command"] if loaded else []
+    )
+
+
+def test_idle_release_restores_the_other_service_when_model_loading_fails(server, tmp_path):
+    from autodj.model import ModelLoadError
+
+    order = []
+    api = QueueApi(server.identity(), [[{"lease": "a" * 32}]])
+    api.release = lambda leases: order.append(("leases", leases))
+    result = _run_idle_command(
+        tmp_path,
+        api,
+        order,
+        "--idle-release",
+        "1",
+        record_model=True,
+        load_error=ModelLoadError("no memory"),
+    )
+    assert result.exit_code == 1
+    assert "no memory" in result.output
+    assert order == ["Before-command", "load", ("leases", ["a" * 32]), "After-command"]
+
+
+def test_heartbeats_keep_claims_alive_while_preparing_the_model(server):
+    loading = threading.Event()
+    renewed = threading.Event()
+
+    def prepare():
+        server.clock.now += WORKER_LEASE_SECONDS - 1
+        loading.set()
+        assert renewed.wait(5), "No heartbeat renewed the claimed songs during preparation"
+        server.clock.now += 2
+        assert len(server.manager.analysis_queue.held_paths()) == 3
+
+    worker, _, model = make_worker(server, once=True, idle_release=60, prepare=prepare)
+    heartbeat = worker.api.heartbeat
+
+    def beat(device=""):
+        reply = heartbeat(device)
+        if loading.is_set() and reply["renewed"] == 3:
+            renewed.set()
+        return reply
+
+    worker.api.heartbeat = beat
+    worker.connect()
+    worker._heartbeat_every = 0.01
+    stats = worker.run()
+    assert stats.done == model.calls == 3
 
 
 def test_idle_exit_runs_each_hook_once_around_all_the_empty_polls(server, tmp_path):
