@@ -123,6 +123,29 @@ describe("native table grid navigation", () => {
     expect(checkbox.checked).toBe(true);
   });
 
+  it("keeps disabled native controls out of table tab stops and activation", () => {
+    document.body.innerHTML = `<table><tbody id="rows"><tr>
+      <td role="gridcell"><button disabled>Unavailable</button></td>
+      <td role="gridcell"><button>Available</button></td>
+    </tr></tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [unavailableCell, availableCell] = body.querySelectorAll("td");
+    const unavailable = unavailableCell.querySelector("button");
+    let activations = 0;
+    unavailable.addEventListener("click", () => { activations += 1; });
+    expect([unavailableCell.tabIndex, unavailable.tabIndex, availableCell.tabIndex]).toEqual([0, -1, -1]);
+
+    unavailableCell.focus();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    unavailableCell.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(activations).toBe(0);
+    unavailableCell.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(availableCell);
+    expect([unavailableCell, availableCell].filter((cell) => cell.tabIndex === 0)).toEqual([availableCell]);
+  });
+
   it("puts the tab stop on a cell's single native control and preserves checkbox state", () => {
     document.body.innerHTML = `<table><tbody id="rows">
       <tr><td role="rowheader" tabindex="-1">Folder</td><td role="gridcell" tabindex="-1"><label><input type="checkbox" tabindex="-1"> Include subfolders</label></td></tr>

@@ -484,6 +484,28 @@ describe("clockwheel editor", () => {
     expect(status()).toBe("");
   });
 
+  it("reuses saved clockwheel buttons and supports one-stop row navigation", async () => {
+    const server = await open(fakeServer());
+    const list = byId("clock-list");
+    const morning = list.querySelector("button");
+    morning.focus();
+    server.clocks.Night = { ...copy(MORNING), name: "Night" };
+    await controls.refresh();
+    expect(list.querySelector("button")).toBe(morning);
+    expect([...list.querySelectorAll("button[tabindex='0']")]).toHaveLength(1);
+    morning.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement.dataset.name).toBe("Night");
+
+    const rows = [...list.children];
+    const observer = new globalThis.MutationObserver(() => {});
+    observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
+    await controls.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([...list.children]).toEqual(rows);
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
+  });
+
   it("navigates step names with arrows, edits with Enter and deletes like the button", async () => {
     await open(fakeServer());
     rowCell(1, "edit").focus();

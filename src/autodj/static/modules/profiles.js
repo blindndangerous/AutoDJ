@@ -13,7 +13,7 @@ import {
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
-import { listRow, nextRowControl, rowButton } from "./dom-helpers.js";
+import { listRow, nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 // profiles.validate_name on the server.
@@ -49,27 +49,38 @@ export function installProfiles(els, { getSettings }) {
   const doc = card.ownerDocument;
   const listNavigation = installActionListNavigation(list);
   let names = [];
+  let renderedNames = null;
 
   const say = (message, tone = "info") => {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
   };
 
   function render() {
+    const signature = JSON.stringify(names);
+    if (signature === renderedNames) { listNavigation.refresh(); return; }
+    renderedNames = signature;
     if (names.length === 0) {
       const empty = doc.createElement("li");
       empty.className = "no-results";
       empty.textContent = "No saved profiles yet.";
-      list.replaceChildren(empty);
+      reconcileRows(list, [], (name) => name, () => null, () => {}, {
+        fallback: nameInput,
+        onFocusLost: ({ target }) => say(`The saved profiles list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "profile name"}.`),
+      });
+      list.append(empty);
       listNavigation.refresh();
       return;
     }
-    list.replaceChildren(...names.map((name) => {
+    reconcileRows(list, names, (name) => name, (name) => {
       const apply = rowButton(doc, "Apply", `Apply profile ${name}`, () => void applyProfile(name));
       const remove = rowButton(doc, "Delete", `Delete profile ${name}`,
         (button) => void deleteProfile(name, button));
       remove.dataset.profile = name;
       return listRow(doc, name, "profile-name", apply, remove);
-    }));
+    }, (row, name) => {
+      const label = row.querySelector(".profile-name");
+      if (label && label.textContent !== name) label.textContent = name;
+    }, { fallback: nameInput, onFocusLost: ({ target }) => say(`The saved profiles list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "profile name"}.`) });
     listNavigation.refresh();
   }
 

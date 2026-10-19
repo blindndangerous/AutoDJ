@@ -19,7 +19,8 @@
 // Category conditions name a saved category (Categories, above) by its ID.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { releaseDialogFocus } from "./dom-helpers.js";
+import { reconcileRows, releaseDialogFocus } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
@@ -65,6 +66,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const nameInput = el("clock-name");
   const resync = el("clock-resync-minutes");
   const status = el("clock-status");
+  const listNavigation = installActionListNavigation(list);
   const typeSelect = el("clock-step-type");
   const newStep = el("clock-new-step");
   const addButton = el("clock-add-step");
@@ -131,27 +133,37 @@ export function installClockwheelPanel({ document: doc = document, request = req
   // ---- Saved clockwheels ---------------------------------------------
   function renderList() {
     const signature = JSON.stringify([data.names, data.active, clock?.name ?? null, isNew]);
-    if (signature === listSignature) return;
+    if (signature === listSignature) { listNavigation.refresh(); return; }
     listSignature = signature;
-    const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset.name : null;
     if (!data.names.length) {
-      const none = doc.createElement("li");
-      none.textContent = "No saved clockwheels.";
-      list.replaceChildren(none);
+      reconcileRows(list, [], (name) => name, () => null, () => {}, {
+        fallback: el("clock-create"),
+        onFocusLost: ({ target }) => say(`The saved clockwheels list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Create clockwheel"}.`),
+      });
+      let none = list.querySelector(":scope > li.no-results");
+      if (!none) { none = doc.createElement("li"); none.className = "no-results"; none.textContent = "No saved clockwheels."; }
+      list.append(none);
+      listNavigation.refresh();
       return;
     }
-    list.replaceChildren(...data.names.map((name) => {
+    reconcileRows(list, data.names, (name) => name, (name) => {
       const item = doc.createElement("li");
       const button = doc.createElement("button");
       button.type = "button";
       button.dataset.name = name;
-      button.textContent = name === data.active ? `${name}, active` : name;
-      if (!isNew && clock?.name === name) button.setAttribute("aria-current", "true");
+      button.dataset.action = "open";
       button.addEventListener("click", () => void openClock(name));
       item.append(button);
       return item;
-    }));
-    if (focused) [...list.querySelectorAll("button")].find((button) => button.dataset.name === focused)?.focus();
+    }, (item, name) => {
+      const button = item.querySelector(":scope > button");
+      const label = name === data.active ? `${name}, active` : name;
+      if (button.textContent !== label) button.textContent = label;
+      const current = !isNew && clock?.name === name;
+      if (current && button.getAttribute("aria-current") !== "true") button.setAttribute("aria-current", "true");
+      else if (!current && button.hasAttribute("aria-current")) button.removeAttribute("aria-current");
+    }, { fallback: el("clock-create"), onFocusLost: ({ target }) => say(`The saved clockwheels list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Create clockwheel"}.`) });
+    listNavigation.refresh();
   }
 
   function renderOptions() {
@@ -1118,7 +1130,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     undoHistory = [];
     clock = null; isNew = false; dirty = false;
     listSignature = ""; optionsSignature = ""; lastNotice = null; lastPendingUpdate = false;
-    list.replaceChildren();
+    reconcileRows(list, [], (name) => name, () => null, () => {}, { fallback: el("clock-create") });
     nameInput.value = "";
     resync.value = "0";
     const file = el("clock-pal-file");
