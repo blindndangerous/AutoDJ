@@ -297,10 +297,9 @@ export function controllingText(entry, nowPlaying = null) {
   if (!isOnAir(entry)) {
     parts.push("Off air.");
   } else {
-    parts.push("On air.");
     const title = nowPlaying || entry.title;
     parts.push(title ? `Playing ${title}.` : "Nothing playing.");
-    parts.push(`${listenerText(entry.listeners)}.`);
+    parts.push(`On air, ${listenerText(entry.listeners)}.`);
   }
   return parts.join(" ");
 }
