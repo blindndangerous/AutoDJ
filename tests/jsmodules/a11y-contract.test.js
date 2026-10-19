@@ -2,9 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { THEMES, cssForTheme, themeTokens } from "./theme-css.js";
+
+// Full-page cascade checks cover many viewport and media variants. Allow CPU
+// contention on Windows without changing the timeout for other test files.
+vi.setConfig({ testTimeout: 60000 });
 
 // Happy DOM caches nodes and computed styles through WeakRef. A task boundary
 // releases their kept-alive targets between cases; microtasks alone do not.
@@ -507,14 +511,17 @@ function forcedColorsMeetsContract(rules = cssRules) {
   for (const selector of ["details.card > summary", "section[data-view] > h2"]) {
     focusElements.push(document.querySelector(selector));
   }
-  for (const element of focusElements) element.classList.add("a11y-focus-visible");
-  matchesByElement = new WeakMap();
+  if (focusElements.some((element) => !element.classList.contains("a11y-focus-visible"))) {
+    for (const element of focusElements) element.classList.add("a11y-focus-visible");
+    matchesByElement = new WeakMap();
+  }
+  const controls = contractControls();
   return representativeMediaContexts(rules, {
     forcedColors: [true],
     reducedMotion: [false, true],
   })
     .every((context) => {
-      const bordersPass = contractControls().every((element) => (
+      const bordersPass = controls.every((element) => (
         ["top", "right", "bottom", "left"].every((side) => {
           const borderColor = effectiveMediaDeclaration(
             element, "", `border-${side}-color`, context, rules,
@@ -667,7 +674,8 @@ const userAgentCss = "pre { margin: 1em 0; }";
 
 // ``extraCss`` goes in its own sheet after ``css``: the same cascade as
 // appending it to ``css``, without parsing ``css`` again.
-function installDocument({ css = cssSource, html = htmlSource, extraCss = "" } = {}) {
+// Markup-only checks need no stylesheet; computed-style checks supply it.
+function installDocument({ css = "", html = htmlSource, extraCss = "" } = {}) {
   document.body.replaceChildren(pageTemplate(html).content.cloneNode(true));
   installStyles([userAgentCss, css, extraCss]);
 }
@@ -838,7 +846,7 @@ function installStatusPage(html, extraCss) {
   if (statusPage?.html === html && installed && statusPage.status === installed) {
     installStyles([userAgentCss, cssSource, extraCss]);
   } else {
-    installDocument({ extraCss, html });
+    installDocument({ css: cssSource, extraCss, html });
     statusPage = { html, status: document.querySelector("#conn-status") };
   }
   return document.querySelector("#conn-status");
@@ -904,7 +912,7 @@ function focusContractControls() {
 
 function nativeChoiceControlsRemainNative(extraCss = "") {
   const rules = extraCss ? [...cssRules, ...parseCss(extraCss)] : cssRules;
-  installDocument({ extraCss });
+  installDocument({ css: cssSource, extraCss });
   for (const type of ["checkbox", "radio"]) {
     for (const checked of [false, true]) {
       const fixture = document.createElement("input");
@@ -1412,58 +1420,64 @@ describe("static accessibility contracts", () => {
     expect(lastValue("html", "scroll-behavior", media, nestedRules))
       .toBeUndefined();
     expect(reducedMotionMeetsContract()).toBe(true);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+  });
+
+  // Separate variants let the event-loop hook release each case's DOM caches.
+  it.each([
+    ["important animation", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["unimportant transition", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) {
         body * { transition-duration: 1s; }
       }
-    `))).toBe(true);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, true],
+    ["smooth scrolling", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) {
         * { scroll-behavior: smooth !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["unscoped animation", `${cssSource}\n
       body * { animation-duration: 1s !important; }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["viewport animation", `${cssSource}\n
       @media (min-width: 1px) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["nested media", `${cssSource}\n
       @media (min-width: 1px) {
         @media (prefers-reduced-motion: reduce) {
           body * { animation-duration: 1s !important; }
         }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["combined media", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) and (min-width: 1px) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["narrow viewport and height", `${cssSource}\n
       @media (prefers-reduced-motion: reduce)
         and (min-width: 800px) and (max-width: 900px)
         and (min-height: 500px) and (max-height: 600px) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["small viewport", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) and (max-width: 600px) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
-    expect(reducedMotionMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["forced colors and motion", `${cssSource}\n
       @media (prefers-reduced-motion: reduce) and (forced-colors: active) {
         body * { animation-duration: 1s !important; }
       }
-    `))).toBe(false);
+    `, false],
+  ])("checks reduced-motion cascade: %s", (_label, css, expected) => {
+    expect(reducedMotionMeetsContract(parseCss(css))).toBe(expected);
   });
 
   it("uses system colors for forced-color controls and custom progress", () => {
@@ -1502,78 +1516,84 @@ describe("static accessibility contracts", () => {
     expect(lastValue(":focus-visible", "outline-color", media, nestedRules))
       .toBeUndefined();
     expect(forcedColorsMeetsContract()).toBe(true);
-    expect(forcedColorsMeetsContract(parseCss(`
+  });
+
+  // Separate variants let the event-loop hook release each case's DOM caches.
+  it.each([
+    ["earlier important fill", `
       @media (forced-colors: active) {
         #progress-fill { background: CanvasText !important; }
       }
       ${cssSource}
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["tab border color", `${cssSource}\n
       @media (forced-colors: active) {
         #view-nav #tab-queue { border-color: Canvas; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["progress fill", `${cssSource}\n
       @media (forced-colors: active) {
         #progress-fill { background: CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["missing focus outline", `${cssSource}\n
       @media (forced-colors: active) {
         #btn-skip:focus-visible { outline: none; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["missing button border", `${cssSource}\n
       @media (forced-colors: active) {
         #btn-skip { border: none; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["tab border", `${cssSource}\n
       @media (forced-colors: active) {
         #view-nav #tab-queue { border: 1px solid Canvas; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["focus color", `${cssSource}\n
       @media (forced-colors: active) {
         #btn-skip:focus-visible { outline: 2px solid CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["unscoped important fill", `${cssSource}\n
       #progress-fill { background: CanvasText !important; }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["viewport fill", `${cssSource}\n
       @media (min-width: 1px) {
         #progress-fill { background: CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["nested media", `${cssSource}\n
       @media (min-width: 1px) {
         @media (forced-colors: active) {
           #progress-fill { background: CanvasText; }
         }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["combined media", `${cssSource}\n
       @media (forced-colors: active) and (min-width: 1px) {
         #progress-fill { background: CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["narrow viewport", `${cssSource}\n
       @media (forced-colors: active)
         and (min-width: 800px) and (max-width: 900px) {
         #progress-fill { background: CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["specific fill", `${cssSource}\n
       @media (forced-colors: active) {
         body #progress-fill { background-color: CanvasText; }
       }
-    `))).toBe(false);
-    expect(forcedColorsMeetsContract(parseCss(`${cssSource}\n
+    `, false],
+    ["reduced motion and colors", `${cssSource}\n
       @media (forced-colors: active) and (prefers-reduced-motion: reduce) {
         body #progress-fill { background-color: CanvasText; }
       }
-    `))).toBe(false);
+    `, false],
+  ])("checks forced-color cascade: %s", (_label, css, expected) => {
+    expect(forcedColorsMeetsContract(parseCss(css))).toBe(expected);
   });
 
   it("keeps selected and pressed states readable without colour", () => {
