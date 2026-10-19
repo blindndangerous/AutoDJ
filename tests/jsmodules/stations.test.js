@@ -128,11 +128,14 @@ describe("the current station", () => {
     expect(stationItemText(AUTODJ)).toBe("AutoDJ, on air, 3 listeners");
     expect(stationItemText(OWL)).toBe("Night Owl Radio, on air, 1 listener");
     expect(stationItemText(OLDIES)).toBe("Oldies, off air");
-    expect(controllingText(AUTODJ)).toBe("Now controlling AutoDJ. On air, 3 listeners. Playing Artist - Song.");
+    expect(controllingText(AUTODJ)).toBe("AutoDJ. On air. Playing Artist - Song. 3 listeners.");
     expect(controllingText(OWL, "Band - Tune"))
-      .toBe("Now controlling Night Owl Radio. On air, 1 listener. Playing Band - Tune.");
-    expect(controllingText(OWL)).toBe("Now controlling Night Owl Radio. On air, 1 listener. Nothing playing.");
-    expect(controllingText(OLDIES)).toBe("Now controlling Oldies. Off air.");
+      .toBe("Night Owl Radio. On air. Playing Band - Tune. 1 listener.");
+    expect(controllingText(OWL)).toBe("Night Owl Radio. On air. Nothing playing. 1 listener.");
+    expect(controllingText(OLDIES)).toBe("Oldies. Off air.");
+    expect(controllingText({ ...AUTODJ, listeners: 0 }))
+      .toBe("AutoDJ. On air. Playing Artist - Song. 0 listeners.");
+    expect(controllingText(null)).toBe("AutoDJ.");
     setKnownStations([AUTODJ]);
     expect(severalStations()).toBe(false);
   });
