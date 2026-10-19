@@ -23,6 +23,12 @@ Use [Programme review](../operations.md#programme-review-and-export) to listen
 privately to a shortened mix and export it before airing. Select **Saved show**;
 review generation does not start or schedule the show.
 
+For production-specific recordings, expand **Prepared editions** inside the show
+list. Record or import speech while stopped, review each pending take in context,
+and approve explicitly before airing. Schedule the production through **Play a
+show**. See [Prepared show editions](operations/prepared-editions.md) for
+recording, approval, re-air warnings and explicit interrupted-edition resumption.
+
 ## Schedule music, liners, and announcements
 
 An event can **Change song picking** to a saved clockwheel, switch a profile or preset, turn discovery on or off, or play a voice liner or station ID. For a seasonal clockwheel, create one event to select it and a second event to return to the usual clockwheel. See [Build your sound](build-your-sound.md) for clockwheels and voice liners.

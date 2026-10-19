@@ -117,15 +117,15 @@ describe("shows markup", () => {
     expect(section.classList.contains("card")).toBe(true);
     expect(section.previousElementSibling).toBe(byId("clockwheel-heading").closest("details"));
     expect(byId("shows-heading").tagName).toBe("H2");
-    // One polite status; the lists and the on-air line are not live.
+    // Show and nested edition actions each own one polite status.
     const live = [...section.querySelectorAll('[role="status"], [aria-live]:not([aria-live="off"])')];
-    expect(live.map((node) => node.id)).toEqual(["shows-status"]);
+    expect(live.map((node) => node.id)).toEqual(["shows-status", "edition-status"]);
     for (const control of section.querySelectorAll("input, select")) {
       expect(section.querySelector(`label[for="${control.id}"]`), control.id).not.toBeNull();
       expect(control.hasAttribute("aria-label"), control.id).toBe(false);
     }
     const fieldsets = [...section.querySelectorAll("fieldset")];
-    expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add show", "Songs come from"]);
+    expect(fieldsets.map((set) => set.querySelector(":scope > legend")?.textContent)).toEqual(["Add show", "Songs come from", "Record or import speech"]);
     expect(byId("shows-songs").tagName).toBe("OL");
     expect(byId("shows-songs").getAttribute("aria-labelledby")).toBe("shows-editor-heading");
     expect(byId("shows-results").getAttribute("aria-labelledby")).toBe("shows-add-heading");
@@ -415,7 +415,7 @@ describe("editing a list", () => {
     const server = await open();
     await openList(server);
     byId("shows-close").click();
-    expect(byId("shows-editor").hidden).toBe(true);
+    await vi.waitFor(() => expect(byId("shows-editor").hidden).toBe(true));
     expect(document.activeElement).toBe(rowButton(0, "open"));
   });
 });

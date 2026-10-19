@@ -208,3 +208,7 @@ Manual and gap rows remain obligations, separate from ADR acceptance.
 
 This record supplies no completed manual rehearsal, hardware-routing claim, broad
 assistive-technology guarantee or measured deployment performance evidence.
+
+## Related proposal — 2026-10-17
+
+The prepared-edition adapter consumes this review service and requests complete target speech for explicit approval. Edition identity, recordings and broadcast eligibility belong to [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.

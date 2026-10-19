@@ -427,6 +427,22 @@ See [Review and export a programme — Incomplete or out-of-date results](guides
 
 See [Review and export a programme — Storage and availability](guides/operations/programme-review.md#storage-and-availability).
 
+## Prepared show editions
+
+See [Prepared show editions](guides/operations/prepared-editions.md).
+
+### Record, review and approve
+
+See [Record, review and approve](guides/operations/prepared-editions.md#record-review-and-approve).
+
+### Schedule, re-air and resume
+
+See [Schedule, re-air and resume](guides/operations/prepared-editions.md#schedule-re-air-and-resume).
+
+### Retention and backup
+
+See [Retention and backup](guides/operations/prepared-editions.md#retention-and-backup).
+
 ## Hour preview and backtiming
 
 See [Test rotation and preview an hour — Hour preview and backtiming](guides/operations/rotation-preview.md#hour-preview-and-backtiming).

@@ -3714,6 +3714,57 @@
         <p class="setting-desc" id="shows-search-help">Title, artist or album. Add puts the song at the end of the list.</p>
         <button type="button" id="shows-search-run">Search</button>
         <ul id="shows-results" aria-labelledby="shows-add-heading"></ul>
+        <details id="edition-card">
+          <summary><h4>Prepared editions</h4></summary>
+          <p class="setting-desc">Prepare recordings for a specific airing; the reusable show stays independent.</p>
+          <div class="settings-row"><label for="edition-list">Saved edition</label><select id="edition-list"></select></div>
+          <button type="button" id="edition-refresh">Refresh editions</button>
+          <button type="button" id="edition-load">Open edition</button>
+          <div class="settings-row"><label for="edition-new-name">New edition name</label><input id="edition-new-name" type="text" maxlength="100"></div>
+          <button type="button" id="edition-create">Create edition from show</button>
+          <p id="edition-status" role="status" aria-live="polite" aria-atomic="true"></p>
+          <section id="edition-editor" hidden>
+            <h5 id="edition-heading" tabindex="-1">Edition contents and recordings</h5>
+            <div class="settings-row"><label for="edition-name">Edition name</label><input id="edition-name" type="text" maxlength="100"></div>
+            <button type="button" id="edition-save-name">Save edition name</button>
+            <button type="button" id="edition-delete">Delete edition</button>
+            <p id="edition-summary"></p>
+            <p id="edition-run-status"></p>
+            <ul id="edition-omissions" role="list"></ul>
+            <ol id="edition-occurrences" role="list"></ol>
+            <p class="setting-desc">Use Search the library above, then Add to edition, to add songs here.</p>
+            <fieldset>
+              <legend>Record or import speech</legend>
+              <div class="settings-row"><label for="edition-position">Position</label>
+                <select id="edition-position"><option value="opening">Opening</option><option value="transition">Song transition</option><option value="closing">Closing</option><option value="segment">Standalone segment</option></select>
+              </div>
+              <div class="settings-row" id="edition-transition-row" hidden><label for="edition-transition">Transition</label><select id="edition-transition"></select></div>
+              <div class="settings-row" id="edition-insert-row" hidden><label for="edition-insert">Insert segment</label><select id="edition-insert"></select></div>
+              <div class="settings-row"><label for="edition-placement">Placement</label>
+                <select id="edition-placement"><option value="auto">Automatic</option><option value="talk_up">Talk up song</option><option value="standalone">Between songs</option></select>
+              </div>
+              <div class="settings-check"><input id="edition-allow-outro" type="checkbox"><label for="edition-allow-outro">Allow outgoing song overlap</label></div>
+              <p class="setting-desc" id="edition-record-help">Record short takes up to 3:00; import standalone segments up to 30:00. Other imported takes have a 5:00 limit. Recordings stay pending until reviewed and approved.</p>
+              <button type="button" id="edition-record" aria-pressed="false" aria-describedby="edition-elapsed edition-record-help">Record</button>
+              <span id="edition-elapsed" aria-live="off">0:00 / 3:00</span>
+              <button type="button" id="edition-save-take" disabled>Save recording</button>
+              <button type="button" id="edition-discard">Discard local recording</button>
+              <div class="settings-row"><label for="edition-file">Audio file</label><input id="edition-file" type="file" accept="audio/*"></div>
+              <button type="button" id="edition-import">Import take</button>
+              <audio id="edition-audio" controls preload="none" data-preview-output aria-label="Private edition take"></audio>
+            </fieldset>
+            <h6>Saved takes</h6>
+            <ul id="edition-takes" role="list"></ul>
+            <button type="button" id="edition-review">Review edition</button>
+            <button type="button" id="edition-start">Start edition after this song</button>
+            <button type="button" id="edition-start-now">Start edition now</button>
+            <div class="settings-row"><label for="edition-resume-item">Resume from item</label><select id="edition-resume-item"></select></div>
+            <button type="button" id="edition-resume">Resume edition explicitly</button>
+            <div class="settings-row"><label for="edition-schedule-at">Air at (station time)</label><input id="edition-schedule-at" type="datetime-local"></div>
+            <div class="settings-row"><label for="edition-schedule-timing">Schedule timing</label><select id="edition-schedule-timing"><option value="soft">After the playing song</option><option value="hard">At the set time</option></select></div>
+            <button type="button" id="edition-schedule">Schedule edition</button>
+          </section>
+        </details>
         <button type="button" id="shows-play-now">Start after this song</button>
         <button type="button" id="shows-close">Close list</button>
       </section>

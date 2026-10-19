@@ -35,6 +35,7 @@ Choose the task you need to complete. Each guide retains detailed commands, chec
 - [Create, edit and import clockwheels](clockwheels.md)
 - [Build rotation categories and repair beets paths](categories.md)
 - [Prepare and air a show](shows.md)
+- [Record and approve speech for a prepared edition](prepared-editions.md)
 - [Configure recorded time checks and voice packs](time-checks.md)
 - [Configure a station text-to-speech command](tts-command.md)
 - [Compare speech and prepare generated time checks](speech-studio.md)

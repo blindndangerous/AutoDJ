@@ -1670,6 +1670,10 @@ class PlayerBridge(LibraryAccess):
         entry = self.entry_for_path(path)
         if entry is None:
             return False
+        return self.play_next_entry(entry, now)
+
+    def play_next_entry(self, entry: IndexEntry, now: bool = False) -> bool:
+        """Queue this exact owned occurrence, preserving prepared-edition identity."""
         if now and (self.stream_mode or self._bus_mode()):
             # Play now on the mix bus: render *entry* from its start and fade
             # the playing track out.  queued_next is left alone so the track

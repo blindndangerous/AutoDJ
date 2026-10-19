@@ -53,6 +53,10 @@ See [Release artifacts](install.md#release-artifacts) for verification. For Dock
 
 On first start, the current catalog's older layout moves into shared and station folders. AutoDJ moves older station settings from `config.toml` into each `station.json`, and imports station history from `library.db` into station databases. A published schema-3 or schema-4 index needs `autodj migrate-index --apply` before serving; preview with `autodj migrate-index` first. Check the result with Doctor. The [migration notes](../operations.md#moved-files) cover older indexes.
 
+Prepared editions and their source recordings are included in normal backups.
+Their derived programme-review files are excluded; download exports that need
+independent retention. See [edition retention](operations/prepared-editions.md#retention-and-backup).
+
 ## Uninstall
 
 Stop AutoDJ and keep a backup if you might return. A source checkout can be removed with its `.venv`, optional `node_modules`, data folder `index`, model folder `models`, and `config.toml`, `config.local.toml`, or `.env`. Keep any music you copied there if it is your only copy. A Hugging Face model cache may also live under `~/.cache/huggingface` or `HF_HOME`.
