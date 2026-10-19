@@ -2708,8 +2708,7 @@
     <h4 id="profile-list-heading">Saved profiles</h4>
     <ul id="profile-list" aria-labelledby="profile-list-heading"></ul>
 
-    <!-- Browser access: only meaningful when the server asks browsers to
-         pair (LAN mode). -->
+    <!-- Browser access: pairing or names owned by the signed-in SSO user. -->
     <h4>Browser access</h4>
     <div id="access-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
     <p id="access-note" hidden>This server does not ask browsers to pair, so there is nothing to sign out of or revoke.</p>
@@ -2721,20 +2720,22 @@
       <h5 id="device-list-heading">Paired devices</h5>
       <button type="button" id="access-refresh">Refresh device list</button>
       <ul id="device-list" aria-labelledby="device-list-heading"></ul>
-      <h5>Pair a new device</h5>
-      <button type="button" id="pair-toggle" aria-expanded="false" aria-controls="pair-panel"
-              aria-describedby="pair-toggle-desc">Show pairing code</button>
-      <span class="setting-desc" id="pair-toggle-desc">
-        Type the code on the new device when it asks.  Each code pairs one device; the code changes by itself every five minutes.
-      </span>
-      <!-- Not a live region.  The code changes on its own and the countdown
-           ticks while this is open; #access-status says the code once, when
-           it is shown or refreshed. -->
-      <div id="pair-panel" hidden>
-        <p>Pairing code <strong id="pair-code" class="pair-code"></strong></p>
-        <p id="pair-countdown" aria-live="off"></p>
-        <button type="button" id="pair-copy">Copy code</button>
-        <button type="button" id="pair-refresh">Refresh code</button>
+      <div id="access-pairing">
+        <h5>Pair a new device</h5>
+        <button type="button" id="pair-toggle" aria-expanded="false" aria-controls="pair-panel"
+                aria-describedby="pair-toggle-desc">Show pairing code</button>
+        <span class="setting-desc" id="pair-toggle-desc">
+          Type the code on the new device when it asks.  Each code pairs one device; the code changes by itself every five minutes.
+        </span>
+        <!-- Not a live region.  The code changes on its own and the countdown
+             ticks while this is open; #access-status says the code once, when
+             it is shown or refreshed. -->
+        <div id="pair-panel" hidden>
+          <p>Pairing code <strong id="pair-code" class="pair-code"></strong></p>
+          <p id="pair-countdown" aria-live="off"></p>
+          <button type="button" id="pair-copy">Copy code</button>
+          <button type="button" id="pair-refresh">Refresh code</button>
+        </div>
       </div>
     </div>
   </div>

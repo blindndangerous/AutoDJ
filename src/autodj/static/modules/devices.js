@@ -1,4 +1,6 @@
-// Settings > Browser access: "Sign out this browser", the paired devices
+// Settings > Browser access: native pairing or SSO-owned browser names.
+// SSO forgetting removes a name without revoking the provider session.
+// Native: "Sign out this browser", the paired devices
 // list with Rename and Revoke per device, and "Show pairing code" for
 // pairing another device.
 //
@@ -23,6 +25,7 @@ import {
   isAuthenticatedRequestCurrent,
   requestJson,
 } from "./api-client.js";
+import { authenticationState } from "./auth.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { fmtTime, focusAfterDialog, nextRowControl, reconcileRows, releaseDialogFocus, rowButton } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
@@ -85,7 +88,7 @@ export function copyByCommand(text, doc = globalThis.document) {
   }
 }
 
-export function installAccess(els, { onSignedOut }) {
+export function installAccess(els, { onSignedOut, getAuthState = authenticationState }) {
   const {
     card, note, controls, signOut, refresh, list, status,
     pairToggle, pairPanel, pairCode, pairCountdown, pairCopy, pairRefresh,
@@ -94,6 +97,13 @@ export function installAccess(els, { onSignedOut }) {
   const doc = card.ownerDocument;
   let devices = [];
   const listNavigation = installActionListNavigation(list);
+  let sso = false;
+  const nativeNote = note.textContent;
+  const nativeSignOutLabel = signOut.textContent;
+  const signOutDescription = doc.getElementById("access-sign-out-desc");
+  const nativeSignOutDescription = signOutDescription?.textContent;
+  const pairingSection = doc.getElementById("access-pairing");
+  const heading = doc.getElementById("device-list-heading");
 
   const say = (message, tone = "info") => {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
@@ -128,13 +138,15 @@ export function installAccess(els, { onSignedOut }) {
       const row = li._row;
       row.device = device;
       const name = who(device);
-      const words = `${name}.  Paired ${pairedDate(device.paired_at)}, `
+      const words = `${name}.  ${sso ? "Registered" : "Paired"} ${pairedDate(device.paired_at)}, `
         + `last seen ${lastSeenWords(device.last_seen_at, now)}.`;
       if (row.text.textContent !== words) row.text.textContent = words;
       if (row.rename.getAttribute("aria-label") !== `Rename ${name}`) row.rename.setAttribute("aria-label", `Rename ${name}`);
-      if (row.revoke.getAttribute("aria-label") !== `Revoke ${name}`) row.revoke.setAttribute("aria-label", `Revoke ${name}`);
+      const action = sso ? "Forget" : "Revoke";
+      if (row.revoke.textContent !== action) row.revoke.textContent = action;
+      if (row.revoke.getAttribute("aria-label") !== `${action} ${name}`) row.revoke.setAttribute("aria-label", `${action} ${name}`);
     }, { fallback: refresh, onFocusLost: ({ target }) => {
-      if (announceFocus) say(`The paired devices list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Refresh device list"}.`);
+      if (announceFocus) say(`${sso ? "Your browsers" : "The paired devices list"} changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Refresh device list"}.`);
     } });
     listNavigation.refresh();
     return result;
@@ -148,10 +160,28 @@ export function installAccess(els, { onSignedOut }) {
     try {
       const body = await requestJson("/api/devices");
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
-      const enabled = body.pairing === true;
-      note.hidden = enabled;
+      sso = body.mode === "trusted_proxy";
+      const enabled = body.pairing === true || sso;
+      const logoutUrl = getAuthState().logout_url;
+      note.hidden = enabled && !sso;
+      note.textContent = sso
+        ? `Signed in as ${body.user?.name || body.user?.id || "your SSO account"}. `
+          + (logoutUrl ? "Sign-in is managed by your SSO provider."
+            : "Sign-in and sign-out are managed externally by your SSO provider.")
+        : nativeNote;
       controls.hidden = !enabled;
-      if (!enabled) hideCode();
+      signOut.hidden = sso && !logoutUrl;
+      signOut.textContent = sso ? "Sign out through SSO" : nativeSignOutLabel;
+      if (signOutDescription) {
+        signOutDescription.hidden = signOut.hidden;
+        signOutDescription.textContent = sso
+          ? "Ends this AutoDJ session and opens your SSO provider's sign-out page."
+          : nativeSignOutDescription;
+      }
+      if (heading) heading.textContent = sso ? "Your browsers" : "Paired devices";
+      if (pairingSection) pairingSection.hidden = sso;
+      if (pairToggle) pairToggle.hidden = sso;
+      if (!enabled || sso) hideCode();
       const known = new Set(devices.map((device) => device.device_id));
       devices = enabled && Array.isArray(body.devices) ? body.devices : [];
       const reconciliation = render({ announceFocus: !announce });
@@ -160,7 +190,8 @@ export function installAccess(els, { onSignedOut }) {
         const moved = reconciliation.focusLost
           ? ` Focus moved to ${reconciliation.target?.getAttribute("aria-label") || reconciliation.target?.textContent.trim() || "Refresh device list"}.`
           : "";
-        say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.${moved}`);
+        say(sso ? `Browser list refreshed.  ${count} ${count === 1 ? "browser" : "browsers"}.${moved}`
+          : `Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.${moved}`);
       } else if (reportNew) {
         const added = devices.filter((device) => !known.has(device.device_id));
         if (added.length > 0) {
@@ -179,22 +210,26 @@ export function installAccess(els, { onSignedOut }) {
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return false;
       if (errorValue.status === 401) hideCode();
-      if (!quiet) say(`Could not load paired devices: ${errorValue.message}`, "error");
+      if (!quiet) say(`Could not load ${sso ? "browsers" : "paired devices"}: ${errorValue.message}`, "error");
       return false;
     }
   }
 
   async function signOutHere() {
+    if (sso && !getAuthState().logout_url) return;
     const confirmed = await confirmAction(doc, {
       title: "Sign out this browser?",
-      message: "Using AutoDJ here again needs a new pairing code from the server.",
+      message: sso
+        ? "This ends your AutoDJ session and opens your SSO provider's sign-out page."
+        : "Using AutoDJ here again needs a new pairing code from the server.",
       confirmLabel: "Sign out",
     });
     signOut.focus();
     if (!confirmed) return;
     const epoch = captureAuthenticatedRequestEpoch();
+    let reply;
     try {
-      await requestJson("/api/logout", { method: "POST" });
+      reply = await requestJson("/api/logout", { method: "POST" });
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       say(`Could not sign out: ${errorValue.message}`, "error");
@@ -202,7 +237,8 @@ export function installAccess(els, { onSignedOut }) {
     }
     if (!isAuthenticatedRequestCurrent(epoch)) return;
     hideCode();
-    onSignedOut(SIGNED_OUT_REASON);
+    if (sso) onSignedOut("", reply.logout_url);
+    else onSignedOut(SIGNED_OUT_REASON);
   }
 
   // The revoke runs while the confirmation is still open, so the list is
@@ -214,12 +250,15 @@ export function installAccess(els, { onSignedOut }) {
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
     let signedOut = false;
+    const action = sso ? "Forget" : "Revoke";
     const confirmed = await confirmAction(doc, {
-      title: device.current ? `Revoke ${device.name}, this browser?` : `Revoke ${device.name}?`,
-      message: device.current
+      title: device.current ? `${action} ${device.name}, this browser?` : `${action} ${device.name}?`,
+      message: sso
+        ? "Forgetting this browser removes its saved name. It does not revoke SSO access or sign it out."
+        : device.current
         ? "This browser is signed out and needs a new pairing code to use AutoDJ again."
         : "That device needs a new pairing code to use AutoDJ again.",
-      confirmLabel: "Revoke",
+      confirmLabel: action,
       onConfirm: async () => {
         let reply;
         try {
@@ -228,7 +267,7 @@ export function installAccess(els, { onSignedOut }) {
           });
         } catch (errorValue) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          result = [`Could not revoke ${device.name}: ${errorValue.message}`, "error"];
+          result = [`Could not ${action.toLowerCase()} ${device.name}: ${errorValue.message}`, "error"];
           return button;
         }
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
@@ -238,7 +277,7 @@ export function installAccess(els, { onSignedOut }) {
         }
         await load();
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
-        result = [`Revoked ${device.name}.`];
+        result = [sso ? `Forgot ${device.name}. SSO access is unchanged.` : `Revoked ${device.name}.`];
         return nextRowControl(list, 'button[data-action="revoke"]', index, refresh);
       },
     });
@@ -414,6 +453,7 @@ export function installAccess(els, { onSignedOut }) {
   }
 
   async function showCode() {
+    if (sso) return;
     if (pairing.busy) return;
     pairing.busy = true;
     try {

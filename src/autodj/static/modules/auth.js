@@ -4,6 +4,12 @@ import {
 } from "./api-client.js";
 import { NBSP } from "./live-region.js";
 
+let latestAuthState = {};
+
+export function authenticationState() {
+  return latestAuthState;
+}
+
 const MAX_SERVER_DETAIL_LENGTH = 200;
 // Shown when a session this browser had is revoked or expires.
 export const SIGNED_OUT_TEXT = "This browser was signed out. Enter a new pairing code.";
@@ -46,6 +52,7 @@ export function initAuthDialog({
   document,
   fetchImpl = fetch,
   onSuccess = () => location.reload(),
+  onSignIn = () => location.reload(),
 }) {
   const dialog = document.querySelector("#auth-dialog");
   const form = document.querySelector("#auth-form");
@@ -140,6 +147,10 @@ export function initAuthDialog({
   // `reason` says why a browser that was paired is being asked again; it
   // is part of the dialog's description, so it is read as the dialog opens.
   function show(reason = "") {
+    if (latestAuthState.mode === "trusted_proxy") {
+      onSignIn();
+      return;
+    }
     reasonText.textContent = reason;
     reasonText.hidden = !reason;
     if (!dialog.open) dialog.showModal();
@@ -200,6 +211,17 @@ export async function bootstrapAuthenticatedApp({
       throw new Error("The AutoDJ server is not reachable.", { cause });
     }
     if (authResponse.status === 401) {
+      let deniedState;
+      try {
+        deniedState = await authResponse.json();
+      } catch (_) {
+        // Native pairing may return a bare 401 rather than JSON.
+      }
+      if (deniedState?.mode === "trusted_proxy") {
+        throw new Error(
+          "SSO sign-in could not be verified. Ask the server administrator to check the proxy's identity settings.",
+        );
+      }
       auth.show();
       return false;
     }
@@ -210,6 +232,7 @@ export async function bootstrapAuthenticatedApp({
     if (!validAuthState(authState)) {
       throw new Error("The AutoDJ server sent a reply this page cannot read.");
     }
+    latestAuthState = authState;
     if (authState.required && !authState.authenticated) {
       auth.show();
       return false;

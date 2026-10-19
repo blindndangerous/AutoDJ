@@ -312,6 +312,26 @@ describe("initAuthDialog", () => {
 });
 
 describe("bootstrapAuthenticatedApp", () => {
+  it("reports a fresh SSO identity rejection without pairing or a reload loop", async () => {
+    const auth = { show: vi.fn() };
+    const onError = vi.fn();
+    const requestState = vi.fn();
+    const startAuthenticatedApp = vi.fn();
+    const started = await bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({
+        ok: false, status: 401,
+        json: { required: true, authenticated: false, pairing: false, mode: "trusted_proxy" },
+      })),
+      auth, onError, requestState, startAuthenticatedApp,
+    });
+    expect(started).toBe(false);
+    expect(auth.show).not.toHaveBeenCalled();
+    expect(requestState).not.toHaveBeenCalled();
+    expect(startAuthenticatedApp).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0].message).toMatch(/SSO.*identity/i);
+  });
+
   it("uses requestState for protected bootstrap and treats auth expiry as recoverable", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({
       ok: true,
@@ -981,5 +1001,28 @@ describe("reconnect probe that cannot reach AutoDJ", () => {
       reconnect: vi.fn(),
     });
     expect(onUnreachable).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("SSO authentication state", () => {
+  it("remembers the explicit mode and returns to sign-in instead of pairing on expiry", async () => {
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    const state = {
+      required: true, authenticated: true, pairing: false, mode: "trusted_proxy",
+      user: { id: "owner", name: "Chris" }, logout_url: null,
+    };
+    await authModule.bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({ ok: true, status: 200, json: state })),
+      requestState: vi.fn().mockResolvedValue({}),
+      auth: { show: vi.fn() }, startAuthenticatedApp: vi.fn(),
+    });
+    expect(authModule.authenticationState()).toEqual(state);
+    const els = installDialogMarkup();
+    const onSignIn = vi.fn();
+    const auth = authModule.initAuthDialog({ document, onSignIn });
+    auth.show("Session expired");
+    expect(onSignIn).toHaveBeenCalledOnce();
+    expect(els.dialog.showModal).not.toHaveBeenCalled();
   });
 });
