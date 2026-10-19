@@ -21,10 +21,11 @@ import { reconcileRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { releaseDialogFocus } from "./dom-helpers.js";
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
+import { clearFormErrors } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
-import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { describeStep } from "./clockwheel-step.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
@@ -57,7 +58,7 @@ export function parseResyncMinutes(text) {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
-export function installClockwheelPanel({ document: doc = document, request = requestJson } = {}) {
+export function installClockwheelPanel({ document: doc = document, request = requestJson, createCategory } = {}) {
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("clock-list");
@@ -73,9 +74,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const addButton = el("clock-add-step");
   const cancelEdit = el("clock-cancel-edit");
   const stepDialog = el("clock-step-dialog");
-  function openStepDialog() {
-    if (stepDialog && !stepDialog.open) stepDialog.showModal();
-  }
+  const stepError = el("clock-step-form-error");
   const legend = el("clock-step-legend");
   if (!panel || !list || !steps || !nameInput || !resync || !status || !typeSelect || !addButton) {
     return { refresh: async () => {}, clearProtectedData() {}, hasUnsavedWork: () => false, resume() {}, destroy() {} };
@@ -104,10 +103,21 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let stepCountGeneration = 0;
   let stepCountRunning = false;
   let pendingStepCount = null;
+  const stepEditor = createEditorDialog({
+    form: el("clock-step-form"), heading: legend, dialog: stepDialog,
+    cancel: cancelEdit, fallback: newStep, submit: addButton, save: saveStep,
+    onCancel: () => {
+      const index = editing;
+      resetForm();
+      renderSteps();
+      say("Edit cancelled.");
+      return index === null ? newStep : rowTarget(index, "edit");
+    },
+  });
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const stepCountCurrent = (epoch, mine) => !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
+  const say = (message, error = false) => announceStatus(stepEditor.region(status), message, { force: true, tone: error ? "error" : "info" });
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
@@ -279,6 +289,20 @@ export function installClockwheelPanel({ document: doc = document, request = req
       genreChoices: (data.genres || []).map((item) => [item, item]),
       beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
       categoryChoices: data.categories.map((item) => [item.id, item.name]),
+      onAddCategory: createCategory && (({ row, category, button }) => {
+        const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+        const host = el("clock-step-conditions");
+        void createCategory({
+          from: button,
+          isCurrent: () => current(epoch, mine) && stepDialog.open && host.contains(row),
+          onCreated: (saved, categories) => {
+            data.categories = categories;
+            updateConditionCategories(host, categories.map((item) => [item.id, item.name]), category, saved.id);
+            category.focus();
+            scheduleStepCount();
+          },
+        });
+      }),
       onFieldChange: updateBeetsNotice,
       onRemove: (row) => {
       const host = row.parentElement;
@@ -364,7 +388,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     const rows = [...el("clock-step-conditions").children];
     if (!rows.length) {
       if (interactive) el("clock-add-condition").focus();
-      throw new Error("Add at least one condition.");
+      throw Object.assign(new Error("Add at least one condition."), { control: el("clock-add-condition") });
     }
     return readConditionRows(rows, {
       interactive,
@@ -646,6 +670,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
   }
 
   function resetForm() {
+    clearStepError();
     stepCountGeneration += 1;
     if (stepCountTimer !== null) clearTimeout(stepCountTimer);
     stepCountTimer = null;
@@ -662,7 +687,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     fillStepHours(doc);
     if (legend) legend.textContent = "Add a step";
     addButton.textContent = "Add step";
-    if (stepDialog?.open) stepDialog.close();
+    stepEditor.close();
   }
 
   function fillAdFields(step = {}) {
@@ -701,8 +726,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     addButton.textContent = `Update step ${index + 1}`;
     fillStepHours(doc, step);
     scheduleStepCount();
-    openStepDialog();
-    typeSelect.focus();
+    stepEditor.open(typeSelect, rowTarget(index, "edit"));
     say(`Editing ${position(index)}.`);
   }
 
@@ -738,13 +762,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
       const source = el("clock-step-source")?.value || "";
       if (!source) {
         if (interactive) el("clock-step-source")?.focus();
-        throw new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`);
+        throw Object.assign(new Error(`Add a ${type === "liner" ? "voice liner" : "music"} folder under Music folders and Voice liner folders first.`), { control: el("clock-step-source") });
       }
       return { type, source, path: relative("clock-step-path", "The track", false, interactive) };
     }
     if (type === "settings") {
       const preset = el("clock-step-preset")?.value || "";
-      if (!preset) throw new Error("Choose a preset.");
+      if (!preset) throw Object.assign(new Error("Choose a preset."), { control: el("clock-step-preset") });
       return { type, preset };
     }
     if (type === "ad_break") return adStep(interactive);
@@ -787,11 +811,11 @@ export function installClockwheelPanel({ document: doc = document, request = req
             ? `Count unavailable: ${result.error}`
             : result.tracks === null ? "Preset changes do not select tracks."
               : `${Number(result.tracks).toLocaleString("en-US")} ${Number(result.tracks) === 1 ? "track" : "tracks"}`;
-          if (result.error || result.tracks !== null) announceStatus(status, output.textContent, { tone: result.error ? "error" : "info" });
+          if (result.error || result.tracks !== null) announceStatus(stepEditor.region(status), output.textContent, { tone: result.error ? "error" : "info" });
         } catch (error) {
           if (stepCountCurrent(item.epoch, item.mine)) {
             output.textContent = `Count unavailable: ${error.message}`;
-            announceStatus(status, output.textContent, { tone: "error" });
+            announceStatus(stepEditor.region(status), output.textContent, { tone: "error" });
           }
         }
       }
@@ -837,18 +861,31 @@ export function installClockwheelPanel({ document: doc = document, request = req
     say(`Condition ${host.children.length} added.`);
   });
   el("clock-step-form")?.addEventListener("input", (event) => {
+    clearStepError();
     if (event.target.closest?.("#clock-step-conditions-field") || event.target === typeSelect) scheduleStepCount();
   });
   el("clock-step-form")?.addEventListener("change", (event) => {
+    clearStepError();
     if (event.target.closest?.("#clock-step-conditions-field") || event.target === typeSelect) scheduleStepCount();
   });
   el("clock-step-conditions")?.addEventListener("click", (event) => {
     if (event.target.closest?.("button[data-remove-condition]")) scheduleStepCount();
   });
-  addButton.addEventListener("click", () => {
+  function clearStepError() {
+    clearFormErrors(el("clock-step-form"), stepError);
+  }
+  function saveStep() {
+    clearStepError();
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     let step;
-    try { step = { ...formStep(), ...readStepHours(doc) }; } catch (error) { say(error.message, true); return; }
+    try { step = { ...formStep(), ...readStepHours(doc) }; }
+    catch (error) {
+      const control = error.control || el("clock-step-form").querySelector('[aria-invalid="true"]');
+      const existing = control?.getAttribute("aria-describedby")?.split(/\s+/)
+        .map(el).find((node) => node?.classList.contains("field-error") && !node.hidden);
+      showEditorError(control, error.message, existing || stepError, stepEditor.status);
+      return;
+    }
     rememberSteps(editing ?? clock.steps.length);
     if (editing !== null) {
       const index = editing;
@@ -860,31 +897,13 @@ export function installClockwheelPanel({ document: doc = document, request = req
       resetForm();
       changed(`Added ${position(clock.steps.length - 1)}.`, clock.steps.length - 1, "edit");
     }
-  });
+  }
   newStep?.addEventListener("click", () => {
     if (!clock) { say("Open or create a clockwheel first.", true); return; }
     resetForm();
     showFields();
     scheduleStepCount();
-    openStepDialog();
-    typeSelect.focus();
-  });
-  // Escape closes the dialog as Cancel does.
-  stepDialog?.addEventListener("cancel", (event) => {
-    event.preventDefault();
-    cancelEdit?.click();
-  });
-  cancelEdit?.addEventListener("click", () => {
-    const index = editing;
-    // The dialog lets go of focus first, so the step's Edit or New step
-    // takes it once the dialog has closed (#385).
-    releaseDialogFocus(stepDialog);
-    resetForm();
-    renderSteps();
-    if (index !== null) {
-      focusRow(index, "edit");
-      say("Edit cancelled.");
-    } else newStep?.focus();
+    stepEditor.open(typeSelect, newStep);
   });
   resync.addEventListener("input", () => { if (clock) { dirty = true; renderNext(); } });
   el("clock-step-match")?.addEventListener("change", scheduleStepCount);

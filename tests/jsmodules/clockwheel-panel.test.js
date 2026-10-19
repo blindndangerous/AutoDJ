@@ -7,7 +7,7 @@ import { describeStep, installClockwheelPanel, parseResyncMinutes } from "../../
 
 const byId = (id) => document.getElementById(id);
 const copy = (value) => JSON.parse(JSON.stringify(value));
-const status = () => byId("clock-status").textContent;
+const status = () => (byId("clock-step-dialog")?.open ? byId("clock-step-form-status") : byId("clock-status")).textContent;
 const rows = () => [...byId("clock-slots").querySelectorAll("li[data-index]")];
 const rowText = (index) => rows()[index].querySelector('button[data-action="edit"]').textContent;
 const rowButton = (index, action) => rows()[index].querySelector(`button[data-action="${action}"]`);
@@ -193,6 +193,7 @@ describe("clockwheel editor", () => {
     expect(describeStep({ type: "music", match: "all", conditions: [{ field: "category", category: "c1" }], selection: "least_recent" }, [], [{ id: "c1", name: "Rock gold" }]))
       .toBe("music from category Rock gold, least recently played");
     const server = await open(fakeServer({ categories: [{ id: "c1", name: "Rock gold" }, { id: "c2", name: "2000s" }] }));
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     expect([...type.options].map((option) => option.value)).not.toContain("category");
     type.value = "music";
@@ -335,6 +336,7 @@ describe("clockwheel editor", () => {
 
   it("saves any-match folder rows and numeric ranges, with summaries for every condition", async () => {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     type.value = "music";
     type.dispatchEvent(new Event("change"));
@@ -389,6 +391,7 @@ describe("clockwheel editor", () => {
 
   it("allows metadata-only steps, preserves rows when edited, and focuses after removal", async () => {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     type.value = "music";
     type.dispatchEvent(new Event("change"));
@@ -630,6 +633,9 @@ describe("clockwheel editor", () => {
     expect(byId("clock-step-path").value).toBe("Unsaved/Path");
     expect(byId("clock-step-legend").textContent).toBe("Edit step 2");
     byId("clock-cancel-edit").click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("clock-step-dialog").open).toBe(false));
     expect(byId("clock-undo").disabled).toBe(false);
     byId("clock-undo").click();
     expect(rows()).toHaveLength(3);
@@ -668,6 +674,7 @@ describe("clockwheel editor", () => {
     await open(fakeServer());
     rowButton(0, "move-down").click();
     rowButton(1, "duplicate").click();
+    byId("clock-new-step").click();
     byId("clock-step-type").value = "settings";
     byId("clock-step-type").dispatchEvent(new Event("change"));
     byId("clock-step-preset").value = "night";
@@ -832,10 +839,12 @@ describe("clockwheel editor", () => {
     const put = server.calls.find((call) => call.method === "PUT");
     expect(put.body.steps[1].require_following).toBe(true);
     expect(put.body.steps[0]).not.toHaveProperty("require_following");
+    byId("clock-new-step").click();
     byId("clock-step-require-following").checked = true;
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toBe("Added Step 4 of 4, liner from Liners, least recently played, ignoring repeat rules, only if the following track fits before the next reset. Not saved yet."));
     expect(byId("clock-step-require-following").checked).toBe(false);
+    byId("clock-new-step").click();
     byId("clock-add-step").click();
     await vi.waitFor(() => expect(status()).toBe("Added Step 5 of 5, liner from Liners, least recently played, ignoring repeat rules. Not saved yet."));
     byId("clock-save").click();
@@ -878,6 +887,7 @@ describe("clockwheel editor", () => {
 
   it("names a half-filled time window, links the error and keeps the step out", async () => {
     await open(fakeServer());
+    byId("clock-new-step").click();
     const from = byId("clock-step-hours-from");
     from.value = "22:00";
     byId("clock-add-step").click();
@@ -903,6 +913,7 @@ describe("clockwheel editor", () => {
 
   it("shows only the fields of the chosen step type and refuses paths that leave the folder", async () => {
     const server = await open(fakeServer());
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     const shown = () => [...document.querySelectorAll(".clock-step-field")].filter((field) => !field.hidden)
       .map((field) => field.querySelector("input, select").id.replace("clock-step-", ""));
@@ -919,6 +930,7 @@ describe("clockwheel editor", () => {
     byId("clock-step-path").value = "Album\\Other.flac";
     byId("clock-add-step").click();
     expect(rowText(3)).toBe("track Album/Other.flac");
+    byId("clock-new-step").click();
     type.value = "liner";
     type.dispatchEvent(new Event("change"));
     expect(shown()).toEqual(["match", "selection", "enforce-rules", "require-following"]);
@@ -950,6 +962,7 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toBe("New clockwheel Night. Add its steps, then press Save clockwheel."));
     expect(document.activeElement).toBe(byId("clock-new-step"));
     expect(byId("clock-open-name").textContent).toBe("Night, not saved yet");
+    byId("clock-new-step").click();
     const condition = byId("clock-step-conditions").firstElementChild;
     condition.querySelectorAll("select")[1].value = "jazz";
     condition.querySelectorAll("input[type=text]")[0].value = "Late/Slow";
@@ -1092,6 +1105,7 @@ describe("unsaved work, for a station switch", () => {
 describe("clockwheel step conditions, for screen readers", () => {
   const conditions = () => [...byId("clock-step-conditions").children];
   const startMusicStep = () => {
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     type.value = "music";
     type.dispatchEvent(new Event("change"));
@@ -1115,7 +1129,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     expect(host.hasAttribute("aria-label")).toBe(false);
     expect(byId(host.getAttribute("aria-labelledby")).textContent).toBe("Conditions");
     const help = byId("clock-step-conditions-help");
-    expect(help.textContent).toContain("Library tools, Categories");
+    expect(help.textContent).toContain("Add category");
     expect(help.textContent).toContain("MM:SS");
     expect(help.textContent).toContain("*");
     const [row] = conditions();
@@ -1299,6 +1313,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     const server = await open(fakeServer({
       ads: { ad_advertisers: ["Example Motors", "Sample Bakery"], ad_categories: ["Car dealers"], ads_reason: "Ad breaks are off for this station." },
     }));
+    byId("clock-new-step").click();
     const type = byId("clock-step-type");
     const shown = () => [...document.querySelectorAll(".clock-step-field")].filter((field) => !field.hidden)
       .map((field) => field.querySelector("input, select").id.replace("clock-step-", ""));
