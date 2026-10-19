@@ -505,9 +505,12 @@ def test_queued_folder_is_scanned_before_remaining_loudness(manager_factory, tmp
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=measure),
+        # Fake audio must not launch FFmpeg for unrelated intro analysis.
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
     ):
         assert manager.start_scan()
-        manager._thread.join(timeout=5)
+        # Wait for completion; pytest's timeout guards against a stuck worker.
+        manager._thread.join()
         assert not manager._thread.is_alive()
 
     assert events.index("new.flac") < events.index("second.flac") < events.index("old-1.flac")
@@ -541,9 +544,10 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     with (
         patch("autodj.library.analyze_basic", side_effect=basic),
         patch("autodj.library.analyze_loudness", side_effect=measure),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
     ):
         assert manager.start_scan()
-        manager._thread.join(timeout=5)
+        manager._thread.join()
         assert not manager._thread.is_alive()
 
     assert events.index(("basic", "new.flac")) < events.index(("loudness", "old.flac"))
@@ -569,9 +573,10 @@ def test_queued_rescan_remeasures_file_changed_during_loudness(manager_factory, 
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=measure),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
     ):
         assert manager.start_scan()
-        manager._thread.join(timeout=5)
+        manager._thread.join()
         assert not manager._thread.is_alive()
 
     assert measured == [len(b"before"), len(b"after the first measurement")]
@@ -609,9 +614,10 @@ def test_queued_advanced_folder_schedules_after_busy_scan(manager_factory, tmp_p
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=measure),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
     ):
         assert manager.start_scan()
-        manager._thread.join(timeout=5)
+        manager._thread.join()
         assert not manager._thread.is_alive()
 
     assert manager.entry_for_path(new_song) is not None
