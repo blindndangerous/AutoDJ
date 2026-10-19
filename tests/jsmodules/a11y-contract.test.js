@@ -3467,10 +3467,8 @@ describe("listener request contracts", () => {
     expect(form).toMatch(/<p id="requests-threshold-error" class="field-error" hidden><\/p>/);
     expect(form).toMatch(/<button type="submit" id="requests-settings-save">Save request settings<\/button>/);
     expect(form).not.toMatch(/aria-live|role="status"/);
-    // A refused value is marked, linked, shown and focused; its words are said once.
-    expect(requestsScript).toMatch(/threshold\.setAttribute\("aria-invalid", "true"\)/);
-    expect(requestsScript).toMatch(/linkThresholdError\(true\)/);
-    expect(requestsScript).toMatch(/threshold\.focus\(\)/);
+    // Field focus, descriptions and announcements are exercised in listener-requests.test.js.
+    expect(requestsScript).toMatch(/showFieldError\(threshold, message, thresholdError, status\)/);
   });
 
   it("says a bridge song in words with tokens only for its colour", () => {

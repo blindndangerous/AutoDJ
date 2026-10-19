@@ -275,16 +275,19 @@ export function announceStatus(
   if (!region) return false;
   const text = message == null ? "" : String(message);
   const doc = region.ownerDocument || globalThis.document;
-  const epoch = (_announcementEpoch.get(region) || 0) + 1;
-  _announcementEpoch.set(region, epoch);
+  if (!text) {
+    _announcementEpoch.set(region, (_announcementEpoch.get(region) || 0) + 1);
+    cancelPending(region);
+  }
   if (force && text) {
     // Chrome can merge the clear and the new text into one change, so the
     // same message again is not spoken.  A trailing no-break space on every
     // other repeat makes the text itself change.
     const repeat = region.textContent === text ? text + NBSP : text;
     region.textContent = "";
+    const epoch = _announcementEpoch.get(region) || 0;
     setTimeout(() => {
-      if (_announcementEpoch.get(region) !== epoch) return;
+      if ((_announcementEpoch.get(region) || 0) !== epoch) return;
       region.textContent = repeat;
       if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
     }, 0);
