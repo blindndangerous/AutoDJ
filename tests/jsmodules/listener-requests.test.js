@@ -181,10 +181,48 @@ describe("listener requests card", () => {
   it("says why a save failed and keeps the button usable", async () => {
     install();
     await flush();
+    byId("requests-threshold").value = "3";
+    byId("requests-threshold").dispatchEvent(new Event("input", { bubbles: true }));
     request.mockRejectedValueOnce(new Error("Request failed (500)"));
     byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(byId("requests-status").textContent)
       .toBe("Could not save the request settings: Request failed (500)"));
+    expect(byId("requests-settings-save").hasAttribute("aria-busy")).toBe(false);
+    expect(byId("requests-threshold").value).toBe("3");
+  });
+
+  it("ignores a settings reply after the station context is cleared", async () => {
+    let finish;
+    request.mockImplementation((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve(STATE));
+    const ui = install();
+    await flush();
+    byId("requests-threshold").value = "2";
+    byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    byId("requests-threshold").value = "3";
+    ui.clear();
+    await flush();
+    finish({ ...STATE, bridge_cost_threshold: 4 });
+    await flush();
+    expect(byId("requests-threshold").value).not.toBe("4");
+  });
+
+  it("prevents a second settings save while the first is pending", async () => {
+    let finish;
+    request.mockImplementation((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; })
+      : Promise.resolve(STATE));
+    install();
+    await flush();
+    const form = byId("requests-settings");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    expect(byId("requests-settings-save").getAttribute("aria-busy")).toBe("true");
+    finish(STATE);
+    await flush();
     expect(byId("requests-settings-save").hasAttribute("aria-busy")).toBe(false);
   });
 

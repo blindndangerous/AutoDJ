@@ -158,6 +158,43 @@ describe("shows use numeric durations", () => {
 });
 
 describe("planning a show", () => {
+  it("keeps one save pending and ignores a duplicate submit", async () => {
+    const server = fakeServer();
+    const original = server.request;
+    let finish;
+    server.request = vi.fn((url, options = {}) => options.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : original(url, options));
+    await open(server);
+    byId("shows-add").click();
+    byId("shows-name").value = "Throwback hour";
+    const form = byId("shows-form");
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(server.request.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    expect(form.getAttribute("aria-busy")).toBe("true");
+    finish({ ...SHOW, name: "Throwback hour", id: "b".repeat(32), events: [] });
+    await vi.waitFor(() => expect(form.hidden).toBe(true));
+  });
+
+  it("does not close a newer draft when a cancelled save finishes", async () => {
+    const server = fakeServer();
+    const original = server.request;
+    let finish;
+    server.request = vi.fn((url, options = {}) => url === "/api/shows" && options.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : original(url, options));
+    await open(server);
+    byId("shows-add").click();
+    byId("shows-name").value = "First draft";
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    byId("shows-cancel").click();
+    byId("shows-add").click();
+    byId("shows-name").value = "Newer draft";
+    finish({ ...SHOW, name: "First draft", id: "b".repeat(32), events: [] });
+    await vi.waitFor(() => expect(status()).toContain("Saved First draft."));
+    expect(byId("shows-form").hidden).toBe(false);
+    expect(byId("shows-name").value).toBe("Newer draft");
+  });
+
   it("adds a show, refusing an empty name with the error linked and focused", async () => {
     const server = await open();
     byId("shows-add").click();

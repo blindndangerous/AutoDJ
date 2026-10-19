@@ -12,6 +12,7 @@ function markup() {
       <div id="stream-relay-shoutcast2"><input id="stream-relay-stream-id"></div>
       <select id="stream-relay-bitrate"><option value=""></option><option value="128"></option></select>
       <input id="stream-relay-public" type="checkbox"><input id="stream-relay-enabled" type="checkbox">
+      <p id="stream-relay-form-error" class="field-error" hidden></p>
       <button type="submit"></button><button type="button" id="stream-relay-cancel"></button>
     </form><button id="stream-metadata-save"></button>
     <input id="stream-station-name"><input id="stream-station-genre"><input id="stream-station-description"><input id="stream-station-url">
@@ -50,10 +51,9 @@ describe("relay settings", () => {
       onError(new Error("host is required"));
       return false;
     });
-    const announce = vi.fn();
     const ui = installRelaySettings({
       doc: document, request: vi.fn(async () => ({ relays: [] })), post,
-      remove: vi.fn(), announce,
+      remove: vi.fn(), announce: vi.fn(),
     });
     ui.setAvailable(true);
     document.getElementById("stream-relay-add").click();
@@ -68,8 +68,34 @@ describe("relay settings", () => {
     await vi.waitFor(() => expect(host.getAttribute("aria-invalid")).toBe("true"));
     expect(card.open).toBe(true);
     expect(document.activeElement).toBe(host);
-    expect(announce).toHaveBeenCalledWith("host is required", true);
+    expect(host.getAttribute("aria-describedby")).toContain("stream-relay-form-error");
+    expect(document.getElementById("stream-relay-form-error").textContent).toBe("host is required");
     ui.reset();
+  });
+
+  it("does not paint a refused save into a reset relay form", async () => {
+    let onError;
+    let finish;
+    const post = vi.fn((_url, _payload, _form, options) => {
+      onError = options.onError;
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const ui = installRelaySettings({
+      doc: document, request: vi.fn(async () => ({ relays: [] })), post,
+      remove: vi.fn(), announce: vi.fn(),
+    });
+    ui.setAvailable(true);
+    document.getElementById("stream-relay-add").click();
+    document.getElementById("stream-relay-form").dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
+    expect(document.getElementById("stream-relay-form").getAttribute("aria-busy")).toBe("true");
+    ui.reset();
+    onError(new Error("host is required"));
+    expect(document.getElementById("stream-relay-form-error").hidden).toBe(true);
+    expect(document.getElementById("stream-relay-host").hasAttribute("aria-invalid")).toBe(false);
+    finish(false);
+    await Promise.resolve();
   });
 
   it("keeps rows and focus stable while relay status changes", async () => {

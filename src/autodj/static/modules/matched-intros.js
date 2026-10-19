@@ -9,7 +9,7 @@
 // playing, and the clip plays on the Preview output device.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { nextRowControl, rowButton } from "./dom-helpers.js";
+import { clearFieldError, nextRowControl, rowButton, showFieldError } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { stationApi } from "./stations.js";
 
@@ -87,27 +87,12 @@ export function installMatchedIntros({ document: doc = document, request = reque
   let playing = null;  // the Listen button pressed now
 
   function say(message, tone = "info") { announceStatus(status, message, { force: true, tone }); }
-  function linkError(field, linked) {
-    const input = inputs[field];
-    const error = errors[field];
-    const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
-    if (linked) ids.push(error.id);
-    if (ids.length) input.setAttribute("aria-describedby", ids.join(" "));
-    else input.removeAttribute("aria-describedby");
-  }
   function clearError(field) {
-    inputs[field].removeAttribute("aria-invalid");
-    errors[field].textContent = "";
-    errors[field].hidden = true;
-    linkError(field, false);
+    clearFieldError(inputs[field], errors[field]);
   }
   function clearErrors() { for (const field of FIELDS) clearError(field); }
   function showError(field, message) {
-    inputs[field].setAttribute("aria-invalid", "true");
-    errors[field].textContent = message;
-    errors[field].hidden = false;
-    linkError(field, true);
-    inputs[field].focus();
+    showFieldError(inputs[field], message, errors[field], status);
   }
 
   function stopListening() {
@@ -239,6 +224,9 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function load(record) {
     generation += 1;
+    busy = false;
+    upload?.classList.remove("is-pending");
+    upload?.removeAttribute("aria-busy");
     stopListening();
     const music = !!record?.id && (record.kind || "music") === "music";
     if (!music) { clear(); return; }
@@ -256,6 +244,9 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function clear() {
     generation += 1;
+    busy = false;
+    upload?.classList.remove("is-pending");
+    upload?.removeAttribute("aria-busy");
     stopListening();
     track = null;
     resetForm();
@@ -310,9 +301,11 @@ export function installMatchedIntros({ document: doc = document, request = reque
       if (field && inputs[field]) showError(field, error.message);
       else say(`Could not add the intro: ${error.message}`, "error");
     } finally {
-      busy = false;
-      upload.classList.remove("is-pending");
-      upload.removeAttribute("aria-busy");
+      if (mine === generation) {
+        busy = false;
+        upload.classList.remove("is-pending");
+        upload.removeAttribute("aria-busy");
+      }
     }
   }
 

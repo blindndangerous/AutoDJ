@@ -1,29 +1,13 @@
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { dialogStatusLine, focusAfterDialog, focusRevealed, releaseDialogFocus } from "./dom-helpers.js";
-import { announceStatus, sayIfStillPending } from "./live-region.js";
+import { dialogStatusLine, focusAfterDialog, releaseDialogFocus, showFieldError } from "./dom-helpers.js";
+import { announceStatus, clearAnnouncedStatus, sayIfStillPending } from "./live-region.js";
 
 const openEditors = new WeakMap();
 const closeEditors = new WeakMap();
 const editorStatuses = new WeakMap();
 
-export function showEditorError(control, message, error, status) {
-  error.textContent = message;
-  error.hidden = false;
-  if (!control) { announceStatus(status, message, { force: true, tone: "error" }); return; }
-  control.setAttribute("aria-invalid", "true");
-  const descriptions = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
-  descriptions.add(error.id);
-  control.setAttribute("aria-describedby", [...descriptions].join(" "));
-  const following = control.nextElementSibling;
-  const label = control.closest("label") || (following?.htmlFor === control.id ? following : null);
-  (label || control).after(error);
-  const before = control.ownerDocument.activeElement;
-  focusRevealed(control);
-  if (before === control || control.ownerDocument.activeElement !== control) {
-    announceStatus(status, message, { force: true, tone: "error" });
-  }
-}
+export const showEditorError = showFieldError;
 
 // Keep dialogs outside tab panels so hidden panels cannot hide an open editor
 // from assistive technology; native modality also supports nested editors.
@@ -67,7 +51,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     const index = stack.indexOf(dialog);
     if (index !== -1) stack.splice(index, 1);
     form.hidden = true;
-    status.textContent = "";
+    clearAnnouncedStatus(status);
   }
   closeEditors.set(dialog, close);
 
@@ -132,7 +116,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       opener = from;
       form.hidden = false;
       original = snapshot();
-      status.textContent = "";
+      clearAnnouncedStatus(status);
       dialog.showModal();
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         if (stack[index] === dialog || !stack[index].isConnected) stack.splice(index, 1);
