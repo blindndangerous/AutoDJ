@@ -498,7 +498,7 @@ describe("clockwheel editor", () => {
 
     const rows = [...list.children];
     const mutations = [];
-    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     await controls.refresh();
     await new Promise((resolve) => setTimeout(resolve, 0));

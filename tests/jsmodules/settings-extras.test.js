@@ -279,7 +279,7 @@ describe("profiles", () => {
     const apply = els.list.querySelector('[aria-label="Apply profile Early"]');
     const rows = [...els.list.children];
     const mutations = [];
-    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
     observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
     const callsBeforeRefresh = fetchImpl.mock.calls.length;
     els.card.dispatchEvent(new Event("toggle"));
@@ -465,7 +465,7 @@ describe("browser access", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
 
     const mutations = [];
-    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
     observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
     const callsBeforeRefresh = fetchImpl.mock.calls.length;
     els.card.dispatchEvent(new Event("toggle"));
