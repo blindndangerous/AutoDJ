@@ -292,14 +292,15 @@ export function stationItemText(entry) {
 
 // What the page says after a switch or on Shift+C.
 export function controllingText(entry, nowPlaying = null) {
-  if (!entry) return `Now controlling ${stationName()}.`;
-  const parts = [`Now controlling ${entry.name}.`];
+  if (!entry) return `${stationName()}.`;
+  const parts = [`${entry.name}.`];
   if (!isOnAir(entry)) {
     parts.push("Off air.");
   } else {
-    parts.push(`On air, ${listenerText(entry.listeners)}.`);
+    parts.push("On air.");
     const title = nowPlaying || entry.title;
     parts.push(title ? `Playing ${title}.` : "Nothing playing.");
+    parts.push(`${listenerText(entry.listeners)}.`);
   }
   return parts.join(" ");
 }
