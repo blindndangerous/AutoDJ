@@ -9,7 +9,8 @@
 // playing, and the clip plays on the Preview output device.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { nextRowControl, reconcileRows, rowButton } from "./dom-helpers.js";
+import { nextRowControl, rowButton } from "./dom-helpers.js";
+import { reconcileRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { stationApi } from "./stations.js";

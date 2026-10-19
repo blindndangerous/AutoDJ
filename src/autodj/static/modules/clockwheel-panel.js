@@ -19,7 +19,8 @@
 // Category conditions name a saved category (Categories, above) by its ID.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { reconcileRows, releaseDialogFocus } from "./dom-helpers.js";
+import { releaseDialogFocus } from "./dom-helpers.js";
+import { reconcileRows } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
