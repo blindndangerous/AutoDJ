@@ -4,6 +4,8 @@ import { dialogStatusLine, focusAfterDialog, focusRevealed, releaseDialogFocus }
 import { announceStatus, sayIfStillPending } from "./live-region.js";
 
 const openEditors = new WeakMap();
+const closeEditors = new WeakMap();
+const editorStatuses = new WeakMap();
 
 export function showEditorError(control, message, error, status) {
   error.textContent = message;
@@ -25,15 +27,16 @@ export function showEditorError(control, message, error, status) {
 
 // Keep dialogs outside tab panels so hidden panels cannot hide an open editor
 // from assistive technology; native modality also supports nested editors.
-export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel }) {
+export function createEditorDialog({ form, heading, cancel, fallback, save, onCancel, dialog: existingDialog, submit }) {
   const doc = form.ownerDocument;
-  const dialog = doc.createElement("dialog");
-  dialog.id = `${form.id}-dialog`;
-  dialog.className = "editor-dialog";
+  const dialog = existingDialog || doc.createElement("dialog");
+  if (!dialog.id) dialog.id = `${form.id}-dialog`;
+  dialog.classList.add("editor-dialog");
   dialog.setAttribute("aria-labelledby", heading.id);
   dialog.append(form);
   doc.body.append(dialog);
   const status = dialogStatusLine(dialog, `${form.id}-status`);
+  editorStatuses.set(dialog, status);
   const stack = openEditors.get(doc) || [];
   openEditors.set(doc, stack);
   let generation = 0;
@@ -47,6 +50,10 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
   const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
 
   function close() {
+    const position = stack.indexOf(dialog);
+    if (position !== -1) {
+      for (const child of stack.slice(position + 1).reverse()) closeEditors.get(child)?.();
+    }
     generation += 1;
     if (confirming) doc.getElementById("confirm-dialog")?.close();
     pending = false;
@@ -62,6 +69,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     form.hidden = true;
     status.textContent = "";
   }
+  closeEditors.set(dialog, close);
 
   async function cancelEdit(event) {
     event.preventDefault();
@@ -76,12 +84,12 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
       if (!discard || mine !== generation) return;
     }
     close();
-    onCancel?.();
-    if (!focusAfterDialog(opener)) focusAfterDialog(fallback);
+    const returnTo = onCancel?.() || opener;
+    if (!focusAfterDialog(returnTo)) focusAfterDialog(fallback);
   }
   cancel.addEventListener("click", cancelEdit);
   dialog.addEventListener("cancel", cancelEdit);
-  form.addEventListener("submit", async (event) => {
+  async function saveEdit(event) {
     event.preventDefault();
     if (pending || !dialog.open) return;
     pending = true;
@@ -89,12 +97,15 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     const epoch = captureAuthenticatedRequestEpoch();
     const current = () => dialog.open && generation === mine && isAuthenticatedRequestCurrent(epoch);
     form.setAttribute("aria-busy", "true");
-    form.querySelectorAll('button[type="submit"]:not(:disabled)').forEach((button) => {
+    [...form.querySelectorAll('button[type="submit"]:not(:disabled)'), ...(submit && !submit.disabled ? [submit] : [])].forEach((button) => {
       button.dataset.editorPending = "";
       button.disabled = true;
     });
     const stop = sayIfStillPending((message) => { if (current()) say(message); }, "Saving…");
-    try { await save(event, current); }
+    try {
+      const result = save(event, current);
+      if (result?.then) await result;
+    }
     catch (error) { if (current()) say(error.message, "error"); }
     finally {
       stop();
@@ -107,12 +118,14 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
         });
       }
     }
-  });
+  }
+  form.addEventListener("submit", saveEdit);
+  submit?.addEventListener("click", saveEdit);
   return {
     dialog, status, close,
     region(fallbackStatus) {
       const top = stack.findLast((item) => item.isConnected && item.open);
-      return top ? dialogStatusLine(top, `${top.id.replace(/-dialog$/, "")}-status`) : fallbackStatus;
+      return top ? editorStatuses.get(top) : fallbackStatus;
     },
     open(first, from = doc.activeElement) {
       generation += 1;
