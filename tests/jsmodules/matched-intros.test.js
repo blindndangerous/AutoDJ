@@ -190,12 +190,13 @@ describe("Track info matched intros", () => {
     await settle();
     const list = el("intros-song-list");
     const before = [...list.querySelectorAll("li")].map((row) => [row, row.textContent]);
-    const observer = new window.MutationObserver(() => {});
+    const mutations = [];
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     await editor.refresh();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...list.querySelectorAll("li")].map((row) => [row, row.textContent])).toEqual(before);
-    expect(observer.takeRecords()).toEqual([]);
+    expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
 

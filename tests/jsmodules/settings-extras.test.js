@@ -278,14 +278,16 @@ describe("profiles", () => {
     await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
     const apply = els.list.querySelector('[aria-label="Apply profile Early"]');
     const rows = [...els.list.children];
-    const observer = new globalThis.MutationObserver(() => {});
+    const mutations = [];
+    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
     observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
+    const callsBeforeRefresh = fetchImpl.mock.calls.length;
     els.card.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
     expect(els.list.querySelector('[aria-label="Apply profile Early"]')).toBe(apply);
-    expect(observer.takeRecords()).toEqual([]);
+    expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
 
@@ -462,14 +464,16 @@ describe("browser access", () => {
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
     expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
 
-    const observer = new globalThis.MutationObserver(() => {});
+    const mutations = [];
+    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
     observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
+    const callsBeforeRefresh = fetchImpl.mock.calls.length;
     els.card.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsBeforeRefresh));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...els.list.children]).toEqual(rows);
     expect(els.list.querySelector('[aria-label="Rename Phone"]')).toBe(rename);
-    expect(observer.takeRecords()).toEqual([]);
+    expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
 
