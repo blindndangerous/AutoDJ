@@ -272,6 +272,23 @@ describe("profiles", () => {
     expect(document.activeElement.getAttribute("aria-label")).toBe("Delete profile Late");
   });
 
+  it("keeps profile controls on an unchanged refresh", async () => {
+    const fetchImpl = vi.fn(() => json({ profiles: ["Early", "Late"] }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    const apply = els.list.querySelector('[aria-label="Apply profile Early"]');
+    const rows = [...els.list.children];
+    const observer = new globalThis.MutationObserver(() => {});
+    observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
+    els.card.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([...els.list.children]).toEqual(rows);
+    expect(els.list.querySelector('[aria-label="Apply profile Early"]')).toBe(apply);
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
+  });
+
   it("moves focus from the dialog straight to the name field when the last profile goes", async () => {
     let names = ["Only"];
     const fetchImpl = vi.fn((url, init = {}) => {
@@ -431,6 +448,42 @@ describe("browser access", () => {
     expect(els.list.querySelector("li").textContent).toMatch(/^Hall speaker\. {2}Paired /);
     const patch = fetchImpl.mock.calls.find(([, init = {}]) => init.method === "PATCH");
     expect(JSON.parse(patch[1].body)).toEqual({ name: "Hall speaker" });
+  });
+
+  it("keeps paired-device controls on an unchanged refresh and provides list navigation", async () => {
+    const fetchImpl = vi.fn(() => json({ pairing: true, devices }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    const rows = [...els.list.children];
+    const rename = els.list.querySelector('[aria-label="Rename Phone"]');
+    rename.focus();
+    rename.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Phone");
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser");
+
+    const observer = new globalThis.MutationObserver(() => {});
+    observer.observe(els.list, { subtree: true, childList: true, characterData: true, attributes: true });
+    els.card.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([...els.list.children]).toEqual(rows);
+    expect(els.list.querySelector('[aria-label="Rename Phone"]')).toBe(rename);
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
+  });
+
+  it("moves focus and announces when a polled paired device disappears", async () => {
+    let listed = devices;
+    const fetchImpl = vi.fn(() => json({ pairing: true, devices: listed }));
+    const { els } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    els.list.querySelector('[aria-label="Revoke Phone"]').focus();
+    listed = [devices[1]];
+    els.card.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(1));
+    await vi.waitFor(() => expect(document.activeElement.getAttribute("aria-label")).toBe("Revoke Tablet, this browser"));
+    await vi.waitFor(() => expect(els.status.textContent).toContain("The paired devices list changed. Focus moved to Revoke Tablet, this browser."));
   });
 
   it("keeps the rename dialog open and says why when the name is refused", async () => {
