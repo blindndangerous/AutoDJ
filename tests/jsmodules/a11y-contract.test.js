@@ -1054,7 +1054,7 @@ describe("static accessibility contracts", () => {
     expect(css).not.toMatch(/#track-info-keep/);
     expect(css.match(/(^|[\s,}])button\s*\{[^{}]*min-height:\s*44px/)).not.toBeNull();
     // Three buttons wrap rather than run off a narrow window.
-    expect(lastValue("#track-info-dialog .dialog-actions", "flex-wrap")).toBe("wrap");
+    expect(lastValue(".dialog-actions", "flex-wrap")).toBe("wrap");
     expect(lastValue("#track-info-dialog", "max-width")).toBe("min(32rem, calc(100vw - 2rem))");
   });
   it("keeps connected status text visible without relying on color alone", () => {

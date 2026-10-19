@@ -43,6 +43,7 @@
       --danger-edge: light-dark(#c0392b, #e5574a);  /* an edge on the card */
       --error-text: light-dark(#b3261e, #ffaaa0);
       --radius:    6px;
+      --control-gap: 0.75rem;
       --badge-border: light-dark(#66758c, #4d7eb5);
       --range-track: light-dark(#66758c, #5a7bb0);
       /* Faint washes over the card: striped rows, the lit lyric, badges. */
@@ -2255,12 +2256,11 @@ dialog h1 { font-size: 1.5em; }
   margin: 0.25rem 0;
 }
 #device-rename-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
-#confirm-dialog .dialog-actions,
-#device-rename-dialog .dialog-actions,
-#track-info-dialog .dialog-actions {
+.dialog-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 0.75rem;
+  gap: var(--control-gap);
 }
 #track-info-dialog h1 { margin-top: 0; }
 /* Save, Discard and Keep editing wrap onto a second line rather than run
@@ -2268,6 +2268,15 @@ dialog h1 { font-size: 1.5em; }
    the window. */
 #track-info-dialog { max-width: min(32rem, calc(100vw - 2rem)); }
 #clock-step-dialog,
-.editor-dialog { width: min(40rem, calc(100vw - 2rem)); max-width: none; }
-#track-info-dialog .dialog-actions { flex-wrap: wrap; }
+.editor-dialog {
+  width: min(40rem, calc(100vw - 2rem));
+  max-width: none;
+}
+.editor-dialog {
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+.editor-dialog .dialog-actions {
+  margin-top: var(--control-gap);
+}
 #track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }

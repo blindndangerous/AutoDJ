@@ -223,6 +223,19 @@ The README install command uses `X.Y.Z` placeholders, so it needs no edit per re
 v0.12.0, v0.16.0, v0.16.1, v0.18.0, v0.18.1, v0.18.2, v0.19.0, v0.19.1, and v0.21.0 were tagged. The other versions from 0.1.0 through 0.15.0,
 0.17.0, and 0.20.0, exist only as changelog entries.
 
+## UI styling
+
+The browser UI uses native HTML and shared rules in
+`src/autodj/static/app.css`. Use `.card` for a grouped surface,
+`.settings-row` for a label and its control, `.setting-desc` for visible help,
+`.field-error` for an error stated in text, and `.no-results` for an empty
+list. Use `.dialog-actions` for a right-aligned, wrapping button row. These
+patterns preserve source and keyboard order; keep action-list rows aligned with
+their labels, and keep purpose-specific layouts such as the clockwheel step
+grid and dense tables local to their feature. Reuse the existing theme and
+spacing tokens, and keep native focus, forced-colors, and narrow-screen
+behavior in view.
+
 ## Where things live
 
 - `src/autodj/cli.py` — CLI entry points (Click).
