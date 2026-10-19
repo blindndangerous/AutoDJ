@@ -82,7 +82,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const legend = el("categories-form-legend");
   const filterHost = el("categories-filter-conditions");
   if (!panel || !list || !status || !form || !addButton || !nameInput || !queryInput || !playlistSelect || !match) {
-    return { refresh: async () => {}, clearProtectedData() {}, resume() {}, destroy() {} };
+    return { refresh: async () => {}, create() {}, clearProtectedData() {}, resume() {}, destroy() {} };
   }
 
   const empty = () => ({ categories: [], playlists: [], playlists_folder: "", beets: false });
@@ -98,12 +98,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
   let countGeneration = 0;
   let countRunning = false;
   let pendingCount = null;
+  let creation = null;
+  let opening = false;
 
   const editor = createEditorDialog({ form, heading: legend, cancel: el("categories-cancel"), fallback: addButton,
     save, onCancel: () => { closeForm(); say("Cancelled. Nothing was saved."); } });
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
-  const countCurrent = (epoch, mine) => !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
+  const countCurrent = (epoch, mine) => editor.dialog.open && !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(editor.region(status), message, { force: true, tone: error ? "error" : "info" });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
@@ -353,6 +355,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function openForm(category, from) {
+    creation = null;
     countGeneration += 1;
     editing = category ? category.id : null;
     clearErrors();
@@ -392,6 +395,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function closeForm() {
+    creation = null;
     countGeneration += 1;
     if (countTimer !== null) clearTimeout(countTimer);
     countTimer = null;
@@ -411,12 +415,12 @@ export function installCategoriesPanel({ document: doc = document, request = req
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation, checkMine = countGeneration;
     try {
       const counts = await send("/api/categories/check", "POST", value);
-      if (!current(epoch, mine) || checkMine !== countGeneration) return;
+      if (!current(epoch, mine) || checkMine !== countGeneration || !editor.dialog.open) return;
       const text = countsText(counts);
       match.textContent = `${text}.`;
       say(`${value.name}: ${text}.`, Boolean(counts.error));
     } catch (error) {
-      if (current(epoch, mine) && checkMine === countGeneration) showError(error.field || "name", error.message);
+      if (current(epoch, mine) && checkMine === countGeneration && editor.dialog.open) showError(error.field || "name", error.message);
     }
   }
 
@@ -465,6 +469,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
 
   async function save(event, active) {
     event?.preventDefault();
+    if (creation && !creation.isCurrent()) { closeForm(); return; }
     clearErrors();
     let value;
     try { value = body(); }
@@ -475,10 +480,12 @@ export function installCategoriesPanel({ document: doc = document, request = req
       const result = editing
         ? await send(`/api/categories/${encodeURIComponent(editing)}`, "PUT", value)
         : await send("/api/categories", "POST", value);
-      if (!current(epoch, mine) || !active()) return;
+      if (!current(epoch, mine) || !active() || (creation && !creation.isCurrent())) return;
+      const caller = creation;
       apply(result);
       closeForm();
-      focusAfterDialog(rowFor(result.category.id) || addButton);
+      if (caller) caller.onCreated(result.category, data.categories);
+      else focusAfterDialog(rowFor(result.category.id) || addButton);
       onChange();
       say(`Saved ${result.category.name}: ${countsText(result.category)}.`);
     } catch (error) {
@@ -611,6 +618,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   function clearProtectedData() {
     suspended = true;
     generation += 1;
+    opening = false;
     if (timer !== null) clearInterval(timer);
     timer = null;
     data = empty();
@@ -625,6 +633,20 @@ export function installCategoriesPanel({ document: doc = document, request = req
     status.textContent = "";
   }
   return {
+    async create({ from, isCurrent, onCreated }) {
+      if (suspended || opening || editor.dialog.open || !isCurrent()) return;
+      opening = true;
+      const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+      try {
+        const result = await request("/api/categories");
+        if (!current(epoch, mine) || !isCurrent()) return;
+        apply(result);
+        openForm(null, from);
+        creation = { isCurrent, onCreated };
+      } catch (error) {
+        if (current(epoch, mine) && isCurrent()) say(`Could not load categories: ${error.message}`, true);
+      } finally { if (generation === mine) opening = false; }
+    },
     refresh,
     clearProtectedData,
     resume() { suspended = false; updatePolling(); },

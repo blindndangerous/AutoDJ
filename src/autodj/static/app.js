@@ -3115,14 +3115,15 @@ libraryFoldersControls = installLibraryFolders({
   },
 });
 
-clockwheelPanelControls = installClockwheelPanel();
+const createCategory = (options) => categoriesPanelControls?.create(options);
+clockwheelPanelControls = installClockwheelPanel({ createCategory });
 // A saved or deleted category reaches the clockwheel step form at once.
 // A saved or deleted category reaches intro rules' condition choices too.
 categoriesPanelControls = installCategoriesPanel({ onChange: () => {
   void clockwheelPanelControls?.refresh();
   introRulesControls?.refresh();
 } });
-introRulesControls = installIntroRulesPanel();
+introRulesControls = installIntroRulesPanel({ createCategory });
 showsPanelControls = installShowsPanel();
 schedulerPanelControls = installSchedulerPanel();
 rotationTestControls = installRotationTest();

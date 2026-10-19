@@ -1106,7 +1106,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     expect(host.hasAttribute("aria-label")).toBe(false);
     expect(byId(host.getAttribute("aria-labelledby")).textContent).toBe("Conditions");
     const help = byId("clock-step-conditions-help");
-    expect(help.textContent).toContain("Library tools, Categories");
+    expect(help.textContent).toContain("Add category");
     expect(help.textContent).toContain("MM:SS");
     expect(help.textContent).toContain("*");
     const [row] = conditions();

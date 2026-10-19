@@ -23,7 +23,7 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 import { clearFormErrors } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
-import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { describeStep } from "./clockwheel-step.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
@@ -56,7 +56,7 @@ export function parseResyncMinutes(text) {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
-export function installClockwheelPanel({ document: doc = document, request = requestJson } = {}) {
+export function installClockwheelPanel({ document: doc = document, request = requestJson, createCategory } = {}) {
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("clock-list");
@@ -276,6 +276,20 @@ export function installClockwheelPanel({ document: doc = document, request = req
       genreChoices: (data.genres || []).map((item) => [item, item]),
       beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
       categoryChoices: data.categories.map((item) => [item.id, item.name]),
+      onAddCategory: createCategory && (({ row, category, button }) => {
+        const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+        const host = el("clock-step-conditions");
+        void createCategory({
+          from: button,
+          isCurrent: () => current(epoch, mine) && stepDialog.open && host.contains(row),
+          onCreated: (saved, categories) => {
+            data.categories = categories;
+            updateConditionCategories(host, categories.map((item) => [item.id, item.name]), category, saved.id);
+            category.focus();
+            scheduleStepCount();
+          },
+        });
+      }),
       onFieldChange: updateBeetsNotice,
       onRemove: (row) => {
       const host = row.parentElement;
