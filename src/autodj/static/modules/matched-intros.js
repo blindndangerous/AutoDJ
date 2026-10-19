@@ -7,6 +7,8 @@
 // focus, which reads the error, so nothing else speaks.  Any other result is
 // said once in #intros-status.  Listen is a toggle: aria-pressed says it is
 // playing, and the clip plays on the Preview output device.
+import { reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { clearFieldError, nextRowControl, rowButton, showFieldError } from "./dom-helpers.js";
@@ -68,6 +70,7 @@ export function installMatchedIntros({ document: doc = document, request = reque
   const inactive = el("intros-inactive");
   const problem = el("intros-problem");
   const lists = { song: el("intros-song-list"), artist: el("intros-artist-list") };
+  const navigation = Object.fromEntries(Object.entries(lists).map(([kind, list]) => [kind, installActionListNavigation(list)]));
   const empties = { song: el("intros-song-empty"), artist: el("intros-artist-empty") };
   const artistHeading = el("intros-artist-heading");
   const artistChoice = el("intro-applies-artist");
@@ -85,6 +88,8 @@ export function installMatchedIntros({ document: doc = document, request = reque
   let generation = 0;
   let busy = false;
   let playing = null;  // the Listen button pressed now
+  let saved = { song: [], artist: [] };
+  let listFocusAnnouncementSuppressed = false;
 
   function say(message, tone = "info") { announceStatus(status, message, { force: true, tone }); }
   function clearError(field) {
@@ -144,7 +149,8 @@ export function installMatchedIntros({ document: doc = document, request = reque
         if (!isAuthenticatedRequestCurrent(epoch)) return null;
         if (playing && list.contains(playing)) stopListening();
         result = `Removed ${name}.`;
-        await refresh();
+        listFocusAnnouncementSuppressed = true;
+        try { await refresh(); } finally { listFocusAnnouncementSuppressed = false; }
         // Focus goes to the next row's button in that list, or the list's heading.
         const heading = doc.getElementById(list.getAttribute("aria-labelledby"));
         const target = nextRowControl(list, "button", Math.max(0, index), heading);
@@ -158,34 +164,45 @@ export function installMatchedIntros({ document: doc = document, request = reque
 
   function renderList(kind, items) {
     const list = lists[kind];
-    const active = doc.activeElement;
-    const hadFocus = list.contains(active);
-    const focusIndex = hadFocus ? [...list.querySelectorAll("button")].indexOf(active) : -1;
-    const focusName = hadFocus ? active.getAttribute("aria-label") : null;
-    const pressedId = playing && list.contains(playing) ? playing.dataset.intro : null;
-    const rows = items.map((item) => {
+    if (playing && list.contains(playing) && !items.some((item) => item.id === playing.dataset.intro)) stopListening();
+    const heading = doc.getElementById(list.getAttribute("aria-labelledby"));
+    if (heading && heading.tabIndex !== -1) heading.tabIndex = -1;
+    reconcileRows(list, items, (item) => item.id, () => {
       const row = doc.createElement("li");
       const text = doc.createElement("span");
       text.className = "intro-text";
-      text.textContent = introText(item);
-      const name = item.label || "untitled intro";
-      const play = rowButton(doc, "Listen", `Listen to ${name}`, (button) => void listen(item, button));
-      play.dataset.intro = item.id;
-      play.setAttribute("aria-pressed", pressedId === item.id ? "true" : "false");
-      if (pressedId === item.id) playing = play;
-      const drop = rowButton(doc, "Remove", `Remove ${name}`, (button) => void remove(item, button));
+      const play = rowButton(doc, "Listen", "", (button) => {
+        const current = saved[kind].find((entry) => entry.id === button.dataset.intro);
+        if (current) void listen(current, button);
+      });
+      const drop = rowButton(doc, "Remove", "", (button) => {
+        const current = saved[kind].find((entry) => entry.id === button.dataset.intro);
+        if (current) void remove(current, button);
+      });
+      play.dataset.action = "listen";
+      drop.dataset.action = "remove";
       row.append(text, play, drop);
       return row;
-    });
-    list.replaceChildren(...rows);
-    empties[kind].hidden = items.length > 0;
-    if (hadFocus && !list.contains(doc.activeElement)) {
-      const same = [...list.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === focusName);
-      (same || nextRowControl(list, "button", Math.max(0, focusIndex), null))?.focus();
-    }
+    }, (row, item) => {
+      const name = item.label || "untitled intro";
+      const description = introText(item);
+      if (row.firstElementChild.textContent !== description) row.firstElementChild.textContent = description;
+      const [play, drop] = row.querySelectorAll("button");
+      for (const button of [play, drop]) if (button.dataset.intro !== item.id) button.dataset.intro = item.id;
+      if (play.getAttribute("aria-label") !== `Listen to ${name}`) play.setAttribute("aria-label", `Listen to ${name}`);
+      if (drop.getAttribute("aria-label") !== `Remove ${name}`) drop.setAttribute("aria-label", `Remove ${name}`);
+      const pressed = playing === play ? "true" : "false";
+      if (play.getAttribute("aria-pressed") !== pressed) play.setAttribute("aria-pressed", pressed);
+    }, { fallback: heading, onFocusLost: ({ target }) => {
+      if (!listFocusAnnouncementSuppressed) say(`The matched intro list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "its heading"}.`);
+    } });
+    navigation[kind].refresh();
+    const emptyHidden = items.length > 0;
+    if (empties[kind].hidden !== emptyHidden) empties[kind].hidden = emptyHidden;
   }
 
   function apply(data) {
+    saved = { song: data.song || [], artist: data.artist || [] };
     limits = data.limits || {};
     track = data.track || track;
     const artist = track?.artist || "";
@@ -234,7 +251,6 @@ export function installMatchedIntros({ document: doc = document, request = reque
     resetForm();
     inputs.applies.checked = true;
     status.textContent = "";
-    for (const kind of ["song", "artist"]) { lists[kind].replaceChildren(); empties[kind].hidden = false; }
     apply({ track, song: [], artist: [], active: true });
     section.hidden = false;
     void refresh().catch((error) => {
@@ -251,7 +267,9 @@ export function installMatchedIntros({ document: doc = document, request = reque
     track = null;
     resetForm();
     status.textContent = "";
-    for (const kind of ["song", "artist"]) lists[kind].replaceChildren();
+    listFocusAnnouncementSuppressed = true;
+    try { for (const kind of ["song", "artist"]) renderList(kind, []); }
+    finally { listFocusAnnouncementSuppressed = false; }
     if (problem) { problem.textContent = ""; problem.hidden = true; }
     section.hidden = true;
   }
