@@ -229,6 +229,24 @@ describe("Track info matched intros", () => {
     expect(upload.hasAttribute("aria-busy")).toBe(false);
   });
 
+  it("does not reset a new track's upload draft when an old upload finishes", async () => {
+    let finish;
+    const request = vi.fn((url, options) => options?.method === "POST"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve(LISTING));
+    const editor = install(request);
+    editor.load(RECORD);
+    await settle();
+    chooseFile();
+    el("intros-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    editor.load({ ...RECORD, id: "other-track", title: "New track" });
+    await settle();
+    el("intro-label").value = "Draft for new track";
+    finish(ITEM);
+    await settle();
+    expect(el("intro-label").value).toBe("Draft for new track");
+    expect(el("intros-status").textContent).not.toContain("Added the intro");
+  });
+
   it("shows a field the server refused at that field", async () => {
     const request = vi.fn(async (url, options) => {
       if (options?.method === "POST") throw apiError("Chance: must be at most 100", { status: 422, field: "chance" });

@@ -1,7 +1,7 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
 import { describe, it, expect } from "vitest";
-import { fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
+import { clearFormErrors, fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
@@ -22,6 +22,17 @@ describe("fmtTime", () => {
     expect(fmtTime(Infinity)).toBe("0:00");
     expect(fmtTime(-1)).toBe("0:00");
   });
+});
+
+it("clears stale error descriptions even after the invalid marker was removed", () => {
+  document.body.innerHTML = '<form><input aria-describedby="help problem"><p id="help">Hint</p>'
+    + '<p id="problem" class="field-error">Refused</p></form>';
+  const form = document.querySelector("form");
+  const input = form.querySelector("input");
+  clearFormErrors(form);
+  expect(input.getAttribute("aria-describedby")).toBe("help");
+  expect(form.querySelector("#problem").hidden).toBe(true);
+  expect(form.querySelector("#problem").textContent).toBe("");
 });
 
 describe("fmtTrack", () => {

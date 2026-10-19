@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   announceStatus,
+  clearAnnouncedStatus,
   clearLiveRegionLater,
   installVisibleStatusBehaviour,
   liveAgain,
@@ -157,6 +158,16 @@ describe("announceStatus force", () => {
     expect(region.textContent).toBe("");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(region.textContent).toBe(`Saved.${String.fromCharCode(160)}`);
+  });
+
+  it("cancels queued speech and its mirror when the owning view closes", async () => {
+    const region = document.querySelector("#region");
+    const toast = document.querySelector("#status-toast");
+    announceStatus(region, "The editor failed to save.", { force: true, tone: "error" });
+    clearAnnouncedStatus(region);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(region.textContent).toBe("");
+    expect(toast.hidden).toBe(true);
   });
 
   it("still honours the dwell when forced", async () => {
