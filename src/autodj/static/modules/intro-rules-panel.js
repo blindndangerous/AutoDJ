@@ -15,7 +15,7 @@ import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // next rule's Delete button (or Add intro rule).
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { describeConditions } from "./clockwheel-step.js";
-import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { focusAfterDialog, nextRowControl, rowButton } from "./dom-helpers.js";
 import { parsePointTime } from "./library-folders.js";
@@ -104,7 +104,7 @@ export function ruleFormError({ clipIds = [], folder = "", patternMode = false, 
 
 const NO_PANEL = { refresh() {}, clear() {}, clearProtectedData() {}, resume() {}, destroy() {} };
 
-export function installIntroRulesPanel({ document: doc = document, request = requestJson } = {}) {
+export function installIntroRulesPanel({ document: doc = document, request = requestJson, createCategory } = {}) {
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const section = el("intro-rules");
@@ -243,6 +243,18 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       genreChoices: data.genres.map((item) => [item, item]),
       beetsChoices: data.beets_fields.map((item) => [item, item]),
       categoryChoices: data.categories.map((item) => [item.id, item.name]),
+      onAddCategory: createCategory && (({ row, category, button }) => {
+        const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+        void createCategory({
+          from: button,
+          isCurrent: () => current(epoch, mine) && editor.dialog.open && conditionHost.contains(row),
+          onCreated: (saved, categories) => {
+            data.categories = categories;
+            updateConditionCategories(conditionHost, categories.map((item) => [item.id, item.name]), category, saved.id);
+            category.focus();
+          },
+        });
+      }),
       onRemove: (row) => {
         clearError("conditions");
         const index = [...conditionHost.children].indexOf(row);

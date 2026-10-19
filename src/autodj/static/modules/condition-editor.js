@@ -42,6 +42,7 @@ export function createConditionRow({
   genreChoices = [],
   beetsChoices = [],
   categoryChoices = null,
+  onAddCategory = null,
   onFieldChange = () => {},
   onRemove = () => {},
 }) {
@@ -83,6 +84,15 @@ export function createConditionRow({
   const name = control("Beets field", "select", optionsWithMissing(beetsChoices, value.name));
   let category = null;
   if (categoryChoices !== null) category = control("Music category", "select", optionsWithMissing(categoryChoices, value.category));
+  let addCategory = null;
+  if (category && onAddCategory) {
+    addCategory = doc.createElement("button");
+    addCategory.type = "button";
+    addCategory.textContent = "Add category";
+    addCategory.dataset.addCategory = "";
+    row.append(addCategory);
+    addCategory.addEventListener("click", () => onAddCategory({ row, category, button: addCategory }));
+  }
 
   field.value = value.field || (source.options.length ? "folder" : "title");
   source.value = value.source || source.options[0]?.value || "";
@@ -106,6 +116,7 @@ export function createConditionRow({
     genre.hidden = genre.previousElementSibling.hidden = !isGenre;
     name.hidden = name.previousElementSibling.hidden = !isBeets;
     if (category) category.hidden = category.previousElementSibling.hidden = !isCategory;
+    if (addCategory) addCategory.hidden = !isCategory;
 
     let choices = TEXT_OPERATORS;
     const family = CONDITION_FIELD_DEFINITIONS[current]?.operators;
@@ -132,6 +143,16 @@ export function createConditionRow({
   ROW_CONTROLS.set(row, { field, source, folder, recursive, operator, input, upper, genre, name, category });
   sync();
   return { row, field, source, folder, recursive, operator, input, upper, genre, name, category, help };
+}
+
+export function updateConditionCategories(host, choices, selectedControl, selectedId) {
+  for (const row of host.children) {
+    const category = ROW_CONTROLS.get(row)?.category;
+    if (!category) continue;
+    const value = category === selectedControl ? selectedId : category.value;
+    optionList(host.ownerDocument, category, optionsWithMissing(choices, value));
+    category.value = value;
+  }
 }
 
 /**

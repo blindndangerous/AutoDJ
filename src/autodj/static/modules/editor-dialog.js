@@ -4,6 +4,7 @@ import { dialogStatusLine, focusAfterDialog, releaseDialogFocus, showFieldError 
 import { announceStatus, clearAnnouncedStatus, sayIfStillPending } from "./live-region.js";
 
 const openEditors = new WeakMap();
+const closeEditors = new WeakMap();
 const editorStatuses = new WeakMap();
 
 export const showEditorError = showFieldError;
@@ -33,6 +34,10 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
   const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
 
   function close() {
+    const position = stack.indexOf(dialog);
+    if (position !== -1) {
+      for (const child of stack.slice(position + 1).reverse()) closeEditors.get(child)?.();
+    }
     generation += 1;
     if (confirming) doc.getElementById("confirm-dialog")?.close();
     pending = false;
@@ -48,6 +53,7 @@ export function createEditorDialog({ form, heading, cancel, fallback, save, onCa
     form.hidden = true;
     clearAnnouncedStatus(status);
   }
+  closeEditors.set(dialog, close);
 
   async function cancelEdit(event) {
     event.preventDefault();

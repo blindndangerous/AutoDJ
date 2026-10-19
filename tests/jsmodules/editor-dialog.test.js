@@ -40,6 +40,26 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 afterEach(() => document.body.replaceChildren());
 
 describe("editor dialog controller", () => {
+  it("closes child editors and invalidates their pending work with the parent", async () => {
+    const parent = makeEditor("parent");
+    parent.open(parent.value);
+    let current;
+    let finish;
+    const child = makeEditor("child", { save: (_event, isCurrent) => {
+      current = isCurrent;
+      return new Promise((resolve) => { finish = resolve; });
+    } });
+    child.open(child.value, parent.value);
+    child.form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(current()).toBe(true);
+    parent.close();
+    expect(child.dialog.open).toBe(false);
+    expect(parent.dialog.open).toBe(false);
+    expect(current()).toBe(false);
+    finish();
+    await Promise.resolve();
+  });
+
   it("reuses an existing dialog and finishes a synchronous step save immediately", () => {
     document.body.innerHTML = '<dialog id="step"><fieldset id="step-form"><h1 id="title">Step</h1><input id="value"><button id="save" type="button">Add step</button><button id="cancel">Cancel</button></fieldset></dialog>';
     const save = vi.fn();
