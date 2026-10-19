@@ -11,6 +11,7 @@
     "deadcode": "knip",
     "audit:transitions": "node tests/playwright/transition_audit.mjs",
     "audit:health": "node tests/playwright/health_audit.mjs",
+    "audit:sso": "node tests/playwright/sso_audit.mjs",
     "audit:visual": "node tests/playwright/visual_audit.mjs",
     "audit:reviews": "node tests/playwright/programme_review_audit.mjs",
     "audit:editions": "node tests/playwright/prepared_edition_audit.mjs",

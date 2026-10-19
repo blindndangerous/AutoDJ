@@ -8,6 +8,12 @@ local configuration, outside issues and station archives. Follow the
 
 ## Browser controllers
 
+In `server.auth_mode = "trusted_proxy"`, SSO replaces pairing. Follow the
+[trusted-proxy setup](operations/network.md#single-sign-on-through-a-trusted-proxy).
+Revoke access at the identity provider. **Your browsers** lets each user list,
+rename or forget their own records; forgetting does not revoke access. The
+`devices` CLI commands below apply only to native mode and refuse SSO mode.
+
 A paired browser controls every station and can pair more browsers. Pair only
 trusted operators; there are no separate station-operator roles. Listening alone
 does not grant control.

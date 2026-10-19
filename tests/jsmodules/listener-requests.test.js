@@ -88,10 +88,12 @@ describe("listener requests card", () => {
   let request;
   let timers;
   let delayed;
+  let enabled;
 
   const install = () => installListenerRequests({
     doc: document,
     request,
+    isEnabled: () => enabled,
     setTimer: (callback) => { timers.push(callback); return 1; },
     later: (callback, ms) => { delayed.push({ callback, ms }); return 1; },
     formatTime: () => "2:05 PM",
@@ -106,8 +108,44 @@ describe("listener requests card", () => {
     mount();
     timers = [];
     delayed = [];
+    enabled = true;
     request = vi.fn(async () => STATE);
   });
+
+  it.each(["refresh", "settings", "action"])(
+    "stops requests and ignores a pending %s after sign-out, but refreshes a station switch",
+    async (pending) => {
+      const controls = install();
+      await flush();
+      let finish;
+      request.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+      const button = row(A).querySelector('[data-action="approve"]');
+      if (pending === "refresh") void controls.refresh();
+      else if (pending === "settings") {
+        byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+      } else button.click();
+      const calls = request.mock.calls.length;
+      enabled = false;
+      controls.clear();
+      expect(request).toHaveBeenCalledTimes(calls);
+      finish(STATE);
+      await flush();
+      runDelayed();
+      expect(byId("requests-card").hidden).toBe(true);
+      expect(byId("requests-list").children).toHaveLength(0);
+      expect(byId("requests-status").textContent).toBe("");
+      timers[0]();
+      byId("requests-card").dispatchEvent(new Event("toggle"));
+      byId("requests-settings").dispatchEvent(new Event("submit", { cancelable: true }));
+      await controls.refresh();
+      expect(request).toHaveBeenCalledTimes(calls);
+      enabled = true;
+      controls.clear();
+      await flush();
+      expect(request).toHaveBeenCalledTimes(calls + 1);
+      expect(byId("requests-list").children).toHaveLength(2);
+    },
+  );
 
   it("shows while requests are off, with the switch off and no lists", async () => {
     request = vi.fn(async () => ({

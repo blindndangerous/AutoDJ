@@ -1386,10 +1386,11 @@ const _accessEls = {
   pairRefresh:   document.getElementById("pair-refresh"),
 };
 installAccess(_accessEls, {
-  // The pairing dialog takes focus and says why it opened.
-  onSignedOut: (reason) => {
+  // Stop protected activity before pairing again or leaving for SSO sign-out.
+  onSignedOut: (reason, logoutUrl) => {
     expireAuthenticatedSession();
-    auth.show(reason);
+    if (logoutUrl) location.assign(logoutUrl);
+    else auth.show(reason);
   },
 });
 
@@ -3267,7 +3268,7 @@ function startAuthenticatedApp(initialState) {
   };
   timeCheckControls = installTimeChecks(linerAudio);
   speechControls = installSpeechStudio();
-  listenerRequestControls = installListenerRequests();
+  listenerRequestControls = installListenerRequests({ isEnabled: authenticatedInteractionEnabled });
   breakSettingsControls = installBreakSettings();
   linerControls = installLiners(_linerEls, { postSettings, ...linerAudio });
   // When the server mixes, it plays the cart itself and the page only

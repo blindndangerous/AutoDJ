@@ -4,6 +4,12 @@ import {
 } from "./api-client.js";
 import { NBSP } from "./live-region.js";
 
+let latestAuthState = {};
+
+export function authenticationState() {
+  return latestAuthState;
+}
+
 const MAX_SERVER_DETAIL_LENGTH = 200;
 // Shown when a session this browser had is revoked or expires.
 export const SIGNED_OUT_TEXT = "This browser was signed out. Enter a new pairing code.";
@@ -46,6 +52,7 @@ export function initAuthDialog({
   document,
   fetchImpl = fetch,
   onSuccess = () => location.reload(),
+  onSignIn = () => location.reload(),
 }) {
   const dialog = document.querySelector("#auth-dialog");
   const form = document.querySelector("#auth-form");
@@ -62,6 +69,7 @@ export function initAuthDialog({
 
   let pendingSubmit = null;
   let lastError = "";
+  let signInStarted = false;
 
   function clearError() {
     error.textContent = "";
@@ -140,6 +148,13 @@ export function initAuthDialog({
   // `reason` says why a browser that was paired is being asked again; it
   // is part of the dialog's description, so it is read as the dialog opens.
   function show(reason = "") {
+    if (latestAuthState.mode === "trusted_proxy") {
+      if (!signInStarted) {
+        signInStarted = true;
+        onSignIn();
+      }
+      return;
+    }
     reasonText.textContent = reason;
     reasonText.hidden = !reason;
     if (!dialog.open) dialog.showModal();
@@ -195,11 +210,29 @@ export async function bootstrapAuthenticatedApp({
   try {
     let authResponse;
     try {
-      authResponse = await fetchImpl("/api/auth/status");
+      authResponse = await fetchImpl("/api/auth/status", { redirect: "manual" });
     } catch (cause) {
       throw new Error("The AutoDJ server is not reachable.", { cause });
     }
+    if (authResponse.type === "opaqueredirect") {
+      if (latestAuthState.mode === "trusted_proxy") {
+        auth.show();
+        return false;
+      }
+      throw new Error("Reload this page to sign in through the gateway.");
+    }
     if (authResponse.status === 401) {
+      let deniedState;
+      try {
+        deniedState = await authResponse.json();
+      } catch (_) {
+        // Native pairing may return a bare 401 rather than JSON.
+      }
+      if (deniedState?.mode === "trusted_proxy") {
+        throw new Error(
+          "SSO sign-in could not be verified. Ask the server administrator to check the proxy's identity settings.",
+        );
+      }
       auth.show();
       return false;
     }
@@ -210,6 +243,7 @@ export async function bootstrapAuthenticatedApp({
     if (!validAuthState(authState)) {
       throw new Error("The AutoDJ server sent a reply this page cannot read.");
     }
+    latestAuthState = authState;
     if (authState.required && !authState.authenticated) {
       auth.show();
       return false;
@@ -255,6 +289,11 @@ export async function reconnectWebSocketAfterClose({
       // which a script reading it would only see as a network error.
       const response = await fetchImpl("/api/auth/status", { redirect: "manual" });
       if (response.type === "opaqueredirect") {
+        if (latestAuthState.mode === "trusted_proxy") {
+          onExpired();
+          auth.show();
+          return false;
+        }
         onUnreachable({ signInRedirect: true });
       } else if (response.status === 401) {
         onExpired();
@@ -262,6 +301,9 @@ export async function reconnectWebSocketAfterClose({
         return false;
       } else if (response.ok) {
         const authState = await response.json();
+        if (!validAuthState(authState) && latestAuthState.mode === "trusted_proxy") {
+          throw new Error("The AutoDJ server sent a reply this page cannot read.");
+        }
         if (!validAuthState(authState)
             || (authState.required && !authState.authenticated)) {
           onExpired();

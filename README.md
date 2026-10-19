@@ -49,7 +49,7 @@ You can use AutoDJ just for beatmatching and its library tools without running a
 
 ## For administrators
 
-The [install guide](docs/guides/install.md) covers Windows, Linux, Docker, and NAS storage. [Operations](docs/operations.md) has backup, restore, upgrade, network, and command details. Run `autodj doctor` to check an installation. Use **Settings**, **Profiles and access** for paired browsers and **Settings**, **Analysis workers** for machine tokens. Do not publish the control page without access controls.
+The [install guide](docs/guides/install.md) covers Windows, Linux, Docker, and NAS storage. [Operations](docs/operations.md) has backup, restore, upgrade, network, and command details. Run `autodj doctor` to check an installation. Use **Settings**, **Profiles and access** for paired or SSO-identified browsers and **Settings**, **Analysis workers** for machine tokens. Do not publish the control page without access controls. An authenticating reverse proxy can use the provider-neutral [trusted-proxy mode](docs/guides/operations/network.md#single-sign-on-through-a-trusted-proxy); ordinary installations retain code-entry pairing.
 
 ## For contributors
 

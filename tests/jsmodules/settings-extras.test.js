@@ -350,7 +350,7 @@ describe("profiles", () => {
 });
 
 describe("browser access", () => {
-  function setup(fetchImpl) {
+  function setup(fetchImpl, authState = {}) {
     document.body.innerHTML = `
       <details id="card"><summary>Browser access</summary>
         <p id="note" hidden></p>
@@ -390,7 +390,7 @@ describe("browser access", () => {
       if (opener?.isConnected) opener.focus();
       rename.dispatchEvent(new Event("close"));
     });
-    installAccess(els, { onSignedOut });
+    installAccess(els, { onSignedOut, getAuthState: () => authState });
     const answer = confirmDialog();
     els.card.open = true;
     els.card.dispatchEvent(new Event("toggle"));
@@ -591,6 +591,7 @@ describe("browser access", () => {
       ? { authenticated: false } : { pairing: true, devices }));
     const { els, onSignedOut, answer } = setup(fetchImpl);
     await vi.waitFor(() => expect(els.controls.hidden).toBe(false));
+    expect(els.signOut.textContent).toBe("Sign out this browser");
 
     els.signOut.click();
     await answer("confirm");
@@ -652,4 +653,57 @@ describe("browser access", () => {
     await vi.waitFor(() => expect(els.status.textContent).toBe("Could not revoke Phone: Server busy"));
     expect(document.activeElement).toBe(revoke);
   });
+
+  it("shows SSO identity and browser names without offering pairing or unmanaged logout", async () => {
+    const fetchImpl = vi.fn(() => json({
+      pairing: false, mode: "trusted_proxy", devices, user: { id: "owner", name: "Alice" },
+    }));
+    const { els } = setup(fetchImpl, { mode: "trusted_proxy", logout_url: null });
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    expect(els.controls.hidden).toBe(false);
+    expect(els.note.textContent).toContain("Signed in as Alice");
+    expect(els.note.textContent).toContain("managed externally");
+    expect(els.signOut.hidden).toBe(true);
+    expect(els.pairToggle.hidden).toBe(true);
+    expect(els.list.querySelector('[aria-label="Forget Phone"]')).not.toBeNull();
+    expect(els.list.textContent).not.toContain("Paired");
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/pairing-code")).toBe(false);
+  });
+
+  it("forgets an SSO browser without claiming to revoke access or signing out", async () => {
+    let listed = devices;
+    const fetchImpl = vi.fn((url, init = {}) => {
+      if (init.method === "DELETE") {
+        listed = devices.slice(1);
+        return json({ forgotten: devices[0].device_id, signed_out: false });
+      }
+      return json({ pairing: false, mode: "trusted_proxy", devices: listed, user: { name: "Alice" } });
+    });
+    const { els, onSignedOut, answer } = setup(fetchImpl);
+    await vi.waitFor(() => expect(els.list.querySelectorAll("li")).toHaveLength(2));
+    els.list.querySelector('[aria-label="Forget Phone"]').click();
+    expect(document.getElementById("confirm-message").textContent).toContain("does not revoke");
+    await answer("confirm");
+    await vi.waitFor(() => expect(els.status.textContent).toContain("Forgot Phone"));
+    expect(onSignedOut).not.toHaveBeenCalled();
+    expect(els.list.querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("hands SSO logout to session cleanup with the server's configured URL", async () => {
+    const logoutUrl = "https://login.example.test/logout";
+    const fetchImpl = vi.fn((url) => json(url === "/api/logout"
+      ? { authenticated: false, logout_url: logoutUrl }
+      : { pairing: false, mode: "trusted_proxy", devices, user: { name: "Alice" } }));
+    const { els, onSignedOut, answer } = setup(fetchImpl, {
+      mode: "trusted_proxy", logout_url: logoutUrl,
+    });
+    await vi.waitFor(() => expect(els.controls.hidden).toBe(false));
+    expect(els.signOut.hidden).toBe(false);
+    expect(els.signOut.textContent).toBe("Sign out through SSO");
+    els.signOut.click();
+    expect(document.getElementById("confirm-message").textContent).not.toContain("pairing code");
+    await answer("confirm");
+    await vi.waitFor(() => expect(onSignedOut).toHaveBeenCalledWith("", logoutUrl));
+  });
+
 });

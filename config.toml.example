@@ -18,6 +18,8 @@
 #   AUTODJ_HOST
 #   AUTODJ_PORT
 #   AUTODJ_ACCESS_TOKEN
+#   AUTODJ_TRUSTED_PROXY_SECRET
+#   AUTODJ_TRUSTED_PROXY_SECRET_FILE
 #   AUTODJ_LAN
 #   AUTODJ_HUGGINGFACE_TOKEN
 # END ENVIRONMENT OVERRIDES
@@ -44,6 +46,12 @@ throttle_ms = 0
 host = "127.0.0.1"
 port = 8080
 # access_token = "generate-at-least-32-random-bytes"
+# auth_mode = "native" # Or "trusted_proxy"; requires a proxy shared secret.
+# Supply AUTODJ_TRUSTED_PROXY_SECRET through the service environment, or use:
+# trusted_proxy_secret_file = "/srv/autodj/private/proxy-secret"
+# A direct secret and secret file are mutually exclusive, including environment inputs.
+# trusted_proxy_secret may also be set in ignored config.local.toml; never share it.
+# sso_logout_url = "/sso/logout" # Optional same-origin path or HTTPS URL.
 lan = false
 insecure_lan = false
 session_ttl_seconds = 7776000

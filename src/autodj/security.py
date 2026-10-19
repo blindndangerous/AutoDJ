@@ -19,12 +19,12 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 
 from starlette.exceptions import HTTPException
-from starlette.requests import Request
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse
 from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from autodj.config import ServerConfig, canonicalize_allowed_origin
+from autodj.config import ServerConfig, canonicalize_allowed_origin, resolve_trusted_proxy_secret
 from autodj.pairing import DEVICE_ID
 
 COOKIE_NAME = "autodj_session"
@@ -148,6 +148,7 @@ class SecurityPolicy:
     config: ServerConfig
     secure_cookie: bool = False
     now: Callable[[], float] = time.time
+    monotonic_now: Callable[[], float] = time.monotonic
     device_is_active: Callable[[str], bool] | None = field(default=None, repr=False)
     _pairing_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False, compare=False
@@ -165,11 +166,62 @@ class SecurityPolicy:
     def __post_init__(self) -> None:
         """Detach policy decisions from caller-owned mutable configuration."""
         self.config = copy.deepcopy(self.config)
+        if self.config.auth_mode == "trusted_proxy":
+            secret = resolve_trusted_proxy_secret(self.config)
+            self.config.trusted_proxy_secret_file = None
+            self.config.trusted_proxy_secret = secret
 
     @property
     def authentication_required(self) -> bool:
-        """Return whether the policy has an access token configured."""
-        return self.config.access_token is not None
+        """Return whether browser requests require authentication."""
+        return self.config.auth_mode == "trusted_proxy" or self.pairing_required
+
+    @property
+    def pairing_required(self) -> bool:
+        """Native pairing alone uses the configured access token."""
+        return self.config.auth_mode == "native" and self.config.access_token is not None
+
+    def sso_identity(self, scope: Scope) -> tuple[str, str] | None:
+        """Read identity headers only after the proxy proves knowledge of its secret."""
+        if self.config.auth_mode != "trusted_proxy":
+            return None
+        secret = self.config.trusted_proxy_secret
+        proofs = _raw_header_values(scope, b"x-autodj-proxy-auth")
+        if secret is None or len(proofs) != 1:
+            return None
+        if not hmac.compare_digest(proofs[0].encode("latin-1"), secret.encode("ascii")):
+            return None
+        users = _raw_header_values(scope, b"x-autodj-user-id")
+        names = _raw_header_values(scope, b"x-autodj-user-name")
+        if len(users) != 1 or len(names) > 1:
+            return None
+        user_id = users[0]
+        if (
+            not user_id.strip()
+            or len(user_id) > 256
+            or not user_id.isascii()
+            or not user_id.isprintable()
+        ):
+            return None
+        try:
+            name = names[0].encode("latin-1").decode("utf-8") if names else ""
+        except UnicodeError:
+            return None
+        if len(name) > 256 or (name and not name.isprintable()):
+            return None
+        return user_id, name if name.strip() else user_id
+
+    def browser_authenticated(self, scope: Scope) -> bool:
+        """Authenticate HTTP or WebSocket browsers using the selected mode only."""
+        if self.config.auth_mode == "trusted_proxy":
+            return self.sso_identity(scope) is not None
+        return self.verify_session(HTTPConnection(scope).cookies.get(COOKIE_NAME))
+
+    def socket_session_is_valid(self, cookie: str | None, accepted_at: float) -> bool:
+        """Bound SSO sockets so reconnecting checks provider authorization again."""
+        if self.config.auth_mode == "trusted_proxy":
+            return self.monotonic_now() - accepted_at < min(self.config.session_ttl_seconds, 900)
+        return not self.authentication_required or self.verify_session(cookie)
 
     def pairing_code_now(self) -> tuple[str, int, int]:
         """Return the current code, seconds until it expires, and seconds until the next one.
@@ -836,10 +888,12 @@ class SecurityMiddleware:
             and (len(origin_values) != 1 or not policy.origin_allowed(origin_values[0]))
         ):
             rejection = (403, "Disallowed Origin")
-        elif policy.authentication_required and not _is_public_path(path, slugs):
-            cookie = Request(scope).cookies.get(COOKIE_NAME)
-            if not policy.verify_session(cookie):
-                rejection = (401, "Authentication required")
+        elif (
+            policy.authentication_required
+            and not _is_public_path(path, slugs)
+            and not policy.browser_authenticated(scope)
+        ):
+            rejection = (401, "Authentication required")
 
         if rejection is not None:
             status, detail = rejection

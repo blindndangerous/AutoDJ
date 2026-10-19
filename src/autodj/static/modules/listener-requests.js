@@ -115,6 +115,7 @@ function setText(node, text) {
 export function installListenerRequests({
   doc = document,
   request = requestJson,
+  isEnabled = () => true,
   setTimer = (callback, ms) => setInterval(callback, ms),
   later = (callback, ms) => setTimeout(callback, ms),
   formatTime = defaultTime,
@@ -135,6 +136,7 @@ export function installListenerRequests({
   let busy = false;
 
   function say(message, tone = "info") {
+    if (!isEnabled()) return;
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
   }
 
@@ -269,7 +271,7 @@ export function installListenerRequests({
     settingsForm.addEventListener("change", () => { settingsDirty = true; });
     settingsForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (saving) return;
+      if (saving || !isEnabled()) return;
       clearThresholdError();
       const limit = parseThreshold(threshold?.value);
       if (limit === null) {
@@ -305,7 +307,7 @@ export function installListenerRequests({
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(body),
         }); } finally { stopPending(); }
-        if (!currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
+        if (!isEnabled() || !currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
         settingsDirty = false;
         saving = false;
         lastJson = null;
@@ -313,7 +315,7 @@ export function installListenerRequests({
         render(state);
         say(savedText(before, state));
       } catch (error) {
-        if (!currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
+        if (!isEnabled() || !currentSave() || !isAuthenticatedRequestCurrent(epoch)) return;
         // Answered after a station switch: the form is the new station's (#70).
         const left = staleActionText(error);
         if (left) say(left, error?.actionDone ? "info" : "error");
@@ -362,6 +364,7 @@ export function installListenerRequests({
   });
 
   async function refresh() {
+    if (!isEnabled()) return;
     const mine = ++refreshGeneration;
     const station = stationEpoch();
     const epoch = captureAuthenticatedRequestEpoch();
@@ -371,7 +374,7 @@ export function installListenerRequests({
     } catch {
       return;
     }
-    if (mine !== refreshGeneration || station !== stationEpoch() || !isAuthenticatedRequestCurrent(epoch)) return;
+    if (!isEnabled() || mine !== refreshGeneration || station !== stationEpoch() || !isAuthenticatedRequestCurrent(epoch)) return;
     if (!state || typeof state !== "object") return;
     // Shown off or on: Take listener requests is here.
     card.hidden = false;
@@ -397,7 +400,8 @@ export function installListenerRequests({
 
   list.addEventListener("click", async (event) => {
     const button = event.target.closest?.("button[data-action]");
-    if (!button || busy) return;
+    if (!button || busy || !isEnabled()) return;
+    const mine = settingsGeneration;
     const { id, action } = button.dataset;
     const song = button.dataset.song || "the song";
     const next = neighbours(id);
@@ -409,7 +413,9 @@ export function installListenerRequests({
     button.classList.add("is-pending");
     button.setAttribute("aria-busy", "true");
     // A short line when the reply is slow, so the press is heard (#384).
-    const stopPending = sayIfStillPending(say, {
+    const stopPending = sayIfStillPending((message) => {
+      if (mine === settingsGeneration) say(message);
+    }, {
       approve: `Queueing ${song}…`,
       "play-next": `Queueing ${song} to play next…`,
       reject: `Turning down ${song}…`,
@@ -419,14 +425,16 @@ export function installListenerRequests({
         method: "POST",
         headers: { Accept: "application/json" },
       });
+      if (!isEnabled() || mine !== settingsGeneration) return;
       const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
       // Move focus first, then let the decided row go, then say the result.
       focusTarget(next, state)?.focus();
       lastJson = null;
       render(state);
       const done = action === "reject" ? `Turned down ${song}.` : `Queued ${song}.`;
-      later(() => say(done), ANNOUNCE_DELAY_MS);
+      later(() => { if (mine === settingsGeneration) say(done); }, ANNOUNCE_DELAY_MS);
     } catch (error) {
+      if (!isEnabled()) return;
       // Answered after a station switch: done, or not, on the old station.
       const left = staleActionText(error);
       say(left || error?.message || "That did not work.", error?.actionDone ? "info" : "error");
@@ -438,12 +446,12 @@ export function installListenerRequests({
     }
   });
 
-  const showing = () => card.open && !card.hidden && !doc.hidden && !panel?.hidden;
+  const showing = () => isEnabled() && card.open && !card.hidden && !doc.hidden && !panel?.hidden;
   card.addEventListener("toggle", () => { if (card.open) void refresh(); });
   setTimer(() => { if (showing()) void refresh(); }, POLL_MS);
   void refresh();
   // Switching stations (#70) or signing out: drop the other station's
-  // requests at once, then ask the station now controlled.
+  // requests at once; refresh the station only while authenticated.
   function clear() {
     settingsGeneration++;
     settingsSaveId++;

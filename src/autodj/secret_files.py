@@ -40,15 +40,8 @@ def access_token_path(cfg: AutoDJConfig) -> Path:
 
 if sys.platform == "win32":
 
-    def _owner_only_windows(path: str) -> None:
-        """Give *path* a protected DACL granting full control to the current user only.
-
-        ``os.chmod`` on Windows only toggles the read-only flag, so without this
-        the file would keep the permissions it inherits from its folder.
-
-        Raises:
-            OSError: The current user or the new permissions could not be set.
-        """
+    def _windows_user_sid() -> str:
+        """Return the current process user's SID for private-file access lists."""
         import ctypes
         from ctypes import wintypes
 
@@ -73,13 +66,6 @@ if sys.platform == "win32":
             ctypes.c_void_p,
             ctypes.POINTER(wintypes.LPWSTR),
         ]
-        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-            wintypes.LPCWSTR,
-            wintypes.DWORD,
-            ctypes.POINTER(ctypes.c_void_p),
-            ctypes.c_void_p,
-        ]
-        advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
 
         def fail() -> OSError:
             return ctypes.WinError(ctypes.get_last_error())
@@ -107,12 +93,38 @@ if sys.platform == "win32":
                 kernel32.LocalFree(text)
         finally:
             kernel32.CloseHandle(token)
+        assert user is not None
+        return user
+
+    def _owner_only_windows(path: str) -> None:
+        """Give *path* a protected DACL granting full control to the current user only.
+
+        ``os.chmod`` on Windows only toggles the read-only flag, so without this
+        the file would keep the permissions it inherits from its folder.
+
+        Raises:
+            OSError: The current user or the new permissions could not be set.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p,
+        ]
+        advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+        user = _windows_user_sid()
         descriptor = ctypes.c_void_p()
         # D:P protects the DACL from inheritance; FA is full access.
         if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
             f"D:P(A;;FA;;;{user})", 1, ctypes.byref(descriptor), None
         ):
-            raise fail()
+            raise ctypes.WinError(ctypes.get_last_error())
         try:
             dacl_security_information = 0x00000004
             protected_dacl_security_information = 0x80000000
@@ -121,9 +133,96 @@ if sys.platform == "win32":
                 dacl_security_information | protected_dacl_security_information,
                 descriptor,
             ):
-                raise fail()
+                raise ctypes.WinError(ctypes.get_last_error())
         finally:
             kernel32.LocalFree(descriptor)
+
+    def _check_private_windows_file(fd: int) -> None:
+        """Require the opened file's DACL to grant access only to the current user."""
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        class ACL(ctypes.Structure):
+            _fields_ = [
+                ("revision", wintypes.BYTE),
+                ("reserved", wintypes.BYTE),
+                ("size", wintypes.WORD),
+                ("ace_count", wintypes.WORD),
+                ("reserved2", wintypes.WORD),
+            ]
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        advapi32.GetSecurityInfo.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi32.GetSecurityInfo.restype = wintypes.DWORD
+        advapi32.GetAce.argtypes = [
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi32.ConvertSidToStringSidW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.LPWSTR),
+        ]
+        user = _windows_user_sid()
+        descriptor, dacl = ctypes.c_void_p(), ctypes.c_void_p()
+        # SE_FILE_OBJECT and DACL_SECURITY_INFORMATION, on the same handle we read.
+        status = advapi32.GetSecurityInfo(
+            msvcrt.get_osfhandle(fd),
+            1,
+            4,
+            None,
+            None,
+            ctypes.byref(dacl),
+            None,
+            ctypes.byref(descriptor),
+        )
+        if status:
+            raise ctypes.WinError(status)
+        try:
+            if not dacl.value:
+                raise PermissionError("secret file requires an owner-only access list")
+            acl = ctypes.cast(dacl, ctypes.POINTER(ACL)).contents
+            for index in range(acl.ace_count):
+                ace = ctypes.c_void_p()
+                if not advapi32.GetAce(dacl, index, ctypes.byref(ace)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                assert ace.value is not None
+                kind = ctypes.cast(ace, ctypes.POINTER(wintypes.BYTE))[0]
+                if kind == 1:  # ACCESS_DENIED_ACE grants no access.
+                    continue
+                if kind != 0:  # Only ordinary ACCESS_ALLOWED_ACE entries are supported.
+                    raise PermissionError("secret file requires an owner-only access list")
+                text = wintypes.LPWSTR()
+                # ACCESS_ALLOWED_ACE contains a 4-byte header, 4-byte mask, then the SID.
+                if not advapi32.ConvertSidToStringSidW(ace.value + 8, ctypes.byref(text)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                try:
+                    if text.value != user:
+                        raise PermissionError("secret file requires an owner-only access list")
+                finally:
+                    kernel32.LocalFree(text)
+        finally:
+            kernel32.LocalFree(descriptor)
+
+
+def _check_private_file(fd: int) -> None:
+    """Check the permissions of the opened secret, not a separately resolved path."""
+    if sys.platform == "win32":
+        _check_private_windows_file(fd)
+    elif os.fstat(fd).st_mode & 0o077:
+        raise PermissionError("secret file requires owner-only permissions (mode 0600 or 0400)")
 
 
 def write_private_file(path: Path, text: str | bytes) -> None:
@@ -161,15 +260,23 @@ def write_private_file(path: Path, text: str | bytes) -> None:
 
 
 def read_secret(
-    path: Path, *, valid: Callable[[str], bool], error: type[Exception], what: str
+    path: Path,
+    *,
+    valid: Callable[[str], bool],
+    error: type[Exception],
+    what: str,
+    require_private: bool = False,
 ) -> str | None:
     """Return the secret saved at *path*, or ``None`` if it is missing or not *valid*.
 
     Raises:
-        error: The file exists but cannot be read.
+        error: The file exists but cannot be read, or required private permissions fail.
     """
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        with path.open(encoding="utf-8") as handle:
+            if require_private:
+                _check_private_file(handle.fileno())
+            text = handle.read().strip()
     except FileNotFoundError:
         return None
     except (OSError, UnicodeDecodeError) as exc:

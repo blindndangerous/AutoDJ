@@ -842,6 +842,23 @@ def validate_access_token(token: str | None) -> None:
         raise ValueError("server.access_token must be at least 32 UTF-8 bytes")
 
 
+def validate_trusted_proxy_secret(secret: str | None, secret_file: str | None = None) -> None:
+    """Reject ambiguous sources and values unsafe for the proxy proof header."""
+    if secret is not None and secret_file is not None:
+        raise ValueError(
+            "server.trusted_proxy_secret and server.trusted_proxy_secret_file are mutually exclusive"
+        )
+    if secret is None:
+        return
+    if not isinstance(secret, str):
+        raise TypeError("server.trusted_proxy_secret must be a string")
+    if len(secret) < 32 or any(not 33 <= ord(char) <= 126 for char in secret):
+        raise ValueError(
+            "server.trusted_proxy_secret must contain at least 32 printable ASCII bytes "
+            "without spaces"
+        )
+
+
 def canonicalize_allowed_origin(value: str) -> str:
     """Validate and normalize an HTTP or HTTPS origin."""
     if not isinstance(value, str):
@@ -943,6 +960,10 @@ class ServerConfig(_Section):
     host: str = "127.0.0.1"
     port: int = 8080
     access_token: str | None = field(default=None, repr=False)
+    auth_mode: str = "native"
+    trusted_proxy_secret: str | None = field(default=None, repr=False)
+    trusted_proxy_secret_file: str | None = None
+    sso_logout_url: str | None = None
     insecure_lan: bool = False
     lan: bool = False
     allowed_hosts: list[str] | None = None
@@ -958,7 +979,7 @@ class ServerConfig(_Section):
 
     def __post_init__(self) -> None:
         """Normalize and validate server settings after initialization."""
-        for name in ("ssl_certfile", "ssl_keyfile"):
+        for name in ("ssl_certfile", "ssl_keyfile", "trusted_proxy_secret_file"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or not value.strip()):
                 raise ValueError(f"server.{name} must be a nonempty path")
@@ -976,6 +997,28 @@ class ServerConfig(_Section):
         if not 1 <= self.port <= 65535:
             raise ValueError("server.port must be between 1 and 65535")
         validate_access_token(self.access_token)
+        self.auth_mode = _one_of(self.auth_mode, ("native", "trusted_proxy"), "server.auth_mode")
+        validate_trusted_proxy_secret(self.trusted_proxy_secret, self.trusted_proxy_secret_file)
+        if self.sso_logout_url is not None:
+            value = self.sso_logout_url
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\\" in value
+                or any(not char.isprintable() or char.isspace() for char in value)
+            ):
+                raise ValueError("server.sso_logout_url must be a safe path or HTTPS URL")
+            parsed = urlsplit(value)
+            relative = value.startswith("/") and not value.startswith("//")
+            if not relative and (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("server.sso_logout_url must be a same-origin path or HTTPS URL")
+            if not relative:
+                canonicalize_allowed_origin(f"https://{parsed.netloc}")
         if not isinstance(self.insecure_lan, bool):
             raise TypeError("server.insecure_lan must be a boolean")
         if not isinstance(self.lan, bool):
@@ -1029,6 +1072,24 @@ class ServerConfig(_Section):
             raise TypeError("server section must be a table")
         data = dict(data)
         return super().from_dict(data)
+
+
+def resolve_trusted_proxy_secret(cfg: ServerConfig) -> str | None:
+    """Read one configured source without replacing the operator's source settings."""
+    from autodj.secret_files import read_secret
+
+    validate_trusted_proxy_secret(cfg.trusted_proxy_secret, cfg.trusted_proxy_secret_file)
+    if cfg.trusted_proxy_secret_file is None:
+        return cfg.trusted_proxy_secret
+    secret = read_secret(
+        Path(cfg.trusted_proxy_secret_file),
+        valid=lambda _: True,
+        error=ValueError,
+        what="trusted proxy secret",
+        require_private=True,
+    )
+    validate_trusted_proxy_secret(secret)
+    return secret
 
 
 STATION_OUTPUTS = ("browser", "server", "stream")
@@ -1088,6 +1149,11 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
     Also requires the TLS certificate and key files, when set, to exist.
     """
     cfg.__post_init__()
+    proxy_authenticated = False
+    if cfg.auth_mode == "trusted_proxy":
+        if resolve_trusted_proxy_secret(cfg) is None:
+            raise ValueError("server.trusted_proxy_secret is required in trusted_proxy mode")
+        proxy_authenticated = True
     for name in ("ssl_certfile", "ssl_keyfile"):
         value = getattr(cfg, name)
         if value is not None and not Path(value).is_file():
@@ -1103,7 +1169,7 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
         )
     if not cfg.effective_allowed_hosts() or not cfg.effective_allowed_origins():
         raise ValueError("wildcard binding requires explicit allowed_hosts and allowed_origins")
-    if not loopback and not cfg.access_token and not cfg.insecure_lan:
+    if not loopback and not proxy_authenticated and not cfg.access_token and not cfg.insecure_lan:
         raise ValueError(
             "LAN binding requires [server] access_token/--access-token or explicit --insecure-lan"
         )
@@ -1948,6 +2014,8 @@ ENVIRONMENT_OVERLAY: dict[str, tuple[str, str, Callable[[str], object]]] = {
     "AUTODJ_HOST": ("server", "host", str),
     "AUTODJ_PORT": ("server", "port", int),
     "AUTODJ_ACCESS_TOKEN": ("server", "access_token", str),
+    "AUTODJ_TRUSTED_PROXY_SECRET": ("server", "trusted_proxy_secret", str),
+    "AUTODJ_TRUSTED_PROXY_SECRET_FILE": ("server", "trusted_proxy_secret_file", str),
     "AUTODJ_LAN": ("server", "lan", parse_env_bool),
     "AUTODJ_HUGGINGFACE_TOKEN": ("huggingface", "token", str),
 }
