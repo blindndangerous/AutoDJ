@@ -186,14 +186,21 @@ DEP002 = [
 ]
 
 [tool.vulture]
-paths = ["src/autodj"]
-min_confidence = 80
+paths = ["src/autodj", "scripts", "vulture_whitelist.py"]
+min_confidence = 60
+sort_by_size = true
 exclude = ["tests/", "tmp/"]
-ignore_decorators = ["@app.route", "@app.get", "@app.post", "@app.websocket", "@pytest.fixture"]
+ignore_decorators = [
+    "@app.*", "@router.*", "@station_router.*",  # FastAPI routes
+    "@*.command",  # click commands
+    "@field_validator", "@model_validator",  # pydantic hooks
+    "@pytest.fixture",
+]
 # `set_playback_settings` collects all of its keyword params into a
 # locals()-derived dict and dispatches via per-helper readers, so the
 # raw parameter name is never referenced directly by vulture's heuristic.
-ignore_names = ["replaygain_enabled", "replaygain_target_db", "transition_fx", "transition_wet_mix"]
+# `model_config` is pydantic's class-level configuration hook.
+ignore_names = ["model_config", "replaygain_enabled", "replaygain_target_db", "transition_fx", "transition_wet_mix"]
 
 [tool.bandit]
 targets = ["src/autodj"]

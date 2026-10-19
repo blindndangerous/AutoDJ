@@ -719,7 +719,7 @@ async function openDaypartErrors(page, visit) {
   await visit("library/ad-step-error");
   await page.locator("#clock-step-ad-seconds").fill("0");
   await page.locator("#clock-step-type").selectOption("music");
-  await page.locator("#clock-cancel-edit").click();
+  await cancelEditor(page, "clock-step", "clock-cancel-edit");
 }
 
 // Library tools: an automatic rescan under 5 minutes refused in the

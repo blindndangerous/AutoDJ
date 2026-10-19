@@ -24,7 +24,8 @@ import {
   requestJson,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { fmtTime, focusAfterDialog, nextRowControl, releaseDialogFocus, rowButton } from "./dom-helpers.js";
+import { fmtTime, focusAfterDialog, nextRowControl, reconcileRows, releaseDialogFocus, rowButton } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 
 export const SIGNED_OUT_REASON =
@@ -92,7 +93,7 @@ export function installAccess(els, { onSignedOut }) {
   if (!card || !note || !controls || !signOut || !refresh || !list || !status) return;
   const doc = card.ownerDocument;
   let devices = [];
-  const rows = new Map();
+  const listNavigation = installActionListNavigation(list);
 
   const say = (message, tone = "info") => {
     announceStatus(status, message, { dwellMs: tone === "error" ? 6000 : 3000, force: true, tone });
@@ -117,28 +118,26 @@ export function installAccess(els, { onSignedOut }) {
     return row;
   }
 
-  function render() {
-    const ids = new Set(devices.map((device) => device.device_id));
-    for (const [id, row] of rows) {
-      if (ids.has(id)) continue;
-      row.li.remove();
-      rows.delete(id);
-    }
+  function render({ announceFocus = true } = {}) {
     const now = Date.now();
-    for (const device of devices) {
-      let row = rows.get(device.device_id);
-      if (!row) {
-        row = newRow(device);
-        rows.set(device.device_id, row);
-        list.append(row.li);
-      }
+    const result = reconcileRows(list, devices, (device) => device.device_id, (device) => {
+      const row = newRow(device);
+      row.li._row = row;
+      return row.li;
+    }, (li, device) => {
+      const row = li._row;
       row.device = device;
       const name = who(device);
-      row.text.textContent = `${name}.  Paired ${pairedDate(device.paired_at)}, `
+      const words = `${name}.  Paired ${pairedDate(device.paired_at)}, `
         + `last seen ${lastSeenWords(device.last_seen_at, now)}.`;
-      row.rename.setAttribute("aria-label", `Rename ${name}`);
-      row.revoke.setAttribute("aria-label", `Revoke ${name}`);
-    }
+      if (row.text.textContent !== words) row.text.textContent = words;
+      if (row.rename.getAttribute("aria-label") !== `Rename ${name}`) row.rename.setAttribute("aria-label", `Rename ${name}`);
+      if (row.revoke.getAttribute("aria-label") !== `Revoke ${name}`) row.revoke.setAttribute("aria-label", `Revoke ${name}`);
+    }, { fallback: refresh, onFocusLost: ({ target }) => {
+      if (announceFocus) say(`The paired devices list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Refresh device list"}.`);
+    } });
+    listNavigation.refresh();
+    return result;
   }
 
   // announce: say the count (the Refresh button).  reportNew: say any
@@ -155,10 +154,13 @@ export function installAccess(els, { onSignedOut }) {
       if (!enabled) hideCode();
       const known = new Set(devices.map((device) => device.device_id));
       devices = enabled && Array.isArray(body.devices) ? body.devices : [];
-      render();
+      const reconciliation = render({ announceFocus: !announce });
       if (announce) {
         const count = devices.length;
-        say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.`);
+        const moved = reconciliation.focusLost
+          ? ` Focus moved to ${reconciliation.target?.getAttribute("aria-label") || reconciliation.target?.textContent.trim() || "Refresh device list"}.`
+          : "";
+        say(`Device list refreshed.  ${count} paired ${count === 1 ? "device" : "devices"}.${moved}`);
       } else if (reportNew) {
         const added = devices.filter((device) => !known.has(device.device_id));
         if (added.length > 0) {

@@ -92,11 +92,10 @@ MAX_QUEUED = 100
 #: with what it has, and the preview says so.  A soft limit: it is checked
 #: before each pick, so one slow pick can run past it.
 BUDGET_SECONDS = 4.0
-#: How often the page refreshes an open preview, in seconds.
-PAGE_REFRESH_SECONDS = 30.0
 #: How long a preview is kept while what is fixed stays the same, in
-#: seconds: longer than the page's refresh, so an open card that finds
-#: nothing new fixed costs no dry run.
+#: seconds: longer than the page's refresh (``REFRESH_MS`` in
+#: ``static/modules/hour-preview.js``), so an open card that finds nothing
+#: new fixed costs no dry run.
 KEEP_SECONDS = 45.0
 #: The most previews that may wait for the worker at once (each station and
 #: span waits once: later asks share its answer).

@@ -56,24 +56,16 @@ def test_parse_rejects_unsupported_executable_statements(source):
         parse_pal(source)
 
 
-def test_clock_slot_json_validation():
-    slot = ClockSlot("music", recursive=True)
-    assert ClockSlot.from_json(slot.to_json()) == slot
+def test_clock_slot_validation():
     assert not ClockSlot("music").require_following
-    liner = ClockSlot("liners", kind="liner", require_following=True)
-    assert ClockSlot.from_json(liner.to_json()) == liner
+    assert ClockSlot("liners", kind="liner", require_following=True).require_following
     with pytest.raises(ValueError, match="selection"):
         ClockSlot("music", selection="weighted")
     with pytest.raises(ValueError, match="only valid for liner"):
         ClockSlot("music", require_following=True)
     for invalid in (1, "true", None):
         with pytest.raises(ValueError, match="must be a boolean"):
-            ClockSlot.from_json({"folder": "liners", "kind": "liner", "require_following": invalid})
-    with pytest.raises(ValueError, match="unknown"):
-        ClockSlot.from_json({"folder": "music", "code": "run"})
-    ad = ClockSlot(kind="ad_break", max_spots=2, advertiser="Example Motors")
-    assert ClockSlot.from_json(ad.to_json()) == ad
-    assert "max_spots" not in slot.to_json()
+            ClockSlot("liners", kind="liner", require_following=invalid)
 
 
 def test_ad_steps_pass_to_next_music_across_wrap_and_keep_liner():

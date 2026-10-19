@@ -215,16 +215,3 @@ def initialize_paths(root: Path, python: Path, env: dict[str, str]) -> None:
         "c.index.model_dir.mkdir(parents=True, exist_ok=True)"
     )
     run([str(python), "-c", code], root, env)
-
-
-def saved_selection(root: Path) -> tuple[Path, str]:
-    """Load the verified environment selected by setup."""
-    state = read_json(root / STATE)
-    if state.get("backend") not in {"cpu", "amd", "nvidia"} or not isinstance(
-        state.get("environment"), str
-    ):
-        raise ValueError("Run scripts/setup.py first to select an AutoDJ environment.")
-    environment = (root / state["environment"]).resolve()
-    if not python_path(environment).is_file():
-        raise ValueError(f"Environment is missing: {environment}. Run setup again.")
-    return environment, state["backend"]

@@ -493,11 +493,6 @@ def pack_dates_from(state: dict[str, Any] | None, path: Path) -> PackDatesState:
     return found
 
 
-def load_pack_dates(cfg: AutoDJConfig, paths: StationPaths | None = None) -> dict[str, ClipDates]:
-    """Each voice pack's play dates that could be read (see :func:`read_pack_dates`)."""
-    return read_pack_dates(cfg, paths).dates
-
-
 def _has_audio(path: Path) -> bool:
     """Whether *path* is a sound file with at least one frame."""
     try:

@@ -13,6 +13,13 @@ category plays is set by how many steps of the clockwheel use it. Choose **Music
 **Category** condition, and select its name. You can use several categories or combine a category
 with folder and metadata conditions in the same step; the category itself stays unchanged.
 
+In a clockwheel music step or intro rule, **Add category** beside a **Music category**
+condition opens the category editor above your unfinished editor. **Save category**
+selects the new category in that condition and returns you to it. Other conditions
+and unsaved edits stay in place. Cancel or Escape returns without changing the selection,
+asking before discarding a changed category draft. The saved category remains available
+even if you later cancel the step or rule.
+
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
 list says how many unique songs each category holds, how many playlist lines match no library track,
 how many songs were placed by their release year (see below), and which clockwheels use it. **Add

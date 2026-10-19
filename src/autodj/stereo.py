@@ -21,7 +21,7 @@ import subprocess  # nosec B404 -- FFmpeg runs with a fixed argv and no shell
 import tempfile
 import threading
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -367,31 +367,6 @@ def mono(audio: np.ndarray) -> np.ndarray:
     if audio.ndim == 1:
         return audio
     return audio.mean(axis=1).astype(np.float32)
-
-
-def per_channel(fn: Callable[[np.ndarray], np.ndarray], audio: np.ndarray) -> np.ndarray:
-    """Apply a mono function to each channel of *audio*.
-
-    Args:
-        fn: Function taking and returning a 1-D array.
-        audio: Mono or ``(frames, channels)`` audio.
-
-    Returns:
-        ``fn(audio)`` for mono input; for 2-D input the per-channel results
-        stacked on axis 1, each trimmed or zero-padded to the first
-        channel's output length so the columns always line up.
-    """
-    if audio.ndim == 1:
-        return fn(audio)
-    columns = [np.asarray(fn(np.ascontiguousarray(audio[:, c]))) for c in range(audio.shape[1])]
-    length = len(columns[0])
-    fitted = []
-    for column in columns:
-        if len(column) >= length:
-            fitted.append(column[:length])
-        else:
-            fitted.append(np.pad(column, (0, length - len(column))))
-    return np.stack(fitted, axis=1).astype(np.float32)
 
 
 def envelope(env: np.ndarray, like: np.ndarray) -> np.ndarray:

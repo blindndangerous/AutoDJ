@@ -27,6 +27,7 @@ from autodj.server import (
     _apply_time_settings,
     create_app,
 )
+from tests.unit._catalog_vectors import set_vector
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 
@@ -338,7 +339,7 @@ def test_track_points_reports_playback_and_analysis_state(library_api):
     assert record["analysis"] == "pending"
     assert record["key_label"] == "--"
 
-    manager.catalog.set_vector(music, np.zeros(FEATURE_DIM, dtype=np.float32))
+    set_vector(manager.catalog, music, np.zeros(FEATURE_DIM, dtype=np.float32))
     assert call("GET", "/api/library/points", str(music))["analysis"] == "ready"
 
     source = manager.catalog.sources("music")[0]

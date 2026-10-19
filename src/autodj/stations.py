@@ -979,24 +979,6 @@ class StationRuntime:
         """The station's name, as listeners see it."""
         return str(self.cfg.stream.station_name)
 
-    def uses_stereo_tool(self) -> bool:
-        """Whether Stereo Tool processes this station's mix, or will from the next song.
-
-        Only a station that mixes on the server runs a mastering process.
-        The song playing keeps the processing it was rendered with, so a
-        station that just left Stereo Tool still counts until it ends.
-        """
-        player = self.player
-        if getattr(player, "bus", None) is None:
-            return False
-        if getattr(player, "_continuous_master", None) is None:
-            return False
-        modes = {
-            getattr(player, "_active_processing_mode", None),
-            self.cfg.playback.loudness_processing,
-        }
-        return "stereotool" in modes
-
     def summary(self) -> dict[str, Any]:
         """The station's name, state, listeners, song and stream address, for ``/api/stations``."""
         bridge = self.bridge
@@ -1481,16 +1463,6 @@ class AbandonedPlayer:
         """Whether the player thread is still running."""
         return self.player_thread.is_alive()
 
-    def uses_stereo_tool(self) -> bool:
-        """Whether its mastering process may be Stereo Tool."""
-        modes = {
-            getattr(self.player, "_active_processing_mode", None),
-            self.cfg.playback.loudness_processing,
-        }
-        return (
-            getattr(self.player, "_continuous_master", None) is not None and "stereotool" in modes
-        )
-
     def close_master(self) -> bool:
         """Close the mastering process; return whether its processes have ended.  Never raises."""
         return _close_master(
@@ -1630,7 +1602,6 @@ class StationRegistry:
         self, default: StationRuntime | ExtraStation, extras: Sequence[ExtraStation] = ()
     ) -> None:
         self._default = default
-        self._default_factory = isinstance(default, ExtraStation)
         self._extras = {extra.slug: extra for extra in extras}
         if isinstance(default, ExtraStation):
             if default.slug != DEFAULT_SLUG:
@@ -1665,21 +1636,12 @@ class StationRegistry:
         # instead of waiting while the player finishes (up to
         # stop_timeout_s).
         self._stopping: set[str] = set()
-        # Mastering lifecycle bookkeeping, inspected by lifecycle tests and
-        # held around changes to the four collections:
-        # _running, _starting, _stopping_runtimes and _stuck.  So a check
-        # sees each station in exactly one of them, never in none.
-        self.stereo_tool_lock = threading.RLock()
-        # A station being torn down, out of _running: it still holds
-        # Stereo Tool until its mastering process has closed.
-        self._stopping_runtimes: dict[str, StationRuntime] = {}
+        # Held around changes to _stuck, which a worker thread also changes.
+        self._stuck_lock = threading.Lock()
         # A station whose player outlived its stop: its player and
         # mastering process run on (closing the master under a running
         # player is unsafe), so it keeps Stereo Tool until the player ends.
         self._stuck: dict[str, StationRuntime | AbandonedPlayer] = {}
-        # The config of each station being built, which may already have
-        # taken Stereo Tool, until it runs or has failed to start.
-        self._starting: dict[str, AutoDJConfig] = {}
         # Set by the app: wires a built station to the app (its WebSocket
         # push, schedule, carts and time checks) before it starts, and
         # closes its pages' sockets once it has stopped.
@@ -1905,42 +1867,6 @@ class StationRegistry:
             atomic_write(path, json.dumps(document, indent=2) + "\n")
             self._extras[slug] = replace(extra, autostart=enabled)
 
-    def stereo_tool_user(self, exclude: str) -> str | None:
-        """The station other than *exclude* that uses Stereo Tool, in words, or ``None``.
-
-        A running station, one being started whose settings choose it, one
-        still stopping, or one whose player outlived its stop (its Stereo
-        Tool runs until then); for the last two, the words say so and to
-        try again shortly.  The check holds :attr:`stereo_tool_lock`, as
-        every move between these does, so a check from another thread
-        always finds the station.
-        """
-        with self.stereo_tool_lock:
-            for station in self.all():
-                if station.slug != exclude and station.uses_stereo_tool():
-                    return station.name
-            for slug, cfg in self._starting.items():
-                if slug != exclude and cfg.playback.loudness_processing == "stereotool":
-                    return str(cfg.stream.station_name)
-            for slug, station in self._stopping_runtimes.items():
-                if slug != exclude and station.uses_stereo_tool():
-                    return (
-                        f"{station.name}, which is still stopping (try again in a few seconds, "
-                        "once it has stopped)"
-                    )
-            for slug, held in self._stuck.items():
-                if slug != exclude and held.uses_stereo_tool():
-                    return (
-                        f"{held.name}, which has not finished stopping: its player is still "
-                        "running (try again shortly, or restart AutoDJ if this lasts)"
-                    )
-            return None
-
-    def mark_starting(self, slug: str, cfg: AutoDJConfig) -> None:
-        """Record station *slug* while its runtime is being built."""
-        with self.stereo_tool_lock:
-            self._starting[slug] = cfg
-
     def stereo_tool_presets(self) -> list[tuple[str, str]]:
         """(station name, Stereo Tool preset) for every configured station.
 
@@ -2011,13 +1937,8 @@ class StationRegistry:
                 return running
             try:
                 running = await _run_as(slug, self._start_extra(extra))
-                with self.stereo_tool_lock:
-                    self._running[slug] = running
-                    self._starting.pop(slug, None)
+                self._running[slug] = running
             finally:
-                # A failed start gives up its claim.
-                with self.stereo_tool_lock:
-                    self._starting.pop(slug, None)
                 with self.configuration_lock:
                     self._content.pop(slug, None)
             return running
@@ -2075,9 +1996,7 @@ class StationRegistry:
             async with self._locks[slug]:
                 runtime = self._running.get(slug)
                 if runtime is not None:
-                    with self.stereo_tool_lock:
-                        self._stopping_runtimes[slug] = runtime
-                        del self._running[slug]
+                    del self._running[slug]
                     self._stopped_names[slug] = runtime.name
                     self._stopped_requests[slug] = _takes_requests(runtime)
                     warnings = await _run_as(
@@ -2086,8 +2005,6 @@ class StationRegistry:
                         getattr(runtime, "thread_scope", None),
                     )
         finally:
-            with self.stereo_tool_lock:
-                self._stopping_runtimes.pop(slug, None)
             self._stopping.discard(slug)
         return warnings
 
@@ -2157,7 +2074,7 @@ class StationRegistry:
         from any thread.
         """
         slug = runtime.slug
-        with self.stereo_tool_lock:
+        with self._stuck_lock:
             self._stuck[slug] = runtime
         logger.warning(
             "Station %s: its player is still running; its mastering process and Stereo Tool "
@@ -2189,7 +2106,7 @@ class StationRegistry:
                         slug,
                     )
                 time.sleep(self.stuck_retry_s)
-            with self.stereo_tool_lock:
+            with self._stuck_lock:
                 if self._stuck.get(slug) is runtime:
                     del self._stuck[slug]
             logger.info("Station %s: its player has ended; its mastering process is closed", slug)
@@ -2233,8 +2150,7 @@ class StationRegistry:
             cache_closed = await library.close(writers_quiesced, readers_stopped=readers_stopped)
             for station in self.all():
                 await _run_as(station.slug, station.close(), getattr(station, "thread_scope", None))
-            with self.stereo_tool_lock:
-                self._running.clear()
+            self._running.clear()
             return writers_quiesced, cache_closed
 
 

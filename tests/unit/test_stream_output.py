@@ -83,7 +83,7 @@ async def test_icy_listener_gets_title_block(output: StreamOutput) -> None:
     assert encode_metadata("Artist - Song") in data
 
 
-async def test_listener_count_follows_add_remove_and_disconnect_all(
+async def test_listener_count_follows_add_remove_and_close(
     output: StreamOutput,
 ) -> None:
     counts = []
@@ -93,7 +93,7 @@ async def test_listener_count_follows_add_remove_and_disconnect_all(
     counts.append(output.listener_count)
     second = output.add_listener(icy=False)
     counts.append(output.listener_count)
-    output.disconnect_all()
+    output.close()
     counts.append(output.listener_count)
     assert counts == [1, 0, 1, 0]
     assert first.closed and second.closed
@@ -856,7 +856,6 @@ async def test_sinks_get_every_chunk_with_its_title_and_are_not_listeners(
     assert sink.fed[0][1] == "Artist - Song"
     assert "A stream sink failed" in caplog.text  # one broken sink does not stop the next
     assert output.listener_count == 0
-    output.disconnect_all()
     output.write(_block())
     _wait_until(lambda: len(sink.fed) == 2)
 

@@ -147,20 +147,12 @@ def _beets_text(value: Any) -> str | None:
     return None
 
 
-def matches_condition(
-    condition: Mapping[str, Any], entry: Any, beets_item: Mapping[str, Any] | None = None
-) -> bool:
-    """Match a validated nonfolder condition against a library entry."""
-    return condition_matcher(condition)(entry, beets_item)
-
-
 def condition_matcher(
     condition: Mapping[str, Any],
 ) -> Callable[[Any, Mapping[str, Any] | None], bool]:
     """Validate a nonfolder condition once and return a test for each entry.
 
-    The test takes a library entry and its Beets values (or ``None``), and
-    answers exactly as :func:`matches_condition` does.
+    The test takes a library entry and its Beets values (or ``None``).
     """
     c = validate_metadata_condition(condition)
     field, op, wanted = c["field"], c["operator"], c["value"]

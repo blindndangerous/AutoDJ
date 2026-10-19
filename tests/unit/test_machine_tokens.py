@@ -11,7 +11,6 @@ from autodj.machine_tokens import (
     SCOPE_ANNOUNCER,
     STATION_SCOPES,
     MachineTokenStore,
-    token_id_of,
     validate_name,
     validate_scopes,
     validate_station,
@@ -38,7 +37,6 @@ def test_created_token_is_shown_once_and_only_its_digest_is_stored(store, tmp_pa
     assert token.name == "Studio PC"
     assert token.scopes == (SCOPE_ANALYSIS_WORKER,)
     assert secret.startswith(f"adj1.{token.token_id}.")
-    assert token_id_of(secret) == token.token_id
     with sqlite3.connect(tmp_path / ".machine-tokens.sqlite3") as db:
         dump = "\n".join(db.iterdump())
     db.close()
@@ -133,7 +131,7 @@ def test_tokens_command_creates_lists_and_revokes(tmp_path):
     secret = created.stdout.strip()
     assert secret.startswith("adj1.")
     assert "shown only now and cannot be shown again" in created.stderr
-    token_id = token_id_of(secret)
+    token_id = secret.split(".")[1]
     listed = runner.invoke(cli, [*base, "list"])
     assert token_id in listed.output and "Studio PC" in listed.output
     assert secret.split(".")[2] not in listed.output

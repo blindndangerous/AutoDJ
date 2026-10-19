@@ -13,7 +13,7 @@ import sqlite3
 import time
 import warnings
 from collections import deque
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,33 +152,6 @@ def _load_tracks_rows(conn: sqlite3.Connection) -> list[IndexEntry]:
     """SELECT every row from ``tracks`` in FAISS vector order."""
     cur = conn.execute(_TRACKS_SELECT_SQL)
     return [_row_to_entry(r) for r in cur.fetchall()]
-
-
-def _resolve_beets_path(path: Path, music_dir: Path) -> Path:
-    """Resolve a beets-stored path to an absolute local path.
-
-    Beets stores track paths relative to its library ``directory``, or
-    absolute on setups without its ``relative_path`` option.  Relative paths
-    are joined to *music_dir*, the local mount point of that ``directory``.
-    Absolute paths are returned unchanged; the indexer skips any that fall
-    outside *music_dir*.
-
-    Args:
-        path: Original path from the beets database (may be relative or absolute).
-        music_dir: Local directory that corresponds to the beets library root.
-
-    Returns:
-        An absolute :class:`~pathlib.Path` pointing to the local file.
-    """
-    # Normalise to forward slashes for portable comparison
-    raw = str(path).replace("\\", "/")
-
-    # Heuristics for "absolute": POSIX root, or Windows drive letter (e.g. "Z:/...")
-    is_absolute = raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":")
-    if is_absolute:
-        return path
-
-    return music_dir / raw.lstrip("/")
 
 
 def source_mtime(path: str | Path) -> float:
@@ -364,44 +337,12 @@ class IndexEntry:
 # ---------------------------------------------------------------------------
 
 
-def walk_music_dir(music_dir: Path, formats: list[str]) -> Iterator[Path]:
-    """Yield the audio files under *music_dir* matching *formats*.
-
-    The walk is lazy, folder by folder in name order, so a caller that
-    needs only a few files can stop without listing a whole library.
-
-    Args:
-        music_dir: Root directory to search.
-        formats: List of file extensions to include (without the leading dot,
-            e.g. ``["mp3", "flac", "m4a"]``).
-
-    Returns:
-        An iterator of :class:`~pathlib.Path` objects under *music_dir*.
-
-    Raises:
-        FileNotFoundError: If *music_dir* does not exist.
-    """
-    if not music_dir.exists():
-        raise FileNotFoundError(f"Music directory not found: {music_dir}")
-    extensions = {f".{ext.lower()}" for ext in formats}
-
-    def walk() -> Iterator[Path]:
-        for root, dirs, files in os.walk(music_dir):
-            dirs.sort()
-            for name in sorted(files):
-                if os.path.splitext(name)[1].lower() in extensions:
-                    yield Path(root, name)
-
-    return walk()
-
-
 # ---------------------------------------------------------------------------
 # Audio loading
 # ---------------------------------------------------------------------------
 
 # Each phase saves the files it decoded with warnings or skipped here, in the
 # index directory, so they can be read after the progress line has moved on.
-INDEX_DECODE_LOG = "decode-indexing.log"
 ANALYSE_DECODE_LOG = "decode-analysing.log"
 LIBRARY_DECODE_LOG = "decode-library.log"
 

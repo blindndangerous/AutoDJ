@@ -10,7 +10,7 @@ import random
 import re
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -107,47 +107,6 @@ class ClockSlot:
             raise ValueError("category step needs a category")
         if self.require_following and self.kind != "liner":
             raise ValueError("require_following is only valid for liner slots")
-
-    def to_json(self) -> dict[str, Any]:
-        value = asdict(self)
-        if not self.require_following:
-            value.pop("require_following")
-        if not self.conditions:
-            value.pop("conditions")
-            value.pop("match")
-        if self.kind != "ad_break":
-            for field in ("max_spots", "max_seconds", "advertiser", "ad_category"):
-                value.pop(field)
-        return value
-
-    @classmethod
-    def from_json(cls, value: Mapping[str, Any]) -> ClockSlot:
-        if not isinstance(value, Mapping):
-            raise ValueError("clock slot JSON must be an object")
-        allowed = {
-            "folder",
-            "recursive",
-            "selection",
-            "enforce_rules",
-            "kind",
-            "path",
-            "preset",
-            "category",
-            "require_following",
-            "conditions",
-            "match",
-            "max_spots",
-            "max_seconds",
-            "advertiser",
-            "ad_category",
-        }
-        unknown = set(value) - allowed
-        if unknown:
-            raise ValueError(f"unknown clock slot field(s): {', '.join(sorted(unknown))}")
-        try:
-            return cls(**value)
-        except TypeError as exc:
-            raise ValueError(f"invalid clock slot fields: {exc}") from exc
 
 
 _CALL = re.compile(

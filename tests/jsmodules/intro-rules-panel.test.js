@@ -168,6 +168,11 @@ describe("intro rules list and form", () => {
     expect(button(1, "delete").getAttribute("aria-label")).toBe("Delete intro rule Rule 2");
     expect(byId("intro-rules-empty").hidden).toBe(true);
     expect(status()).toBe("");
+    const actions = [...byId("intro-rules-list").querySelectorAll("button")];
+    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    actions[0].focus();
+    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(actions[1]);
   });
 
   it("adds a rule: focus to Label, then to the saved rule's Edit button, said once", async () => {

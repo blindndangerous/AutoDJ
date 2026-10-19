@@ -70,6 +70,13 @@ def test_speech_cues_trim_the_silence_around_the_speech_only(length, noise):
     assert cues.points(False)["overlap_start"] is None
 
 
+def check_room(desk: BreakDesk, slot_id: str, size: int = 0) -> None:
+    """Reserve room for a break and give it straight back; raises when there is none."""
+    probe = new_id()
+    desk.reserve(probe, slot_id, size, "probe")
+    desk.release(probe)
+
+
 def test_speech_cues_keep_the_end_inside_the_file():
     audio = np.full((2 * SR, 2), 0.2, dtype=np.float32)
     cues = speech_cues(audio)
@@ -192,14 +199,14 @@ def test_room_is_capped_per_slot_per_station_and_by_quota(desk):
     desk.add(make_break(desk, slot))
     desk.add(make_break(desk, slot))
     with pytest.raises(BreakError) as full_slot:
-        desk.check_room(slot)
+        check_room(desk, slot)
     assert (full_slot.value.status, full_slot.value.reason) == (409, "slot_full")
     desk.add(make_break(desk, new_id()))
     with pytest.raises(BreakError) as full:
         desk.add(make_break(desk, new_id()))
     assert (full.value.status, full.value.reason) == (429, "queue_full")
     with pytest.raises(BreakError) as quota:
-        BreakDesk(lambda: config, desk.folder).check_room(new_id(), config.quota_bytes + 1)
+        check_room(BreakDesk(lambda: config, desk.folder), new_id(), config.quota_bytes + 1)
     assert (quota.value.status, quota.value.reason) == (507, "quota")
 
 
@@ -395,7 +402,7 @@ def test_uploads_in_progress_hold_room_until_booked_or_released(desk):
     desk.add(item)
     assert desk.waiting_in(slot) == 1
     desk.release(second)
-    desk.check_room(slot, config.quota_bytes - item.size)
+    check_room(desk, slot, config.quota_bytes - item.size)
 
 
 def test_a_rendered_break_that_never_airs_expires(desk):
@@ -415,7 +422,7 @@ def test_a_rendered_break_that_never_airs_expires(desk):
     assert finished.reason == "it was mixed in but never reached the air"
     assert not item.path.exists()
     # It no longer holds the station's room.
-    desk.check_room(new_id())
+    check_room(desk, new_id())
 
 
 def test_a_slot_with_no_waiting_breaks_left_is_reported_once_the_lock_is_free(desk):

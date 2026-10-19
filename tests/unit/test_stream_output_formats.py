@@ -247,7 +247,7 @@ async def test_a_waiting_opus_listener_can_leave_and_is_dropped_on_close() -> No
         leaving, staying = out.add_listener(icy=False), out.add_listener(icy=False)
         out.remove_listener(leaving)
         assert leaving.closed and out.listener_count == 1
-        out.disconnect_all()
+        out.close()
         assert staying.closed and out.listener_count == 0
     finally:
         out.close()

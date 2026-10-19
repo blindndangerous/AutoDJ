@@ -166,9 +166,6 @@ class FakeEncoder:
                 self._cond.wait(0.05)
             return self._chunks.pop(0) if self._chunks else b""
 
-    def close_input(self) -> None:
-        pass
-
     def close(self) -> None:
         with self._cond:
             self._closed = True

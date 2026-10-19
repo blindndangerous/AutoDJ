@@ -2139,8 +2139,10 @@
           <input type="checkbox" id="schedule-enabled">
           <label for="schedule-enabled">Enabled</label>
         </div>
-        <button type="submit" id="schedule-save">Save event</button>
-        <button type="button" id="schedule-cancel">Cancel</button>
+        <div class="dialog-actions">
+          <button type="submit" id="schedule-save">Save event</button>
+          <button type="button" id="schedule-cancel">Cancel</button>
+        </div>
       </fieldset>
     </form>
     <h4 id="schedule-runs-heading">Recent runs</h4>
@@ -2292,6 +2294,7 @@
           <label for="stream-relay-bitrate">Bitrate</label><select id="stream-relay-bitrate"><option value="">Use station stream quality</option><option>128</option><option>192</option><option>256</option><option>320</option></select>
           <label><input id="stream-relay-public" type="checkbox"> Public directory listing</label>
           <label><input id="stream-relay-enabled" type="checkbox" checked> Enabled</label>
+          <p id="stream-relay-form-error" class="field-error" hidden></p>
           <button type="submit">Save relay</button><button type="button" id="stream-relay-cancel">Cancel</button>
         </form>
       </details>
@@ -3190,8 +3193,10 @@
               <input type="checkbox" id="ads-spot-enabled">
               <label for="ads-spot-enabled">Airs</label>
             </div>
-            <button type="submit" id="ads-spot-save">Save spot</button>
-            <button type="button" id="ads-spot-cancel">Cancel</button>
+            <div class="dialog-actions">
+              <button type="submit" id="ads-spot-save">Save spot</button>
+              <button type="button" id="ads-spot-cancel">Cancel</button>
+            </div>
           </fieldset>
         </form>
       </section>
@@ -3261,8 +3266,10 @@
               <input type="checkbox" id="ads-break-enabled">
               <label for="ads-break-enabled">Runs</label>
             </div>
-            <button type="submit" id="ads-break-save">Save ad break</button>
-            <button type="button" id="ads-break-cancel">Cancel</button>
+            <div class="dialog-actions">
+              <button type="submit" id="ads-break-save">Save ad break</button>
+              <button type="button" id="ads-break-cancel">Cancel</button>
+            </div>
           </fieldset>
         </form>
         <h4 id="ads-pending-heading">Waiting for a song change</h4>
@@ -3583,8 +3590,10 @@
           <button type="button" id="categories-check">Check</button>
           <!-- Browseable count; completed results are announced through categories-status. -->
           <p id="categories-match" aria-live="off">Not checked yet.</p>
-          <button type="submit" id="categories-save">Save category</button>
-          <button type="button" id="categories-cancel">Cancel</button>
+          <div class="dialog-actions">
+            <button type="submit" id="categories-save">Save category</button>
+            <button type="button" id="categories-cancel">Cancel</button>
+          </div>
         </fieldset>
       </form>
     </details>
@@ -3871,8 +3880,10 @@
             <p id="intro-rules-not-after-error" class="field-error" hidden></p>
           </div>
           <span class="setting-desc" id="intro-rules-dates-help">Optional. Both days are included, in the station’s time zone.</span>
-          <button type="submit" id="intro-rules-save">Save intro rule</button>
-          <button type="button" id="intro-rules-cancel">Cancel</button>
+          <div class="dialog-actions">
+            <button type="submit" id="intro-rules-save">Save intro rule</button>
+            <button type="button" id="intro-rules-cancel">Cancel</button>
+          </div>
         </fieldset>
       </form>
       <p id="intro-rules-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -3891,6 +3902,7 @@
 <dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
 <fieldset id="clock-step-form" class="flow-form">
   <legend><h1 id="clock-step-legend">Add a step</h1></legend>
+  <p id="clock-step-form-error" class="field-error" hidden></p>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">
     <option value="music">Music matching conditions</option>
@@ -3905,7 +3917,7 @@
     <p id="clock-step-conditions-label">Conditions</p>
     <div id="clock-step-conditions" role="group" aria-labelledby="clock-step-conditions-label"></div>
     <button type="button" id="clock-add-condition">Add condition</button>
-    <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. To use a category condition, first add a music category under Library tools, Categories.</p>
+    <p class="setting-desc" id="clock-step-conditions-help">Choose Matches to use * for any text or ? for one character. Duration accepts seconds or MM:SS. Beets fields require a configured Beets library. Use Add category beside a music category condition to create one.</p>
     <p class="setting-desc" id="clock-step-beets-notice" hidden></p>
     <p id="clock-step-match-count" aria-live="off">Matching track count appears while editing.</p>
   </div>
@@ -3984,8 +3996,10 @@
     </div>
     <p id="clock-step-hours-error" class="field-error" hidden></p>
   </fieldset>
+  <div class="dialog-actions">
   <button type="button" id="clock-add-step">Add step</button>
   <button type="button" id="clock-cancel-edit">Cancel</button>
+  </div>
 </fieldset>
 </dialog>
 <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title" aria-describedby="track-info-dialog-desc">

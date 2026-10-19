@@ -81,6 +81,33 @@ describe("native table grid navigation", () => {
     expect(body.querySelector("h3").textContent).toBe("13 Oct 2026");
   });
 
+  it("keeps Home, End and Ctrl+Home/End after refresh with sparse rows and controls", () => {
+    document.body.innerHTML = '<table><tbody id="rows"><tr><td role="gridcell">Old</td></tr></tbody></table>';
+    const body = document.getElementById("rows");
+    const navigation = installTableNavigation(body);
+    body.innerHTML = `<tr><td role="rowheader">One</td><td role="gridcell"><button>Play</button></td></tr>
+      <tr><td role="rowheader">Two</td></tr>
+      <tr><td role="rowheader">Three</td><td role="gridcell"><input type="checkbox"></td></tr>`;
+    navigation.refresh();
+    const [one, playCell] = body.querySelectorAll("td[role]");
+    const play = playCell.querySelector("button");
+    const checkbox = body.querySelector("input");
+    play.focus();
+    const home = new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true });
+    play.dispatchEvent(home);
+    expect(home.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(one);
+    const end = new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true });
+    one.dispatchEvent(end);
+    expect(document.activeElement).toBe(playCell);
+    const lastRow = new KeyboardEvent("keydown", { key: "End", ctrlKey: true, bubbles: true, cancelable: true });
+    play.dispatchEvent(lastRow);
+    expect(document.activeElement).toBe(checkbox);
+    const firstRow = new KeyboardEvent("keydown", { key: "Home", ctrlKey: true, bubbles: true, cancelable: true });
+    checkbox.dispatchEvent(firstRow);
+    expect(document.activeElement).toBe(playCell);
+  });
+
   it("leaves modifiers alone and activates the cell's native checkbox by Space", () => {
     document.body.innerHTML = `<table><tbody id="rows"><tr><td role="gridcell" tabindex="-1"><input type="checkbox" tabindex="-1"></td></tr></tbody></table>`;
     const body = document.getElementById("rows");
@@ -94,6 +121,29 @@ describe("native table grid navigation", () => {
     cell.dispatchEvent(space);
     expect(space.defaultPrevented).toBe(true);
     expect(checkbox.checked).toBe(true);
+  });
+
+  it("keeps disabled native controls out of table tab stops and activation", () => {
+    document.body.innerHTML = `<table><tbody id="rows"><tr>
+      <td role="gridcell"><button disabled>Unavailable</button></td>
+      <td role="gridcell"><button>Available</button></td>
+    </tr></tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [unavailableCell, availableCell] = body.querySelectorAll("td");
+    const unavailable = unavailableCell.querySelector("button");
+    let activations = 0;
+    unavailable.addEventListener("click", () => { activations += 1; });
+    expect([unavailableCell.tabIndex, unavailable.tabIndex, availableCell.tabIndex]).toEqual([0, -1, -1]);
+
+    unavailableCell.focus();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    unavailableCell.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(activations).toBe(0);
+    unavailableCell.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(availableCell);
+    expect([unavailableCell, availableCell].filter((cell) => cell.tabIndex === 0)).toEqual([availableCell]);
   });
 
   it("puts the tab stop on a cell's single native control and preserves checkbox state", () => {

@@ -16,6 +16,9 @@
 // Added to a repeated message so the region text changes.
 export const NBSP = String.fromCharCode(160);
 const _timers = new WeakMap();
+const _announcementEpoch = new WeakMap();
+let _lastMirroredRegion = null;
+let _lastMirroredText = "";
 
 export function clearLiveRegionLater(el, dwellMs = 3000) {
   if (!el) return;
@@ -26,6 +29,22 @@ export function clearLiveRegionLater(el, dwellMs = 3000) {
     _timers.delete(el);
   }, dwellMs);
   _timers.set(el, t);
+}
+
+// Cancel queued speech and its visible mirror when the owning view closes.
+export function clearAnnouncedStatus(region) {
+  if (!region) return;
+  _announcementEpoch.set(region, (_announcementEpoch.get(region) || 0) + 1);
+  cancelPending(region);
+  const timer = _timers.get(region);
+  if (timer) clearTimeout(timer);
+  _timers.delete(region);
+  region.textContent = "";
+  if (_lastMirroredRegion !== region) return;
+  const toast = region.ownerDocument?.getElementById("status-toast");
+  if (toast?.textContent === _lastMirroredText) showVisibleStatus("", region.ownerDocument);
+  _lastMirroredRegion = null;
+  _lastMirroredText = "";
 }
 
 // Shown, not said: *text* goes into a live region with the region off, and
@@ -256,22 +275,36 @@ export function announceStatus(
   if (!region) return false;
   const text = message == null ? "" : String(message);
   const doc = region.ownerDocument || globalThis.document;
+  if (!text) {
+    _announcementEpoch.set(region, (_announcementEpoch.get(region) || 0) + 1);
+    cancelPending(region);
+  }
   if (force && text) {
     // Chrome can merge the clear and the new text into one change, so the
     // same message again is not spoken.  A trailing no-break space on every
     // other repeat makes the text itself change.
     const repeat = region.textContent === text ? text + NBSP : text;
     region.textContent = "";
+    const epoch = _announcementEpoch.get(region) || 0;
     setTimeout(() => {
+      if ((_announcementEpoch.get(region) || 0) !== epoch) return;
       region.textContent = repeat;
       if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
     }, 0);
-    if (mirror) showVisibleStatus(text, doc, { force: true, tone });
+    if (mirror) {
+      _lastMirroredRegion = region;
+      _lastMirroredText = text;
+      showVisibleStatus(text, doc, { force: true, tone });
+    }
     return true;
   }
   if (region.textContent === text) return false;
   region.textContent = text;
-  if (mirror) showVisibleStatus(text, doc, { tone });
+  if (mirror) {
+    _lastMirroredRegion = region;
+    _lastMirroredText = text;
+    showVisibleStatus(text, doc, { tone });
+  }
   if (dwellMs > 0) clearLiveRegionLater(region, dwellMs);
   return true;
 }

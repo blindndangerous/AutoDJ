@@ -19,10 +19,12 @@
 // field is only said.  While the list is being generated, Move up, Move
 // down, Remove and Add stay in the tab order but are marked unavailable and
 // say why.  A refresh that fails is said once, until one succeeds again.
+import { reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { announceStatus } from "./live-region.js";
-import { fmtTime, placeRows, selectOnFocus } from "./dom-helpers.js";
+import { announceStatus, sayIfStillPending } from "./live-region.js";
+import { clearFieldError, fmtTime, placeRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -97,9 +99,11 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const el = (id) => doc.getElementById(id);
   const panel = el("panel-library");
   const list = el("shows-list");
+  const listNavigation = installActionListNavigation(list);
   const status = el("shows-status");
   const form = el("shows-form");
   const addButton = el("shows-add");
+  let listFocusAnnouncementSuppressed = false;
   const nameInput = el("shows-name");
   const categorySelect = el("shows-category");
   const clockSelect = el("shows-clockwheel");
@@ -126,6 +130,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   let listSignature = "";
   let songsSignature = "";
   let saving = Promise.resolve();
+  let savingForm = false;
+  let formGeneration = 0;
+  let formSaveId = 0;
   let generating = false;
   let loadFailed = false;
   let timer = null;
@@ -134,6 +141,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
 
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
+  const listFocusLost = ({ target }) => {
+    if (!listFocusAnnouncementSuppressed) say(`The show list changed. Focus moved to ${target?.getAttribute("aria-label") || target?.textContent.trim() || "Add show"}.`);
+  };
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => (el("shows-source-clockwheel")?.checked ? "clockwheel" : "category");
   const byId = (id) => data.shows.find((show) => show.id === id);
@@ -168,39 +178,30 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     const signature = JSON.stringify(data.shows);
     if (signature === listSignature) return;
     listSignature = signature;
-    const rows = [...list.querySelectorAll(":scope > li[data-id]")];
-    if (rows.length && rows.length === data.shows.length
-        && rows.every((row, i) => row.dataset.id === data.shows[i].id && row.dataset.name === data.shows[i].name)) {
-      // The same shows in the same order: change only the words.
-      rows.forEach((row, i) => {
-        const text = describeShow(data.shows[i]);
-        const span = row.firstElementChild;
-        if (span && span.textContent !== text) span.textContent = text;
-      });
-      return;
-    }
-    const focused = list.contains(doc.activeElement) ? doc.activeElement.dataset : null;
     if (!data.shows.length) {
       const none = doc.createElement("li");
       none.textContent = "No shows yet. Press Add show to plan one.";
-      list.replaceChildren(none);
+      reconcileRows(list, [], () => "", () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost });
+      list.append(none);
       return;
     }
-    list.replaceChildren(...data.shows.map((show) => {
+    reconcileRows(list, data.shows, (show) => show.id, () => {
       const item = doc.createElement("li");
-      item.dataset.id = show.id;
-      item.dataset.name = show.name;
-      const text = doc.createElement("span");
-      text.textContent = describeShow(show);
-      item.append(
-        text, " ",
-        namedButton("open", "Open list", show.name, { id: show.id }), " ",
-        namedButton("edit", "Edit", show.name, { id: show.id }), " ",
-        namedButton("delete", "Delete", show.name, { id: show.id }),
-      );
+      item.append(doc.createElement("span"), " ", namedButton("open", "Open list", ""), " ",
+        namedButton("edit", "Edit", ""), " ", namedButton("delete", "Delete", ""));
       return item;
-    }));
-    if (focused?.id) rowFor(focused.id, focused.action)?.focus();
+    }, (item, show) => {
+      if (item.dataset.id !== show.id) item.dataset.id = show.id;
+      if (item.dataset.name !== show.name) item.dataset.name = show.name;
+      const description = describeShow(show);
+      if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
+      for (const button of item.querySelectorAll("button")) {
+        if (button.dataset.id !== show.id) button.dataset.id = show.id;
+        const label = `${button.textContent} ${show.name}`;
+        if (button.getAttribute("aria-label") !== label) button.setAttribute("aria-label", label);
+      }
+    }, { fallback: addButton, onFocusLost: listFocusLost });
+    listNavigation.refresh();
   }
 
   function rowFor(id, action = "open") {
@@ -250,23 +251,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     el("shows-clockwheel-help")?.toggleAttribute("hidden", kind !== "clockwheel");
   }
 
-  function linkError(control, linked) {
-    if (!control || !errorText) return;
-    const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
-      .filter((id) => id && id !== errorText.id);
-    if (linked) ids.push(errorText.id);
-    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
-    else control.removeAttribute("aria-describedby");
-  }
-
-  function unmark(control) {
-    control?.removeAttribute("aria-invalid");
-    linkError(control, false);
-  }
-
   function clearErrors() {
-    for (const id of Object.values(FIELD_IDS)) unmark(el(id));
-    if (errorText) { errorText.textContent = ""; errorText.hidden = true; }
+    for (const id of Object.values(FIELD_IDS)) clearFieldError(el(id), errorText);
   }
 
   function showError(field, message) {
@@ -274,13 +260,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     if (field === "clockwheel") el("shows-source-clockwheel").checked = true;
     showSource();
     const target = el(FIELD_IDS[field] || FIELD_IDS.name);
-    target?.setAttribute("aria-invalid", "true");
-    linkError(target, true);
-    if (errorText) { errorText.textContent = message; errorText.hidden = false; }
-    // Focus moving to the field reads the linked error, so say it only otherwise.
-    const before = target?.ownerDocument.activeElement;
-    target?.focus();
-    if (!target || before === target || target.ownerDocument.activeElement !== target) say(message, true);
+    showFieldError(target, message, errorText, status);
   }
 
   function body() {
@@ -315,6 +295,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   function openForm(show, from) {
+    formGeneration += 1;
     editing = show ? show.id : null;
     opener = from;
     clearErrors();
@@ -329,6 +310,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   }
 
   function closeForm() {
+    formGeneration += 1;
     form.hidden = true;
     editing = null;
     clearErrors();
@@ -336,30 +318,56 @@ export function installShowsPanel({ document: doc = document, request = requestJ
 
   async function save(event) {
     event?.preventDefault();
+    if (savingForm) return;
     clearErrors();
     const value = body();
     if (!valid(value)) return;
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    const formMine = formGeneration;
+    const saveId = ++formSaveId;
+    const editingId = editing;
+    const added = editingId === null;
+    savingForm = true;
+    form.setAttribute("aria-busy", "true");
+    const submitButtons = [...form.querySelectorAll('button[type="submit"]')];
+    submitButtons.forEach((button) => button.setAttribute("aria-busy", "true"));
+    const stopPending = sayIfStillPending((message) => {
+      if (current(epoch, mine)) say(message);
+    }, "Saving show…");
     try {
-      const show = editing
-        ? await send(url(editing), "PUT", value)
+      const show = editingId
+        ? await send(url(editingId), "PUT", value)
         : await send("/api/shows", "POST", value);
       if (!current(epoch, mine)) return;
-      const added = !editing;
+      if (formMine !== formGeneration) {
+        try { await load(); } catch (_) { /* the next refresh draws the list */ }
+        if (current(epoch, mine)) say(added
+          ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.`
+          : `Saved ${show.name}.`);
+        return;
+      }
       // The list is drawn again while focus is still on Save show, and focus
       // moves to the saved show before the form is hidden.  Hiding the form
       // first dropped focus to the page for the reload, and NVDA then read
       // the whole Shows card before the Open list button.
       try { await load(); } catch (_) { /* the next refresh draws the list */ }
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || formMine !== formGeneration) return;
       if (open?.id === show.id) applyOpen(show);
       (rowFor(show.id) || addButton).focus();
       closeForm();
       say(added ? `Saved ${show.name}. Press Open list, then Generate list, to pick its songs.` : `Saved ${show.name}.`);
     } catch (error) {
       if (!current(epoch, mine)) return;
-      if (FIELD_IDS[error.field]) showError(error.field, error.message);
+      if (formMine !== formGeneration) say(error.message, true);
+      else if (FIELD_IDS[error.field]) showError(error.field, error.message);
       else say(error.message, true);
+    } finally {
+      stopPending();
+      if (saveId === formSaveId) {
+        savingForm = false;
+        form.removeAttribute("aria-busy");
+        submitButtons.forEach((button) => button.removeAttribute("aria-busy"));
+      }
     }
   }
 
@@ -383,7 +391,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
           if (!current(epoch, mine)) return null;
           if (editing === id) closeForm();
           if (open?.id === id) closeEditor();
-          await load();
+          listFocusAnnouncementSuppressed = true;
+          try { await load(); } finally { listFocusAnnouncementSuppressed = false; }
           done = true;
           const next = data.shows[Math.min(index, data.shows.length - 1)];
           return (next && rowFor(next.id)) || addButton;
@@ -778,7 +787,9 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   });
   for (const id of ["shows-source-category", "shows-source-clockwheel"]) el(id)?.addEventListener("change", showSource);
   for (const field of [nameInput, categorySelect, clockSelect, targetInput]) {
-    field.addEventListener("input", () => unmark(field));
+    field.addEventListener("input", () => {
+      if (field.getAttribute("aria-invalid") === "true") clearFieldError(field, errorText);
+    });
   }
   el("shows-start")?.addEventListener("input", (event) => event.target.removeAttribute("aria-invalid"));
   el("shows-generate")?.addEventListener("click", () => void generate());
@@ -837,11 +848,18 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   function clearProtectedData() {
     suspended = true;
     generation += 1;
+    formGeneration += 1;
+    formSaveId += 1;
+    savingForm = false;
+    form.removeAttribute("aria-busy");
+    form.querySelectorAll('[aria-busy="true"]').forEach((button) => button.removeAttribute("aria-busy"));
     if (timer !== null) clearInterval(timer);
     timer = null;
     data = empty();
     listSignature = "";
-    list.replaceChildren();
+    listFocusAnnouncementSuppressed = true;
+    try { reconcileRows(list, [], (show) => show.id, () => null, () => {}, { fallback: addButton, onFocusLost: listFocusLost }); }
+    finally { listFocusAnnouncementSuppressed = false; }
     closeForm();
     closeEditor();
     nameInput.value = "";

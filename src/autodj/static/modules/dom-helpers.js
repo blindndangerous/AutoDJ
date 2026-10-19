@@ -132,6 +132,51 @@ export function focusRevealed(control, options) {
   control.focus(options);
 }
 
+// Keep field errors associated with their control without dropping its help.
+export function clearFieldError(control, error) {
+  control?.removeAttribute("aria-invalid");
+  if (!control || !error?.id) return;
+  const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
+  if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+  else control.removeAttribute("aria-describedby");
+  error.textContent = "";
+  error.hidden = true;
+}
+
+export function clearFormErrors(form, error = null) {
+  if (!form) return;
+  const errors = error ? [error] : [...form.querySelectorAll(".field-error")];
+  form.querySelectorAll("[aria-describedby]").forEach((control) => {
+    let ids = (control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    for (const item of errors) ids = ids.filter((id) => id !== item.id);
+    if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
+    else control.removeAttribute("aria-describedby");
+  });
+  form.querySelectorAll("[aria-invalid='true']").forEach((control) => control.removeAttribute("aria-invalid"));
+  errors.forEach((item) => {
+    item.textContent = "";
+    item.hidden = true;
+  });
+}
+
+export function showFieldError(control, message, error, status) {
+  error.textContent = message;
+  error.hidden = false;
+  if (!control) { announceStatus(status, message, { force: true, tone: "error" }); return; }
+  control.setAttribute("aria-invalid", "true");
+  const ids = new Set((control.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+  if (error.id) ids.add(error.id);
+  if (ids.size) control.setAttribute("aria-describedby", [...ids].join(" "));
+  const following = control.nextElementSibling;
+  const label = control.closest("label") || (following?.htmlFor === control.id ? following : null);
+  (label || control).after(error);
+  const before = control.ownerDocument.activeElement;
+  focusRevealed(control);
+  if (before === control || control.ownerDocument.activeElement !== control) {
+    announceStatus(status, message, { force: true, tone: "error" });
+  }
+}
+
 // ----------------------------------------------------------------
 // Closing a modal <dialog> (#385).  The browser puts focus back on the
 // control that opened a dialog while the dialog is still closing, when the
@@ -263,6 +308,46 @@ export function placeRows(list, rows) {
     if (previous.nextSibling !== rows[i]) list.insertBefore(rows[i], previous.nextSibling);
     previous = rows[i];
   }
+}
+
+// Reuse direct-child rows by stable item key, update them in place, then
+// order them without moving the row that currently contains focus.
+export function reconcileRows(list, items, keyOf, createRow, updateRow, { fallback = null, onFocusLost = null } = {}) {
+  const active = list.ownerDocument.activeElement;
+  const focusedRow = active?.closest?.("li");
+  const focusedIndex = focusedRow && focusedRow.parentElement === list ? [...list.children].indexOf(focusedRow) : -1;
+  const focusedKey = focusedRow?.dataset.rowKey;
+  const focusedAction = active?.dataset?.action || active?.dataset?.role;
+  const focusedColumn = focusedRow ? [...focusedRow.querySelectorAll("button")].indexOf(active) : -1;
+  const existing = new Map([...list.children]
+    .filter((row) => row.dataset.rowKey !== undefined)
+    .map((row) => [row.dataset.rowKey, row]));
+  const rows = items.map((item, index) => {
+    const key = String(keyOf(item));
+    let row = existing.get(key);
+    if (!row) row = createRow(item);
+    if (row.dataset.rowKey !== key) row.dataset.rowKey = key;
+    updateRow(row, item, index);
+    return row;
+  });
+  placeRows(list, rows);
+  const focused = focusedIndex >= 0 && (!active.isConnected || active.disabled);
+  let target = null;
+  if (focused) {
+    const candidates = (row) => [...row.querySelectorAll(":scope > button:not(:disabled)")];
+    const choose = (row) => {
+      const buttons = candidates(row);
+      return buttons.find((button) => (button.dataset.action || button.dataset.role) === focusedAction)
+        || buttons[Math.min(Math.max(focusedColumn, 0), buttons.length - 1)] || buttons[0] || null;
+    };
+    const same = rows.find((row) => row.dataset.rowKey === focusedKey);
+    target = same && choose(same);
+    if (!target && rows.length) target = choose(rows[Math.min(focusedIndex, rows.length - 1)]);
+    if (!target) target = typeof fallback === "function" ? fallback() : fallback;
+    target?.focus?.();
+    onFocusLost?.({ key: focusedKey, action: focusedAction, target });
+  }
+  return { rows, focusLost: focused, target };
 }
 
 // The station's calendar day at *now*, as YYYY-MM-DD, or "" when the page

@@ -2367,10 +2367,6 @@ class PlayerBridge(LibraryAccess):
         """Write the settings owner's web_state.json atomically."""
         self.settings.save()
 
-    def _state_dir(self) -> Any:
-        """The folder holding this station's ``web_state.json``."""
-        return self.settings.state_dir
-
     def get_settings(self) -> dict:
         """Return a snapshot of every adjustable setting and available presets."""
         return self.settings.get_settings()

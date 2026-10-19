@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import itertools
 import random
+import re
 import threading
 import time
 import uuid
@@ -1055,7 +1056,12 @@ def test_a_preview_is_kept_while_nothing_new_is_fixed(tmp_path: Path, monkeypatc
         previews.submit(source, 60)
     # Kept past the page's own refresh, so an open card that finds nothing new
     # fixed costs no dry run.
-    assert KEEP_SECONDS > hour_preview.PAGE_REFRESH_SECONDS
+    script = (Path(hour_preview.__file__).parent / "static/modules/hour-preview.js").read_text(
+        encoding="utf-8"
+    )
+    refresh_ms = re.search(r"const REFRESH_MS = (\d+);", script)
+    assert refresh_ms is not None
+    assert int(refresh_ms[1]) / 1000 < KEEP_SECONDS
 
 
 def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(

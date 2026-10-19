@@ -109,7 +109,7 @@ repos:
         language: system
         stages: [pre-push]
         pass_filenames: false
-        files: ^(src/|pyproject\.toml$)
+        files: ^(src/|scripts/|vulture_whitelist\.py$|pyproject\.toml$)
 
       - id: deptry
         name: deptry
