@@ -1054,7 +1054,7 @@ describe("static accessibility contracts", () => {
     expect(css).not.toMatch(/#track-info-keep/);
     expect(css.match(/(^|[\s,}])button\s*\{[^{}]*min-height:\s*44px/)).not.toBeNull();
     // Three buttons wrap rather than run off a narrow window.
-    expect(lastValue("#track-info-dialog .dialog-actions", "flex-wrap")).toBe("wrap");
+    expect(lastValue(".dialog-actions", "flex-wrap")).toBe("wrap");
     expect(lastValue("#track-info-dialog", "max-width")).toBe("min(32rem, calc(100vw - 2rem))");
   });
   it("keeps connected status text visible without relying on color alone", () => {
@@ -3467,10 +3467,8 @@ describe("listener request contracts", () => {
     expect(form).toMatch(/<p id="requests-threshold-error" class="field-error" hidden><\/p>/);
     expect(form).toMatch(/<button type="submit" id="requests-settings-save">Save request settings<\/button>/);
     expect(form).not.toMatch(/aria-live|role="status"/);
-    // A refused value is marked, linked, shown and focused; its words are said once.
-    expect(requestsScript).toMatch(/threshold\.setAttribute\("aria-invalid", "true"\)/);
-    expect(requestsScript).toMatch(/linkThresholdError\(true\)/);
-    expect(requestsScript).toMatch(/threshold\.focus\(\)/);
+    // Field focus, descriptions and announcements are exercised in listener-requests.test.js.
+    expect(requestsScript).toMatch(/showFieldError\(threshold, message, thresholdError, status\)/);
   });
 
   it("says a bridge song in words with tokens only for its colour", () => {
