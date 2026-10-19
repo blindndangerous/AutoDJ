@@ -500,12 +500,13 @@ describe("clockwheel editor", () => {
     expect(document.activeElement.dataset.name).toBe("Night");
 
     const rows = [...list.children];
-    const observer = new globalThis.MutationObserver(() => {});
+    const mutations = [];
+    const observer = new globalThis.MutationObserver((records) => mutations.push(...records));
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     await controls.refresh();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect([...list.children]).toEqual(rows);
-    expect(observer.takeRecords()).toEqual([]);
+    expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
 

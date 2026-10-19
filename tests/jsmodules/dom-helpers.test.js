@@ -225,11 +225,12 @@ describe("reconcileRows", () => {
       });
     render([{ id: "a", name: "A" }]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const observer = new window.MutationObserver(() => {});
+    const mutations = [];
+    const observer = new window.MutationObserver((records) => mutations.push(...records));
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     render([{ id: "a", name: "A" }]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(observer.takeRecords()).toEqual([]);
+    expect([...mutations, ...observer.takeRecords()]).toEqual([]);
     observer.disconnect();
   });
 });
