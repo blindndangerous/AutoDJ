@@ -172,12 +172,13 @@ def _hash(path: Path) -> str:
 def _content_hash(path: Path, hashes: dict[Path, str]) -> str:
     if path not in hashes:
         stat = path.stat()
-        hashes[path] = _cached_hash(path.resolve(), stat.st_size, stat.st_mtime_ns, stat.st_ino)
+        hashes[path] = _cached_hash(path.resolve(), (stat.st_size, stat.st_mtime_ns, stat.st_ino))
     return hashes[path]
 
 
 @lru_cache(maxsize=4096)
-def _cached_hash(path: Path, size: int, mtime_ns: int, inode: int) -> str:
+def _cached_hash(path: Path, _identity: tuple[int, int, int]) -> str:
+    """Hash *path*; size, mtime and inode in *_identity* only key the cache."""
     return _hash(path)
 
 
