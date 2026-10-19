@@ -70,6 +70,8 @@ describe("where a request goes", () => {
     expect(stationApi("/api/stream/relays/backup")).toBe("/api/stations/nightowl/stream/relays/backup");
     expect(stationApi("/api/liners/upload?replace=true"))
       .toBe("/api/stations/nightowl/liners/upload?replace=true");
+    expect(stationApi("/api/editions/edition/takes/take/reattach"))
+      .toBe("/api/stations/nightowl/editions/edition/takes/take/reattach");
     expect(stationWsPath()).toBe("/api/stations/nightowl/ws");
   });
 

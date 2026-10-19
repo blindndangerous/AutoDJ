@@ -59,11 +59,19 @@ or changing an unrelated edition item preserves valid approval. Missing, invalid
 unattached and unapproved speech is skipped and reported during playout; valid
 songs continue without generating a replacement take.
 
+A standalone segment follows its occurrence when you move it, add a song after
+it or remove a neighbour. Changed neighbours require review and approval again.
+If an edit separates a transition's pair, its take shows **Unattached**. In that
+take's **Position for** list, choose the new adjacent pair and press **Reattach**.
+Then review and approve it again. Reattaching keeps the saved audio. An unattached
+opening or closing take offers the current first or last item in the same control.
+
 Edits refresh uncommitted prepared audio. The playout commit boundary is the
 first affected speech duck ramp or incoming overlap; a primary speech occurrence
 commits when its first PCM enters playout, including an incoming overlap.
-AutoDJ refuses an edit whose early check already sees
-that boundary crossed. That check is not an atomic promise: playback may cross
+AutoDJ refuses an edit affecting the current speech or next handoff whose early
+check already sees that boundary crossed. Other edits remain available: you can
+approve a closing take while the opening plays. That check is not an atomic promise: playback may cross
 while a save or replacement render is in progress. In that case the edit is saved
 for future review and playout, while the current occurrence retains its prior
 approval and continues without interruption. **Current committed audio continues**
@@ -92,6 +100,10 @@ Show does not dismiss this edition's Interrupted state. Ordinary saved Shows ret
 existing automatic-resume behavior. Creating or recovering a review never starts
 a broadcast.
 
+Opening and closing clips map to a real programme item for resume: the first
+item for an opening, or the last item for a closing. Confirm the selected item
+before resuming; the closing fallback can replay that last item.
+
 ## Retention and backup
 
 Edition state lives in the station's `editions.json`; immutable source WAV files
@@ -100,6 +112,12 @@ imports and derived review files are excluded. Keep an independent backup before
 removing a production. An active edition cannot be deleted. Removing a take keeps
 its prior source asset with the edition; deleting the edition removes assets no
 other edition references. Source audio and explicit approval state survive restart.
+Removing a segment's programme row also removes its active take and retains its
+source asset. Another segment can then use that position.
+On the process's first access to an edition-audio directory, AutoDJ removes
+abandoned partial upload and import folders. Later station starts or settings
+changes do not repeat that cleanup. Cleanup failures are logged without blocking
+station startup.
 
 Retained source assets count toward the station's 4 GiB edition-audio cap,
 including superseded takes. There is no individual source-asset cleanup control;

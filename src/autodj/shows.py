@@ -41,6 +41,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -930,7 +931,14 @@ class ShowRunner:
         with self._state_lock:
             return self._on_air is not None and self._on_air.edition_id == edition_id
 
-    def prepared_handoff(self, current: Any, upcoming: Any) -> tuple[Any, ...]:
+    def prepared_handoff(
+        self,
+        current: Any,
+        upcoming: Any,
+        *,
+        report_omissions: bool = True,
+        plan: Any = None,
+    ) -> tuple[Any, ...]:
         """Only the exact adjacent edition occurrences receive their approved take."""
         if upcoming is None or self._edition_store is None:
             return ()
@@ -942,11 +950,15 @@ class ShowRunner:
             return ()
         # Approval/cue/media inputs are rechecked on the render worker, outside
         # queue and audio locks, rather than trusting admission-time approval.
-        plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
-        with self._state_lock:
-            for reason in plan.omissions:
-                if not any(row["reason"] == reason for row in air.skipped):
-                    air.skip("", "Prepared speech", reason)
+        if plan is None:
+            plan = self.prepared_plan()
+        if plan is None:
+            return ()
+        if report_omissions:
+            with self._state_lock:
+                for reason in plan.omissions:
+                    if not any(row["reason"] == reason for row in air.skipped):
+                        air.skip("", "Prepared speech", reason)
         return tuple(
             prepared_break(take)
             for take in plan.handoffs.get((before.occurrence_id, after.occurrence_id), ())
@@ -955,6 +967,18 @@ class ShowRunner:
     @staticmethod
     def _plan_signature(plan: Any) -> str:
         return repr((plan.items, dict(plan.handoffs), plan.omissions))
+
+    def prepared_plan(self) -> Any:
+        with self._state_lock:
+            air = self._on_air
+        if air is None or air.edition_id is None:
+            return None
+        return self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+
+    def prepared_plan_valid(self, plan: Any) -> bool:
+        return self.edition_active(plan.edition_id) and self._edition_store.plan_is_current(
+            plan, self._edition_station
+        )
 
     def request_prepared_refresh(self) -> None:
         """Queue-held callers only wake the existing event-loop control worker."""
@@ -980,12 +1004,13 @@ class ShowRunner:
                     "", "Prepared audio refresh failed; check edition before airing"
                 )
 
-    def prepared_render_token(self) -> str:
+    def prepared_render_token(self, plan: Any = None) -> str:
         with self._state_lock:
             air = self._on_air
         if air is None or air.edition_id is None:
             return ""
-        plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+        if plan is None:
+            plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
         cfg = self._bridge.player._cfg
         return repr((self._plan_signature(plan), cfg.playback, cfg.breaks, cfg.replaygain))
 
@@ -1012,13 +1037,35 @@ class ShowRunner:
                     and settings == repr((cfg.playback, cfg.breaks, cfg.replaygain))
                 )
 
-    def prepared_editable(self, edition_id: str) -> bool:
+    def prepared_editable(
+        self,
+        edition_id: str,
+        *,
+        take_ids: set[str] | None = None,
+        pair: tuple[str | None, str | None] | None = None,
+    ) -> bool:
         """Edits cannot retract a prepared voice already committed to the bus."""
         if not self.edition_active(edition_id):
             return True
         player = self._bridge.player
         track = player._playing_render
         if track is None or player.bus is None:
+            return True
+        marks = attached(player, "_edition_occurrences")
+        before, after = marks.get(track.entry), marks.get(track.next_entry)
+        current_pair = (
+            before.occurrence_id if before else None,
+            after.occurrence_id if after else None,
+        )
+        with self._state_lock:
+            air = self._on_air
+            if air is None or air.edition_id != edition_id:
+                return True
+            protected = {identity for _at, identity, _end in track.break_events}
+        protected.update(mark.take_id for mark in (before, after) if mark and mark.take_id)
+        if not (protected if take_ids is None else protected & take_ids) and (
+            pair is None or pair != current_pair
+        ):
             return True
         boundary = player.prepared_tail_boundary(track)
         return player.bus.can_replace_unheard_tail(track, before_frame=boundary)
@@ -1056,10 +1103,10 @@ class ShowRunner:
                     player._state.queued_next = None
             for omission in plan.omissions:
                 self.prepared_speech_failed("", omission)
-            player.refresh_prepared_tail()
+            player.refresh_prepared_tail(plan)
             self._prepared_signature = signature
 
-    def prepared_primary_valid(self, entry: Any) -> bool:
+    def prepared_primary_valid(self, entry: Any, *, plan: Any = None) -> bool:
         """Recheck approval and the immutable asset at the last render boundary."""
         mark = attached(self._bridge.player, "_edition_occurrences").get(entry)
         with self._state_lock:
@@ -1067,7 +1114,8 @@ class ShowRunner:
         if mark is None or air is None or air.edition_id is None:
             return False
         try:
-            plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
+            if plan is None:
+                plan = self._edition_store.runtime_plan(air.edition_id, self._edition_station)
             valid = any(
                 row.occurrence_id == mark.occurrence_id
                 and row.take_id == mark.take_id
@@ -1094,8 +1142,13 @@ class ShowRunner:
             if air is None or air.edition_id is None or air.marked_started:
                 return
             self._edition_store.mark_started(air.edition_id, confirm_reair=air.confirm_reair)
-            self._write_state(air, strict=True)
             air.marked_started = True
+            try:
+                self._write_state(air, strict=True)
+            except OSError:
+                logger.exception(
+                    "Could not save prepared edition progress; airing guard is durable"
+                )
 
     def prepared_audio_committed(self) -> None:
         """An edit cannot revoke the prior approval of already committed PCM."""
@@ -1238,13 +1291,21 @@ class ShowRunner:
                 if air.edition_id is not None:
                     rows = air.prepared.items
                     index = min(air.resume_index(), max(0, len(rows) - 1))
+                    resume = next(
+                        (
+                            row.occurrence_id
+                            for row in (*rows[index:], *reversed(rows[:index]))
+                            if row.take_id != row.occurrence_id
+                        ),
+                        None,
+                    )
                     document.update(
                         edition_id=air.edition_id,
                         occurrences=[
                             {"id": row.occurrence_id, "label": row.label, "kind": row.kind}
                             for row in rows
                         ],
-                        resume_occurrence=rows[index].occurrence_id if rows else None,
+                        resume_occurrence=resume,
                     )
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(path, json.dumps(document, ensure_ascii=False) + "\n")
@@ -1328,10 +1389,15 @@ class ShowRunner:
             self._prepared_loop = asyncio.get_running_loop()
             self._bridge.player.request_prepared_refresh = self.request_prepared_refresh
             self._bridge.player.prepared_render_token = self.prepared_render_token
+            self._bridge.player.prepared_plan = self.prepared_plan
+            self._bridge.player.prepared_plan_valid = self.prepared_plan_valid
             self._bridge.player.prepared_render_guard = self.prepared_render_guard
             self._bridge.player.prepared_primary_valid = self.prepared_primary_valid
             self._bridge.player.prepared_render_committed = self.prepared_render_committed
             self._bridge.player.prepared_handoff = self.prepared_handoff
+            self._bridge.player.prepared_preview_handoff = partial(
+                self.prepared_handoff, report_omissions=False
+            )
             self._bridge.player.prepared_speech_failed = self.prepared_speech_failed
             self._bridge.player.prepared_audio_committed = self.prepared_audio_committed
             queued, _skipped = await self._begin(

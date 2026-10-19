@@ -62,6 +62,49 @@ def test_pending_review_retains_real_take_and_never_approves_it(tmp_path):
         assert np.max(np.abs(rendered.read(1000))) > 0.01
 
 
+def test_appending_after_segment_still_produces_complete_receipt_and_airable_take(tmp_path):
+    """ADR-0015-02 ADR-0015-03: editing after an interview retains full review and approval."""
+    from autodj.prepared_editions import Occurrence, ReviewReceipt
+    from tests.unit.test_prepared_editions import voice
+
+    station, show_id, entries = station_content(tmp_path, seconds=2)
+    store = edition_store(station)
+    edition = store.create(show_id, station.shows.get(show_id))
+    edition = store.import_take(
+        edition.id,
+        edition.revision,
+        voice(tmp_path, seconds=1),
+        position="segment",
+    )
+    take = edition.takes[0]
+    edition = store.edit(
+        edition.id,
+        edition.revision,
+        occurrences=[*edition.occurrences, Occurrence(path=entries[1].path)],
+    )
+    request = {
+        "source": "edition",
+        "edition_id": edition.id,
+        "include_pending": True,
+        "target_take_id": take.id,
+        "keep_complete": [take.id],
+    }
+    plan = capture_review(station, request)
+    output = tmp_path / "review"
+    output.mkdir()
+    metadata = render_review(
+        plan.source,
+        plan.items,
+        output,
+        settings=ReviewSettings(head_seconds=0.01, tail_seconds=0.01),
+        keep_complete=[take.id],
+    )
+    proofs = review_receipts(plan.request, metadata, "f" * 32)
+    assert len(proofs) == 1 and proofs[0]["keep_complete"]
+    store.approve(edition.id, take.id, ReviewReceipt.model_validate(proofs[0]), station)
+    assert any(row.take_id == take.id for row in store.runtime_plan(edition.id, station).items)
+
+
 def test_edition_review_becomes_stale_when_its_source_asset_changes(tmp_path):
     station, show_id, _ = station_content(tmp_path, seconds=2)
     store = edition_store(station)

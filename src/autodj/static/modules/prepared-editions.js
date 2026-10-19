@@ -190,7 +190,7 @@ export function installPreparedEditions({
             : `standalone segment, ${itemName(take.occurrence_id)}`;
       const description = `${take.label || "Speech"}; ${placement}`;
       li.dataset.takeId = take.id;
-      text.textContent = `${description}. ${take.status === "needs_review" ? "Needs review" : take.status}.`;
+      text.textContent = `${description}. ${take.status === "needs_review" ? "Needs review" : take.status === "unattached" ? "Unattached" : take.status}.`;
       const listen = button("listen", "Listen to take", () => {
         stopAudio(); get("audio").src = stationApi(endpoint(`/assets/${encodeURIComponent(take.asset_id)}`));
       });
@@ -212,10 +212,38 @@ export function installPreparedEditions({
           if (current(ticket)) { render(value); get("heading").focus(); say("Take removed; saved source audio retained."); }
         } catch (error) { fail(error, ticket); }
       });
-      listen.disabled = review.disabled = ["missing", "invalid"].includes(take.status);
-      approve.disabled = !receipts.has(take.id) || ["missing", "invalid"].includes(take.status);
+      listen.disabled = ["missing", "invalid"].includes(take.status);
+      review.disabled = ["missing", "invalid", "unattached"].includes(take.status);
+      approve.disabled = !receipts.has(take.id) || review.disabled;
       for (const control of [listen, record, review, approve, remove]) control.setAttribute("aria-label", `${control.textContent} ${description}`);
-      li.append(text, listen, record, review, approve, remove); return li;
+      li.append(text, listen, record, review, approve, remove);
+      if (take.status === "unattached" && take.position !== "segment") {
+        const select = doc.createElement("select"), selectLabel = doc.createElement("label");
+        select.id = `edition-reattach-${take.id}`; selectLabel.htmlFor = select.id;
+        selectLabel.textContent = `Position for ${description}`;
+        const rows = edition.occurrences;
+        const pairs = take.position === "transition"
+          ? rows.slice(0, -1).map((item, index) => [item.id, rows[index + 1].id])
+          : rows.length ? [take.position === "opening" ? [null, rows[0].id] : [rows.at(-1).id, null]] : [];
+        select.append(...pairs.map(([before, after], index) => option(String(index),
+          before && after ? `${itemName(before)} into ${itemName(after)}` : before ? `After ${itemName(before)}` : `Before ${itemName(after)}`)));
+        const reattach = button("reattach", "Reattach", () => void withDisabled(reattach, async () => {
+          const ticket = context(), pair = pairs[Number(select.value)];
+          if (!pair) return;
+          try {
+            const value = await send(endpoint(`/takes/${encodeURIComponent(take.id)}/reattach`), "POST", {
+              expected_revision: edition.revision, before_id: pair[0], after_id: pair[1],
+            });
+            if (current(ticket)) {
+              render(value); get("takes").querySelector(`[data-take-id="${take.id}"] button[data-action='review']`)?.focus();
+              say("Take reattached. Review and approve its new position before broadcast.");
+            }
+          } catch (error) { fail(error, ticket, select); }
+        }));
+        reattach.setAttribute("aria-label", `Reattach ${description}`); reattach.disabled = !pairs.length;
+        li.append(selectLabel, select, reattach);
+      }
+      return li;
     }));
   }
   function reviewTake(take = null) {
@@ -329,7 +357,13 @@ export function installPreparedEditions({
     busy = true;
     try {
       const value = await request(endpoint(`/takes?${query}`), { method: "POST", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
-      if (current(ticket)) { render(value); stopAudio(); dropLocal(); rerecord = null; get("file").value = ""; say("Take saved. Contextual review and explicit approval are required before broadcast."); }
+      if (current(ticket)) {
+        const saved = value.takes.find((take) => !edition.takes.some((old) => old.id === take.id && old.asset_id === take.asset_id));
+        render(value);
+        const review = saved && get("takes").querySelector(`[data-take-id="${saved.id}"] button[data-action='review']`);
+        (review && !review.disabled ? review : get("heading")).focus();
+        stopAudio(); dropLocal(); rerecord = null; get("file").value = ""; say("Take saved. Contextual review and explicit approval are required before broadcast.");
+      }
     } catch (error) { fail(error, ticket, error.status === 409 ? get("load") : control); }
     finally { if (current(ticket)) busy = false; }
   }
@@ -394,7 +428,7 @@ export function installPreparedEditions({
       if (current(ticket)) {
         generation += 1; loadNumber += 1; busy = false; starting = false;
         stopRecording(true); stopAudio(); dropLocal(); receipts.clear(); requested.clear();
-        edition = null; get("editor").hidden = true; onChange(); await refresh(); say("Edition deleted.");
+        get("list").focus(); edition = null; get("editor").hidden = true; onChange(); await refresh(); say("Edition deleted.");
       }
     } catch (error) { fail(error, ticket); }
   });

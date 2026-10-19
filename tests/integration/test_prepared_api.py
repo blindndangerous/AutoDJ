@@ -111,3 +111,16 @@ def test_edition_access_and_early_upload_cap(prefix):
         headers={"Content-Length": str(512 * 1024**2 + 1)},
     )
     assert oversized.status_code == 413
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/api/stations/default"])
+def test_reattach_body_is_capped_before_json_parsing(prepared_client, prefix):
+    from autodj.worker_api import SMALL_BODY_MAX_BYTES
+
+    client, _, _ = prepared_client
+    response = client.post(
+        f"{prefix}/editions/{'a' * 32}/takes/{'b' * 32}/reattach",
+        content=b" " * SMALL_BODY_MAX_BYTES + b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413

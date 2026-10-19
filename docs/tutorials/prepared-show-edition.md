@@ -60,8 +60,12 @@ another page has made your view stale: **Open edition** reloads the saved state.
 4. Press **Stop recording**. Check that the microphone indicator stops and the
    page says the recording stopped for this position.
 5. Play **Private edition take**, listen for the complete sentence, then pause it.
-6. Press **Save recording**. Find the saved take and read **Needs review** beside
+6. Press **Save recording**. Focus moves to the saved take's **Review pending
+   speech** button. Read **Needs review** beside
    its numbered transition.
+
+If the saved audio is missing or invalid, focus returns to **Edition contents
+and recordings**. Repair the audio before reviewing it.
 
 The stored take is now durable, but it is not approved for broadcast. Short
 recordings have a 3:00 limit. Listening privately has not changed that state.
@@ -106,6 +110,12 @@ Expected result: the name changes and the take stays **ready**. Its audio,
 adjacent occurrences and mixing inputs are unchanged. Re-recording the take,
 replacing an adjacent occurrence, or changing relevant cues would instead mark
 it **Needs review** without deleting the source recording.
+
+If you separate a transition's two items, its take becomes **Unattached**. Choose
+an adjacent pair in that take's **Position for** list and press **Reattach**.
+The recording stays saved; review and approve its new context before airing.
+Standalone segments instead follow their own occurrence and need review again
+when their neighbours change.
 
 ## Stop and retain the production
 

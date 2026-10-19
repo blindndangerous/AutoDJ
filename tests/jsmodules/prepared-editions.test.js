@@ -91,8 +91,13 @@ it("stops late microphone grants and drops responses after clearing protected co
   expect(get("audio").hasAttribute("src")).toBe(false);
 });
 
-it("records without a near-air slot, caps the microphone, and uploads the chosen position", async () => {
+it.each(["needs_review", "missing", "invalid"])("saves a recording and preserves focus when the saved take is %s", async (status) => {
   const stop = vi.fn(), timers = [];
+  const request = vi.fn(async (url, init) => {
+    if (url.startsWith("/api/editions?")) return { editions: [edition] };
+    return init?.method === "POST" && url.includes("/takes?")
+      ? { ...edition, takes: [{ ...take, status }] } : edition;
+  });
   class Recorder extends EventTarget {
     mimeType = "audio/webm";
     start() {}
@@ -102,7 +107,8 @@ it("records without a near-air slot, caps the microphone, and uploads the chosen
       this.dispatchEvent(event); this.dispatchEvent(new Event("stop"));
     }
   }
-  const { controls, request } = harness({
+  const { controls } = harness({
+    request,
     media: () => ({ getUserMedia: async () => ({ getTracks: () => [{ stop }] }) }),
     Recorder: () => Recorder, objectUrl: () => "blob:take", revokeUrl: vi.fn(),
     setTimer: (fn, milliseconds) => { timers.push({ fn, milliseconds }); return 1; }, clearTimer: vi.fn(),
@@ -113,11 +119,67 @@ it("records without a near-air slot, caps the microphone, and uploads the chosen
   expect(timers[0].milliseconds).toBe(180000);
   timers[0].fn(); await settle();
   expect(stop).toHaveBeenCalledOnce();
+  get("save-take").focus();
   get("save-take").click(); await settle();
   const upload = request.mock.calls.find(([url, init]) => url.includes("/takes?") && init?.method === "POST");
   expect(upload[0]).toContain("position=opening");
   expect(upload[0]).toContain("expected_revision=3");
   expect(upload[1].body).toBeInstanceOf(Blob);
+  expect(document.activeElement).toBe(status === "needs_review"
+    ? get("takes").querySelector("[data-action='review']") : get("heading"));
+});
+
+it("focuses the edition list after deleting the open edition", async () => {
+  const { controls } = harness({ confirm: async () => true });
+  await controls.openShow(show); get("load").click(); await settle();
+  get("delete").focus(); get("delete").click(); await settle();
+  expect(get("editor").hidden).toBe(true);
+  expect(document.activeElement).toBe(get("list"));
+});
+
+it("reattaches an unattached take to the selected pair and focuses review", async () => {
+  const detached = { ...edition, takes: [{ ...take, status: "unattached" }] };
+  const request = vi.fn(async (url) => url.includes("?") ? { editions: [detached] }
+    : url.endsWith("/reattach") ? { ...detached, revision: 4, takes: [take] } : detached);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  expect(get("takes").textContent).toContain("Unattached");
+  expect(get("takes").querySelector("[data-action='review']").disabled).toBe(true);
+  get("takes").querySelector("[data-action='reattach']").click(); await settle();
+  const upload = request.mock.calls.find(([url]) => url.endsWith("/reattach"));
+  expect(JSON.parse(upload[1].body)).toEqual({ expected_revision: 3, before_id: "first", after_id: "second" });
+  expect(document.activeElement).toBe(get("takes").querySelector("[data-action='review']"));
+});
+
+it("gives same-label unattached takes distinct position names", async () => {
+  const value = { ...edition, takes: [
+    { ...take, label: "Speech", status: "unattached", after_id: "removed" },
+    { ...take, id: "other", label: "Speech", status: "unattached", before_id: "removed" },
+  ] };
+  const request = vi.fn(async (url) => url.includes("?") ? { editions: [value] } : value);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  const labels = [...get("takes").querySelectorAll("label")].map((label) => label.textContent);
+  expect(labels).toHaveLength(2);
+  expect(new Set(labels).size).toBe(2);
+  expect(labels[0]).toContain("item 1, A");
+  expect(labels[1]).toContain("item 2, B");
+});
+
+it("sends one reattachment when its focused button is pressed twice", async () => {
+  const detached = { ...edition, takes: [{ ...take, status: "unattached" }] };
+  const replies = [];
+  const request = vi.fn(async (url) => url.includes("?") ? { editions: [detached] }
+    : url.endsWith("/reattach") ? new Promise((resolve) => replies.push(resolve)) : detached);
+  const { controls } = harness({ request });
+  await controls.openShow(show); get("load").click(); await settle();
+  const reattach = get("takes").querySelector("[data-action='reattach']");
+  reattach.focus(); reattach.click(); reattach.click(); await settle();
+  const count = replies.length;
+  for (const reply of replies) reply({ ...detached, revision: 4, takes: [take] });
+  await settle();
+  expect(count).toBe(1);
+  expect(document.activeElement).toBe(get("takes").querySelector("[data-action='review']"));
 });
 
 it("uses revision-safe import and keeps existing audio after a refused request", async () => {

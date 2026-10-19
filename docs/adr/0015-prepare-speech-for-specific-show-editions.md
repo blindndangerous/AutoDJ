@@ -125,6 +125,41 @@ An edition that has started may already have aired speech even if a crash
 prevented exact accounting. Require an explicit re-air confirmation before
 scheduling or starting it again; do not claim exact transmission history.
 
+### 2026-10-18: binding recovery and scoped edit checks
+
+Segment neighbours are derived from the segment occurrence's current position.
+Moving the segment or changing its neighbours preserves the source and attachment
+while invalidating changed approval dependencies. A separated transition pair is
+explicitly Unattached. Reattach chooses a valid adjacent pair, retains the take
+and asset identities, and requires fresh review and approval. The same action
+repairs displaced opening and closing bindings.
+
+Removing a segment occurrence removes its active take in the same revision while
+retaining the source asset. This frees its binding for another segment. A missing
+segment item requires removal or re-import rather than transition reattachment.
+Partial-import cleanup runs once per process per resolved audio directory, even
+when stopped editors and running stations use different objects. Cleanup errors
+are logged and do not block startup or repeat cleanup over active imports.
+
+Apply edit preflight only to changes affecting current speech or the immediate
+handoff, including next primary speech eligibility. Unrelated future take approval
+remains available while an opening clip plays. Preserve the existing race policy
+when a relevant edit crosses the boundary after preflight.
+
+Cache content hashes process-wide by resolved path, size, nanosecond modification
+time and inode. Share a frozen runtime plan through render selection and decoding;
+recheck its revision and eligibility after decoding. A detected change triggers a
+fresh render attempt. The final tail-swap guard still validates current inputs.
+An error during post-decode eligibility validation omits prepared speech for the
+retry; valid music continues without retrying an unverifiable speech plan.
+This avoids repeated whole-file reads; it does not guarantee latency or detect an
+external byte edit that preserves every cache-key field.
+
+Persist resume choices as real occurrences. An opening maps to the first real
+item; a closing with no following item maps to the last real item, which may replay
+on explicit resume. Once the durable may-have-aired marker succeeds, progress-file
+failure is logged without retrying that marker as an unconfirmed re-air.
+
 ## Alternatives and consequences
 
 - Attach speech to reusable Shows or song paths: less state, but edits and repeated
@@ -150,14 +185,14 @@ acceptance. Platform and human listening evidence remains a separate obligation.
 
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
-| `ADR-0015-01` | Stable occurrence identities distinguish repeated songs and preserve take bindings through moves. | automated | `tests/unit/test_prepared_editions.py::test_repeated_song_ids_survive_reorder_and_stale_edit_is_rejected` |
-| `ADR-0015-02` | Relevant changes invalidate approval without losing audio; unrelated edits preserve approval. | automated | `tests/unit/test_prepared_editions.py::test_intact_pair_move_and_unrelated_edits_preserve_approval_but_changed_song_does_not` |
-| `ADR-0015-03` | Full-target contextual review and explicit approval use server-owned complete, non-omitted receipts. | automated | `tests/unit/test_prepared_review.py::test_pending_review_retains_real_take_and_never_approves_it`; `tests/integration/test_prepared_api.py::test_stopped_edition_import_real_review_explicit_approval_and_retained_audio`; `tests/unit/test_prepared_long_audio.py::test_real_above_threshold_segment_gets_complete_target_receipt` |
+| `ADR-0015-01` | Stable occurrence identities distinguish repeated songs and preserve take bindings through moves. | automated | `tests/unit/test_prepared_editions.py::test_repeated_song_ids_survive_reorder_and_stale_edit_is_rejected`; `tests/unit/test_prepared_editions.py::test_segment_follows_current_neighbours_and_can_be_reapproved`; `tests/unit/test_prepared_editions.py::test_broken_pair_is_unattached_and_reattach_keeps_asset`; `tests/unit/test_prepared_api.py::test_reattach_route_keeps_source_and_rejects_stale_revision`; `tests/unit/test_prepared_editions.py::test_removing_segment_row_removes_take_and_frees_binding_without_losing_asset` |
+| `ADR-0015-02` | Relevant changes invalidate approval without losing audio; unrelated edits preserve approval. | automated | `tests/unit/test_prepared_editions.py::test_intact_pair_move_and_unrelated_edits_preserve_approval_but_changed_song_does_not`; `tests/unit/test_prepared_editions.py::test_segment_follows_current_neighbours_and_can_be_reapproved`; `tests/unit/test_prepared_editions.py::test_broken_pair_is_unattached_and_reattach_keeps_asset`; `tests/unit/test_prepared_review.py::test_appending_after_segment_still_produces_complete_receipt_and_airable_take`; `tests/unit/test_prepared_api.py::test_reattach_route_keeps_source_and_rejects_stale_revision`; `tests/unit/test_prepared_editions.py::test_removing_adjacent_segment_keeps_reapproved_take_valid_on_rename`; `tests/unit/test_prepared_editions.py::test_removing_segment_row_removes_take_and_frees_binding_without_losing_asset` |
+| `ADR-0015-03` | Full-target contextual review and explicit approval use server-owned complete, non-omitted receipts. | automated | `tests/unit/test_prepared_review.py::test_pending_review_retains_real_take_and_never_approves_it`; `tests/integration/test_prepared_api.py::test_stopped_edition_import_real_review_explicit_approval_and_retained_audio`; `tests/unit/test_prepared_long_audio.py::test_real_above_threshold_segment_gets_complete_target_receipt`; `tests/unit/test_prepared_review.py::test_appending_after_segment_still_produces_complete_receipt_and_airable_take` |
 | `ADR-0015-04` | Approved local audio uses shared placement; long primary segments use bounded normal-speed playback. | automated | `tests/unit/test_prepared_playout.py::test_prepared_handoff_renders_when_announcer_breaks_are_disabled`; `tests/unit/test_prepared_playout.py::test_primary_speech_uses_bounded_long_decode_instead_of_break_decoder`; `tests/unit/test_prepared_long_audio.py::test_real_thirty_minute_primary_decode_is_scoped_and_disk_backed` |
-| `ADR-0015-05` | Interrupted editions require explicit resume; ordinary Shows keep automatic resume and hard-event priority. | automated | `tests/unit/test_prepared_playout.py::test_prepared_restart_requires_explicit_chosen_occurrence_and_preserves_ordinary_resume` |
+| `ADR-0015-05` | Interrupted editions require explicit resume; ordinary Shows keep automatic resume and hard-event priority. | automated | `tests/unit/test_prepared_playout.py::test_prepared_restart_requires_explicit_chosen_occurrence_and_preserves_ordinary_resume`; `tests/unit/test_prepared_editions.py::test_resume_take_id_maps_to_real_occurrence`; `tests/unit/test_prepared_playout.py::test_progress_saves_real_resume_occurrence_for_edge_clips` |
 | `ADR-0015-06` | Station source assets survive backup/restore and browser-only authorization applies. | automated | `tests/unit/test_prepared_backup.py::test_backup_restores_editions_and_source_audio_but_not_partial_imports`; `tests/integration/test_prepared_api.py::test_edition_access_and_early_upload_cap` |
 | `ADR-0015-07` | Windows/Chrome/NVDA production, full-target review, approval and listening are demonstrated. | manual | Operator rehearsal occurs after both feature PRs are submitted. Record revision, versions, steps, focus/speech and audible joins; keep the feature open pending evidence. |
-| `ADR-0015-08` | Edits crossing the commit boundary preserve current-run approval honestly and invalidate future PCM. | automated | `tests/unit/test_prepared_tail.py::test_boundary_crossed_after_edit_preflight_freezes_current_run_approval` |
+| `ADR-0015-08` | Edits crossing the commit boundary preserve current-run approval honestly and invalidate future PCM. | automated | `tests/unit/test_prepared_tail.py::test_boundary_crossed_after_edit_preflight_freezes_current_run_approval`; `tests/unit/test_prepared_tail.py::test_future_take_edit_is_allowed_while_opening_clip_is_committed`; `tests/unit/test_prepared_api.py::test_closing_approval_succeeds_while_opening_clip_plays`; `tests/unit/test_prepared_tail.py::test_edit_lock_uses_rendered_speech_after_approval_changes` |
 
 ## Verification limits
 

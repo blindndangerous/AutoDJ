@@ -2959,6 +2959,7 @@ class Player:
             # An intro matched to the next song (#127) takes the automatic
             # liner's place at this change; the liner trigger stays due.
             intro = None
+            prepared = self._prepared_plan()
             try:
                 if plan is not None:
                     unbooked_ad_steps, unbooked_slot_id = plan.ad_steps, plan.slot_id
@@ -2972,7 +2973,9 @@ class Player:
                     next_clock_revision = getattr(plan, "clock_revision", None)
                     next_clock_name = plan.clock_name
                     next_clock_boundary = plan.boundary_after
-                    breaks = self._prepared_breaks(current, next_entry) + self._take_breaks(plan)
+                    breaks = self._prepared_breaks(
+                        current, next_entry, plan=prepared
+                    ) + self._take_breaks(plan)
                     liners, liner_key, intro = self._transition_voice(
                         current, next_entry, liners, breaks, context.at
                     )
@@ -2986,14 +2989,14 @@ class Player:
                         next_clock_name = self._pending_clock_name
                         next_clock_revision = self._chosen_clock_revision
                         next_clock_boundary = self._pending_clock_boundary
-                    breaks = self._prepared_breaks(current, next_entry)
+                    breaks = self._prepared_breaks(current, next_entry, plan=prepared)
                     liners, liner_key, intro = self._transition_voice(
                         current, next_entry, liners, breaks, context.at
                     )
                 else:
                     next_entry, next_mode = self._choose_next(current, context)
                     unbooked_ad_steps = getattr(self, "_chosen_clock_ad_steps", ())
-                    breaks = self._prepared_breaks(current, next_entry)
+                    breaks = self._prepared_breaks(current, next_entry, plan=prepared)
                     if breaks:
                         liners, liner_key, intro = self._transition_voice(
                             current, next_entry, liners, breaks, context.at
@@ -3009,6 +3012,8 @@ class Player:
                     # the render then finds this plan.
                     self.planned_transition(current, next_entry, next_mode)
                 voice: dict[str, Any] = {"intro": intro} if intro is not None else {}
+                if prepared is not None:
+                    voice["prepared_plan"] = prepared
                 if breaks:
                     rendered = self._render_track(
                         current,
@@ -3205,16 +3210,32 @@ class Player:
             desk.on_slot_empty = self._unpin_slot
 
     def _prepared_breaks(
-        self, current: IndexEntry, upcoming: IndexEntry | None
+        self,
+        current: IndexEntry,
+        upcoming: IndexEntry | None,
+        *,
+        plan: Any = None,
     ) -> tuple[Break, ...]:
         callback = getattr(self, "prepared_handoff", None)
         if callback is None or upcoming is None:
             return ()
         try:
-            return callback(current, upcoming)
+            return (
+                callback(current, upcoming, plan=plan)
+                if plan is not None
+                else callback(current, upcoming)
+            )
         except (OSError, ValueError):
             logger.warning("Prepared speech is unavailable; music continues", exc_info=True)
             return ()
+
+    def _prepared_plan(self) -> Any:
+        callback = getattr(self, "prepared_plan", None)
+        try:
+            return callback() if callback is not None else None
+        except (OSError, ValueError):
+            logger.warning("Prepared speech is unavailable; music continues", exc_info=True)
+            return None
 
     def _unpin_slot(self, slot_id: str) -> None:
         """Let the queue move the open slot again once no break waits in it."""
@@ -3682,12 +3703,14 @@ class Player:
         )
         return max(0, min(boundaries))
 
-    def refresh_prepared_tail(self) -> None:
+    def refresh_prepared_tail(self, prepared_plan: Any = None) -> None:
         """Replace a prepared future handoff; decoding never runs on the bus thread.
 
         Unlike ordinary queue refresh, an invalid prepared render is never kept
         as a fallback. A voice that crossed its commit boundary keeps playing.
         """
+        if prepared_plan is None:
+            prepared_plan = self._prepared_plan()
         with self._clock_selection_lock:
             track = self._playing_render
             if track is None or self.bus is None:
@@ -3702,12 +3725,12 @@ class Player:
                 self._render_ahead.reset(lambda: self._skip_past_render(track))
                 return
             token_for = getattr(self, "prepared_render_token", None)
-            token = token_for() if token_for is not None else ""
+            token = token_for(prepared_plan) if token_for is not None else ""
             next_entry = track.next_entry
-            if not self._prepared_primary_valid(next_entry):
+            if not self._prepared_primary_valid(next_entry, plan=prepared_plan):
                 with self._state.queue_lock:
                     next_entry = self._peek_user_queue(track.entry)
-            breaks = self._prepared_breaks(track.entry, next_entry)
+            breaks = self._prepared_breaks(track.entry, next_entry, plan=prepared_plan)
             if self.break_desk is not None:
                 ordinary = tuple(
                     item
@@ -3724,6 +3747,7 @@ class Player:
                 liners=tuple((entry, queued) for _at, entry, queued in track.liner_events),
                 breaks=breaks,
                 intro=track.incoming_intro,
+                prepared_plan=prepared_plan,
             )
             if rendered is None or rendered.playback_rate != track.playback_rate:
                 self._render_ahead.reset(lambda: self._skip_past_render(track))
@@ -4849,11 +4873,13 @@ class Player:
             return audio
         return (audio * gain).astype(np.float32)
 
-    def _prepared_primary_valid(self, entry: IndexEntry | None) -> bool:
+    def _prepared_primary_valid(self, entry: IndexEntry | None, *, plan: Any = None) -> bool:
         if not getattr(entry, "_prepared_clip", False):
             return True
         validate = getattr(self, "prepared_primary_valid", None)
-        return validate is None or validate(entry)
+        return validate is None or (
+            validate(entry, plan=plan) if plan is not None else validate(entry)
+        )
 
     def _load_playout_audio(self, entry: IndexEntry) -> np.ndarray:
         """Decode originals on the render worker, preserving source cue positions.
@@ -4863,8 +4889,6 @@ class Player:
         mapped into memory, not in ordinary memory.
         """
         if getattr(entry, "_prepared_clip", False):
-            if not self._prepared_primary_valid(entry):
-                return np.empty((0, 2), dtype=np.float32)
             if self._cfg.playback.loudness_processing in {"smooth", "stereotool"}:
                 from autodj.processing import load_and_measure_audio
 
@@ -6705,6 +6729,8 @@ class Player:
         liners: tuple[tuple[IndexEntry, bool], ...] = (),
         breaks: tuple[Break, ...] = (),
         intro: Any = None,
+        prepared_plan: Any = None,
+        omit_prepared: bool = False,
     ) -> RenderedTrack | None:
         """Render *current* from *start_offset* into the head of *next_entry*.
 
@@ -6734,9 +6760,18 @@ class Player:
         """
         # This track's decode, when the previous render mixed it in, and the
         # next track's, started now so it runs alongside this one's.
-        if not self._prepared_primary_valid(current):
+        if omit_prepared:
+            if getattr(current, "_prepared_clip", False):
+                return None
+            if getattr(next_entry, "_prepared_clip", False):
+                next_entry = None
+            breaks = tuple(item for item in breaks if item.source != "prepared_edition")
+            prepared_plan = None
+        elif prepared_plan is None:
+            prepared_plan = self._prepared_plan()
+        if not self._prepared_primary_valid(current, plan=prepared_plan):
             return None
-        if not self._prepared_primary_valid(next_entry):
+        if not self._prepared_primary_valid(next_entry, plan=prepared_plan):
             next_entry = None
         source_decode = self._take_prefetched(current)
         incoming_decode = (
@@ -6754,11 +6789,38 @@ class Player:
                 source_decode=source_decode,
                 incoming_decode=incoming_decode,
             )
+            valid_plan = getattr(self, "prepared_plan_valid", None)
+            unchanged = True
+            if prepared_plan is not None and valid_plan is not None:
+                try:
+                    unchanged = valid_plan(prepared_plan)
+                except (OSError, ValueError):
+                    logger.warning("Prepared speech is unavailable; music continues", exc_info=True)
+                    unchanged = False
+                    omit_prepared = True
+            if not unchanged:
+                fresh = None if omit_prepared else self._prepared_plan()
+                return self._render_track(
+                    current,
+                    next_entry,
+                    start_offset,
+                    glide_in=glide_in,
+                    liners=liners,
+                    breaks=tuple(item for item in breaks if item.source != "prepared_edition")
+                    + (
+                        ()
+                        if omit_prepared
+                        else self._prepared_breaks(current, next_entry, plan=fresh)
+                    ),
+                    intro=intro,
+                    prepared_plan=fresh,
+                    omit_prepared=omit_prepared,
+                )
             selected_prepared = tuple(
                 item for item in breaks if getattr(item, "source", None) == "prepared_edition"
             )
             if selected_prepared and getattr(self, "prepared_handoff", None) is not None:
-                fresh = self._prepared_breaks(current, next_entry)
+                fresh = self._prepared_breaks(current, next_entry, plan=prepared_plan)
 
                 def identity(item: Break) -> tuple:
                     return (
@@ -6781,9 +6843,9 @@ class Player:
                         breaks=tuple(item for item in breaks if item not in selected_prepared),
                         intro=intro,
                     )
-            if not self._prepared_primary_valid(current):
+            if not self._prepared_primary_valid(current, plan=prepared_plan):
                 return None
-            if not self._prepared_primary_valid(next_entry):
+            if not self._prepared_primary_valid(next_entry, plan=prepared_plan):
                 return self._render_track(
                     current, None, start_offset, glide_in=glide_in, liners=liners, breaks=breaks
                 )

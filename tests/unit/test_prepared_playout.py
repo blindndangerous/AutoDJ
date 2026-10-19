@@ -1,6 +1,7 @@
 """Prepared editions share the queue and mixer without a near-air reservation."""
 
 import asyncio
+import copy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,7 @@ class Editions:
     def runtime_plan(self, identity, station, *, include_pending=False, from_occurrence=None):
         assert identity == self.plan.edition_id
         if from_occurrence is None:
-            return self.plan
+            return copy.deepcopy(self.plan)
         index = next(
             i for i, item in enumerate(self.plan.items) if item.occurrence_id == from_occurrence
         )
@@ -35,6 +36,11 @@ class Editions:
             raise ValueError("Confirm re-airing this edition")
         self.started += 1
         self.plan.previously_started = True
+
+    def plan_is_current(self, plan, station):
+        return repr((plan.items, plan.handoffs, plan.omissions)) == repr(
+            (self.plan.items, self.plan.handoffs, self.plan.omissions)
+        )
 
 
 def item(identity, entry, *, kind="song"):
@@ -234,6 +240,93 @@ def test_prepared_handoff_renders_when_announcer_breaks_are_disabled(tmp_path, m
     assert source.player._slot_plan is None
 
 
+def test_one_prepared_plan_is_shared_through_render_and_decode(tmp_path, monkeypatch):
+    runner, source, _, editions, _ = setup(tmp_path)
+    clips = []
+    for identity in ("opening", "segment"):
+        path = tmp_path / f"{identity}.wav"
+        sf.write(path, np.full((2 * SR, 2), 0.2, np.float32), SR, subtype="FLOAT")
+        clips.append(
+            SimpleNamespace(
+                occurrence_id=identity,
+                path=path,
+                kind="clip",
+                seconds=2,
+                take_id=identity,
+                label=identity,
+            )
+        )
+    speech = tmp_path / "link.wav"
+    sf.write(speech, np.full((SR, 2), 0.3, np.float32), SR, subtype="FLOAT")
+    editions.plan.items = tuple(clips)
+    editions.plan.handoffs = {
+        ("opening", "segment"): (
+            SimpleNamespace(
+                take_id="link",
+                asset_id="link-asset",
+                path=speech,
+                seconds=1,
+                placement="standalone",
+                allow_outro=False,
+                label="Link",
+            ),
+        )
+    }
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    current, upcoming = source.player._state.queue
+    plan = editions.runtime_plan
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(True)
+        return plan(*args, **kwargs)
+
+    monkeypatch.setattr(editions, "runtime_plan", counted)
+    source.player._set_render_cursor(current, 0, "queue", from_queue=True)
+    rendered = source.player._next_rendered()
+    assert rendered is not None and rendered.entry is current
+    assert rendered.next_entry is upcoming
+    assert [event[1] for event in rendered.break_events] == ["link"]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "error", [PermissionError("sharing violation"), ValueError("invalid manifest")]
+)
+@pytest.mark.parametrize("manifest_unreadable", [False, True])
+def test_post_decode_store_failure_keeps_song_and_drops_prepared_speech(
+    tmp_path, monkeypatch, error, manifest_unreadable
+):
+    from tests.unit.test_prepared_tail import _current_handoff
+
+    _runner, source, editions, old, _, _, _ = _current_handoff(tmp_path)
+    original = editions.runtime_plan
+    failed = False
+    checks = 0
+
+    def validate(*args):
+        nonlocal failed, checks
+        checks += 1
+        if checks > 1:
+            pytest.fail("A failed validation must not retry another unverifiable plan")
+        failed = True
+        raise error
+
+    def plan(*args, **kwargs):
+        if failed and manifest_unreadable:
+            raise error
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(editions, "plan_is_current", validate)
+    monkeypatch.setattr(editions, "runtime_plan", plan)
+    source.player._set_render_cursor(old.entry, 0, "queue", from_queue=True)
+    rendered = source.player._next_rendered()
+    assert rendered is not None and rendered.entry is old.entry
+    assert not rendered.break_events
+    assert np.max(np.abs(rendered.audio)) > 0
+    assert checks == 1
+
+
 def settle(runner):
     async def changed():
         runner.track_changed()
@@ -253,6 +346,54 @@ def test_conservative_airing_guard_is_persisted_once_before_owned_pcm_can_escape
     assert editions.started == 1
     runner.prepared_render_committed(entry)
     assert editions.started == 1
+
+
+def test_progress_write_failure_does_not_retry_successful_airing_marker(tmp_path, monkeypatch):
+    runner, source, _, editions, _ = setup(tmp_path)
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    monkeypatch.setattr(
+        runner, "_write_state", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    entry = source.player._state.queue[0]
+    runner.prepared_render_committed(entry)
+    runner.prepared_render_committed(entry)
+    assert editions.started == 1
+
+
+@pytest.mark.parametrize("edge, expected", [("opening", "0"), ("closing", "2")])
+def test_progress_saves_real_resume_occurrence_for_edge_clips(tmp_path, edge, expected):
+    """ADR-0015-05: a restart never preselects an edge take as its occurrence."""
+    import json
+
+    runner, _, _, editions, _ = setup(tmp_path)
+    clip = SimpleNamespace(
+        occurrence_id=edge,
+        take_id=edge,
+        path=tmp_path / f"{edge}.wav",
+        kind="clip",
+        seconds=1,
+        label=edge,
+    )
+    editions.plan.items = (
+        (clip, *editions.plan.items) if edge == "opening" else (*editions.plan.items, clip)
+    )
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    air = runner._on_air
+    air.waiting.clear()
+    air.next_index = 0 if edge == "opening" else len(air.prepared.items) - 1
+    runner._write_state(air, strict=True)
+    document = json.loads((tmp_path / "show_on_air.json").read_text())
+    assert document["resume_occurrence"] == expected
+
+
+def test_preview_handoff_does_not_append_live_omissions(tmp_path):
+    runner, source, _, editions, _ = setup(tmp_path)
+    asyncio.run(runner.start_edition(editions.plan.edition_id))
+    editions.plan.omissions = ("Future take needs review",)
+    before = runner.status()["skipped"][:]
+    queued = source.player._state.queue
+    assert runner.prepared_handoff(queued[0], queued[1], report_omissions=False) == ()
+    assert runner.status()["skipped"] == before
 
 
 def test_final_prepared_item_remains_active_until_automation_really_follows(tmp_path):

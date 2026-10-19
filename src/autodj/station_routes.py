@@ -1180,6 +1180,9 @@ def equip_station(station: Any, publish: Callable[[dict[str, Any]], Awaitable[No
     schedule.register(show_action(station.show_runner, station.shows, edition_store(station)))
     if bridge.player is not None:
         bridge.player.prepared_handoff = station.show_runner.prepared_handoff
+        bridge.player.prepared_preview_handoff = functools.partial(
+            station.show_runner.prepared_handoff, report_omissions=False
+        )
         bridge.player.prepared_speech_failed = station.show_runner.prepared_speech_failed
 
     def show_starts_within(within_s: float) -> str | None:

@@ -46,6 +46,8 @@ def test_prepared_join_changes_forecast_before_next_automatic_speech(
     source.player.prepared_handoff = lambda before, after: (
         (take,) if before is first and after is second else ()
     )
+    source.player.prepared_preview_handoff = source.player.prepared_handoff
+    source.player.prepared_handoff = lambda *_: pytest.fail("Preview called the live handoff")
     monkeypatch.setattr(
         Player,
         "_load_voice_audio",
@@ -103,3 +105,23 @@ def test_scheduled_prepared_edition_stops_honestly(tmp_path, prefix):
     assert rows == []
     assert "scheduled prepared edition" in stopped
     assert "cannot yet be predicted" in stopped
+
+
+def test_preview_without_read_only_callback_never_calls_live_handoff(tmp_path):
+    source, _, songs = _station(tmp_path, liners=[])
+    source.player.prepared_handoff = lambda *_: pytest.fail("Preview called live handoff")
+    decided = Decided(
+        now=NOW,
+        handoff=NOW,
+        waiting=tuple(Item("song", NOW, 0, "queued", entry) for entry in songs[:2]),
+    )
+    rows, _, _ = predict(
+        source,
+        snapshot_player(source.player),
+        decided,
+        NOW + 500,
+        seed=1,
+        limit=2,
+        capture_audio=True,
+    )
+    assert len([row for row in rows if row.kind == "song"]) == 2

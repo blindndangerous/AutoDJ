@@ -1461,7 +1461,9 @@ def _predict(
     )
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
     # The callback resolves stable prepared occurrences, never track paths.
-    player.prepared_handoff = getattr(source.player, "prepared_handoff", None)  # type: ignore[attr-defined]
+    player.prepared_handoff = getattr(  # type: ignore[attr-defined]
+        source.player, "prepared_preview_handoff", None
+    )
     live_intros = getattr(source.player, "matched_intros", None)
     if live_intros is not None and getattr(source.player, "bus", None) is not None:
         player.matched_intros = live_intros.snapshot()

@@ -22,6 +22,7 @@ from autodj.prepared_editions import (
     EditionError,
     Occurrence,
     ReviewReceipt,
+    _bound,
     edition_store,
     relevant_signature,
 )
@@ -55,6 +56,12 @@ class ApproveBody(_Body):
     review_id: ID
 
 
+class ReattachBody(_Body):
+    expected_revision: StrictInt = Field(ge=1)
+    before_id: ID | None = None
+    after_id: ID | None = None
+
+
 class UploadFields(_Body):
     expected_revision: int = Field(ge=1)
     filename: str = Field(min_length=1, max_length=255)
@@ -82,9 +89,70 @@ async def _call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         ) from None
 
 
-async def _editable(station: Any, edition_id: str) -> None:
+async def _editable(
+    station: Any,
+    edition_id: str,
+    *,
+    take_id: str | None = None,
+    occurrences: list[Occurrence] | None = None,
+    position: str | None = None,
+    before_id: str | None = None,
+    after_id: str | None = None,
+    index: int | None = None,
+) -> None:
     runner = getattr(station, "show_runner", None)
-    if runner is not None and not await asyncio.to_thread(runner.prepared_editable, edition_id):
+    if runner is None:
+        return
+    edition = await _call(edition_store(station).get, edition_id)
+    affected = {take_id} if take_id else set()
+    replaced = next((take for take in edition.takes if take.id == take_id), None)
+    candidate = (
+        edition.model_copy(update={"occurrences": tuple(occurrences)})
+        if occurrences is not None
+        else edition
+    )
+    insertion = len(edition.occurrences) if index is None else index
+    for take in edition.takes:
+        try:
+            rows = _bound(edition, take)
+        except EditionError:
+            rows = ()
+        try:
+            changed = rows != _bound(candidate, take)
+        except EditionError:
+            changed = bool(rows)
+        if changed or (
+            replaced
+            and replaced.occurrence_id
+            and any(row.id == replaced.occurrence_id for row in rows)
+        ):
+            affected.add(take.id)
+        if position == "segment" and not take_id:
+            ids = [row.id for row in edition.occurrences]
+            own = ids.index(take.occurrence_id) if take.occurrence_id in ids else -2
+            if (
+                (take.position == "opening" and insertion == 0)
+                or (take.position == "closing" and insertion == len(ids))
+                or (take.position == "segment" and insertion in {own, own + 1})
+                or (
+                    take.position == "transition"
+                    and 0 < insertion < len(ids)
+                    and (take.before_id, take.after_id) == (ids[insertion - 1], ids[insertion])
+                )
+            ):
+                affected.add(take.id)
+    if not await asyncio.to_thread(
+        runner.prepared_editable,
+        edition_id,
+        take_ids=affected,
+        pair=(
+            (before_id, after_id)
+            if position == "transition"
+            else (replaced.before_id, replaced.after_id)
+            if replaced and replaced.position == "transition"
+            else None
+        ),
+    ):
         raise HTTPException(
             status_code=409,
             detail="This speech is already committed to playback; stop the edition before editing",
@@ -207,16 +275,14 @@ def install_prepared(
 
     @router.put("/editions/{edition_id}")
     async def edit(station: SavedStationDep, edition_id: str, body: EditBody) -> dict:
-        await _editable(station, edition_id)
+        await _editable(station, edition_id, occurrences=body.occurrences)
         if body.occurrences is not None:
             original = await _call(edition_store(station).get, edition_id)
             old = {item.path for item in original.occurrences if item.kind == "song"}
-            if any(
-                item.kind == "song"
-                and item.path not in old
-                and station.bridge.library.entry_for_path(item.path) is None
-                for item in body.occurrences
-            ):
+            added = {item.path for item in body.occurrences if item.kind == "song"} - old
+            if added and station.bridge.library is None:
+                raise HTTPException(status_code=409, detail="The music library is not available")
+            if any(station.bridge.library.entry_for_path(path) is None for path in added):
                 raise HTTPException(
                     status_code=400, detail="Add songs from this station's music library"
                 )
@@ -252,7 +318,10 @@ def install_prepared(
         declared = request.headers.get("content-length")
         if declared and (not declared.isdecimal() or int(declared) > MAX_UPLOAD_BYTES):
             raise HTTPException(status_code=413, detail="The audio upload exceeds 512 MiB")
-        await _editable(station, edition_id)
+        edit_options = fields.model_dump(
+            include={"take_id", "position", "before_id", "after_id", "index"}
+        )
+        await _editable(station, edition_id, **edit_options)
         store = edition_store(station)
         original = await _call(store.get, edition_id)
         if original.revision != fields.expected_revision:
@@ -277,7 +346,7 @@ def install_prepared(
                             await asyncio.to_thread(output.write, chunk)
                 options = fields.model_dump(exclude={"expected_revision", "filename"})
                 async with decode_gate():
-                    await _editable(station, edition_id)
+                    await _editable(station, edition_id, **edit_options)
                     task = asyncio.create_task(
                         _call(
                             store.import_take,
@@ -321,7 +390,7 @@ def install_prepared(
     async def remove_take(
         station: SavedStationDep, edition_id: str, take_id: str, expected_revision: int
     ) -> dict:
-        await _editable(station, edition_id)
+        await _editable(station, edition_id, take_id=take_id)
         edition = await _call(
             edition_store(station).remove_take, edition_id, take_id, expected_revision
         )
@@ -353,9 +422,35 @@ def install_prepared(
                 status_code=409,
                 detail="The stored review proof is incomplete; review the take again",
             ) from None
-        await _editable(station, edition_id)
+        await _editable(station, edition_id, take_id=take_id)
         edition = await _call(
             edition_store(station).approve, edition_id, take_id, evidence, station
+        )
+        await _changed(station)
+        return await _call(_view, station, edition)
+
+    @router.post("/editions/{edition_id}/takes/{take_id}/reattach")
+    async def reattach(
+        station: SavedStationDep,
+        edition_id: str,
+        take_id: str,
+        body: ReattachBody,
+    ) -> dict:
+        await _editable(
+            station,
+            edition_id,
+            take_id=take_id,
+            position="transition",
+            before_id=body.before_id,
+            after_id=body.after_id,
+        )
+        edition = await _call(
+            edition_store(station).reattach,
+            edition_id,
+            take_id,
+            body.expected_revision,
+            before_id=body.before_id,
+            after_id=body.after_id,
         )
         await _changed(station)
         return await _call(_view, station, edition)

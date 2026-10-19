@@ -75,6 +75,7 @@ def capture_edition(station: Any, request: dict[str, Any], *, cancelled: Any) ->
         return tuple(prepared_break(take) for take in plan.handoffs.get((pair[0], pair[1]), ()))
 
     source.player.prepared_handoff = handoff
+    source.player.prepared_preview_handoff = handoff
     rows = []
     for row in _finite(source, entries, start, cancelled):
         item = identities.get(id(row.entry))

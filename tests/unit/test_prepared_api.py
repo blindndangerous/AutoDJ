@@ -125,6 +125,120 @@ def test_stale_save_bad_upload_and_active_delete_preserve_edition(tmp_path):
     assert client.get(f"/api/editions/{identity}").status_code == 200
 
 
+def test_adding_song_without_library_returns_conflict(tmp_path):
+    from autodj.prepared_editions import Occurrence
+
+    client, station, show_id, _, _ = production(tmp_path)
+    edition = client.post("/api/editions", json={"show_id": show_id}).json()
+    station.bridge.library = None
+    response = client.put(
+        f"/api/editions/{edition['id']}",
+        json={
+            "expected_revision": edition["revision"],
+            "occurrences": [
+                *(
+                    row.model_dump()
+                    for row in edition_store(station).get(edition["id"]).occurrences
+                ),
+                Occurrence(path="new.wav").model_dump(),
+            ],
+        },
+    )
+    assert response.status_code == 409
+    assert "library" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("change", ["reorder", "remove"])
+def test_existing_songs_can_be_edited_without_library(tmp_path, change):
+    client, station, show_id, _, _ = production(tmp_path)
+    store = edition_store(station)
+    edition = store.create(show_id, station.shows.get(show_id))
+    rows = (
+        list(reversed(edition.occurrences))
+        if change == "reorder"
+        else list(edition.occurrences[1:])
+    )
+    station.bridge.library = None
+    response = client.put(
+        f"/api/editions/{edition.id}",
+        json={
+            "expected_revision": edition.revision,
+            "occurrences": [row.model_dump() for row in rows],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert store.get(edition.id).occurrences == tuple(rows)
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/api/stations/default"])
+def test_reattach_route_keeps_source_and_rejects_stale_revision(tmp_path, prefix):
+    """ADR-0015-01 ADR-0015-02: explicit reattachment retains audio and validates revisions."""
+    from tests.unit.test_prepared_editions import add_take
+
+    client, station, show_id, _, _ = production(tmp_path)
+    store = edition_store(station)
+    edition = store.create(show_id, station.shows.get(show_id))
+    edition = add_take(station, store, edition, tmp_path)
+    take = edition.takes[0]
+    edition = store.edit(
+        edition.id, edition.revision, occurrences=list(reversed(edition.occurrences))
+    )
+    url = f"{prefix}/editions/{edition.id}/takes/{take.id}/reattach"
+    body = {
+        "expected_revision": edition.revision,
+        "before_id": edition.occurrences[0].id,
+        "after_id": edition.occurrences[1].id,
+    }
+    result = client.post(url, json=body)
+    assert result.status_code == 200, result.text
+    assert result.json()["takes"][0]["asset_id"] == take.asset_id
+    assert result.json()["takes"][0]["status"] == "needs_review"
+    original = store.path.read_bytes()
+    assert client.post(url, json=body).status_code == 409
+    assert store.path.read_bytes() == original
+    assert store.asset_path(take.asset_id).is_file()
+
+
+def test_closing_approval_succeeds_while_opening_clip_plays(tmp_path, monkeypatch):
+    """ADR-0015-08: committed opening speech does not lock a future closing approval."""
+    from types import SimpleNamespace
+
+    from autodj.identity_map import attached
+    from tests.unit.test_prepared_editions import receipt
+    from tests.unit.test_prepared_tail import _current_handoff
+
+    client, station, show_id, proofs, _ = production(tmp_path)
+    store = edition_store(station)
+    edition = store.create(show_id, station.shows.get(show_id))
+    edition = store.import_take(
+        edition.id,
+        edition.revision,
+        voice(tmp_path),
+        position="closing",
+        before_id=edition.occurrences[-1].id,
+    )
+    take = edition.takes[0]
+    proof = receipt(station, store, edition, take)
+    proofs[proof.review_id] = {"receipts": [proof.model_dump()]}
+    live = tmp_path / "live"
+    live.mkdir()
+    runner, source, _, track, _, _, _ = _current_handoff(live)
+    track.entry._prepared_clip = True
+    attached(source.player, "_edition_occurrences")[track.entry] = SimpleNamespace(
+        occurrence_id="opening",
+        take_id="opening",
+    )
+    runner._on_air.edition_id = edition.id
+    station.show_runner = runner
+    monkeypatch.setattr(runner, "prepared_changed", lambda: None)
+    approved = client.post(
+        f"/api/editions/{edition.id}/takes/{take.id}/approve",
+        json={"review_id": proof.review_id},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["takes"][0]["status"] == "ready"
+
+
 def test_live_mutation_rechecks_boundary_and_notifies_only_after_success(tmp_path):
     from types import SimpleNamespace
 
@@ -142,7 +256,7 @@ def test_live_mutation_rechecks_boundary_and_notifies_only_after_success(tmp_pat
         )
 
     station.show_runner = SimpleNamespace(
-        prepared_editable=lambda requested: requested == identity and allowed[0],
+        prepared_editable=lambda requested, **_changes: requested == identity and allowed[0],
         prepared_changed=notify_changed,
         status=lambda: dict(running),
     )

@@ -251,7 +251,9 @@ def test_manifest_is_utf8_even_when_platform_default_is_cp1252(tmp_path, monkeyp
     assert store.edit(edition.id, edition.revision, name="Édition").name == "Édition"
 
 
-def test_runtime_validation_hashes_each_source_once_but_rechecks_next_pass(tmp_path, monkeypatch):
+def test_runtime_validation_reuses_unchanged_hashes_and_rechecks_changed_files(
+    tmp_path, monkeypatch
+):
     import os
     from collections import Counter
 
@@ -270,11 +272,190 @@ def test_runtime_validation_hashes_each_source_once_but_rechecks_next_pass(tmp_p
 
     monkeypatch.setattr(module, "_hash", counted)
     assert store.runtime_plan(edition.id, station).handoffs
-    assert max(calls.values()) == 1
+    calls.clear()
+    assert store.runtime_plan(edition.id, station).handoffs
+    assert not calls
     path = store.audio / edition.assets[take.asset_id].file
     stamp = path.stat()
     data = bytearray(path.read_bytes())
     data[-1] ^= 1
     path.write_bytes(data)
-    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000))
     assert not store.runtime_plan(edition.id, station).handoffs
+
+
+@pytest.mark.parametrize("edit", ["append", "move", "remove_neighbour"])
+def test_segment_follows_current_neighbours_and_can_be_reapproved(tmp_path, edit):
+    """ADR-0015-01 ADR-0015-02: edits retain the segment and invalidate changed context."""
+    from autodj.prepared_editions import Occurrence
+
+    station, store, edition, entries = edition_store(tmp_path)
+    edition = store.import_take(edition.id, edition.revision, voice(tmp_path), position="segment")
+    take = edition.takes[0]
+    edition = store.approve(edition.id, take.id, receipt(station, store, edition, take), station)
+    rows = list(edition.occurrences)
+    if edit == "append":
+        rows.append(Occurrence(path=entries[1].path))
+    elif edit == "move":
+        rows.insert(1, rows.pop())
+    else:
+        rows.pop(-2)
+    edition = store.edit(edition.id, edition.revision, occurrences=rows)
+    take = edition.takes[0]
+    at = next(index for index, row in enumerate(rows) if row.id == take.occurrence_id)
+    assert take.before_id == (rows[at - 1].id if at else None)
+    assert take.after_id == (rows[at + 1].id if at + 1 < len(rows) else None)
+    assert store.take_status(edition, take, station) == "needs_review"
+    assert store.asset_path(take.asset_id).is_file()
+    pending = store.runtime_plan(edition.id, station, include_pending=True)
+    assert any(row.take_id == take.id for row in pending.items)
+    assert not pending.omissions
+    edition = store.approve(edition.id, take.id, receipt(station, store, edition, take), station)
+    assert any(row.take_id == take.id for row in store.runtime_plan(edition.id, station).items)
+
+
+def test_broken_pair_is_unattached_and_reattach_keeps_asset(tmp_path):
+    """ADR-0015-01 ADR-0015-02: broken pairs expose recovery without re-recording."""
+    station, store, edition, _ = edition_store(tmp_path)
+    edition = add_take(station, store, edition, tmp_path)
+    take = edition.takes[0]
+    edition = store.edit(
+        edition.id,
+        edition.revision,
+        occurrences=[edition.occurrences[0], edition.occurrences[2], edition.occurrences[1]],
+    )
+    assert store.take_status(edition, take, station) == "unattached"
+    edition = store.reattach(
+        edition.id,
+        take.id,
+        edition.revision,
+        before_id=edition.occurrences[0].id,
+        after_id=edition.occurrences[1].id,
+    )
+    moved = edition.takes[0]
+    assert moved.asset_id == take.asset_id and moved.id == take.id
+    assert store.take_status(edition, moved, station) == "needs_review"
+    edition = store.approve(edition.id, moved.id, receipt(station, store, edition, moved), station)
+    assert store.runtime_plan(edition.id, station).handoffs
+
+
+def test_removing_adjacent_segment_keeps_reapproved_take_valid_on_rename(tmp_path):
+    """ADR-0015-02: segment removal updates bindings before the next unrelated edit."""
+    station, store, edition, _ = edition_store(tmp_path)
+    for _ in range(2):
+        edition = store.import_take(
+            edition.id, edition.revision, voice(tmp_path), position="segment"
+        )
+    removed, kept = edition.takes
+    edition = store.remove_take(edition.id, removed.id, edition.revision)
+    kept = edition.takes[0]
+    edition = store.approve(edition.id, kept.id, receipt(station, store, edition, kept), station)
+    edition = store.edit(edition.id, edition.revision, name="Unrelated name")
+    assert store.take_status(edition, edition.takes[0], station) == "ready"
+
+
+@pytest.mark.parametrize("position", ["opening", "closing"])
+def test_resume_take_id_maps_to_real_occurrence(tmp_path, position):
+    """ADR-0015-05: primary edge speech never leaves an unusable resume choice."""
+    station, store, edition, _ = edition_store(tmp_path)
+    edition = store.import_take(
+        edition.id,
+        edition.revision,
+        voice(tmp_path),
+        position=position,
+        **(
+            {"after_id": edition.occurrences[0].id}
+            if position == "opening"
+            else {"before_id": edition.occurrences[-1].id}
+        ),
+    )
+    take = edition.takes[0]
+    plan = store.runtime_plan(edition.id, station, from_occurrence=take.id)
+    expected = edition.occurrences[0 if position == "opening" else -1].id
+    assert plan.items[0].occurrence_id == expected
+
+
+def test_import_passes_duration_bound_to_decoder(tmp_path, monkeypatch):
+    from autodj import prepared_editions as module
+
+    _station, store, edition, _ = edition_store(tmp_path)
+    decode = module.load_stereo
+    limits = []
+
+    def bounded(*args, max_seconds=None):
+        limits.append(max_seconds)
+        return decode(*args, max_seconds=max_seconds)
+
+    monkeypatch.setattr(module, "load_stereo", bounded)
+    store.import_take(edition.id, edition.revision, voice(tmp_path), position="segment")
+    assert limits == [1800]
+
+
+def test_station_store_startup_sweeps_only_partial_imports(tmp_path):
+    from autodj.prepared_editions import edition_store as station_store
+
+    station, store, _edition, _ = edition_store(tmp_path)
+    for name in (".upload-crashed", ".import-crashed", "retained"):
+        directory = store.audio / name
+        directory.mkdir(parents=True)
+        (directory / "source.wav").write_bytes(b"partial")
+    source = store.audio / "retained.wav"
+    source.write_bytes(b"published")
+    station_store(station)
+    assert not (store.audio / ".upload-crashed").exists()
+    assert not (store.audio / ".import-crashed").exists()
+    assert source.read_bytes() == b"published"
+    assert (store.audio / "retained/source.wav").exists()
+    # Ordinary requests reuse the store and cannot sweep an active upload.
+    active = store.audio / ".upload-active"
+    active.mkdir()
+    station_store(station)
+    assert active.is_dir()
+    from types import SimpleNamespace
+
+    restarted = SimpleNamespace(paths=station.paths)
+    station_store(restarted)
+    assert active.is_dir()
+
+
+def test_partial_import_cleanup_failure_does_not_prevent_station_store(
+    tmp_path, monkeypatch, caplog
+):
+    from autodj import prepared_editions as module
+
+    station, store, _, _ = edition_store(tmp_path)
+    partial = store.audio / ".import-locked"
+    partial.mkdir(parents=True)
+    monkeypatch.setattr(
+        module.shutil, "rmtree", lambda *_: (_ for _ in ()).throw(PermissionError("locked"))
+    )
+    assert module.edition_store(station).audio == store.audio
+    assert partial.is_dir()
+    assert "locked" in caplog.text
+
+
+def test_removing_segment_row_removes_take_and_frees_binding_without_losing_asset(tmp_path):
+    """ADR-0015-01 ADR-0015-02: row removal retains audio without orphaning its take."""
+    _station, store, edition, _ = edition_store(tmp_path)
+    for index in (1, 4):
+        edition = store.import_take(
+            edition.id,
+            edition.revision,
+            voice(tmp_path),
+            position="segment",
+            index=index,
+        )
+    removed, kept = edition.takes
+    edition = store.edit(
+        edition.id,
+        edition.revision,
+        occurrences=[row for row in edition.occurrences if row.id != removed.occurrence_id],
+    )
+    assert [take.id for take in edition.takes] == [kept.id]
+    assert store.asset_path(removed.asset_id).is_file()
+    rows = list(edition.occurrences)
+    rows.insert(1, rows.pop())
+    edition = store.edit(edition.id, edition.revision, occurrences=rows)
+    assert store.get(edition.id) == edition
+    assert edition.takes[0].before_id == rows[0].id
+    assert edition.takes[0].after_id == rows[2].id

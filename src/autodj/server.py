@@ -1278,6 +1278,7 @@ def create_app(
         "/api/editions/{edition_id}": lambda: SHOWS_SONGS_BODY_MAX_BYTES,
         "/api/editions/{edition_id}/takes": lambda: EDITION_UPLOAD_BYTES,
         "/api/editions/{edition_id}/takes/{take_id}/approve": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/editions/{edition_id}/takes/{take_id}/reattach": lambda: SMALL_BODY_MAX_BYTES,
         "/api/editions/{edition_id}/start": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/tags": lambda: TAG_BODY_MAX_BYTES,
         WORKER_PREFIX + "result": lambda: RESULT_BODY_MAX_BYTES,

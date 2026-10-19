@@ -5,12 +5,15 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import os
+import shutil
 import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Annotated, Any, Literal
@@ -28,6 +31,7 @@ MAX_UPLOAD_BYTES = 512 * 1024**2
 MAX_ASSET_BYTES = 4 * 1024**3
 MAX_SHORT_SECONDS = 300
 MAX_SEGMENT_SECONDS = 1800
+logger = logging.getLogger(__name__)
 
 
 def _id() -> str:
@@ -167,8 +171,14 @@ def _hash(path: Path) -> str:
 
 def _content_hash(path: Path, hashes: dict[Path, str]) -> str:
     if path not in hashes:
-        hashes[path] = _hash(path)
+        stat = path.stat()
+        hashes[path] = _cached_hash(path.resolve(), stat.st_size, stat.st_mtime_ns, stat.st_ino)
     return hashes[path]
+
+
+@lru_cache(maxsize=4096)
+def _cached_hash(path: Path, size: int, mtime_ns: int, inode: int) -> str:
+    return _hash(path)
 
 
 def _bound(edition: Edition, take: Take) -> tuple[Occurrence, ...]:
@@ -188,9 +198,6 @@ def _bound(edition: Edition, take: Take) -> tuple[Occurrence, ...]:
             and rows[index].take_id == take.id
             and rows[index].asset_id == take.asset_id
         )
-        left = rows[index - 1].id if index > 0 else None
-        right = rows[index + 1].id if 0 <= index < len(rows) - 1 else None
-        valid = valid and left == take.before_id and right == take.after_id
         selected = rows[max(0, index - 1) : index + 2] if index >= 0 else ()
     else:
         left_index = by_id.get(take.before_id or "", -1)
@@ -198,8 +205,27 @@ def _bound(edition: Edition, take: Take) -> tuple[Occurrence, ...]:
         valid = left_index >= 0 and right_index == left_index + 1
         selected = rows[left_index : right_index + 1] if valid else ()
     if not valid:
-        raise EditionError("The take's occurrence placement changed; review or reattach it")
+        if take.position == "segment":
+            raise EditionError("The segment's programme item is missing; remove or re-import it")
+        raise EditionError("The take is unattached; choose its position and use Reattach")
     return tuple(selected)
+
+
+def _rebind_segments(edition: Edition) -> Edition:
+    rows = edition.occurrences
+    indices = {row.id: index for index, row in enumerate(rows)}
+    takes = []
+    for take in edition.takes:
+        index = indices.get(take.occurrence_id or "")
+        if take.position == "segment" and index is not None:
+            take = take.model_copy(
+                update={
+                    "before_id": rows[index - 1].id if index else None,
+                    "after_id": rows[index + 1].id if index + 1 < len(rows) else None,
+                }
+            )
+        takes.append(take)
+    return edition.model_copy(update={"takes": tuple(takes)})
 
 
 def relevant_signature(
@@ -301,6 +327,30 @@ class EditionStore:
         self.path, self.audio = Path(path), Path(audio)
         self._lock = threading.RLock()
 
+    def sweep_partial_imports(self) -> None:
+        """Startup only: discard crash leftovers without touching published sources."""
+        try:
+            if self.audio.is_symlink() or not self.audio.is_dir():
+                return
+            root = self.audio.resolve()
+            for path in self.audio.iterdir():
+                if (
+                    path.name.startswith((".upload-", ".import-"))
+                    and not path.is_symlink()
+                    and path.is_dir()
+                    and path.resolve().parent == root
+                ):
+                    try:
+                        shutil.rmtree(path)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove partial edition import %s", path, exc_info=True
+                        )
+        except OSError:
+            logger.warning(
+                "Could not inspect partial edition imports in %s", self.audio, exc_info=True
+            )
+
     def _read(self) -> dict[str, Edition]:
         try:
             data = _File.model_validate_json(self.path.read_text(encoding="utf-8"))
@@ -375,7 +425,13 @@ class EditionStore:
                 ):
                     raise EditionError("Import segment audio before adding it to an edition")
                 values["occurrences"] = tuple(occurrences)
-            changed = Edition.model_validate(values)
+                kept = {item.id for item in occurrences}
+                values["takes"] = tuple(
+                    take
+                    for take in edition.takes
+                    if take.position != "segment" or take.occurrence_id in kept
+                )
+            changed = _rebind_segments(Edition.model_validate(values))
             editions[edition_id] = changed
             self._save(editions)
             return changed
@@ -456,7 +512,7 @@ class EditionStore:
             scratch = Path(scratch_name)
             temporary = scratch / "normalized.wav"
             with audio_workspace(scratch, max_bytes=1024**3):
-                audio = load_stereo(str(source), SAMPLE_RATE)
+                audio = load_stereo(str(source), SAMPLE_RATE, max_seconds=limit)
                 if not 0 < len(audio) <= round(limit * SAMPLE_RATE):
                     raise EditionError(f"This recording must be at most {limit} seconds")
                 audible = False
@@ -554,6 +610,7 @@ class EditionStore:
                         }
                     )
                     _bound(changed, take)
+                    changed = _rebind_segments(changed)
                     if cancelled():
                         raise EditionError("Recording import cancelled")
                     os.replace(temporary, destination)
@@ -574,6 +631,10 @@ class EditionStore:
         asset = edition.assets.get(take.asset_id)
         if asset is None or not (self.audio / asset.file).is_file():
             return "missing"
+        try:
+            _bound(edition, take)
+        except EditionError:
+            return "unattached"
         try:
             if (self.audio / asset.file).is_symlink() or _content_hash(
                 self.audio / asset.file, hashes
@@ -638,6 +699,47 @@ class EditionStore:
                     ),
                 }
             )
+            changed = _rebind_segments(changed)
+            editions[edition_id] = changed
+            self._save(editions)
+            return changed
+
+    def reattach(
+        self,
+        edition_id: str,
+        take_id: str,
+        expected_revision: int,
+        *,
+        before_id: str | None,
+        after_id: str | None,
+    ) -> Edition:
+        with self._lock:
+            editions = self._read()
+            edition = self._current(editions, edition_id, expected_revision)
+            take = next((item for item in edition.takes if item.id == take_id), None)
+            if take is None:
+                raise EditionError("That take no longer exists", 404)
+            if take.position == "segment":
+                raise EditionError(
+                    "Segments follow their programme items; remove or re-import a missing segment"
+                )
+            self._check_binding(edition, take.position, before_id, after_id, take_id)
+            attached = take.model_copy(
+                update={
+                    "before_id": before_id,
+                    "after_id": after_id,
+                    "approval": None,
+                }
+            )
+            _bound(edition, attached)
+            changed = edition.model_copy(
+                update={
+                    "revision": edition.revision + 1,
+                    "takes": tuple(
+                        attached if item.id == take_id else item for item in edition.takes
+                    ),
+                }
+            )
             editions[edition_id] = changed
             self._save(editions)
             return changed
@@ -681,6 +783,12 @@ class EditionStore:
         edition = self.get(edition_id)
         selected = edition.occurrences
         if from_occurrence is not None:
+            edge = next((take for take in edition.takes if take.id == from_occurrence), None)
+            if edge is not None and selected:
+                if edge.position == "opening":
+                    from_occurrence = selected[0].id
+                elif edge.position == "closing":
+                    from_occurrence = selected[-1].id
             at = next((n for n, row in enumerate(selected) if row.id == from_occurrence), None)
             if at is None:
                 raise EditionError("Choose an occurrence in this edition")
@@ -779,8 +887,24 @@ class EditionStore:
             edition.previously_started,
         )
 
+    def plan_is_current(self, plan: PreparedPlan, station: Any) -> bool:
+        """Check a render's frozen eligibility without building another runtime plan."""
+        edition = self.get(plan.edition_id)
+        if edition.revision != plan.revision:
+            return False
+        expected = {row.take_id for row in plan.items if row.take_id}
+        expected.update(take.take_id for group in plan.handoffs.values() for take in group)
+        hashes: dict[Path, str] = {}
+        ready = {
+            take.id
+            for take in edition.takes
+            if self.take_status(edition, take, station, hashes=hashes) == "ready"
+        }
+        return expected == ready
+
 
 _STORE_LOCK = threading.Lock()
+_SWEPT_AUDIO: set[Path] = set()
 
 
 def edition_store(station: Any) -> EditionStore:
@@ -789,6 +913,10 @@ def edition_store(station: Any) -> EditionStore:
         store = getattr(station, "edition_store", None)
         if store is None:
             store = EditionStore(station.paths.editions, station.paths.edition_audio)
+            audio = store.audio.resolve()
+            if audio not in _SWEPT_AUDIO:
+                _SWEPT_AUDIO.add(audio)
+                store.sweep_partial_imports()
             station.edition_store = store
         return store
 

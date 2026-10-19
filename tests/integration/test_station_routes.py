@@ -116,6 +116,7 @@ STATION = frozenset(
         "/editions/{edition_id}/takes",
         "/editions/{edition_id}/assets/{asset_id}",
         "/editions/{edition_id}/takes/{take_id}/approve",
+        "/editions/{edition_id}/takes/{take_id}/reattach",
         "/editions/{edition_id}/takes/{take_id}",
         "/editions/{edition_id}/start",
         "/speech",

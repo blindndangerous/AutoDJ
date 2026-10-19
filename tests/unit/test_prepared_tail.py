@@ -265,3 +265,28 @@ def test_boundary_crossed_after_edit_preflight_freezes_current_run_approval(tmp_
     # Following uncommitted PCM has no stale fallback to the old approval.
     assert source.player._render_ahead.pop() is None
     np.testing.assert_array_equal(bus.render_block(), old.audio[boundary : boundary + MixBus.BLOCK])
+
+
+def test_future_take_edit_is_allowed_while_opening_clip_is_committed(tmp_path):
+    """ADR-0015-08: unrelated future approvals do not retract committed opening speech."""
+    runner, _source, editions, old, bus, _, _ = _current_handoff(tmp_path)
+    old.entry._prepared_clip = True
+    bus.seek(MixBus.BLOCK)
+    assert runner.prepared_editable(editions.plan.edition_id, take_ids={"closing"})
+    assert not runner.prepared_editable(editions.plan.edition_id, take_ids={"d" * 32})
+
+
+def test_song_only_overlap_does_not_lock_future_edits(tmp_path):
+    runner, source, editions, old, _bus_instance, _, _ = _current_handoff(tmp_path)
+    runner._on_air.prepared.handoffs = {}
+    editions.plan.handoffs = {}
+    source.player._playing_render = replace(old, break_events=())
+    assert runner.prepared_editable(editions.plan.edition_id, take_ids={"closing"})
+
+
+def test_edit_lock_uses_rendered_speech_after_approval_changes(tmp_path):
+    """ADR-0015-08: newly approved current speech commits even if admission omitted it."""
+    runner, _, editions, _, bus, boundary, _ = _current_handoff(tmp_path)
+    runner._on_air.prepared.handoffs = {}
+    bus.seek(boundary)
+    assert not runner.prepared_editable(editions.plan.edition_id, take_ids={"d" * 32})
