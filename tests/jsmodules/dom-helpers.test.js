@@ -1,10 +1,10 @@
 // Pure-function tests for ./modules/dom-helpers.js.
 
-import { describe, it, expect } from "vitest";
 import { vi } from "vitest";
+import { reconcileRows } from "../../src/autodj/static/modules/dom-helpers.js";
+import { describe, it, expect } from "vitest";
 import { fmtTime, fmtTrack, escHtml, focusAfterDialog, focusRevealed, isTypingTarget, placeRows } from
   "../../src/autodj/static/modules/dom-helpers.js";
-import { reconcileRows } from "../../src/autodj/static/modules/dom-helpers.js";
 
 describe("fmtTime", () => {
   it("formats seconds into m:ss or h:mm:ss without wrapping hours", () => {

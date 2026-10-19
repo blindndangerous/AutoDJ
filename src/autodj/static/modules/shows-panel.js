@@ -19,12 +19,12 @@
 // field is only said.  While the list is being generated, Move up, Move
 // down, Remove and Add stay in the tab order but are marked unavailable and
 // say why.  A refresh that fails is said once, until one succeeds again.
+import { reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { fmtTime, placeRows, selectOnFocus } from "./dom-helpers.js";
-import { reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;

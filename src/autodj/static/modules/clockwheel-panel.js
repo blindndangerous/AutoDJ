@@ -17,11 +17,11 @@
 // Folders are chosen from the registered library folders by ID, with an
 // optional path inside the folder; the browser never sends a full path.
 // Category conditions name a saved category (Categories, above) by its ID.
+import { reconcileRows } from "./dom-helpers.js";
+import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { releaseDialogFocus } from "./dom-helpers.js";
-import { reconcileRows } from "./dom-helpers.js";
-import { installActionListNavigation } from "./action-list-navigation.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
