@@ -192,6 +192,13 @@ describe("the Ads tab", () => {
     const breakButtons = [...byId("ads-breaks").querySelectorAll("button")];
     expect(breakButtons.map((button) => button.textContent)).toEqual(["Edit", "Run now", "Delete"]);
     expect(breakButtons[1].hasAttribute("aria-describedby")).toBe(false);
+    for (const list of [byId("ads-spots"), byId("ads-breaks")]) {
+      const actions = [...list.querySelectorAll("button")];
+      expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+      actions[0].focus();
+      actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(actions[1]);
+    }
     expect(byId("ads-rules-separation").value).toBe("15");
     expect(byId("ads-pending").textContent).toBe("Nothing is waiting.");
   });

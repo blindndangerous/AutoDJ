@@ -78,11 +78,16 @@ describe("Track info matched intros", () => {
     expect(el("intros-editor").hidden).toBe(false);
     expect(el("intros-artist-heading").textContent).toBe("For any song by Example Artist");
     expect(el("intro-applies-artist-label").textContent).toBe("Any song by Example Artist");
+    expect(el("intros-song-list").querySelector(".intro-text")).not.toBeNull();
     const buttons = [...el("intros-song-list").querySelectorAll("button")];
     expect(buttons.map((button) => [button.textContent, button.getAttribute("aria-label")])).toEqual([
       ["Listen", "Listen to Brand new"], ["Remove", "Remove Brand new"],
     ]);
     expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
+    expect(buttons.filter((button) => button.tabIndex === 0)).toHaveLength(1);
+    buttons[0].focus();
+    buttons[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(buttons[1]);
     expect(el("intros-song-empty").hidden).toBe(true);
     expect(el("intros-artist-list").children).toHaveLength(1);
     expect(el("intros-inactive").hidden).toBe(true);
@@ -160,6 +165,53 @@ describe("Track info matched intros", () => {
     await settle();
     el("intro-playback").dispatchEvent(new Event("ended"));
     expect(listen.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps the same focused and pressed Listen button when refreshed item details change", async () => {
+    const request = vi.fn(async () => LISTING);
+    const editor = install(request);
+    editor.load(RECORD);
+    await settle();
+    const listen = el("intros-song-list").querySelector("button");
+    listen.focus();
+    listen.click();
+    await settle();
+    request.mockResolvedValueOnce({ ...LISTING, song: [{ ...ITEM, label: "Updated intro" }] });
+    await editor.refresh();
+    expect(el("intros-song-list").querySelector("button")).toBe(listen);
+    expect(document.activeElement).toBe(listen);
+    expect(listen.getAttribute("aria-pressed")).toBe("true");
+    expect(listen.getAttribute("aria-label")).toBe("Listen to Updated intro");
+  });
+
+  it("does not mutate the saved list on an unchanged refresh", async () => {
+    const editor = install(vi.fn(async () => LISTING));
+    editor.load(RECORD);
+    await settle();
+    const list = el("intros-song-list");
+    const before = [...list.querySelectorAll("li")].map((row) => [row, row.textContent]);
+    const observer = new MutationObserver(() => {});
+    observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
+    await editor.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect([...list.querySelectorAll("li")].map((row) => [row, row.textContent])).toEqual(before);
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
+  });
+
+  it("moves focus and announces once when a refresh removes its focused intro", async () => {
+    const request = vi.fn().mockResolvedValueOnce(LISTING).mockResolvedValueOnce({ ...LISTING, song: [] });
+    const editor = install(request);
+    editor.load(RECORD);
+    await settle();
+    const list = el("intros-song-list");
+    const remove = list.querySelector('[data-action="remove"]');
+    remove.focus();
+    await editor.refresh();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const heading = el("intros-song-heading");
+    expect(document.activeElement).toBe(heading);
+    expect(el("intros-status").textContent).toBe("The matched intro list changed. Focus moved to For this song.");
   });
 
   it("refuses a missing file at the field, linked and focused, without asking the server", async () => {

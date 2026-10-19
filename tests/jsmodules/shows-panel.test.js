@@ -137,6 +137,17 @@ describe("shows markup", () => {
   });
 });
 
+describe("show list keyboard navigation", () => {
+  it("keeps one tab stop and moves between the saved show's actions", async () => {
+    await open();
+    const actions = [...byId("shows-list").querySelectorAll("button")];
+    expect(actions.filter((item) => item.tabIndex === 0)).toHaveLength(1);
+    actions[0].focus();
+    actions[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(actions[1]);
+  });
+});
+
 describe("shows use numeric durations", () => {
   it("says a show, its list and the show on the air", () => {
     expect(describeShow(SHOW)).toBe(
