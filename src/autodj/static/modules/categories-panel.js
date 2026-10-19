@@ -158,12 +158,6 @@ export function installCategoriesPanel({ document: doc = document, request = req
       .find((button) => button.dataset.id === id && button.dataset.action === action) || null;
   }
 
-  function focusRow(id, action = "edit") {
-    const button = rowFor(id, action);
-    button?.focus();
-    return button;
-  }
-
   function renderPlaylists() {
     // A poll that finds the same files leaves the choice alone.
     const signature = JSON.stringify([data.playlists, data.playlists_folder]);

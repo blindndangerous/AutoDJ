@@ -24,7 +24,7 @@ export function installActionListNavigation(list) {
       ? active : buttons.find((button) => !button.disabled);
     for (const button of buttons) {
       const tabIndex = button === chosen ? 0 : -1;
-      if (button.tabIndex !== tabIndex) button.tabIndex = tabIndex;
+      if (button.getAttribute("tabindex") !== String(tabIndex)) button.tabIndex = tabIndex;
     }
     if (focused && active.disabled) {
       const row = active.parentElement;
