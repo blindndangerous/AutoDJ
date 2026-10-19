@@ -98,6 +98,7 @@
         --danger-edge: #e5574a;
         --error-text: #ffaaa0;
         --radius: 6px;
+        --control-gap: 0.75rem;
         --badge-border: #4d7eb5;
         --range-track: #5a7bb0;
         --tint: rgba(255, 255, 255, 0.035);
