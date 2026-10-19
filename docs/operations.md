@@ -411,6 +411,22 @@ See [Configuration precedence and repeat settings — Repeat settings](reference
 
 See [Test rotation and preview an hour — Testing the rotation](guides/operations/rotation-preview.md#testing-the-rotation).
 
+## Programme review and export
+
+See [Review and export a programme — Programme review and export](guides/operations/programme-review.md#programme-review-and-export).
+
+### Generate and listen
+
+See [Review and export a programme — Generate and listen](guides/operations/programme-review.md#generate-and-listen).
+
+### Incomplete or out-of-date results
+
+See [Review and export a programme — Incomplete or out-of-date results](guides/operations/programme-review.md#incomplete-or-out-of-date-results).
+
+### Storage and availability
+
+See [Review and export a programme — Storage and availability](guides/operations/programme-review.md#storage-and-availability).
+
 ## Hour preview and backtiming
 
 See [Test rotation and preview an hour — Hour preview and backtiming](guides/operations/rotation-preview.md#hour-preview-and-backtiming).

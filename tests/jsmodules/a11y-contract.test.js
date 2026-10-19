@@ -3125,10 +3125,10 @@ describe("static accessibility contracts", () => {
     expect(status.getAttribute("role")).toBe("status");
     expect(status.getAttribute("aria-live")).toBe("polite");
     expect(appSource).toMatch(/installPreviewOutput\(\{\s*announce: \(message, options\) => announceStatus\(settingsStatus/);
-    // Only the cue point player, Listen on a matched intro and the voice
-    // tracker's Listen back are previews; the decks and Listen here are not.
+    // Programme review, the cue point player, Listen on a matched intro and
+    // the voice tracker's Listen back are previews; decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["points-preview", "intro-playback", "vt-playback"]);
+      .toEqual(["review-audio", "points-preview", "intro-playback", "vt-playback"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);

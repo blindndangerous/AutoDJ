@@ -55,6 +55,77 @@ from the top of the page when the page's confirmation dialog closes) is accepted
 It covers only those pairings and flows. This repository has no sampling record for earlier
 releases.
 
+## Programme review rehearsal
+
+Programme review requires a separate Windows/Google Chrome/NVDA rehearsal and
+actual listening evidence before its feature issue closes. The operator will run
+this from the PR instructions. The steps below are a procedure, not an executed
+result; the published release samples above do not verify this new workflow.
+
+Use the exact PR candidate commit and a test station with a saved Show containing
+known songs, a repeated song, saved segue cues and a short automatic voice clip.
+Prepare a copied non-song interview clip longer than five minutes when checking
+long-clip shortening. Configure the existing default TTS command for the
+placeholder cases; no live provider is required if a local command is used.
+Keep a previously completed review for failure/recovery comparisons. Start a
+second station playing when checking isolation and use a distinguishable private
+preview device when testing output routing.
+
+Perform every essential action with keyboard and NVDA; record speech and focus
+observations, not just whether the control responded. Follow
+[Programme review and export](guides/operations/programme-review.md#programme-review-and-export) for the
+exact controls.
+
+| Step | Expected observation |
+| --- | --- |
+| With the target station stopped, open Programme review; refresh, choose Saved show and generate. | Start/range hints are associated with their inputs; Keyboard focus moves from Generate to Cancel before Generate is disabled. Completion returns focus to Generate only when focus remains on Cancel; focus elsewhere is preserved. The station stays stopped; one completion announcement and no automatic playback. |
+| Select a saved result and press Load review; play it and tab through item buttons, Previous item and Next item. | Loading moves focus to Review result; labels identify items and both time axes; keyboard seeks retain usable focus; short clips and the actual joins/ducking sound complete. |
+| Review a range that cuts a join or short clip. | Effective range explains expansion; no clipped speech or repeated overlapping section. |
+| Change opening/ending and tone duration; generate again, then review a long interview. | Song/long-clip middles are omitted, short clips stay complete, skip tones are distinctive and follow the chosen duration. |
+| Download MP3 and WAV and play both outside the page. | Both contain the same ordered sections, joins, skip tones and placeholders as the reviewed result; audible codec quality is acceptable. |
+| Generate Current queue and Forecast reviews with automatic clips/time checks eligible at the intended start. | Automatic content follows full programme time; current station playback and the other station remain unaffected. |
+| Change a test source cue; press Refresh reviews, reload the old result, then generate again. | Out of date is available in text; old audio stays unchanged; explicit regeneration creates a separate result. |
+| Temporarily rename a copied test source file; generate with configured TTS, then restore the source. | Incomplete result names the omission and speaks a placeholder; unknown downstream programme times are identified honestly. |
+| Repeat the missing-input case with default TTS unavailable; cancel another generation. | Actionable failure/cancellation is announced once; prior review remains available; retry works after repair. |
+| Switch stations during a request and while preview audio is playing. | Old audio stops and delayed results do not populate the new station; download addresses follow the selected station. |
+| Use a separate preview output, then exercise an unavailable-device fallback. | Sound reaches the chosen private device; actual routing and fallback announcements match the settings and hearing observations. |
+| Restart AutoDJ, load a completed review, cancel its deletion, then delete an unwanted review. | Completed audio/exports survive restart without starting broadcast; confirmation identifies the selected date and warns that reviews are excluded from backups; focus starts on Cancel; cancellation keeps the result; confirmed deletion removes only that result and leaves no replacement selected. |
+
+Record the evidence in the PR using this form. Fill in the candidate commit at
+execution; do not reuse a prior revision's result after a relevant change.
+
+```text
+Candidate commit:
+Date/time and tester:
+Windows version:
+Google Chrome version:
+NVDA version and relevant settings:
+Playback output mode and devices:
+Private preview device and fallback tested:
+Test station/show and automatic-content setup:
+Rows completed, expected/actual results:
+NVDA speech/focus observations:
+Listening findings (joins, ducking, tone, placeholder, MP3/WAV):
+Failures, omitted steps and remaining limitations:
+Evidence attachments or recordings:
+```
+
+Browser automation and synthetic audio checks are separate evidence. They do not
+prove NVDA speech, actual device routing or audible quality. Missing required
+manual/listening evidence keeps `autodj-ovc` open; publishing implementation for
+the operator to rehearse does not waive that closure gate.
+
+For the focused Linux/WSL browser journey, with development dependencies and
+Playwright Chromium installed, run `npm run audit:reviews`. Set
+`PLAYWRIGHT_BROWSERS_PATH` when the browser lives outside its default cache;
+`AUTODJ_PYTHON` can select the development Python interpreter. The report is
+`.coord/programme_review_audit.json` by default (`AUTODJ_REVIEW_AUDIT_REPORT`
+overrides it). This starts a local synthetic station fixture with native review
+routes, source capture, jobs and rendering. It checks real controls and downloads,
+with deterministic local TTS audio and injected cancellation delay. It bypasses
+normal model/hardware startup and does not establish normal-startup, physical
+output-routing, speech or Windows/NVDA evidence.
+
 ## Continuous integration
 
 Add/Edit forms for categories, intro rules, scheduled events, ad spots and ad

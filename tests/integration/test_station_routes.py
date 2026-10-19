@@ -106,6 +106,11 @@ SOURCE_MOUNTS = frozenset({"/live", "/stations/{slug}/live"})
 # /api/stations/{slug}<route>.
 STATION = frozenset(
     {
+        "/reviews",
+        "/reviews/jobs/{job_id}",
+        "/reviews/jobs/{job_id}/cancel",
+        "/reviews/{review_id}",
+        "/reviews/{review_id}/audio/{format}",
         "/speech",
         "/speech/preflight",
         "/speech/batches",

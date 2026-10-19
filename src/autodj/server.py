@@ -1107,6 +1107,12 @@ def create_app(
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            review_jobs = getattr(app.state, "review_jobs", None)
+            if review_jobs is not None and not await asyncio.to_thread(
+                review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error("A review renderer is still reading; the library remains open")
             writers_quiesced, cache_closed = await stations.shutdown(
                 library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
             )
@@ -1160,10 +1166,9 @@ def create_app(
         echo itself would raise and turn a validation error into a 500.  Only
         the type, location and message are returned.
 
-        Only an error marked ``reports_field`` (a cart's backwards play
-        dates, :class:`autodj.carts.CartDatesError`) answers with its message
-        and ``field``, so the cart editor can link the error to the field;
-        every other endpoint keeps this list format.
+        Errors marked ``reports_field`` answer
+        with their message and ``field`` so the editor can focus that input.
+        Other validation errors keep the list format.
         """
         for error in exc.errors():
             cause = (error.get("ctx") or {}).get("error")
@@ -1259,6 +1264,8 @@ def create_app(
         AD_UPLOAD_PATH: lambda: _ad_upload_cap(stations),
         AD_BREAKS_PATH: lambda: AD_JSON_BODY_MAX_BYTES,
         "/api/rotation-test": lambda: SMALL_BODY_MAX_BYTES,
+        # 500 keep-complete targets of up to 80 characters, plus timing fields.
+        "/api/reviews": lambda: 64 * 1024,
         # Shows (#106): POST and PUT; a list of up to 500 songs is the largest.
         "/api/shows": lambda: SMALL_BODY_MAX_BYTES,
         "/api/shows/{show_id}": lambda: SMALL_BODY_MAX_BYTES,

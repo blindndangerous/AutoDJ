@@ -71,6 +71,11 @@ compatibility assessment.
 
 ## Current contracts
 
+The separate [programme review proposal](0014-isolate-programme-review-and-export.md)
+adds frozen shortened audio and exports using shared selection/placement. It does
+not turn the Hour preview forecast into an actual-broadcast promise. This
+retrospective record remains Proposed.
+
 IDs are stable and are never recycled. Automated means an existing regression
 test is mapped; structural validation does not execute it, prove platform
 coverage, or accept this ADR. Manual and gap rows remain explicit obligations

@@ -257,6 +257,11 @@ class StationPaths:
         return self.state_dir / "shows.json"
 
     @property
+    def reviews(self) -> Path:
+        """Private, derived programme review snapshots, never scanned as library audio."""
+        return self.state_dir / "reviews"
+
+    @property
     def show_on_air(self) -> Path:
         """The show on the air and its place, so a restart resumes it (#106)."""
         return self.state_dir / "show_on_air.json"

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import hashlib
 import logging
 import random
@@ -154,6 +155,16 @@ class PreviewError(ValueError):
 
 
 @dataclass(frozen=True)
+class IncomingHandoff:
+    """Frozen selections for the transition INTO a song, before timing projection."""
+
+    liners: tuple[tuple[Any, bool], ...] = ()
+    intro: Any = None
+    ad_spots: tuple[tuple[str, Any], ...] = ()
+    breaks: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
 class Item:
     """One thing the station plays.
 
@@ -175,6 +186,18 @@ class Item:
     entry: Any = None
     label: str = ""
     playback_rate: float = 1.0
+    audio: Any = None
+    audio_starts: float | None = None
+    incoming_handoff: IncomingHandoff | None = None
+    duration_unknown: bool = False
+    playback_config: Any = None
+    protected: tuple[tuple[float, float], ...] = ()
+    incoming_offset: int = 0
+    incoming_glide: Any = None
+    in_handoff: bool = False
+    occurrence_id: str = ""
+    cut_at: float | None = None
+    absolute_timing: bool = False
     asset_id: str | None = None
     details_entry: Any = None
 
@@ -401,7 +424,7 @@ def _mixed_in(
                 details_entry=_registered_liner(player, assets.get(intro_id)),
             )
         )
-    return found
+    return [replace(item, in_handoff=True) for item in found]
 
 
 @dataclass
@@ -551,7 +574,9 @@ class Head:
     ad_heard: tuple[Any, ...] = ()
 
 
-def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Head | None:
+def read_head(
+    player: Any, desk: Any = None, *, now: float | None = None, capture_audio: bool = False
+) -> Head | None:
     """The fixed part of what *player* will play, read without changing anything.
 
     ``None`` when nothing is playing.  Takes ``queue_lock`` only for a copy
@@ -565,7 +590,7 @@ def read_head(player: Any, desk: Any = None, *, now: float | None = None) -> Hea
     ads = getattr(player, "ad_desk", None)
     heard = ads.heard_snapshot() if ads is not None else []
     if getattr(player, "bus", None) is not None:
-        found = _read_bus(player, desk, now, average, ads, heard)
+        found = _read_bus(player, desk, now, average, ads, heard, capture_audio=capture_audio)
     else:
         found = _read_browser(player, now, average)
     if found is None:
@@ -864,6 +889,7 @@ def read_station(
     *,
     now: float | None = None,
     show: tuple[str, Sequence[Any]] | None = None,
+    capture_audio: bool = False,
 ) -> Decided:
     """What *player* has decided, read without changing anything.
 
@@ -872,7 +898,7 @@ def read_station(
     the show on the air, its name and its songs not yet queued (#106): they
     follow the queue, fixed.
     """
-    head = read_head(player, desk, now=now)
+    head = read_head(player, desk, now=now, capture_audio=capture_audio)
     if head is None:
         return Decided(time.time() if now is None else now, reason=NOTHING_PLAYING)
     timed = time_queue(player, head)
@@ -935,6 +961,50 @@ def _dmca_breaks(
     return tuple(complement(records, when, player._track_keys()).broken(entry))
 
 
+def _captured_render(track: Any, base: float, player: Any) -> dict[str, Any]:
+    """Own finished immutable render PCM, after all live snapshot locks are released."""
+    from autodj.playout import DUCK_RAMP_SECONDS
+    from autodj.stereo import copy_audio
+
+    # RenderedTrack audio is immutable once handed to the bus (_music returns
+    # read-only views). Copy outside its locks; allocation respects review budgets.
+    owned = copy_audio(track.audio)
+    spans = []
+    for frame, entry, _queued in getattr(track, "liner_events", ()):
+        spans.append(
+            (
+                max(base, base + frame / SAMPLE_RATE - DUCK_RAMP_SECONDS),
+                base + frame / SAMPLE_RATE + float(entry.length or 0) + DUCK_RAMP_SECONDS,
+            )
+        )
+    for frame, _key, end, *_label in (
+        *getattr(track, "break_events", ()),
+        *getattr(track, "intro_events", ()),
+    ):
+        spans.append(
+            (
+                max(base, base + frame / SAMPLE_RATE - DUCK_RAMP_SECONDS),
+                base + end / SAMPLE_RATE + DUCK_RAMP_SECONDS,
+            )
+        )
+    overlap = getattr(track, "overlap_frames", 0)
+    if overlap:
+        spans.append(
+            (
+                base + (len(track.audio) - overlap) / SAMPLE_RATE,
+                base + len(track.audio) / SAMPLE_RATE,
+            )
+        )
+    return {
+        "audio": owned,
+        "audio_starts": base,
+        "incoming_offset": track.start_offset,
+        "incoming_glide": copy.deepcopy(track.glide_in),
+        "protected": tuple(spans),
+        "playback_config": copy.deepcopy(player._cfg),
+    }
+
+
 def _read_bus(
     player: Any,
     desk: Any,
@@ -942,6 +1012,8 @@ def _read_bus(
     average: float,
     ads: Any = None,
     heard: list[Any] | None = None,
+    *,
+    capture_audio: bool = False,
 ) -> _Found | None:
     """The fixed part when the server mixes the audio (server audio or a stream)."""
     live = _read_live(player)
@@ -973,6 +1045,7 @@ def _read_bus(
             "on_air",
             playing.entry,
             playback_rate=playback_rate,
+            **(_captured_render(playing, base, player) if capture_audio else {}),
         )
     )
     items.extend(_mixed_in(playing, base, now, desk, "ready", queued, player=player))
@@ -1007,6 +1080,8 @@ def _read_bus(
                 "picked",
                 following,
                 playback_rate=following_rate,
+                incoming_offset=playing.next_start_offset if capture_audio else 0,
+                incoming_glide=copy.deepcopy(playing.next_glide) if capture_audio else None,
             )
         )
         unplayed.append((following, enters))
@@ -1027,6 +1102,7 @@ def _read_bus(
             "ready",
             following,
             playback_rate=ready_rate,
+            **(_captured_render(ready, ready_at, player) if capture_audio else {}),
         )
     )
     unplayed.append((following, enters))
@@ -1043,6 +1119,8 @@ def _read_bus(
             "picked",
             after,
             playback_rate=after_rate,
+            incoming_offset=ready.next_start_offset if capture_audio else 0,
+            incoming_glide=copy.deepcopy(ready.next_glide) if capture_audio else None,
         )
     )
     unplayed.append((after, after_enters))
@@ -1053,9 +1131,11 @@ def _read_bus(
         return items, unplayed, queued, after, handoff, clock
     # The open song change (#88): the song after that, its liners and booked breaks.
     moment = handoff
+    selected_breaks: list[Any] = []
+    ad_spots: list[tuple[str, Any]] = []
     for liner, from_queue in plan.liners:
         length = float(liner.length or 0.0)
-        items.append(Item("liner", moment, length, "picked", liner))
+        items.append(Item("liner", moment, length, "picked", liner, in_handoff=True))
         unplayed.append((liner, moment))
         if from_queue:
             queued.append(liner)
@@ -1065,9 +1145,11 @@ def _read_bus(
 
         for booked in desk.listing():
             if booked.slot_id == plan.slot_id and booked.state == QUEUED:
+                if capture_audio:
+                    selected_breaks.append(copy.deepcopy(booked))
                 speech = max(0.0, float(booked.cues.speech))
                 label = _break_label(desk, booked.break_id)
-                items.append(Item("break", moment, speech, "booked", label=label))
+                items.append(Item("break", moment, speech, "booked", label=label, in_handoff=True))
                 moment += speech
     if ads is not None and ads.refusal() is None and plan.ad_steps and heard is not None:
         booked_ads = desk is not None and any(
@@ -1078,15 +1160,38 @@ def _read_bus(
             for step in plan.ad_steps:
                 forecast = ads.forecast_step(step, change_at, heard)
                 if forecast is not None:
+                    if capture_audio:
+                        ad_spots.extend(getattr(forecast, "spots", ()))
                     items.append(
-                        Item("break", moment, forecast.seconds, "predicted", label=forecast.label)
+                        Item(
+                            "break",
+                            moment,
+                            forecast.seconds,
+                            "predicted",
+                            label=forecast.label,
+                            in_handoff=True,
+                        )
                     )
                     moment += forecast.seconds
     upcoming = plan.upcoming
     seconds = _remaining(player, upcoming, 0.0, average)
     items.append(
         Item(
-            "song", moment, seconds, "picked", upcoming, playback_rate=music_rate(player, upcoming)
+            "song",
+            moment,
+            seconds,
+            "picked",
+            upcoming,
+            playback_rate=music_rate(player, upcoming),
+            incoming_handoff=IncomingHandoff(
+                tuple(plan.liners),
+                getattr(plan, "intro", None),
+                tuple(ad_spots),
+                tuple(selected_breaks),
+            )
+            if capture_audio
+            else None,
+            playback_config=copy.deepcopy(player._cfg) if capture_audio else None,
         )
     )
     unplayed.append((upcoming, moment))
@@ -1161,6 +1266,8 @@ def predict(
     ad_runs: Sequence[Any] = (),
     preferred_choices: dict[str, str] | None = None,
     on_choice: Callable[[str, str], None] | None = None,
+    capture_audio: bool = False,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[Item], float, str | None]:
     """Pick on from where *decided* ends until *end*, with a copy of the station's player.
 
@@ -1185,6 +1292,8 @@ def predict(
             preferred_choices or {},
             on_choice,
             ad_runs,
+            capture_audio,
+            cancelled,
         )
 
 
@@ -1202,16 +1311,28 @@ def _interrupt_at(source: SimulationSource, event: Any, at: float, handoff: floa
 
 
 def _scheduled_audio(
-    source: SimulationSource, player: Any, checks: Any, event: Any, at: float
+    source: SimulationSource,
+    player: Any,
+    checks: Any,
+    event: Any,
+    at: float,
+    *,
+    capture_audio: bool = False,
 ) -> Item | None:
     """Read the same clip and play dates as the action, without running it."""
     seconds = 0.0
+    captured: list[Any] = []
+    from autodj.stereo import copy_audio
+
     label = event.name
     if event.action == "liner":
         worker = player.liner_scheduler
         if worker is None or worker.refusal(event.params["name"], at) is not None:
             return None
-        seconds = len(worker.decode(event.params["name"])) / SAMPLE_RATE
+        decoded = worker.decode(event.params["name"])
+        seconds = len(decoded) / SAMPLE_RATE
+        if capture_audio:
+            captured.append(copy_audio(decoded))
         label = f"Scheduled liner: {label}"
     elif event.action == "play_cart":
         if source.carts is None:
@@ -1219,8 +1340,13 @@ def _scheduled_audio(
         cart = source.carts.store.slot(int(event.params["page"]), int(event.params["slot"]))
         if cart.dates().refusal(datetime.fromtimestamp(at, ZoneInfo(source.timezone)).date()):
             return None
+        decoded = source.carts.decode(cart) if capture_audio else None
+        if decoded is not None:
+            captured.append(copy_audio(decoded))
         seconds = (
-            float(cart.duration)
+            len(decoded) / SAMPLE_RATE
+            if decoded is not None
+            else float(cart.duration)
             if cart.duration is not None
             else len(source.carts.decode(cart)) / SAMPLE_RATE
         )
@@ -1228,7 +1354,20 @@ def _scheduled_audio(
     elif event.action == "time_check":
         if checks is None:
             return None
-        duration = checks.forecast_seconds(datetime.fromtimestamp(at, UTC), scheduled=True)
+        options = {"on_audio": captured.append} if capture_audio else {}
+        duration = checks.forecast_seconds(
+            datetime.fromtimestamp(at, UTC), scheduled=True, **options
+        )
+        if duration is None and capture_audio:
+            return Item(
+                "break",
+                at,
+                0.0,
+                "predicted",
+                label=f"Time check: {label}",
+                duration_unknown=True,
+                absolute_timing=True,
+            )
         if duration is None:
             raise PreviewError(f"the duration of time check {label} is not known yet")
         seconds = duration
@@ -1240,7 +1379,19 @@ def _scheduled_audio(
     ):
         with player.liner_scheduler._state():
             player.liner_scheduler._fired_locked(at=at)
-    return Item("break", at, seconds, "predicted", label=label) if seconds > 0 else None
+    return (
+        Item(
+            "break",
+            at,
+            seconds,
+            "predicted",
+            label=label,
+            audio=captured[0] if captured else None,
+            absolute_timing=True,
+        )
+        if seconds > 0
+        else None
+    )
 
 
 def _before_interrupt(source: SimulationSource, decided: Decided, end: float) -> Decided:
@@ -1258,7 +1409,11 @@ def _before_interrupt(source: SimulationSource, decided: Decided, end: float) ->
         if song is None or _interrupt_at(source, event, at, song.starts + song.seconds) != at:
             continue
         items = tuple(
-            replace(row, seconds=min(row.seconds, at - row.starts))
+            replace(
+                row,
+                seconds=min(row.seconds, at - row.starts),
+                cut_at=at if row.kind == "song" and row.starts + row.seconds > at else row.cut_at,
+            )
             for row in decided.items
             if row.starts < at
         )
@@ -1284,6 +1439,8 @@ def _predict(
     preferred_choices: dict[str, str],
     on_choice: Callable[[str, str], None] | None,
     ad_runs: Sequence[Any] = (),
+    capture_audio: bool = False,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[list[Item], float, str | None]:
     began = time.perf_counter()
     # Ad breaks not yet booked (#51), soonest first: each joins the first
@@ -1291,9 +1448,13 @@ def _predict(
     ads = deque(sorted(ad_runs, key=lambda run: run.at))
     current = decided.last
     handoff = decided.handoff
-    if current is None or handoff >= end:
+    if (current is None and not (capture_audio and decided.waiting)) or handoff >= end:
         return [], handoff, None
-    current_rate = max(0.01, float(decided.last_rate or music_rate(source.player, current)))
+    current_rate = (
+        max(0.01, float(decided.last_rate or music_rate(source.player, current)))
+        if current is not None
+        else 1.0
+    )
     player = _copy_player(source, snapshot, decided.now, random.Random(seed), _ignore)
     live_intros = getattr(source.player, "matched_intros", None)
     if live_intros is not None and getattr(source.player, "bus", None) is not None:
@@ -1357,7 +1518,10 @@ def _predict(
     songs = 0
     choice_occurrences: dict[str, int] = {}
     while handoff < end:
-        if songs >= limit:
+        if cancelled is not None and cancelled():
+            stopped = "review cancelled"
+            break
+        if songs >= limit and not capture_audio:
             stopped = "it reached its limit of songs"
             break
         if time.perf_counter() - began > budget:
@@ -1365,7 +1529,11 @@ def _predict(
             break
         # As the station does: the pick reads the clock at the playing song's
         # start, and dayparting the hours at the next song's.
-        player._sim_now = handoff - song_seconds(player, current, average) / current_rate
+        player._sim_now = (
+            handoff - song_seconds(player, current, average) / current_rate
+            if current is not None
+            else handoff
+        )
         pending_events.extend(schedule.due(handoff))
         cut = min(
             (_interrupt_at(source, event, at, handoff) for at, event in pending_events),
@@ -1373,7 +1541,11 @@ def _predict(
         )
         if cut < handoff:
             found = [
-                replace(row, seconds=min(row.seconds, cut - row.starts))
+                replace(
+                    row,
+                    seconds=min(row.seconds, cut - row.starts),
+                    cut_at=cut if row.kind == "song" else row.cut_at,
+                )
                 if row.starts < cut < row.starts + row.seconds
                 else row
                 for row in found
@@ -1392,8 +1564,23 @@ def _predict(
             if event.action in {"liner", "play_cart", "time_check"}:
                 airs = at if event.timing == "hard" and event.action == "play_cart" else handoff
                 try:
-                    audio = _scheduled_audio(source, player, checks, event, airs)
+                    audio = _scheduled_audio(
+                        source, player, checks, event, airs, capture_audio=capture_audio
+                    )
                 except Exception as exc:
+                    if capture_audio:
+                        found.append(
+                            Item(
+                                "break",
+                                airs,
+                                0.0,
+                                "predicted",
+                                label=f"Scheduled audio unavailable: {event.name}",
+                                duration_unknown=True,
+                                absolute_timing=True,
+                            )
+                        )
+                        continue
                     stopped = f"scheduled audio {event.name} could not be predicted: {exc}"
                     break
                 if audio is not None:
@@ -1409,6 +1596,9 @@ def _predict(
                     stopped = f"scheduled event {event.name} cannot be predicted: {refusal}"
                     break
         if stopped:
+            break
+        if songs >= limit:
+            stopped = "it reached its limit of songs"
             break
         added: tuple[tuple[Any, bool], ...] = ()
         queued_row = None
@@ -1447,10 +1637,17 @@ def _predict(
             if on_choice is not None:
                 on_choice(choice_key, entry.path)
         moment = handoff
+        ad_spots: list[tuple[str, Any]] = []
         while ads and ads[0].at <= handoff:
             run = ads.popleft()
+            if capture_audio:
+                ad_spots.extend(getattr(run, "spots", ()))
             if run.seconds > 0:  # a break no spot can fill airs nothing
-                found.append(Item("break", moment, run.seconds, "predicted", label=run.label))
+                found.append(
+                    Item(
+                        "break", moment, run.seconds, "predicted", label=run.label, in_handoff=True
+                    )
+                )
                 moment += run.seconds
         if (
             source.ads is not None
@@ -1461,17 +1658,32 @@ def _predict(
             for step in getattr(player, "_chosen_clock_ad_steps", ()):
                 forecast = source.ads.forecast_step(step, change_at, heard)
                 if forecast is not None:
+                    if capture_audio:
+                        ad_spots.extend(getattr(forecast, "spots", ()))
                     found.append(
-                        Item("break", moment, forecast.seconds, "predicted", label=forecast.label)
+                        Item(
+                            "break",
+                            moment,
+                            forecast.seconds,
+                            "predicted",
+                            label=forecast.label,
+                            in_handoff=True,
+                        )
                     )
                     moment += forecast.seconds
         intro = None
         liner_key = ""
         if player._cfg.playback.transition_mode == "saved_points":
-            breaks = (SimpleNamespace(kind="ad"),) if moment > handoff else ()
-            added, liner_key, intro = player._transition_voice(
-                current, entry, added, breaks, handoff
-            )
+            breaks: tuple[Any, ...] = (SimpleNamespace(kind="ad"),) if moment > handoff else ()
+            if current is None:
+                intro = player._matched_intro(entry, breaks, handoff) if not added else None
+            else:
+                added, liner_key, intro = player._transition_voice(
+                    current, entry, added, breaks, handoff
+                )
+        selected_handoff = (
+            IncomingHandoff(tuple(added), intro, tuple(ad_spots)) if capture_audio else None
+        )
         voice: tuple[Any, dict[str, Any], bool] | None = None
         intro_label = intro.label if intro is not None else ""
         if intro is not None:
@@ -1538,18 +1750,19 @@ def _predict(
                             speech,
                             "predicted",
                             label=f"Matched intro: {intro_label}",
+                            in_handoff=True,
                             asset_id=intro.intro_id,
                             details_entry=intro_liner,
                         )
                     )
                 else:
-                    found.append(Item("liner", starts, length, "predicted", liner))
+                    found.append(Item("liner", starts, length, "predicted", liner, in_handoff=True))
                     record(liner, starts)
             moment += delay
         else:
             for liner, _queued in added:
                 length = float(liner.length or 0.0)
-                found.append(Item("liner", moment, length, "predicted", liner))
+                found.append(Item("liner", moment, length, "predicted", liner, in_handoff=True))
                 record(liner, moment)
                 moment += length
         player._sim_now = moment
@@ -1571,7 +1784,21 @@ def _predict(
             checks.tick(now, True)
             # A planned talk-up already on air leaves the announcement pending.
             if not (liner_key and added):
-                duration = checks.forecast_seconds(now)
+                captured_check: list[Any] = []
+                options = {"on_audio": captured_check.append} if capture_audio else {}
+                duration = checks.forecast_seconds(now, **options)
+                if duration is None and capture_audio:
+                    found.append(
+                        Item(
+                            "break",
+                            moment,
+                            0.0,
+                            "predicted",
+                            label="Time check",
+                            duration_unknown=True,
+                        )
+                    )
+                    duration = 0.0
                 if duration is None:
                     stopped = "the duration of the automatic time check is not known yet"
                     break
@@ -1579,7 +1806,16 @@ def _predict(
                 if duration > 0:
                     cue = scheduler._intro_cue(track, round(duration * SAMPLE_RATE))
                     starts = moment + (cue.frame / SAMPLE_RATE if cue is not None else 0)
-                    found.append(Item("break", starts, duration, "predicted", label="Time check"))
+                    found.append(
+                        Item(
+                            "break",
+                            starts,
+                            duration,
+                            "predicted",
+                            label="Time check",
+                            audio=captured_check[0] if captured_check else None,
+                        )
+                    )
         record(entry, moment, track_start=not automatic or time_check > 0)
         if time_check > 0:
             with scheduler._state():
@@ -1596,11 +1832,29 @@ def _predict(
                 ),
                 default=until,
             )
+            captured_liners: dict[tuple[float, str], Any] = {}
+
+            def capture_liner(
+                at: float,
+                name: str,
+                audio: Any,
+                captured: dict[tuple[float, str], Any] = captured_liners,
+            ) -> None:
+                captured[(at, name)] = audio
+
+            liner_options = {"on_audio": capture_liner} if capture_audio else {}
             for at, name, length in scheduler.forecast(
-                moment, until, track=track, track_start=time_check <= 0
+                moment, until, track=track, track_start=time_check <= 0, **liner_options
             ):
                 found.append(
-                    Item("break", at, length, "predicted", label=f"Automatic liner: {name}")
+                    Item(
+                        "break",
+                        at,
+                        length,
+                        "predicted",
+                        label=f"Automatic liner: {name}",
+                        audio=captured_liners.get((at, name)),
+                    )
                 )
         found.append(
             Item(
@@ -1615,6 +1869,8 @@ def _predict(
                 entry,
                 queued_row.label if queued_row is not None else show_name if from_show else "",
                 playback_rate=current_rate,
+                incoming_handoff=selected_handoff,
+                playback_config=copy.deepcopy(player._cfg) if capture_audio else None,
             )
         )
         current, handoff = entry, moment + seconds
@@ -1981,6 +2237,9 @@ def build_preview(
     budget: float = BUDGET_SECONDS,
     preferred_choices: dict[str, str] | None = None,
     on_prediction: Callable[[tuple[tuple[str, str], ...]], None] | None = None,
+    capture_audio: bool = False,
+    on_items: Callable[[tuple[Item, ...]], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """The preview of *source*'s next *minutes*, as the page reads it (JSON shape).
 
@@ -1989,12 +2248,15 @@ def build_preview(
     minutes = check_minutes(minutes)
     zone = ZoneInfo(source.timezone)
     if decided is None:
-        decided = read_station(source.player, desk, now=now, show=_on_air_show(source))
+        decided = read_station(
+            source.player, desk, now=now, show=_on_air_show(source), capture_audio=capture_audio
+        )
     now = decided.now
     end = now + minutes * 60
     # Queued songs are fixed choices, but their voice clips have not been rendered yet.
     if (
-        getattr(source.player, "matched_intros", None) is not None
+        capture_audio
+        or getattr(source.player, "matched_intros", None) is not None
         or getattr(source.player, "liner_scheduler", None) is not None
     ):
         first = next(
@@ -2054,6 +2316,8 @@ def build_preview(
         budget=budget,
         ad_runs=forecasts,
         preferred_choices=preferred_choices,
+        capture_audio=capture_audio,
+        cancelled=cancelled,
         on_choice=(
             (lambda key, path: choices.append((key, path))) if on_prediction is not None else None
         ),
@@ -2061,6 +2325,8 @@ def build_preview(
     if on_prediction is not None:
         on_prediction(tuple(choices))
     timeline = sorted([*decided.items, *predicted], key=lambda item: item.starts)
+    if on_items is not None:
+        on_items(tuple(timeline))
     songs = [item for item in timeline if item.kind == "song"]
     # A skipped show song takes no time and opens no song change.
     changes = song_changes([item for item in timeline if item.kind != "skipped"])
