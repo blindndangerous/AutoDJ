@@ -1303,6 +1303,16 @@ def cmd_analyse_library(ctx: click.Context) -> None:
     ),
 )
 @click.option(
+    "--idle-release",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="MINUTES",
+    help=(
+        "Load the model only when songs arrive, then free it after MINUTES with an empty "
+        "queue. Keep polling and repeat the hooks for each load. --idle-exit wins if both expire."
+    ),
+)
+@click.option(
     "--batch",
     default=4,
     show_default=True,
@@ -1326,7 +1336,7 @@ def cmd_analyse_library(ctx: click.Context) -> None:
     "--before-command",
     default=None,
     help=(
-        "Program to run once before the model is loaded, such as "
+        "Program to run before each model load (once without --idle-release), such as "
         "'podman stop tts-service' to free the GPU.  Run without a shell."
     ),
 )
@@ -1334,7 +1344,7 @@ def cmd_analyse_library(ctx: click.Context) -> None:
     "--after-command",
     default=None,
     help=(
-        "Program to run when the worker stops, after Ctrl+C or an error too, such as "
+        "Program to run after freeing the model, on exit or --idle-release, such as "
         "'podman start tts-service'.  Run without a shell."
     ),
 )
@@ -1345,6 +1355,7 @@ def cmd_worker(
     token: str,
     once: bool,
     idle_exit: int | None,
+    idle_release: int | None,
     batch: int,
     device: str,
     ca_cert: Path | None,
@@ -1357,11 +1368,14 @@ def cmd_worker(
     as `autodj index` would and sends the results back.  The server's music
     folder is never read directly.  Ctrl+C stops after the current song.
     Without --once or --idle-exit it keeps running and waits for new songs.
+    With --idle-release, it loads the model on demand and frees it between batches.
 
     
     Examples:
       autodj worker --server https://nas.local:8765 --token adj1.…
       autodj worker --server https://nas.local:8765 --idle-exit 10 \
+        --before-command "podman stop tts-service" --after-command "podman start tts-service"
+      autodj worker --server https://nas.local:8765 --idle-release 5 \
         --before-command "podman stop tts-service" --after-command "podman start tts-service"
     """
     import signal
@@ -1399,14 +1413,43 @@ def cmd_worker(
     label = device_description(chosen)
     identity = analysis_identity(cfg.model.name, None)
     wrapper: MuqWrapper | None = None
+    prepared = False
 
     def analyse(path: Path) -> TrackAnalysis:
-        assert wrapper is not None  # loaded before the worker runs
+        assert wrapper is not None  # loaded before analysis starts
         return analyse_file(path, wrapper)
+
+    def prepare() -> None:
+        nonlocal wrapper, prepared
+        prepared = True
+        run_hook(before_command, "Before-command")
+        console.print(f"Analysing on {escape(label)}.")
+        wrapper = load_model(model_path, device=chosen)
+
+    def release() -> None:
+        nonlocal wrapper, prepared
+        if not prepared:
+            return
+        prepared = False
+        try:
+            if wrapper is not None:
+                release_gpu(wrapper)
+        finally:
+            wrapper = None
+            run_hook(after_command, "After-command")
 
     idle_seconds = idle_exit * 60.0 if idle_exit is not None else (0.0 if once else None)
     worker = Worker(
-        api, analyse, identity, batch=batch, device=label, stop=stop, idle_exit=idle_seconds
+        api,
+        analyse,
+        identity,
+        batch=batch,
+        device=label,
+        stop=stop,
+        idle_exit=idle_seconds,
+        idle_release=idle_release * 60.0 if idle_release is not None else None,
+        prepare=prepare if idle_release is not None else None,
+        release=release if idle_release is not None else None,
     )
     previous = signal.signal(signal.SIGINT, interrupted)
     try:
@@ -1419,16 +1462,12 @@ def cmd_worker(
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         worker.identity = analysis_identity(cfg.model.name, folder_commit(model_path))
         worker.check_identity(server_identity)
-        run_hook(before_command, "Before-command")
         try:
-            console.print(f"Analysing on {escape(label)}.")
-            wrapper = load_model(model_path, device=chosen)
+            if idle_release is None:
+                prepare()
             worker.run()
         finally:
-            if wrapper is not None:
-                release_gpu(wrapper)
-                wrapper = None
-            run_hook(after_command, "After-command")
+            release()
     except (WorkerError, ModelLoadError) as exc:
         raise click.ClickException(str(exc)) from exc
     except KeyboardInterrupt:
