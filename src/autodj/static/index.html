@@ -21,7 +21,7 @@
 <dialog id="auth-dialog"
         aria-labelledby="auth-title" aria-describedby="auth-reason auth-help">
   <form id="auth-form" method="dialog">
-    <h2 id="auth-title">Pair this browser</h2>
+    <h1 id="auth-title">Pair this browser</h1>
     <p id="auth-reason" hidden></p>
     <p id="auth-help">Enter the 8-digit pairing code shown by the AutoDJ server. You only need to do this once on this browser.</p>
     <label for="auth-token">Pairing code</label>
@@ -2043,7 +2043,7 @@
          in #schedule-form-error. -->
     <form id="schedule-form" novalidate hidden>
       <fieldset>
-        <legend id="schedule-form-legend">Add event</legend>
+        <legend><h1 id="schedule-form-legend">Add event</h1></legend>
         <p id="schedule-form-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="schedule-name">Name</label>
@@ -3134,7 +3134,7 @@
              #ads-spot-error, marked aria-invalid, linked and focused. -->
         <form id="ads-spot-form" novalidate hidden>
           <fieldset>
-            <legend id="ads-spot-legend">Add spot</legend>
+            <legend><h1 id="ads-spot-legend">Add spot</h1></legend>
             <p id="ads-spot-error" class="field-error" hidden></p>
             <div class="settings-row" id="ads-spot-file-row">
               <label for="ads-spot-file">Audio file</label>
@@ -3202,7 +3202,7 @@
         <button type="button" id="ads-break-add">Add ad break</button>
         <form id="ads-break-form" novalidate hidden>
           <fieldset>
-            <legend id="ads-break-legend">Add ad break</legend>
+            <legend><h1 id="ads-break-legend">Add ad break</h1></legend>
             <p id="ads-break-error" class="field-error" hidden></p>
             <div class="settings-row">
               <label for="ads-break-name">Break name</label>
@@ -3503,7 +3503,7 @@
            in #categories-form-error. -->
       <form id="categories-form" novalidate hidden>
         <fieldset>
-          <legend id="categories-form-legend">Add category</legend>
+          <legend><h1 id="categories-form-legend">Add category</h1></legend>
           <p id="categories-form-error" class="field-error" hidden></p>
           <div class="settings-row">
             <label for="categories-name">Name</label>
@@ -3727,7 +3727,7 @@
       <button type="button" id="intro-rules-add">Add intro rule</button>
       <form id="intro-rules-form" novalidate hidden>
         <fieldset>
-          <legend><h4 id="intro-rules-form-legend">Add intro rule</h4></legend>
+          <legend><h1 id="intro-rules-form-legend">Add intro rule</h1></legend>
           <div class="settings-row tag-field">
             <label for="intro-rules-label">Label</label>
             <input type="text" id="intro-rules-label" maxlength="120" autocomplete="off" aria-describedby="intro-rules-label-help">
@@ -3839,7 +3839,7 @@
      or Cancel closes it and returns focus. -->
 <dialog id="clock-step-dialog" aria-labelledby="clock-step-legend">
 <fieldset id="clock-step-form" class="flow-form">
-  <legend><h4 id="clock-step-legend">Add a step</h4></legend>
+  <legend><h1 id="clock-step-legend">Add a step</h1></legend>
   <label for="clock-step-type">Step type</label>
   <select id="clock-step-type">
     <option value="music">Music matching conditions</option>
@@ -3939,7 +3939,7 @@
 </dialog>
 <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title" aria-describedby="track-info-dialog-desc">
   <form method="dialog">
-    <h2 id="track-info-dialog-title"></h2>
+    <h1 id="track-info-dialog-title"></h1>
     <p id="track-info-dialog-desc">Save your changes before choosing another track, or discard them to switch.</p>
     <p id="track-info-error" role="status" aria-live="polite"></p>
     <div class="dialog-actions">
@@ -3958,7 +3958,7 @@
 <dialog id="confirm-dialog" aria-labelledby="confirm-title"
         aria-describedby="confirm-message">
   <form method="dialog">
-    <h2 id="confirm-title"></h2>
+    <h1 id="confirm-title"></h1>
     <p id="confirm-message"></p>
     <div class="dialog-actions">
       <button type="submit" id="confirm-cancel" value="cancel">Cancel</button>
@@ -3973,7 +3973,7 @@
      dialog is inert and its status region would not be heard. -->
 <dialog id="device-rename-dialog" aria-labelledby="device-rename-title">
   <form id="device-rename-form" method="dialog" novalidate>
-    <h2 id="device-rename-title">Rename device</h2>
+    <h1 id="device-rename-title">Rename device</h1>
     <label for="device-rename-name">Device name</label>
     <input id="device-rename-name" type="text" maxlength="64" autocomplete="off"
            spellcheck="false" aria-describedby="device-rename-desc device-rename-error">
@@ -3994,7 +3994,7 @@
      `hidden` subtree — not rendered, and not in the accessibility tree,
      while showModal() still made the rest of the page inert. -->
 <dialog id="hotkey-help-modal" aria-labelledby="hotkey-help-title">
-  <h2 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h2>
+  <h1 id="hotkey-help-title" style="margin-top:0">Keyboard shortcuts</h1>
   <p>Space and the Up and Down Arrow keys work on the Now Playing tab only, because on other tabs they scroll the page. Every other shortcut works from any tab.</p>
   <p>You can toggle keyboard shortcuts under Settings.</p>
   <dl style="display:grid;grid-template-columns:max-content 1fr;column-gap:1rem;row-gap:0.25rem;margin:0">
@@ -4011,6 +4011,7 @@
     <dt><kbd>Page Up</kbd> <span aria-hidden="true">/</span><span class="visually-hidden">or</span> <kbd>Page Down</kbd></dt><dd>Previous <span aria-hidden="true">/</span><span class="visually-hidden">or</span> next cart page. Only with focus on the cart wall.</dd>
     <dt><kbd>Alt+M</kbd></dt><dd>Talk over the music while held, when the station can go live. Talk stops when you let go, however quick the press; focus stays where it is.</dd>
     <dt><kbd>Alt+R</kbd></dt><dd>Start <span aria-hidden="true">/</span><span class="visually-hidden">or</span> stop recording a voice track. Only while the Voice tracks tab shows; focus stays where it is.</dd>
+    <dt><kbd>t</kbd></dt><dd>Track Info for current track</dd>
     <dt style="margin-top:0.5rem"><kbd>Shift+T</kbd></dt><dd style="margin-top:0.5rem">Speak current track (artist – title)</dd>
     <dt><kbd>Shift+N</kbd></dt><dd>Speak next track (artist, title, BPM)</dd>
     <dt><kbd>Shift+R</kbd></dt><dd>Speak time remaining</dd>

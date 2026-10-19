@@ -16,7 +16,7 @@ with folder and metadata conditions in the same step; the category itself stays 
 Keep them in the **Library tools** tab, **Categories**, next to the clockwheels that use them. The
 list says how many unique songs each category holds, how many playlist lines match no library track,
 how many songs were placed by their release year (see below), and which clockwheels use it. **Add
-category** and **Edit** open one form; the count refreshes after a short pause, and **Check** gives
+category** and **Edit** open the same modal form; the count refreshes after a short pause, and **Check** gives
 immediate feedback. Counts describe the matching selection before playback limits and hours.
 Settled category and clock-step counts are also announced to screen readers after each completed
 check; edits and stale count responses do not produce announcements. Categories saved with matching

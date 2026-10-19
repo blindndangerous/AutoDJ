@@ -5,6 +5,7 @@ the sys.modules level before any test module imports autodj.player, so the
 import succeeds without audio hardware.
 """
 
+import os
 import sys
 from unittest.mock import MagicMock
 
@@ -13,6 +14,20 @@ import pytest
 # Mock sounddevice before any module-level import can trigger PortAudio lookup
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def _no_hook_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test's git calls in its own temporary repo.
+
+    A git hook (pre-push runs this suite) exports GIT_DIR, GIT_INDEX_FILE and
+    friends. Inherited, they make ``git init`` and ``git add`` in tmp_path act on
+    the real repository: its index fills with fixture files and core.bare turns on.
+    Clearing them for all tests, not per file, covers tests added later too.
+    """
+    for name in list(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)

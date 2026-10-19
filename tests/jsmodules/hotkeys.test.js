@@ -100,9 +100,12 @@ describe("page shortcut scope", () => {
   let volumeInput;
   let seekDelta;
   let speakHour;
+  let currentTrack;
+  let trackInfoClick;
 
   beforeAll(() => {
     document.body.innerHTML = `
+      <div id="sr-status"></div>
       <section id="panel-now"></section>
       <dialog id="hotkey-help-modal">
         <button id="btn-shortcuts-close"><span id="dialog-close-label">Close</span></button>
@@ -120,6 +123,7 @@ describe("page shortcut scope", () => {
       <button id="page-skip">Page skip</button>
       <button id="page-shuffle">Shuffle</button>
       <button id="page-mute">Mute</button>
+      <button id="edit-current-points">Track info</button>
     `;
     const modal = document.querySelector("#hotkey-help-modal");
     modal.showModal = vi.fn(() => modal.setAttribute("open", ""));
@@ -132,6 +136,8 @@ describe("page shortcut scope", () => {
     skipClick = vi.spyOn(skip, "click");
     shuffleClick = vi.spyOn(shuffle, "click");
     muteClick = vi.spyOn(mute, "click");
+    trackInfoClick = vi.spyOn(document.querySelector("#edit-current-points"), "click");
+    currentTrack = { path: "/music/current.flac" };
     seekDelta = vi.fn();
     speakHour = vi.fn(async () => {});
     volumeInput = vi.fn();
@@ -144,6 +150,8 @@ describe("page shortcut scope", () => {
       volSlider: volume,
       seekDelta,
       getBpm: () => 120,
+      getTrack: () => currentTrack,
+      btnTrackInfo: document.querySelector("#edit-current-points"),
       speakHour,
     });
   });
@@ -153,6 +161,8 @@ describe("page shortcut scope", () => {
     skipClick.mockClear();
     shuffleClick.mockClear();
     muteClick.mockClear();
+    trackInfoClick.mockClear();
+    currentTrack = { path: "/music/current.flac" };
     seekDelta.mockClear();
     volumeInput.mockClear();
     document.querySelector("#volume").value = "50";
@@ -180,6 +190,20 @@ describe("page shortcut scope", () => {
     expect(skipClick).toHaveBeenCalledOnce();
     expect(document.querySelector("#volume").value).toBe("50");
     expect(volumeInput).not.toHaveBeenCalled();
+  });
+
+  it("opens current Track info through its button and announces when nothing is playing", async () => {
+    const open = keyEvent(document.body, "t");
+    expect(open.defaultPrevented).toBe(true);
+    expect(trackInfoClick).toHaveBeenCalledOnce();
+
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: "t" }));
+    trackInfoClick.mockClear();
+    currentTrack = null;
+    expect(keyEvent(document.body, "t").defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector("#sr-status").textContent)
+      .toBe("No track currently playing"));
+    expect(trackInfoClick).not.toHaveBeenCalled();
   });
 
   it("leaves a key a table already used, such as arrows between rows", () => {

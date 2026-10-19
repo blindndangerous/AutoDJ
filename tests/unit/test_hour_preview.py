@@ -1102,6 +1102,21 @@ def test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh(
     previews.get(source, 60)
     assert len(builds) == 8
 
+    details = SimpleNamespace(path="/library/liners/shared.wav")
+    intro = Item(
+        "intro", 1000, 4, "picked", asset_id="intro-a", label="Year 2000", details_entry=details
+    )
+    decided = replace(decided, items=(intro,))
+    previews.get(source, 60)
+    previews.get(source, 60)
+    assert len(builds) == 9
+    decided = replace(decided, items=(replace(intro, asset_id="intro-b"),))
+    previews.get(source, 60)
+    assert len(builds) == 10
+    decided = replace(decided, items=(replace(intro, asset_id="intro-b", label="Year 2001"),))
+    previews.get(source, 60)
+    assert len(builds) == 11
+
 
 def test_category_signature_does_not_hold_the_category_pick_lock(
     tmp_path: Path, monkeypatch
@@ -1256,6 +1271,7 @@ def test_the_preview_and_the_rotation_tester_time_songs_alike(tmp_path: Path) ->
 @pytest.mark.parametrize("first_overlap,second_overlap", [(None, 0), (0, -1), (2, 1), (-2, 0)])
 @pytest.mark.parametrize("incoming_intro", [None, 0.0, 4.0])
 @pytest.mark.parametrize("allow_outro", [False, True])
+@pytest.mark.parametrize("rate,missing_segue", [(1.0, False), (0.9, True), (1.1, True)])
 def test_preview_liner_chain_matches_synthetic_live_render(
     tmp_path: Path,
     monkeypatch,
@@ -1263,10 +1279,13 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     second_overlap: float,
     incoming_intro: float | None,
     allow_outro: bool,
+    rate: float,
+    missing_segue: bool,
 ) -> None:
     source, _power, gold = _station(tmp_path)
     player = source.player
     liners = source.library.entries_snapshot("liner")
+    monkeypatch.setattr(player, "music_playback_rate", lambda entry: rate)
     points = {
         gold[0].path: {"start": 0, "outro": 4, "segue": 8, "end": 12},
         liners[0].path: {"start": 0.5, "segue": 2.5, "end": 3.5, "overlap_start": first_overlap},
@@ -1275,6 +1294,8 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     }
     if incoming_intro is not None:
         points[gold[1].path]["intro"] = incoming_intro
+    if missing_segue:
+        points[liners[0].path].pop("segue")
     monkeypatch.setattr(source.library.catalog, "points", lambda path: points.get(path, {}))
     monkeypatch.setattr(
         source.library.catalog, "record_for_path", lambda _path: {"allow_outro": allow_outro}
@@ -1289,11 +1310,13 @@ def test_preview_liner_chain_matches_synthetic_live_render(
     actual = player._render_saved_track(
         gold[0], gold[1], 0, ((liners[0], False), (liners[1], False))
     )
-    rows, delay = hour_preview._preview_liner_group(player, gold[0], gold[1], liners, NOW + 8)
+    rows, delay = hour_preview._preview_liner_group(
+        player, gold[0], gold[1], liners, NOW + 8 / rate
+    )
     actual_incoming = len(actual.audio) - actual.overlap_frames
-    assert delay == pytest.approx(actual_incoming / SR - 8)
-    assert rows[0][1] == pytest.approx(NOW + actual.liner_events[0][0] / SR)
-    assert rows[1][1] == pytest.approx(NOW + actual.liner_events[1][0] / SR)
+    assert delay == pytest.approx(actual_incoming / SR - 8 / rate, abs=2 / SR)
+    assert rows[0][1] - NOW == pytest.approx(actual.liner_events[0][0] / SR, abs=2 / SR)
+    assert rows[1][1] - NOW == pytest.approx(actual.liner_events[1][0] / SR, abs=2 / SR)
 
 
 def test_the_snapshot_shares_nothing_of_the_clockwheel(tmp_path: Path) -> None:
@@ -1650,9 +1673,10 @@ def test_browser_forecast_uses_live_position_after_seek(tmp_path: Path, percent:
 
 
 @pytest.mark.parametrize("filename_pattern", [None, "year-{year}.wav"])
-@pytest.mark.parametrize("talk_up", [False, True])
+@pytest.mark.parametrize("incoming_intro", [0.0, 0.75, 5.0])
+@pytest.mark.parametrize("saved_segue", [None, 2.0])
 def test_year_intro_rules_are_predicted_without_consuming_live_state(
-    tmp_path, monkeypatch, talk_up, filename_pattern
+    tmp_path, incoming_intro, saved_segue, filename_pattern
 ):
     from autodj.intro_rules import IntroRule, IntroRules
     from autodj.matched_intros import MatchedIntros
@@ -1669,18 +1693,28 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     player.bus = SimpleNamespace()
     clip_path = write_voice(tmp_path / "year-2000.wav", 2)
     clip = SimpleNamespace(path=str(clip_path), length=2)
+    clips = [clip]
+    if filename_pattern:
+        alternate = tmp_path / "alternate"
+        alternate.mkdir()
+        alternate_path = write_voice(alternate / "year-2000.wav", 2)
+        clips.append(SimpleNamespace(path=str(alternate_path), length=2))
+    clips_by_path = {entry.path: entry for entry in clips}
     catalog = source.library.catalog
+    lookup = source.library.entry_for_path
     catalog.record_for_path = lambda path: (
-        {"id": "song", "kind": "music"} if path != clip.path else {"kind": "liner"}
+        {"id": "song", "kind": "music"}
+        if str(path) not in clips_by_path
+        else {"kind": "liner", "allow_outro": False}
     )
+    catalog.entry_for_path = lambda path: clips_by_path.get(str(path)) or lookup(path)
     source.library.record_for_id = lambda key: (
         {"path": clip.path, "kind": "liner"} if key == "year" else None
     )
-    lookup = source.library.entry_for_path
-    source.library.entry_for_path = lambda path: clip if path == clip.path else lookup(path)
+    source.library.entry_for_path = lambda path: clips_by_path.get(str(path)) or lookup(path)
     entries_snapshot = source.library.entries_snapshot
     source.library.entries_snapshot = lambda kind="music": (
-        (clip,) if kind == "liner" else entries_snapshot(kind)
+        tuple(clips) if kind == "liner" else entries_snapshot(kind)
     )
     player.matched_intros = store = MatchedIntros(tmp_path / "matched_intros.json", tmp_path)
     store.rules = IntroRules(tmp_path / "intro_rules.json", date.fromtimestamp, store._rng)
@@ -1696,19 +1730,31 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
         ),
         create=True,
     )
-    points = {"start": 0, "intro": 5 if talk_up else 0, "segue": 200, "end": 200}
-    catalog.points = lambda path: points if path != clip.path else {}
+    music_points = {"start": 0, "intro": incoming_intro, "segue": 200, "end": 200}
+    liner_points = {
+        "start": 0,
+        "segue": saved_segue,
+        "end": 2,
+        "overlap_start": -1,
+    }
+    catalog.points = lambda path: liner_points if path in clips_by_path else music_points
     before = store.rules.path.read_bytes()
     rng = store._rng.getstate()
     items, _, stopped = hour_preview.predict(
         source, snapshot_player(player), decided, NOW + 900, seed=1, budget=30
     )
     assert stopped is None
-    [intro] = [item for item in items if item.kind == "intro"]
-    following = next(item for item in items if item.kind == "song")
+    intro = next(
+        item for item in items if item.kind == "intro" and item.label == "Matched intro: Year 2000"
+    )
+    following = next(item for item in items if item.kind == "song" and item.status == "predicted")
     assert intro.label == "Matched intro: Year 2000"
-    if talk_up:
-        assert intro.starts == pytest.approx(following.starts)
+    assert intro.asset_id
+    if incoming_intro >= intro.seconds:
+        assert intro.starts == pytest.approx(following.starts + 1.0)
+    elif incoming_intro > 0:
+        assert intro.starts < following.starts < intro.starts + intro.seconds
+        assert intro.starts + intro.seconds == pytest.approx(following.starts + incoming_intro)
     else:
         assert intro.starts + intro.seconds <= following.starts + 0.02
     assert store.rules.path.read_bytes() == before
@@ -1727,11 +1773,65 @@ def test_year_intro_rules_are_predicted_without_consuming_live_state(
     view = build_preview(source, 15, decided=with_queue, budget=30)
     [queued_row] = [row for row in view["items"] if row["status"] == "queued"]
     [voice_row] = [row for row in view["items"] if row["kind"] == "intro"]
+    assert voice_row["asset_id"] == intro.asset_id
+    assert voice_row["path"] is None
+    assert voice_row["title"] == intro.label
+    assert intro.details_entry is not None
+    assert voice_row["details_path"] == intro.details_entry.path
+    assert voice_row["details_path"] in {entry.path for entry in clips}
+    assert voice_row["details_kind"] == "liner"
     assert queued_row["path"] == gold[1].path
-    assert datetime.fromisoformat(voice_row["starts_at"]) <= datetime.fromisoformat(
-        queued_row["starts_at"]
-    )
     assert not store.rules._reserved
+
+    catalog.entry_for_path = lambda _path: None
+    missing, _, _ = hour_preview.predict(
+        source, snapshot_player(player), decided, NOW + 900, seed=1, budget=30
+    )
+    missing_intro = next(item for item in missing if item.kind == "intro")
+    assert missing_intro.asset_id == intro.asset_id
+    assert missing_intro.label.startswith("Matched intro unavailable:")
+    assert missing_intro.seconds == 0
+    assert missing_intro.details_entry is None
+
+
+def test_fixed_matched_intro_keeps_its_safe_asset_identity():
+    entry = SimpleNamespace(path="/library/liners/registered.wav")
+    path = entry.path
+    catalog = SimpleNamespace(
+        record_for_path=lambda _path: {"kind": "liner"},
+        entry_for_path=lambda _path: entry,
+    )
+    player = SimpleNamespace(_library=SimpleNamespace(catalog=catalog))
+    rows = hour_preview._mixed_in(
+        SimpleNamespace(
+            intro_events=((0, "intro-42", 4 * SR, "Year 2000"),),
+            intro_assets=(("intro-42", path),),
+        ),
+        100.0,
+        100.0,
+        None,
+        "picked",
+        [],
+        player=player,
+    )
+    [intro] = rows
+    assert intro.asset_id == "intro-42"
+    assert intro.entry is None
+    assert intro.details_entry is entry
+    catalog.entry_for_path = lambda _path: None
+    absent = hour_preview._mixed_in(
+        SimpleNamespace(
+            intro_events=((0, "intro-42", 4 * SR, "Year 2000"),),
+            intro_assets=(("intro-42", path),),
+        ),
+        100.0,
+        100.0,
+        None,
+        "picked",
+        [],
+        player=player,
+    )
+    assert absent[0].details_entry is None
 
 
 @pytest.mark.parametrize("talk_up", [False, True])

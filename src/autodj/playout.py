@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -98,6 +99,57 @@ def liner_release_frames(main_frames: int, intro_frames: int, overlap_start: flo
     return max(
         main_frames - intro_frames, min(main_frames, _frames(overlap_start, "overlap_start"))
     )
+
+
+def liner_main_frames(first: int, frames: int, segue: float | None) -> int:
+    """Speech/main duration within a trimmed clip; no Segue uses its full length."""
+    return frames if segue is None else min(frames, max(0, round(segue * SAMPLE_RATE) - first))
+
+
+def liner_chain_timing(
+    clips: Sequence[tuple[int, int, float | None, bool]], incoming_intro: float
+) -> tuple[int, float, float | None]:
+    """Return chain main frames, music delay, and outro limit (both in seconds).
+
+    Each clip supplies trimmed frames, main frames, Overlap start, and whether
+    it may start over the outgoing outro. Audio and catalog access stay outside.
+    """
+    frames = main_frames = fit_main_frames = 0
+    release = 0.0
+    negative, zero = [], []
+    ordinary = False
+    outro_limit = None
+    for length, main, overlap, allow_outro in clips:
+        main_frames = frames + main
+        if overlap is not None and overlap < 0:
+            negative.append((frames, overlap, main))
+        elif overlap == 0:
+            zero.append((frames, main))
+            fit_main_frames = max(fit_main_frames, main_frames)
+        else:
+            ordinary = True
+            delay = main / SAMPLE_RATE if overlap is None else min(overlap, main / SAMPLE_RATE)
+            if delay > 0 or overlap is None:
+                release = max(release, frames / SAMPLE_RATE + delay)
+        if not allow_outro and outro_limit is None:
+            outro_limit = frames / SAMPLE_RATE
+        frames += length
+    if negative:
+        intro_frames = round(incoming_intro * SAMPLE_RATE)
+        constraints = [
+            offset / SAMPLE_RATE + liner_release_frames(main, intro_frames, cue) / SAMPLE_RATE
+            for offset, cue, main in negative
+        ]
+        constraints.extend((offset + main - intro_frames) / SAMPLE_RATE for offset, main in zero)
+        if ordinary:
+            constraints.append(release)
+        if clips[0][2] is None or clips[0][2] >= 0:
+            constraints.append(0.0)
+        release = max(constraints)
+    elif fit_main_frames:
+        release = max(release, fit_main_frames / SAMPLE_RATE - incoming_intro)
+    # Every clip's main content must finish before the incoming vocals.
+    return main_frames, max(release, main_frames / SAMPLE_RATE - incoming_intro), outro_limit
 
 
 def liner_chain_placement(

@@ -686,7 +686,10 @@ _Found = tuple[float, float, float | None, float, float]
 
 def _audible_end(audio: np.ndarray) -> int | None:
     """One past the last frame louder than -60 dBFS, or ``None``."""
-    audible = np.flatnonzero(np.max(np.abs(audio), axis=1) >= _SILENCE_AMPLITUDE)
+    amplitude = np.abs(audio)
+    if audio.ndim > 1:
+        amplitude = np.max(amplitude, axis=1)
+    audible = np.flatnonzero(amplitude >= _SILENCE_AMPLITUDE)
     return int(audible[-1]) + 1 if len(audible) else None
 
 
@@ -755,6 +758,13 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
     return start, end, segue, detected_intro, detected_outro
 
 
+def _segue_reference(rms: np.ndarray, exclude_tail_bins: int) -> float:
+    """Keep trailing silence out of the reference without removing interior pauses."""
+    audible = np.flatnonzero(rms >= _SILENCE_AMPLITUDE)
+    end = max(0, int(audible[-1]) + 1 - exclude_tail_bins) if len(audible) else 0
+    return float(np.median(rms[:end])) if end else 0.0
+
+
 def _suggest_liner_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     """Find a sustained final content drop in a short liner, never an interior pause."""
     window = max(1, round(sample_rate * 0.05))
@@ -764,11 +774,7 @@ def _suggest_liner_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     bins = [samples[start : start + window] for start in range(0, len(samples), window)]
     rms = np.asarray([np.sqrt(np.mean(block * block)) for block in bins], dtype=np.float64)
     duration = len(samples) / sample_rate
-    centers = (np.arange(len(rms)) + 0.5) * window / sample_rate
-    body = rms[centers < max(0.0, duration - 0.5)]
-    if len(body) == 0:
-        return None
-    reference = float(np.median(body))
+    reference = _segue_reference(rms, round(0.5 * sample_rate / window))
     if not math.isfinite(reference) or reference <= 1e-6:
         return None
 
@@ -787,8 +793,12 @@ def _suggest_liner_segue(audio: np.ndarray, sample_rate: int) -> float | None:
 def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     """Suggest only a sustained final energy drop, never a vocal cue."""
     window = sample_rate
-    tail_start = max(0, len(audio) - 60 * sample_rate)
-    tail = audio[tail_start:]
+    last = _audible_end(audio)
+    if last is None:
+        return None
+    # Anchor the bounded window to content, so padding cannot push it out of view.
+    tail_start = max(0, last - 60 * sample_rate)
+    tail = audio[tail_start : min(len(audio), last + 5 * sample_rate)]
     if len(tail) < 6 * window:
         return None
     rms = np.asarray(
@@ -797,8 +807,7 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
             for start in range(0, len(tail), window)
         ]
     )
-    body = rms[:-5]
-    reference = float(np.median(body))
+    reference = _segue_reference(rms, 5)
     if reference <= 1e-6:
         return None
     threshold = reference * 10 ** (-10 / 20)
@@ -806,7 +815,7 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     while index >= 0 and rms[index] <= threshold:
         index -= 1
     point = (tail_start + (index + 1) * window) / sample_rate
-    quiet_duration = len(tail) - (index + 1) * window
+    quiet_duration = len(audio) - tail_start - (index + 1) * window
     return (
         point
         if quiet_duration >= 5 * sample_rate and 0 < point < len(audio) / sample_rate

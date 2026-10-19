@@ -3,9 +3,9 @@
 An operator records something like "here's the new one from Example Artist"
 and attaches it in Track info, either to that song or to every song by the
 song's artist.  When the song comes up, the clip is mixed into its song change:
-it talks up the song (the voice ends as the vocal starts) when the song's
-intro is at least as long as the speech, and otherwise plays just before the
-song.  Only saved-point playback mixes them, as it does announcer breaks.
+detected speech cues use liner placement across the outgoing outro and
+incoming intro, delaying the song when needed to finish before its vocals.
+Only saved-point playback mixes them, as it does announcer breaks.
 
 Each station keeps its own intros: ``matched_intros.json`` in its state
 folder, by intro ID, and the audio in its ``intros`` folder as

@@ -1,3 +1,4 @@
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // Library tools, Intro rules (#127): voice liners that play as the next song
 // starts when that song matches a rule's conditions (genre, decade, artist,
 // a Beets field, a folder or a category), each station's own.
@@ -16,7 +17,7 @@ import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, reques
 import { describeConditions } from "./clockwheel-step.js";
 import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { nextRowControl, rowButton } from "./dom-helpers.js";
+import { focusAfterDialog, nextRowControl, rowButton } from "./dom-helpers.js";
 import { parsePointTime } from "./library-folders.js";
 import { announceStatus } from "./live-region.js";
 
@@ -28,7 +29,6 @@ const SERVER_FIELDS = {
   label: "label", conditions: "conditions", clip_ids: "clips", liner_folder: "folder", filename_pattern: "pattern",
   chance: "chance", cooldown_minutes: "cooldown", not_before: "not-before", not_after: "not-after",
 };
-const CONDITION_FIELDS = ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets", "category"];
 const PRIORITY_WORDS = {
   after_artist: "after the song’s and the artist’s own intros",
   before_artist: "after the song’s own intros, before the artist’s",
@@ -137,18 +137,19 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   const blank = () => ({ rules: [], liners: [], liner_folders: [], sources: [], genres: [], beets_fields: [], categories: [] });
   let data = blank();
   let editing = null; // the rule ID being edited, or null when adding
-  let opener = null;
   let generation = 0;
   let testGeneration = 0;
   let suspended = false;
-  let busy = false;
   let conditionId = 0;
   let listSignature = "";
   // The control each shown error is linked to.
   const marked = new Map();
 
+  const editor = createEditorDialog({ form, heading: legend, cancel: el("intro-rules-cancel"), fallback: addButton,
+    save, onCancel: () => { closeForm(); say("Cancelled. Nothing was saved."); } });
+
   const current = (epoch, mine) => !suspended && mine === generation && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, tone = "info") => announceStatus(status, message, { force: true, tone });
+  const say = (message, tone = "info") => announceStatus(editor.region(status), message, { force: true, tone });
   const indexOf = (id) => data.rules.findIndex((rule) => rule.id === id);
   const nameOf = (id) => ruleName(data.rules[indexOf(id)] || {}, indexOf(id));
   const linerBoxes = () => [...linerHost.querySelectorAll('input[type="checkbox"]')];
@@ -187,12 +188,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   function showError(field, message) {
     const control = ({ pattern: patternInput, "pattern-folder": patternFolder, "test-song": testQuery })[field] || controlFor(field);
     if (!control) { say(message, "error"); return; }
-    control.setAttribute("aria-invalid", "true");
-    errors[field].textContent = message;
-    errors[field].hidden = false;
-    link(control, errors[field], true);
     marked.set(field, control);
-    control.focus();
+    showEditorError(control, message, errors[field], editor.region(status));
   }
 
   // ---- The list --------------------------------------------------------
@@ -241,7 +238,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
       nextId: () => `intro-rules-condition-${++conditionId}`,
       index: conditionHost.children.length + 1,
       value,
-      fields: CONDITION_FIELDS,
+      allowCategory: true,
       sourceChoices: data.sources.map((item) => [item.id, item.path]),
       genreChoices: data.genres.map((item) => [item, item]),
       beetsChoices: data.beets_fields.map((item) => [item, item]),
@@ -300,7 +297,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
   function openForm(rule, from) {
     invalidateTest(true);
     editing = rule ? rule.id : null;
-    opener = from;
     clearErrors();
     inputs.label.value = rule?.label || "";
     el("intro-rules-match").value = rule?.match || "all";
@@ -321,8 +317,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     testResults.replaceChildren();
     testSelected.textContent = "";
     legend.textContent = rule ? `Edit intro rule ${ruleName(rule, indexOf(rule.id))}` : "Add intro rule";
-    form.hidden = false;
-    inputs.label.focus();
+    editor.open(inputs.label, from);
   }
 
   function renderPatternFolders(chosen = "") {
@@ -442,7 +437,7 @@ export function installIntroRulesPanel({ document: doc = document, request = req
 
   function closeForm() {
     invalidateTest(true);
-    form.hidden = true;
+    editor.close();
     editing = null;
     clearErrors();
   }
@@ -464,9 +459,8 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     return conditions;
   }
 
-  async function save(event) {
+  async function save(event, active) {
     event.preventDefault();
-    if (busy) return;
     clearErrors();
     let conditions;
     try { conditions = readForm(); }
@@ -492,7 +486,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     if (refused) { showError(refused[0], refused[1]); return; }
     const body = ruleBody(conditions);
     const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
-    busy = true;
     try {
       const saved = editing
         ? await request(`/api/intros/rules/${encodeURIComponent(editing)}`, {
@@ -501,19 +494,17 @@ export function installIntroRulesPanel({ document: doc = document, request = req
         : await request("/api/intros/rules", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         });
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || !active()) return;
       await refresh().catch(() => {});
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || !active()) return;
       closeForm();
-      rowControl(saved.id)?.focus();
+      focusAfterDialog(rowControl(saved.id) || addButton);
       say(`Saved intro rule ${nameOf(saved.id)}.`);
     } catch (error) {
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || !active()) return;
       const field = error.field === "liner_folder" && patternMode ? "pattern-folder" : SERVER_FIELDS[error.field];
       if (field) showError(field, error.message);
       else say(`Could not save the intro rule: ${error.message}`, "error");
-    } finally {
-      busy = false;
     }
   }
 
@@ -559,7 +550,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     refresh().catch((error) => say(`Could not load the intro rules: ${error.message}`, "error"));
   }
 
-  form.addEventListener("submit", (event) => void save(event));
   selectionMode.addEventListener("change", () => { invalidateTest(); updateSelectionMode(); });
   el("intro-rules-pattern-insert").addEventListener("click", () => {
     const token = `{${el("intro-rules-pattern-field").value}}`;
@@ -575,12 +565,6 @@ export function installIntroRulesPanel({ document: doc = document, request = req
     if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); void searchTestSong(); }
   });
   addButton.addEventListener("click", () => openForm(null, addButton));
-  el("intro-rules-cancel")?.addEventListener("click", () => {
-    const back = editing ? rowControl(editing) : null;
-    closeForm();
-    (back || (opener?.isConnected ? opener : addButton)).focus();
-    say("Cancelled. Nothing was saved.");
-  });
   conditionAdd.addEventListener("click", () => {
     clearError("conditions");
     if (conditionHost.children.length >= MAX_CONDITIONS) {

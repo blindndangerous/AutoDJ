@@ -16,8 +16,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import soundfile as sf
 
-from autodj.breaks import new_id
+from autodj.breaks import new_id, speech_cues
 from autodj.matched_intros import (
     MAX_INTROS,
     Chosen,
@@ -435,15 +436,105 @@ def test_a_talk_up_intro_follows_the_liner_intro_rule(tmp_path: Path, speech: fl
         assert end == pytest.approx(vocal, abs=1e-3)
 
 
-def test_an_intro_longer_than_the_songs_intro_plays_before_it(tmp_path: Path) -> None:
+def test_an_intro_spans_the_outro_and_short_incoming_intro(tmp_path: Path) -> None:
     player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
     render = player._render_track(a, b, 0, intro=_chosen(tmp_path, 3.0))
     start, end = _intro_span(render)
-    assert start == pytest.approx(10.0, abs=1e-3)
-    assert end == pytest.approx(13.0, abs=1e-3)
-    # The song starts when the speech ends.
-    assert _incoming(render) == pytest.approx(13.0, abs=1e-3)
-    assert render.audio[round(12.0 * SR)][0] == 0.0  # a has faded, b has not started
+    assert start == pytest.approx(9.0, abs=1e-3)
+    assert end == pytest.approx(12.0, abs=1e-3)
+    assert _incoming(render) == pytest.approx(10.0, abs=1e-3)
+    assert render.audio[round(11.0 * SR)][0] > 0.0
+
+
+@pytest.mark.parametrize("outro", [None, 8.0])
+@pytest.mark.parametrize("incoming_intro", [None, 0.75, 5.0])
+def test_private_intro_uses_detected_cues_like_a_liner(tmp_path, outro, incoming_intro):
+    from autodj.hour_preview import _preview_liner_group
+
+    player, (a, b, _c, _d), points, _desk = make_station(tmp_path)
+    points[a.path]["outro"] = outro
+    points[b.path]["intro"] = (
+        None if incoming_intro is None else points[b.path]["start"] + incoming_intro
+    )
+    path = tmp_path / file_name(new_id(), ".wav")
+    audio = np.zeros((round(4.5 * SR), 2), dtype=np.float32)
+    audio[round(0.5 * SR) : round(3.5 * SR), 1] = 0.5
+    sf.write(path, audio, SR, subtype="FLOAT")
+    detected = speech_cues(audio)
+    assert detected.start == pytest.approx(0.45)
+    assert detected.segue == pytest.approx(3.5)
+    assert detected.end == pytest.approx(3.9)
+    liner = SimpleNamespace(path=str(path), length=4.5)
+    points[liner.path] = detected.points(True)
+    player._library.catalog.record_for_path = lambda source: {
+        "kind": "liner" if str(source) == liner.path else "music",
+        "allow_outro": True,
+    }
+    load = player._load_playout_audio
+    player._load_playout_audio = lambda entry: audio.copy() if entry is liner else load(entry)
+    ordinary = player._render_saved_track(a, b, 0, ((liner, False),))
+    chosen = Chosen(new_id(), path, "Private intro")
+    matched = player._render_saved_track(a, b, 0, intro=chosen)
+    assert ordinary is not None and matched is not None
+    assert matched.intro_events[0][0] == ordinary.liner_events[0][0]
+    assert _incoming(matched) == pytest.approx(_incoming(ordinary), abs=1 / SR)
+    start, end = _intro_span(matched)
+    assert end - start == pytest.approx(detected.speech, abs=1 / SR)
+    assert start >= (10.0 if outro is None else outro) - 1 / SR
+    assert end <= _incoming(matched) + (incoming_intro or 0) + 1 / SR
+
+    voices = []
+
+    def capture(_audio, cues, length, allow_outro):
+        voices.append((SimpleNamespace(path=str(path), length=length), cues, allow_outro))
+        return 0, round(detected.speech * SR)
+
+    player._add_intro(chosen, capture)
+    rows, delay = _preview_liner_group(player, a, b, (), 10.0, voice=voices[0])
+    assert rows[0][1] == pytest.approx(start, abs=1 / SR)
+    assert 10.0 + delay == pytest.approx(_incoming(matched), abs=1 / SR)
+
+
+@pytest.mark.parametrize("overlap_start", [-1.0, 0.0, 0.5])
+@pytest.mark.parametrize("incoming_intro", [0.0, 0.75, 5.0])
+def test_an_intro_rule_uses_registered_liner_cues_like_a_liner(
+    tmp_path: Path, overlap_start: float, incoming_intro: float
+) -> None:
+    player, (a, b, _c, _d), points, _desk = make_station(tmp_path)
+    points[b.path]["intro"] = points[b.path]["start"] + incoming_intro
+    liner_path = tmp_path / "year-2000.wav"
+    liner = SimpleNamespace(path=str(liner_path), length=4.0)
+    audio = np.zeros((round(liner.length * SR), 2), dtype=np.float32)
+    audio[: round(3.0 * SR), 1] = 0.5
+    points[liner.path] = {
+        "start": 0.5,
+        "segue": 2.5,
+        "end": 3.5,
+        "overlap_start": overlap_start,
+    }
+    player._library.catalog.entry_for_path = lambda path: liner if str(path) == liner.path else None
+    player._library.catalog.record_for_path = lambda path: (
+        {"id": "registered-year", "kind": "liner", "allow_outro": True}
+        if str(path) == liner.path
+        else {"id": f"song-{Path(path).stem}", "kind": "music"}
+    )
+    load_playout_audio = player._load_playout_audio
+
+    def load(entry):
+        return audio.copy() if entry.path == liner.path else load_playout_audio(entry)
+
+    player._load_playout_audio = load  # type: ignore[method-assign]
+
+    ordinary = player._render_saved_track(a, b, 0, ((liner, False),))
+    chosen = Chosen(f"rule:{'a' * 32}", liner_path, "Year 2000")
+    matched = player._render_saved_track(a, b, 0, intro=chosen)
+
+    assert ordinary is not None and matched is not None
+    assert matched.intro_events[0][0] == ordinary.liner_events[0][0]
+    assert matched.intro_events[0][2] - matched.intro_events[0][0] == round(2.0 * SR)
+    assert matched.overlap_frames == ordinary.overlap_frames
+    assert matched.next_start_offset == ordinary.next_start_offset
+    assert matched.intro_assets == ((chosen.intro_id, str(liner_path)),)
 
 
 def test_an_intro_follows_a_news_break(tmp_path: Path) -> None:
@@ -619,8 +710,8 @@ def test_liner_only_setting_and_hour_preview_follow_the_rendered_handoff(
     else:
         assert not render.liner_events
         assert render.intro_events
-        assert _intro_span(render)[1] == pytest.approx(13.0, abs=1e-3)
-        assert _incoming(render) == pytest.approx(13.0, abs=1e-3)
+        assert _intro_span(render)[1] == pytest.approx(12.0, abs=1e-3)
+        assert _incoming(render) == pytest.approx(10.0, abs=1e-3)
         assert [item.kind for item in items] == ["intro"]
 
 
@@ -674,9 +765,15 @@ def test_the_hour_preview_lists_a_mixed_intro(tmp_path: Path) -> None:
     from autodj.hour_preview import _mixed_in, item_title
 
     player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
-    render = player._render_track(a, b, 0, intro=_chosen(tmp_path, 1.5))
-    items = _mixed_in(render, NOW, NOW, None, "ready", [])
+    intro = _chosen(tmp_path, 1.5)
+    render = player._render_track(a, b, 0, intro=intro)
+    player._library.catalog.record_for_path = lambda _path: {"kind": "liner"}
+    player._library.catalog.entry_for_path = lambda path: SimpleNamespace(path=str(path))
+    items = _mixed_in(render, NOW, NOW, None, "ready", [], player=player)
     assert [(item.kind, item.status) for item in items] == [("intro", "ready")]
     assert items[0].seconds == pytest.approx(1.5, abs=1e-3)
+    assert items[0].asset_id == intro.intro_id
+    assert items[0].details_entry.path == str(intro.path)
     assert item_title(items[0]) == "Matched intro: New single"
+    assert render.intro_assets == ((intro.intro_id, str(intro.path)),)
     assert np.isfinite(items[0].starts)

@@ -2324,7 +2324,7 @@ describe("static accessibility contracts", () => {
     expect(dialog.tagName).toBe("DIALOG");
     expect(dialog.closest("main, section, details, [hidden]")).toBeNull();
     const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
-    expect(title.tagName).toBe("H2");
+    expect(title.tagName).toBe("H1");
     expect(dialog.contains(title)).toBe(true);
     const message = document.getElementById(dialog.getAttribute("aria-describedby"));
     expect(dialog.contains(message)).toBe(true);
@@ -2339,6 +2339,18 @@ describe("static accessibility contracts", () => {
         ["confirm-accept", "submit", "confirm"],
       ]);
     expect(buttons[0].textContent.trim()).toBe("Cancel");
+  });
+
+  it("names every static dialog with its own level-one heading", () => {
+    installDocument();
+    const dialogs = [...document.querySelectorAll("dialog")];
+    expect(dialogs.length).toBeGreaterThan(0);
+    for (const dialog of dialogs) {
+      const title = document.getElementById(dialog.getAttribute("aria-labelledby"));
+      expect(title?.tagName, dialog.id).toBe("H1");
+      expect(dialog.contains(title), dialog.id).toBe(true);
+      expect(dialog.querySelector("h1, h2, h3, h4, h5, h6"), dialog.id).toBe(title);
+    }
   });
 
   it("never nests a dialog inside a tab panel", () => {

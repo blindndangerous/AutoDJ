@@ -1,3 +1,4 @@
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // Categories: the rotation categories clockwheel steps pick from.
 //
 // The server keeps them in categories.json and works out their songs.  This
@@ -11,10 +12,11 @@
 // aria-invalid, the error text as part of its description, and focus; the
 // words stay visible in the form.
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
+import { focusAfterDialog } from "./dom-helpers.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { showBeetsPaths } from "./beets-paths.js";
-import { createConditionRow, readConditionRows } from "./condition-editor.js";
+import { createConditionRow, readConditionRows, renumberConditionRows } from "./condition-editor.js";
 import { describeConditions } from "./clockwheel-step.js";
 import { parsePointTime } from "./library-folders.js";
 
@@ -86,7 +88,6 @@ export function installCategoriesPanel({ document: doc = document, request = req
   const empty = () => ({ categories: [], playlists: [], playlists_folder: "", beets: false });
   let data = empty();
   let editing = null; // the ID being edited, or null when adding
-  let opener = null; // the button that opened the form
   let listSignature = "";
   let playlistSignature = "";
   let timer = null;
@@ -98,9 +99,12 @@ export function installCategoriesPanel({ document: doc = document, request = req
   let countRunning = false;
   let pendingCount = null;
 
+  const editor = createEditorDialog({ form, heading: legend, cancel: el("categories-cancel"), fallback: addButton,
+    save, onCancel: () => { closeForm(); say("Cancelled. Nothing was saved."); } });
+
   const current = (epoch, mine) => !suspended && generation === mine && isAuthenticatedRequestCurrent(epoch);
   const countCurrent = (epoch, mine) => !suspended && countGeneration === mine && isAuthenticatedRequestCurrent(epoch);
-  const say = (message, error = false) => announceStatus(status, message, { force: true, tone: error ? "error" : "info" });
+  const say = (message, error = false) => announceStatus(editor.region(status), message, { force: true, tone: error ? "error" : "info" });
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const source = () => el("categories-source-filters")?.checked ? "filters" : el("categories-source-m3u")?.checked ? "m3u" : "query";
   const byId = (id) => data.categories.find((category) => category.id === id);
@@ -181,7 +185,13 @@ export function installCategoriesPanel({ document: doc = document, request = req
       option.textContent = label;
       return option;
     }));
-    if (data.playlists.includes(chosen)) playlistSelect.value = chosen;
+    if (chosen && !data.playlists.includes(chosen)) {
+      const missing = doc.createElement("option");
+      missing.value = chosen;
+      missing.textContent = `${chosen} (unavailable)`;
+      playlistSelect.append(missing);
+    }
+    if (chosen) playlistSelect.value = chosen;
     const folder = el("categories-folder");
     if (folder) folder.textContent = data.playlists_folder || "the playlists folder";
   }
@@ -200,16 +210,17 @@ export function installCategoriesPanel({ document: doc = document, request = req
       nextId: () => `category-condition-${++filterId}`,
       index: filterHost.children.length + 1,
       value,
-      fields: ["folder", "year", "bpm", "duration", "artist", "title", "album", "genre", "beets"],
       sourceChoices: (data.folders || []).map((item) => [item.id, item.path]),
       genreChoices: (data.genres || []).map((item) => [item, item]),
       beetsChoices: (data.beets_fields || []).map((item) => [item, item]),
       onRemove: (row) => {
+        const index = [...filterHost.children].indexOf(row);
+        clearErrors();
         row.remove();
-        [...filterHost.children].forEach((item, index) => {
-          item.querySelector("legend").textContent = `Condition ${index + 1}`;
-          item.querySelector("button").textContent = `Remove condition ${index + 1}`;
-        });
+        renumberConditionRows(filterHost);
+        const left = [...filterHost.children];
+        (left[Math.min(index, left.length - 1)]?.querySelector("select") || el("categories-filter-add")).focus();
+        say(`Condition ${index + 1} removed, ${plural(left.length, "condition", "conditions")} left.`);
       },
     });
   }
@@ -254,7 +265,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
   }
 
   function showError(field, message) {
-    const target = el(FIELD_IDS[field] || FIELD_IDS.name);
+    const target = (field === "conditions" && filterHost.querySelector("[aria-invalid]")) || el(FIELD_IDS[field] || FIELD_IDS.name);
     if (field === "source" || field === "query" || field === "playlist" || field === "conditions") {
       // The field must be visible to take focus.
       if (field === "playlist") el("categories-source-m3u").checked = true;
@@ -266,11 +277,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       control?.setAttribute("aria-invalid", "true");
       linkError(control, true);
     }
-    if (errorText) { errorText.textContent = message; errorText.hidden = false; }
-    // Focus moving to the field reads the linked error, so say it only otherwise.
-    const before = target?.ownerDocument.activeElement;
-    target?.focus();
-    if (!target || before === target || target.ownerDocument.activeElement !== target) say(message, true);
+    showEditorError(target, message, errorText, editor.region(status));
   }
 
   function body(interactive = true) {
@@ -348,7 +355,6 @@ export function installCategoriesPanel({ document: doc = document, request = req
   function openForm(category, from) {
     countGeneration += 1;
     editing = category ? category.id : null;
-    opener = from;
     clearErrors();
     nameInput.value = category?.name || "";
     queryInput.value = category?.query || "";
@@ -368,14 +374,21 @@ export function installCategoriesPanel({ document: doc = document, request = req
     renderPlaylists();
     el("categories-filter-match").value = category?.match || "all";
     renderFilterConditions(category?.source === "filters" ? category.conditions || [] : []);
-    if (category?.playlist) playlistSelect.value = category.playlist;
+    if (category?.playlist) {
+      if (![...playlistSelect.options].some((option) => option.value === category.playlist)) {
+        const missing = doc.createElement("option");
+        missing.value = category.playlist;
+        missing.textContent = `${category.playlist} (unavailable)`;
+        playlistSelect.append(missing);
+      }
+      playlistSelect.value = category.playlist;
+    }
     showSource();
     match.textContent = category
       ? `Matching selection: ${countsText(category)}.`
       : "Not checked yet.";
     if (legend) legend.textContent = category ? `Edit category ${category.name}` : "Add category";
-    form.hidden = false;
-    nameInput.focus();
+    editor.open(nameInput, from);
   }
 
   function closeForm() {
@@ -383,7 +396,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (countTimer !== null) clearTimeout(countTimer);
     countTimer = null;
     pendingCount = null;
-    form.hidden = true;
+    editor.close();
     editing = null;
     clearErrors();
   }
@@ -395,15 +408,15 @@ export function installCategoriesPanel({ document: doc = document, request = req
     try { value = body(); }
     catch (error) { showError(error.field || "conditions", error.message); return; }
     if (!valid(value)) return;
-    const epoch = captureAuthenticatedRequestEpoch(), mine = generation;
+    const epoch = captureAuthenticatedRequestEpoch(), mine = generation, checkMine = countGeneration;
     try {
       const counts = await send("/api/categories/check", "POST", value);
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || checkMine !== countGeneration) return;
       const text = countsText(counts);
       match.textContent = `${text}.`;
       say(`${value.name}: ${text}.`, Boolean(counts.error));
     } catch (error) {
-      if (current(epoch, mine)) showError(error.field || "name", error.message);
+      if (current(epoch, mine) && checkMine === countGeneration) showError(error.field || "name", error.message);
     }
   }
 
@@ -439,18 +452,18 @@ export function installCategoriesPanel({ document: doc = document, request = req
           match.textContent = result.error
             ? `Count unavailable: ${result.error}`
             : `${countsText(result)}.`;
-          announceStatus(status, match.textContent, { tone: result.error ? "error" : "info" });
+          announceStatus(editor.region(status), match.textContent, { tone: result.error ? "error" : "info" });
         } catch (error) {
           if (countCurrent(item.epoch, item.mine)) {
             match.textContent = `Count unavailable: ${error.message}`;
-            announceStatus(status, match.textContent, { tone: "error" });
+            announceStatus(editor.region(status), match.textContent, { tone: "error" });
           }
         }
       }
     } finally { countRunning = false; }
   }
 
-  async function save(event) {
+  async function save(event, active) {
     event?.preventDefault();
     clearErrors();
     let value;
@@ -462,14 +475,14 @@ export function installCategoriesPanel({ document: doc = document, request = req
       const result = editing
         ? await send(`/api/categories/${encodeURIComponent(editing)}`, "PUT", value)
         : await send("/api/categories", "POST", value);
-      if (!current(epoch, mine)) return;
+      if (!current(epoch, mine) || !active()) return;
       apply(result);
       closeForm();
-      focusRow(result.category.id);
+      focusAfterDialog(rowFor(result.category.id) || addButton);
       onChange();
       say(`Saved ${result.category.name}: ${countsText(result.category)}.`);
     } catch (error) {
-      if (current(epoch, mine)) showError(error.field || "name", error.message);
+      if (current(epoch, mine) && active()) showError(error.field || "name", error.message);
     }
   }
 
@@ -544,13 +557,6 @@ export function installCategoriesPanel({ document: doc = document, request = req
   });
   addButton.addEventListener("click", () => openForm(null, addButton));
   el("categories-check")?.addEventListener("click", () => void check());
-  form.addEventListener("submit", (event) => void save(event));
-  el("categories-cancel")?.addEventListener("click", () => {
-    const back = editing ? focusRow(editing) : null;
-    closeForm();
-    if (!back) (opener?.isConnected ? opener : addButton).focus();
-    say("Cancelled. Nothing was saved.");
-  });
   for (const id of ["categories-source-query", "categories-source-m3u", "categories-source-filters"]) {
     el(id)?.addEventListener("change", () => {
       showSource();

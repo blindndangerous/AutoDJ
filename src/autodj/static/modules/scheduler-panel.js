@@ -1,3 +1,4 @@
+import { createEditorDialog, showEditorError } from "./editor-dialog.js";
 // Settings > Schedule: timed events (scheduler.py on the server).
 //
 // The server lists the actions and their settings, so an action that a
@@ -15,6 +16,7 @@
 
 import { requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { focusAfterDialog } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { clockText } from "./time-format.js";
 
@@ -42,12 +44,15 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
   let session = 0;
   let generation = 0;
 
+  const editor = createEditorDialog({ form, heading: get("form-legend"), cancel: get("cancel"), fallback: addButton,
+    save, onCancel: closeForm });
+
   function emptyData() {
     return { timezone: "", actions: [], events: [], upcoming: [], runs: [] };
   }
 
   function say(message, tone = "info") {
-    announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 3000, tone });
+    announceStatus(editor.region(status), message, { force: true, dwellMs: tone === "error" ? 6000 : 3000, tone });
   }
 
   function option(value, label) {
@@ -146,7 +151,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     row.dataset.eventId = event.id;
     row.append(doc.createElement("span"));
     // Spaced like the other settings lists (dom-helpers listRow).
-    for (const [role, onClick] of [["edit", openForm], ["toggle", toggleEvent], ["run", runEvent], ["delete", deleteEvent]]) {
+    for (const [role, onClick] of [["edit", (event, button) => openForm(event, button)], ["toggle", toggleEvent], ["run", runEvent], ["delete", deleteEvent]]) {
       row.append(" ", rowButton(role, onClick));
     }
     fillRow(row, event);
@@ -219,7 +224,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   function focusRowButton(id, role) {
     const row = [...list.children].find((item) => item.dataset.eventId === id);
-    (row?.querySelector(`[data-role="${role}"]`) || addButton).focus();
+    focusAfterDialog(row?.querySelector(`[data-role="${role}"]`) || addButton);
   }
 
   // ---- Row buttons ----------------------------------------------------
@@ -347,7 +352,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     else daysGroup.removeAttribute("aria-describedby");
   }
 
-  function openForm(event = null) {
+  function openForm(event = null, opener = doc.activeElement) {
     editing = event?.id ?? null;
     clearError();
     get("form-legend").textContent = event ? `Edit ${event.name}` : "Add event";
@@ -368,12 +373,11 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     get("wait").value = String(event?.wait_seconds ?? 0);
     get("enabled").checked = event ? event.enabled : true;
     showRepeatFields();
-    form.hidden = false;
-    nameInput.focus();
+    editor.open(nameInput, opener);
   }
 
   function closeForm() {
-    form.hidden = true;
+    editor.close();
     editing = null;
     clearError();
   }
@@ -417,16 +421,16 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
 
   // Say what is wrong, keep the words on screen, and put focus on the field.
   function showError(field, message) {
+    const controls = fieldControls(field);
+    if (!controls.length) return false;
     clearError();
     formError.textContent = message;
     formError.hidden = false;
-    const controls = fieldControls(field);
-    for (const control of controls) {
+    for (const control of controls.slice(1)) {
       control.setAttribute("aria-invalid", "true");
       linkError(control, true);
     }
-    say(message, "error");
-    controls[0]?.focus();
+    showEditorError(controls[0], message, formError, editor.region(status));
     return controls.length > 0;
   }
 
@@ -513,7 +517,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
     return body;
   }
 
-  async function save(submitEvent) {
+  async function save(submitEvent, active) {
     submitEvent.preventDefault();
     const problem = firstProblem();
     if (problem) {
@@ -529,7 +533,7 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
         method: id ? "PUT" : "POST", headers: JSON_HEADERS, body: JSON.stringify(payload()),
       });
     } catch (error) {
-      if (current !== session) return;
+      if (current !== session || !active()) return;
       if (error.status === 404) {
         closeForm();
         addButton.focus();
@@ -539,24 +543,18 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       }
       return;
     }
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     // The list is updated before the form closes, so focus goes from Save
     // straight to the event's Edit button.  A failed reload leaves the
     // list to the next schedule message.
     await load().catch(() => false);
-    if (current !== session) return;
+    if (current !== session || !active()) return;
     closeForm();
     focusRowButton(saved.id, "edit");
     say(`Event ${saved.name} saved`);
   }
 
-  addButton.addEventListener("click", () => openForm());
-  get("cancel").addEventListener("click", () => {
-    const id = editing;
-    closeForm();
-    if (id) focusRowButton(id, "edit");
-    else addButton.focus();
-  });
+  addButton.addEventListener("click", () => openForm(null, addButton));
   actionSelect.addEventListener("change", () => renderParams());
   repeatSelect.addEventListener("change", showRepeatFields);
   // A field the user changes is no longer marked as the bad one.
@@ -566,7 +564,6 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       for (const control of group) unmark(control);
     }
   });
-  form.addEventListener("submit", (event) => void save(event));
   panel.addEventListener("toggle", () => void refresh());
 
   return {

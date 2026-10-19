@@ -10,6 +10,8 @@ Use Tab to move to a tab strip, then Left Arrow and Right Arrow to change tabs; 
 
 In NVDA, shortcuts work in focus mode. Press NVDA+Space to switch modes. Browse mode intercepts letter keys; press NVDA+F2 and then a shortcut to pass one key to the page. JAWS can pass a key with Insert+3. When a button has focus, Space activates the button. Arrows operate a focused slider, tab strip, or list instead of a page shortcut.
 
+Add/Edit dialogs for intro rules, categories, scheduled events and ads return to the saved item's Edit button after Save. Cancel or Escape returns to the opener and asks before discarding changed fields. While a save is pending, wait for its result before closing the dialog.
+
 ## Playback and navigation shortcuts
 
 - `Space` or `k`: play or pause. In stream mode, start or stop listening in this browser.
@@ -17,6 +19,7 @@ In NVDA, shortcuts work in focus mode. Press NVDA+Space to switch modes. Browse 
 - Up Arrow and Down Arrow: raise or lower volume by 5 percent.
 - Comma and Period: seek back or forward one measure from BPM, or five seconds if BPM is unknown. Seeking is unavailable in stream mode.
 - `?`: open or close the shortcut dialog. Escape closes it.
+- `t`: open **Track info** for the current track, with the same unsaved-change prompt as its Now Playing button. If nothing is playing, the page says “No track currently playing”.
 - `Alt+1` to `Alt+9`: open the tab at that position.
 - `[` and `]`: announce previous or next song landmark. In **Track info**, they move the cue preview. On other tabs, they seek the song on air only if **Bracket keys seek the song on air** is on; that setting is off by default and seeking never works in stream mode.
 - `Shift+U`: speak the upcoming landmark on air.

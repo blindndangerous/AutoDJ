@@ -1216,7 +1216,7 @@
       padding: 0 0.4rem;
       font-weight: 600;
     }
-    fieldset legend > :is(h3, h4, h5) { font-size: inherit; margin: 0; }
+    fieldset legend > :is(h1, h3, h4, h5) { font-size: inherit; margin: 0; }
     /* `hidden` attribute must win over author display rules
        (settings-row uses flex, setting-desc uses block; both beat the
        UA [hidden] {display:none} on specificity). */
@@ -2090,7 +2090,8 @@
 #confirm-dialog,
 #device-rename-dialog,
 #track-info-dialog,
-#clock-step-dialog {
+#clock-step-dialog,
+.editor-dialog {
   /* `*, *::before, *::after { margin: 0 }` overrides the UA
      `dialog:modal { margin: auto }`, which pinned this dialog to the
      top-left corner of the viewport.  #auth-dialog already restores it. */
@@ -2107,7 +2108,8 @@
 #confirm-dialog::backdrop,
 #device-rename-dialog::backdrop,
 #track-info-dialog::backdrop,
-#clock-step-dialog::backdrop {
+#clock-step-dialog::backdrop,
+.editor-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 #hotkey-help-modal kbd {
@@ -2238,8 +2240,9 @@
 #live-talkover {
   margin-top: 1rem;
 }
-#confirm-dialog h2,
-#device-rename-dialog h2 {
+dialog h1 { font-size: 1.5em; }
+#confirm-dialog h1,
+#device-rename-dialog h1 {
   margin-top: 0;
 }
 #confirm-dialog p {
@@ -2259,11 +2262,12 @@
   justify-content: flex-end;
   gap: 0.75rem;
 }
-#track-info-dialog h2 { margin-top: 0; }
+#track-info-dialog h1 { margin-top: 0; }
 /* Save, Discard and Keep editing wrap onto a second line rather than run
    off a 320 px screen or 200 % text, and the dialog never grows wider than
    the window. */
 #track-info-dialog { max-width: min(32rem, calc(100vw - 2rem)); }
-#clock-step-dialog { width: min(40rem, calc(100vw - 2rem)); max-width: none; }
+#clock-step-dialog,
+.editor-dialog { width: min(40rem, calc(100vw - 2rem)); max-width: none; }
 #track-info-dialog .dialog-actions { flex-wrap: wrap; }
 #track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }
