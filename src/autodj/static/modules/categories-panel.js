@@ -143,7 +143,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
       if (item.firstElementChild.textContent !== description) item.firstElementChild.textContent = description;
       const [edit, drop] = item.querySelectorAll("button");
       for (const [button, action, title] of [[edit, "edit", "Edit"], [drop, "delete", "Delete"]]) {
-        button.type = "button";
+        if (button.type !== "button") button.type = "button";
         if (button.dataset.action !== action) button.dataset.action = action;
         if (button.dataset.id !== category.id) button.dataset.id = category.id;
         if (button.textContent !== title) button.textContent = title;
