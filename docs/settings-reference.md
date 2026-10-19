@@ -94,11 +94,15 @@ TOML section: `[server]`.
 - `host`. Values: IP address or host name. Default: `127.0.0.1`. Sets the web server's listen address; LAN mode can override it.
 - `port`. Values: whole number from 1 to 65535. Default: 8080. Sets the web server port.
 - `access_token`. Values: secret of at least 32 UTF-8 bytes or blank. Default: blank. Sets the pairing and session secret; blank creates a local secret file.
+- `auth_mode`. Values: `native` or `trusted_proxy`. Default: `native`. Selects native pairing or browser SSO through an authenticating proxy.
+- `trusted_proxy_secret`. Values: secret of at least 32 printable ASCII bytes without spaces or blank. Default: blank. Required in `trusted_proxy` mode, directly or through a secret file. `AUTODJ_TRUSTED_PROXY_SECRET` overrides TOML. Mutually exclusive with `trusted_proxy_secret_file`, even when one source comes from the environment. Keep it in private service configuration. The proxy sends it as `X-AutoDJ-Proxy-Auth`; identity headers alone grant no access.
+- `trusted_proxy_secret_file`. Values: owner-only UTF-8 secret file path or blank. Default: blank. Mutually exclusive with a direct secret. `AUTODJ_TRUSTED_PROXY_SECRET_FILE` overrides the configured path. POSIX group/other permission bits cause an error; use mode 0600 or 0400. Windows access lists must grant access only to the account running AutoDJ. Keep the file outside station backups. Missing, unreadable, non-private or invalid secrets prevent trusted-proxy startup.
+- `sso_logout_url`. Values: same-origin path or HTTPS URL without user information, or blank. Default: blank. Enables **Sign out through SSO**. The provider controls logout scope. Other tabs may stay connected until their sockets expire, at most 900 seconds or the shorter `session_ttl_seconds`.
 - `insecure_lan`. Values: true or false. Default: false. When true, skips browser pairing so anyone on the network can control AutoDJ. Keep false for normal use.
 - `lan`. Values: true or false. Default: false. Listens on the local network with browser pairing.
 - `allowed_hosts`. Values: list of host names or blank. Default: blank. Limits names accepted in the browser address bar; LAN mode fills the local names.
 - `allowed_origins`. Values: list of origins or blank. Default: blank. Limits browser origins allowed to control the server.
-- `session_ttl_seconds`. Values: 60 to 31536000 seconds. Default: 7776000. Sets how long a paired browser session lasts.
+- `session_ttl_seconds`. Values: 60 to 31536000 seconds. Default: 7776000. Sets how long a paired browser session lasts. SSO control and microphone sockets use the shorter of this value and 900 seconds before reconnecting through the proxy.
 - `trusted_proxies`. Values: list of IP addresses or networks. Default: empty list. Lists proxy IP addresses or networks that AutoDJ trusts when they forward a listener's real IP address; do not list other clients.
 - `ssl_certfile`. Values: PEM certificate path or blank. Default: blank. Enables HTTPS with ssl_keyfile.
 - `ssl_keyfile`. Values: PEM private key path or blank. Default: blank. Enables HTTPS with ssl_certfile.

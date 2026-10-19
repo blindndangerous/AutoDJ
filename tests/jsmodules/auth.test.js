@@ -312,6 +312,26 @@ describe("initAuthDialog", () => {
 });
 
 describe("bootstrapAuthenticatedApp", () => {
+  it("reports a fresh SSO identity rejection without pairing or a reload loop", async () => {
+    const auth = { show: vi.fn() };
+    const onError = vi.fn();
+    const requestState = vi.fn();
+    const startAuthenticatedApp = vi.fn();
+    const started = await bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({
+        ok: false, status: 401,
+        json: { required: true, authenticated: false, pairing: false, mode: "trusted_proxy" },
+      })),
+      auth, onError, requestState, startAuthenticatedApp,
+    });
+    expect(started).toBe(false);
+    expect(auth.show).not.toHaveBeenCalled();
+    expect(requestState).not.toHaveBeenCalled();
+    expect(startAuthenticatedApp).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0].message).toMatch(/SSO.*identity/i);
+  });
+
   it("uses requestState for protected bootstrap and treats auth expiry as recoverable", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(response({
       ok: true,
@@ -352,7 +372,7 @@ describe("bootstrapAuthenticatedApp", () => {
 
     expect(started).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status", { redirect: "manual" });
     expect(auth.show).toHaveBeenCalledOnce();
     expect(startAuthenticatedApp).not.toHaveBeenCalled();
   });
@@ -375,7 +395,7 @@ describe("bootstrapAuthenticatedApp", () => {
 
     expect(await bootstrapAuthenticatedApp(args)).toBe(true);
     expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status");
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status", { redirect: "manual" });
     expect(requestState).toHaveBeenCalledOnce();
     expect(requestState).toHaveBeenCalledWith("/api/status");
     expect(startAuthenticatedApp).toHaveBeenCalledOnce();
@@ -981,5 +1001,102 @@ describe("reconnect probe that cannot reach AutoDJ", () => {
       reconnect: vi.fn(),
     });
     expect(onUnreachable).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("SSO authentication state", () => {
+  it("remembers the explicit mode and returns to sign-in instead of pairing on expiry", async () => {
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    const state = {
+      required: true, authenticated: true, pairing: false, mode: "trusted_proxy",
+      user: { id: "owner", name: "Alice" }, logout_url: null,
+    };
+    await authModule.bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({ ok: true, status: 200, json: state })),
+      requestState: vi.fn().mockResolvedValue({}),
+      auth: { show: vi.fn() }, startAuthenticatedApp: vi.fn(),
+    });
+    expect(authModule.authenticationState()).toEqual(state);
+    const els = installDialogMarkup();
+    const onSignIn = vi.fn();
+    const auth = authModule.initAuthDialog({ document, onSignIn });
+    auth.show("Session expired");
+    auth.show("Session expired again");
+    expect(onSignIn).toHaveBeenCalledOnce();
+    expect(els.dialog.showModal).not.toHaveBeenCalled();
+  });
+
+  it("returns an authenticated SSO browser to sign-in once after a redirect", async () => {
+    vi.resetModules();
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    await authModule.bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({ ok: true, status: 200, json: {
+        required: true, authenticated: true, mode: "trusted_proxy", pairing: false,
+      } })),
+      requestState: vi.fn().mockResolvedValue({}),
+      auth: { show: vi.fn() }, startAuthenticatedApp: vi.fn(),
+    });
+    const els = installDialogMarkup();
+    const onSignIn = vi.fn();
+    const auth = authModule.initAuthDialog({ document, onSignIn });
+    const fetchImpl = vi.fn().mockResolvedValue({ type: "opaqueredirect", status: 0, ok: false });
+    const onError = vi.fn();
+    const startAuthenticatedApp = vi.fn();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await authModule.bootstrapAuthenticatedApp({
+        fetchImpl, auth, onError, startAuthenticatedApp,
+      })).toBe(false);
+    }
+    expect(fetchImpl).toHaveBeenCalledWith("/api/auth/status", { redirect: "manual" });
+    expect(onSignIn).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+    expect(startAuthenticatedApp).not.toHaveBeenCalled();
+    expect(els.dialog.showModal).not.toHaveBeenCalled();
+    const reconnect = vi.fn();
+    const onUnreachable = vi.fn();
+    expect(await authModule.reconnectWebSocketAfterClose({
+      event: { code: 1006 }, auth, fetchImpl, reconnect, onUnreachable,
+    })).toBe(false);
+    expect(onSignIn).toHaveBeenCalledOnce();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(onUnreachable).not.toHaveBeenCalled();
+  });
+
+  it.each(["network failure", "unreadable response"])("retries SSO WebSockets after %s and recovers without reloading", async (failure) => {
+    vi.resetModules();
+    const authModule = await import("../../src/autodj/static/modules/auth.js");
+    const state = { required: true, authenticated: true, mode: "trusted_proxy", pairing: false };
+    await authModule.bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockResolvedValue(response({ ok: true, status: 200, json: state })),
+      requestState: vi.fn().mockResolvedValue({}),
+      auth: { show: vi.fn() }, startAuthenticatedApp: vi.fn(),
+    });
+    installDialogMarkup();
+    const onSignIn = vi.fn();
+    const auth = authModule.initAuthDialog({ document, onSignIn });
+    const onExpired = vi.fn();
+    const onUnreachable = vi.fn();
+    const reconnect = vi.fn();
+    const fetchImpl = vi.fn();
+    if (failure === "network failure") fetchImpl.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    else fetchImpl.mockResolvedValueOnce(response({ ok: true, status: 200, json: {} }));
+    fetchImpl.mockResolvedValue(response({ ok: true, status: 200, json: state }));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await authModule.reconnectWebSocketAfterClose({
+        event: { code: 1006 }, auth, fetchImpl, onExpired, onUnreachable, reconnect,
+      })).toBe(true);
+    }
+    expect(reconnect).toHaveBeenCalledTimes(2);
+    expect(onUnreachable).toHaveBeenCalledExactlyOnceWith({ signInRedirect: false });
+    expect(onExpired).not.toHaveBeenCalled();
+    expect(onSignIn).not.toHaveBeenCalled();
+    const onError = vi.fn();
+    expect(await authModule.bootstrapAuthenticatedApp({
+      fetchImpl: vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+      auth, startAuthenticatedApp: vi.fn(), onError,
+    })).toBe(false);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onSignIn).not.toHaveBeenCalled();
   });
 });

@@ -18,6 +18,78 @@ AutoDJ uses automated checks and requires a screen-reader sample before release 
 Each modal dialog starts with an H1 title referenced by its `aria-labelledby`.
 Verify level-one heading navigation inside the dialog as well as its initial field focus.
 
+## Disposable SSO browser audit
+
+`npm run audit:sso` is a separate manual audit, outside `audit:ci`. It checks
+automatic browser registration, names, ownership housekeeping and local logout
+cleanup. It does not test an identity provider or establish screen-reader speech.
+
+Use an unused checkout with Python and Node dependencies and Caddy installed.
+Keep playback stopped. Create `local/sso-audit/config.toml` with:
+
+```toml
+[index]
+index_dir = "local/sso-audit/index"
+model_dir = "local/sso-audit/models"
+
+[server]
+host = "127.0.0.1"
+port = 2892
+auth_mode = "trusted_proxy"
+allowed_hosts = ["127.0.0.1"]
+allowed_origins = ["http://127.0.0.1:2891"]
+sso_logout_url = "/sso-audit-logged-out"
+```
+
+Create `local/sso-audit/Caddyfile` with the following disposable test gateway.
+Its fixed account admits every local caller. Keep it on loopback, never deploy
+it as authentication, and use the [Authentik tutorial](tutorials/sso-authentik-caddy.md)
+for real authorization and browser HTTPS.
+
+```caddyfile
+http://127.0.0.1:2891 {
+    route {
+        respond /sso-audit-logged-out "Audit signed out" 200
+        request_header -X-AutoDJ-User-ID
+        request_header -X-AutoDJ-User-Name
+        request_header -X-AutoDJ-Proxy-Auth
+        reverse_proxy 127.0.0.1:2892 {
+            header_up X-AutoDJ-User-ID audit-user
+            header_up X-AutoDJ-User-Name "Audit user"
+            header_up X-AutoDJ-Proxy-Auth {env.AUTODJ_TRUSTED_PROXY_SECRET}
+        }
+    }
+}
+```
+
+From the checkout in Bash, disable shell tracing and start both processes with
+the same random secret. These commands create only disposable state under `local/`:
+
+```bash
+set +x
+export AUTODJ_TRUSTED_PROXY_SECRET="$(openssl rand -hex 32)"
+uv run --frozen --no-sync autodj --config local/sso-audit/config.toml serve &
+autodj_audit_pid=$!
+caddy run --config local/sso-audit/Caddyfile --adapter caddyfile &
+caddy_audit_pid=$!
+```
+
+Wait for both servers to report readiness. Verify that a direct forged identity
+returns 401, then run the browser audit in the same shell:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'X-AutoDJ-User-ID: forged-user' http://127.0.0.1:2892/api/status
+AUTODJ_URL=http://127.0.0.1:2891 AUTODJ_BROWSERS=chromium npm run audit:sso
+kill "$caddy_audit_pid" "$autodj_audit_pid"
+wait "$caddy_audit_pid" "$autodj_audit_pid"
+unset AUTODJ_TRUSTED_PROXY_SECRET
+```
+
+Record browser versions, results and `sso_audit.json` separately from provider
+login and manual keyboard/speech evidence. The generated index and browser
+records remain under `local/sso-audit/`; remove that directory when finished.
+
 ## Published evidence
 
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).

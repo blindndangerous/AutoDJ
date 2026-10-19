@@ -383,7 +383,7 @@ def install_live_routes(
             await websocket.close(code=4403)
             return
         cookie = websocket.cookies.get(COOKIE_NAME)
-        if policy.authentication_required and not policy.verify_session(cookie):
+        if policy.authentication_required and not policy.browser_authenticated(websocket.scope):
             await websocket.close(code=4401)
             return
         try:
@@ -408,10 +408,11 @@ def install_live_routes(
         budget = rate * 2 * 2 + MIC_MAX_MESSAGE_BYTES
         window_start = time.monotonic()
         window_bytes = 0
+        accepted_at = policy.monotonic_now()
         try:
             await websocket.accept()
             while not station.stopped:
-                if policy.authentication_required and not policy.verify_session(cookie):
+                if not policy.socket_session_is_valid(cookie, accepted_at):
                     await websocket.close(code=4401)
                     break
                 try:
@@ -420,6 +421,12 @@ def install_live_routes(
                     await websocket.close(code=4000)
                     break
                 if message["type"] == "websocket.disconnect":
+                    break
+                if (
+                    policy.config.auth_mode == "trusted_proxy"
+                    and not policy.socket_session_is_valid(cookie, accepted_at)
+                ):
+                    await websocket.close(code=4401)
                     break
                 pcm = message.get("bytes")
                 if (

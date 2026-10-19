@@ -711,6 +711,10 @@ def _device_registry(ctx: click.Context) -> tuple[AutoDJConfig, DeviceRegistry]:
     from autodj.pairing import DeviceRegistry
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    if cfg.server.auth_mode == "trusted_proxy":
+        raise click.ClickException(
+            "SSO browsers are managed in Settings; native pairing commands are disabled."
+        )
     return cfg, DeviceRegistry(paired_devices_path(cfg))
 
 

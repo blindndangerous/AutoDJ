@@ -248,6 +248,8 @@ class TestDefaultAndEnvironmentConfig:
             "AUTODJ_HOST",
             "AUTODJ_PORT",
             "AUTODJ_ACCESS_TOKEN",
+            "AUTODJ_TRUSTED_PROXY_SECRET",
+            "AUTODJ_TRUSTED_PROXY_SECRET_FILE",
             "AUTODJ_LAN",
             "AUTODJ_HUGGINGFACE_TOKEN",
         }

@@ -19,6 +19,16 @@ missing file is an error. Put access tokens only in ignored local configuration 
 newer AutoDJ removed, produces a warning and is ignored. Invalid values for supported settings
 still need fixing.
 
+Trusted-proxy SSO requires a separate proxy secret. Supply
+`AUTODJ_TRUSTED_PROXY_SECRET` or an owner-only file selected by
+`server.trusted_proxy_secret_file` or `AUTODJ_TRUSTED_PROXY_SECRET_FILE`.
+A direct secret and a secret file are mutually exclusive. Remove the previous
+source when switching, including environment values. Keep the file private and
+outside station state and backups. POSIX group/other permissions are rejected;
+Windows access lists must grant access only to the account running AutoDJ.
+See the [network guide](../../guides/operations/network.md#single-sign-on-through-a-trusted-proxy)
+for the proxy header contract.
+
 ## Repeat settings
 
 Repeat limits are edited in Settings > Picking > Repeats and stored in

@@ -22,7 +22,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [4: Server mix bus](0004-server-mix-bus-and-stream-mode.md) | Accepted; amendments apply | Server audio, stream fan-out, mastering, live input, recordings |
 | [5: Station ownership](0005-a-station-owns-its-playout-chain.md) | Accepted; current ownership amendment 2026-10-16 | Station lifecycle, settings, routes, state paths, shared library |
 | [6: Catalog and migrations](0006-use-a-catalog-with-explicit-migrations.md) | Proposed; retrospective | Playable records, derived vectors, model identity, legacy migration |
-| [7: Access boundaries](0007-separate-browser-worker-and-listener-access.md) | Proposed; retrospective | Browser sessions, machine/announcer credentials, public surfaces |
+| [7: Access boundaries](0007-separate-browser-worker-and-listener-access.md) | Proposed; retrospective | Browser sessions, machine/announcer credentials, public surfaces; provider-neutral SSO amendment 2026-10-18 and proxy proof, private secret sources and bounded socket authority 2026-10-19 |
 | [8: Background work](0008-bound-background-work-outside-playout.md) | Proposed; retrospective | Jobs, remote analysis leases, rendering, shutdown and resource ownership |
 | [9: Picking and scheduling](0009-share-picking-rules-with-isolated-previews.md) | Proposed; retrospective | Selection, simulation, preview truth, scheduling, requests and inserted audio |
 | [10: State recovery](0010-preserve-state-through-atomic-writes-and-recovery.md) | Proposed; retrospective | Saved-state validation, secrets, backup/restore and recovery |

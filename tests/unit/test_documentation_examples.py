@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("page", ["network", "domain-https", "library"])
 def test_documented_config_loads_without_writing_state(tmp_path: Path, page: str) -> None:
     document = ROOT / "docs" / "guides" / "operations" / f"{page}.md"
-    examples = re.findall(r"^```toml\n(.*?)^```", document.read_text(), re.M | re.S)
+    examples = re.findall(r"^```toml\n(.*?)^```", document.read_text(encoding="utf-8"), re.M | re.S)
     assert examples, f"No complete TOML example remains in {document}"
     for example in examples:
         config = tmp_path / "example.toml"
@@ -95,7 +95,9 @@ def test_native_documentation_is_syntax_only_and_safe_fixture_is_isolated(tmp_pa
         examples.check_syntax(malformed, shell, tool)
     count = 0
     for page in examples.PAGES:
-        blocks = examples.shell_blocks((ROOT / f"docs/guides/{page}.md").read_text(), shell)
+        blocks = examples.shell_blocks(
+            (ROOT / f"docs/guides/{page}.md").read_text(encoding="utf-8"), shell
+        )
         for block in blocks:
             examples.check_syntax(block, shell, tool)
             count += 1
@@ -109,8 +111,8 @@ def test_reviewed_fragment_drift_rejected_before_execution(
 ) -> None:
     page = tmp_path / "docs/guides/core-operations.md"
     page.parent.mkdir(parents=True)
-    text = (ROOT / "docs/guides/core-operations.md").read_text()
-    page.write_text(text.replace("[index]", "[unreviewed]"))
+    text = (ROOT / "docs/guides/core-operations.md").read_text(encoding="utf-8")
+    page.write_text(text.replace("[index]", "[unreviewed]"), encoding="utf-8")
     fixtures = tmp_path / "tests/fixtures/documentation"
     fixtures.mkdir(parents=True)
     for source in (ROOT / "tests/fixtures/documentation").iterdir():

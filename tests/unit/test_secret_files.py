@@ -7,6 +7,7 @@ import re
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -55,6 +56,37 @@ def test_invalid_content_is_replaced(tmp_path: Path, content: str) -> None:
 
 def test_missing_file_reads_as_none(tmp_path: Path) -> None:
     assert read_secret(tmp_path / "nope", valid=bool, error=_SecretError, what="x") is None
+
+
+@pytest.mark.parametrize(
+    "mode,private",
+    [(0o600, True), (0o400, True), (0o640, False), (0o604, False), (0o660, False), (0o601, False)],
+)
+def test_private_secret_read_checks_posix_permissions_before_contents(
+    tmp_path, monkeypatch, mode, private
+):
+    from autodj import secret_files
+
+    path = tmp_path / "secret"
+    path.write_text("private-test-value", encoding="utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(secret_files.sys, "platform", "linux")
+        patch.setattr(
+            secret_files.os, "fstat", lambda _: SimpleNamespace(st_mode=stat.S_IFREG | mode)
+        )
+        if private:
+            assert (
+                read_secret(
+                    path, valid=bool, error=_SecretError, what="test secret", require_private=True
+                )
+                == "private-test-value"
+            )
+        else:
+            with pytest.raises(_SecretError, match="owner-only") as rejected:
+                read_secret(
+                    path, valid=bool, error=_SecretError, what="test secret", require_private=True
+                )
+            assert "private-test-value" not in str(rejected.value)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
