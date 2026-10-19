@@ -63,6 +63,10 @@ For a value or default, use the [settings reference](../settings-reference.md).
 
 ## Protect and extend your setup
 
+- [Sign in with Authentik and Caddy](sso-authentik-caddy.md). Protect the
+  practice server with SSO, verify access and browser ownership, and restore
+  native access. Requires an existing Authentik installation, Caddy, a domain
+  with working HTTPS, administrator access and two test accounts.
 - [Back up and recover the practice station](backup-recovery.md). Inspect a
   backup and restore into an isolated destination. Begin with the saved practice
   setup and space for a separate recovery copy. Keep music and credentials safe

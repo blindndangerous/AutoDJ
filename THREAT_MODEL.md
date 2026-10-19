@@ -5,7 +5,7 @@ Architecture discovery starts at the [ADR index](docs/adr/README.md).
 summarizes existing trust separation for review and links its code/tests;
 this threat model retains detailed security policy and limitations.
 
-Last reviewed: 2026-10-13. Re-review every major release.
+Last reviewed: 2026-10-18 (trusted-proxy browser access amendment). Re-review every major release.
 
 ## Scope and trust boundaries
 
@@ -100,14 +100,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   Relay source connections do not support TLS, so passwords sent to those servers are not encrypted
   by AutoDJ; use a trusted network or a server that protects its source connection separately.
 
-Cloud sync, multi-user roles, billing, and public Internet hosting are out of scope. Use TLS for any
-network where observers could read HTTP traffic, and terminate it in AutoDJ itself with
-`[server] ssl_certfile` and `ssl_keyfile` (or `--ssl-certfile` and `--ssl-keyfile`). A proxy that
-forwards to AutoDJ over plain HTTP is not supported: the `Secure` cookie flag and the
-advertised-origin check follow AutoDJ's own TLS setting, so such a proxy leaves session cookies
-without `Secure`.
+Cloud sync, independent application roles and billing are out of scope. Use TLS for any
+network where observers could read HTTP traffic. In native mode, terminate TLS in AutoDJ itself
+with `[server] ssl_certfile` and `ssl_keyfile` (or the matching CLI flags). Native session cookie
+flags and advertised-origin checks follow AutoDJ's own TLS setting; a plain-HTTP backend does not
+inherit secure native-session behavior merely because a proxy terminates TLS. Explicit
+trusted-proxy mode has the separate identity boundary described below.
 
-The supported remote setup is a Cloudflare Tunnel that connects to AutoDJ over HTTPS and checks
+One supported native-mode remote setup is a Cloudflare Tunnel that connects to AutoDJ over HTTPS and checks
 its certificate against the domain (`originServerName`), with Cloudflare Access (an email
 one-time PIN policy) in front and `cloudflared` set to refuse requests without a valid Access
 token; see [docs/operations.md](docs/operations.md#https-with-your-own-domain). Access decides
@@ -116,7 +116,7 @@ Every tunnelled request arrives from the `cloudflared` machine's address. Withou
 `[stream] trusted_proxies` entry (which applies in every mode), the per-address pairing lockout counts all remote browsers as one
 client, and someone who passed Access could use up that budget and delay other remote pairings
 for one code window. Never expose AutoDJ to
-the internet without Access, including through port forwarding.
+the internet without an authenticating gateway, including through port forwarding.
 
 AutoDJ reloads a renewed certificate and key when their files change, checked every five
 minutes. It copies the pair and test-loads it before putting it into the live TLS context, so a
@@ -142,11 +142,11 @@ gets one with only that directive) and `X-Frame-Options: DENY`, including its ow
 404s. Only a response whose own policy names other frame ancestors keeps it unchanged: today that
 is the embeddable player alone (see "Radio stream listening").
 
-Default loopback mode is anonymous. For a non-loopback bind, startup validation requires a token or
+Default native loopback mode is anonymous. For a native non-loopback bind, startup validation requires a token or
 explicit insecure-LAN acknowledgement. Wildcard binds also require nonempty exact allowed-host and
 allowed-origin lists.
 
-When `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
+In native mode, when `server.access_token` or `AUTODJ_ACCESS_TOKEN` is set:
 
 - The token must contain at least 32 UTF-8 bytes.
 - The browser never receives or sends the token. Operators share a short pairing code instead.
@@ -1185,3 +1185,39 @@ advisory.
 ## Reporting a vulnerability
 
 Use the private process in [SECURITY.md](SECURITY.md).
+
+## Trusted-proxy browser identity (2026-10-18)
+
+`server.auth_mode` explicitly selects `native` (default) or `trusted_proxy` per
+instance. Native loopback access, code-entry pairing and immediate device
+revocation retain their existing semantics. Trusted-proxy mode accepts the
+provider-neutral `X-AutoDJ-User-ID` assertion for control requests; the optional
+`X-AutoDJ-User-Name` is a label, never authority. Missing or invalid identity is
+rejected without falling back to a native pairing cookie or code. Host/Origin,
+request-size, public-route and machine-credential boundaries still apply.
+
+The operator trusts the proxy and the backend network. The proxy must strip
+client-supplied identity headers and set verified values only after application
+authorization succeeds, including for control WebSocket handshakes. Direct backend
+access can forge identity; loopback binding does not defend against other local
+processes. Trusting those processes is a deployment decision, not protection
+provided by these headers. The proxy must provide browser HTTPS and must not let
+public-listener exceptions include write methods, browser-management routes or
+control WebSocket upgrades.
+
+SSO browser records are separate from native paired-device authorizations. Their
+cookie identifies a browser only; it cannot authorize any control request. Records
+are owned by the stable asserted user ID. Only that owner may list, rename or
+forget them; a different account gets a different record. Forgetting does not
+revoke SSO access, and forgotten records can be recreated after authorization.
+Changing providers requires deliberate stable-ID migration. Display names, email
+addresses, browser labels and passkey metadata are not stable identity keys.
+
+AutoDJ delegates access revocation and optional logout to the gateway/provider.
+An operator-configured logout URL may end sessions in other applications. Already
+open SSO WebSockets may remain usable until disconnected after provider logout or
+revocation; no immediate provider-to-socket revocation or per-action identity audit
+is promised. Browser cookies do not reveal which passkey authenticated a session,
+and no device-bound/synced classification is inferred. See the
+[deployment procedure](docs/guides/operations/network.md#single-sign-on-through-a-trusted-proxy)
+and [ADR 7 amendment](docs/adr/0007-separate-browser-worker-and-listener-access.md#amendment-2026-10-18-provider-neutral-browser-sso).

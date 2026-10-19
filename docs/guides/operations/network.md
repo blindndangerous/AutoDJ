@@ -1,6 +1,6 @@
-# Connect devices on a private network
+# Connect browsers and configure access
 
-Serve on your LAN, set up HTTPS and pair browsers. Use the advanced overrides only for names automatic detection cannot discover.
+Serve on your LAN with native pairing, or delegate browser access to an authenticating reverse proxy. Use the advanced overrides only for names automatic detection cannot discover.
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
@@ -86,7 +86,7 @@ the replaced files within five minutes.
 
 ## Paired devices
 
-In the web page, Settings, Profiles and access lists every paired device with when it was paired and
+In native mode, the web page's Settings, Profiles and access lists every paired device with when it was paired and
 when it was last seen, and marks this browser. Each row has Rename and Revoke. Names are 1 to 64
 printable characters. **Show pairing code** shows a code with a Copy button and how long it stays
 valid; the code changes by itself every five minutes and cannot be edited. Each code pairs one
@@ -118,6 +118,72 @@ uv run autodj serve --host 0.0.0.0 \
   --ssl-keyfile radio-key.pem
 ```
 
-The certificate and key are local files on the AutoDJ server. Never publish the AutoDJ port to
-the internet. The only supported way to reach AutoDJ from outside your network is the Cloudflare
-Tunnel with Cloudflare Access described next.
+The certificate and key are local files on the AutoDJ server. Do not expose the backend port
+to the internet. Remote access requires an authenticating gateway: use the Cloudflare Access
+procedure linked from [operations](../../operations.md#https-with-your-own-domain), or configure
+the trusted-proxy mode below.
+
+## Single sign-on through a trusted proxy
+
+For a worked example with an existing identity service, follow
+[Sign in to Practice with Authentik and Caddy](../../tutorials/sso-authentik-caddy.md).
+
+Use this mode only when an authenticating reverse proxy controls access to the
+backend. AutoDJ has no provider SDK, OAuth client, group policy or passkey-type
+classification. The proxy authenticates and authorizes each new control request
+and WebSocket connection. Configure the SSO provider's application access there.
+
+1. Keep the backend reachable only on a trusted network or loopback address.
+   Terminate browser HTTPS at the proxy. Anyone able to send requests directly to
+   the backend can assert an identity; this mode does not authenticate the proxy
+   cryptographically or isolate it from other trusted localhost processes.
+2. Remove **all client-supplied** `X-AutoDJ-User-ID` and `X-AutoDJ-User-Name`
+   headers before authentication. After successful authentication, set
+   `X-AutoDJ-User-ID` to one stable, nonempty, opaque identifier and optionally set
+   `X-AutoDJ-User-Name` to a display name. Overwrite rather than append identity
+   headers. Never use a mutable name or email address as the stable identifier.
+3. Set the server policy in `config.toml`, replacing the example domain:
+
+   ```toml
+   [server]
+   host = "127.0.0.1"
+   auth_mode = "trusted_proxy"
+   allowed_hosts = ["radio.example.org", "127.0.0.1", "localhost"]
+   allowed_origins = ["https://radio.example.org", "http://127.0.0.1:8080"]
+   # Optional: the provider's operator-approved logout endpoint.
+   # sso_logout_url = "https://login.example.org/logout"
+   ```
+
+   Keep exact Host and Origin allowlists, body limits and machine-token rules.
+   Configure trusted forwarding addresses for your deployment; identity headers
+   are a separate contract from forwarded client-address/protocol headers.
+   Restart AutoDJ after changing access mode. Do not use `--insecure-lan` to
+   approximate SSO or expose a native pairing fallback through this instance.
+4. Sign in through the public proxy URL. A browser is registered automatically;
+   no code or mandatory naming prompt is shown. Its initial label uses the
+   display name (or stable ID when no name is supplied). Rename it to something
+   useful such as “Studio laptop” in Settings, Profiles and access.
+
+Each SSO user sees, renames and forgets only their own browser records. A separate
+SSO browser cookie identifies the record; it grants no access without the verified
+identity header. Changing accounts creates a separate record. Forgetting a browser
+is housekeeping, not access revocation: an authorized browser can register again.
+Revoke access at the SSO provider. SSO records and native paired devices are stored
+separately; switching back to native mode does not turn SSO records into paired
+devices, and native pairing/revocation behavior remains available there.
+
+When `sso_logout_url` is configured, **Sign out through SSO** follows that URL.
+Its scope is provider-defined and may sign the person out of other applications.
+Clearing an AutoDJ browser record alone does not end the SSO session. Existing
+WebSockets may remain connected after provider sign-out or revocation until they
+disconnect; the proxy checks new connections. Browser records do not provide a
+per-action user audit. Passkey type is not inferred from browser identity.
+
+Before publishing, verify that anonymous controls redirect or fail at the proxy,
+client-supplied identity headers cannot bypass it, and backend control requests
+without a user ID fail even with an old native cookie. Test account switching,
+ownership of browser records, and control WebSocket authentication. Check any
+explicit public listener exceptions separately: listener pages and streams remain
+anonymous only where configured, and never authorize control or browser management.
+For provider migration, plan stable-ID mapping; an ID from a new provider does not
+automatically identify the same person.
