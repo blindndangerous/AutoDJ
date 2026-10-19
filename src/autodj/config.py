@@ -943,6 +943,8 @@ class ServerConfig(_Section):
     host: str = "127.0.0.1"
     port: int = 8080
     access_token: str | None = field(default=None, repr=False)
+    auth_mode: str = "native"
+    sso_logout_url: str | None = None
     insecure_lan: bool = False
     lan: bool = False
     allowed_hosts: list[str] | None = None
@@ -976,6 +978,27 @@ class ServerConfig(_Section):
         if not 1 <= self.port <= 65535:
             raise ValueError("server.port must be between 1 and 65535")
         validate_access_token(self.access_token)
+        self.auth_mode = _one_of(self.auth_mode, ("native", "trusted_proxy"), "server.auth_mode")
+        if self.sso_logout_url is not None:
+            value = self.sso_logout_url
+            if (
+                not isinstance(value, str)
+                or not value
+                or "\\" in value
+                or any(not char.isprintable() or char.isspace() for char in value)
+            ):
+                raise ValueError("server.sso_logout_url must be a safe path or HTTPS URL")
+            parsed = urlsplit(value)
+            relative = value.startswith("/") and not value.startswith("//")
+            if not relative and (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("server.sso_logout_url must be a same-origin path or HTTPS URL")
+            if not relative:
+                canonicalize_allowed_origin(f"https://{parsed.netloc}")
         if not isinstance(self.insecure_lan, bool):
             raise TypeError("server.insecure_lan must be a boolean")
         if not isinstance(self.lan, bool):
@@ -1103,7 +1126,12 @@ def validate_server_exposure(cfg: ServerConfig) -> None:
         )
     if not cfg.effective_allowed_hosts() or not cfg.effective_allowed_origins():
         raise ValueError("wildcard binding requires explicit allowed_hosts and allowed_origins")
-    if not loopback and not cfg.access_token and not cfg.insecure_lan:
+    if (
+        not loopback
+        and cfg.auth_mode != "trusted_proxy"
+        and not cfg.access_token
+        and not cfg.insecure_lan
+    ):
         raise ValueError(
             "LAN binding requires [server] access_token/--access-token or explicit --insecure-lan"
         )

@@ -35,6 +35,17 @@ class PairedDevice:
     revoked_at: int | None
 
 
+@dataclass(frozen=True)
+class SSOBrowser:
+    """One user's browser inventory record; it grants no native authorization."""
+
+    device_id: str
+    user_id: str
+    name: str
+    paired_at: int
+    last_seen_at: int
+
+
 class DeviceRegistry:
     """Store paired browser identities in a small transactional SQLite file."""
 
@@ -94,6 +105,17 @@ class DeviceRegistry:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sso_browsers (
+                    device_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    paired_at INTEGER NOT NULL,
+                    last_seen_at INTEGER NOT NULL
+                )
+                """
+            )
             # At most one open pairing request: the time its code stops working.
             connection.execute(
                 """
@@ -120,6 +142,69 @@ class DeviceRegistry:
         ):
             raise ValueError("device name must contain 1 to 64 printable characters")
         return name
+
+    def register_sso(
+        self, user_id: str, user_name: str, browser_id: str | None = None
+    ) -> SSOBrowser:
+        """Remember a browser for its owner, preserving an existing custom label."""
+        if (
+            not isinstance(user_id, str)
+            or not user_id.strip()
+            or len(user_id) > 256
+            or not user_id.isascii()
+            or not user_id.isprintable()
+        ):
+            raise ValueError("SSO user ID must contain 1 to 256 printable ASCII characters")
+        name = self._name((user_name or user_id)[:_MAX_DEVICE_NAME])
+        timestamp = int(self._now())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT device_id, user_id, name, paired_at, last_seen_at FROM sso_browsers "
+                "WHERE device_id = ? AND user_id = ?",
+                (browser_id, user_id),
+            ).fetchone()
+            if row is not None:
+                connection.execute(
+                    "UPDATE sso_browsers SET last_seen_at = ? WHERE device_id = ? AND user_id = ?",
+                    (timestamp, browser_id, user_id),
+                )
+                return SSOBrowser(row[0], row[1], row[2], row[3], timestamp)
+            device_id = uuid.uuid4().hex
+            connection.execute(
+                "INSERT INTO sso_browsers VALUES (?, ?, ?, ?, ?)",
+                (device_id, user_id, name, timestamp, timestamp),
+            )
+        return SSOBrowser(device_id, user_id, name, timestamp, timestamp)
+
+    def sso_devices(self, user_id: str) -> list[SSOBrowser]:
+        """List only this user's SSO browser inventory in creation order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT device_id, user_id, name, paired_at, last_seen_at FROM sso_browsers "
+                "WHERE user_id = ? ORDER BY paired_at, rowid",
+                (user_id,),
+            ).fetchall()
+        return [SSOBrowser(*row) for row in rows]
+
+    def rename_sso(self, user_id: str, device_id: str, name: str) -> str | None:
+        """Rename this owner's browser without touching native authorization."""
+        name = self._name(name)
+        with self._connect() as connection:
+            changed = connection.execute(
+                "UPDATE sso_browsers SET name = ? WHERE device_id = ? AND user_id = ?",
+                (name, device_id, user_id),
+            ).rowcount
+        return name if changed == 1 else None
+
+    def forget_sso(self, user_id: str, device_id: str) -> bool:
+        """Forget only this owner's SSO browser record."""
+        with self._connect() as connection:
+            changed = connection.execute(
+                "DELETE FROM sso_browsers WHERE device_id = ? AND user_id = ?",
+                (device_id, user_id),
+            ).rowcount
+        return changed == 1
 
     def pair(self, name: str) -> PairedDevice:
         """Create and persist a distinct authorized browser identity."""

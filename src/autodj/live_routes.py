@@ -383,7 +383,7 @@ def install_live_routes(
             await websocket.close(code=4403)
             return
         cookie = websocket.cookies.get(COOKIE_NAME)
-        if policy.authentication_required and not policy.verify_session(cookie):
+        if policy.authentication_required and not policy.browser_authenticated(websocket.scope):
             await websocket.close(code=4401)
             return
         try:
@@ -411,7 +411,7 @@ def install_live_routes(
         try:
             await websocket.accept()
             while not station.stopped:
-                if policy.authentication_required and not policy.verify_session(cookie):
+                if policy.pairing_required and not policy.verify_session(cookie):
                     await websocket.close(code=4401)
                     break
                 try:

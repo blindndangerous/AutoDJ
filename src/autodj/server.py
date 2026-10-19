@@ -1198,7 +1198,7 @@ def create_app(
 
     server_config = cfg.server
     device_registry: DeviceRegistry | None = None
-    if isinstance(server_config.access_token, str):
+    if isinstance(server_config.access_token, str) or server_config.auth_mode == "trusted_proxy":
         device_registry = DeviceRegistry(paired_devices_path(cfg))
     policy = SecurityPolicy(
         server_config,
@@ -1223,7 +1223,7 @@ def create_app(
         Raises:
             RuntimeError: Pairing is not enabled.
         """
-        if device_registry is None:
+        if device_registry is None or not policy.pairing_required:
             raise RuntimeError("pairing is not enabled")
         code, valid_for, next_code_in = policy.pairing_code_now()
         device_registry.open_pairing(valid_for)
@@ -1364,10 +1364,55 @@ def create_app(
     # REST API
     # ------------------------------------------------------------------
 
+    # ADR-0007: the proxy authorizes people; this cookie identifies browsers only.
+    sso_cookie = "autodj_browser"
+
+    def sso_user(request: Request) -> tuple[str, str]:
+        identity = policy.sso_identity(request.scope)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="SSO identity is missing or invalid")
+        return identity
+
     @app.get("/api/auth/status")
-    async def api_auth_status(request: Request) -> dict[str, object]:
+    async def api_auth_status(request: Request, response: Response) -> dict[str, object]:
         """Report whether this browser holds a valid authenticated session."""
         request_policy = policy
+        if request_policy.config.auth_mode == "trusted_proxy":
+            identity = request_policy.sso_identity(request.scope)
+            if identity is None:
+                response.status_code = 401
+                response.headers["Cache-Control"] = "no-store"
+                return {
+                    "required": True,
+                    "authenticated": False,
+                    "pairing": False,
+                    "mode": "trusted_proxy",
+                }
+            user_id, user_name = identity
+            assert device_registry is not None
+            browser = await asyncio.to_thread(
+                device_registry.register_sso, user_id, user_name, request.cookies.get(sso_cookie)
+            )
+            response.set_cookie(
+                sso_cookie,
+                browser.device_id,
+                httponly=True,
+                samesite="strict",
+                secure=request.url.scheme == "https",
+                max_age=request_policy.config.session_ttl_seconds,
+                path="/",
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return {
+                "required": True,
+                "authenticated": True,
+                "pairing": False,
+                "mode": "trusted_proxy",
+                "user": {"id": user_id, "name": user_name},
+                "device_id": browser.device_id,
+                "device_name": browser.name,
+                "logout_url": request_policy.config.sso_logout_url,
+            }
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         registry = device_registry
         cookie = request.cookies.get(COOKIE_NAME)
@@ -1397,7 +1442,7 @@ def create_app(
         """Pair one browser and issue its persistent device-bound session."""
         request_policy = policy
         registry = device_registry
-        if registry is None or not request_policy.authentication_required:
+        if registry is None or not request_policy.pairing_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         client = peer_address(request.scope)
         block = request_policy.pairing_block(client)
@@ -1456,10 +1501,7 @@ def create_app(
         request_policy = policy
         if not request_policy.authentication_required:
             return True
-        cookie = request.cookies.get(COOKIE_NAME)
-        if cookie is None:
-            return False
-        return await asyncio.to_thread(request_policy.verify_session, cookie)
+        return await asyncio.to_thread(request_policy.browser_authenticated, request.scope)
 
     @app.post("/api/logout")
     async def api_logout(request: Request) -> Response:
@@ -1471,6 +1513,13 @@ def create_app(
         """
         request_policy = policy
         registry = device_registry
+        if request_policy.config.auth_mode == "trusted_proxy":
+            sso_user(request)
+            if request_policy.config.sso_logout_url is None:
+                raise HTTPException(status_code=409, detail="SSO sign-out is managed externally")
+            return JSONResponse(
+                {"authenticated": False, "logout_url": request_policy.config.sso_logout_url}
+            )
         device_id = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         if device_id is not None and registry is not None:
             await asyncio.to_thread(registry.revoke, device_id)
@@ -1481,7 +1530,27 @@ def create_app(
         """List paired browsers, marking the one making this request."""
         request_policy = policy
         registry = device_registry
-        if registry is None or not request_policy.authentication_required:
+        if request_policy.config.auth_mode == "trusted_proxy":
+            user_id, user_name = sso_user(request)
+            assert registry is not None
+            browsers = await asyncio.to_thread(registry.sso_devices, user_id)
+            current = request.cookies.get(sso_cookie)
+            return {
+                "pairing": False,
+                "mode": "trusted_proxy",
+                "user": {"id": user_id, "name": user_name},
+                "devices": [
+                    {
+                        "device_id": browser.device_id,
+                        "name": browser.name,
+                        "paired_at": browser.paired_at,
+                        "last_seen_at": browser.last_seen_at,
+                        "current": browser.device_id == current,
+                    }
+                    for browser in browsers
+                ],
+            }
+        if registry is None or not request_policy.pairing_required:
             return {"pairing": False, "devices": []}
         current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
         devices = await asyncio.to_thread(registry.list_devices)
@@ -1505,7 +1574,22 @@ def create_app(
         """Revoke one paired browser; revoking this browser also signs it out."""
         request_policy = policy
         registry = device_registry
-        if registry is None or not request_policy.authentication_required:
+        if request_policy.config.auth_mode == "trusted_proxy":
+            user_id, _ = sso_user(request)
+            assert registry is not None
+            if not await asyncio.to_thread(registry.forget_sso, user_id, device_id):
+                raise HTTPException(status_code=404, detail="That browser was not found")
+            response = JSONResponse({"forgotten": device_id, "signed_out": False})
+            if request.cookies.get(sso_cookie) == device_id:
+                response.delete_cookie(
+                    sso_cookie,
+                    path="/",
+                    httponly=True,
+                    samesite="strict",
+                    secure=request.url.scheme == "https",
+                )
+            return response
+        if registry is None or not request_policy.pairing_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         # Read before revoking: afterwards this session no longer resolves.
         current = request_policy.session_device_id(request.cookies.get(COOKIE_NAME))
@@ -1518,10 +1602,22 @@ def create_app(
         return JSONResponse(payload)
 
     @app.patch("/api/devices/{device_id}")
-    async def api_device_rename(device_id: str, body: DeviceRenameBody) -> dict[str, str]:
+    async def api_device_rename(
+        device_id: str, body: DeviceRenameBody, request: Request
+    ) -> dict[str, str]:
         """Rename one paired browser."""
         registry = device_registry
-        if registry is None or not policy.authentication_required:
+        if policy.config.auth_mode == "trusted_proxy":
+            user_id, _ = sso_user(request)
+            assert registry is not None
+            try:
+                name = await asyncio.to_thread(registry.rename_sso, user_id, device_id, body.name)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if name is None:
+                raise HTTPException(status_code=404, detail="That browser was not found")
+            return {"device_id": device_id, "name": name}
+        if registry is None or not policy.pairing_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         try:
             name = await asyncio.to_thread(registry.rename, device_id, body.name)
@@ -1538,7 +1634,7 @@ def create_app(
         Any paired browser may pair another one, the same as the operator
         running ``autodj devices pairing-code``.  The code is never logged.
         """
-        if device_registry is None or not policy.authentication_required:
+        if device_registry is None or not policy.pairing_required:
             raise HTTPException(status_code=409, detail="Pairing is not enabled")
         paused = policy.pairing_paused()
         if paused is not None:
@@ -2514,8 +2610,8 @@ def create_app(
             await reject(403, 4403)
             return
         session_cookie = websocket.cookies.get(COOKIE_NAME)
-        if request_policy.authentication_required and not request_policy.verify_session(
-            session_cookie
+        if request_policy.authentication_required and not request_policy.browser_authenticated(
+            websocket.scope
         ):
             await reject(401, 4401)
             return
@@ -2530,8 +2626,10 @@ def create_app(
 
         def session_is_valid() -> bool:
             """Return whether the accepted WebSocket session remains valid."""
-            return not request_policy.authentication_required or request_policy.verify_session(
-                session_cookie
+            return (
+                request_policy.config.auth_mode == "trusted_proxy"
+                or not request_policy.authentication_required
+                or request_policy.verify_session(session_cookie)
             )
 
         client = _WebSocketClient(
@@ -3063,7 +3161,7 @@ def serve(
     # paired browser, and none is logged.
     pairing: tuple[str, int] | None = None
     if (
-        startup_policy.authentication_required
+        startup_policy.pairing_required
         and startup_registry is not None
         and not startup_registry.has_active_devices()
     ):
@@ -3084,14 +3182,14 @@ def serve(
                 urls,
                 pairing,
                 in_container=in_container,
-                code_on_request=startup_policy.authentication_required,
+                code_on_request=startup_policy.pairing_required,
             ),
             extra={
                 LOG_FILE_TEXT: format_lan_banner(
                     urls,
                     None,
                     in_container=in_container,
-                    code_on_request=startup_policy.authentication_required,
+                    code_on_request=startup_policy.pairing_required,
                 )
             },
         )
@@ -3101,7 +3199,7 @@ def serve(
             pairing[0],
             extra={LOG_FILE_TEXT: "A pairing code was shown on the console."},
         )
-    elif startup_policy.authentication_required:
+    elif startup_policy.pairing_required:
         logger.info("%s", PAIRING_ON_REQUEST_HINT)
 
     if stream:
