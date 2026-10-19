@@ -190,7 +190,7 @@ describe("Track info matched intros", () => {
     await settle();
     const list = el("intros-song-list");
     const before = [...list.querySelectorAll("li")].map((row) => [row, row.textContent]);
-    const observer = new MutationObserver(() => {});
+    const observer = new window.MutationObserver(() => {});
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     await editor.refresh();
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -214,7 +214,7 @@ describe("reconcileRows", () => {
       });
     render([{ id: "a", name: "A" }]);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const observer = new MutationObserver(() => {});
+    const observer = new window.MutationObserver(() => {});
     observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true });
     render([{ id: "a", name: "A" }]);
     await new Promise((resolve) => setTimeout(resolve, 0));
