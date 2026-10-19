@@ -187,11 +187,6 @@ class FfmpegEncoder:  # pragma: no cover -- exercised by tests/integration/test_
         stdout = cast(io.BufferedReader, self._proc.stdout)
         return stdout.read1(n)
 
-    def close_input(self) -> None:
-        """Close ffmpeg's stdin so it flushes and exits."""
-        if self._proc.stdin and not self._proc.stdin.closed:
-            self._proc.stdin.close()
-
     def close(self) -> None:
         """Terminate ffmpeg, then release its pipes once it is dead.
 
@@ -829,11 +824,6 @@ class StreamOutput:
             else:
                 return
             listener.close()
-
-    def disconnect_all(self) -> None:
-        """Close every listener."""
-        with self._lock:
-            self._disconnect_all_locked()
 
     def _disconnect_all_locked(self) -> None:
         """Close every listener (lock held)."""

@@ -1097,27 +1097,6 @@ class LibraryCatalog:
                 )
             }
 
-    def set_vector(self, path: str | Path, vector: np.ndarray) -> None:
-        from autodj.indexer import FEATURE_DIM
-
-        value = np.asarray(vector, dtype=np.float32)
-        if value.shape != (FEATURE_DIM,) or not np.isfinite(value).all():
-            raise ValueError(f"vector must be a finite float32 array of shape ({FEATURE_DIM},)")
-        with self._lock:
-            row = (
-                self._db()
-                .execute("SELECT id FROM catalog_entries WHERE path=?", (_path(path),))
-                .fetchone()
-            )
-            if row is None:
-                raise KeyError(_path(path))
-            self._db().execute(
-                "INSERT INTO catalog_vectors VALUES (?,?) ON CONFLICT(entry_id) "
-                "DO UPDATE SET vector=excluded.vector",
-                (row["id"], value.tobytes()),
-            )
-            self._db().commit()
-
     def seed_vectors(self, entries: Sequence[IndexEntry], vectors: np.ndarray) -> int:
         from autodj.indexer import FEATURE_DIM
 
@@ -1139,17 +1118,6 @@ class LibraryCatalog:
                 count += 1
             db.commit()
             return count
-
-    def vectors_snapshot(self) -> tuple[list[IndexEntry], np.ndarray]:
-        from autodj.indexer import FEATURE_DIM
-
-        with self.reader() as reader:
-            coverage = reader.coverage()
-            by_path = {entry.path: entry for entry in reader.entries("music", coverage)}
-            paths = [path for path in reader.vector_paths() if path in by_path]
-            chunks = list(reader.vectors(set(paths)))
-        vectors = np.concatenate(chunks) if chunks else np.empty((0, FEATURE_DIM), np.float32)
-        return [by_path[path] for path in paths], vectors
 
     def _coverage(self, path: str, kind: str) -> bool:
         return any(
@@ -1240,28 +1208,6 @@ class LibraryCatalog:
                 )
                 .fetchone()
             )
-
-    def count_entries(
-        self, kind: str = "music", *, vectors: bool = False, active: bool = False
-    ) -> int:
-        with self._lock:
-            if vectors:
-                rows = (
-                    self._db()
-                    .execute(
-                        "SELECT e.path FROM catalog_entries e JOIN catalog_vectors v "
-                        "ON v.entry_id=e.id WHERE e.kind=?",
-                        (kind,),
-                    )
-                    .fetchall()
-                )
-            else:
-                rows = (
-                    self._db()
-                    .execute("SELECT path FROM catalog_entries WHERE kind=?", (kind,))
-                    .fetchall()
-                )
-            return sum(1 for row in rows if not active or self._active(row["path"], kind))
 
     def sources_for_path(self, path: str | Path, kind: str | None = None) -> list[dict]:
         normalized = _path(path)

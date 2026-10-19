@@ -39,7 +39,7 @@ def save(station: Station, body: dict, path: str = "/api/breaks/settings"):
 
 
 def stored(station: Station) -> dict:
-    path = station.station.bridge._state_dir() / "web_state.json"
+    path = station.station.bridge.settings.state_dir / "web_state.json"
     return json.loads(path.read_text(encoding="utf-8"))["playback"]
 
 
@@ -204,7 +204,7 @@ def test_saved_break_settings_win_over_config_after_a_restart(station):
     assert save(station, {"enabled": False, "dj_placement": "talk_up"}).status_code == 200
     # config.toml still says on and auto: the saved values win at the next start.
     station.player._cfg.breaks = BreaksConfig(enabled=True, dj_placement="auto", duck_db=-3.0)
-    load_into_bridge(station.station.bridge, station.station.bridge._state_dir())
+    load_into_bridge(station.station.bridge, station.station.bridge.settings.state_dir)
     restored = station.player._cfg.breaks
     assert (restored.enabled, restored.dj_placement, restored.duck_db) == (False, "talk_up", None)
 

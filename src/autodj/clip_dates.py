@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: Literal[1] = 1
-LINER_DATES_FILE = "liner_dates.json"
 #: The most liners that can have dates.
 MAX_LINER_DATES = 2000
 

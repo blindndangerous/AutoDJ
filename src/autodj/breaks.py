@@ -480,17 +480,6 @@ class BreakDesk:
                 507, "The waiting break files would pass this station's quota", "quota"
             )
 
-    def check_room(self, slot_id: str, size: int = 0) -> None:
-        """Refuse a break the station has no room for.
-
-        Raises:
-            BreakError: 429 when the station already holds ``max_queued``
-                breaks (uploads in progress included), 409 when the slot
-                holds ``max_per_slot``, 507 when the files would pass the quota.
-        """
-        with self._lock:
-            self._room_locked(slot_id, size)
-
     def reserve(self, break_id: str, slot_id: str, size: int, name: str) -> None:
         """Hold room for an upload before its body is read.
 
@@ -499,7 +488,9 @@ class BreakDesk:
         gives it back.
 
         Raises:
-            BreakError: As :meth:`check_room`.
+            BreakError: 429 when the station already holds ``max_queued``
+                breaks (uploads in progress included), 409 when the slot
+                holds ``max_per_slot``, 507 when the files would pass the quota.
         """
         with self._lock:
             self._room_locked(slot_id, size)
@@ -509,7 +500,7 @@ class BreakDesk:
         """Move an upload's held room to the slot its form named, under its file name.
 
         Raises:
-            BreakError: As :meth:`check_room` (the slot is full); the room
+            BreakError: As :meth:`reserve` (the slot is full); the room
                 stays held for :meth:`release`.
         """
         with self._lock:
@@ -534,7 +525,7 @@ class BreakDesk:
         Its reservation, if any, becomes the break.
 
         Raises:
-            BreakError: As :meth:`check_room`; 409 for an announcer's or voice
+            BreakError: As :meth:`reserve`; 409 for an announcer's or voice
                 tracker's break while breaks are off.  Checked under the lock
                 :meth:`drop_waiting_breaks` takes, so an upload that was let in
                 before breaks were turned off can never be booked after.

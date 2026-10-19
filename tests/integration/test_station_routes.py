@@ -615,8 +615,6 @@ def test_each_push_lists_the_stations_when_there_are_several() -> None:
         registry = SimpleNamespace(
             slugs=lambda slugs=slugs: frozenset(slugs),
             summaries=lambda: entries,
-            stereo_tool_user=lambda exclude: None,
-            stereo_tool_lock=None,
         )
         runtime = station()
         _share_station(registry, runtime)  # type: ignore[arg-type]

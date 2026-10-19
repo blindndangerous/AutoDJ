@@ -15,6 +15,7 @@ from autodj.config import (
 )
 from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager, analyse_library
+from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 
 
 def _config(root: Path, music: Path) -> AutoDJConfig:
@@ -71,7 +72,7 @@ def test_limit_and_workers_use_one_batch_and_force_reembeds_existing_vector(tmp_
     cfg, songs, _ = _catalog(tmp_path)
     seed = LibraryManager(cfg, _sim())
     old_vector = np.full(FEATURE_DIM, -1, dtype=np.float32)
-    seed.catalog.set_vector(songs[0], old_vector)
+    set_vector(seed.catalog, songs[0], old_vector)
     seed.close()
 
     seen = {}
@@ -92,7 +93,7 @@ def test_limit_and_workers_use_one_batch_and_force_reembeds_existing_vector(tmp_
     assert seen == {"paths": songs[:2], "workers": 4}
     check = LibraryManager(cfg, _sim())
     try:
-        np.testing.assert_array_equal(check.catalog.vectors_snapshot()[1][0], np.zeros(FEATURE_DIM))
+        np.testing.assert_array_equal(vectors_snapshot(check.catalog)[1][0], np.zeros(FEATURE_DIM))
     finally:
         check.close()
 
@@ -109,9 +110,9 @@ def test_analysis_keeps_existing_vector_and_skips_disabled_and_liner_sources_on_
     setup.catalog.add_source(active_root, advanced=True)
     setup.catalog.put_entry(_entry(active_song))
     existing = np.full(FEATURE_DIM, 0.7, dtype=np.float32)
-    setup.catalog.set_vector(songs[0], existing)
-    setup.catalog.set_vector(active_song, existing)
-    setup.catalog.set_vector(liner, existing)
+    set_vector(setup.catalog, songs[0], existing)
+    set_vector(setup.catalog, active_song, existing)
+    set_vector(setup.catalog, liner, existing)
     setup.catalog.set_points(songs[0], {"start": 3, "end": 170}, source="user")
     setup.catalog.set_setting("sentinel", "kept")
     setup.close()
@@ -126,7 +127,7 @@ def test_analysis_keeps_existing_vector_and_skips_disabled_and_liner_sources_on_
         assert check.catalog.has_vector(songs[0])
         assert check.catalog.has_vector(active_song)
         assert check.catalog.has_vector(liner)
-        entries, vectors = check.catalog.vectors_snapshot()
+        entries, vectors = vectors_snapshot(check.catalog)
         by_path = {
             os.path.normcase(entry.path): vector
             for entry, vector in zip(entries, vectors, strict=True)
@@ -157,7 +158,7 @@ def test_each_successful_result_is_checkpointed_durably(tmp_path):
     check = LibraryManager(cfg, _sim())
     try:
         assert all(check.catalog.has_vector(song) for song in songs)
-        vectors = check.catalog.vectors_snapshot()[1]
+        vectors = vectors_snapshot(check.catalog)[1]
         np.testing.assert_array_equal(
             vectors,
             np.asarray(

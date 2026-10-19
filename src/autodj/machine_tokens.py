@@ -82,12 +82,6 @@ def _digest(secret: str) -> str:
     return hashlib.sha256(secret.encode("ascii")).hexdigest()
 
 
-def token_id_of(token: str) -> str | None:
-    """The id part of a well-formed token, or ``None``."""
-    match = _TOKEN.fullmatch(token) if isinstance(token, str) else None
-    return match.group(1) if match else None
-
-
 def validate_name(value: object) -> str:
     """Return *value* stripped, or raise ``ValueError`` unless it is 1 to 64 printable characters."""
     if not isinstance(value, str):

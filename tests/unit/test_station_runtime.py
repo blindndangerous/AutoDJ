@@ -183,9 +183,6 @@ class _Runtime:
         self.paths = SimpleNamespace(liners=Path("liners") / slug)
         self.cfg = SimpleNamespace(playback=SimpleNamespace(stereotool_preset=f"{slug}.sts"))
 
-    def uses_stereo_tool(self) -> bool:
-        return self._stereo
-
     def player_running(self) -> bool:
         return False
 
@@ -455,7 +452,7 @@ def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
     assert "Station daybreak did not start: Daybreak's processor could not start" in messages
 
 
-def test_stereo_tool_diagnostics_and_every_stations_preset(tmp_path: Path) -> None:
+def test_every_stations_stereo_tool_preset(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
         _Runtime("default", log, stereo=True),  # type: ignore[arg-type]
@@ -464,8 +461,6 @@ def test_stereo_tool_diagnostics_and_every_stations_preset(tmp_path: Path) -> No
             _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path),
         ],
     )
-    assert registry.stereo_tool_user(exclude="nightowl") == "Default"
-    assert registry.stereo_tool_user(exclude="default") is None
     saved = tmp_path / "nightowl" / "web_state.json"
     saved.parent.mkdir(parents=True)
     saved.write_text(json.dumps({"playback": {"stereotool_preset": "Owl.sts"}}), "utf-8")
@@ -563,35 +558,6 @@ def _playback(processing: str, name: str) -> Any:
         playback=SimpleNamespace(loudness_processing=processing),
         stream=SimpleNamespace(station_name=name),
     )
-
-
-def test_a_station_being_started_is_included_in_processor_diagnostics(tmp_path: Path) -> None:
-    log: list[str] = []
-
-    def build(registry: StationRegistry) -> _Runtime:
-        registry.mark_starting("nightowl", _playback("stereotool", "Owl"))
-        assert registry.stereo_tool_user(exclude="default") == "Owl"
-        return _Runtime("nightowl", log, stereo=True)
-
-    registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
-        [_extra("nightowl", build, tmp_path, autostart=False)],
-    )
-    asyncio.run(registry.start("nightowl"))
-    # Running now: it counts as a running station, no longer as a starting one.
-    assert registry._starting == {}
-    assert registry.stereo_tool_user(exclude="default") == "Nightowl"
-
-
-def test_multiple_stations_can_be_recorded_as_starting(tmp_path: Path) -> None:
-    log: list[str] = []
-    registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
-        [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)],
-    )
-    registry.mark_starting("default", _playback("stereotool", "AutoDJ"))
-    registry.mark_starting("nightowl", _playback("stereotool", "Night Owl"))
-    assert set(registry._starting) == {"default", "nightowl"}
 
 
 class _Library:
@@ -771,47 +737,6 @@ def test_a_stopping_stations_pages_are_closed_before_its_player_finishes(tmp_pat
     ]
 
 
-def test_stereo_tool_held_by_a_stopping_station_says_so(tmp_path: Path) -> None:
-    log: list[str] = []
-    registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
-        [
-            _extra(
-                "nightowl",
-                lambda _r: _Runtime("nightowl", log, stereo=True),
-                tmp_path,
-                autostart=False,
-            )
-        ],
-    )
-
-    async def scenario() -> None:
-        owl = await registry.start("nightowl")
-        assert registry.stereo_tool_user(exclude="default") == "Nightowl"
-        gate = asyncio.Event()
-        stop = owl.stop
-
-        async def slow_stop(timeout: float) -> bool:
-            await gate.wait()
-            return await stop(timeout)
-
-        owl.stop = slow_stop  # type: ignore[method-assign]
-        stopping = asyncio.create_task(registry.stop("nightowl"))
-        await asyncio.sleep(0.05)
-        # Its Stereo Tool runs until it has stopped: still taken, and said so.
-        held = registry.stereo_tool_user(exclude="default")
-        assert held == (
-            "Nightowl, which is still stopping (try again in a few seconds, once it has stopped)"
-        )
-        registry.mark_starting("default", _playback("stereotool", "AutoDJ"))
-        assert registry.stereo_tool_user(exclude="default") == held
-        gate.set()
-        await stopping
-        assert registry.stereo_tool_user(exclude="default") is None
-
-    asyncio.run(scenario())
-
-
 def test_a_runtime_stops_and_closes_once(tmp_path: Path) -> None:
     from autodj.stations import StationRuntime
 
@@ -907,69 +832,6 @@ def test_a_failed_build_leaves_a_player_that_will_not_stop_and_its_master(
     assert player._state.should_stop and player._skip_event.is_set()
 
 
-class _SlowCheck(_Runtime):
-    """A default station whose Stereo Tool check is slow, widening every race window."""
-
-    def uses_stereo_tool(self) -> bool:
-        time.sleep(0.0005)
-        return False
-
-
-def test_a_check_from_another_thread_always_finds_the_licence_holder(tmp_path: Path) -> None:
-    """Start and stop a Stereo Tool station over and over while a worker thread checks.
-
-    From the moment its build claims Stereo Tool until it closes its
-    mastering process, a check from another thread (a station switching
-    to Stereo Tool in its settings) must always find it: starting,
-    running or stopping.
-    """
-    log: list[str] = []
-    # Set from the claim until the station closes its mastering process.
-    held = threading.Event()
-    cfg = _playback("stereotool", "Nightowl")
-
-    class _Licensed(_Runtime):
-        async def close(self) -> None:
-            held.clear()  # Stereo Tool is gone from here on
-            await super().close()
-
-    def build(registry: StationRegistry) -> _Runtime:
-        registry.mark_starting("nightowl", cfg)
-        held.set()
-        return _Licensed("nightowl", log, stereo=True)
-
-    registry = StationRegistry(
-        _SlowCheck("default", log),  # type: ignore[arg-type]
-        [_extra("nightowl", build, tmp_path, autostart=False)],
-    )
-    misses: list[int] = []
-    done = threading.Event()
-
-    def check() -> None:
-        while not done.is_set():
-            before = held.is_set()
-            found = registry.stereo_tool_user(exclude="default")
-            if before and held.is_set() and found is None:
-                misses.append(1)
-
-    checker = threading.Thread(target=check, daemon=True)
-    checker.start()
-
-    async def scenario() -> None:
-        for _ in range(150):
-            await registry.start("nightowl")
-            await asyncio.sleep(0)
-            await registry.stop("nightowl")
-
-    try:
-        asyncio.run(scenario())
-    finally:
-        done.set()
-        checker.join(5)
-    assert misses == []
-    assert registry.stereo_tool_user(exclude="default") is None
-
-
 def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
     tmp_path: Path,
 ) -> None:
@@ -1010,12 +872,9 @@ def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
     async def scenario() -> None:
         await registry.start("nightowl")
         await registry.stop("nightowl")
-        # Its player runs on: listed as stuck, still holding Stereo Tool,
-        # refusing a start, and its mastering process left open.
+        # Its player runs on: listed as stuck, refusing a start, and its
+        # mastering process (and Stereo Tool licence) left open.
         assert registry.get("nightowl").summary()["state"] == "stuck stopping"
-        assert "has not finished stopping: its player is still running" in (
-            registry.stereo_tool_user(exclude="default") or ""
-        )
         with pytest.raises(StationControlError, match="has not finished stopping"):
             await registry.start("nightowl")
         assert closed == []
@@ -1026,7 +885,7 @@ def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
                 break
             await asyncio.sleep(0.01)
         assert closed == ["master"]
-        assert registry.stereo_tool_user(exclude="default") is None
+        assert "nightowl" not in registry._stuck
 
     asyncio.run(scenario())
 
@@ -1056,7 +915,7 @@ def test_a_failed_build_with_a_stuck_player_is_held_too(tmp_path: Path) -> None:
     _abandon_player(player, thread, 0.05, on_stuck=lambda: registry.hold_until_player_ends(held))
     assert closed == []
     assert registry.get("nightowl").summary()["state"] == "stuck stopping"
-    assert (registry.stereo_tool_user(exclude="default") or "").startswith("Night Owl Radio")
+    assert registry._stuck["nightowl"] is held
     release.set()
     thread.join(5)
     deadline = time.monotonic() + 5
@@ -1485,7 +1344,7 @@ def test_a_mastering_process_that_outlives_the_close_keeps_the_licence(
             if registry.get("nightowl").summary()["state"] == "stopped":
                 break
             # Held while its mastering process has not ended, licence and all.
-            assert registry.stereo_tool_user(exclude="default") is not None
+            assert "nightowl" in registry._stuck
             await asyncio.sleep(0.02)
         assert registry.get("nightowl").summary()["state"] == "stopped"
 

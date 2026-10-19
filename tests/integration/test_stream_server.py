@@ -77,9 +77,8 @@ def test_only_mp3_and_m3u_are_served_under_stream_dot(stream_app) -> None:
 
 
 def test_rotate_route_is_gone(stream_app) -> None:
-    client, stream = stream_app
+    client, _stream = stream_app
     assert client.post("/api/stream/rotate").status_code in (404, 405)
-    stream.disconnect_all.assert_not_called()
 
 
 @pytest.mark.parametrize("query", ["", "?connection=new-listener"])

@@ -13,6 +13,7 @@ from click.testing import CliRunner
 from autodj.catalog import LibraryCatalog
 from autodj.cli import _load_index_for_serve, cli
 from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets, file_fingerprint
+from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 from tests.unit._legacy_index import save_index
 from tests.unit.test_library import fake_basic, fake_loudness, make_config
 
@@ -178,7 +179,7 @@ def test_force_replaces_vector_and_preserves_user_data(tmp_path: Path) -> None:
     with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir)
         catalog.put_entry(_entry(song))
-        catalog.set_vector(song, np.zeros(FEATURE_DIM, dtype=np.float32))
+        set_vector(catalog, song, np.zeros(FEATURE_DIM, dtype=np.float32))
         catalog.set_points(song, {"intro": 12.0}, source="user")
         catalog.write_history(
             [
@@ -207,7 +208,7 @@ def test_force_replaces_vector_and_preserves_user_data(tmp_path: Path) -> None:
         assert record["points"]["intro"] == 12.0
         assert record["point_sources"]["intro"] == "user"
         assert catalog.recent_history() and catalog.recent_history()[0]["event_id"] == "play-1"
-        _, vectors = catalog.vectors_snapshot()
+        _, vectors = vectors_snapshot(catalog)
         assert np.all(vectors[0] == 1)
 
 
@@ -240,7 +241,7 @@ def test_catalog_beets_enrichment_keeps_vector_and_cues_without_legacy_files(
     with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.add_source(cfg.library.music_dir)
         catalog.put_entry(_entry(song))
-        catalog.set_vector(song, np.full(FEATURE_DIM, 0.25, dtype=np.float32))
+        set_vector(catalog, song, np.full(FEATURE_DIM, 0.25, dtype=np.float32))
         catalog.set_points(song, {"intro": 8.0}, source="user")
 
     updated, total = enrich_from_beets(cfg.index.library_dir, cfg.library.music_dir, beets_db)
@@ -251,7 +252,7 @@ def test_catalog_beets_enrichment_keeps_vector_and_cues_without_legacy_files(
         assert record["title"] == "Updated"
         assert record["points"]["intro"] == 8.0
         assert record["point_sources"]["intro"] == "user"
-        _, vectors = catalog.vectors_snapshot()
+        _, vectors = vectors_snapshot(catalog)
         assert np.all(vectors[0] == 0.25)
     assert not (cfg.index.library_dir / "index-manifest.json").exists()
 
@@ -315,7 +316,7 @@ def test_index_backfills_relative_music_root_without_pruning_disabled_folder(
     _source(cfg, enabled)
     with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         catalog.put_entry(_entry(song))
-        catalog.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(catalog, song, np.ones(FEATURE_DIM, dtype=np.float32))
         catalog.set_points(song, {"intro": 12.0}, source="user")
     close_cache()
     try:

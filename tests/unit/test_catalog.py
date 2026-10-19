@@ -11,6 +11,7 @@ import pytest
 from autodj import catalog as catalog_module
 from autodj.catalog import _SCHEMA, LibraryCatalog
 from autodj.indexer import FEATURE_DIM, IndexEntry
+from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 
 
 def entry(path: Path, *, title: str = "Title", energy: float = 0.2) -> IndexEntry:
@@ -558,7 +559,7 @@ def test_seed_vectors_and_confirmed_move_preserve_vector(tmp_path: Path) -> None
         record_id = catalog.record_for_path(old)["id"]
         old.rename(new)
         assert catalog.rekey(old, new)
-        records, vectors = catalog.vectors_snapshot()
+        records, vectors = vectors_snapshot(catalog)
         assert records[0].path == os.path.normcase(str(new))
         assert catalog.record_for_path(new)["id"] == record_id
         np.testing.assert_array_equal(vectors[0], vector)
@@ -588,12 +589,12 @@ def test_changed_content_invalidates_vector_and_keeps_prepared_audio_external(
                 "gain_db": 2.5,
             },
         )
-        catalog.set_vector(track, np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(catalog, track, np.ones(FEATURE_DIM, dtype=np.float32))
         track.write_bytes(b"new audio, a different file")
         catalog.put_entry(entry(track))
         assert catalog.record_for_path(track)["loudness"] == {}
         assert "prepared_path" not in catalog.record_for_path(track)
-        records, vectors = catalog.vectors_snapshot()
+        records, vectors = vectors_snapshot(catalog)
         assert records == []
         assert vectors.shape == (0, FEATURE_DIM)
 
@@ -679,7 +680,7 @@ def test_change_counters_track_records_vectors_and_sources_from_any_process(
         assert cues["entries"] == after_put["entries"]
         assert cues["records"] > after_put["records"]
 
-        other.set_vector(song, np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(other, song, np.ones(FEATURE_DIM, dtype=np.float32))
         other.update_source(source["id"], recursive=False, advanced=True)
         changed = catalog.change_versions()
         assert changed["vectors"] == cues["vectors"] + 1
@@ -708,7 +709,7 @@ def test_unembedded_count_matches_paths_and_tracks_external_changes(tmp_path: Pa
 
         other.update_source(nested_source["id"], recursive=True, advanced=True)
         assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
-        other.set_vector(songs[1], np.ones(FEATURE_DIM, dtype=np.float32))
+        set_vector(other, songs[1], np.ones(FEATURE_DIM, dtype=np.float32))
         assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
         other.put_entry(entry(nested / "new.flac"))
         assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
@@ -721,7 +722,7 @@ def test_removing_entry_cascades_to_vector(tmp_path: Path) -> None:
         catalog.put_entry(entry(song))
         vector = np.zeros(FEATURE_DIM, np.float32)
         vector[0] = 1
-        catalog.set_vector(song, vector)
+        set_vector(catalog, song, vector)
         assert catalog.remove_entries([str(song)]) == 1
         assert catalog._db().execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert catalog._db().execute("SELECT COUNT(*) FROM catalog_vectors").fetchone()[0] == 0

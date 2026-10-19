@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from autodj.beets import BeetsNotFoundError, Track, get_all_tracks, search_tracks
+from autodj.beets import BeetsNotFoundError, Track, search_tracks
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -150,43 +150,43 @@ class TestTrack:
 
 
 # ---------------------------------------------------------------------------
-# get_all_tracks
+# search_tracks with an empty query (every row)
 # ---------------------------------------------------------------------------
 
 
-class TestGetAllTracks:
+class TestAllTracks:
     def test_returns_all_rows(self, beets_db: Path) -> None:
-        tracks = get_all_tracks(beets_db)
+        tracks = search_tracks(beets_db, "")
         assert len(tracks) == 3
 
     def test_returns_track_objects(self, beets_db: Path) -> None:
-        tracks = get_all_tracks(beets_db)
+        tracks = search_tracks(beets_db, "")
         assert all(isinstance(t, Track) for t in tracks)
 
     def test_path_decoded_from_bytes(self, beets_db: Path) -> None:
-        tracks = get_all_tracks(beets_db)
+        tracks = search_tracks(beets_db, "")
         assert all(isinstance(t.path, Path) for t in tracks)
 
     def test_metadata_correct(self, beets_db: Path) -> None:
-        tracks = get_all_tracks(beets_db)
+        tracks = search_tracks(beets_db, "")
         mysterons = next(t for t in tracks if t.title == "Mysterons")
         assert mysterons.artist == "Portishead"
         assert mysterons.bpm == 95.0
         assert mysterons.year == 1994
 
     def test_empty_library_returns_empty_list(self, empty_beets_db: Path) -> None:
-        tracks = get_all_tracks(empty_beets_db)
+        tracks = search_tracks(empty_beets_db, "")
         assert tracks == []
 
     def test_raises_if_db_missing(self, tmp_path: Path) -> None:
         with pytest.raises(BeetsNotFoundError):
-            get_all_tracks(tmp_path / "nonexistent.db")
+            search_tracks(tmp_path / "nonexistent.db", "")
 
     def test_raises_if_db_not_sqlite(self, tmp_path: Path) -> None:
         bad = tmp_path / "library.db"
         bad.write_bytes(b"not a sqlite file")
         with pytest.raises(sqlite3.DatabaseError):
-            get_all_tracks(bad)
+            search_tracks(bad, "")
 
     def test_open_db_closes_connection_when_validation_read_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -348,15 +348,15 @@ def _make_beets_db_with_optional(path: Path) -> Path:
 
 
 class TestOptionalColumns:
-    def test_get_all_tracks_reads_initial_key(self, tmp_path) -> None:
+    def test_search_tracks_reads_initial_key(self, tmp_path) -> None:
         db = _make_beets_db_with_optional(tmp_path / "library.db")
-        tracks = get_all_tracks(db)
+        tracks = search_tracks(db, "")
         assert tracks[0].initial_key == "Am"
         assert tracks[1].initial_key == "8B"
 
-    def test_get_all_tracks_reads_lyrics(self, tmp_path) -> None:
+    def test_search_tracks_reads_lyrics(self, tmp_path) -> None:
         db = _make_beets_db_with_optional(tmp_path / "library.db")
-        tracks = get_all_tracks(db)
+        tracks = search_tracks(db, "")
         assert tracks[0].lyrics == "la la la"
 
 

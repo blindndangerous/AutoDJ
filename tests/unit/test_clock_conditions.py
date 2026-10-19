@@ -1,6 +1,10 @@
 import pytest
 
-from autodj.clock_conditions import genres, matches_condition, validate_metadata_condition
+from autodj.clock_conditions import condition_matcher, genres, validate_metadata_condition
+
+
+def matches_condition(condition, entry, beets_item=None):
+    return condition_matcher(condition)(entry, beets_item)
 
 
 def test_genres_split_only_semicolon_and_nul_and_deduplicate():
