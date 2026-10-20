@@ -17,6 +17,7 @@ from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 from autodj.playlog import COLUMNS
 from autodj.server import PlayerBridge, create_app
+from autodj.station_store import StationStore, migrate_legacy
 from tests._layout import point_index
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
@@ -47,7 +48,13 @@ def catalog(tmp_path: Path):
                 }
             ]
         )
-        yield opened
+        store = StationStore(tmp_path / "station.db", "default")
+        migrate_legacy(opened, store)
+        opened._test_station_store = store
+        try:
+            yield opened
+        finally:
+            store.close()
 
 
 def _client(library) -> TestClient:
@@ -57,7 +64,12 @@ def _client(library) -> TestClient:
         allowed_hosts=["testserver"],
         allowed_origins=["http://testserver"],
     )
-    bridge = PlayerBridge(player=player, sim=_make_sim_mock(), library=library)
+    bridge = PlayerBridge(
+        player=player,
+        sim=_make_sim_mock(),
+        library=library,
+        ledger=SimpleNamespace(store=library.catalog._test_station_store) if library else None,
+    )
     return TestClient(create_app(bridge), headers={"Host": "testserver"})
 
 

@@ -6,11 +6,13 @@ import json
 import math
 import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from autodj.catalog import DEFAULT_STATION, LibraryCatalog, _path
+from autodj.sqlite_utils import readonly_uri
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS station_plays (
@@ -179,10 +181,13 @@ class StationStore:
                 ", (SELECT n.played_at FROM play_history n "
                 "WHERE n.interrupted=0 AND n.rowid>h.rowid ORDER BY n.rowid LIMIT 1) AS following_at"
             )
-        with self._lock:
+        # Keep report parsing and its following-play lookup on one reader snapshot.
+        with closing(sqlite3.connect(readonly_uri(self.path), uri=True, timeout=30)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
             if start is not None and end is not None:
-                self._db.create_function("in_report_range", 1, in_range)
-            rows = self._db.execute(
+                db.create_function("in_report_range", 1, in_range)
+            rows = db.execute(
                 "SELECT h.played_at,h.duration,h.title,h.artist,h.path,h.album,"  # nosec B608 - fixed SQL fragments only
                 "CASE WHEN h.kind='live' THEN 'live' ELSE COALESCE(NULLIF(h.track_kind,''),h.kind) END AS kind,"
                 "h.performances,h.ended_at" + following + " FROM play_history h "

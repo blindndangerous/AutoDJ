@@ -1455,7 +1455,9 @@ def install_station_routes(router: StationRouter) -> None:
             start = parse_bound(from_text)
             end = parse_bound(to_text, end=True)
             plays = await asyncio.to_thread(
-                functools.partial(plays_between, station=station.slug),
+                functools.partial(
+                    plays_between, station=station.slug, station_store=station.ledger.store
+                ),
                 library.catalog,
                 start,
                 end,

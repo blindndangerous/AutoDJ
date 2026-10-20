@@ -326,3 +326,68 @@ def test_renaming_keeps_the_place_and_drops_the_old_names_later_places(catalog) 
     assert ledger.get_setting("clock") == {"name": "Day", "cursor": 4}
     # Without the old name, it is another clockwheel and starts at its top.
     assert ledger.select_clock("Night") == {"name": "Night", "cursor": 0}
+
+
+def test_station_report_snapshot_allows_writes_and_keeps_following_row_consistent(
+    catalog, monkeypatch
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from autodj import catalog as catalog_module
+
+    library, (one, two) = catalog
+    ledger = _ledger(library)
+    store = ledger.store
+    store.write_history([_row("old", one, "Old")], [])
+    entered, release = threading.Event(), threading.Event()
+    parse = catalog_module.history_start
+
+    def slow_parse(value):
+        entered.set()
+        assert release.wait(5)
+        return parse(value)
+
+    monkeypatch.setattr(catalog_module, "history_start", slow_parse)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            report = workers.submit(store.play_log, T0, T0 + timedelta(hours=1))
+            try:
+                assert entered.wait(5)
+                write = workers.submit(store.write_history, [_row("new", two, "New", 1)], [])
+                write.result(timeout=2)
+            finally:
+                release.set()
+            rows = report.result(timeout=5)
+        assert [row["title"] for row in rows] == ["Old"]
+        assert rows[0]["following_at"] is None
+    finally:
+        store.close()
+
+
+def test_station_report_preserves_offsets_naive_times_precision_and_insertion_order(catalog):
+    from datetime import timezone
+
+    library, (one, _two) = catalog
+    store = _ledger(library).store
+    offset = timezone(timedelta(hours=-4))
+    rows = [
+        {**_row("offset", one, "Offset"), "played_at": T0.astimezone(offset).isoformat()},
+        {**_row("earlier", one, "Earlier"), "played_at": (T0 - timedelta(seconds=1)).isoformat()},
+        {
+            **_row("legacy", one, "Legacy"),
+            "played_at": T0.astimezone().replace(tzinfo=None).isoformat(),
+        },
+        {**_row("cut", one, "Interrupted"), "played_at": T0.isoformat()},
+        {**_row("micro", one, "Micro"), "played_at": (T0 + timedelta(microseconds=1)).isoformat()},
+        {**_row("end", one, "End"), "played_at": (T0 + timedelta(microseconds=2)).isoformat()},
+    ]
+    try:
+        store.write_history(rows, ["cut"])
+        selected = store.play_log(T0, T0 + timedelta(microseconds=2))
+        assert [row["title"] for row in selected] == ["Offset", "Legacy", "Micro"]
+        assert selected[0]["following_at"] == rows[1]["played_at"]
+        assert selected[1]["following_at"] == rows[4]["played_at"]
+        assert selected[2]["following_at"] == rows[5]["played_at"]
+        assert len(store.play_log()) == 5
+    finally:
+        store.close()
