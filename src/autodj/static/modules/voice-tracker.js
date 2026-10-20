@@ -28,6 +28,7 @@
 import { requestJson, withDisabled } from "./api-client.js";
 import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
 
 const POLL_TICKS = 5;
 const WARN_SECONDS = 30;
@@ -35,9 +36,13 @@ const MAX_LISTED = 50;
 // Room for the form around the file, under the station's upload cap.
 const FORM_BYTES = 4096;
 const WAV_HEADER_BYTES = 44;
+const FOCUS_SETTLE_MS = 150;
+const FOCUS_WAIT_MS = 3000;
 
 export const NO_RECORDER_TEXT = "This browser cannot record audio. Try a current version of Firefox, Chrome, Edge or Safari.";
 export const INSECURE_TEXT = "Recording needs a secure connection: open AutoDJ over HTTPS, or on this computer at localhost.";
+const MICROPHONE_KEY = "autodj.voiceMicrophoneId";
+const MICROPHONE_LABEL_KEY = "autodj.voiceMicrophoneLabel";
 
 // 65.4 seconds is "1:05".
 export function clock(seconds) {
@@ -199,6 +204,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   interval = setInterval,
   objectUrl = (blob) => URL.createObjectURL(blob),
   revokeUrl = (url) => URL.revokeObjectURL(url),
+  storage = defaultStorage(),
 } = {}) {
   if (!root) return null;
   const doc = root.ownerDocument;
@@ -212,6 +218,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const closes = el("vt-closes");
   const airs = el("vt-airs");
   const recordButton = el("vt-record");
+  const microphoneSelect = el("vt-microphone");
+  const microphoneRefresh = el("vt-microphone-refresh");
+  const microphoneStatus = el("vt-microphone-status");
+  const testButton = el("vt-microphone-test");
+  const testPlayback = el("vt-microphone-playback");
   const timer = el("vt-timer");
   const playback = el("vt-playback");
   const placement = el("vt-placement");
@@ -233,6 +244,20 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   let take = null;
   let session = null;
   let starting = false;
+  let testing = null;
+  let testStarting = false;
+  let pendingTestStream = null;
+  let testGeneration = 0;
+  let microphoneChoices = [];
+  let microphoneListKnown = false;
+  let microphoneEpoch = 0;
+  let booking = false;
+  let bookingAbort = null;
+  let selectedMicrophone = {
+    id: readStorage(storage, MICROPHONE_KEY) || "",
+    label: readStorage(storage, MICROPHONE_LABEL_KEY) || "",
+  };
+  const stoppedTracks = new WeakSet();
   let generation = 0;
   let linked = null;
   let wasShown = false;
@@ -246,6 +271,21 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     message,
     { force: true, tone, mirror, dwellMs: 5000 },
   );
+
+  function afterFocus() {
+    const view = doc.defaultView;
+    const pause = () => new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS));
+    if (!view || typeof doc.hasFocus !== "function" || doc.hasFocus()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        view.removeEventListener("focus", done);
+        resolve(pause());
+      };
+      const timer = setTimeout(done, FOCUS_WAIT_MS);
+      view.addEventListener("focus", done, { once: true });
+    });
+  }
 
   // ---- Errors: words on the page, linked to the control, said once ----
 
@@ -264,13 +304,113 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     error.hidden = true;
   }
 
-  function fail(control, message) {
+  function microphoneLabel(id, label = "") {
+    if (!id) return "System default";
+    return microphoneChoices.find((item) => item.deviceId === id)?.label
+      || label || "the selected microphone";
+  }
+
+  function renderMicrophones(missing = null) {
+    if (!microphoneSelect) return;
+    const choices = [{ id: "", label: "System default" }, ...microphoneChoices.map((item) => ({
+      id: item.deviceId,
+      label: item.label || `Microphone ${microphoneChoices.indexOf(item) + 1}`,
+    }))];
+    if (selectedMicrophone.id && !choices.some((item) => item.id === selectedMicrophone.id)) {
+      choices.push({
+        id: selectedMicrophone.id,
+        label: `${selectedMicrophone.label || "Saved microphone"}${missing === null ? "" : ` (${missing ? "not connected" : "unavailable"})`}`,
+      });
+    }
+    microphoneSelect.replaceChildren(...choices.map((choice) => {
+      const option = doc.createElement("option");
+      option.value = choice.id;
+      option.textContent = choice.label;
+      return option;
+    }));
+    microphoneSelect.value = selectedMicrophone.id;
+  }
+
+  function microphoneNote(message) {
+    setText(microphoneStatus, message);
+    if (microphoneStatus) microphoneStatus.hidden = !message;
+    if (microphoneSelect) {
+      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-desc vt-microphone-status");
+      else microphoneSelect.setAttribute("aria-describedby", "vt-microphone-desc");
+    }
+  }
+
+  async function refreshMicrophones() {
+    const epoch = ++microphoneEpoch;
+    let devices;
+    try {
+      devices = await media()?.enumerateDevices?.();
+    } catch {
+      devices = null;
+    }
+    if (epoch !== microphoneEpoch) return;
+    if (Array.isArray(devices)) {
+      microphoneChoices = devices.filter((item) => item.kind === "audioinput" && item.deviceId && item.deviceId !== "default");
+      microphoneListKnown ||= devices.some((item) => item.kind === "audioinput" && item.label);
+    }
+    const present = !selectedMicrophone.id || microphoneChoices.some((item) => item.deviceId === selectedMicrophone.id);
+    renderMicrophones(microphoneListKnown ? !present : null);
+    if (selectedMicrophone.id && microphoneListKnown && !present) {
+      microphoneNote("The selected microphone is not connected. Choose another microphone or System default.");
+    } else if (!microphoneChoices.some((item) => item.label)) {
+      microphoneNote("Microphone names may appear after you allow access. Unnamed microphones can still be selected.");
+    } else if (!testing && !session) microphoneNote("");
+    const activeId = testing?.stream?.getAudioTracks?.()[0]?.getSettings?.()?.deviceId;
+    if (testing && activeId && microphoneListKnown && !microphoneChoices.some((item) => item.deviceId === activeId)) {
+      stopMicrophoneTest("The microphone disconnected, so the microphone test stopped. Choose another input.");
+      microphoneNote("The microphone disconnected during the test. Choose another input or System default.");
+    }
+  }
+
+  function saveMicrophone(id) {
+    const device = microphoneChoices.find((item) => item.deviceId === id);
+    selectedMicrophone = { id, label: id ? (device?.label || (selectedMicrophone.id === id ? selectedMicrophone.label : "")) : "" };
+    if (id) writeStorage(storage, MICROPHONE_KEY, id);
+    else removeStorage(storage, MICROPHONE_KEY);
+    if (id && selectedMicrophone.label) writeStorage(storage, MICROPHONE_LABEL_KEY, selectedMicrophone.label);
+    else removeStorage(storage, MICROPHONE_LABEL_KEY);
+    renderMicrophones();
+    microphoneNote("");
+  }
+
+  function requestedMicrophone() {
+    const audio = {
+      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    };
+    if (selectedMicrophone.id) audio.deviceId = { exact: selectedMicrophone.id };
+    return { audio };
+  }
+
+  function microphoneWords(stream, prefix) {
+    const settings = stream?.getAudioTracks?.()[0]?.getSettings?.();
+    const actual = settings?.deviceId;
+    const confirmed = actual && actual !== "default";
+    const label = confirmed && (microphoneChoices.find((item) => item.deviceId === actual)?.label
+      || (actual === selectedMicrophone.id ? selectedMicrophone.label : ""));
+    return confirmed
+      ? label ? `${prefix} ${label}.` : `${prefix} microphone; the browser confirmed its device ID but cannot provide its name.`
+      : prefix === "Recording from"
+        ? "The browser cannot confirm which microphone was used."
+        : `${prefix} The browser cannot confirm which microphone is active.`;
+  }
+
+  function reportMicrophone(stream, prefix) {
+    microphoneNote(microphoneWords(stream, prefix));
+  }
+
+  function fail(control, message, gate = null) {
     clearError();
     error.textContent = message;
     error.hidden = false;
     link(control, true);
     linked = control;
-    say(message, { tone: "error" });
+    if (gate) void Promise.resolve(gate).then(() => say(message, { tone: "error" }));
+    else say(message, { tone: "error" });
   }
 
   // ---- What the server says ----
@@ -439,6 +579,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function stopTracks(stream) {
     for (const track of stream?.getTracks?.() || []) {
+      if (stoppedTracks.has(track)) continue;
+      stoppedTracks.add(track);
       try { track.stop(); } catch (_) { /* already stopped */ }
     }
   }
@@ -502,6 +644,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // Listen back: a toggle, pressed while the take plays.
   async function listen() {
     clearError();
+    if (booking) {
+      fail(listenButton, "Wait for booking to finish first.");
+      return;
+    }
+    if (testing || testStarting || starting) {
+      fail(listenButton, testing || testStarting ? "Stop the microphone test first." : "Wait for microphone access to finish first.");
+      return;
+    }
     if (session) {
       fail(listenButton, "Stop recording first: press Record or Alt+R.");
       return;
@@ -528,6 +678,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function start() {
     clearError();
+    if (booking) {
+      fail(recordButton, "Wait for booking to finish first.");
+      return;
+    }
+    if (testing || testStarting) {
+      fail(recordButton, "Stop the microphone test before recording.");
+      return;
+    }
     const slot = data?.slot;
     if (!slot) {
       fail(recordButton, data?.reason
@@ -548,30 +706,31 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     starting = true;
     const asked = generation;
     let stream;
+    let focusGate = null;
     try {
       // Unprocessed: what the microphone hears, as a studio would want it.
-      stream = await devices.getUserMedia({
-        audio: {
-          channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-        },
-      });
+      stream = await devices.getUserMedia(requestedMicrophone());
+      focusGate = afterFocus();
     } catch (problem) {
+      if (asked !== generation) return;
       starting = false;
-      fail(recordButton, microphoneProblem(problem));
+      if (selectedMicrophone.id) microphoneNote(`Could not use ${microphoneLabel(selectedMicrophone.id, selectedMicrophone.label)}. Choose another microphone or System default. ${microphoneProblem(problem)}`);
+      fail(recordButton, microphoneProblem(problem), afterFocus());
       return;
     }
     if (asked !== generation) {
       // Signed out while the browser asked for the microphone.
-      starting = false;
       stopTracks(stream);
       return;
     }
-    if (!shown() || doc.visibilityState === "hidden") {
+    if (!root.isConnected || !shown() || doc.visibilityState === "hidden") {
       starting = false;
       stopTracks(stream);
       say("Recording did not start: the Voice tracks tab is not showing.");
       return;
     }
+    const labelRefresh = refreshMicrophones();
+    reportMicrophone(stream, "Recording from");
     let recorder;
     try {
       recorder = new Rec(stream);
@@ -586,6 +745,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     stopListening();
     const current = {
       recorder, stream, chunks: [], started: now(), slot, minutes: 0,
+      microphone: microphoneWords(stream, "Recording from"),
       warned: false, closing: false, stopping: false, done: false, cancelled: false, note: "",
     };
     recorder.addEventListener("dataavailable", (event) => {
@@ -605,10 +765,18 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     session = current;
+    void labelRefresh.then(() => {
+      if (session === current) {
+        current.microphone = microphoneWords(stream, "Recording from");
+        reportMicrophone(stream, "Recording from");
+      }
+    });
     starting = false;
     recordButton.setAttribute("aria-pressed", "true");
     renderTimer();
-    say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+    void Promise.resolve(focusGate).then(() => {
+      if (session === current) say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+    });
   }
 
   function stop(note = "") {
@@ -616,6 +784,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     if (!current || current.stopping) return;
     current.stopping = true;
     current.note = note;
+    stopTracks(current.stream);
     try {
       current.recorder.stop();
     } catch (_) {
@@ -640,12 +809,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     const blob = new Blob(current.chunks, { type: current.recorder.mimeType || "audio/webm" });
+    current.chunks = [];
     if (!blob.size) {
       renderTimer();
       fail(recordButton, "Nothing was recorded. Check the microphone, then press Record again.");
       return;
     }
     showTake(blob, seconds, current.slot);
+    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"));
     renderTimer();
     say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
   }
@@ -661,9 +832,16 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // Recording only goes on while the tab shows and the page is in view:
   // leaving either stops it, keeps the take and lets the microphone go.
   function guard() {
-    if (!session || session.stopping) return;
-    if (!shown()) stop("You left the Voice tracks tab, so recording stopped. ");
-    else if (doc.visibilityState === "hidden") stop("The page was hidden, so recording stopped. ");
+    const reason = !root.isConnected ? "The voice tracker closed" : !shown() ? "You left the Voice tracks tab" : doc.visibilityState === "hidden" ? "The page was hidden" : "";
+    if (!reason) return;
+    if (session && !session.stopping) stop(`${reason}, so recording stopped. `);
+    if (testing) stopMicrophoneTest(`${reason}, so the microphone test stopped.`);
+    if (testStarting) stopMicrophoneTest("");
+    if (starting) {
+      generation += 1;
+      starting = false;
+      testGeneration += 1;
+    }
   }
 
   function tick() {
@@ -709,6 +887,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function book(button) {
     clearError();
+    if (testing || testStarting || starting) {
+      fail(bookButton, "Stop microphone access before booking a voice track.");
+      return;
+    }
+    if (booking) return;
     if (session) {
       fail(bookButton, "Stop recording first: press Record or Alt+R.");
       return;
@@ -724,10 +907,17 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     }
     const slot = target(open);
     if (!slot) return;
-    await withDisabled(button, async () => {
+    booking = true;
+    const recorded = take;
+    const asked = generation;
+    const abort = new AbortController();
+    bookingAbort = abort;
+    stopListening();
+    try { await withDisabled(button, async () => {
       let wav;
       try {
-        wav = await toWav(take.blob, rate());
+        wav = await toWav(recorded.blob, rate());
+        if (asked !== generation || take !== recorded) return;
       } catch (_) {
         fail(bookButton, "This browser could not read the recording back. Record it again.");
         return;
@@ -745,8 +935,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       form.append("file", new File([wav], "voice-track.wav", { type: "audio/wav" }));
       let booked;
       try {
-        booked = await requestJson("/api/voice-tracks", { method: "POST", body: form });
+        booked = await requestJson("/api/voice-tracks", { method: "POST", body: form, signal: abort.signal });
+        if (asked !== generation || take !== recorded) return;
       } catch (problem) {
+        if (asked !== generation || abort.signal.aborted) return;
         if (problem.status === 409) await refresh();
         const latest = data?.slot;
         if (problem.status === 409 && take && latest && latest.slot_id !== slot.slot_id) {
@@ -761,7 +953,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       renderTimer();
       const when = booked.airs_in_s != null ? ` It airs in about ${roughly(booked.airs_in_s)}.` : "";
       say(`Booked ${booked.label || "the voice track"}.${when}`);
-    });
+    }); } finally {
+      if (bookingAbort === abort) { booking = false; bookingAbort = null; }
+    }
   }
 
   function discard() {
@@ -781,6 +975,85 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     say("Recording discarded.");
   }
 
+  function stopMicrophoneTest(message = "Microphone test stopped.") {
+    testGeneration += 1;
+    const current = testing;
+    testing = null;
+    testStarting = false;
+    try { testPlayback.pause(); } catch (_) { /* not playing */ }
+    testPlayback.srcObject = null;
+    stopTracks(current?.stream || pendingTestStream);
+    pendingTestStream = null;
+    testButton.setAttribute("aria-pressed", "false");
+    testButton.textContent = "Test microphone";
+    if (message && current) say(message);
+    if (!session) microphoneNote("");
+  }
+
+  async function toggleMicrophoneTest() {
+    clearError();
+    if (testing || testStarting) {
+      stopMicrophoneTest();
+      return;
+    }
+    if (session || starting || booking || listenButton.getAttribute("aria-pressed") === "true") {
+      fail(testButton, "Stop recording or listen-back before testing the microphone.");
+      return;
+    }
+    const devices = media();
+    if (typeof devices?.getUserMedia !== "function") {
+      fail(testButton, secure() ? NO_RECORDER_TEXT : INSECURE_TEXT);
+      return;
+    }
+    testStarting = true;
+    const asked = ++testGeneration;
+    let stream;
+    try {
+      stream = await devices.getUserMedia(requestedMicrophone());
+      if (asked !== testGeneration) {
+        stopTracks(stream);
+        return;
+      }
+      if (!root.isConnected || !shown() || doc.visibilityState === "hidden") {
+        stopTracks(stream);
+        testStarting = false;
+        return;
+      }
+      pendingTestStream = stream;
+      const focusGate = afterFocus();
+      const labelRefresh = refreshMicrophones();
+      testPlayback.srcObject = stream;
+      await testPlayback.play();
+      if (asked !== testGeneration) {
+        stopTracks(stream);
+        if (pendingTestStream === stream) pendingTestStream = null;
+        if (testPlayback.srcObject === stream) testPlayback.srcObject = null;
+        return;
+      }
+      pendingTestStream = null;
+      testing = { stream };
+      testStarting = false;
+      stream.getAudioTracks?.()[0]?.addEventListener?.("ended", () => {
+        if (testing?.stream === stream) stopMicrophoneTest("The microphone stopped, so the microphone test ended.");
+      }, { once: true });
+      testButton.setAttribute("aria-pressed", "true");
+      testButton.textContent = "Stop microphone test";
+      reportMicrophone(stream, "Testing");
+      void labelRefresh.then(() => { if (testing?.stream === stream) reportMicrophone(stream, "Testing"); });
+      void Promise.resolve(focusGate).then(() => {
+        if (testing?.stream === stream) say("Microphone test started. Use headphones to avoid feedback. Press Stop microphone test when finished.");
+      });
+    } catch (problem) {
+      stopTracks(stream);
+      if (asked !== testGeneration) return;
+      pendingTestStream = null;
+      testPlayback.srcObject = null;
+      testStarting = false;
+      if (selectedMicrophone.id) microphoneNote(`Could not use ${microphoneLabel(selectedMicrophone.id, selectedMicrophone.label)}. Choose another microphone or System default. ${microphoneProblem(problem)}`);
+      fail(testButton, microphoneProblem(problem), afterFocus());
+    }
+  }
+
   async function cancel(track, button) {
     await withDisabled(button, async () => {
       try {
@@ -795,6 +1068,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   }
 
   recordButton.addEventListener("click", () => void toggle());
+  microphoneSelect?.addEventListener("change", () => saveMicrophone(microphoneSelect.value));
+  microphoneRefresh?.addEventListener("click", () => void refreshMicrophones());
+  testButton?.addEventListener("click", () => void toggleMicrophoneTest());
   listenButton.addEventListener("click", () => void listen());
   playback.addEventListener("ended", () => listenButton.setAttribute("aria-pressed", "false"));
   bookButton.addEventListener("click", (event) => void book(event.currentTarget));
@@ -809,12 +1085,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     void toggle();
   });
   doc.addEventListener("visibilitychange", guard);
+  media()?.addEventListener?.("devicechange", () => { void refreshMicrophones(); });
   if (typeof globalThis.MutationObserver === "function") {
     new globalThis.MutationObserver(guard).observe(panel, { attributes: true, attributeFilter: ["hidden"] });
   }
   interval(tick, 1000);
   renderSlot();
   renderTimer();
+  void refreshMicrophones();
 
   return {
     refresh,
@@ -825,6 +1103,13 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     clear() {
       requestEpoch += 1;
       generation += 1;
+      starting = false;
+      bookingAbort?.abort();
+      bookingAbort = null;
+      booking = false;
+      testGeneration += 1;
+      if (testing) stopMicrophoneTest("");
+      else if (testStarting) stopMicrophoneTest("");
       if (session) {
         session.cancelled = true;
         stop();

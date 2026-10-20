@@ -127,6 +127,14 @@ intro is, the time left to book it and roughly when it airs. That change is the 
 song, because the next one is already mixed. The time left counts down on the page; it is not
 read out on its own.
 
+Choose **Microphone** before recording. The choice is remembered in this browser;
+**System default** forgets it. **Refresh microphones** updates the list; names may
+be hidden until permission is granted. The input status reports the acquired
+track's identity when the browser supplies it. An unavailable selected microphone
+is not silently replaced. Use **Test microphone** with headphones for a private
+monitor on the Preview output device, then **Stop microphone test** before recording.
+The monitor never books a take or joins the station output.
+
 1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
    moving focus, which suits a screen reader user who wants to stay on another control.

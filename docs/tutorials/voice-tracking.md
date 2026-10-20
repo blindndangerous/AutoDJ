@@ -82,20 +82,29 @@ if the explanation remains. Do not record against an unavailable slot.
 
 ## Capture and privately check one take
 
-1. Press **Record**. If the browser asks, allow microphone access for this site.
-2. Say “This is Practice radio. More music after this.” Keep the take to a few
+1. Choose the intended input in **Microphone**. AutoDJ remembers the choice in
+   this browser. **Refresh microphones** updates the list after connecting or
+   removing a device. If names are hidden, allow microphone permission; numbered
+   inputs can still be selected. Use **Test microphone** to hear a private live
+   monitor through **Preview output device**. Press **Stop microphone test** when
+   finished, and use headphones to avoid feedback.
+2. Press **Record**. If the browser asks, allow microphone access for this site.
+3. Say “This is Practice radio. More music after this.” Keep the take to a few
    seconds, then press **Record** again.
-3. Read the timer. It should describe a recorded duration and say **not booked
+4. Read the microphone status and timer. The status reports the active input
+   when the browser provides its track device settings; otherwise it says that
+   the browser cannot confirm it. The timer should describe a recorded duration and say **not booked
    yet**. The browser's microphone indicator should no longer show active capture.
-4. Press **Listen back**. Listen for your complete sentence. Press it again if
+5. Press **Listen back**. Listen for your complete sentence. Press it again if
    you want to stop the preview before it ends.
-5. Check **Booked voice tracks**. Your local take has not created a new booking.
+6. Check **Booked voice tracks**. Your local take has not created a new booking.
 
 The timer and absence of a booking establish the private state without relying
 on sound. Listening establishes whether the microphone captured usable speech.
 If the browser blocks recording, allow microphone access in that site's browser
-permissions and press Record again. For a missing microphone, connect/select one
-before retrying. On an insecure page, reopen using the secure or localhost
+permissions and press Record again. If the selected microphone is missing or
+unavailable, choose a different input or **System default**; an explicit choice
+is never silently replaced. On an insecure page, reopen using the secure or localhost
 address from the prerequisites; permissions alone cannot fix an insecure context.
 
 If the take is silent or clipped, check the input device and record again. A new
