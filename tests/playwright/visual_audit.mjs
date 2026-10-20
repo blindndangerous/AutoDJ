@@ -861,16 +861,28 @@ async function openShowStates(page, visit) {
   await page.locator("#shows-cancel").click();
 }
 
-// Voice tracks (#128): the open song change and a booked list are stood
-// in for (the audit server takes no breaks), and the microphone and the
-// recorder are stubbed before any page script, so Record works with no
-// device and no permission prompt.  window.__micRefusal names the error
-// the next request for the microphone fails with.
+// Voice tracks (#128): the open song change includes explicit queued and
+// predicted transition candidates plus a protected booked voice track.  The
+// editable rows exercise the native per-item selectors in the audit.  The
+// microphone and recorder are stubbed before any page script, so Record
+// works with no device or permission prompt.  window.__micRefusal names the
+// error the next request for the microphone fails with.
 const VOICE_CONTEXT = {
   station: "default", accepting: true, reason: null, now: null, next: null,
   slot: {
     slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
     pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
+    transition_revision: "d".repeat(64),
+    transition_items: [
+      { id: "e".repeat(24), kind: "liner", source: "automatic", label: "Predicted station ID",
+        committed: false, editable: true, deferred: false, current_action: "replace", default_action: "replace" },
+      { id: "f".repeat(24), kind: "liner", source: "queued", label: "Queued weather liner",
+        committed: true, editable: true, deferred: false, current_action: "after", default_action: "after" },
+      { id: `break:${"b".repeat(32)}`, kind: "booked_voice", source: "voice_track",
+        label: "Third Song into Fourth Song", committed: true, editable: false, deferred: false, default_action: "" },
+    ],
+    transition_order: ["e".repeat(24), "f".repeat(24), `break:${"b".repeat(32)}`],
+    transition_summary: ["Predicted station ID", "Queued weather liner", "Third Song into Fourth Song"],
     ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
     upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
   },
