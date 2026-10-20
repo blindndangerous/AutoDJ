@@ -19,7 +19,7 @@ Stations**. Every station supports these choices. Startup flags
 | Browser must stay running for this output | Yes | No | No; listener/continuous policy still applies |
 | Crossfades, EQ, transitions, liners | Browser path | Server path | Server path |
 | DJ mixing beatmatching | Separate Beatmatch on skip control | Server DJ mixing | Server DJ mixing |
-| Record and book a voice track | No server song-change slot | Available with breaks enabled | Available with breaks enabled |
+| Record and book a voice track | No server song-change slot | Available with saved-point transitions; external breaks may stay off | Available with saved-point transitions; external breaks may stay off |
 | Volume, mute, device | Local browser controls | Server sound-card controls | Listening-device controls; no change to broadcast level |
 | Live DJ and browser talkover | Unavailable | Unavailable | Available with live-input requirements |
 | Broadcast recording and outbound relays | Unavailable | Unavailable | Available when configured |

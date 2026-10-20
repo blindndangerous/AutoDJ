@@ -279,7 +279,7 @@ Station section: `dmca` in `station.json`. Set this switch in **Settings**, **So
 
 Station section: `breaks` in `station.json`.
 
-- `enabled`. Values: true or false. Default: false. Accepts DJ breaks on this station. **Take breaks on this station**.
+- `enabled`. Values: true or false. Default: false. Accepts external announcer uploads on this station. Manual voice tracks are independent. **Accept announcer uploads**.
 - `dj_placement`. Values: `auto` (Automatic), `talk_up` (Talk up the next song), or `standalone` (Between the songs). Default: `auto`. Places DJ breaks over an intro or between songs. **Where a DJ break goes**.
 - `min_intro_seconds`. Values: 0 to 60 seconds. Default: 2.0. Sets the shortest intro for automatic talk up. **Shortest intro to talk up (seconds)**.
 - `duck_db`. Values: -30 to 0 decibels or blank. Default: blank. Lowers music under a break; blank uses the voice liner setting. **Music under a break (decibels)**.

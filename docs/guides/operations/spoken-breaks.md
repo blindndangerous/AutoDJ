@@ -1,6 +1,6 @@
 # Book announcer breaks and browser voice tracks
 
-Enable breaks, authorize an announcer or record in a paired browser, and book speech for the open song change.
+Enable external announcer uploads or record in a paired browser, and book speech for the open song change.
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
@@ -24,15 +24,15 @@ that splices them in at once.
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
 off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
-**Take breaks on this station** and choose **Save break settings**. They work from then on, with
+**Accept announcer uploads** and choose **Save break settings**. They work from then on, with
 no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
 up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
 liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
 saved-point playback. The result of a save is said once.
 
-Turning breaks off drops the breaks still waiting for their song change, from the announcer
-program and the Voice tracks tab; a break already mixed into the next song change still plays,
-and the ad schedule's spots stay. From then on the announcer's `GET context` answers
+Turning breaks off drops announcer uploads still waiting for their song change; a break already
+mixed into the next song change still plays. Manual voice tracks and the ad schedule's spots stay
+booked. From then on the announcer's `GET context` answers
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
 Settings, Breaks", and an upload is refused with 409 and the same words.
 
@@ -53,8 +53,9 @@ Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
 effect at the next start. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
 under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
 and they take the place of definition values at every start from then on. When the saved
-switch differs from the station definition, the log says so once at start. With breaks off,
-AutoDJ picks songs exactly as before and the API says so. The upload limits, quotas and waiting
+switch differs from the station definition, the log says so once at start. With external uploads
+off and no ad schedule or manual voice tracker requesting a slot, AutoDJ does no advance slot
+planning. The upload limits, quotas and waiting
 times below are station settings:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
@@ -113,10 +114,11 @@ browser sends, is refused: these routes are for programs only.
 ## Voice tracking from the browser
 
 The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
-change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
-It needs breaks turned on for the station (Settings, Breaks, with saved-point playback);
-otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
-signed-in browser.
+change, using the same booking desk as announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+It works with server audio or stream output and saved-point transitions, even when external
+announcer uploads are off. Browser playback and stopped stations cannot render these tracks.
+Opening the tab requests advance slot planning; an unused tracker adds no planning work. No token
+is needed: the tab uses your signed-in browser.
 
 The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
 or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from

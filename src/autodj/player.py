@@ -1135,6 +1135,7 @@ class Player:
         # its samples the previous track's overlap already played, and how
         # it was picked (for "why this track" once it starts).
         self._pending_entry: IndexEntry | None = None
+        self._voice_tracking_requested = False
         self._pending_offset: int = 0
         self._pending_pick_mode: str = "seed"
         self._pending_clock_step: dict | None = None
@@ -1221,6 +1222,7 @@ class Player:
 
     def stop(self) -> None:
         """Wake and stop the playback loop, including empty-library waiting."""
+        self._voice_tracking_requested = False
         self._state.should_stop = True
         self._skip_event.set()
         self._render_ahead.stop(timeout=0)
@@ -3283,10 +3285,23 @@ class Player:
         desk = self.break_desk
         return (
             desk is not None
-            and desk.plans_slots
+            and (desk.plans_slots or self._voice_tracking_requested)
             and self._library is not None
             and self._cfg.playback.transition_mode == "saved_points"
         )
+
+    def request_voice_track_slot(self) -> bool:
+        """Start planning slots on demand for the server voice tracker."""
+        if (
+            self._dry_run
+            or self._library is None
+            or self._cfg.playback.transition_mode != "saved_points"
+            or self.break_desk is None
+        ):
+            return False
+        self._voice_tracking_requested = True
+        self._render_ahead.request_plan()
+        return True
 
     def _playing_remaining_s(self) -> float:
         """Seconds left of the playing render, overlap included."""

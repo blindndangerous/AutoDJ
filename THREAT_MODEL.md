@@ -515,7 +515,9 @@ takes the announcer path described above: the middleware's body cap (the same as
 upload), the declared length checked against the station's own limit before the body is read,
 the room held in the station's caps, the 60-second body deadline, the server's own file name, the
 one-at-a-time decode with the header checked first, and the quota, slot and per-slot limits,
-which announcer breaks and voice tracks share. A voice track is always a DJ break. Uploads and
+which announcer breaks and voice tracks share. A voice track is always a DJ break. It can be
+booked with server audio or stream output and saved-point transitions, independently of the
+external announcer switch. Turning that switch off drops only waiting announcer uploads. Uploads and
 cancels count against the station's `requests_per_minute`, shared by every open page; reading
 the open slot does not. A cancel finds only voice tracks, so a page cannot drop an announcer's
 break, and the announcer routes list, look up and cancel only announcer breaks, so an announcer
@@ -533,7 +535,8 @@ On-air safety: nothing an announcer does runs on the audio thread or waits for i
 mixed by the render-ahead worker one song ahead, as liners are; the mix bus only marks a break
 on the air through a short lock; the desk writes its log lines after releasing that lock. A break
 that cannot be decoded at render time is dropped and the music renders without it. The song
-change after the next song is picked early only on stations with `[breaks] enabled = true`.
+change after the next song is picked early only when external breaks, a due ad break, or a manual
+voice tracker request needs it; the tracker requests planning on demand.
 
 Every FFmpeg and `ffprobe` command that decodes a file or an upload now passes
 `-protocol_whitelist file,pipe`: library decoding (`load_with_ffmpeg`), loudness measurement and
