@@ -2216,10 +2216,14 @@ async function voiceTrackerProblems(page) {
   await page.locator("#tab-voice").click();
   await page.locator("#vt-slot").waitFor({ state: "visible" });
   const problems = [];
+  await page.waitForFunction(() => location.hash === "#voice"
+    && document.getElementById("tab-voice").getAttribute("aria-selected") === "true");
   const predictedChoice = page.locator(`#vt-transition-choice-${"e".repeat(24)}`);
-  await predictedChoice.focus();
-  await page.keyboard.press("End");
-  await page.keyboard.press("Home");
+  await predictedChoice.press("End");
+  await page.waitForFunction(() => document.getElementById(`vt-transition-choice-${"e".repeat(24)}`).value === "after");
+  await predictedChoice.press("Home");
+  await page.waitForFunction(() => document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)
+    ?.textContent.includes("skipped in this transition"));
   const choices = await page.evaluate(() => ({
     focus: document.activeElement?.id,
     predicted: document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)?.textContent,

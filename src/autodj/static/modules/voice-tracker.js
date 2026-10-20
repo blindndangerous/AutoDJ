@@ -519,10 +519,17 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     const planned = effectiveTransitionOrder(slot);
     if (planned) {
       const rows = new Map([...transitionItems.children].map((row) => [row.dataset.transitionId, row]));
-      for (const id of [...planned.order, ...items.filter((item) =>
-        item.editable && actionFor(item) === "replace").map((item) => item.id)]) {
+      let next = null;
+      const order = [...planned.order, ...items.filter((item) =>
+        item.editable && actionFor(item) === "replace").map((item) => item.id)];
+      for (const id of order.toReversed()) {
         const row = rows.get(id);
-        if (row) transitionItems.append(row);
+        if (!row) continue;
+        // Moving the focused native select resets WebKit's keyboard state.
+        if (!row.contains(active) && row.nextElementSibling !== next) {
+          transitionItems.insertBefore(row, next);
+        }
+        next = row;
       }
     }
     if (hadFocus && doc.activeElement !== active && active.isConnected) active.focus();
