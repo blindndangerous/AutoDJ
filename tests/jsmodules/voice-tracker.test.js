@@ -335,16 +335,16 @@ describe("voice tracker", () => {
     let select;
     const prepared = tracker({
       beforeInstall: () => {
-        const list = document.createElement("ul");
+        const list = byId("vt-transition-items") || document.createElement("ul");
         list.id = "vt-transition-items";
         const row = document.createElement("li");
         row.dataset.transitionId = "liner-1";
         select = document.createElement("select");
         select.innerHTML = '<option value="before">Before</option><option value="after">After</option>';
         select.value = "after";
-        row.append(select);
+        row.append(document.createElement("span"), document.createElement("label"), select);
         list.append(row);
-        byId("voice-tracker").append(list);
+        if (!list.isConnected) byId("voice-tracker").append(list);
       },
       toWav: async (_blob, _rate, _context, _pause, onDecoded) => {
         onDecoded({ speech: 1, clip: 1.4, tail: 0.4 });
@@ -362,6 +362,7 @@ describe("voice tracker", () => {
     await press("vt-record");
     await press("vt-record");
     await flush();
+    select = byId("vt-transition-items").querySelector("select");
     const forecastRequest = () => prepared.server.calls.filter((call) => call.method === "GET").at(-1).url;
     expect(forecastRequest()).toContain("transition_revision=revision-1");
     expect(decodeURIComponent(forecastRequest())).toContain(
