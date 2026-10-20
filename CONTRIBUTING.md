@@ -9,41 +9,104 @@ Shortest path from "I have an idea" to "my change is merged".
 git clone https://github.com/<your-fork>/autodj
 cd autodj
 
-# 2. Install with dev tools (Node.js is only needed for the JS tests, lint and audits)
-uv sync --frozen --all-extras
+# 2. Install base dependencies and dev tools, without model packages
+uv sync --frozen
+# Node.js is needed for frontend tests, lint and audits
 npm ci --ignore-scripts
 
-# 3. Wire pre-commit (installs the pre-commit, commit-msg and pre-push hooks)
-uv run pre-commit install
+# 3. Install the pre-commit, commit-msg and pre-push hooks
+uv run --frozen --no-sync pre-commit install
 
-# 4. Run reproducible Python and frontend gates
-uv run python scripts/ci_pytest.py
-npm run lint
-npm test
-npm run deadcode
+# 4. Run the fixed local smoke suite, then tests relevant to your change
+uv run --frozen --no-sync python scripts/ci_pytest.py --profile smoke
+uv run --frozen --no-sync python -m pytest --no-cov tests/unit/test_architecture_docs.py
 ```
 
-Full suite must remain green. `scripts/ci_pytest.py` fails below 90% line coverage (`fail_under` in
-`pyproject.toml`); there is no branch floor. Add a test only for a defect it would catch, not to
-raise the number. New behavior needs focused tests. Only add regression tests if they test a meaningful outcome.
+For a constrained contributor environment with only base dependencies and test
+tools, use `uv sync --frozen --no-default-groups --group test`. This is a supported
+no-model setup; hook and quality tools use the default dev setup above. Validate
+the no-model environment with
+`uv run --frozen --no-sync python scripts/ci_pytest.py --profile no-model`.
+This profile requires `torch`, `muq` and `transformers` to be absent, then runs
+the smoke suite and selected no-model, index and worker tests. Smoke and no-model
+profiles run serially without the full-suite coverage floor. Smoke tests must
+execute without skips. These profiles do not prove model execution works.
+
+For full local validation, install `uv sync --frozen --all-extras` and run
+`uv run --frozen --no-sync python scripts/ci_pytest.py --profile full`.
+The full profile requires model packages and at least 2 GiB plus 64 MiB of free
+scratch space. The runner uses a private temporary directory and checks loopback
+permissions before running tests; resolve a failed preflight before retrying.
+The default profile is full. It enforces 90% line coverage, with no branch floor.
+There is no whole-run duration guarantee. Use `--no-sync` for verification so
+`uv run` does not silently change the selected environment.
+
+## Choose checks for the change
+
+This table governs local validation scope. Select checks by what the change can
+execute or affect; a file extension alone does not establish scope. Add tests
+only for meaningful missing invariants, not to raise coverage numbers.
+
+| Change | Local evidence |
+| --- | --- |
+| Prose, links, documentation moves | Documentation structural checks and review against cited sources; check changed examples and procedures using the [documentation verification guide](docs/contributor/documentation-verification.md). |
+| Comments or test annotations that do not change execution | Structural checks, including ADR mappings when affected; explicitly reuse unaffected behavioral evidence as described below. |
+| Runtime behavior or executable test changes | Run affected tests, callers and integrations; use `uv run --frozen --no-sync python -m pytest --no-cov <selectors>` for focused iteration. |
+| Dependencies, test runner, fixtures or CI configuration | Validate the affected environment and runner/configuration behavior; exercise changed jobs in CI. |
+| Final merge candidate | Required CI must pass on the final head; local smoke, focused tests and reused evidence do not replace it. |
+
+Draft pushes run fast static/documentation checks and no-model smoke in CI.
+Marking a PR ready for review triggers full CI, as do subsequent pushes while it
+is ready. Required checks must actually execute on their designated CI runner;
+a passing job that skipped its required behavior is insufficient. Optional
+platform-specific skips remain allowed. Full Python CI explicitly requires the
+programme-review render tests to execute.
+
+Record the scope, reason, commands, revision, results and limitations in the PR.
+To reuse successful evidence, name its prior run/report and revision, identify
+unchanged relevant code, configuration, dependencies, options and environment,
+and explain why it covers the candidate. A documentation or annotation change
+can reuse unaffected behavioral evidence; a link to a test alone is not evidence
+that it ran. Repeat checks when relevant execution inputs change or coverage is
+uncertain. There is no automatic evidence cache.
+
+Do not automatically retry a failed behavioral test. Diagnose the failure,
+fix or escalate an environment problem, then retry once. For a suspected baseline
+failure, reproduce it once on the unchanged base in the same environment, record
+both results and link follow-up work. Stop chasing a green run; a caused
+regression must be fixed, and unresolved required CI failures block merging.
 
 ## Checks before a push
 
-`uv run pre-commit install` installs a pre-push hook as well as the commit hooks. When a push changes web
-UI files (`src/autodj/static/`), the frontend tests (`tests/jsmodules/`), or the npm, Vitest or ESLint
-configuration, the hook runs two checks from CI's frontend job:
+Keep installed hooks enabled. Existing hooks read the updated configuration;
+reinstalling them is unnecessary. Commits run quick checks. Python-related
+pushes run the fixed smoke suite; choose relevant tests from the table above
+before pushing. Expensive quality and audit hooks are available explicitly:
+
+```bash
+uv run --frozen --no-sync pre-commit run --all-files --hook-stage manual
+```
+
+These checks remain in full CI. The secret-scanning baseline stays enabled.
+To run applicable commit and pre-push hooks manually, use:
+
+```bash
+uv run --frozen --no-sync pre-commit run --all-files
+uv run --frozen --no-sync pre-commit run --all-files --hook-stage pre-push
+```
+
+When a push changes web UI files (`src/autodj/static/`), frontend tests
+(`tests/jsmodules/`), or npm, Vitest or ESLint configuration, the hook also runs:
 
 - `knip`, the unused-code scan, over the whole project.
-- The Vitest tests related to the pushed files: tests that import a changed file, and tests
-  that read it or mention it by name. A configuration-only change may have no related tests.
+- Vitest tests related to the pushed files: tests that import a changed file,
+  read it or mention it by name. A configuration-only change may have no related tests.
 
-Pushes that change only Python or documentation skip both. The hook needs `node_modules`; if it
-is missing, the hook stops and asks you to run `npm ci --ignore-scripts`. CI uses Node.js 26, as `engines` in package.json says.
-CI still runs the full Vitest suite. Run `npm test` yourself after a large frontend change.
-To run every pre-push check by hand, use
-`uv run pre-commit run --all-files --hook-stage pre-push`.
-
-If a pre-push check fails, fix the cause and push again rather than bypassing the hook.
+Python-only and documentation-only pushes skip those frontend checks. The hook
+needs `node_modules`; if missing, run `npm ci --ignore-scripts`. CI uses Node.js
+26, as `engines` in package.json says, and full CI runs the complete Vitest suite.
+Run `npm test` locally after a large frontend change. Fix failed hooks rather
+than bypassing them; use the failure protocol above for behavioral tests.
 
 ## Writing documentation
 
@@ -145,7 +208,8 @@ ADR/doc changes and mapped-test renames. The read-only check also runs in the
 commit hook and normal pytest/CI. It verifies local links, status/index agreement,
 stable constraint IDs, and reciprocal test selectors; it does not run behavioral
 tests or approve decisions. Follow the [mapping rules](docs/adr/README.md#constraint-traceability-and-local-checks),
-keep manual/gap evidence explicit, and run the affected tests separately.
+keep manual/gap evidence explicit, and select execution or evidence reuse using
+the [change-to-check table](#choose-checks-for-the-change).
 Record an ADR disposition and rationale in every PR, even when none is needed.
 
 Link applicable ADRs and acceptance criteria in the PR, identify evidence for
@@ -176,19 +240,12 @@ Use the PR template and check the following as applicable:
 - Use short native form labels; keep longer help outside the label, readable on demand without `aria-describedby`. Keep concise format hints, active restrictions, station context and validation errors associated with their controls, including `aria-invalid` and error focus. In Settings, use `data-help` when visibility logic needs to hide or show that help.
 - Use the same numeric times and concise counts for visual and screen-reader output; follow the [UI wording guidance](docs/accessibility-testing.md#ui-wording) rather than assuming numbers need spoken-word replacements.
 - Leave `CHANGELOG.md` alone; the release notes are written when releasing.
-- Run local tests and lint, type, and security checks relevant to what the change could break,
-  including affected callers and integrations. Documentation-only changes need content and link
-  checks; workflow changes need configuration validation and the affected jobs exercised in CI.
-  Full CI must pass on the final revision before merging; focused local checks do not replace it.
-- Broaden local validation for shared behavior, dependencies, security boundaries, failures, or
-  unresolved risks. Repeat successful checks when relevant code, configuration, or dependencies
-  change, or new evidence warrants it; do not rerun them solely to duplicate a completed gate.
-  Record what was checked and any remaining limitations in the PR.
-- Keep installed hooks enabled. Commits run quick hooks; pushes run the applicable full-suite
-  and slower checks. To run every hook manually, use `uv run pre-commit run --all-files` followed
-  by `uv run pre-commit run --all-files --hook-stage pre-push`. These commands are available for
-  broader validation, not an additional mandatory repeat after equivalent checks have passed.
-- For setup, configuration, dependency, or runtime changes, run `uv run autodj doctor` against
+- Follow the [change-to-check table](#choose-checks-for-the-change), including
+  affected callers and integrations, and record results and limitations. Required
+  CI must pass on the final head before merging.
+- Keep installed hooks enabled; use the commands in
+  [Checks before a push](#checks-before-a-push) for explicit broader validation.
+- For setup, configuration, dependency, or runtime changes, run `uv run --frozen --no-sync autodj doctor` against
   the intended local configuration.
 - For web UI changes, start AutoDJ and run Playwright Chromium audit with
   `AUTODJ_BROWSERS=chromium npm run audit:ci`. CI does not run WebKit, so also run
