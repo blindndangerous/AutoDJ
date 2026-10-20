@@ -79,6 +79,18 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     assert named["slot"]["slot_id"] == slot["slot_id"]
 
 
+def test_deeply_nested_transition_choices_are_refused_before_storing_audio(station):
+    slot = voice(station)["slot"]
+    response = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[" * 1200 + "]" * 1200,
+    )
+    assert response.status_code == 422
+    assert files(station.desk) == []
+
+
 def test_voice_track_booking_revalidates_the_transition_plan_revision(station):
     slot = voice(station)["slot"]
     assert len(slot["transition_revision"]) == 64
