@@ -109,7 +109,8 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
     return {
         path.relative_to(root): (
             path.is_dir(),
-            path.stat().st_size,
+            # Transient SQLite WAL sidecars can also change directory size.
+            None if path.is_dir() else path.stat().st_size,
             # Read-only SQLite connections may create transient WAL sidecars.
             None if path.is_dir() else path.stat().st_mtime_ns,
             None if path.is_dir() else sha256_file(path),
