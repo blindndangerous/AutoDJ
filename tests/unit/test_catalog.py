@@ -705,14 +705,14 @@ def test_unembedded_count_matches_paths_and_tracks_external_changes(tmp_path: Pa
         catalog.put_entry(entry(songs[0]))
         catalog.put_entry(entry(songs[1]))
         catalog.put_entry(entry(songs[2]))
-        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
+        assert catalog.unembedded_count() == len(list(catalog.iter_unembedded_paths())) == 0
 
         other.update_source(nested_source["id"], recursive=True, advanced=True)
-        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
+        assert catalog.unembedded_count() == len(list(catalog.iter_unembedded_paths())) == 1
         set_vector(other, songs[1], np.ones(FEATURE_DIM, dtype=np.float32))
-        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 0
+        assert catalog.unembedded_count() == len(list(catalog.iter_unembedded_paths())) == 0
         other.put_entry(entry(nested / "new.flac"))
-        assert catalog.unembedded_count() == len(catalog.unembedded_paths()) == 1
+        assert catalog.unembedded_count() == len(list(catalog.iter_unembedded_paths())) == 1
 
 
 def test_removing_entry_cascades_to_vector(tmp_path: Path) -> None:

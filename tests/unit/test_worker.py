@@ -159,7 +159,7 @@ def test_ctrl_c_finishes_the_song_in_hand_and_gives_the_rest_back(server):
     assert stats.done == 1
     assert "/api/worker/release" in transport.paths
     assert server.manager.analysis_queue.held_paths() == set()
-    assert len(server.manager.catalog.unembedded_paths()) == 2
+    assert len(list(server.manager.catalog.iter_unembedded_paths())) == 2
 
 
 def test_a_song_that_fails_is_reported_and_held_back(server):

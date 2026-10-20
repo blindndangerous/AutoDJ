@@ -1303,13 +1303,6 @@ class LibraryCatalog:
         """
         return self._unembedded_paths(ordered=True)
 
-    def unembedded_paths(self) -> list[str]:
-        """Paths of music records with no vector under an advanced, non-liner source.
-
-        Songs longer than :meth:`advanced_max_minutes` are left out.
-        """
-        return list(self.iter_unembedded_paths())
-
     def unembedded_count(self) -> int:
         """Count pending music without sorting or materializing its paths."""
         return sum(1 for _ in self._unembedded_paths(ordered=False))
@@ -1323,7 +1316,7 @@ class LibraryCatalog:
     ) -> list[dict]:
         """Records the analysis job should embed, in path order.
 
-        :meth:`unembedded_paths` whose file exists, leaving out *exclude*
+        :meth:`iter_unembedded_paths` whose file exists, leaving out *exclude*
         (normalized paths), at most *limit* of them.  A file check only for
         the records returned.
         """

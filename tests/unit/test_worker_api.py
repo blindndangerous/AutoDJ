@@ -584,10 +584,6 @@ def test_claim_pages_past_missing_held_and_lost_leases(server, monkeypatch):
     import autodj.catalog as catalog_module
 
     monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 1, raising=False)
-    # The iterator must not allocate the legacy full pending list.
-    monkeypatch.setattr(
-        server.manager.catalog, "unembedded_paths", lambda: pytest.fail("eager backlog")
-    )
     server.songs[0].unlink()
     queue = server.manager.analysis_queue
     record = server.manager.catalog.record_for_path(server.songs[1])
@@ -617,3 +613,18 @@ def test_claim_continues_after_losing_a_page_to_another_worker(server, monkeypat
     assert len(result["songs"]) == 2
     assert lost[0].lease_id not in {song["lease"] for song in result["songs"]}
     assert result["waiting"] == 3  # Exact pending count still includes leased songs.
+
+
+def test_small_claim_does_not_consume_the_entire_candidate_iterator(server, monkeypatch):
+    catalog = server.manager.catalog
+    original = catalog.iter_unembedded_paths
+    examined = []
+
+    def observed():
+        for path in original():
+            examined.append(path)
+            yield path
+
+    monkeypatch.setattr(catalog, "iter_unembedded_paths", observed)
+    assert len(claim(server, server.token()[1], batch=1)["songs"]) == 1
+    assert len(examined) == 1
