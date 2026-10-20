@@ -272,19 +272,34 @@ describe("voice tracker", () => {
     server.slot = slot(undefined, {
       transition_revision: "c".repeat(64),
       transition_items: [
-        { id: "queued-id", label: "Station ID", kind: "liner", committed: true, editable: true, default_action: "after" },
-        { id: "auto-id", label: "Auto liner", kind: "liner", committed: false, editable: true, default_action: "replace" },
+        { id: "queued-id", label: "Station ID", kind: "liner", source: "queued", committed: true, editable: true, default_action: "after" },
+        { id: "auto-id", label: "Auto liner", kind: "liner", source: "automatic", committed: false, editable: true, default_action: "after" },
+        { id: "break:news", label: "News break", kind: "booked_break", source: "announcer", committed: true, editable: false, default_action: "" },
       ],
-      transition_order: ["queued-id", "auto-id"],
-      transition_summary: ["Station ID", "Auto liner"],
+      transition_order: ["auto-id", "break:news", "queued-id"],
+      transition_summary: ["Auto liner", "News break", "Station ID"],
     });
     await controls.refresh();
     const controlsList = byId("vt-transition-items").querySelectorAll("select");
     expect(byId("vt-transition").hidden).toBe(false);
-    expect([...controlsList].map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
-      "Position for Station ID:", "Position for Auto liner:",
+    expect([...controlsList].filter((control) => !control.hidden)
+      .map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
+      "Position for Auto liner:", "Position for Station ID:",
     ]);
-    expect([...controlsList].map((control) => control.value)).toEqual(["after", "replace"]);
+    expect([...controlsList].filter((control) => !control.hidden).map((control) => control.value))
+      .toEqual(["after", "after"]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["Auto liner (predicted)", "News break (committed)", "Station ID (committed)"]);
+    controlsList[0].focus();
+    controlsList[0].value = "replace";
+    controlsList[0].dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.activeElement).toBe(controlsList[0]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["News break (committed)", "Station ID (committed)", "Auto liner (skipped in this transition)"]);
+    const autoSelect = [...byId("vt-transition-items").children]
+      .find((row) => row.dataset.transitionId === "auto-id").querySelector("select");
+    autoSelect.value = "after";
+    autoSelect.dispatchEvent(new Event("change", { bubbles: true }));
     expect(byId("vt-transition-summary").textContent).toContain("Your new voice track");
     await press("vt-record");
     await press("vt-record");
@@ -292,7 +307,7 @@ describe("voice tracker", () => {
     const post = server.calls.find((call) => call.method === "POST");
     expect(post.body.get("transition_revision")).toBe("c".repeat(64));
     expect(JSON.parse(post.body.get("transition_choices"))).toEqual([
-      { id: "queued-id", action: "after" }, { id: "auto-id", action: "replace" },
+      { id: "queued-id", action: "after" }, { id: "auto-id", action: "after" },
     ]);
   });
 

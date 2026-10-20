@@ -220,6 +220,14 @@ def _slot_view(
             known.add(key)
     if plan.transition_order:
         transition_order = [key for key in plan.transition_order if key in known]
+        # The renderer appends breaks booked outside the frozen voice-track
+        # plan after its ordered items. Keep the API's effective order in sync.
+        transition_order.extend(
+            item["id"]
+            for item in transition_items
+            if item["kind"] in {"booked_voice", "booked_break"}
+            and item["id"] not in transition_order
+        )
     else:
         candidate_order = [item.item_id for item in plan.transition_items if item.editable]
         split = next(
@@ -514,12 +522,15 @@ def install_breaks(router: StationRouter) -> None:
             try:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
                     raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
-                await asyncio.to_thread(
-                    station.player.book_break,
-                    item,
-                    transition_revision=transition_revision,
-                    transition_choices=transition_choices or (),
-                )
+                if transition_revision is None:
+                    await asyncio.to_thread(station.player.book_break, item)
+                else:
+                    await asyncio.to_thread(
+                        station.player.book_break,
+                        item,
+                        transition_revision=transition_revision,
+                        transition_choices=transition_choices or (),
+                    )
             except BreakError as exc:
                 slot = await asyncio.to_thread(_current_slot, station)
                 return refused(exc.status, exc.detail, exc.reason, slot)

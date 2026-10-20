@@ -132,6 +132,33 @@ def test_voice_track_booking_revalidates_the_transition_plan_revision(station):
     assert f"break:{first_id}" not in voice(station)["slot"]["transition_order"]
 
 
+def test_custom_transition_view_includes_later_announcer_breaks_in_render_order(station):
+    slot = voice(station)["slot"]
+    booked_voice = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[]",
+    )
+    assert booked_voice.status_code == 201, booked_voice.text
+    voice_id = booked_voice.json()["break_id"]
+
+    external = station.upload(slot, label="Station announcement")
+    assert external.status_code == 201, external.text
+    external_id = external.json()["break_id"]
+
+    updated = voice(station)["slot"]
+    voice_key = f"break:{voice_id}"
+    external_key = f"break:{external_id}"
+    ids = [item["id"] for item in updated["transition_items"]]
+    assert updated["transition_order"] == [voice_key, external_key]
+    assert all(key in ids for key in updated["transition_order"])
+    assert updated["transition_summary"] == [
+        next(item["label"] for item in updated["transition_items"] if item["id"] == key)
+        for key in updated["transition_order"]
+    ]
+
+
 def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
     station = Station(tmp_path, min_intro_seconds=5.0)
     slot = voice(station)["slot"]
