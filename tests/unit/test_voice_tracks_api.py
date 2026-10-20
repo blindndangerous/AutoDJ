@@ -68,22 +68,95 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
         "max_bytes": 40 * 1024 * 1024,
         "max_seconds": 300.0,
         "sample_rate": 44100,
-        "dj_placement": "auto",
-        "min_intro_s": 2.0,
         "max_per_slot": 2,
     }
     assert context["tracks"] == []
+    assert slot["queued_chain_speech_s"] == 0
+    assert slot["queued_chain_clip_s"] == 0
     assert "history" not in context and "requests" not in context
     # The same station by name.
     named = voice(station, "/api/stations/default/voice-tracks")
     assert named["slot"]["slot_id"] == slot["slot_id"]
 
 
-def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
+def test_context_forecasts_the_whole_queued_voice_chain_and_cue_tails(station):
+    first = book(station, placement="auto").json()
+    first_item = station.desk.get(first["break_id"])
+    context = voice(station)
+    slot = context["slot"]
+    assert slot["queued_chain_speech_s"] == pytest.approx(first_item.cues.speech)
+    assert slot["queued_chain_clip_s"] == pytest.approx(first_item.cues.end - first_item.cues.start)
+    assert slot["queued_chain_clip_s"] > slot["queued_chain_speech_s"]
+
+    second = book(station, placement="auto").json()
+    second_item = station.desk.get(second["break_id"])
+    slot = voice(station)["slot"]
+    assert slot["queued_chain_speech_s"] == pytest.approx(
+        first_item.cues.speech + second_item.cues.speech
+    )
+    assert slot["queued_chain_clip_s"] == pytest.approx(
+        first_item.cues.end - first_item.cues.start + second_item.cues.end - second_item.cues.start
+    )
+
+
+def test_manual_fit_ignores_announcer_intro_minimum(tmp_path):
     station = Station(tmp_path, min_intro_seconds=5.0)
     slot = voice(station)["slot"]
-    assert slot["auto_placement"] == "standalone"
-    assert "shorter than 5 s" in slot["auto_note"]
+    assert slot["auto_placement"] == "talk_up"
+    assert slot["auto_note"] is None
+
+
+def test_voice_forecast_uses_playback_rate_for_both_music_windows(station):
+    c, d = station.entries[2:]
+    c._prepared_points = {"start": 0.25, "outro": 14.0, "segue": 18.0, "end": 20.0}
+    d._prepared_points = {"start": 0.25, "intro": 2.25, "segue": 18.0, "end": 20.0}
+    station.player.music_playback_rate = lambda _entry: 2.0
+    slot = voice(station)["slot"]
+    assert slot["upcoming_intro_s"] == pytest.approx(1.0)
+    assert slot["ending_outro_s"] == pytest.approx(2.0)
+
+
+def test_voice_forecast_query_is_read_only_and_validated(station):
+    plan = station.player._slot_plan
+    before = (plan.slot_id, plan.pinned, tuple(item.break_id for item in station.desk.listing()))
+    response = voice(station, "/api/voice-tracks?speech_s=5.25&tail_s=0.4&placement=talk_up")
+    forecast = response["slot"]["voice_forecast"]
+    assert set(forecast) == {
+        "recording_start_s",
+        "music_entry_s",
+        "chain_speech_s",
+        "chain_clip_s",
+        "speech_without_music_s",
+    }
+    assert forecast["chain_speech_s"] >= 5.25
+    assert forecast["chain_clip_s"] >= 5.65
+    assert (
+        plan.slot_id,
+        plan.pinned,
+        tuple(item.break_id for item in station.desk.listing()),
+    ) == before
+
+    for query in (
+        "speech_s=-0.1",
+        "placement=overlap",
+        "speech_s=600&tail_s=0.01",
+    ):
+        reply = station.client.get(f"/api/voice-tracks?{query}")
+        assert reply.status_code == 422
+
+
+def test_voice_track_admission_fails_closed_when_hard_event_timing_is_unavailable(
+    station, monkeypatch
+):
+    def unavailable(*_args):
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(station.player, "voice_track_crosses_hard_boundary", unavailable)
+    reply = book(station, placement="auto")
+    assert reply.status_code == 409
+    assert reply.json()["reason"] == "scheduled_boundary"
+    assert "could not be checked" in reply.json()["detail"]
+    assert files(station.desk) == []
 
 
 def test_a_voice_track_is_booked_as_a_dj_break_and_rendered(station):

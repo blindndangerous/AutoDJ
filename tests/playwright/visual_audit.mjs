@@ -870,6 +870,7 @@ const VOICE_CONTEXT = {
   station: "default", accepting: true, reason: null, now: null, next: null,
   slot: {
     slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
+    ending_outro_s: 5, queued_chain_speech_s: 4, queued_chain_clip_s: 4.4,
     pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
     ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
     upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
@@ -915,10 +916,47 @@ async function standInForVoiceTracker(page) {
         this.dispatchEvent(new Event("stop"));
       }
     };
+    window.OfflineAudioContext = class {
+      constructor(channels, length, sampleRate) {
+        this.channels = channels;
+        this.length = length;
+        this.sampleRate = sampleRate;
+      }
+
+      async decodeAudioData() {
+        // recordingToWav asks the browser to decode/resample at its target
+        // WAV rate. Keep this synthetic decoded buffer at that requested rate.
+        const rate = this.sampleRate;
+        const samples = new Float32Array(rate * 5);
+        samples.fill(0.5, rate / 2, rate * 3.5);
+        return {
+          numberOfChannels: 1, length: samples.length, sampleRate: rate,
+          getChannelData: () => samples,
+        };
+      }
+    };
   });
-  await page.route("**/api/voice-tracks", (route) => (route.request().method() === "GET"
-    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(VOICE_CONTEXT) })
-    : route.continue()));
+  await page.route("**/api/voice-tracks**", (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = JSON.parse(JSON.stringify(VOICE_CONTEXT));
+    const url = new URL(route.request().url());
+    const speech = Number(url.searchParams.get("speech_s"));
+    if (url.searchParams.has("speech_s")) {
+      const tail = Number(url.searchParams.get("tail_s") || 0);
+      // Mirror the forecast response fields used by the page, using the
+      // fixture's queued speech/clip totals and the decoded take cues.
+      response.slot.voice_forecast = {
+        recording_start_s: 1,
+        music_entry_s: 2,
+        chain_speech_s: (response.slot.planned_liner_speech_s || 0)
+          + (response.slot.queued_chain_speech_s || 0) + speech,
+        chain_clip_s: (response.slot.planned_liner_clip_s || 0)
+          + (response.slot.queued_chain_clip_s || 0) + speech + tail,
+        speech_without_music_s: speech,
+      };
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
+  });
 }
 
 // Voice tracks while recording, with a take to book, and with the
@@ -931,6 +969,11 @@ async function openVoiceStates(page, visit) {
   await visit("voice/recording");
   await record.click();
   await page.waitForFunction(() => /^Recorded/.test(document.getElementById("vt-timer").textContent));
+  await page.waitForFunction(() => document.getElementById("vt-fit").textContent.includes("Full chain speech"));
+  const forecast = await page.locator("#vt-fit").textContent();
+  if (!forecast.includes("Full chain speech") || !forecast.includes("tail")) {
+    throw new Error(`prepared voice forecast is missing queued speech or cue tail: ${forecast}`);
+  }
   await visit("voice/recorded");
   await page.locator("#vt-discard").click();
   await page.evaluate(() => { window.__micRefusal = "NotAllowedError"; });

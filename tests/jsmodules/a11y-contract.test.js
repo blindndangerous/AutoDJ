@@ -3233,12 +3233,11 @@ describe("static accessibility contracts", () => {
     const placement = document.getElementById("vt-placement");
     expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
     expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
-    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "talk_up", "standalone"]);
-    const outro = document.getElementById("vt-allow-outro");
-    expect(outro.getAttribute("type")).toBe("checkbox");
-    expect(outro.parentElement.classList.contains("settings-check")).toBe(true);
-    expect(document.querySelector('label[for="vt-allow-outro"]').textContent).toBe("Start over the ending song's outro");
-    expect(outro.getAttribute("aria-describedby")).toBe("vt-allow-outro-desc");
+    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "standalone"]);
+    expect([...placement.options].map((option) => option.textContent)).toEqual([
+      "Fit over outro and intro", "Between songs",
+    ]);
+    expect(document.getElementById("vt-allow-outro")).toBeNull();
     // Listen back is a named toggle; the player itself is never shown.
     const player = document.getElementById("vt-playback");
     expect(player.tagName).toBe("AUDIO");

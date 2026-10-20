@@ -143,19 +143,22 @@ The monitor never books a take or joins the station output.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
    Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
-3. Choose the **Placement**: **Automatic** (follows **Where a DJ break goes** in Settings, Breaks;
-   the description under it says what it will do for this change), **Talk up the next song's
-   intro** (your voice ends as the vocal starts), or **Standalone, between the songs**. For a
-   talk-up, **Start over the ending song's outro** lets your voice begin while the ending song
-   plays out.
+3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
+   Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;
+   the original tail remains. When speech exceeds that musical window, the incoming song
+   waits so its vocal cannot cover the speech. **Between songs** plays a clean break instead.
+   The tab shows usable outro, intro, recorded and detected speech lengths, and the estimated
+   voice start, next-song entry and speech without song music. After WAV preparation, the
+   estimate includes the planned liner and queued-break cues and uses the playout timing rules;
+   changing placement refreshes it. Time left to book is a separate render-ahead deadline: a
+   longer outro does not extend it.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
 The recording state is said once when recording starts and stops, then once a minute, and 30
 seconds before the length limit or before the song change closes. Recording stops by itself at
-three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
-that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
-whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+three minutes or sooner if the station's upload and storage limits cannot hold the take. The browser
+prepares the WAV in chunks and caches it for private listen-back and booking.
 Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
 tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
 

@@ -3046,7 +3046,7 @@
       <p id="vt-help">
         Record a DJ break for the open song change, listen back, then book it.
         The song change after the next song is the one still open: the next one is already mixed.
-        Your voice plays over the next song's intro (a talk-up) or between the songs.
+        Your voice fits across the ending outro and next intro, or plays between songs.
         Alt+R starts and stops recording.
       </p>
 
@@ -3056,7 +3056,9 @@
         <dl id="vt-slot" class="vt-facts" hidden>
           <dt>Ending song</dt><dd id="vt-ending"></dd>
           <dt>Next song</dt><dd id="vt-upcoming"></dd>
-          <dt>Intro of the next song</dt><dd id="vt-intro"></dd>
+          <dt>Usable ending outro</dt><dd id="vt-outro"></dd>
+          <dt>Usable next intro</dt><dd id="vt-intro"></dd>
+          <dt>Time available for speech</dt><dd id="vt-window"></dd>
           <dt>Time left to book</dt><dd id="vt-closes"></dd>
           <dt>Airs in about</dt><dd id="vt-airs"></dd>
         </dl>
@@ -3090,19 +3092,12 @@
         <div class="settings-row">
           <label for="vt-placement">Placement</label>
           <select id="vt-placement" aria-describedby="vt-placement-desc">
-            <option value="auto">Automatic</option>
-            <option value="talk_up">Talk up the next song's intro</option>
-            <option value="standalone">Standalone, between the songs</option>
+            <option value="auto">Fit over outro and intro</option>
+            <option value="standalone">Between songs</option>
           </select>
         </div>
         <span class="setting-desc" id="vt-placement-desc"></span>
-        <div class="settings-check">
-          <input type="checkbox" id="vt-allow-outro" aria-describedby="vt-allow-outro-desc">
-          <label for="vt-allow-outro">Start over the ending song's outro</label>
-        </div>
-        <span class="setting-desc" id="vt-allow-outro-desc">
-          For a talk-up: your voice may begin while the ending song plays out, not only after it.
-        </span>
+        <p id="vt-fit">Record a take to estimate its fit.</p>
         <div class="vt-actions">
           <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
           <button type="button" id="vt-book">Book voice track</button>
