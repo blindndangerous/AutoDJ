@@ -49,8 +49,12 @@ def runtime_environment(environment: Path, backend: str) -> dict[str, str]:
     """Use the same device policy and cache locations for setup and later runs."""
     result = os.environ.copy()
     result["AUTODJ_RUNTIME"] = "current"
-    if backend == "cpu":
+    if backend in {"cpu", "no-model"}:
         result["AUTODJ_GPU"] = "0"
+    if backend == "no-model":
+        result["AUTODJ_NO_MODEL"] = "1"
+    else:
+        result.pop("AUTODJ_NO_MODEL", None)
     if backend == "amd":
         result["MIOPEN_USER_DB_PATH"] = str(environment / "miopen/db")
         result["MIOPEN_CUSTOM_CACHE_DIR"] = str(environment / "miopen/cache")
@@ -115,7 +119,7 @@ def install_commands(
     if not python_path(environment).is_file():
         commands.append(["uv", "venv", "--python", "3.14", "--seed", str(environment)])
     platform_recipe = _platform_recipe(root, backend, system, machine, amd_arch)
-    if backend != "cpu" and platform_recipe is None:
+    if backend not in {"cpu", "no-model"} and platform_recipe is None:
         raise ValueError(f"No automatic {backend} installation recipe for {system}.")
     if platform_recipe and platform_recipe.get("packages"):
         constraints = root / ".uv" / f"setup-{backend}-constraints.txt"
@@ -146,7 +150,15 @@ def install_commands(
         )
     else:
         commands.append(
-            ["uv", "pip", "install", "--python", str(python_path(environment)), "-e", ".[all]"]
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python_path(environment)),
+                "-e",
+                "." if backend == "no-model" else ".[all]",
+            ]
         )
     return commands
 
@@ -209,8 +221,9 @@ def create_configuration(root: Path, port: int) -> None:
 def initialize_paths(root: Path, python: Path, env: dict[str, str]) -> None:
     """Check audio imports, then let AutoDJ resolve and validate its own paths."""
     code = (
-        "import muq, torchaudio, sounddevice, soundfile; "
-        "from autodj.config import load_config; c=load_config(); "
+        ("" if env.get("AUTODJ_NO_MODEL") == "1" else "import muq, torchaudio, sounddevice; ")
+        + "import faiss, librosa, soundfile; "
+        + "from autodj.config import load_config; c=load_config(); "
         "c.index.index_dir.mkdir(parents=True, exist_ok=True); "
         "c.index.model_dir.mkdir(parents=True, exist_ok=True)"
     )

@@ -481,6 +481,16 @@ def _dependency_check() -> DoctorCheck:
 
 def _model_cache_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Inspect the configured model cache without downloading or repairing it."""
+    from autodj.model_identity import model_analysis_available
+
+    if not model_analysis_available():
+        return DoctorCheck(
+            "model-cache",
+            CheckStatus.WARN,
+            "local model analysis unavailable",
+            "Model analysis is disabled or its packages are not installed; "
+            "run `autodj setup --backend cpu` to enable it. Imported songs remain available.",
+        )
     try:
         status = inspect_model_cache(cfg.model, cfg.index)
     except (ImportError, OSError, RuntimeError, ValueError):

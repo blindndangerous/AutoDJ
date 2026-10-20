@@ -457,6 +457,7 @@ def test_basic_entry_is_playable_while_loudness_runs_and_analysis_can_start(
     with (
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=slow_loudness),
+        patch("autodj.model_identity.model_analysis_available", return_value=True),
         patch("autodj.jobs.get_manager", return_value=Jobs()),
     ):
         assert manager.start_scan()
@@ -622,7 +623,10 @@ def test_queued_advanced_folder_schedules_after_busy_scan(manager_factory, tmp_p
 
     assert manager.entry_for_path(new_song) is not None
     assert manager._scan_generation == 2
-    with patch("autodj.jobs.get_manager", return_value=Jobs()):
+    with (
+        patch("autodj.model_identity.model_analysis_available", return_value=True),
+        patch("autodj.jobs.get_manager", return_value=Jobs()),
+    ):
         assert manager.schedule_analysis()
     assert manager._analysis_started_generation == manager._scan_generation
     assert len(captured) == 1
@@ -1598,6 +1602,7 @@ def test_idle_analysis_check_runs_once_until_the_catalog_changes(manager_factory
     unembedded = manager.catalog.unembedded_music
     with (
         patch.object(manager.catalog, "unembedded_music", wraps=unembedded) as check,
+        patch("autodj.model_identity.model_analysis_available", return_value=True),
         patch("autodj.jobs.get_manager", return_value=Jobs()),
     ):
         for _ in range(3):
@@ -2134,3 +2139,22 @@ def test_library_snapshot_says_when_beets_songs_match_no_library_song(manager_fa
         assert view["summary"] == "3 of 3 library songs have a beets entry"
     finally:
         beets_paths._latest.clear()
+
+
+def test_no_model_keeps_basic_tracks_and_remote_analysis_queue(
+    manager_factory, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"music")
+    manager.catalog.put_entry(make_entry(song), "music")
+    manager.refresh()
+    with patch("autodj.jobs.get_manager") as jobs:
+        assert not manager.schedule_analysis()
+        jobs.assert_not_called()
+    assert manager.entry_for_path(song) is not None
+    assert len(manager.analysis_pending()) == 1
+    with patch.object(manager.analysis_queue, "worker_active", return_value=True):
+        assert not manager.schedule_analysis()
+    assert manager._yielded_to_worker

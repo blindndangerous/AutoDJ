@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.14.*"
 
 [[package]]
@@ -107,7 +107,6 @@ dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
     { name = "librosa" },
-    { name = "muq" },
     { name = "mutagen" },
     { name = "numba" },
     { name = "numpy" },
@@ -116,7 +115,6 @@ dependencies = [
     { name = "rich" },
     { name = "scipy" },
     { name = "starlette" },
-    { name = "transformers" },
     { name = "tzdata" },
     { name = "tzlocal" },
     { name = "uvicorn", extra = ["standard"] },
@@ -124,13 +122,17 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "muq" },
     { name = "sounddevice" },
     { name = "soundfile" },
     { name = "torch" },
+    { name = "transformers" },
 ]
 index = [
+    { name = "muq" },
     { name = "soundfile" },
     { name = "torch" },
+    { name = "transformers" },
 ]
 play = [
     { name = "sounddevice" },
@@ -168,7 +170,8 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.32.5" },
     { name = "huggingface-hub", specifier = ">=1.31.0" },
     { name = "librosa", specifier = ">=0.11.0" },
-    { name = "muq", specifier = ">=0.1.0" },
+    { name = "muq", marker = "extra == 'all'", specifier = ">=0.1.0" },
+    { name = "muq", marker = "extra == 'index'", specifier = ">=0.1.0" },
     { name = "mutagen", specifier = ">=1.47.0" },
     { name = "numba", specifier = ">=0.67.0" },
     { name = "numpy", specifier = ">=1.26.0" },
@@ -184,7 +187,8 @@ requires-dist = [
     { name = "starlette", specifier = "~=1.6.0" },
     { name = "torch", marker = "extra == 'all'", specifier = ">=2.2.0" },
     { name = "torch", marker = "extra == 'index'", specifier = ">=2.2.0" },
-    { name = "transformers", specifier = ">=5.16.1" },
+    { name = "transformers", marker = "extra == 'all'", specifier = ">=5.16.1" },
+    { name = "transformers", marker = "extra == 'index'", specifier = ">=5.16.1" },
     { name = "tzdata", specifier = ">=2026.1" },
     { name = "tzlocal", specifier = ">=5.3.1,<6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.47.0" },

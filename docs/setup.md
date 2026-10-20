@@ -58,6 +58,43 @@ previously saved GPU choice. You do not need an AMD environment or GPU drivers f
 Use the launcher for ordinary commands. You do not need to activate an environment or run
 `uv sync` separately.
 
+## No-model installation
+
+Use this mode when the server needs the web UI, basic library imports, browser
+playback or server streams, but will not run the music embedding model locally:
+
+```sh
+./autodj setup --no-model --yes
+./autodj serve
+```
+
+On Windows use `.\autodj.cmd` in place of `./autodj`. The saved selection is
+`.uv/setup-no-model`; later launcher calls reuse it. No MuQ, PyTorch or
+Transformers packages or model weights are installed. CPU audio processing still
+uses NumPy, librosa and FFmpeg; no-model does not mean dependency-free. Set
+`UV_NO_CACHE=1` during setup to avoid retaining a second installer cache.
+
+Basic imports and previously saved analysis remain usable. `autodj index` imports
+playable songs successfully and reports pending analysis without loading a model
+or downloading weights. Automatic local MuQ analysis is disabled; explicit
+advanced-analysis and worker commands explain how to enable it. A separate
+model-capable remote analysis worker can still connect.
+Queue, random, least-recently-played and category/clockwheel operation do not
+require local model weights. Similarity needs compatible saved or remote vectors.
+This mode does not remove sound-card packages from an existing environment.
+
+The ordinary setup still installs the complete CPU/GPU-capable runtime. To add
+local model analysis later, run `./autodj setup --backend cpu` or the appropriate
+supported GPU setup. Switching runtimes preserves the old environment; review
+its disk use before installing another one. Model weights are downloaded only
+when analysis is requested. `--no-model` cannot be combined with GPU setup or
+`--test-import`.
+
+For direct package installs, the base package is now the no-model serving set;
+the `index` extra adds model analysis, `play` adds sound-card output, and `all`
+adds both. Prefer guided CPU setup to select CPU wheels explicitly. The container
+continues to install the `index` extra and its pinned CPU model runtime.
+
 ## Finding uv and FFmpeg
 
 AutoDJ finds these programs on PATH, the operating system's list of executable directories.

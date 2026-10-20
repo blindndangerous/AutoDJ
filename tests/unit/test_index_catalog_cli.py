@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 from click.testing import CliRunner
 
 from autodj.catalog import LibraryCatalog
@@ -16,6 +18,12 @@ from autodj.indexer import FEATURE_DIM, IndexEntry, enrich_from_beets, file_fing
 from tests.unit._catalog_vectors import set_vector, vectors_snapshot
 from tests.unit._legacy_index import save_index
 from tests.unit.test_library import fake_basic, fake_loudness, make_config
+
+
+@pytest.fixture(autouse=True)
+def simulated_model(monkeypatch):
+    """Catalog tests simulate model execution; they never load a real model."""
+    monkeypatch.setitem(sys.modules, "autodj.model", MagicMock())
 
 
 def _source(cfg, folder: Path, *, advanced: bool = True) -> None:
@@ -29,6 +37,7 @@ def _invoke(cfg, args: list[str], *, deps=True):
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
         patch("autodj.cli._load_index_for_serve", wraps=_load_index_for_serve),
         patch("autodj.cli._can_import", return_value=deps),
+        patch("autodj.model_identity.model_analysis_available", return_value=True),
         patch("autodj.library.analyze_basic", side_effect=fake_basic),
         patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
         patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
@@ -113,6 +122,32 @@ def test_index_saves_basic_song_before_missing_dependencies(tmp_path: Path) -> N
     assert "missing packages" in result.output
     download.assert_not_called()
     assert not (cfg.index.library_dir / "index-manifest.json").exists()
+    with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
+        assert catalog.record_for_path(song) is not None
+        assert not catalog.has_vector(song)
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_index_without_a_model_keeps_playable_tracks_and_pending_analysis(
+    tmp_path, monkeypatch, disabled
+):
+    cfg = make_config(tmp_path)
+    _source(cfg, cfg.library.music_dir)
+    song = cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"song")
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1" if disabled else "0")
+    monkeypatch.setitem(sys.modules, "autodj.model", None)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.library.analyze_basic", side_effect=fake_basic),
+        patch("autodj.library.analyze_loudness", side_effect=fake_loudness),
+        patch("autodj.intro_lift.measure_source_intro", return_value=0.0),
+    ):
+        result = CliRunner().invoke(cli, ["index", "--no-enrich", "--no-analyse"])
+    assert result.exit_code == 0, result.output
+    assert "1 songs available" in result.output
+    assert "analysis pending" in result.output.lower()
     with LibraryCatalog(cfg.index.library_dir / "library.db") as catalog:
         assert catalog.record_for_path(song) is not None
         assert not catalog.has_vector(song)
