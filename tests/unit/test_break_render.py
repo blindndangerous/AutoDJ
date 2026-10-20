@@ -79,9 +79,7 @@ def test_custom_transition_order_is_used_by_the_live_render(station, source, act
     item = make_break(desk, "slot", seconds=2.0)
     desk.add(item)
     (taken,) = desk.take(item.slot_id, 0.0)
-    liner_item = TransitionItem(
-        f"{source}-liner", "liner", source, "Station ID", entry=liner
-    )
+    liner_item = TransitionItem(f"{source}-liner", "liner", source, "Station ID", entry=liner)
     break_item = TransitionItem(
         f"break:{item.break_id}",
         "booked_voice",
