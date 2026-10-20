@@ -3232,6 +3232,7 @@ describe("stream mode", () => {
       // Listen back: a preview in the page, which follows the page level
       // or plays on the Preview output device.
       "modules/voice-tracker.js: await playback.play();",
+      "modules/voice-tracker.js: await testPlayback.play();",
     ]);
     expect(found.plays.find((line) => line.startsWith("modules/stream-mode.js")))
       .toBe("modules/stream-mode.js: beforePlay(); | await audio.play();");
