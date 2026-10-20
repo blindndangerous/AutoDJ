@@ -10,8 +10,8 @@ The ``voice-tracks`` routes (#128) are the browser's: an operator signed in
 to the web UI records a DJ break for the open song change and books it.
 They take the session cookie and, for a change, the page's ``Origin``, as
 every other browser route does, and never a machine token.  A voice track
-is a break like any other: the same checks, caps, decoding, quota and
-placement.
+is a break like any other: the same validation, decode protections, shared
+station quota and placement, with its own 600-second and 64 MiB upload caps.
 
 The routes answer under ``/api/announcer/`` for the default station and
 ``/api/stations/<slug>/announcer/`` for any station by name:
@@ -103,8 +103,12 @@ ANNOUNCER_PREFIX = "/api/announcer/"
 ANNOUNCER_SCOPES = {ANNOUNCER_PREFIX: SCOPE_ANNOUNCER}
 #: The upload route, for the request-body cap.
 UPLOAD_PATH = ANNOUNCER_PREFIX + "breaks"
-#: The voice tracker's upload route (#128), a browser route with the same cap.
+#: The voice tracker's upload route (#128), with its own body cap.
 VOICE_UPLOAD_PATH = "/api/voice-tracks"
+# Manual browser recordings have their own budget; announcer integrations
+# continue to use the station's configured break limits.
+VOICE_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+VOICE_MAX_SECONDS = 600.0
 #: Room for the multipart framing and the form fields around the file.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 #: Plays and queued requests the context lists.
@@ -174,6 +178,22 @@ def _slot_view(
     points = player.saved_points(plan.upcoming)
     intro = points.get("intro")
     start = points.get("start") or 0.0
+    outgoing = player.saved_points(plan.ending)
+    outgoing_rate = player.music_playback_rate(plan.ending)
+    segue = outgoing.get("segue") or outgoing.get("end") or plan.ending.length
+    outro_point = outgoing.get("outro")
+    outro = max(
+        outgoing.get("start") or 0.0,
+        plan.ending_offset_s,
+        segue if outro_point is None else outro_point,
+    )
+    liner_clip_s = 0.0
+    for entry, _queued in plan.liners:
+        liner_points = player.saved_points(entry)
+        liner_clip_s += max(
+            0.0,
+            (liner_points.get("end") or entry.length) - (liner_points.get("start") or 0.0),
+        )
     desk: BreakDesk = station.breaks
     return {
         "slot_id": plan.slot_id,
@@ -182,6 +202,8 @@ def _slot_view(
         "closes_in_s": round(closes_in, 1),
         "airs_in_s": round(airs_in, 1),
         "upcoming_intro_s": None if intro is None else round(max(0.0, intro - start), 3),
+        "ending_outro_s": round(max(0.0, segue - outro) / outgoing_rate, 3),
+        "planned_liner_clip_s": round(liner_clip_s, 3),
         "pinned": plan.pinned,
         "breaks_booked": desk.waiting_in(plan.slot_id),
     }
@@ -327,13 +349,14 @@ def install_breaks(router: StationRouter) -> None:
         elif not station.player.request_voice_track_slot():
             raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
         config = desk.config
-        cap = config.max_upload_bytes
+        cap = VOICE_MAX_UPLOAD_BYTES if source == VOICE_TRACK else config.max_upload_bytes
+        max_seconds = VOICE_MAX_SECONDS if source == VOICE_TRACK else config.max_seconds
         declared = request.headers.get("content-length")
         size = cap
         if declared is not None:
             if not declared.isdecimal() or int(declared) > cap + MULTIPART_OVERHEAD_BYTES:
                 raise HTTPException(
-                    status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                    status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                 )
             size = min(cap, int(declared))
         break_id = new_id()
@@ -384,12 +407,56 @@ def install_breaks(router: StationRouter) -> None:
                     )
                 except LinerTooLargeError as exc:
                     raise HTTPException(
-                        status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                        status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                     ) from exc
             finally:
                 await upload.close()
             assert path is not None  # stored, or the request has already answered
-            cues = await decode_one(path, config.max_seconds)
+            cues = await decode_one(path, max_seconds)
+            if source == VOICE_TRACK:
+                slot = await asyncio.to_thread(_current_slot, station)
+                if slot is None or slot["slot_id"] != fields.slot_id:
+                    return refused(409, "That song change is no longer open", "slot_closed", slot)
+                if (slot["ending"] or {}).get("id") != fields.ending_id or (
+                    slot["upcoming"] or {}
+                ).get("id") != fields.upcoming_id:
+                    return refused(
+                        409, "The songs around that song change have changed", "pair_changed", slot
+                    )
+            if source == VOICE_TRACK:
+                chain = sorted(
+                    (
+                        queued
+                        for queued in desk.listing()
+                        if queued.slot_id == fields.slot_id and queued.state == "queued"
+                    ),
+                    key=lambda queued: (queued.kind == "dj", queued.created_at),
+                )
+                queued_clip_s = sum(
+                    max(0.0, queued.cues.end - queued.cues.start) for queued in chain
+                )
+                starts_at = time.time() + float(slot["airs_in_s"])
+                outro_s = float(slot.get("ending_outro_s") or 0.0) if fields.allow_outro else 0.0
+                starts_at -= outro_s
+                duration = (
+                    outro_s
+                    + float(slot.get("planned_liner_clip_s") or 0.0)
+                    + queued_clip_s
+                    + max(0.0, cues.end - cues.start)
+                )
+                try:
+                    crosses = await asyncio.to_thread(
+                        station.player.voice_track_crosses_hard_boundary, starts_at, duration
+                    )
+                except Exception:
+                    crosses = True
+                if crosses:
+                    return refused(
+                        409,
+                        "This voice chain would cross or could not be checked against a hard scheduled boundary",
+                        "scheduled_boundary",
+                        slot,
+                    )
             now = time.time()
             label = _clean_label(fields.label)
             if not label and source == VOICE_TRACK:
@@ -410,6 +477,7 @@ def install_breaks(router: StationRouter) -> None:
                 created_at=now,
                 expires_at=now + (fields.expires_s or config.default_expires_seconds),
                 source=source,
+                limit_s=max_seconds if source == VOICE_TRACK else None,
             )
             try:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
@@ -519,10 +587,7 @@ def install_breaks(router: StationRouter) -> None:
 
     @router.post("/voice-tracks", status_code=201)
     async def voice_track_upload(station: StationDep, request: Request) -> JSONResponse:
-        """Book a voice track recorded in the browser for the open song change.
-
-        The same checks, caps, decoding and quota as an announcer's break.
-        """
+        """Book a browser voice track under its own duration/upload caps."""
         desk = voice_desk(station)
         return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
 
@@ -652,8 +717,8 @@ def _voice_context(station: StationRuntime) -> dict[str, Any]:
         "next": context["next"],
         "slot": slot,
         "limits": {
-            "max_bytes": config.max_upload_bytes,
-            "max_seconds": config.max_seconds,
+            "max_bytes": VOICE_MAX_UPLOAD_BYTES,
+            "max_seconds": VOICE_MAX_SECONDS,
             "sample_rate": SAMPLE_RATE,
             "dj_placement": config.dj_placement,
             "min_intro_s": config.min_intro_seconds,
@@ -836,6 +901,8 @@ __all__ = [
     "ANNOUNCER_SCOPES",
     "MULTIPART_OVERHEAD_BYTES",
     "UPLOAD_PATH",
+    "VOICE_MAX_SECONDS",
+    "VOICE_MAX_UPLOAD_BYTES",
     "VOICE_UPLOAD_PATH",
     "decode_gate",
     "install_breaks",

@@ -65,8 +65,8 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     # A 2-second intro meets min_intro_seconds (2), so auto talks it up.
     assert slot["auto_placement"] == "talk_up" and slot["auto_note"] is None
     assert context["limits"] == {
-        "max_bytes": 40 * 1024 * 1024,
-        "max_seconds": 300.0,
+        "max_bytes": 64 * 1024 * 1024,
+        "max_seconds": 600.0,
         "sample_rate": 44100,
         "dj_placement": "auto",
         "min_intro_s": 2.0,
@@ -77,6 +77,89 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     # The same station by name.
     named = voice(station, "/api/stations/default/voice-tracks")
     assert named["slot"]["slot_id"] == slot["slot_id"]
+
+
+def test_manual_voice_limits_do_not_change_announcer_limits(tmp_path, monkeypatch):
+    import autodj.breaks_api as api
+    from autodj.server import _voice_upload_cap
+
+    station = Station(tmp_path, max_seconds=5.0, max_upload_mb=2)
+    limits = voice(station)["limits"]
+    assert (limits["max_bytes"], limits["max_seconds"]) == (64 * 1024 * 1024, 600.0)
+    assert _voice_upload_cap(station.app.state.stations) >= 64 * 1024 * 1024
+    checked = []
+
+    async def decode(_gate, _path, max_seconds, _decode=None):
+        checked.append(max_seconds)
+        from autodj.breaks import BreakCues
+
+        return BreakCues(0, 1, 1, 2)
+
+    monkeypatch.setattr(api, "_gated_decode", decode)
+    assert book(station).status_code == 201
+    assert station.upload().status_code == 201
+    assert checked == [600.0, 5.0]
+    assert station.desk.config.max_upload_mb == 2
+    assert station.desk.get(voice(station)["tracks"][0]["break_id"]).limit_s == 600.0
+
+
+@pytest.mark.parametrize(("length", "accepted"), [(599.99, True), (600.01, False)])
+def test_manual_upload_decoder_enforces_the_synthetic_ten_minute_boundary(
+    tmp_path, monkeypatch, length, accepted
+):
+    """Exercise just below and above the installed cap without a ten-minute decode."""
+    import numpy as np
+
+    from autodj import break_audio, breaks_api
+    from autodj.breaks import BreakCues
+    from autodj.stereo import TrackTooLongError
+
+    station = Station(tmp_path)
+    station.player.voice_track_crosses_hard_boundary = lambda _at, _duration: False
+    limits = []
+
+    def decode(_path, max_seconds):
+        limits.append(max_seconds)
+        if length > max_seconds:
+            raise TrackTooLongError("synthetic voice track", length)
+        return np.zeros((2, 2), dtype=np.float32)
+
+    monkeypatch.setattr(break_audio, "decode_break", decode)
+    monkeypatch.setattr(breaks_api, "speech_cues", lambda _audio: BreakCues(0, 1, 1, length))
+    reply = book(station, body=wav())
+
+    assert limits == [600.0]
+    if accepted:
+        assert reply.status_code == 201, reply.text
+        assert station.desk.get(reply.json()["break_id"]).limit_s == 600.0
+        assert len(files(station.desk)) == 1
+    else:
+        assert reply.status_code == 422
+        assert "at most 600 seconds" in reply.json()["detail"]
+        assert voice(station)["tracks"] == []
+        assert files(station.desk) == []
+
+
+@pytest.mark.parametrize("placement", ["auto", "talk_up", "standalone"])
+def test_hard_boundary_refusal_leaves_no_voice_track_or_file(station, placement):
+    station.player.voice_track_crosses_hard_boundary = lambda _at, _duration: True
+    reply = book(station, placement=placement)
+    assert reply.status_code == 409
+    assert reply.json()["reason"] == "scheduled_boundary"
+    assert voice(station)["tracks"] == []
+    assert files(station.desk) == []
+
+
+def test_hard_boundary_check_fails_closed_when_event_access_raises(station):
+    def unavailable(*_args):
+        raise RuntimeError("scheduler unavailable")
+
+    station.player.voice_track_crosses_hard_boundary = unavailable
+    reply = book(station, placement="talk_up", allow_outro="true")
+    assert reply.status_code == 409
+    assert reply.json()["reason"] == "scheduled_boundary"
+    assert "could not be checked" in reply.json()["detail"]
+    assert files(station.desk) == []
 
 
 def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
@@ -151,6 +234,14 @@ def test_voice_tracks_and_announcer_breaks_share_the_slot_and_the_quota(tmp_path
     assert len(files(station.desk)) == 1
 
 
+def test_manual_uploads_obey_the_station_quota(tmp_path):
+    station = Station(tmp_path, max_upload_mb=1, quota_mb=1)
+    assert book(station).status_code == 201
+    refused = station.upload()
+    assert refused.status_code == 507 and refused.json()["reason"] == "quota"
+    assert len(files(station.desk)) == 1
+
+
 def test_a_closed_slot_is_409_with_the_slot_open_now(station):
     slot = voice(station)["slot"]
     closed = book(station, {**slot, "slot_id": "f" * 32})
@@ -178,10 +269,12 @@ def test_bad_recordings_are_refused_and_leave_no_file(station, form, body, statu
     assert files(station.desk) == []
 
 
-def test_a_recording_over_the_stations_limits_is_refused(tmp_path):
+def test_manual_duration_is_independent_but_oversize_bodies_are_refused(tmp_path):
     station = Station(tmp_path, max_seconds=5.0, max_upload_mb=2)
-    too_long = book(station, body=wav(seconds=6.0))
-    assert too_long.status_code == 422 and "at most 5 seconds" in too_long.json()["detail"]
+    accepted = book(station, body=wav(seconds=6.0))
+    assert accepted.status_code == 201, accepted.text
+    external = station.upload(body=wav(seconds=6.0))
+    assert external.status_code == 422 and "at most 5 seconds" in external.json()["detail"]
     declared = station.client.post(
         "/api/voice-tracks",
         content=b"x",
@@ -192,7 +285,7 @@ def test_a_recording_over_the_stations_limits_is_refused(tmp_path):
         },
     )
     assert declared.status_code == 413
-    assert files(station.desk) == []
+    assert len(files(station.desk)) == 1
 
 
 def test_manual_voice_track_booking_does_not_need_external_breaks(tmp_path):
@@ -327,3 +420,46 @@ def test_a_voice_track_for_the_change_wins_over_a_matched_intro(station):
     assert intro_id not in store._reserved
     # Without the voice track the same intro would have been chosen.
     assert station.player._matched_intro(d, (), 0.0) is not None
+
+
+def test_real_ten_minute_mono_wav_uses_manual_limits(tmp_path):
+    import io
+    import wave
+
+    import numpy as np
+
+    station = Station(tmp_path, max_seconds=5.0, max_upload_mb=2)
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(44100)
+        block = np.full(44100, 6000, dtype="<i2").tobytes()
+        for _ in range(600):
+            audio.writeframesraw(block)
+    payload = output.getvalue()
+    assert len(payload) == 52_920_044
+    reply = book(station, body=payload)
+    assert reply.status_code == 201, reply.text
+    item = station.desk.get(reply.json()["break_id"])
+    assert item.cues.length == pytest.approx(600)
+    assert item.cues.speech == pytest.approx(600)
+    assert item.limit_s == 600
+    # The unmodified announcer path rejects the same file using its own cap.
+    assert station.upload(body=payload).status_code == 413
+
+
+def test_real_overlong_wav_header_is_rejected_before_decode(station):
+    import io
+    import wave
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b"\x10\x10" * 4_800_080)
+    reply = book(station, body=output.getvalue())
+    assert reply.status_code == 422, reply.text
+    assert files(station.desk) == []
+    assert voice(station)["tracks"] == []

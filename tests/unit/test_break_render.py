@@ -71,6 +71,53 @@ def test_talk_up_ends_the_voice_on_the_next_songs_vocal(station):
     assert desk.get(item.break_id).mixed_as == "talk_up"
 
 
+@pytest.mark.parametrize("placement", ["auto", "talk_up", "standalone"])
+def test_manual_voice_is_dropped_when_its_full_chain_hits_a_hard_boundary(station, placement):
+    player, (a, b, _c, _d), _points, desk = station
+    slot_id = new_id()
+    first = replace(
+        make_break(desk, slot_id, seconds=3.0, placement=placement, allow_outro=True),
+        source=VOICE_TRACK,
+    )
+    second = replace(
+        make_break(desk, slot_id, seconds=2.0, placement=placement, allow_outro=True),
+        source=VOICE_TRACK,
+    )
+    desk.add(first)
+    desk.add(second)
+    taken = tuple(desk.take(first.slot_id, 0.0))
+    windows = []
+
+    def crosses(start, duration):
+        windows.append((start, duration))
+        return True
+
+    player.voice_track_crosses_hard_boundary = crosses
+    rendered = player._render_track(a, b, 0, breaks=taken)
+    assert rendered.break_events == ()
+    assert all(desk.get(item.break_id).state == DROPPED for item in taken)
+    assert windows[0][0] == pytest.approx(-2.0)
+    assert windows[0][1] == pytest.approx(2.0 + first.cues.end - first.cues.start)
+    assert windows[1][1] == pytest.approx(
+        2.0 + first.cues.end - first.cues.start + second.cues.end - second.cues.start
+    )
+
+
+def test_hard_boundary_window_includes_a_planned_liner_before_voice(station):
+    player, (a, b, liner, _d), _points, desk = station
+    item = replace(make_break(desk, new_id(), seconds=3.0, allow_outro=True), source=VOICE_TRACK)
+    desk.add(item)
+    (taken,) = desk.take(item.slot_id, 0.0)
+    windows = []
+    player.voice_track_crosses_hard_boundary = lambda start, duration: (
+        windows.append((start, duration)) or False
+    )
+    player._render_track(a, b, 0, liners=((liner, False),), breaks=(taken,))
+    liner_points = player.saved_points(liner)
+    liner_s = liner_points["end"] - liner_points["start"]
+    assert windows[0] == pytest.approx((-2.0, 2.0 + liner_s + item.cues.end - item.cues.start))
+
+
 def test_standalone_lets_the_next_song_in_when_the_speech_ends(station):
     player, (a, b, _c, _d), _points, desk = station
     item = make_break(desk, new_id(), kind="news", seconds=3.0)
