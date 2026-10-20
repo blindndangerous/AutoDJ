@@ -617,6 +617,24 @@ class MatchedIntros:
             for intro_id in intro_ids:
                 self._reserved.pop(intro_id, None)
 
+    def reserve_chosen(self, intro_id: str, at: float) -> bool:
+        """Reserve a frozen intro ID without rerunning its random choice."""
+        intros = self.all()
+        intro = intros.get(intro_id)
+        if intro is None or not (self.folder / intro.file).is_file():
+            return False
+        day = self._day_at(at)
+        if intro.dates.refusal(day) is not None:
+            return False
+        with self._lock:
+            self._apply_heard_locked()
+            last = self._last_locked(intro_id, intro)
+            wait = intro.cooldown_minutes * 60.0
+            if last is not None and wait > 0 and abs(at - last) < wait:
+                return False
+            self._reserved[intro_id] = at
+        return True
+
     def heard(self, intro_id: str) -> None:
         """The mix bus reports *intro_id* on the air.  Never waits."""
         if intro_id.startswith("rule:") and self.rules is not None:

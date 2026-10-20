@@ -78,6 +78,17 @@ def test_intros_are_saved_by_id_and_read_back_by_another_store(tmp_path: Path) -
     assert other.all()[intro_id].chance == 50
 
 
+def test_frozen_intro_reservation_does_not_draw_or_replace_candidate(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    intro_id = _add(store, cooldown_minutes=30)
+    frozen = store.snapshot().choose("song-a", "", NOW)
+    assert frozen is not None and frozen.intro_id == intro_id
+    assert store.reserve_chosen(frozen.intro_id, NOW)
+    assert not store.reserve_chosen(frozen.intro_id, NOW + 1)
+    store.release((frozen.intro_id,))
+    assert store.reserve_chosen(frozen.intro_id, NOW + 1)
+
+
 def test_an_intro_is_for_one_song_or_one_artist(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="one song or one artist"):
         Intro(file=file_name("a" * 32, ".wav"), track_id="x", artist="Someone")

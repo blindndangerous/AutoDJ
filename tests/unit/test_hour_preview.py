@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from autodj import hour_preview
-from autodj.breaks import SlotPlan
+from autodj.breaks import SlotPlan, TransitionItem
 from autodj.hour_preview import (
     KEEP_SECONDS,
     HourPreviews,
@@ -702,7 +702,9 @@ def _render(entry: Any, seconds: float, following: Any, overlap: float, **fields
     )
 
 
-def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Path) -> None:
+def test_server_audio_reads_renders_the_open_change_and_its_breaks(
+    tmp_path: Path, monkeypatch
+) -> None:
     source, power, gold = _station(tmp_path)
     player = source.player
     ident = source.library.entries_snapshot("liner")[0]
@@ -800,6 +802,31 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     ]
     # Step 3 of the clockwheel (Gold) follows the open change's place.
     assert view["items"][9]["title"].startswith("Gold ")
+
+    # A customized frozen slot order must be the same in the fixed rows and
+    # in the audio-review handoff, without asking the live chooser again.
+    plan = player._slot_plan
+    plan.transition_items = (
+        TransitionItem("liner-1", "liner", "automatic", "Station ID", entry=ident),
+        TransitionItem(
+            "break:b1", "booked_voice", "voice_track", "Voice track", committed=True, editable=False
+        ),
+    )
+    plan.transition_order = ("break:b1", "liner-1")
+    rng_before = copy.deepcopy(player._rng.bit_generator.state)
+    monkeypatch.setattr(hour_preview, "_captured_render", lambda *_args: {})
+    customized = read_station(player, desk, now=NOW, capture_audio=True)
+    open_rows = [item for item in customized.items if item.in_handoff and item.starts >= NOW + 535]
+    assert [(item.kind, item.starts) for item in open_rows[:2]] == [
+        ("break", pytest.approx(NOW + 535)),
+        ("liner", pytest.approx(NOW + 547)),
+    ]
+    incoming = next(item for item in customized.items if item.entry is power[3]).incoming_handoff
+    assert incoming is not None
+    assert incoming.transition_order == ("break:b1", "liner-1")
+    assert [entry.path for entry, _queued in incoming.liners] == [ident.path]
+    assert [item.break_id for item in incoming.breaks] == ["b1"]
+    assert player._rng.bit_generator.state == rng_before
 
 
 def test_fixed_open_clockwheel_step_is_predicted_until_booked(tmp_path: Path) -> None:
@@ -1838,6 +1865,30 @@ def test_fixed_matched_intro_keeps_its_safe_asset_identity():
         player=player,
     )
     assert absent[0].details_entry is None
+
+
+def test_frozen_transition_preview_skips_cancelled_and_replaced_items():
+    kept = SimpleNamespace(path="kept.wav", length=6.0)
+    replaced = SimpleNamespace(path="replaced.wav", length=4.0)
+    plan = SimpleNamespace(
+        transition_order=("break:gone", "old", "kept"),
+        transition_replaced=("old",),
+        transition_items=(
+            TransitionItem(
+                "break:gone", "booked_voice", "voice_track", "Cancelled", committed=True
+            ),
+            TransitionItem("old", "liner", "queued", "Replaced", entry=replaced),
+            TransitionItem("kept", "liner", "clockwheel", "Kept", entry=kept),
+        ),
+    )
+    frozen = hour_preview._frozen_transition_contents(plan, ())
+    assert frozen is not None
+    ordered, liners, intro = frozen
+    assert ordered == [("liner", kept)]
+    assert liners == ((kept, True),)
+    assert intro is None
+    plan.transition_order = ()  # reset/stale plan follows legacy selection
+    assert hour_preview._frozen_transition_contents(plan, ()) is None
 
 
 @pytest.mark.parametrize("talk_up", [False, True])

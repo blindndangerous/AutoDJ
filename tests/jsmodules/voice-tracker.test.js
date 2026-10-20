@@ -267,6 +267,35 @@ describe("voice tracker", () => {
     expect(byId("vt-none").hidden).toBe(false);
   });
 
+  it("shows an ordered editable plan and submits its revision and choices", async () => {
+    const { controls, server } = tracker();
+    server.slot = slot(undefined, {
+      transition_revision: "c".repeat(64),
+      transition_items: [
+        { id: "queued-id", label: "Station ID", kind: "liner", committed: true, editable: true, default_action: "after" },
+        { id: "auto-id", label: "Auto liner", kind: "liner", committed: false, editable: true, default_action: "replace" },
+      ],
+      transition_order: ["queued-id", "auto-id"],
+      transition_summary: ["Station ID", "Auto liner"],
+    });
+    await controls.refresh();
+    const controlsList = byId("vt-transition-items").querySelectorAll("select");
+    expect(byId("vt-transition").hidden).toBe(false);
+    expect([...controlsList].map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
+      "Voice track position:", "Voice track position:",
+    ]);
+    expect([...controlsList].map((control) => control.value)).toEqual(["after", "replace"]);
+    expect(byId("vt-transition-summary").textContent).toContain("Your new voice track");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-book");
+    const post = server.calls.find((call) => call.method === "POST");
+    expect(post.body.get("transition_revision")).toBe("c".repeat(64));
+    expect(JSON.parse(post.body.get("transition_choices"))).toEqual([
+      { id: "queued-id", action: "after" }, { id: "auto-id", action: "replace" },
+    ]);
+  });
+
   it("says why no song change is open", async () => {
     const { controls, server } = tracker();
     server.slot = null;

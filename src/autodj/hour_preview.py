@@ -161,6 +161,8 @@ class IncomingHandoff:
     intro: Any = None
     ad_spots: tuple[tuple[str, Any], ...] = ()
     breaks: tuple[Any, ...] = ()
+    transition_order: tuple[str, ...] = ()
+    transition_items: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1136,13 +1138,7 @@ def _read_bus(
     moment = handoff
     selected_breaks: list[Any] = []
     ad_spots: list[tuple[str, Any]] = []
-    for liner, from_queue in plan.liners:
-        length = float(liner.length or 0.0)
-        items.append(Item("liner", moment, length, "picked", liner, in_handoff=True))
-        unplayed.append((liner, moment))
-        if from_queue:
-            queued.append(liner)
-        moment += length
+    booked_breaks: list[Any] = []
     if desk is not None:
         from autodj.breaks import QUEUED
 
@@ -1150,9 +1146,70 @@ def _read_bus(
             if booked.slot_id == plan.slot_id and booked.state == QUEUED:
                 if capture_audio:
                     selected_breaks.append(copy.deepcopy(booked))
-                speech = max(0.0, float(booked.cues.speech))
-                label = _break_label(desk, booked.break_id)
+                booked_breaks.append(booked)
+    frozen = _frozen_transition_contents(plan, booked_breaks)
+    handoff_liners = tuple(plan.liners)
+    handoff_intro = getattr(plan, "intro", None)
+    handoff_order: tuple[str, ...] = ()
+    handoff_transition_items: tuple[Any, ...] = ()
+    if frozen is None:
+        for liner, from_queue in plan.liners:
+            length = float(liner.length or 0.0)
+            items.append(Item("liner", moment, length, "picked", liner, in_handoff=True))
+            unplayed.append((liner, moment))
+            if from_queue:
+                queued.append(liner)
+            moment += length
+        for booked in booked_breaks:
+            speech = max(0.0, float(booked.cues.speech))
+            label = _break_label(desk, booked.break_id)
+            items.append(Item("break", moment, speech, "booked", label=label, in_handoff=True))
+            moment += speech
+    else:
+        ordered, handoff_liners, handoff_intro = frozen
+        handoff_order = tuple(plan.transition_order)
+        handoff_transition_items = tuple(plan.transition_items)
+        for kind, selected in ordered:
+            if kind == "liner":
+                liner = selected
+                length = float(liner.length or 0.0)
+                from_queue = any(
+                    entry.path == liner.path and source for entry, source in handoff_liners
+                )
+                items.append(Item("liner", moment, length, "picked", liner, in_handoff=True))
+                unplayed.append((liner, moment))
+                if from_queue:
+                    queued.append(liner)
+                moment += length
+            elif kind == "break":
+                speech = max(0.0, float(selected.cues.speech))
+                label = _break_label(desk, selected.break_id)
                 items.append(Item("break", moment, speech, "booked", label=label, in_handoff=True))
+                moment += speech
+            else:
+                intro = selected
+                speech = max(0.0, float(getattr(intro, "speech_s", 0.0) or 0.0))
+                entry = _registered_liner(player, intro.path)
+                if entry is not None and speech <= 0:
+                    cue = player.saved_points(entry)
+                    speech = max(
+                        0.0,
+                        (cue.get("segue") or cue.get("end") or entry.length)
+                        - (cue.get("start") or 0.0),
+                    )
+                items.append(
+                    Item(
+                        "intro",
+                        moment,
+                        speech,
+                        "picked",
+                        label=f"Matched intro: {intro.label}",
+                        in_handoff=True,
+                        asset_id=intro.intro_id,
+                        details_entry=entry,
+                        duration_unknown=speech <= 0,
+                    )
+                )
                 moment += speech
     if ads is not None and ads.refusal() is None and plan.ad_steps and heard is not None:
         booked_ads = desk is not None and any(
@@ -1187,10 +1244,12 @@ def _read_bus(
             upcoming,
             playback_rate=music_rate(player, upcoming),
             incoming_handoff=IncomingHandoff(
-                tuple(plan.liners),
-                getattr(plan, "intro", None),
+                handoff_liners,
+                handoff_intro,
                 tuple(ad_spots),
                 tuple(selected_breaks),
+                handoff_order,
+                handoff_transition_items,
             )
             if capture_audio
             else None,
@@ -1202,6 +1261,67 @@ def _read_bus(
         queued.append(upcoming)
     clock = (plan.next_cursor, plan.clock_name, plan.boundary_after or live.boundary)
     return items, unplayed, queued, upcoming, moment + seconds, clock
+
+
+def _frozen_transition_contents(
+    plan: Any, breaks: Sequence[Any]
+) -> tuple[list[tuple[str, Any]], tuple[tuple[Any, bool], ...], Any] | None:
+    """Resolve a customized slot's frozen item order without choosing anything live."""
+    order = tuple(getattr(plan, "transition_order", ()))
+    transition_items = tuple(getattr(plan, "transition_items", ()))
+    if not order or not transition_items:
+        return None
+    replaced = set(getattr(plan, "transition_replaced", ()))
+    planned = {item.item_id: item for item in transition_items}
+    liners = tuple(
+        (item.entry, item.source in {"queued", "clockwheel"})
+        for item in transition_items
+        if item.kind == "liner" and item.item_id not in replaced and item.entry is not None
+    )
+    intro_item = next(
+        (
+            item
+            for item in transition_items
+            if item.kind == "matched_intro"
+            and item.item_id not in replaced
+            and item.intro is not None
+        ),
+        None,
+    )
+    intro = intro_item.intro if intro_item is not None else None
+    liner_by_id = {
+        item.item_id: item.entry
+        for item in transition_items
+        if item.kind == "liner" and item.item_id not in replaced and item.entry is not None
+    }
+    break_by_id = {f"break:{item.break_id}": item for item in breaks}
+    selected: list[tuple[str, Any]] = []
+    handled_liners: set[str] = set()
+    handled_breaks: set[str] = set()
+    used_intro = False
+    for key in order:
+        item = planned.get(key)
+        if item is not None and item.kind == "liner" and key in liner_by_id:
+            selected.append(("liner", liner_by_id[key]))
+            handled_liners.add(key)
+        elif item is not None and item.kind == "matched_intro" and item.intro is not None:
+            if item.item_id not in replaced:
+                selected.append(("intro", item.intro))
+                used_intro = True
+        elif key in break_by_id:
+            selected.append(("break", break_by_id[key]))
+            handled_breaks.add(key)
+    # Match the shared renderer's fallback order for any content omitted from
+    # the explicit order: selected liners, queued breaks, then the intro.
+    selected.extend(
+        ("liner", entry) for item_id, entry in liner_by_id.items() if item_id not in handled_liners
+    )
+    selected.extend(
+        ("break", item) for key, item in break_by_id.items() if key not in handled_breaks
+    )
+    if intro is not None and not used_intro:
+        selected.append(("intro", intro))
+    return selected, liners, intro
 
 
 def _read_browser(player: Any, now: float, average: float) -> _Found | None:

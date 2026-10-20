@@ -79,6 +79,59 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     assert named["slot"]["slot_id"] == slot["slot_id"]
 
 
+def test_voice_track_booking_revalidates_the_transition_plan_revision(station):
+    slot = voice(station)["slot"]
+    assert len(slot["transition_revision"]) == 64
+    result = book(
+        station,
+        slot,
+        transition_revision="0" * 64,
+        transition_choices="[]",
+    )
+    assert result.status_code == 409
+    assert result.json()["reason"] == "transition_changed"
+    assert voice(station)["tracks"] == []
+    booked = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[]",
+    )
+    assert booked.status_code == 201, booked.text
+    first_id = booked.json()["break_id"]
+    planned = voice(station)["slot"]
+    assert planned["transition_revision"] != slot["transition_revision"]
+    assert planned["transition_order"] == [f"break:{first_id}"]
+    second = book(
+        station,
+        planned,
+        transition_revision=planned["transition_revision"],
+        transition_choices="[]",
+    )
+    assert second.status_code == 201, second.text
+    after_second = voice(station)["slot"]
+    removed = station.client.delete(f"/api/voice-tracks/{first_id}", headers=ORIGIN)
+    assert removed.status_code == 200
+    after_cancel = voice(station)["slot"]
+    assert after_cancel["transition_revision"] != after_second["transition_revision"]
+    stale = book(
+        station,
+        after_second,
+        transition_revision=after_second["transition_revision"],
+        transition_choices="[]",
+    )
+    assert stale.status_code == 409
+    assert stale.json()["reason"] == "transition_changed"
+    rebooked = book(
+        station,
+        after_cancel,
+        transition_revision=after_cancel["transition_revision"],
+        transition_choices="[]",
+    )
+    assert rebooked.status_code == 201, rebooked.text
+    assert f"break:{first_id}" not in voice(station)["slot"]["transition_order"]
+
+
 def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
     station = Station(tmp_path, min_intro_seconds=5.0)
     slot = voice(station)["slot"]

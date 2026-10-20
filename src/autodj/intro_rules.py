@@ -414,6 +414,31 @@ class IntroRules:
             self._drain()
             self._reserved.pop(key, None)
 
+    def reserve_chosen(self, key: str, at: float) -> bool:
+        """Reserve a frozen rule choice without drawing a different clip."""
+        with self._lock:
+            self._drain()
+            rules = self._load()
+            rule = rules.get(key)
+            if rule is None or rule.dates.refusal(self._day_at(at)):
+                return False
+            last = max(
+                (
+                    value
+                    for value in (rule.last_aired, self._aired.get(key), self._reserved.get(key))
+                    if value is not None
+                ),
+                default=None,
+            )
+            if (
+                last is not None
+                and rule.cooldown_minutes
+                and abs(at - last) < rule.cooldown_minutes * 60
+            ):
+                return False
+            self._reserved[key] = at
+            return True
+
     def needs_upkeep(self) -> bool:
         return bool(self._heard or self._released or self._unwritten) or self.needs_warming()
 

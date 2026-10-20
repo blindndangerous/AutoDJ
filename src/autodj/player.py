@@ -12,6 +12,8 @@ or the stream encoder in 20 ms blocks.
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import logging
 import math
 import os
@@ -43,7 +45,7 @@ try:
     import soundfile as _sf_mod
 
     sf: Any = _sf_mod
-except ImportError:  # pragma: no cover — minimal install path
+except ImportError:  # pragma: no cover â€” minimal install path
     sf = None
 # sounddevice is imported only by autodj.sound_output, lazily, when server
 # audio actually opens a device.
@@ -59,7 +61,15 @@ from autodj.beatmatch import (
     phase_locked_start,
     tempo_ratio,
 )
-from autodj.breaks import Break, BreakError, SlotPlan, new_id, placement_for, speech_cues
+from autodj.breaks import (
+    Break,
+    BreakError,
+    SlotPlan,
+    TransitionItem,
+    new_id,
+    placement_for,
+    speech_cues,
+)
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
 from autodj.identity_map import attached
 from autodj.indexer import IndexEntry
@@ -129,7 +139,7 @@ _CONSOLE = Console()
 
 
 # ---------------------------------------------------------------------------
-# Crossfade math (pure functions — testable without audio hardware)
+# Crossfade math (pure functions â€” testable without audio hardware)
 # ---------------------------------------------------------------------------
 
 
@@ -199,7 +209,7 @@ def _apply_crossfade_ducked(
     progressively attenuated by blending in a Butterworth high-pass of
     the outgoing tail, while the incoming track fades in normally.  This eliminates
     the muddy bass build-up that two simultaneously-playing tracks
-    produce in the sub-200 Hz range — the core trick used by pro DJs
+    produce in the sub-200 Hz range â€” the core trick used by pro DJs
     when manually mixing.
 
     Falls back to plain :func:`_apply_crossfade` if the crossfade region
@@ -235,7 +245,7 @@ def _apply_crossfade_ducked(
     try:
         sos = butter(4, cutoff_norm, btype="high", output="sos")
         a_tail_hp = cast(np.ndarray, sosfilt(sos, a_tail, axis=0)).astype(np.float32)
-    except (ValueError, RuntimeError):  # pragma: no cover — degenerate sample rate
+    except (ValueError, RuntimeError):  # pragma: no cover â€” degenerate sample rate
         return _apply_crossfade(audio_a, audio_b, crossfade_samples)
 
     # Bass-duck envelope: 0.0 = full bass, 1.0 = bass fully removed.
@@ -252,7 +262,7 @@ def _apply_crossfade_ducked(
     fade_in = np.linspace(0.0, 1.0, crossfade_samples, dtype=np.float32)
 
     overlap = (a_ducked * envelope(fade_out, a_ducked)) + (b_head * envelope(fade_in, b_head))
-    # Hard-limit to ±1.0 — even with bass-ducking, two bright tracks can sum
+    # Hard-limit to Â±1.0 â€” even with bass-ducking, two bright tracks can sum
     # above full scale during the overlap on densely arranged music.
     np.clip(overlap, -1.0, 1.0, out=overlap)
     return join_audio([a_body, overlap, b_body])
@@ -542,7 +552,7 @@ class PlayerState:
     play_history: deque[PlayRecord] = field(default_factory=deque)
     dmca_enabled: bool = False
     clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
-    volume: float = 1.0  # 0.0 (silent) – 1.0 (full)
+    volume: float = 1.0  # 0.0 (silent) â€“ 1.0 (full)
     is_muted: bool = False
     track_number: int = 0
     discovery_enabled: bool = False
@@ -861,7 +871,7 @@ class Player:
     _cursor_serial: int = 0
     # The station's liner play dates: passes over the liners a clockwheel's
     # liner steps may not play today (see autodj.clip_dates.LinerGate).
-    liner_filter: Callable[[Any], Any] | None = None
+    liner_filter: Callable[..., Any] | None = None
     _skip_next_intro: bool = False
     _continuous_master: Any = None
     # Guards the per-pair effect plans of planned_transition.
@@ -961,7 +971,7 @@ class Player:
     ) -> None:
         """Initialise the player with configuration and index.
 
-        No model is needed at play time — next-track vectors are looked up
+        No model is needed at play time â€” next-track vectors are looked up
         directly from the pre-built FAISS index.
 
         Args:
@@ -984,23 +994,23 @@ class Player:
         # rate) and the web page's settings routes change them.
         # Anchored mode: when True, every similarity query uses the SEED
         # vector rather than the currently-playing track.  Prevents the
-        # session from drifting away from where the user started — each
+        # session from drifting away from where the user started â€” each
         # next track is similar to the seed, not to the previous track.
         # Off by default; toggled from the web UI.
-        # Path of the seed track — set in run() / set externally by the
+        # Path of the seed track â€” set in run() / set externally by the
         # bridge when the user picks a fresh seed.  Used by anchored mode.
         self._seed_path: str | None = None
         # Pure shuffle: pick random next track, completely ignore similarity.
         # When the user disables pure-shuffle mid-set,
-        # the next pick uses similarity from the current track — so they can
+        # the next pick uses similarity from the current track â€” so they can
         # use shuffle to stumble onto a song they like, then "lock in" by
         # toggling shuffle off and let the auto-DJ continue from there.
-        # Lyrics for the current track — populated when each track loads,
+        # Lyrics for the current track â€” populated when each track loads,
         # consumed by the web UI via PlayerBridge.get_state().
         self._current_lyrics: list = []
         self._current_lyrics_plain: str = ""
         # 3-band EQ state (1.0 = unity), mutated by the web UI
-        # DJ meta cache — initialised lazily on first use so tests with
+        # DJ meta cache â€” initialised lazily on first use so tests with
         # mock configs don't trip on the cache load.
         from autodj.dj_meta import DjMetaCache as _DjMetaCache
 
@@ -1022,9 +1032,9 @@ class Player:
         self._bg_lyrics_inflight: set[str] = set()
         self._bg_lyrics_lock = threading.Lock()
         # How the playing track's opening was stretched while it was mixed
-        # in (1.0 = not stretched) — exposed via state
+        # in (1.0 = not stretched) â€” exposed via state
         self._beatmatch_ratio: float = 1.0
-        # The transition effect the playing track came in with — exposed
+        # The transition effect the playing track came in with â€” exposed
         # via state
         self._last_transition_fx: str = "none"
         # Effect chosen per (outgoing, incoming) path pair, with the
@@ -1035,7 +1045,7 @@ class Player:
         # Shared RNG for transition effects that use randomness, so a single
         # seed drives both stereo channels identically (see apply_transition).
         self._rng: np.random.Generator = np.random.default_rng()
-        # Pick provenance — set by _pick_next describing HOW the current
+        # Pick provenance â€” set by _pick_next describing HOW the current
         # track was selected.  Read by the bridge to build the
         # "why this track" sentence list shown in the web UI.
         self._last_pick_mode: str = "seed"
@@ -1053,7 +1063,7 @@ class Player:
         self._pending_clock_name: str | None = None
         self._chosen_clock_revision: int | None = None
         self._pending_clock_cursor_revision: int | None = None
-        # Previous track played — kept so the explainer can compute deltas
+        # Previous track played â€” kept so the explainer can compute deltas
         # against the current pick.
         self._previous_track: IndexEntry | None = None
         self._last_repeat_cap_warning: tuple[int, int, int] | None = None
@@ -1063,7 +1073,7 @@ class Player:
         # ANY track even after every track had been played, then
         # silently fall through filter-relaxation paths and either
         # raise SimilarityError or return the same neighbour every
-        # advance — the "repeats too soon" symptom users hit on small
+        # advance â€” the "repeats too soon" symptom users hit on small
         # libraries.  Reserve at least 4 unplayed candidates so the
         # picker still has variety.
         library_size = len(getattr(sim_index, "entries", []) or [])
@@ -1117,7 +1127,7 @@ class Player:
         self._settings.attach(self)
         self._skip_event = threading.Event()
         self._lock = threading.Lock()
-        # Shared playback position (samples) — written by the mix bus, read and
+        # Shared playback position (samples) â€” written by the mix bus, read and
         # written by seeks.  Using a list so both sides share the same object.
         self._playback_pos: list[int] = [0]
         self._playback_output_pos: list[int] = [0]
@@ -2408,6 +2418,8 @@ class Player:
         liners, queued = self._station_queue(
             context.queue_reserved, (*self._pending_reserved_liners, *also_reserved)
         )
+        self._chosen_queue_liner_paths = tuple(entry.path for entry in liners)
+        self._chosen_clock_liner = None
         self._chosen_clock_step = None
         self._chosen_clock_ad_steps = ()
         self._chosen_clock_revision = self._clock_revision
@@ -2443,6 +2455,7 @@ class Player:
                         )
                     ):
                         liners.append(picked.liner)
+                        self._chosen_clock_liner = picked.liner
                 cursor = marked_cursor
         elif self._cfg.playback.pick_mode == "clock" and self._clock is not None:
             if seed is not None:
@@ -2546,6 +2559,7 @@ class Player:
                         )
                     )
                 ):
+                    self._chosen_clock_liner = picked.liner
                     return upcoming, mode, ((picked.liner, False),), cursor, ""
         else:
             try:
@@ -2657,6 +2671,81 @@ class Player:
                 liners, key = self._auto_liner(current, upcoming)
         return liners, key, intro
 
+    def _slot_transition_items(
+        self,
+        plan: SlotPlan,
+        at: float | None,
+    ) -> tuple[TransitionItem, ...]:
+        """Predict handoff speech on isolated chooser state and freeze its order."""
+        preview = copy.copy(self)
+        if self.liner_scheduler is not None:
+            preview.liner_scheduler = self.liner_scheduler.snapshot()
+        if self.matched_intros is not None:
+            preview.matched_intros = self.matched_intros.snapshot()
+        liners, _, intro = preview._transition_voice(
+            plan.ending, plan.upcoming, plan.liners, (), at
+        )
+        queue_paths = set(plan.queue_liner_paths)
+        clock_path = plan.clock_liner.path if plan.clock_liner is not None else None
+        items: list[TransitionItem] = []
+        for entry, _queued in liners:
+            if entry.path == clock_path:
+                source = "clockwheel"
+            elif entry.path in queue_paths:
+                source = "queued"
+            else:
+                source = "automatic"
+            item_id = hashlib.sha256(f"{source}\0{entry.path}".encode()).hexdigest()[:24]
+            items.append(
+                TransitionItem(
+                    item_id,
+                    "liner",
+                    source,
+                    entry.display_name,
+                    entry=entry,
+                    committed=source in {"queued", "clockwheel"},
+                )
+            )
+        if intro is not None:
+            item_id = hashlib.sha256(f"intro\0{intro.intro_id}".encode()).hexdigest()[:24]
+            source = "intro_rule" if intro.intro_id.startswith("rule:") else "matched_intro"
+            items.append(
+                TransitionItem(
+                    item_id,
+                    "matched_intro",
+                    source,
+                    intro.label,
+                    intro=intro,
+                )
+            )
+        identities = "\n".join(f"{item.item_id}:{item.source}" for item in items)
+        plan.transition_seed = hashlib.sha256(
+            f"{plan.slot_id}\0{plan.serial}\0{plan.clock_revision}\0{plan.upcoming.path}\0{identities}".encode()
+        ).hexdigest()
+        plan.transition_revision = self._transition_revision(plan)
+        return tuple(items)
+
+    def _transition_revision(self, plan: SlotPlan) -> str:
+        """Revision of the frozen candidates plus currently committed order."""
+        active = {
+            f"break:{item.break_id}"
+            for item in (self.break_desk.listing() if self.break_desk is not None else ())
+            if item.slot_id == plan.slot_id and item.state == "queued"
+        }
+        order = tuple(
+            key for key in plan.transition_order if not key.startswith("break:") or key in active
+        )
+        value = "\0".join(
+            (
+                plan.transition_seed or plan.transition_revision,
+                "\n".join(sorted(active)),
+                "\n".join(order),
+                "\n".join(plan.transition_replaced),
+                "\n".join(f"{key}:{action}" for key, action in plan.transition_actions),
+            )
+        )
+        return hashlib.sha256(value.encode()).hexdigest()
+
     def _matched_intro(
         self, upcoming: IndexEntry | None, breaks: tuple[Break, ...], at: float | None
     ) -> Any:
@@ -2711,6 +2800,34 @@ class Player:
         store = self.matched_intros
         if store is not None and track.intro_events:
             store.release(intro_id for _at, intro_id, _end, _label in track.intro_events)
+
+    def _reserve_frozen_transition_intro(self, intro: Any, at: float | None) -> Any:
+        """Adopt a frozen intro choice without rerolling it on live chooser state."""
+        if intro is None or self.matched_intros is None:
+            return None
+        when = at if at is not None else self._now()
+        path = Path(intro.path)
+        if not path.is_file():
+            return None
+        entry = self._library.entry_for_path(str(path)) if self._library is not None else None
+        if entry is not None and self.liner_filter is not None:
+            try:
+                if not self.liner_filter((entry,), when):
+                    return None
+            except (OSError, ValueError):
+                return None
+        intro_id = str(intro.intro_id)
+        if intro_id.startswith("rule:"):
+            rules = getattr(self.matched_intros, "rules", None)
+            reserve = getattr(rules, "reserve_chosen", None)
+            held = reserve(intro_id[5:], when) if reserve is not None else False
+        else:
+            reserve = getattr(self.matched_intros, "reserve_chosen", None)
+            held = reserve(intro_id, when) if reserve is not None else False
+        if not held:
+            logger.info("Frozen matched intro %s is no longer eligible", intro_id)
+            return None
+        return intro
 
     def _settle_intros(self, track: RenderedTrack | None) -> None:
         """Queue release of intros in a playing render that ended before they aired."""
@@ -2978,9 +3095,62 @@ class Player:
                     breaks = self._prepared_breaks(
                         current, next_entry, plan=prepared
                     ) + self._take_breaks(plan)
-                    liners, liner_key, intro = self._transition_voice(
-                        current, next_entry, liners, breaks, context.at
-                    )
+                    if plan.transition_order:
+                        replaced = set(plan.transition_replaced)
+                        planned_auto = next(
+                            (
+                                item
+                                for item in plan.transition_items
+                                if item.source == "automatic" and item.item_id not in replaced
+                            ),
+                            None,
+                        )
+                        if planned_auto is not None:
+                            key = f"{current.path}\n{next_entry.path}"
+                            points = self.saved_points(current)
+                            seconds = float(
+                                points.get("segue") or points.get("outro") or current.length
+                            ) / max(self.music_playback_rate(current), 1e-9)
+                            reserve = getattr(self.liner_scheduler, "reserve_frozen_handoff", None)
+                            record = (
+                                self._library.catalog.record_for_path(planned_auto.entry.path)
+                                if self._library is not None
+                                else None
+                            )
+                            name = str(record.get("id")) if record else planned_auto.entry.path.name
+                            if reserve is not None and reserve(
+                                key,
+                                name,
+                                tracks_ahead=1,
+                                seconds_ahead=seconds,
+                            ):
+                                liner_key = key
+                            else:
+                                # The frozen candidate is no longer eligible. Do
+                                # not reroll and silently substitute another clip.
+                                planned_auto = None
+                        liners = tuple(
+                            (item.entry, item.source in {"queued", "clockwheel"})
+                            for item in plan.transition_items
+                            if item.kind == "liner"
+                            and item.item_id not in replaced
+                            and (item.source != "automatic" or item is planned_auto)
+                        )
+                        intro_item = next(
+                            (
+                                item
+                                for item in plan.transition_items
+                                if item.kind == "matched_intro" and item.item_id not in replaced
+                            ),
+                            None,
+                        )
+                        intro = intro_item.intro if intro_item is not None else None
+                        if intro_item is not None:
+                            intro = self._reserve_frozen_transition_intro(intro, context.at)
+                    else:
+                        liners, liner_key, intro = self._transition_voice(
+                            current, next_entry, liners, breaks, context.at
+                        )
                 elif station_mode:
                     next_entry, next_mode, liners, next_cursor, liner_key = (
                         self._choose_station_next(current, context, auto_liner=False)
@@ -3024,11 +3194,20 @@ class Player:
                         glide_in=glide,
                         liners=liners,
                         breaks=breaks,
+                        transition_order=plan.transition_order if plan is not None else (),
+                        transition_items=plan.transition_items if plan is not None else (),
                         **voice,
                     )
                 elif liners:
                     rendered = self._render_track(
-                        current, next_entry, offset, glide_in=glide, liners=liners, **voice
+                        current,
+                        next_entry,
+                        offset,
+                        glide_in=glide,
+                        liners=liners,
+                        transition_order=plan.transition_order if plan is not None else (),
+                        transition_items=plan.transition_items if plan is not None else (),
+                        **voice,
                     )
                 else:
                     rendered = self._render_track(
@@ -3037,6 +3216,12 @@ class Player:
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
                 rendered = None
+            if (
+                liner_key
+                and self.liner_scheduler is not None
+                and (rendered is None or not rendered.liner_events)
+            ):
+                self.liner_scheduler.release_plan(liner_key)
             if rendered is not None and next_entry is not None and unbooked_ad_steps:
                 self._miss_unbooked_ad_steps(unbooked_ad_steps, unbooked_slot_id)
             if intro is not None and (
@@ -3049,7 +3234,7 @@ class Player:
                 for item in breaks:
                     if item.break_id not in mixed:
                         self.break_desk.drop(item.break_id, "its song change could not be rendered")
-            if rendered is None and current_from_queue:
+            if rendered is None and current_from_queue and current is not None:
                 with self._state.queue_lock:
                     self._commit_queue_pick(current)  # it will never start
             self._set_render_cursor(
@@ -3251,6 +3436,12 @@ class Player:
                 and (desk is None or desk.waiting_in(slot_id) == 0)
             ):
                 plan.pinned = False
+                plan.transition_items = tuple(
+                    item for item in plan.transition_items if not item.item_id.startswith("break:")
+                )
+                plan.transition_order = ()
+                plan.transition_replaced = ()
+                plan.transition_actions = ()
                 logger.info("The open song change has no breaks left; the queue may change it")
 
     def _discard_plan(self, plan: SlotPlan, reason: str) -> None:
@@ -3273,6 +3464,8 @@ class Player:
         if desk is not None:
             for _at, break_id, _end in track.break_events:
                 desk.drop(break_id, "its render was thrown away before it played")
+        if track.liner_plan_key and self.liner_scheduler is not None:
+            self.liner_scheduler.release_plan(track.liner_plan_key)
         self._release_intros(track)
 
     def _breaks_on(self) -> bool:
@@ -3407,7 +3600,10 @@ class Player:
             clock_revision=getattr(self, "_chosen_clock_revision", self._clock_revision),
             clock_step=getattr(self, "_chosen_clock_step", None),
             ad_steps=self._chosen_clock_ad_steps if mode == "clock" else (),
+            queue_liner_paths=tuple(getattr(self, "_chosen_queue_liner_paths", ())),
+            clock_liner=getattr(self, "_chosen_clock_liner", None),
         )
+        plan.transition_items = self._slot_transition_items(plan, context.at)
         with self._slot_lock:
             self._slot_plan = plan
         logger.info(
@@ -3545,7 +3741,100 @@ class Player:
             return plan, 0.0, remaining + body
         return plan, remaining, remaining + plan.before_s + body
 
-    def book_break(self, item: Break) -> SlotPlan:
+    def _voice_transition_order(
+        self, plan: SlotPlan, break_id: str, choices: Sequence[Mapping[str, str]]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        editable = [item for item in plan.transition_items if item.editable]
+        by_id = {str(choice.get("id", "")): str(choice.get("action", "")) for choice in choices}
+        if len(by_id) != len(choices) or set(by_id) != {item.item_id for item in editable}:
+            raise BreakError(
+                409,
+                "The planned transition items changed; refresh and choose again",
+                "transition_changed",
+            )
+        actions = [by_id[item.item_id] for item in editable]
+        if any(action not in {"replace", "before", "after"} for action in actions):
+            raise BreakError(
+                422, "Choose Replace, Before or After for each transition item", "transition_choice"
+            )
+
+        replaced = [index for index, action in enumerate(actions) if action == "replace"]
+        order = [item.item_id for index, item in enumerate(editable) if index not in replaced]
+        desk = self.break_desk
+        protected = [
+            f"break:{item.break_id}"
+            for item in (desk.listing() if desk is not None else ())
+            if item.slot_id == plan.slot_id and item.state == "queued"
+        ]
+        matched_at = next(
+            (index for index, item in enumerate(editable) if item.kind == "matched_intro"),
+            len(editable),
+        )
+        insert_protected_at = sum(1 for index in range(matched_at) if index not in replaced)
+        protected_to_add = [key for key in protected if key not in order]
+        order[insert_protected_at:insert_protected_at] = protected_to_add
+        lower, upper = 0, len(order)
+        for index, item in enumerate(editable):
+            if index in replaced:
+                continue
+            at = order.index(item.item_id)
+            if actions[index] == "after":
+                lower = max(lower, at + 1)
+            elif actions[index] == "before":
+                upper = min(upper, at)
+        if lower > upper:
+            raise BreakError(
+                409,
+                "The selected Before, After and Replace choices conflict",
+                "transition_conflict",
+            )
+        position = lower
+        voice_key = f"break:{break_id}"
+        if plan.transition_order:
+            protected_set = set(protected)
+            previous_voice = {
+                item.item_id for item in plan.transition_items if item.kind == "booked_voice"
+            }
+            cleaned = [
+                key
+                for key in plan.transition_order
+                if not key.startswith("break:") or key in protected_set
+            ]
+            current_base = [key for key in cleaned if key not in previous_voice]
+            proposed_base = [key for key in order if key not in previous_voice]
+            if current_base != proposed_base:
+                raise BreakError(
+                    409,
+                    "A voice track already set a different transition order",
+                    "transition_conflict",
+                )
+            order = cleaned
+            before = next((key for key in cleaned if key in order[position:]), None)
+            at = order.index(before) if before is not None else len(order)
+            order.insert(at, voice_key)
+        else:
+            order.insert(position, voice_key)
+        return tuple(order), tuple(editable[index].item_id for index in replaced)
+
+    def _slot_plan_is_stale(self, plan: SlotPlan) -> bool:
+        if plan.clock_name != self._pending_clock_name or (
+            plan.mode == "clock" and plan.clock_revision != self._clock_revision
+        ):
+            return True
+        liners, head = self._station_queue(plan.queue_reserved, plan.reserved)
+        if tuple(entry.path for entry in liners) != plan.queue_liner_paths:
+            return True
+        if plan.mode == "queue":
+            return head is None or head.path != plan.upcoming.path
+        return head is not None
+
+    def book_break(
+        self,
+        item: Break,
+        *,
+        transition_revision: str | None = None,
+        transition_choices: Sequence[Mapping[str, str]] = (),
+    ) -> SlotPlan:
         """Book *item* for the open song change and pin its pair (an API thread).
 
         Raises:
@@ -3563,9 +3852,50 @@ class Player:
                 or plan.slot_id != item.slot_id
                 or plan.serial != self._cursor_serial
                 or (plan.stale and not plan.pinned)
+                or (transition_revision is not None and self._slot_plan_is_stale(plan))
             ):
                 raise BreakError(409, "That song change is no longer open", "slot_closed")
+            if transition_revision is not None:
+                plan.transition_revision = self._transition_revision(plan)
+            if transition_revision is not None and transition_revision != plan.transition_revision:
+                raise BreakError(
+                    409,
+                    "The planned transition changed; refresh and choose again",
+                    "transition_changed",
+                )
+            if transition_revision is not None:
+                order, replaced = self._voice_transition_order(
+                    plan, item.break_id, transition_choices
+                )
             desk.add(item)
+            if transition_revision is not None:
+                plan.transition_order = order
+                plan.transition_replaced = replaced
+                plan.transition_actions = tuple(
+                    (
+                        item.item_id,
+                        str(
+                            next(
+                                choice["action"]
+                                for choice in transition_choices
+                                if choice["id"] == item.item_id
+                            )
+                        ),
+                    )
+                    for item in plan.transition_items
+                    if item.editable
+                )
+                plan.transition_items += (
+                    TransitionItem(
+                        f"break:{item.break_id}",
+                        "booked_voice",
+                        "voice_track",
+                        item.label or "Voice track",
+                        committed=True,
+                        editable=False,
+                    ),
+                )
+                plan.transition_revision = self._transition_revision(plan)
             plan.pinned = True
             return replace(plan)
 
@@ -4166,7 +4496,7 @@ class Player:
         # browser owns every state transition: it calls /api/advance
         # (or /api/skip) which routes through PlayerBridge.advance_now()
         # to mutate state synchronously.  This loop never advances on
-        # its own — that was the source of the "song changed while page
+        # its own â€” that was the source of the "song changed while page
         # idle" bug.
         #
         # The page can POST /api/advance while the first pick is still
@@ -4766,12 +5096,12 @@ class Player:
             _log_repeat_blocks(context.repeat, picked)
             return picked, mode
         except SimilarityError:
-            # The repeat window is >= index size — relax it to the tracks
+            # The repeat window is >= index size â€” relax it to the tracks
             # that must never follow (this one, the one starting, the one
             # playing), so we can keep playing without going back and forth.
             protected = context.protected | {current.path}
             logger.info(
-                "No candidates after applying repeat window (%d tracks) — "
+                "No candidates after applying repeat window (%d tracks) â€” "
                 "relaxing to avoid only the %d tracks around this one.",
                 len(context.recent),
                 len(protected),
@@ -4861,7 +5191,7 @@ class Player:
         return chosen
 
     # ------------------------------------------------------------------
-    # _render_track helpers — broken out so the renderer stays readable.
+    # _render_track helpers â€” broken out so the renderer stays readable.
     # Each helper owns one phase of the crossfade pipeline.
     # ------------------------------------------------------------------
 
@@ -5070,6 +5400,8 @@ class Player:
         *,
         breaks: tuple[Break, ...] = (),
         intro: Any = None,
+        transition_order: tuple[str, ...] = (),
+        transition_items: tuple[TransitionItem, ...] = (),
         source_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
         incoming_decode: Future[tuple[tuple | None, np.ndarray]] | None = None,
     ) -> RenderedTrack | None:
@@ -5120,6 +5452,10 @@ class Player:
                 )
             )
 
+        incoming_points = self.saved_points(next_entry)
+        rate_b = self.music_playback_rate(next_entry)
+        incoming_points_out = _music_output_points(incoming_points, rate_b)
+
         def add_clip(
             audio: np.ndarray, cues: dict[str, Any], length: float, allow_outro: bool
         ) -> tuple[int, int] | None:
@@ -5137,15 +5473,63 @@ class Player:
             frames += len(clip)
             return at, main
 
-        for liner_entry, queued in liners:
+        spoken: list[tuple[int, str, int]] = []
+        introduced: list[tuple[int, str, int, str]] = []
+        custom_order = bool(transition_order and transition_items)
+        frozen_audio: dict[str, np.ndarray] = {}
+        invalid_frozen: set[str] = set()
+        invalid_intro_ids: set[str] = set()
+        if custom_order:
+            planned_ids = set(transition_order)
+            for transition_item in transition_items:
+                if (
+                    transition_item.kind != "liner"
+                    or transition_item.item_id not in planned_ids
+                    or transition_item.entry is None
+                ):
+                    continue
+                try:
+                    frozen_audio[transition_item.entry.path] = self._load_playout_audio(
+                        transition_item.entry
+                    )
+                except (OSError, ValueError, RuntimeError):
+                    invalid_frozen.add(transition_item.entry.path)
+                    logger.exception("Frozen liner %s is unavailable", transition_item.entry.path)
+            invalid_intro_ids = {
+                transition_item.item_id
+                for transition_item in transition_items
+                if transition_item.kind == "matched_intro"
+                and transition_item.item_id in planned_ids
+                and (
+                    transition_item.intro is None
+                    or intro is None
+                    or not Path(transition_item.intro.path).is_file()
+                )
+            }
+            if invalid_frozen or invalid_intro_ids:
+                retained_voice = [
+                    break_item for break_item in breaks if break_item.source == "voice_track"
+                ]
+                for break_item in retained_voice:
+                    self._drop_prepared_or_break(
+                        break_item, "the frozen transition content is no longer available"
+                    )
+                breaks = tuple(
+                    break_item for break_item in breaks if break_item.source != "voice_track"
+                )
+
+        def add_liner(liner_entry: IndexEntry, queued: bool) -> None:
             try:
                 record = (
                     self._library.catalog.record_for_path(liner_entry.path)
                     if self._library
                     else None
                 )
+                audio = frozen_audio.get(liner_entry.path)
+                if audio is None:
+                    audio = self._load_playout_audio(liner_entry)
                 added = add_clip(
-                    self._load_playout_audio(liner_entry),
+                    audio,
                     self.saved_points(liner_entry),
                     liner_entry.length,
                     bool(record and record.get("allow_outro", False)),
@@ -5157,17 +5541,72 @@ class Player:
                 logger.exception(
                     "Cannot prepare liner %s; leaving music playable", liner_entry.path
                 )
-                if queued:
+                if queued and not custom_order:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
-        incoming_points = self.saved_points(next_entry)
-        rate_b = self.music_playback_rate(next_entry)
-        incoming_points_out = _music_output_points(incoming_points, rate_b)
-        spoken: list[tuple[int, str, int]] = []
-        if breaks:
-            spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
-        # The matched intro leads into the song and keeps its native voice speed.
-        introduced = self._add_intro(intro, add_clip) if intro is not None else []
+
+        def add_break(item: Break, dj_followed: bool = False) -> None:
+            spoken.extend(
+                self._add_breaks(
+                    (item,),
+                    incoming_points_out,
+                    add_clip,
+                    dj_followed=dj_followed,
+                )
+            )
+
+        def add_intro(selected: Any) -> None:
+            introduced.extend(self._add_intro(selected, add_clip))
+
+        if custom_order:
+            planned = {item.item_id: item for item in transition_items}
+            liners_by_path = {entry.path: queued for entry, queued in liners}
+            liners_by_id = {
+                item.item_id: item.entry for item in transition_items if item.kind == "liner"
+            }
+            breaks_by_id = {f"break:{item.break_id}": item for item in breaks}
+            handled_liners: set[str] = set()
+            handled_breaks: set[str] = set()
+            used_intro = False
+            for key in transition_order:
+                content = planned.get(key)
+                if content is not None and content.kind == "liner":
+                    entry = liners_by_id.get(key)
+                    if entry is not None and entry.path in liners_by_path:
+                        handled_liners.add(entry.path)
+                        if entry.path not in invalid_frozen:
+                            add_liner(entry, liners_by_path[entry.path])
+                elif (
+                    content is not None
+                    and content.kind == "matched_intro"
+                    and content.intro is not None
+                    and key not in invalid_intro_ids
+                ):
+                    add_intro(content.intro)
+                    used_intro = True
+                elif key in breaks_by_id:
+                    item = breaks_by_id[key]
+                    later_break = any(
+                        later in breaks_by_id
+                        for later in transition_order[transition_order.index(key) + 1 :]
+                    )
+                    add_break(item, dj_followed=later_break)
+                    handled_breaks.add(item.break_id)
+            for entry, queued in liners:
+                if entry.path not in handled_liners:
+                    add_liner(entry, queued)
+            for item in breaks:
+                if item.break_id not in handled_breaks:
+                    add_break(item)
+            if intro is not None and not used_intro and not invalid_intro_ids:
+                add_intro(intro)
+        else:
+            for liner_entry, queued in liners:
+                add_liner(liner_entry, queued)
+            if breaks:
+                spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
+            if intro is not None:
+                introduced = self._add_intro(intro, add_clip)
         voiced = [*spoken, *((at, intro_id, end) for at, intro_id, end, _label in introduced)]
         duck_db = self._break_duck_db() if voiced else 0.0
         incoming_intro = max(
@@ -5264,6 +5703,8 @@ class Player:
         breaks: tuple[Break, ...],
         incoming_points: dict[str, Any],
         add_clip: Callable[[np.ndarray, dict[str, Any], float, bool], tuple[int, int] | None],
+        *,
+        dj_followed: bool = False,
     ) -> list[tuple[int, str, int]]:
         """Decode each break and append it to the handoff's voice chain (#88).
 
@@ -5281,7 +5722,7 @@ class Player:
         intro_s = None if intro is None else max(0.0, float(intro) - float(start))
         spoken: list[tuple[int, str, int]] = []
         for index, item in enumerate(breaks):
-            if index < len(breaks) - 1 and item.kind == "dj":
+            if (index < len(breaks) - 1 or dj_followed) and item.kind == "dj":
                 placement, note = "standalone", "another break follows it"
             else:
                 placement, note = placement_for(
@@ -5420,14 +5861,14 @@ class Player:
         Resolution order:
         1. Sibling ``.lrc`` file (timestamped, scrolls in the web UI).
         2. Beets DB ``lyrics`` field.
-        3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, ©lyr).
+        3. Embedded ID3/Vorbis/MP4 lyric tags (USLT, LYRICS, Ã‚Â©lyr).
 
         Sources 2 and 3 are parsed as LRC too: taggers routinely put the
         synced text in the tag rather than a sidecar.  Whichever source
         wins, timestamped text lands in the first element and untimed text
         in the second -- never both.
         """
-        # Respect the lyric-display toggle — when off we skip ALL lyric
+        # Respect the lyric-display toggle â€” when off we skip ALL lyric
         # work and the web UI hides its card.
         if not self._cfg.playback.show_lyrics:
             return [], ""
@@ -6011,7 +6452,7 @@ class Player:
         crossfade_samples: int,
         prefetched: Future[tuple[tuple | None, np.ndarray]] | None = None,
     ) -> np.ndarray:
-        """Load incoming track, resample to sr_a, ReplayGain — silence on failure.
+        """Load incoming track, resample to sr_a, ReplayGain â€” silence on failure.
 
         Uses the *prefetched* decode when given.
         """
@@ -6474,7 +6915,7 @@ class Player:
         "backspin": 2.5,  # Pioneer Backspin / Numark Reverse Roll
         "forward_spin": 2.5,  # mirror of backspin
         "noise_riser": 4.0,  # 2-bar build @ 120 BPM
-        "noise_drop": 3.0,  # shorter — drops feel snappier
+        "noise_drop": 3.0,  # shorter â€” drops feel snappier
         "reverb_tail": 4.0,  # mid-size hall
         "freeze": 4.0,  # granular hold needs space
         "glitch": 3.0,  # chaotic; longer becomes tedious
@@ -6489,7 +6930,7 @@ class Player:
         "vinyl_rewind": 3.5,  # slow musical reverse + pitch drop
         "transformer": 2.5,  # syncopated 16-cps fader cuts
         "dub_siren": 3.0,  # smooth sine riser w/ vibrato
-        "stutter_build": 3.0,  # accelerating gate 4 → 32 Hz
+        "stutter_build": 3.0,  # accelerating gate 4 Ã¢â€ â€™ 32 Hz
         "wow_flutter": 2.5,  # pitch wobble + amplitude tremolo
         "phaser": 3.0,  # 4-stage allpass cascade
         "ring_modulator": 2.5,  # signal x 173 Hz sine carrier
@@ -6583,7 +7024,7 @@ class Player:
         start_offset: int,
         semitones: int = 0,
     ) -> _FxPlan:
-        """The planned effect for *current* → *next_entry*, with its sync data.
+        """The planned effect for *current* Ã¢â€ â€™ *next_entry*, with its sync data.
 
         The tempo counts only when ``[playback] beat_sync_fx`` is on and
         :func:`~autodj.transitions.trusted_bpm` accepts it, and the keys
@@ -6744,6 +7185,8 @@ class Player:
         liners: tuple[tuple[IndexEntry, bool], ...] = (),
         breaks: tuple[Break, ...] = (),
         intro: Any = None,
+        transition_order: tuple[str, ...] = (),
+        transition_items: tuple[TransitionItem, ...] = (),
         prepared_plan: Any = None,
         omit_prepared: bool = False,
     ) -> RenderedTrack | None:
@@ -6801,6 +7244,8 @@ class Player:
                 liners=liners,
                 breaks=breaks,
                 intro=intro,
+                transition_order=transition_order,
+                transition_items=transition_items,
                 source_decode=source_decode,
                 incoming_decode=incoming_decode,
             )
@@ -6828,6 +7273,8 @@ class Player:
                         else self._prepared_breaks(current, next_entry, plan=fresh)
                     ),
                     intro=intro,
+                    transition_order=transition_order,
+                    transition_items=transition_items,
                     prepared_plan=fresh,
                     omit_prepared=omit_prepared,
                 )
@@ -6857,12 +7304,21 @@ class Player:
                         liners=liners,
                         breaks=tuple(item for item in breaks if item not in selected_prepared),
                         intro=intro,
+                        transition_order=transition_order,
+                        transition_items=transition_items,
                     )
             if not self._prepared_primary_valid(current, plan=prepared_plan):
                 return None
             if not self._prepared_primary_valid(next_entry, plan=prepared_plan):
                 return self._render_track(
-                    current, None, start_offset, glide_in=glide_in, liners=liners, breaks=breaks
+                    current,
+                    None,
+                    start_offset,
+                    glide_in=glide_in,
+                    liners=liners,
+                    breaks=breaks,
+                    transition_order=transition_order,
+                    transition_items=transition_items,
                 )
             return replace(rendered, incoming_intro=intro) if rendered is not None else None
         finally:
@@ -6882,6 +7338,8 @@ class Player:
         incoming_decode: Future[tuple[tuple | None, np.ndarray]] | None,
         breaks: tuple[Break, ...] = (),
         intro: Any = None,
+        transition_order: tuple[str, ...] = (),
+        transition_items: tuple[TransitionItem, ...] = (),
     ) -> RenderedTrack | None:
         """:meth:`_render_track` with the two decodes under way."""
         try:
@@ -6898,12 +7356,14 @@ class Player:
                     liners,
                     breaks=breaks,
                     intro=intro,
+                    transition_order=transition_order,
+                    transition_items=transition_items,
                     source_decode=source_decode,
                     incoming_decode=incoming_decode,
                 )
             audio_a_full = self._playout_audio(current, source_decode)
         except (OSError, ValueError, RuntimeError) as exc:
-            logger.error("Cannot load %s: %s — skipping.", current.path, exc)
+            logger.error("Cannot load %s: %s â€” skipping.", current.path, exc)
             return None
         if start_offset >= len(audio_a_full):
             return None

@@ -145,6 +145,47 @@ def test_saved_points_plans_one_liner_until_heard_or_released(tmp_path: Path) ->
     assert scheduler.plan_for_handoff("handoff-2", tracks_ahead=2, seconds_ahead=0) == "id-two"
 
 
+def test_frozen_handoff_choice_reserves_without_reroll_and_commits_rotation(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "same.wav"
+    second = tmp_path / "two" / "same.wav"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+    cfg = _cfg(
+        transition_mode="saved_points",
+        liners_talk_up=True,
+        liners_pick_mode="sequential",
+        liners_every_n_songs=2,
+    )
+    scheduler = LinerScheduler(
+        cfg,
+        tmp_path / "flat",
+        MagicMock(),
+        registered_liners=lambda: [("id-one", first), ("id-two", second)],
+        path_decoder=lambda _path: np.zeros((8, 2), np.float32),
+        vocal_start=lambda _entry: 1.0,
+        can_fire=lambda: False,
+    )
+    prediction = scheduler.snapshot()
+    assert prediction.plan_for_handoff("frozen", 2, 0) == "id-one"
+    assert scheduler._registered_cursor == 0
+    assert scheduler.reserve_frozen_handoff("frozen", "id-one", tracks_ahead=2, seconds_ahead=0)
+    assert scheduler._planned_name == "id-one"
+    assert scheduler.mark_planned_fired("frozen")
+    assert scheduler._registered_cursor == 1
+    assert scheduler.plan_for_handoff("next", 2, 0) == "id-two"
+    assert scheduler.release_plan("next")
+    assert scheduler.reserve_frozen_handoff(
+        "interrupted", "id-two", tracks_ahead=2, seconds_ahead=0
+    )
+    assert scheduler.release_plan("interrupted")
+    assert scheduler._registered_cursor == 1
+    assert scheduler.reserve_frozen_handoff("retry", "id-two", tracks_ahead=2, seconds_ahead=0)
+    assert scheduler.mark_planned_fired("retry")
+    assert scheduler._registered_cursor == 2
+
+
 def test_snapshot_plans_and_advances_without_changing_live_scheduler(tmp_path: Path) -> None:
     first = tmp_path / "one" / "same.wav"
     second = tmp_path / "two" / "same.wav"

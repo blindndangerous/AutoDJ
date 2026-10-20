@@ -953,6 +953,58 @@ class LinerScheduler:
             self._planned_key = self._planned_name = None
             return True
 
+    def reserve_frozen_handoff(
+        self, key: str, name: str, *, tracks_ahead: int, seconds_ahead: float
+    ) -> bool:
+        """Adopt a previously predicted handoff pick without drawing the RNG again."""
+        try:
+            seconds = float(seconds_ahead)
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(seconds) or seconds < 0 or not key or not name or tracks_ahead < 0:
+            return False
+        registered = self._registered_entries()
+        files = [entry[0] for entry in registered]
+        if registered:
+            matches = [
+                index for index, (candidate, _path) in enumerate(registered) if candidate == name
+            ]
+        else:
+            self._refresh_library()
+            files = [path.name for path in self._library.files]
+            matches = [index for index, candidate in enumerate(files) if candidate == name]
+        if not matches:
+            return False
+        airs = self._wall_clock() + seconds
+        playable = [self.refusal(candidate, airs) is None for candidate in files]
+        selected = matches[0]
+        if not playable[selected]:
+            return False
+        with self._state():
+            if not self._planner_mode() or not self._cfg.liners_enabled:
+                return False
+            if self._planned_key is not None:
+                return self._planned_key == key and self._planned_name == name
+            minutes = (self._clock() - self._last_fire + seconds) / 60.0
+            if not self._trigger().should_fire(
+                track_count=self._tracks_since + tracks_ahead,
+                minutes_since_last=minutes,
+                random_target_minutes=self._random_target,
+            ):
+                return False
+            if self._cfg.liners_pick_mode == "sequential":
+                start = (
+                    self._registered_cursor % len(files)
+                    if registered
+                    else self._library.cursor % len(files)
+                )
+                moved = (selected - start) % len(files) + 1
+            else:
+                moved = 1
+            self._planned_key, self._planned_name = key, name
+            self._planned_moves = moved
+            return True
+
     def mark_planned_fired(self, key: str) -> bool:
         """Commit a reservation when the planned liner actually becomes audible.
 
