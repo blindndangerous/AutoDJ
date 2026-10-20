@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import ntpath
 import os
 import platform
 import shutil
@@ -143,7 +144,15 @@ def main() -> int:
         options.extend(selected)
         for selector in selected:
             options.extend(["--require-executed", selector])
-    with tempfile.TemporaryDirectory(prefix="autodj-pytest-") as folder:
+    scratch_parent = None
+    if platform.system() == "Windows" and (
+        ntpath.splitdrive(tempfile.gettempdir())[0].casefold()
+        != ntpath.splitdrive(str(Path.cwd()))[0].casefold()
+    ):
+        # Synthetic rooted paths must resolve on the checkout's drive, as before.
+        scratch_parent = Path.cwd() / ".tmp"
+        scratch_parent.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="autodj-pytest-", dir=scratch_parent) as folder:
         scratch = Path(folder)
         if args.profile == "full" and shutil.disk_usage(scratch).free < 2 * 1024**3 + 64 * 1024**2:
             print(

@@ -36,7 +36,10 @@ For full local validation, install `uv sync --frozen --all-extras` and run
 `uv run --frozen --no-sync python scripts/ci_pytest.py --profile full`.
 The full profile requires model packages and at least 2 GiB plus 64 MiB of free
 scratch space. The runner uses a private temporary directory and checks loopback
-permissions before running tests; resolve a failed preflight before retrying.
+permissions before running tests. On Windows, a temporary directory on another
+drive is replaced with an isolated directory under the checkout's ignored `.tmp/`
+so rooted fixture paths keep their original drive. Unix scratch selection is
+unchanged; resolve a failed preflight before retrying.
 The default profile is full. It enforces 90% line coverage, with no branch floor.
 There is no whole-run duration guarantee. Use `--no-sync` for verification so
 `uv run` does not silently change the selected environment.

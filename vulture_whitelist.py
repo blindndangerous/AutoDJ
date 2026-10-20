@@ -35,3 +35,10 @@ _.anchor_to_seed
 _.replaygain_max_clip_safe_gain
 # Read through self.__dict__.setdefault("_fx_plans", ...) in player.py.
 _._fx_plans
+
+# Pytest discovers these registered plugin hooks by name (-p scripts.ci_pytest).
+_.pytest_addoption
+_.pytest_sessionstart
+_.pytest_deselected
+_.pytest_testnodedown
+_.pytest_sessionfinish

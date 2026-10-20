@@ -54,6 +54,7 @@ def test_real_index_imports_audio_without_model_analysis(runtime, tmp_path):
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=40,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -70,7 +71,7 @@ def test_real_empty_server_becomes_ready_and_stops(runtime, tmp_path):
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     opener = build_opener(ProxyHandler({}))
-    with (tmp_path / "server.log").open("w+") as log:
+    with (tmp_path / "server.log").open("w+", encoding="utf-8") as log:
         server = subprocess.Popen(
             [
                 sys.executable,
