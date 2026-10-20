@@ -88,6 +88,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0012-04` | A fully Torch-free model-cache inspection for model-capable installs is not implemented or accepted. | gap | Cache inspection currently imports model.py/Torch without loading weights; do not infer broader coverage from import-only tests. |
 | `ADR-0012-05` | Hardware/model compatibility and release artifacts require their applicable environments. | manual | Run the relevant MuQ inference, hardware, wheel/container, full CI, and release-sampling checks for changes to those surfaces. |
 | `ADR-0012-06` | Base serving dependencies exclude the model stack; no-model setup saves a reusable runtime without a Torch probe. | automated | `tests/unit/test_setup_flow.py::test_no_model_core_metadata_keeps_analysis_optional`; `tests/unit/test_setup_flow.py::test_no_model_setup_saves_runtime_without_torch_probe` |
+| `ADR-0012-07` | No-model servers accept compatible remote results with an existing model cache; missing cache requests are refused with recovery advice that does not promise no-model downloads. | automated | `tests/unit/test_worker_api.py::test_a_valid_result_goes_into_the_live_catalog`; `tests/unit/test_worker_api.py::test_a_server_without_the_model_cannot_check_results` |
 
 ## Amendment 2026-10-18: optional no-model serving runtime
 
@@ -105,6 +106,17 @@ as an expected Doctor warning, while preserving basic imports, playback,
 streaming, saved vectors and remote analysis results. It does not introduce an
 alternate embedding model or change the trust boundary for remote workers.
 Full-install model-cache inspection retains the limitation in ADR-0012-04.
+
+### Clarification 2026-10-20: output packages and remote analysis prerequisites
+
+Fresh no-model setup includes browser playback and streaming but omits the
+sound-card output packages supplied by the `play` extra. Remote analysis retains
+the existing exact-weight identity contract: the server needs an existing
+compatible cache, including in no-model mode. No-model indexing does not
+bootstrap that cache, and enabling a remote worker does not remove the server's
+model-storage requirement. Supporting fresh servers without cached weights is
+outside this change. The worker guide documents the prerequisite; worker API
+diagnostics distinguish restoring the cache from using model-capable indexing.
 
 ## Verification
 

@@ -34,6 +34,7 @@ This installs the UI, basic music import, playback and streaming without MuQ,
 PyTorch, Transformers or model weights. Local sonic-similarity analysis and
 analysis-worker execution are unavailable; queues, categories and clockwheels
 remain usable. FFmpeg is still needed for common audio formats and streaming.
+Fresh no-model setup omits server sound-card packages; the `play` extra adds them.
 See [no-model setup](docs/setup.md#no-model-installation) for limits and upgrades.
 
 ## Build your station
