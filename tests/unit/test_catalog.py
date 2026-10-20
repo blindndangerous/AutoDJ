@@ -739,10 +739,12 @@ def test_pending_iterator_advances_past_rejected_pages_without_holding_lock(tmp_
         catalog.seed_entries(entry(tmp_path / "a-excluded" / f"{i}.flac") for i in range(5))
         catalog.seed_entries(entry(eligible / f"{i}.flac") for i in range(3))
         candidates = catalog.iter_unembedded_paths()
-        assert next(candidates) == str(eligible / "0.flac")
+        assert next(candidates) == catalog_module.normalize_path(eligible / "0.flac")
         with ThreadPoolExecutor(max_workers=1) as executor:
             try:
                 assert executor.submit(catalog.get_setting, "unused", 42).result(timeout=5) == 42
-                assert list(candidates) == [str(eligible / f"{i}.flac") for i in (1, 2)]
+                assert list(candidates) == [
+                    catalog_module.normalize_path(eligible / f"{i}.flac") for i in (1, 2)
+                ]
             finally:
                 candidates.close()
