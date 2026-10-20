@@ -266,6 +266,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const list = el("vt-list");
   const none = el("vt-none");
   const listHeading = el("vt-booked-heading");
+  const transitionItems = el("vt-transition-items");
 
   let data = null;
   let fetchedAt = 0;
@@ -591,15 +592,48 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   async function refresh() {
     const epoch = ++requestEpoch;
     let url = "/api/voice-tracks";
+    let transitionForecast = false;
     if (take?.cues?.speech > 0) {
-      url += `?speech_s=${encodeURIComponent(take.cues.speech)}`
-        + `&tail_s=${encodeURIComponent(take.cues.tail || 0)}`
-        + `&placement=${encodeURIComponent(placement.value)}`;
+      const query = new URLSearchParams({
+        speech_s: String(take.cues.speech),
+        tail_s: String(take.cues.tail || 0),
+        placement: placement.value,
+      });
+      const slot = data?.slot;
+      if (slot?.transition_revision && Array.isArray(slot.transition_items) && transitionItems) {
+        const choices = slot.transition_items.filter((item) => item.editable).map((item) => {
+          const row = [...transitionItems.children]
+            .find((candidate) => candidate.dataset.transitionId === item.id);
+          const select = row?.querySelector("select");
+          return {
+            id: item.id,
+            action: select?.value || item.current_action || item.default_action || "replace",
+          };
+        });
+        query.set("transition_revision", slot.transition_revision);
+        query.set("transition_choices", JSON.stringify(choices));
+        transitionForecast = true;
+        slot.voice_forecast = null;
+        renderPlacement();
+      }
+      url += `?${query}`;
     }
     try {
       const response = await requestJson(url);
       if (epoch === requestEpoch) apply(response);
     } catch (problem) {
+      if (epoch === requestEpoch && transitionForecast && problem.status === 409) {
+        const latestEpoch = ++requestEpoch;
+        try {
+          const latest = await requestJson("/api/voice-tracks");
+          if (latestEpoch === requestEpoch) apply(latest);
+        } catch (_) {
+          if (latestEpoch === requestEpoch) {
+            setText(el("vt-fit"), "The transition changed. Refresh the voice tracker to get a new estimate.");
+          }
+        }
+        return;
+      }
       // Shown, not said: the page asks again every few seconds.
       if (epoch === requestEpoch && !data) {
         unavailable.hidden = false;
@@ -1126,6 +1160,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   placement.addEventListener("change", () => {
     renderPlacement();
     if (take?.cues) void refresh();
+  });
+  transitionItems?.addEventListener("change", (event) => {
+    if (event.target instanceof doc.defaultView.HTMLSelectElement && take?.cues) void refresh();
   });
   // Alt+R: start or stop from anywhere in the Voice tracks tab, focus staying put.
   doc.addEventListener("keydown", (event) => {

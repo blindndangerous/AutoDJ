@@ -152,6 +152,8 @@ function microphone() {
 
 function tracker(over = {}) {
   installIndex();
+  const { beforeInstall, ...options } = over;
+  beforeInstall?.();
   const server = fakeServer();
   const mic = microphone();
   const storage = memoryStorage();
@@ -167,8 +169,8 @@ function tracker(over = {}) {
     objectUrl: () => "blob:take",
     revokeUrl: vi.fn(),
     storage,
-    ...over,
-    media: over.media ? () => over.media(mic) : () => mic,
+    ...options,
+    media: options.media ? () => options.media(mic) : () => mic,
   });
   const advance = async (seconds) => {
     for (let i = 0; i < seconds; i += 1) {
@@ -327,6 +329,68 @@ describe("voice tracker", () => {
     expect(byId("vt-fit").textContent).toContain("The playout timing estimate is pending.");
     expect(prepared.server.calls.filter((call) => call.method === "GET").at(-1).url)
       .toBe("/api/voice-tracks");
+  });
+
+  it("includes current native transition choices in the cue forecast and refreshes on change", async () => {
+    let select;
+    const prepared = tracker({
+      beforeInstall: () => {
+        const list = document.createElement("ul");
+        list.id = "vt-transition-items";
+        const row = document.createElement("li");
+        row.dataset.transitionId = "liner-1";
+        select = document.createElement("select");
+        select.innerHTML = '<option value="before">Before</option><option value="after">After</option>';
+        select.value = "after";
+        row.append(select);
+        list.append(row);
+        byId("voice-tracker").append(list);
+      },
+      toWav: async (_blob, _rate, _context, _pause, onDecoded) => {
+        onDecoded({ speech: 1, clip: 1.4, tail: 0.4 });
+        return new Blob([new Uint8Array(44)], { type: "audio/wav" });
+      },
+    });
+    prepared.server.slot = {
+      ...slot(), transition_revision: "revision-1",
+      transition_items: [{
+        id: "liner-1", editable: true, current_action: "after", default_action: "after",
+      }],
+    };
+
+    await prepared.controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    await flush();
+    const forecastRequest = () => prepared.server.calls.filter((call) => call.method === "GET").at(-1).url;
+    expect(forecastRequest()).toContain("transition_revision=revision-1");
+    expect(decodeURIComponent(forecastRequest())).toContain(
+      'transition_choices=[{"id":"liner-1","action":"after"}]',
+    );
+
+    select.value = "before";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(decodeURIComponent(forecastRequest())).toContain(
+      'transition_choices=[{"id":"liner-1","action":"before"}]',
+    );
+
+    const originalRequest = api.requestJson.getMockImplementation();
+    let refuseChoice = true;
+    api.requestJson.mockImplementation(async (url, options = {}) => {
+      if (refuseChoice && url.includes("transition_choices=")) {
+        refuseChoice = false;
+        prepared.server.calls.push({ method: options.method || "GET", url, body: options.body });
+        throw Object.assign(new Error("The planned transition changed"), { status: 409 });
+      }
+      return originalRequest(url, options);
+    });
+    select.value = "after";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(prepared.server.calls.filter((call) => call.method === "GET").at(-1).url)
+      .toBe("/api/voice-tracks");
+    expect(byId("vt-fit").textContent).toContain("The playout timing estimate is pending.");
   });
 
   it("forecasts the cue tail after all queued clips", async () => {

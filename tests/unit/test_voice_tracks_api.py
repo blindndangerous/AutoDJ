@@ -9,7 +9,9 @@ a session cookie, never a machine token.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -140,9 +142,75 @@ def test_voice_forecast_query_is_read_only_and_validated(station):
         "speech_s=-0.1",
         "placement=overlap",
         "speech_s=600&tail_s=0.01",
+        "speech_s=5&transition_choices=%5B%5D",
+        "speech_s=5&transition_revision=rev&transition_choices=%7B%7D",
+        "speech_s=5&transition_revision=rev&transition_choices=%5B%7B%22id%22%3A%22x%22%2C%22action%22%3A%22move%22%7D%5D",
     ):
         reply = station.client.get(f"/api/voice-tracks?{query}")
         assert reply.status_code == 422
+
+
+def test_voice_forecast_uses_frozen_matched_intro_order_and_its_full_cues(station, monkeypatch):
+    plan = station.player._slot_plan
+    intro = SimpleNamespace(intro_id="matched-intro", path="unused.wav", label="Matched")
+    plan.transition_items = (
+        SimpleNamespace(item_id="intro", kind="matched_intro", intro=intro, entry=None),
+    )
+
+    def resolve(_plan, _break_id, choices):
+        selected = choices[0]["action"]
+        if selected == "replace":
+            return (("break:forecast",), ("intro",))
+        if selected == "before":
+            return (("break:forecast", "intro"), ())
+        return (("intro", "break:forecast"), ())
+
+    def add_intro(_intro, add_clip):
+        event = add_clip(
+            None,
+            {"start": 0.0, "segue": 2.0, "end": 2.75, "overlap_start": 0.0},
+            2.75,
+            True,
+        )
+        return [event] if event else []
+
+    monkeypatch.setattr(station.player, "_voice_transition_order", resolve, raising=False)
+    monkeypatch.setattr(station.player, "_add_intro", add_intro)
+    monkeypatch.setattr(
+        station.player, "_transition_revision", lambda _plan: "revision-1", raising=False
+    )
+    monkeypatch.setattr(station.player, "slot_status", lambda: (plan, 10.0, 20.0))
+
+    def forecast(action):
+        query = urlencode(
+            {
+                "speech_s": "5.25",
+                "tail_s": "0.4",
+                "placement": "talk_up",
+                "transition_revision": "revision-1",
+                "transition_choices": json.dumps([{"id": "intro", "action": action}]),
+            }
+        )
+        response = station.client.get(f"/api/voice-tracks?{query}")
+        assert response.status_code == 200, response.text
+        return response.json()["slot"]["voice_forecast"]
+
+    before, after, replaced = forecast("before"), forecast("after"), forecast("replace")
+    assert before["chain_speech_s"] == pytest.approx(7.25)
+    assert before["chain_clip_s"] == pytest.approx(8.4)
+    assert after["chain_speech_s"] == pytest.approx(7.25)
+    assert after["chain_clip_s"] == pytest.approx(8.4)
+    assert after["recording_start_s"] - before["recording_start_s"] == pytest.approx(2.75)
+    assert replaced["chain_speech_s"] == pytest.approx(5.25)
+    assert replaced["chain_clip_s"] == pytest.approx(5.65)
+
+
+def test_voice_forecast_refuses_transition_choices_without_a_supported_plan(station):
+    reply = station.client.get(
+        "/api/voice-tracks?speech_s=5&transition_revision=stale&transition_choices=%5B%5D"
+    )
+    assert reply.status_code == 409
+    assert "cannot be forecast" in reply.json()["detail"]
 
 
 def test_voice_track_admission_fails_closed_when_hard_event_timing_is_unavailable(

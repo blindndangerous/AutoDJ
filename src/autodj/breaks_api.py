@@ -55,6 +55,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -283,6 +284,7 @@ def _voice_chain_forecast(
     speech_s: float,
     tail_s: float,
     placement: str,
+    transition_choices: list[dict[str, str]] | None = None,
 ) -> dict[str, float]:
     """Place a proposed manual take with the same frame helpers as playout."""
     from autodj.breaks import placement_for
@@ -316,22 +318,25 @@ def _voice_chain_forecast(
     speech_spans: list[tuple[int, int]] = []
     clip_frames = 0
 
-    def add(cues: dict[str, Any], length: float, allow_outro: bool) -> None:
+    def add(cues: dict[str, Any], length: float, allow_outro: bool) -> tuple[int, int] | None:
         nonlocal clip_frames
         first = round(float(cues.get("start") or 0.0) * SAMPLE_RATE)
         last = round(float(cues.get("end") or length) * SAMPLE_RATE)
         frames = max(0, last - first)
         if not frames:
-            return
+            return None
+        offset = clip_frames
         main = liner_main_frames(first, frames, cues.get("segue"))
         timing.append((frames, main, cues.get("overlap_start"), allow_outro))
         speech_spans.append((clip_frames, main))
         clip_frames += frames
+        return offset, main
 
     if player._is_liner(plan.ending):
         points = player.saved_points(plan.ending)
         add(points, plan.ending.length, False)
-    for entry, _queued in plan.liners:
+
+    def add_liner(entry: Any) -> None:
         points = player.saved_points(entry)
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
         add(points, entry.length, bool(record and record.get("allow_outro", False)))
@@ -345,12 +350,13 @@ def _voice_chain_forecast(
         key=lambda item: (item.kind == "dj", item.created_at),
     )
     config = desk.config
-    for item in queued:
+
+    def add_break(item: Break, dj_followed: bool = False) -> None:
         manual_fit = item.source == VOICE_TRACK and item.placement != "standalone"
         if manual_fit:
             is_talk_up = True
-        elif item.kind == "dj":
-            is_talk_up = False  # the proposed take follows every queued DJ break
+        elif item.kind == "dj" and dj_followed:
+            is_talk_up = False  # Another break follows this one in the chain.
         else:
             is_talk_up = (
                 placement_for(
@@ -369,17 +375,60 @@ def _voice_chain_forecast(
         )
 
     manual_fit = placement != "standalone"
-    take_start = clip_frames
-    add(
-        {
-            "start": 0.0,
-            "segue": speech_s,
-            "end": speech_s + tail_s,
-            "overlap_start": 0.0 if manual_fit else None,
-        },
-        speech_s + tail_s,
-        manual_fit,
-    )
+
+    def add_take() -> None:
+        add(
+            {
+                "start": 0.0,
+                "segue": speech_s,
+                "end": speech_s + tail_s,
+                "overlap_start": 0.0 if manual_fit else None,
+            },
+            speech_s + tail_s,
+            manual_fit,
+        )
+
+    take_start = 0
+    order_for = getattr(player, "_voice_transition_order", None)
+    transition_items = tuple(getattr(plan, "transition_items", ()))
+    if transition_choices is not None and callable(order_for):
+        order, replaced = order_for(plan, "forecast", transition_choices)
+        replaced_set = set(replaced)
+        liners = {item.item_id: item.entry for item in transition_items if item.kind == "liner"}
+        intros = {
+            item.item_id: item.intro for item in transition_items if item.kind == "matched_intro"
+        }
+        breaks = {f"break:{item.break_id}": item for item in queued}
+        take_added = False
+        break_keys = set(breaks) | {"break:forecast"}
+        for index, key in enumerate(order):
+            if key == "break:forecast":
+                take_start = clip_frames
+                add_take()
+                take_added = True
+            elif key in liners and key not in replaced_set:
+                add_liner(liners[key])
+            elif key in breaks:
+                dj_followed = any(later in break_keys for later in order[index + 1 :])
+                add_break(breaks[key], dj_followed=dj_followed)
+            elif key in intros and key not in replaced_set:
+                intro = intros[key]
+                if intro is None:
+                    continue
+                events = player._add_intro(
+                    intro, lambda _audio, cues, length, allow_outro: add(cues, length, allow_outro)
+                )
+                if not events:
+                    raise ValueError("The matched intro could not be forecast")
+        if not take_added:
+            raise ValueError("The proposed take is missing from the transition plan")
+    else:
+        for entry, _queued in plan.liners:
+            add_liner(entry)
+        for item in queued:
+            add_break(item, dj_followed=True)
+        take_start = clip_frames
+        add_take()
     main_frames, release, outro_lead_limit = liner_chain_timing(timing, incoming_intro)
     liner_start, incoming_frame = liner_chain_placement(
         start_frame,
@@ -711,6 +760,8 @@ def install_breaks(router: StationRouter) -> None:
         speech_s: float | None = Query(default=None, ge=0.5, le=MAX_FORECAST_SECONDS),
         tail_s: float = Query(default=0.0, ge=0.0, le=MAX_FORECAST_SECONDS),
         placement: Literal["auto", "talk_up", "standalone"] = "auto",
+        transition_revision: str | None = Query(default=None, max_length=64),
+        transition_choices: str | None = Query(default=None, max_length=8192),
     ) -> JSONResponse:
         """The open song change, the limits, and this station's voice tracks."""
         if speech_s is not None and speech_s + tail_s > MAX_FORECAST_SECONDS:
@@ -718,6 +769,32 @@ def install_breaks(router: StationRouter) -> None:
                 status_code=422,
                 detail=f"The voice track exceeds {MAX_FORECAST_SECONDS:g} seconds",
             )
+        if (transition_revision is None) != (transition_choices is None):
+            raise HTTPException(status_code=422, detail="Transition choices need a revision")
+        if transition_choices is not None and speech_s is None:
+            raise HTTPException(status_code=422, detail="Transition choices need a speech estimate")
+        parsed_choices = None
+        if transition_choices is not None:
+            try:
+                parsed_choices = json.loads(transition_choices)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=422, detail="Transition choices must be valid JSON"
+                ) from exc
+            if (
+                not isinstance(parsed_choices, list)
+                or len(parsed_choices) > 64
+                or any(
+                    not isinstance(choice, dict)
+                    or set(choice) != {"id", "action"}
+                    or not isinstance(choice["id"], str)
+                    or not 1 <= len(choice["id"]) <= 128
+                    or not isinstance(choice["action"], str)
+                    or choice["action"] not in {"replace", "before", "after"}
+                    for choice in parsed_choices
+                )
+            ):
+                raise HTTPException(status_code=422, detail="Transition choices are invalid")
         desk: BreakDesk | None = getattr(station, "breaks", None)
         if desk is None:
             return JSONResponse(
@@ -731,7 +808,15 @@ def install_breaks(router: StationRouter) -> None:
                 headers=_NO_STORE,
             )
         return JSONResponse(
-            await asyncio.to_thread(_voice_context, station, speech_s, tail_s, placement),
+            await asyncio.to_thread(
+                _voice_context,
+                station,
+                speech_s,
+                tail_s,
+                placement,
+                transition_revision,
+                parsed_choices,
+            ),
             headers=_NO_STORE,
         )
 
@@ -839,6 +924,8 @@ def _voice_context(
     speech_s: float | None = None,
     tail_s: float = 0.0,
     placement: str = "auto",
+    transition_revision: str | None = None,
+    transition_choices: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """What the voice tracker shows (blocking: it reads the catalog).
 
@@ -861,6 +948,8 @@ def _voice_context(
     desk: BreakDesk = station.breaks
     config = desk.config
     slot = context["slot"]
+    if transition_choices is not None and slot is None:
+        raise HTTPException(status_code=409, detail="No song change is open for this forecast")
     if slot is not None:
         slot["auto_placement"] = "talk_up"
         slot["auto_note"] = None
@@ -879,12 +968,39 @@ def _voice_context(
         if speech_s is not None:
             plan, _closes_in, _airs_in = station.player.slot_status()
             if plan is not None and plan.slot_id == slot["slot_id"]:
+                if transition_choices is not None:
+                    revision_for = getattr(station.player, "_transition_revision", None)
+                    order_for = getattr(station.player, "_voice_transition_order", None)
+                    if not callable(revision_for) or not callable(order_for):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="This transition plan cannot be forecast; refresh and try again",
+                        )
+                    if revision_for(plan) != transition_revision:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The planned transition changed; refresh and choose again",
+                        )
                 try:
                     slot["voice_forecast"] = _voice_chain_forecast(
-                        station, plan, speech_s, tail_s, placement
+                        station, plan, speech_s, tail_s, placement, transition_choices
                     )
-                except Exception:
+                except BreakError as exc:
+                    if transition_choices is not None:
+                        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
                     logger.warning("Could not forecast the voice-track handoff", exc_info=True)
+                except Exception as exc:
+                    if transition_choices is not None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The planned transition changed; refresh and choose again",
+                        ) from exc
+                    logger.warning("Could not forecast the voice-track handoff", exc_info=True)
+            elif transition_choices is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The planned song change changed; refresh and choose again",
+                )
     return {
         "station": context["station"],
         "accepting": context["accepting"],
