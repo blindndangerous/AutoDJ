@@ -483,7 +483,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         const select = doc.createElement("select");
         select.id = `vt-transition-choice-${item.id}`;
         label.htmlFor = select.id;
-        label.textContent = "Voice track position:";
         for (const [value, title] of [["replace", "Replace"], ["before", "Before"], ["after", "After"]]) {
           const option = doc.createElement("option");
           option.value = value;
@@ -500,6 +499,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       const text = row.querySelector("span");
       const label = row.querySelector("label");
       const select = row.querySelector("select");
+      setText(label, `Position for ${item.label || "transition audio"}:`);
       const action = transitionChoices.get(item.id) || item.current_action || item.default_action || "replace";
       const deferred = item.deferred && action === "replace";
       const retained = item.source === "queued" || item.source === "clockwheel";

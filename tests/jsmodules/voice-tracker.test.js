@@ -282,7 +282,7 @@ describe("voice tracker", () => {
     const controlsList = byId("vt-transition-items").querySelectorAll("select");
     expect(byId("vt-transition").hidden).toBe(false);
     expect([...controlsList].map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
-      "Voice track position:", "Voice track position:",
+      "Position for Station ID:", "Position for Auto liner:",
     ]);
     expect([...controlsList].map((control) => control.value)).toEqual(["after", "replace"]);
     expect(byId("vt-transition-summary").textContent).toContain("Your new voice track");
