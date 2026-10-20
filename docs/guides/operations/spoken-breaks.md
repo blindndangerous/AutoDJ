@@ -161,7 +161,8 @@ such as ads and news remain in their protected positions. The ordered summary up
 change selectors.
 
 AutoDJ freezes predicted content for the open song pair without advancing liner rotation or intro
-cooldowns. It reserves the frozen candidates only when that transition is rendered. If Before,
+cooldowns. It reserves the frozen candidates only when that transition is rendered. A retained
+intro advances its random chooser only when heard; replacing or discarding it does not. If Before,
 After and Replace choices contradict one another, booking is refused without changing the plan.
 A stale plan is also refused; refresh the list and submit your choice against the latest revision.
 

@@ -244,6 +244,40 @@ class Chosen:
     intro_id: str
     path: Path
     label: str
+    rng_trace: tuple[int | None, ...] = ()
+
+
+class _RecordingRandom(random.Random):
+    """A chooser RNG that records its primitive draws for deferred replay."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.draws: list[int | None] = []
+
+    def random(self) -> float:
+        value = super().random()
+        self.draws.append(None)
+        return value
+
+    def getrandbits(self, k: int) -> int:
+        value = super().getrandbits(k)
+        self.draws.append(k)
+        return value
+
+    def mark(self) -> int:
+        return len(self.draws)
+
+    def since(self, mark: int) -> tuple[int | None, ...]:
+        return tuple(self.draws[mark:])
+
+
+def _replay_rng_trace(rng: random.Random, trace: Iterable[int | None]) -> None:
+    """Advance *rng* by the same primitive calls, ignoring their results."""
+    for draw in trace:
+        if draw is None:
+            rng.random()
+        else:
+            rng.getrandbits(draw)
 
 
 class MatchedIntros:
@@ -284,7 +318,7 @@ class MatchedIntros:
         # Aired times not written to the file yet.
         self._unwritten = False
         # Reports from the mix bus, taken in under the lock by the next call.
-        self._heard: deque[tuple[str, float]] = deque()
+        self._heard: deque[tuple[str, float, tuple[int | None, ...]]] = deque()
         self._released: deque[str] = deque()
         # Audio files a delete could not remove yet (one open for a decode).
         self._doomed: set[Path] = set()
@@ -407,7 +441,7 @@ class MatchedIntros:
                 logger.warning("Could not read the matched intros file %s: %s", self.path, exc)
                 return dict(self._intros)
 
-    def snapshot(self) -> Self:
+    def snapshot(self, *, record_rng: bool = False) -> Self:
         """An independent, read-only choice state for a preview."""
         rng = random.Random()
         clone = type(self)(self.path, self.folder, self._day_at, rng)
@@ -434,6 +468,15 @@ class MatchedIntros:
             clone._snapshot_loading = False
         if self.rules is not None:
             clone.rules = self.rules.snapshot(rng=clone._rng)
+        # Apply prior playback on the clone before any later choice, even if
+        # the upcoming song has no matched candidates of its own.
+        clone.drain_heard()
+        if record_rng:
+            recording = _RecordingRandom()
+            recording.setstate(clone._rng.getstate())
+            clone._rng = recording
+            if clone.rules is not None:
+                clone.rules._rng = recording
         return clone
 
     def add(self, intro_id: str, intro: Intro) -> None:
@@ -506,13 +549,30 @@ class MatchedIntros:
     def _apply_heard_locked(self) -> None:
         """Take in what the mix bus reported.  Caller holds ``_lock``."""
         while self._heard:
-            intro_id, at = self._heard.popleft()
+            intro_id, at, rng_draws = self._heard.popleft()
+            # Matched and rule intros share this RNG; this single queue keeps
+            # commits in the order the mix bus reported them.
+            if self.rules is not None:
+                with self.rules._lock:
+                    _replay_rng_trace(self._rng, rng_draws)
+            else:
+                _replay_rng_trace(self._rng, rng_draws)
+            if intro_id.startswith("rule:"):
+                continue
             self._reserved.pop(intro_id, None)
             if intro_id in self._intros:
                 self._aired[intro_id] = max(at, self._aired.get(intro_id, at))
                 self._unwritten = True
         while self._released:
             self._reserved.pop(self._released.popleft(), None)
+
+    def drain_heard(self) -> None:
+        """Apply queued heard/release reports before another chooser draws."""
+        with self._lock:
+            self._apply_heard_locked()
+        if self.rules is not None:
+            with self.rules._lock:
+                self.rules._drain()
 
     def _last_locked(self, intro_id: str, intro: Intro) -> float | None:
         """When *intro* last aired, or is planned to.  Caller holds ``_lock``."""
@@ -635,12 +695,12 @@ class MatchedIntros:
             self._reserved[intro_id] = at
         return True
 
-    def heard(self, intro_id: str) -> None:
+    def heard(self, intro_id: str, rng_draws: tuple[int | None, ...] = ()) -> None:
         """The mix bus reports *intro_id* on the air.  Never waits."""
+        at = time.time()
+        self._heard.append((intro_id, at, tuple(rng_draws)))
         if intro_id.startswith("rule:") and self.rules is not None:
-            self.rules.heard(intro_id[5:])
-            return
-        self._heard.append((intro_id, time.time()))
+            self.rules.heard(intro_id[5:], at=at)
 
     def release_later(self, intro_ids: Iterable[str]) -> None:
         """Queue reservations the mix bus left without waiting for the store lock."""

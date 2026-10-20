@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,7 +32,7 @@ from autodj.matched_intros import (
     wait_words,
 )
 from autodj.stereo import SAMPLE_RATE as SR
-from tests.unit._break_station import make_break, make_station, write_voice
+from tests.unit._break_station import make_break, make_station, start_station, write_voice
 
 NOW = 1_800_000_000.0
 
@@ -87,6 +88,124 @@ def test_frozen_intro_reservation_does_not_draw_or_replace_candidate(tmp_path: P
     assert not store.reserve_chosen(frozen.intro_id, NOW + 1)
     store.release((frozen.intro_id,))
     assert store.reserve_chosen(frozen.intro_id, NOW + 1)
+
+
+def test_frozen_intro_replays_its_draws_only_when_heard(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    intro_id = _add(store, chance=100, cooldown_minutes=0)
+    initial = store._rng.getstate()
+    snapshot = store.snapshot(record_rng=True)
+    mark = snapshot._rng.mark()
+    frozen = snapshot.choose("song-a", "", NOW)
+    assert frozen is not None and frozen.intro_id == intro_id
+    draws = snapshot._rng.since(mark)
+    assert draws
+    assert store._rng.getstate() == initial  # Prediction alone leaves live state untouched.
+
+    # A live draw can happen between prediction and airtime; replay advances
+    # from that state instead of replacing it with the snapshot's old state.
+    store._rng.random()
+    expected = random.Random(1)
+    expected.setstate(initial)
+    expected.random()
+    for draw in draws:
+        expected.random() if draw is None else expected.getrandbits(draw)
+    after_intervening_draw = store._rng.getstate()
+    store.heard(intro_id, draws)
+    assert store._rng.getstate() == after_intervening_draw
+    store.upkeep()
+    committed = store._rng.getstate()
+    assert committed == expected.getstate()
+    store.upkeep()
+    assert store._rng.getstate() == committed  # A heard event commits once.
+
+
+def test_cancelled_frozen_intro_does_not_commit_prediction_draws(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    _add(store, chance=100, cooldown_minutes=0)
+    before = store._rng.getstate()
+    snapshot = store.snapshot(record_rng=True)
+    assert snapshot.choose("song-a", "", NOW) is not None
+    store.upkeep()  # No heard report: cancellation/discard leaves live RNG alone.
+    assert store._rng.getstate() == before
+
+
+def test_snapshot_applies_prior_heard_trace_before_recording_the_next_choice(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    intro_id = _add(store, chance=100, cooldown_minutes=0)
+    initial = store._rng.getstate()
+    prior = (None, 5)
+    store.heard(intro_id, prior)
+
+    snapshot = store.snapshot(record_rng=True)
+    mark = snapshot._rng.mark()
+    assert snapshot.choose("song-a", "", NOW) is not None
+    next_trace = snapshot._rng.since(mark)
+    assert next_trace
+    assert store._rng.getstate() == initial
+    store.heard(intro_id, next_trace)
+
+    expected = random.Random()
+    expected.setstate(initial)
+    for trace in (prior, next_trace):
+        for draw in trace:
+            expected.random() if draw is None else expected.getrandbits(draw)
+    store.upkeep()
+    assert store._rng.getstate() == expected.getstate()
+
+
+def test_matched_and_rule_heard_draws_keep_their_shared_rng_order(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    intro_id = _add(store, chance=100, cooldown_minutes=0)
+    store.rules = SimpleNamespace(heard=lambda _key, **_kwargs: None, _lock=threading.Lock())
+    initial = store._rng.getstate()
+    traces = ((None,), (4,), (None, 3))
+    store.heard(intro_id, traces[0])
+    store.heard(f"rule:{'a' * 32}", traces[1])
+    store.heard(intro_id, traces[2])
+
+    expected = random.Random()
+    expected.setstate(initial)
+    for trace in traces:
+        for draw in trace:
+            expected.random() if draw is None else expected.getrandbits(draw)
+    with store._lock:
+        store._apply_heard_locked()
+
+    assert store._rng.getstate() == expected.getstate()
+
+
+def test_retained_frozen_intro_commits_its_choice_draws_after_live_play(tmp_path: Path) -> None:
+    player, entries, _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    player._library.entry_for_path = lambda _path: None
+    _a, _b, _c, upcoming = entries
+    intro_id = _add(store, track_id=f"song-{Path(upcoming.path).stem}", chance=100)
+
+    _render_a, render_b, plan = start_station(player, entries)
+    spoken = next(item for item in plan.transition_items if item.source == "matched_intro")
+    assert spoken.intro is not None and spoken.intro.rng_trace
+    plan.transition_order = (spoken.item_id,)
+    player._on_track_start(render_b)
+    render_c = player._next_rendered()
+    assert render_c is not None and render_c.next_entry is upcoming
+    assert render_c.intro_rng_traces == ((intro_id, spoken.intro.rng_trace),)
+
+    player._start_playing(render_c)
+    player._on_position(render_c.intro_events[0][0] + 1)
+    assert store._heard[-1][2] == spoken.intro.rng_trace
+    expected = random.Random(1)
+    # The store's seed has already advanced only by the trace reported by this render.
+    expected.setstate(store._rng.getstate())
+    for draw in spoken.intro.rng_trace:
+        expected.random() if draw is None else expected.getrandbits(draw)
+    before = store._rng.getstate()
+    store.upkeep()
+    assert store._rng.getstate() == expected.getstate()
+    assert store._rng.getstate() != before
 
 
 def test_an_intro_is_for_one_song_or_one_artist(tmp_path: Path) -> None:
@@ -171,19 +290,19 @@ def test_snapshot_choosing_does_not_change_the_store_or_its_files(tmp_path: Path
     source_rng = store._rng.getstate()
     store._aired[intro_id] = NOW - 120
     store._reserved[intro_id] = NOW - 60
-    store._heard.append((intro_id, NOW - 30))
+    store._heard.append((intro_id, NOW - 30, ()))
     store._released.append("other")
     clone = store.snapshot()
     clone._stat = lambda: (_ for _ in ()).throw(AssertionError("snapshot read the file"))
 
-    assert clone._aired == store._aired
-    assert clone._reserved == store._reserved
-    assert list(clone._heard) == list(store._heard)
-    assert list(clone._released) == list(store._released)
+    assert clone._aired[intro_id] == NOW - 30
+    assert clone._reserved == {}
+    assert list(clone._heard) == []
+    assert list(clone._released) == []
     assert clone.choose("song-a", "", NOW) is not None
     assert store._aired[intro_id] == NOW - 120
     assert store._reserved[intro_id] == NOW - 60
-    assert list(store._heard) == [(intro_id, NOW - 30)]
+    assert list(store._heard) == [(intro_id, NOW - 30, ())]
     assert list(store._released) == ["other"]
     assert store._rng.getstate() == source_rng
     clone.upkeep()
@@ -329,7 +448,7 @@ def test_an_intro_waits_its_cooldown_after_it_is_held_or_heard(tmp_path: Path) -
     store.release([intro_id])
     assert store.choose("song-a", "", NOW + 300) is not None
     store.heard(intro_id)
-    store._heard[-1] = (intro_id, NOW + 300)  # heard when planned, for the test's clock
+    store._heard[-1] = (intro_id, NOW + 300, ())  # heard when planned, for the test's clock
     store.release([intro_id])  # a later discard of another render changes nothing heard
     assert store.choose("song-a", "", NOW + 600) is None
     assert store.choose("song-a", "", NOW + 901) is not None
@@ -349,7 +468,7 @@ def test_the_one_heard_longest_ago_plays(tmp_path: Path) -> None:
     chosen = store.choose("song-a", "", NOW)
     assert chosen is not None and chosen.intro_id == second
     store.heard(second)
-    store._heard[-1] = (second, NOW)
+    store._heard[-1] = (second, NOW, ())
     chosen = store.choose("song-a", "", NOW + 1)
     assert chosen is not None and chosen.intro_id == first
 
@@ -593,6 +712,50 @@ def test_the_station_mixes_a_matched_intro_instead_of_an_automatic_liner(
     player._start_playing(render)
     player._on_position(render.intro_events[0][0] + 1)
     assert list(store._heard) and store._heard[0][0] == intro_id
+
+
+def test_same_intro_in_two_renders_commits_only_the_heard_render_trace(tmp_path: Path) -> None:
+    player, (a, b, _c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    intro_id = _add(store, track_id=f"song-{Path(b.path).stem}")
+    path = store.folder / file_name(intro_id, ".wav")
+    trace = (None, 7, None)
+    chosen = Chosen(intro_id, path, "Frozen intro", trace)
+    discarded = player._render_track(a, b, 0, intro=Chosen(intro_id, path, "Other render", (3,)))
+    render = player._render_track(a, b, 0, intro=chosen)
+    player._discard_render(discarded)
+    assert not store._heard
+    assert render.intro_rng_traces == ((intro_id, trace),)
+    player._start_playing(render)
+    player._on_position(render.intro_events[0][0] + 1)
+
+    assert store._heard and store._heard[0][0] == intro_id
+    assert store._heard[0][2] == trace
+    player._on_position(render.intro_events[0][0] + 2)
+    assert len(store._heard) == 1
+
+
+def test_live_before_song_rule_drains_a_previously_heard_frozen_trace(tmp_path: Path) -> None:
+    player, (_a, b, _c, _d), _points, _desk = make_station(tmp_path)
+    store = _store(tmp_path)
+    player.matched_intros = store
+    store.rules = MagicMock()
+    store.rules.priorities.return_value = {"before_song"}
+    trace = (None, 9)
+    store.heard("already-aired", trace)
+    initial = store._rng.getstate()
+
+    def choose_before_song(*_args, **_kwargs):
+        # The live before-song rule is reached before any matched candidate
+        # selection, so pending draws must be applied at _matched_intro entry.
+        assert not store._heard
+        assert store._rng.getstate() != initial
+        return None
+
+    store.rules.choose.side_effect = choose_before_song
+    assert player._matched_intro(b, (), NOW) is None
+    store.rules.choose.assert_any_call(b, NOW, player._library, "before_song", None)
 
 
 def test_an_intro_skipped_before_its_event_is_released(tmp_path: Path) -> None:

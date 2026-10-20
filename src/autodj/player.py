@@ -73,6 +73,7 @@ from autodj.breaks import (
 from autodj.dmca import WINDOW_SECONDS, Complement, complement, relaxed
 from autodj.identity_map import attached
 from autodj.indexer import IndexEntry
+from autodj.matched_intros import Chosen
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack, SkipTail
 from autodj.music_speed import resample_music
 from autodj.processing import TrackWindows
@@ -2680,11 +2681,17 @@ class Player:
         preview = copy.copy(self)
         if self.liner_scheduler is not None:
             preview.liner_scheduler = self.liner_scheduler.snapshot()
+        trace_rng: Any | None = None
+        trace_mark = 0
         if self.matched_intros is not None:
-            preview.matched_intros = self.matched_intros.snapshot()
+            preview.matched_intros = self.matched_intros.snapshot(record_rng=True)
+            trace_rng = preview.matched_intros._rng
+            trace_mark = trace_rng.mark()
         liners, _, intro = preview._transition_voice(
             plan.ending, plan.upcoming, plan.liners, (), at
         )
+        if isinstance(intro, Chosen) and trace_rng is not None:
+            intro = replace(intro, rng_trace=trace_rng.since(trace_mark))
         queue_paths = set(plan.queue_liner_paths)
         clock_path = plan.clock_liner.path if plan.clock_liner is not None else None
         items: list[TransitionItem] = []
@@ -2762,6 +2769,9 @@ class Player:
         if any(item.kind == "dj" for item in breaks):
             return None
         try:
+            drain_heard = getattr(store, "drain_heard", None)
+            if drain_heard is not None:
+                drain_heard()
             record = self._library.catalog.record_for_path(upcoming.path)
             if record is None or record.get("kind", "music") != "music":
                 return None
@@ -4117,6 +4127,7 @@ class Player:
                 break_events=rendered.break_events,
                 liner_events=rendered.liner_events,
                 intro_events=rendered.intro_events,
+                intro_rng_traces=rendered.intro_rng_traces,
                 full_audio=rendered.full_audio,
                 transition_fx=rendered.transition_fx,
                 beatmatch_ratio=rendered.beatmatch_ratio,
@@ -4472,10 +4483,15 @@ class Player:
                         self._heard_break_ends.add(break_id)
                         desk.aired(break_id)
             if playing.intro_events and (intros := self.matched_intros) is not None:
+                rng_traces = dict(playing.intro_rng_traces)
                 for at, intro_id, _end, _label in playing.intro_events:
                     if frames > at and intro_id not in self._heard_intros:
                         self._heard_intros.add(intro_id)
-                        intros.heard(intro_id)  # never waits
+                        rng_draws = rng_traces.get(intro_id, ())
+                        if rng_draws:
+                            intros.heard(intro_id, rng_draws)  # never waits
+                        else:
+                            intros.heard(intro_id)  # never waits
 
     def _run_headless(self, current: IndexEntry) -> None:
         """Track-picking loop with no server audio output.
@@ -5661,6 +5677,7 @@ class Player:
                 logger.exception("Cannot prepare incoming track %s", next_entry.path)
         full_audio = handoff.full_audio
         audio = full_audio[start_out - source_start_out :]
+        frozen_trace = tuple(getattr(intro, "rng_trace", ()))
         liner_start = (
             0
             if handoff.liner_s is None
@@ -5686,6 +5703,13 @@ class Player:
             intro_events=tuple(
                 (liner_start + at, intro_id, liner_start + end, label)
                 for at, intro_id, end, label in introduced
+            ),
+            intro_rng_traces=(
+                ((intro.intro_id, frozen_trace),)
+                if intro is not None
+                and frozen_trace
+                and any(event[1] == intro.intro_id for event in introduced)
+                else ()
             ),
             intro_assets=(
                 ((intro.intro_id, str(intro.path)),) if introduced and intro is not None else ()

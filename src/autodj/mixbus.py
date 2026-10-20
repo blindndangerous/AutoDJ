@@ -132,6 +132,7 @@ class RenderedTrack:
     liner_events: tuple[tuple[int, IndexEntry, bool], ...] = ()
     break_events: tuple[tuple[int, str, int], ...] = ()
     intro_events: tuple[tuple[int, str, int, str], ...] = ()
+    intro_rng_traces: tuple[tuple[str, tuple[int | None, ...]], ...] = ()
     intro_assets: tuple[tuple[str, str], ...] = ()
     reserved_liners: tuple[IndexEntry, ...] = ()
     next_reserved_liners: tuple[IndexEntry, ...] = ()

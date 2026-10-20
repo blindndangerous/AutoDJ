@@ -403,8 +403,8 @@ class IntroRules:
         while self._released:
             self._reserved.pop(self._released.popleft(), None)
 
-    def heard(self, key: str) -> None:
-        self._heard.append((key, time.time()))
+    def heard(self, key: str, *, at: float | None = None) -> None:
+        self._heard.append((key, at if at is not None else time.time()))
 
     def release_later(self, key: str) -> None:
         self._released.append(key)
