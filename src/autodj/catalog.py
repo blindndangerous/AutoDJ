@@ -182,6 +182,7 @@ _CHANGE_TRACKING = f"""
 # Rows of vectors read and handed on at a time, so a reload never holds every
 # vector twice (as SQLite blobs and as one matrix) next to the FAISS copy.
 VECTOR_CHUNK = 4096
+ANALYSIS_PAGE_SIZE = 256
 
 
 # The station the root config sections describe (autodj.stations.DEFAULT_SLUG).
@@ -1264,21 +1265,50 @@ class LibraryCatalog:
                 if too_long
                 else " AND (e.length<=? OR e.length<=0)"
             )
-            order = " ORDER BY e.path" if ordered else ""
-            for (path,) in db.execute(
-                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed fragments
-                "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + length + order,
-                (limit,) if limit else (),
-            ):
+            sql = (
+                "SELECT e.path FROM catalog_entries e LEFT JOIN catalog_vectors v "  # nosec B608 -- fixed SQL fragments; values bound
+                "ON v.entry_id=e.id WHERE e.kind='music' AND v.entry_id IS NULL" + length
+            )
+            args = (limit,) if limit else ()
+            if not ordered:
+                for (path,) in db.execute(sql, args):
+                    if _covered_by(path, advanced) and not _covered_by(path, liner):
+                        yield path
+                return
+
+        after = ""
+        while True:
+            with self._lock:
+                page = (
+                    self._db()
+                    .execute(
+                        sql + " AND e.path>? ORDER BY e.path LIMIT ?",  # nosec B608 -- fixed SQL fragments
+                        (*args, after, ANALYSIS_PAGE_SIZE),
+                    )
+                    .fetchall()
+                )
+            if not page:
+                return
+            # Advance by SQL rows, even when a whole page fails source coverage.
+            after = page[-1][0]
+            for (path,) in page:
                 if _covered_by(path, advanced) and not _covered_by(path, liner):
                     yield path
+
+    def iter_unembedded_paths(self) -> Iterator[str]:
+        """Yield pending paths in bounded pages, releasing the lock before each yield.
+
+        Counts and held-lease snapshots elsewhere remain proportional to backlog
+        size; this iterator only bounds candidate allocation.
+        """
+        return self._unembedded_paths(ordered=True)
 
     def unembedded_paths(self) -> list[str]:
         """Paths of music records with no vector under an advanced, non-liner source.
 
         Songs longer than :meth:`advanced_max_minutes` are left out.
         """
-        return list(self._unembedded_paths(ordered=True))
+        return list(self.iter_unembedded_paths())
 
     def unembedded_count(self) -> int:
         """Count pending music without sorting or materializing its paths."""
@@ -1298,7 +1328,7 @@ class LibraryCatalog:
         the records returned.
         """
         records: list[dict] = []
-        for path in self.unembedded_paths():
+        for path in self.iter_unembedded_paths():
             if limit is not None and len(records) >= limit:
                 break
             if path in exclude or not Path(path).is_file():

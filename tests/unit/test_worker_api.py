@@ -197,14 +197,14 @@ def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypat
     queue = server.manager.analysis_queue
     real_claim = queue.claim
     catalog = server.manager.catalog
-    real_paths = catalog.unembedded_paths
+    real_paths = catalog.iter_unembedded_paths
     queries = []
 
     def counted_paths():
         queries.append(1)
         return real_paths()
 
-    monkeypatch.setattr(catalog, "unembedded_paths", counted_paths)
+    monkeypatch.setattr(catalog, "iter_unembedded_paths", counted_paths)
     raced = False
 
     def claim_with_race(holder, songs, seconds):
@@ -578,3 +578,42 @@ def test_store_analysis_checks_the_record_inside_its_transaction(server):
         catalog._db().commit()
     assert catalog.store_analysis(song, record["size"], record["fingerprint"], fields, vector)
     assert catalog.record_for_path(song)["key"] == 1
+
+
+def test_claim_pages_past_missing_held_and_lost_leases(server, monkeypatch):
+    import autodj.catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 1, raising=False)
+    # The iterator must not allocate the legacy full pending list.
+    monkeypatch.setattr(
+        server.manager.catalog, "unembedded_paths", lambda: pytest.fail("eager backlog")
+    )
+    server.songs[0].unlink()
+    queue = server.manager.analysis_queue
+    record = server.manager.catalog.record_for_path(server.songs[1])
+    queue.claim(
+        "other", [(record["path"], record["size"], record["fingerprint"])], WORKER_LEASE_SECONDS
+    )
+    secret = server.token()[1]
+    assert len(claim(server, secret, batch=2)["songs"]) == 1
+
+
+def test_claim_continues_after_losing_a_page_to_another_worker(server, monkeypatch):
+    import autodj.catalog as catalog_module
+
+    monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 1, raising=False)
+    queue = server.manager.analysis_queue
+    original = queue.claim
+    lost = []
+
+    def racing_claim(holder, songs, seconds):
+        if not lost:
+            lost.extend(original("competitor", songs[:1], seconds))
+        return original(holder, songs, seconds)
+
+    monkeypatch.setattr(queue, "claim", racing_claim)
+    result = claim(server, server.token()[1], batch=2)
+    assert len(lost) == 1
+    assert len(result["songs"]) == 2
+    assert lost[0].lease_id not in {song["lease"] for song in result["songs"]}
+    assert result["waiting"] == 3  # Exact pending count still includes leased songs.

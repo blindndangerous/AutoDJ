@@ -264,7 +264,7 @@ def install_worker_api(
             queue.seen(token.token_id, token.name, body.device or None)
             by_path: dict[str, dict[str, Any]] = {}
             leases: list[Lease] = []
-            candidates = iter(manager.catalog.unembedded_paths())
+            candidates = manager.catalog.iter_unembedded_paths()
             held = queue.held_paths()
             while len(leases) < body.batch:
                 records = []
@@ -277,14 +277,14 @@ def install_worker_api(
                         break
                 if not records:
                     break
-                by_path.update((record["path"], record) for record in records)
-                leases.extend(
-                    queue.claim(
-                        token.token_id,
-                        [(r["path"], r["size"], r["fingerprint"]) for r in records],
-                        WORKER_LEASE_SECONDS,
-                    )
+                acquired = queue.claim(
+                    token.token_id,
+                    [(r["path"], r["size"], r["fingerprint"]) for r in records],
+                    WORKER_LEASE_SECONDS,
                 )
+                acquired_paths = {lease.path for lease in acquired}
+                by_path.update((r["path"], r) for r in records if r["path"] in acquired_paths)
+                leases.extend(acquired)
             songs = []
             for lease in leases:
                 record = by_path[lease.path]

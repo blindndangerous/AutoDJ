@@ -726,3 +726,23 @@ def test_removing_entry_cascades_to_vector(tmp_path: Path) -> None:
         assert catalog.remove_entries([str(song)]) == 1
         assert catalog._db().execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert catalog._db().execute("SELECT COUNT(*) FROM catalog_vectors").fetchone()[0] == 0
+
+
+def test_pending_iterator_advances_past_rejected_pages_without_holding_lock(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(catalog_module, "ANALYSIS_PAGE_SIZE", 2, raising=False)
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        eligible = tmp_path / "z-eligible"
+        eligible.mkdir()
+        catalog.add_source(eligible)
+        catalog.seed_entries(entry(tmp_path / "a-excluded" / f"{i}.flac") for i in range(5))
+        catalog.seed_entries(entry(eligible / f"{i}.flac") for i in range(3))
+        candidates = catalog.iter_unembedded_paths()
+        assert next(candidates) == str(eligible / "0.flac")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                assert executor.submit(catalog.get_setting, "unused", 42).result(timeout=5) == 42
+                assert list(candidates) == [str(eligible / f"{i}.flac") for i in (1, 2)]
+            finally:
+                candidates.close()
