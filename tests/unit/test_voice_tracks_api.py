@@ -153,9 +153,25 @@ def test_voice_forecast_query_is_read_only_and_validated(station):
 def test_voice_forecast_uses_frozen_matched_intro_order_and_its_full_cues(station, monkeypatch):
     plan = station.player._slot_plan
     intro = SimpleNamespace(intro_id="matched-intro", path="unused.wav", label="Matched")
-    plan.transition_items = (
-        SimpleNamespace(item_id="intro", kind="matched_intro", intro=intro, entry=None),
+    candidate = SimpleNamespace(
+        item_id="intro",
+        kind="matched_intro",
+        source="matched_intro",
+        label="Matched",
+        intro=intro,
+        entry=None,
+        committed=False,
+        editable=True,
+        view=lambda: {
+            "id": "intro",
+            "kind": "matched_intro",
+            "source": "matched_intro",
+            "label": "Matched",
+            "committed": False,
+            "editable": True,
+        },
     )
+    plan.transition_items = (candidate,)
 
     def resolve(_plan, _break_id, choices):
         selected = choices[0]["action"]
@@ -205,7 +221,8 @@ def test_voice_forecast_uses_frozen_matched_intro_order_and_its_full_cues(statio
     assert replaced["chain_clip_s"] == pytest.approx(5.65)
 
 
-def test_voice_forecast_refuses_transition_choices_without_a_supported_plan(station):
+def test_voice_forecast_refuses_transition_choices_without_a_supported_plan(station, monkeypatch):
+    monkeypatch.setattr(station.player, "_voice_transition_order", None, raising=False)
     reply = station.client.get(
         "/api/voice-tracks?speech_s=5&transition_revision=stale&transition_choices=%5B%5D"
     )
