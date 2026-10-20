@@ -143,6 +143,13 @@ def test_voice_forecast_query_is_read_only_and_validated(station):
         "placement=overlap",
         "speech_s=600&tail_s=0.01",
         "speech_s=5&transition_choices=%5B%5D",
+        urlencode(
+            {
+                "speech_s": 5,
+                "transition_revision": "rev",
+                "transition_choices": "[" * 1200 + "]" * 1200,
+            }
+        ),
         "speech_s=5&transition_revision=rev&transition_choices=%7B%7D",
         "speech_s=5&transition_revision=rev&transition_choices=%5B%7B%22id%22%3A%22x%22%2C%22action%22%3A%22move%22%7D%5D",
     ):

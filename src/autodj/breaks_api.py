@@ -777,7 +777,7 @@ def install_breaks(router: StationRouter) -> None:
         if transition_choices is not None:
             try:
                 parsed_choices = json.loads(transition_choices)
-            except (ValueError, TypeError) as exc:
+            except (ValueError, TypeError, RecursionError) as exc:
                 raise HTTPException(
                     status_code=422, detail="Transition choices must be valid JSON"
                 ) from exc
