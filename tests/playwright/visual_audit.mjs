@@ -874,7 +874,7 @@ const VOICE_CONTEXT = {
     ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
     upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
   },
-  limits: { max_bytes: 41943040, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+  limits: { max_bytes: 67108864, max_seconds: 600, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
   tracks: [
     { break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", slot_id: "a".repeat(32),
       mixed_as: null, reason: null, eta: null, source: "voice_track" },

@@ -52,19 +52,29 @@ function fakeServer() {
     accepting: true,
     reason: null,
     slot: slot(),
-    limits: { max_bytes: 40 * 1024 * 1024, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+    limits: { max_bytes: 64 * 1024 * 1024, max_seconds: 600, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
     tracks: [],
     calls: [],
     refuse: null,
+    slowPost: false,
+    rejectPost: null,
   };
   api.requestJson.mockReset().mockImplementation(async (url, options = {}) => {
     const method = options.method || "GET";
-    server.calls.push({ method, url, body: options.body });
+    server.calls.push({ method, url, body: options.body, signal: options.signal });
     if (url === "/api/voice-tracks" && method === "GET") {
       const { calls: _calls, refuse: _refuse, ...view } = server;
       return JSON.parse(JSON.stringify(view));
     }
     if (url === "/api/voice-tracks" && method === "POST") {
+      if (server.slowPost) {
+        return new Promise((_resolve, reject) => {
+          server.rejectPost = reject;
+          options.signal?.addEventListener("abort", () => reject(
+            Object.assign(new Error("Aborted"), { name: "AbortError" }),
+          ), { once: true });
+        });
+      }
       if (server.refuse) {
         const refusal = server.refuse;
         server.refuse = null;
@@ -160,7 +170,12 @@ function tracker(over = {}) {
     }
     await flush();
   };
-  return { controls, server, mic, time, advance, toWav, storage };
+  const tickNow = async (seconds) => {
+    time.now = seconds * 1000;
+    tick();
+    await flush();
+  };
+  return { controls, server, mic, time, advance, tickNow, toWav, storage };
 }
 
 async function flush() {
@@ -233,8 +248,10 @@ describe("voice tracker helpers", () => {
     expect(pause).toHaveBeenCalledTimes(2);
     expect(wav.size).toBe(44 + frames * 2);
     const view = new DataView(await wav.arrayBuffer());
+    expect(view.getUint32(4, true)).toBe(wav.size - 8);
+    expect(view.getUint32(40, true)).toBe(wav.size - 44);
     expect(view.getInt16(44 + (frames - 1) * 2, true)).toBe(16383);
-    expect(BROWSER_MAX_SECONDS).toBe(180);
+    expect(BROWSER_MAX_SECONDS).toBe(600);
   });
 
   it("says why the microphone did not start in plain words", () => {
@@ -294,7 +311,7 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("Recording. Press Record or Alt+R to stop."));
     expect(byId("vt-status").getAttribute("aria-live")).toBe("polite");
     await advance(2);
-    expect(byId("vt-timer").textContent).toBe("Recording 0:02 of 3:00.");
+    expect(byId("vt-timer").textContent).toBe("Recording 0:02 of 10:00.");
     expect(byId("vt-timer").closest("[aria-live]")).toBeNull();
     record.click();
     await flush();
@@ -490,6 +507,19 @@ describe("voice tracker", () => {
     expect(byId("vt-record").getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("stops at the installed ten-minute manual recording limit", async () => {
+    const { controls, server, tickNow } = tracker();
+    await controls.refresh();
+    expect(server.limits.max_seconds).toBe(BROWSER_MAX_SECONDS);
+    await press("vt-record");
+    await tickNow(599);
+    expect(byId("vt-timer").textContent).toBe("Recording 9:59 of 10:00.");
+    await tickNow(600);
+    await vi.waitFor(() => expect(status()).toMatch(/^Stopped at the 10:00 limit\./));
+    expect(byId("vt-record").getAttribute("aria-pressed")).toBe("false");
+    expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
+  });
+
   it("warns when the song change is about to close during a recording", async () => {
     const { controls, server, advance } = tracker();
     server.slot = slot(undefined, { closes_in_s: 40 });
@@ -551,6 +581,39 @@ describe("voice tracker", () => {
     expect(rows[0].textContent).toMatch(/^Third Song into Fourth Song: booked, waiting for its song change, airs in about 6:00 Cancel$/);
     expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Cancel voice track Third Song into Fourth Song");
     expect(byId("vt-none").hidden).toBe(true);
+  });
+
+  it("aborts a slow upload on station clear without restoring the old take", async () => {
+    const { controls, server } = tracker();
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    server.slowPost = true;
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(server.rejectPost).toBeTypeOf("function"));
+    controls.clear();
+    await flush();
+    expect(server.calls.find((call) => call.method === "POST").signal.aborted).toBe(true);
+    expect(byId("vt-playback").hasAttribute("src")).toBe(false);
+    expect(byId("vt-error").textContent).toBe("");
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not start an upload when station clear wins during WAV conversion", async () => {
+    let resolveWav;
+    const { controls, server } = tracker({
+      toWav: vi.fn(() => new Promise((resolve) => { resolveWav = resolve; })),
+    });
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(resolveWav).toBeTypeOf("function"));
+    controls.clear();
+    resolveWav(new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+    await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-playback").hasAttribute("src")).toBe(false);
   });
 
   it("will not book a take on other songs until it is heard again and Book is pressed again", async () => {
