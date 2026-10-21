@@ -247,7 +247,7 @@ export function installProgrammeReview({
     }
     get("source").value = "edition"; get("show-row").hidden = true;
     get("selection-start").value = ""; get("selection-end").value = "";
-    doc.getElementById("tab-now")?.click(); card.open = true;
+    doc.getElementById("tab-library")?.click(); card.open = true;
     get("generate").focus(); void generate();
   });
   // The server waits briefly for the renderer to stop, so the reply is

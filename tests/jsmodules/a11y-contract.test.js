@@ -3157,7 +3157,7 @@ describe("static accessibility contracts", () => {
     // Programme review, the cue point player, Listen on a matched intro and
     // the voice tracker's Listen back are previews; decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["review-audio", "points-preview", "intro-playback", "vt-microphone-playback", "vt-playback", "edition-audio"]);
+      .toEqual(["points-preview", "intro-playback", "vt-microphone-playback", "vt-playback", "edition-audio", "review-audio"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);
