@@ -1,7 +1,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { installIndexMarkup } from "./helpers.js";
+import { installIndexMarkup, memoryStorage } from "./helpers.js";
 
 const api = vi.hoisted(() => ({ requestJson: vi.fn() }));
 vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
@@ -114,20 +114,34 @@ class FakeRecorder extends EventTarget {
 }
 
 function microphone() {
-  const track = { stop: vi.fn() };
-  const stream = { getTracks: () => [track] };
-  return { track, stream, getUserMedia: vi.fn(async () => stream) };
+  const tracks = [];
+  const streams = [];
+  const makeStream = () => {
+    const track = { stop: vi.fn(), getSettings: () => ({ deviceId: "mic-1" }) };
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+    tracks.push(track);
+    streams.push(stream);
+    return stream;
+  };
+  const stream = makeStream();
+  const devices = [];
+  return {
+    track: tracks[0], tracks, stream, streams, devices,
+    getUserMedia: vi.fn(async () => streams.shift() || makeStream()),
+    enumerateDevices: vi.fn(async () => devices),
+    addEventListener: vi.fn(),
+  };
 }
 
 function tracker(over = {}) {
   installIndex();
   const server = fakeServer();
   const mic = microphone();
+  const storage = memoryStorage();
   const time = { now: 0 };
   let tick = () => {};
-  const toWav = vi.fn(async () => new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+  const toWav = over.toWav || vi.fn(async () => new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
   const controls = installVoiceTracker(undefined, {
-    media: () => ({ getUserMedia: mic.getUserMedia }),
     Recorder: () => FakeRecorder,
     toWav,
     now: () => time.now,
@@ -135,7 +149,9 @@ function tracker(over = {}) {
     interval: (fn) => { tick = fn; },
     objectUrl: () => "blob:take",
     revokeUrl: vi.fn(),
+    storage,
     ...over,
+    media: over.media ? () => over.media(mic) : () => mic,
   });
   const advance = async (seconds) => {
     for (let i = 0; i < seconds; i += 1) {
@@ -144,7 +160,7 @@ function tracker(over = {}) {
     }
     await flush();
   };
-  return { controls, server, mic, time, advance, toWav };
+  return { controls, server, mic, time, advance, toWav, storage };
 }
 
 async function flush() {
@@ -288,6 +304,169 @@ describe("voice tracker", () => {
     expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
     expect(byId("vt-timer").textContent).toBe("Recorded 0:02, not booked yet.");
     await vi.waitFor(() => expect(status()).toMatch(/^Recording stopped at 0:02\. Listen back/));
+  });
+
+  it("remembers an exact microphone across recordings and clears it for System default", async () => {
+    const { controls, mic, storage } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" },
+      { kind: "audioinput", deviceId: "mic-2", label: "USB mic" });
+    await controls.refresh();
+    const select = byId("vt-microphone");
+    select.value = "mic-1";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.get("autodj.voiceMicrophoneId")).toBe("mic-1");
+    await press("vt-record");
+    expect(byId("vt-microphone-status").textContent).toBe("Recording from Studio mic.");
+    await press("vt-record");
+    expect(byId("vt-microphone-status").textContent).toBe("Last recording used Studio mic.");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-record");
+    expect(mic.getUserMedia.mock.calls).toEqual([
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+    ]);
+    expect(byId("vt-microphone-status").textContent).toBe("Last recording used Studio mic.");
+    select.value = "mic-2";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.get("autodj.voiceMicrophoneId")).toBe("mic-2");
+    select.value = "";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.has("autodj.voiceMicrophoneId")).toBe(false);
+    await press("vt-record");
+    expect(mic.getUserMedia.mock.calls.at(-1)[0].audio.deviceId).toBeUndefined();
+  });
+
+  it("never retries an unavailable selected microphone as System default", async () => {
+    const { controls, mic } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    mic.getUserMedia.mockRejectedValueOnce({ name: "OverconstrainedError" });
+    await press("vt-record");
+    expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(mic.getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: { exact: "mic-1" } }) });
+    expect(byId("vt-microphone-status").textContent).toMatch(/Could not use Studio mic/);
+  });
+
+  it("restores the saved microphone selection after a page reload", async () => {
+    const first = tracker();
+    first.mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await first.controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    first.controls.clear();
+    const reloaded = tracker({ storage: first.storage });
+    reloaded.mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await reloaded.controls.refresh();
+    expect(byId("vt-microphone").value).toBe("mic-1");
+  });
+
+  it("refreshes on device changes and warns when the saved input disappears", async () => {
+    const { controls, mic } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    mic.devices.splice(0);
+    mic.addEventListener.mock.calls.find(([type]) => type === "devicechange")[1]();
+    await flush();
+    expect(byId("vt-microphone-status").textContent).toMatch(/not connected/);
+    expect([...byId("vt-microphone").options].at(-1).textContent).toBe("Studio mic (not connected)");
+  });
+
+  it("monitors privately through the preview audio, blocks recording, and releases on stop or hide", async () => {
+    const { controls, mic } = tracker();
+    const player = byId("vt-microphone-playback");
+    let monitoredStream = null;
+    Object.defineProperty(player, "srcObject", {
+      configurable: true,
+      get: () => monitoredStream,
+      set: (value) => { monitoredStream = value; },
+    });
+    player.play = vi.fn(async () => {});
+    await controls.refresh();
+    const test = await press("vt-microphone-test");
+    expect(player.hasAttribute("data-preview-output")).toBe(true);
+    expect(player.srcObject).toBe(mic.stream);
+    expect(test.getAttribute("aria-pressed")).toBe("true");
+    await press("vt-record");
+    expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(byId("vt-error").textContent).toMatch(/Stop the microphone test/);
+    await press("vt-microphone-test");
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    await press("vt-microphone-test");
+    byId("panel-voice").hidden = true;
+    await flush();
+    expect(player.srcObject).toBeNull();
+      expect(mic.tracks[1].stop).toHaveBeenCalledTimes(1);
+    expect(byId("vt-microphone-test").getAttribute("aria-pressed")).toBe("false");
+    byId("panel-voice").hidden = false;
+    await press("vt-microphone-test");
+    controls.clear();
+    expect(player.srcObject).toBeNull();
+    expect(mic.tracks.at(-1).stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a pending microphone monitor if the tab hides while playback starts", async () => {
+    const { controls, mic } = tracker();
+    const player = byId("vt-microphone-playback");
+    let monitoredStream = null;
+    Object.defineProperty(player, "srcObject", {
+      configurable: true,
+      get: () => monitoredStream,
+      set: (value) => { monitoredStream = value; },
+    });
+    let resolvePlay;
+    player.play = vi.fn(() => new Promise((resolve) => { resolvePlay = resolve; }));
+    await controls.refresh();
+    byId("vt-microphone-test").click();
+    await vi.waitFor(() => expect(player.srcObject).toBe(mic.stream));
+    byId("panel-voice").hidden = true;
+    await flush();
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    resolvePlay();
+    await flush();
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    expect(byId("vt-microphone-test").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("does not upload a take when its conversion finishes after station clear", async () => {
+    let resolveWav;
+    const { controls, server, toWav } = tracker({
+      toWav: vi.fn(() => new Promise((resolve) => { resolveWav = resolve; })),
+    });
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(toWav).toHaveBeenCalledTimes(1));
+    controls.clear();
+    resolveWav(new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+    await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-playback").getAttribute("src")).toBeNull();
+  });
+
+  it("releases a microphone permission result that arrives after sign-out", async () => {
+    let resolveMic;
+    const { controls, mic } = tracker({
+      media: (device) => ({ ...device, getUserMedia: () => new Promise((resolve) => { resolveMic = resolve; }) }),
+    });
+    await controls.refresh();
+    byId("vt-microphone-playback").play = vi.fn(async () => {});
+    byId("vt-microphone-test").click();
+    controls.clear();
+    resolveMic(mic.stream);
+    await flush();
+    expect(mic.track.stop).toHaveBeenCalled();
+    expect(byId("vt-microphone-playback").srcObject).toBeNull();
   });
 
   it("speaks once a minute and stops itself at the length limit", async () => {
@@ -458,7 +637,7 @@ describe("voice tracker", () => {
     try {
       document.dispatchEvent(new Event("visibilitychange"));
       await flush();
-      expect(mic.track.stop).toHaveBeenCalledTimes(2);
+    expect(mic.tracks[1].stop).toHaveBeenCalledTimes(1);
       await vi.waitFor(() => expect(status()).toMatch(/^The page was hidden, so recording stopped\./));
     } finally {
       delete document.visibilityState;
@@ -602,4 +781,15 @@ describe("voice tracker", () => {
     expect(byId("vt-playback").hasAttribute("src")).toBe(false);
     expect(byId("vt-slot").hidden).toBe(true);
   });
+});
+
+
+it("releases recording tracks when the tracker is removed", async () => {
+  const { controls, mic, advance } = tracker();
+  await controls.refresh();
+  await press("vt-record");
+  byId("voice-tracker").remove();
+  await advance(1);
+  expect(mic.track.stop).toHaveBeenCalled();
+  controls.clear();
 });

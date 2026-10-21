@@ -3066,6 +3066,16 @@
         <h3 id="vt-record-heading">Record</h3>
         <!-- A refusal in words, linked to the control it is about. -->
         <p id="vt-error" class="field-error" hidden></p>
+        <div class="settings-row">
+          <label for="vt-microphone">Microphone</label>
+          <select id="vt-microphone">
+            <option value="">System default</option>
+          </select>
+          <button type="button" id="vt-microphone-refresh">Refresh microphones</button>
+        </div>
+        <p id="vt-microphone-status" class="setting-desc" hidden></p>
+        <button type="button" id="vt-microphone-test" aria-pressed="false">Test microphone</button>
+        <audio id="vt-microphone-playback" preload="none" hidden data-preview-output></audio>
         <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
         <span class="setting-desc" id="vt-record-desc">
           Press to start recording from your microphone, and again (or Alt+R) to stop.
