@@ -197,6 +197,74 @@ def _slot_view(
         speech_end = cue.get("segue") or last
         liner_spans.append((max(0.0, last - first), max(0.0, speech_end - first)))
     desk: BreakDesk = station.breaks
+    active_breaks = {
+        f"break:{item.break_id}"
+        for item in desk.listing()
+        if item.slot_id == plan.slot_id and item.state == "queued"
+    }
+    actions = dict(plan.transition_actions)
+    transition_items = [
+        {
+            **item.view(),
+            "committed": item.committed
+            or bool(plan.transition_order and item.item_id not in plan.transition_replaced),
+            "deferred": item.item_id in plan.transition_replaced,
+            "current_action": actions.get(
+                item.item_id,
+                "replace"
+                if item.source in {"automatic", "matched_intro", "intro_rule"}
+                else "after",
+            ),
+            "default_action": "replace"
+            if item.source in {"automatic", "matched_intro", "intro_rule"}
+            else "after",
+        }
+        for item in plan.transition_items
+        if not item.item_id.startswith("break:") or item.item_id in active_breaks
+    ]
+    known = {item["id"] for item in transition_items}
+    for item in desk.listing():
+        key = f"break:{item.break_id}"
+        if item.slot_id == plan.slot_id and item.state == "queued" and key not in known:
+            transition_items.append(
+                {
+                    "id": key,
+                    "kind": "booked_voice" if item.source == VOICE_TRACK else "booked_break",
+                    "source": item.source,
+                    "label": item.label or "Booked break",
+                    "committed": True,
+                    "editable": False,
+                    "deferred": False,
+                    "default_action": "",
+                }
+            )
+            known.add(key)
+    if plan.transition_order:
+        transition_order = [key for key in plan.transition_order if key in known]
+        # The renderer appends breaks booked outside the frozen voice-track
+        # plan after its ordered items. Keep the API's effective order in sync.
+        transition_order.extend(
+            item["id"]
+            for item in transition_items
+            if item["kind"] in {"booked_voice", "booked_break"}
+            and item["id"] not in transition_order
+        )
+    else:
+        candidate_order = [item.item_id for item in plan.transition_items if item.editable]
+        split = next(
+            (
+                index
+                for index, item in enumerate(plan.transition_items)
+                if item.kind == "matched_intro"
+            ),
+            len(candidate_order),
+        )
+        booked = [
+            item["id"]
+            for item in transition_items
+            if item["kind"] in {"booked_voice", "booked_break"}
+        ]
+        transition_order = [*candidate_order[:split], *booked, *candidate_order[split:]]
     return {
         "slot_id": plan.slot_id,
         "ending": songs.view(plan.ending),
@@ -211,6 +279,14 @@ def _slot_view(
         "planned_liner_speech_s": round(sum(speech for _clip, speech in liner_spans), 3),
         "pinned": plan.pinned,
         "breaks_booked": desk.waiting_in(plan.slot_id),
+        "transition_revision": player._transition_revision(plan),
+        "transition_items": transition_items,
+        "transition_order": transition_order,
+        "transition_summary": [
+            next((item["label"] for item in transition_items if item["id"] == key), "Voice track")
+            for key in transition_order
+            if key not in plan.transition_replaced
+        ],
     }
 
 
@@ -587,6 +663,37 @@ def install_breaks(router: StationRouter) -> None:
                     return refused(
                         409, "The songs around that song change have changed", "pair_changed", slot
                     )
+                transition_revision = (
+                    fields.transition_revision if isinstance(fields, _VoiceFields) else None
+                )
+                transition_choices_text = (
+                    fields.transition_choices if isinstance(fields, _VoiceFields) else None
+                )
+                transition_choices = None
+                if transition_revision is not None:
+                    if slot.get("transition_revision") != transition_revision:
+                        return refused(
+                            409,
+                            "The planned transition changed; refresh and choose again",
+                            "transition_changed",
+                            slot,
+                        )
+                    try:
+                        transition_choices = json.loads(transition_choices_text or "[]")
+                    except (ValueError, RecursionError) as exc:
+                        raise HTTPException(
+                            status_code=422, detail="Transition choices must be valid JSON"
+                        ) from exc
+                    if not isinstance(transition_choices, list) or any(
+                        not isinstance(choice, dict)
+                        or set(choice) != {"id", "action"}
+                        or not all(isinstance(choice[key], str) for key in ("id", "action"))
+                        for choice in transition_choices
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Transition choices must name each item and its action",
+                        )
                 name = file_name(break_id, suffix)
                 try:
                     desk.retarget(break_id, fields.slot_id, name)
@@ -684,7 +791,15 @@ def install_breaks(router: StationRouter) -> None:
             try:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
                     raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
-                await asyncio.to_thread(station.player.book_break, item)
+                if transition_revision is None:
+                    await asyncio.to_thread(station.player.book_break, item)
+                else:
+                    await asyncio.to_thread(
+                        station.player.book_break,
+                        item,
+                        transition_revision=transition_revision,
+                        transition_choices=transition_choices or (),
+                    )
             except BreakError as exc:
                 slot = await asyncio.to_thread(_current_slot, station)
                 return refused(exc.status, exc.detail, exc.reason, slot)
@@ -1159,6 +1274,10 @@ class _VoiceFields(_UploadFields):
     """The form fields of a voice track: a DJ break, so ``kind`` may be left out."""
 
     kind: Literal["dj"] = "dj"
+    transition_revision: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    transition_choices: str | None = Field(default=None, max_length=8192)
 
 
 async def _read_form[F: _UploadFields](

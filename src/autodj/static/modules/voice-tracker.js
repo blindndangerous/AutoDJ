@@ -264,6 +264,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const list = el("vt-list");
   const none = el("vt-none");
   const listHeading = el("vt-booked-heading");
+  const transition = el("vt-transition");
+  const transitionSummary = el("vt-transition-summary");
   const transitionItems = el("vt-transition-items");
 
   let data = null;
@@ -291,6 +293,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   let linked = null;
   let wasShown = false;
   const rows = new Map();
+  const transitionChoices = new Map();
+  let transitionSlotId = null;
 
   const shown = () => !panel.hidden;
   // The tracker's own region while its tab shows; the page-wide one when
@@ -465,6 +469,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function renderSlot() {
     const slot = data?.slot;
+    renderTransition(slot);
     if (!slot) {
       slotList.hidden = true;
       unavailable.hidden = false;
@@ -479,6 +484,124 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     setText(intro, slot.upcoming_intro_s == null ? "No intro point" : introWords(slot.upcoming_intro_s));
     renderTimes();
     renderPlacement();
+  }
+
+  function renderTransition(slot) {
+    if (!transition || !transitionItems || !transitionSummary) return;
+    if (transitionSlotId !== slot?.slot_id) {
+      transitionChoices.clear();
+      transitionSlotId = slot?.slot_id || null;
+    }
+    const active = doc.activeElement;
+    const hadFocus = transitionItems.contains(active);
+    const items = slot?.transition_items || [];
+    transition.hidden = !items.length;
+    const wanted = new Set(items.map((item) => item.id));
+    for (const row of [...transitionItems.children]) {
+      if (!wanted.has(row.dataset.transitionId)) {
+        transitionChoices.delete(row.dataset.transitionId);
+        row.remove();
+      }
+    }
+    for (const item of items) {
+      let row = [...transitionItems.children].find((child) => child.dataset.transitionId === item.id);
+      if (!row) {
+        row = doc.createElement("li");
+        row.dataset.transitionId = item.id;
+        const text = doc.createElement("span");
+        const label = doc.createElement("label");
+        const select = doc.createElement("select");
+        select.id = `vt-transition-choice-${item.id}`;
+        label.htmlFor = select.id;
+        for (const [value, title] of [["replace", "Replace"], ["before", "Before"], ["after", "After"]]) {
+          const option = doc.createElement("option");
+          option.value = value;
+          option.textContent = title;
+          select.append(option);
+        }
+        select.addEventListener("change", () => {
+          transitionChoices.set(item.id, select.value);
+          renderTransition(data?.slot);
+        });
+        row.append(text, doc.createTextNode(" "), label, doc.createTextNode(" "), select);
+        transitionItems.append(row);
+      }
+      const text = row.querySelector("span");
+      const label = row.querySelector("label");
+      const select = row.querySelector("select");
+      setText(label, `Position for ${item.label || "transition audio"}:`);
+      const action = transitionChoices.get(item.id) || item.current_action || item.default_action || "replace";
+      const deferred = item.editable && action === "replace";
+      const retained = item.source === "queued" || item.source === "clockwheel";
+      const state = deferred
+        ? retained ? " (deferred; remains queued)" : " (skipped in this transition)"
+        : item.committed ? " (committed)" : " (predicted)";
+      setText(text, `${item.label || "Transition audio"}${state}`);
+      select.hidden = !item.editable;
+      label.hidden = !item.editable;
+      if (item.editable) {
+        if (!transitionChoices.has(item.id)) transitionChoices.set(item.id, action);
+        select.value = transitionChoices.get(item.id);
+      }
+    }
+    const planned = effectiveTransitionOrder(slot);
+    if (planned) {
+      const rows = new Map([...transitionItems.children].map((row) => [row.dataset.transitionId, row]));
+      let next = null;
+      const order = [...planned.order, ...items.filter((item) =>
+        item.editable && actionFor(item) === "replace").map((item) => item.id)];
+      for (const id of order.toReversed()) {
+        const row = rows.get(id);
+        if (!row) continue;
+        // Moving the focused native select resets WebKit's keyboard state.
+        if (!row.contains(active) && row.nextElementSibling !== next) {
+          transitionItems.insertBefore(row, next);
+        }
+        next = row;
+      }
+    }
+    if (hadFocus && doc.activeElement !== active && active.isConnected) active.focus();
+    updateTransitionSummary(slot);
+  }
+
+  function actionFor(item) {
+    return transitionChoices.get(item.id) || item.current_action || item.default_action || "replace";
+  }
+
+  function effectiveTransitionOrder(slot) {
+    if (!slot) return null;
+    const items = slot.transition_items || [];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const kept = items.filter((item) => !item.editable || actionFor(item) !== "replace");
+    const order = (slot.transition_order || items.map((item) => item.id))
+      .filter((id) => byId.has(id) && kept.includes(byId.get(id)));
+    for (const item of kept) {
+      if (!order.includes(item.id)) order.push(item.id);
+    }
+    let lower = 0;
+    let upper = order.length;
+    for (const item of items.filter((candidate) => candidate.editable && actionFor(candidate) !== "replace")) {
+      const index = order.indexOf(item.id);
+      const action = actionFor(item);
+      if (action === "after") lower = Math.max(lower, index + 1);
+      if (action === "before") upper = Math.min(upper, index);
+    }
+    if (lower > upper) return null;
+    order.splice(lower, 0, "new-voice-track");
+    return { order };
+  }
+
+  function updateTransitionSummary(slot) {
+    if (!slot || !transitionSummary) return;
+    const planned = effectiveTransitionOrder(slot);
+    if (!planned) {
+      setText(transitionSummary, "These choices conflict. Choose a consistent order before booking.");
+      return;
+    }
+    const byId = new Map((slot.transition_items || []).map((item) => [item.id, item]));
+    const labels = planned.order.map((id) => id === "new-voice-track"
+      ? "Your new voice track" : byId.get(id)?.label || "Booked break");
+    setText(transitionSummary, `Planned order: ${labels.join(", ")}.`);
   }
 
   function renderTimes() {
@@ -1012,6 +1135,15 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       form.append("upcoming_id", slot.upcoming.id);
       form.append("placement", placement.value);
       form.append("allow_outro", placement.value === "auto" ? "true" : "false");
+      if (slot.transition_revision) {
+        form.append("transition_revision", slot.transition_revision);
+        form.append("transition_choices", JSON.stringify((slot.transition_items || [])
+          .filter((item) => item.editable)
+          .map((item) => ({
+            id: item.id,
+            action: transitionChoices.get(item.id) || item.current_action || item.default_action || "replace",
+          }))));
+      }
       form.append("file", new File([wav], "voice-track.wav", { type: "audio/wav" }));
       let booked;
       try {

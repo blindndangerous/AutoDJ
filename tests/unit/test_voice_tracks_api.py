@@ -81,6 +81,98 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     assert named["slot"]["slot_id"] == slot["slot_id"]
 
 
+def test_deeply_nested_transition_choices_are_refused_before_storing_audio(station):
+    slot = voice(station)["slot"]
+    response = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[" * 1200 + "]" * 1200,
+    )
+    assert response.status_code == 422
+    assert files(station.desk) == []
+
+
+def test_voice_track_booking_revalidates_the_transition_plan_revision(station):
+    slot = voice(station)["slot"]
+    assert len(slot["transition_revision"]) == 64
+    result = book(
+        station,
+        slot,
+        transition_revision="0" * 64,
+        transition_choices="[]",
+    )
+    assert result.status_code == 409
+    assert result.json()["reason"] == "transition_changed"
+    assert voice(station)["tracks"] == []
+    booked = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[]",
+    )
+    assert booked.status_code == 201, booked.text
+    first_id = booked.json()["break_id"]
+    planned = voice(station)["slot"]
+    assert planned["transition_revision"] != slot["transition_revision"]
+    assert planned["transition_order"] == [f"break:{first_id}"]
+    second = book(
+        station,
+        planned,
+        transition_revision=planned["transition_revision"],
+        transition_choices="[]",
+    )
+    assert second.status_code == 201, second.text
+    after_second = voice(station)["slot"]
+    removed = station.client.delete(f"/api/voice-tracks/{first_id}", headers=ORIGIN)
+    assert removed.status_code == 200
+    after_cancel = voice(station)["slot"]
+    assert after_cancel["transition_revision"] != after_second["transition_revision"]
+    stale = book(
+        station,
+        after_second,
+        transition_revision=after_second["transition_revision"],
+        transition_choices="[]",
+    )
+    assert stale.status_code == 409
+    assert stale.json()["reason"] == "transition_changed"
+    rebooked = book(
+        station,
+        after_cancel,
+        transition_revision=after_cancel["transition_revision"],
+        transition_choices="[]",
+    )
+    assert rebooked.status_code == 201, rebooked.text
+    assert f"break:{first_id}" not in voice(station)["slot"]["transition_order"]
+
+
+def test_custom_transition_view_includes_later_announcer_breaks_in_render_order(station):
+    slot = voice(station)["slot"]
+    booked_voice = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[]",
+    )
+    assert booked_voice.status_code == 201, booked_voice.text
+    voice_id = booked_voice.json()["break_id"]
+
+    external = station.upload(slot, label="Station announcement")
+    assert external.status_code == 201, external.text
+    external_id = external.json()["break_id"]
+
+    updated = voice(station)["slot"]
+    voice_key = f"break:{voice_id}"
+    external_key = f"break:{external_id}"
+    ids = [item["id"] for item in updated["transition_items"]]
+    assert updated["transition_order"] == [voice_key, external_key]
+    assert all(key in ids for key in updated["transition_order"])
+    assert updated["transition_summary"] == [
+        next(item["label"] for item in updated["transition_items"] if item["id"] == key)
+        for key in updated["transition_order"]
+    ]
+
+
 def test_context_forecasts_the_whole_queued_voice_chain_and_cue_tails(station):
     first = book(station, placement="auto").json()
     first_item = station.desk.get(first["break_id"])

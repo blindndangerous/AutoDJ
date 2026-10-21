@@ -70,6 +70,13 @@ the next song because the nearer transition is already prepared.
 3. Leave **Fit over outro and intro** selected to fit your voice against the
    usable music in this song change. Choose **Between songs** when the take
    should play on its own between the tracks.
+4. Read **Planned transition audio** in order. Items marked **committed** are
+   already queued; **predicted** items are eligible choices, not guarantees.
+   For each liner or matched intro, choose **Replace**, **Before** or **After**.
+   The default keeps explicit queued and clockwheel liners before your voice,
+   while replacing automatic liners and matched intros. Replaced queued liners
+   remain queued for a later transition. The ordered summary includes your new
+   voice track; conflicting choices are refused before upload is booked.
 
 Checkpoint: with server audio and saved-point playback, the song-pair facts
 are present and the tab is accepting a take even when announcer uploads are off.

@@ -861,17 +861,29 @@ async function openShowStates(page, visit) {
   await page.locator("#shows-cancel").click();
 }
 
-// Voice tracks (#128): the open song change and a booked list are stood
-// in for (the audit server takes no breaks), and the microphone and the
-// recorder are stubbed before any page script, so Record works with no
-// device and no permission prompt.  window.__micRefusal names the error
-// the next request for the microphone fails with.
+// Voice tracks (#128): the open song change includes explicit queued and
+// predicted transition candidates plus a protected booked voice track.  The
+// editable rows exercise the native per-item selectors in the audit.  The
+// microphone and recorder are stubbed before any page script, so Record
+// works with no device or permission prompt.  window.__micRefusal names the
+// error the next request for the microphone fails with.
 const VOICE_CONTEXT = {
   station: "default", accepting: true, reason: null, now: null, next: null,
   slot: {
     slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
     ending_outro_s: 5, queued_chain_speech_s: 4, queued_chain_clip_s: 4.4,
     pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
+    transition_revision: "d".repeat(64),
+    transition_items: [
+      { id: "e".repeat(24), kind: "liner", source: "automatic", label: "Predicted station ID",
+        committed: false, editable: true, deferred: true, current_action: "replace", default_action: "replace" },
+      { id: "f".repeat(24), kind: "liner", source: "queued", label: "Queued weather liner",
+        committed: true, editable: true, deferred: false, current_action: "after", default_action: "after" },
+      { id: `break:${"b".repeat(32)}`, kind: "booked_voice", source: "voice_track",
+        label: "Third Song into Fourth Song", committed: true, editable: false, deferred: false, default_action: "" },
+    ],
+    transition_order: ["e".repeat(24), "f".repeat(24), `break:${"b".repeat(32)}`],
+    transition_summary: ["Queued weather liner", "Third Song into Fourth Song"],
     ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
     upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
   },
@@ -2247,6 +2259,28 @@ async function voiceTrackerProblems(page) {
   await page.locator("#tab-voice").click();
   await page.locator("#vt-slot").waitFor({ state: "visible" });
   const problems = [];
+  await page.waitForFunction(() => location.hash === "#voice"
+    && document.getElementById("tab-voice").getAttribute("aria-selected") === "true");
+  const predictedChoice = page.locator(`#vt-transition-choice-${"e".repeat(24)}`);
+  await predictedChoice.press("End");
+  await page.waitForFunction(() => document.getElementById(`vt-transition-choice-${"e".repeat(24)}`).value === "after");
+  await predictedChoice.press("Home");
+  await page.waitForFunction(() => document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)
+    ?.textContent.includes("skipped in this transition"));
+  const choices = await page.evaluate(() => ({
+    focus: document.activeElement?.id,
+    predicted: document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)?.textContent,
+    booked: document.querySelector(`[data-transition-id="break:${"b".repeat(32)}"] span`)?.textContent,
+  }));
+  if (choices.focus !== `vt-transition-choice-${"e".repeat(24)}`) {
+    problems.push(`changing a transition choice moved focus to ${choices.focus}`);
+  }
+  if (!choices.predicted?.includes("skipped in this transition")) {
+    problems.push(`replaced predicted liner reads ${JSON.stringify(choices.predicted)}`);
+  }
+  if (!choices.booked?.includes("committed")) {
+    problems.push(`protected booked voice track reads ${JSON.stringify(choices.booked)}`);
+  }
   await page.evaluate(() => {
     window.__voiceSaid = [];
     const region = document.getElementById("vt-status");

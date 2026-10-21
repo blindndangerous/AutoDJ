@@ -155,6 +155,21 @@ The monitor never books a take or joins the station output.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
+When a planned transition list is available, **Planned transition audio** shows which spoken
+items are already committed and which are predictions. Use each item's native **Voice track
+position** selector to put your recording **Before** or **After** that item, or choose **Replace**.
+Replace skips predicted automatic liners and matched intros for this transition; replacing an
+explicit queued or clockwheel liner defers it, leaving it queued for later. The defaults replace
+predicted items and place your voice after explicit queued and clockwheel liners. Scheduled breaks
+such as ads and news remain in their protected positions. The ordered summary updates as you
+change selectors.
+
+AutoDJ freezes predicted content for the open song pair without advancing liner rotation or intro
+cooldowns. It reserves the frozen candidates only when that transition is rendered. A retained
+intro advances its random chooser only when heard; replacing or discarding it does not. If Before,
+After and Replace choices contradict one another, booking is refused without changing the plan.
+A stale plan is also refused; refresh the list and submit your choice against the latest revision.
+
 The recording state is said once when recording starts and stops, then once a minute, and 30
 seconds before the length limit or before the song change closes. Recording stops by itself at
 10 minutes or sooner if the station's upload and storage limits cannot hold the take. Manual voice

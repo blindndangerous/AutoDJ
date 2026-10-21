@@ -296,11 +296,56 @@ describe("voice tracker", () => {
     expect(byId("vt-intro").textContent).toBe("8 seconds");
     expect(byId("vt-closes").textContent).toBe("2:05");
     expect(byId("vt-fit").hidden).toBe(true);
+    expect(byId("vt-timer").textContent).toBe("10:00 max");
     await advance(3);
     expect(byId("vt-closes").textContent).toBe("2:02");
     expect(byId("vt-airs").textContent).toBe("5:27");
     expect(status()).toBe("");
     expect(byId("vt-none").hidden).toBe(false);
+  });
+
+  it("shows an ordered editable plan and submits its revision and choices", async () => {
+    const { controls, server } = tracker();
+    server.slot = slot(undefined, {
+      transition_revision: "c".repeat(64),
+      transition_items: [
+        { id: "queued-id", label: "Station ID", kind: "liner", source: "queued", committed: true, editable: true, default_action: "after" },
+        { id: "auto-id", label: "Auto liner", kind: "liner", source: "automatic", committed: false, editable: true, default_action: "after" },
+        { id: "break:news", label: "News break", kind: "booked_break", source: "announcer", committed: true, editable: false, default_action: "" },
+      ],
+      transition_order: ["auto-id", "break:news", "queued-id"],
+      transition_summary: ["Auto liner", "News break", "Station ID"],
+    });
+    await controls.refresh();
+    const controlsList = byId("vt-transition-items").querySelectorAll("select");
+    expect(byId("vt-transition").hidden).toBe(false);
+    expect([...controlsList].filter((control) => !control.hidden)
+      .map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
+      "Position for Auto liner:", "Position for Station ID:",
+    ]);
+    expect([...controlsList].filter((control) => !control.hidden).map((control) => control.value))
+      .toEqual(["after", "after"]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["Auto liner (predicted)", "News break (committed)", "Station ID (committed)"]);
+    controlsList[0].focus();
+    controlsList[0].value = "replace";
+    controlsList[0].dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.activeElement).toBe(controlsList[0]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["News break (committed)", "Station ID (committed)", "Auto liner (skipped in this transition)"]);
+    const autoSelect = [...byId("vt-transition-items").children]
+      .find((row) => row.dataset.transitionId === "auto-id").querySelector("select");
+    autoSelect.value = "after";
+    autoSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("vt-transition-summary").textContent).toContain("Your new voice track");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-book");
+    const post = server.calls.find((call) => call.method === "POST");
+    expect(post.body.get("transition_revision")).toBe("c".repeat(64));
+    expect(JSON.parse(post.body.get("transition_choices"))).toEqual([
+      { id: "queued-id", action: "after" }, { id: "auto-id", action: "after" },
+    ]);
   });
 
   it("says why no song change is open", async () => {

@@ -520,6 +520,8 @@ def render_review(
                     liners=handoff.liners if handoff is not None else (),
                     breaks=breaks,
                     intro=handoff.intro if handoff is not None else None,
+                    transition_order=(handoff.transition_order if handoff is not None else ()),
+                    transition_items=(handoff.transition_items if handoff is not None else ()),
                 )
                 _check(cancelled)
                 if rendered is None:

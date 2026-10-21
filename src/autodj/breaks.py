@@ -263,6 +263,30 @@ class Break:
         }
 
 
+@dataclass(frozen=True)
+class TransitionItem:
+    """One frozen spoken item in an open song-change plan."""
+
+    item_id: str
+    kind: str
+    source: str
+    label: str
+    entry: Any = None
+    intro: Any = None
+    committed: bool = False
+    editable: bool = True
+
+    def view(self) -> dict[str, Any]:
+        return {
+            "id": self.item_id,
+            "kind": self.kind,
+            "source": self.source,
+            "label": self.label,
+            "committed": self.committed,
+            "editable": self.editable,
+        }
+
+
 @dataclass
 class SlotPlan:
     """The open song change: the player's pick for the song after the next one.
@@ -315,6 +339,14 @@ class SlotPlan:
     stale: bool = False
     clock_step: dict | None = None
     ad_steps: tuple[dict, ...] = ()
+    queue_liner_paths: tuple[Path, ...] = ()
+    clock_liner: Any = None
+    transition_items: tuple[TransitionItem, ...] = ()
+    transition_revision: str = ""
+    transition_seed: str = ""
+    transition_order: tuple[str, ...] = ()
+    transition_replaced: tuple[str, ...] = ()
+    transition_actions: tuple[tuple[str, str], ...] = ()
 
 
 class BreakError(Exception):
@@ -892,6 +924,7 @@ __all__ = [
     "BreakDesk",
     "BreakError",
     "SlotPlan",
+    "TransitionItem",
     "file_name",
     "new_id",
     "placement_for",
