@@ -27,6 +27,8 @@ export function installProgrammeReview({
   const card = get("card");
   const audio = get("audio"), snapshots = get("snapshots"), form = get("form");
   let generation = 0, timer = null, job = null, result = null, selected = 0, submitting = false;
+  // Cancel was accepted for the running job; its renderer stops at its next check.
+  let cancelling = false;
   let refreshNumber = 0, loadNumber = 0;
   let reviewsLoaded = false;
   let editionRequest = null, editionOpener = null;
@@ -60,6 +62,15 @@ export function installProgrammeReview({
   function stopAudio() {
     audio.pause(); audio.removeAttribute("src"); audio.load();
   }
+  // Cancel keeps focus while a cancellation is pending, so it is marked
+  // aria-disabled rather than disabled, which would drop focus to the page.
+  function markCancelling(value) {
+    const cancel = get("cancel");
+    cancelling = value;
+    if (value) cancel.setAttribute("aria-disabled", "true");
+    else cancel.removeAttribute("aria-disabled");
+    cancel.classList.toggle("is-pending", value);
+  }
   function busy(value) {
     const generate = get("generate"), cancel = get("cancel");
     if (value) {
@@ -68,6 +79,7 @@ export function installProgrammeReview({
     }
     generate.classList.toggle("is-pending", value);
     generate.disabled = value;
+    if (!value) markCancelling(false);
     if (!value && doc.activeElement === cancel) generate.focus();
     cancel.hidden = !value;
   }
@@ -127,6 +139,7 @@ export function installProgrammeReview({
     if (!current(ticket)) return;
     job = value; busy(["pending", "queued", "running"].includes(value.status));
     if (["pending", "queued", "running"].includes(value.status)) {
+      if (value.cancel_requested) markCancelling(true);
       timer = setTimer(async () => {
         timer = null;
         try {
@@ -140,7 +153,7 @@ export function installProgrammeReview({
     if (value.status === "failed" || value.status === "error")
       fail({ message: value.error || "Review generation failed.", field: value.field }, ticket,
         get("card").contains(doc.activeElement) || doc.activeElement === doc.body);
-    else if (value.status === "cancelled") say("Review generation cancelled. Previous results are retained.");
+    else if (value.status === "cancelled") say("Review cancelled. Previous results are retained.");
     else {
       await refresh();
       if (!current(ticket)) return;
@@ -237,15 +250,34 @@ export function installProgrammeReview({
     doc.getElementById("tab-now")?.click(); card.open = true;
     get("generate").focus(); void generate();
   });
+  // The server waits briefly for the renderer to stop, so the reply is
+  // usually the cancelled job.  A renderer between checks is still running
+  // (cancel_requested): Cancel stays marked and polling ends the job.
   get("cancel").addEventListener("click", async () => {
     if (!job) return;
+    if (cancelling) { say("Cancellation already requested. Waiting for the review to stop."); return; }
     const ticket = context(), id = job.id;
-    await withDisabled(get("cancel"), async () => {
-      try {
-        const answer = await send(`/api/reviews/jobs/${encodeURIComponent(id)}/cancel`, "POST");
-        if (current(ticket)) { if (timer) clearTimer(timer); timer = null; await follow(answer, ticket); }
-      } catch (error) { fail(error, ticket); }
-    });
+    const mine = () => current(ticket) && job?.id === id;
+    markCancelling(true);
+    say("Cancelling review generation…");
+    try {
+      const answer = await send(`/api/reviews/jobs/${encodeURIComponent(id)}/cancel`, "POST");
+      if (!mine()) return;
+      if (timer) clearTimer(timer); timer = null;
+      await follow(answer, ticket);
+    } catch (error) {
+      if (!mine() || isStaleStationReply(error)) return;
+      if (error.status === 404) {
+        if (timer) clearTimer(timer); timer = null; job = null;
+        busy(false);
+        say("The review had already stopped. Previous results are retained.");
+        void refresh();
+        return;
+      }
+      // Polling continues; Cancel can be pressed again.
+      markCancelling(false);
+      say(`Could not cancel the review: ${error.message || "try again"}`);
+    }
   });
   get("delete").addEventListener("click", async () => {
     const id = snapshots.value;

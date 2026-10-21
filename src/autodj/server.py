@@ -2268,6 +2268,40 @@ def create_app(
         library.start_scan({source["id"]})
         return await asyncio.to_thread(library.snapshot)
 
+    # Browse buttons: the server's folders, for typing a new library folder,
+    # and the folders and audio files inside a registered one (path_browse).
+    @app.get("/api/library/browse")
+    async def api_library_browse(path: Annotated[str, Query(max_length=4096)] = "") -> dict:
+        from autodj.path_browse import BrowseError, list_server_folder
+
+        try:
+            return await asyncio.to_thread(list_server_folder, path)
+        except BrowseError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+    @app.get("/api/library/folders/{source_id}/browse")
+    async def api_library_folder_browse(
+        source_id: str,
+        path: Annotated[str, Query(max_length=4096)] = "",
+        files: bool = False,
+    ) -> dict:
+        from autodj.path_browse import BrowseError, list_library_folder
+
+        library = _catalog_library()
+        sources = await asyncio.to_thread(library.catalog.sources)
+        source = next((s for s in sources if s["id"] == source_id), None)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Folder not registered")
+        extensions = {f".{ext.lower().lstrip('.')}" for ext in cfg.library.supported_formats}
+        try:
+            return await asyncio.to_thread(
+                lambda: list_library_folder(
+                    source["path"], path, files=files, extensions=extensions
+                )
+            )
+        except BrowseError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
     @app.patch("/api/library/folders/{source_id}")
     async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
         library = _catalog_library()

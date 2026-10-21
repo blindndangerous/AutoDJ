@@ -331,6 +331,9 @@ def _encode(output: Path, cancelled: Callable[[], bool]) -> None:
                 if child.poll() is None:
                     child.kill()
                 child.wait()
+    except InterruptedError:
+        # A subclass of OSError: Cancel and the deadline are not FFmpeg failures.
+        raise
     except OSError as exc:
         raise ReviewError("MP3 export could not start; check FFmpeg and available storage") from exc
 

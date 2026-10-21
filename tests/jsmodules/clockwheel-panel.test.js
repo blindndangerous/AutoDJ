@@ -428,11 +428,11 @@ describe("clockwheel editor", () => {
     await vi.waitFor(() => expect(status()).toContain("Saved Morning, 4 steps."));
     rowButton(3, "edit").click();
     expect(byId("clock-step-conditions").children).toHaveLength(2);
-    byId("clock-step-conditions").children[0].querySelector("button").click();
+    byId("clock-step-conditions").children[0].querySelector("button[data-remove-condition]").click();
     expect(byId("clock-step-conditions").children).toHaveLength(1);
     expect(byId("clock-step-conditions").firstElementChild.querySelector("legend").textContent).toBe("Condition 1");
     expect(document.activeElement).toBe(byId("clock-step-conditions").firstElementChild.querySelector("select"));
-    byId("clock-step-conditions").firstElementChild.querySelector("button").click();
+    byId("clock-step-conditions").firstElementChild.querySelector("button[data-remove-condition]").click();
     expect(byId("clock-step-conditions").children).toHaveLength(0);
     expect(document.activeElement).toBe(byId("clock-add-condition"));
     byId("clock-add-step").click();
@@ -1156,7 +1156,7 @@ describe("clockwheel step conditions, for screen readers", () => {
     byId("clock-add-condition").click();
     await vi.waitFor(() => expect(status()).toBe("Condition 3 added."));
     expect(document.activeElement).toBe(conditions()[2].querySelector("select"));
-    const removeButtons = () => conditions().map((row) => row.querySelector("button").textContent);
+    const removeButtons = () => conditions().map((row) => row.querySelector("button[data-remove-condition]").textContent);
     expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2", "Remove condition 3"]);
     const third = conditions()[2];
     const oldLegend = third.querySelector("legend");
@@ -1164,8 +1164,8 @@ describe("clockwheel step conditions, for screen readers", () => {
     third.querySelector("select").addEventListener("focus", () => {
       legendAtFocus = third.querySelector("legend").textContent;
     }, { once: true });
-    conditions()[1].querySelector("button").focus();
-    conditions()[1].querySelector("button").click();
+    conditions()[1].querySelector("button[data-remove-condition]").focus();
+    conditions()[1].querySelector("button[data-remove-condition]").click();
     await vi.waitFor(() => expect(status()).toBe("Condition 2 removed, 2 conditions left."));
     // The condition that took its place has focus, renumbered before focus
     // arrived, with a new legend so its group's name is worked out again (#326).
@@ -1175,11 +1175,11 @@ describe("clockwheel step conditions, for screen readers", () => {
     expect(third.querySelector("legend").textContent).toBe("Condition 2");
     expect(removeButtons()).toEqual(["Remove condition 1", "Remove condition 2"]);
     const first = conditions()[0];
-    third.querySelector("button").click();
+    third.querySelector("button[data-remove-condition]").click();
     await vi.waitFor(() => expect(status()).toBe("Condition 2 removed, 1 condition left."));
     // The last one gone, the one before it has focus.
     expect(document.activeElement).toBe(first.querySelector("select"));
-    first.querySelector("button").click();
+    first.querySelector("button[data-remove-condition]").click();
     await vi.waitFor(() => expect(status()).toBe("Condition 1 removed, 0 conditions left."));
     expect(document.activeElement).toBe(byId("clock-add-condition"));
   });
