@@ -16,11 +16,9 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
-# Core dependencies cover indexing, the browser UI and tag reading, so a plain
-# install (and the container image, which installs no extras) can index and
-# serve.  MuQ already pulls in torch, torchaudio and transformers, and librosa
-# pulls in scipy and soundfile; the ones AutoDJ imports directly are declared
-# here so they do not depend on another package's requirements.
+# Core dependencies cover the browser UI, playback, streaming and basic library
+# import without a music model. The index extra adds MuQ analysis; the native
+# default setup and container retain it. Librosa supplies CPU audio features.
 dependencies = [
     "faiss-cpu>=1.8.0", # nearest-neighbor vector search
     "numpy>=1.26.0", # vector math
@@ -32,8 +30,6 @@ dependencies = [
     "starlette~=1.6.0", # imported by the security middleware; patch releases only
     "pydantic>=2.0.0", # request/response models in server.py
     "uvicorn[standard]>=0.47.0", # ASGI server; 0.47 adds ssl_context_factory
-    "muq>=0.1.0", # MuQ embedding model (24 kHz, 1024-dim)
-    "transformers>=5.16.1", # MuQ compatibility is handled at model load.
     "huggingface_hub>=1.31.0", # model checkpoint download
     "mutagen>=1.47.0", # tags, ReplayGain, cover art, embedded lyrics, ALAC detection
     "scipy>=1.13.0", # biquad filters (EQ duck, sweeps, transitions)
@@ -45,8 +41,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # Extras only add what the core set does not already provide.
-# `index` pins floors for the torch stack MuQ runs on (CPU or CUDA).
+# `index` adds the music-model stack for local CPU/GPU analysis.
 index = [
+    "muq>=0.1.0",
+    "transformers>=5.16.1",
     "torch>=2.2.0",              # MuQ inference (CPU or CUDA)
     "soundfile>=0.12.0",         # audio file decoding
 ]
@@ -59,6 +57,7 @@ play = [
 
 # Convenience meta-group: every extra above.
 all = [
+    "muq>=0.1.0", "transformers>=5.16.1",
     "torch>=2.2.0", "soundfile>=0.12.0",
     "sounddevice>=0.4.6",
 ]

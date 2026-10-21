@@ -68,10 +68,22 @@ The worker's results count only if it ran exactly the server's model weights. `[
 is a branch name (`main`), and two machines that downloaded `main` at different times can hold
 different weights, so the server compares the snapshot commit of each machine's downloaded copy
 (or, for a `[model] manual_path` folder, a digest of its weight files). The server needs its own
-copy of the model for this, which `autodj index` downloads. If the copies differ, the worker stops
+copy of the model for this. With a model-capable server runtime and songs pending
+advanced analysis, `autodj index` downloads that copy. If the copies differ, the worker stops
 before it loads anything and says which commit the server has; set
 `[model] revision = "<that commit>"` in the GPU machine's `config.toml` and start the worker again,
 and it downloads exactly the server's weights.
+
+A [no-model server](../../setup.md#no-model-installation) can use remote analysis
+only if it already has a compatible cache at its configured `model_dir`, or a
+compatible model folder at `manual_path`. Keep that copy available: the server
+checks its exact identity without loading the model. Running `autodj index` in
+no-model mode imports songs but does not download weights. A fresh no-model
+server without a cache cannot accept remote analysis; preserve an existing
+compatible cache or obtain it using ordinary analysis in a model-capable runtime
+before returning to no-model mode. Merely setting a revision does not create a
+cache. Allow disk space for the retained model even though its runtime packages
+are optional.
 
 ## 4. Run the worker
 

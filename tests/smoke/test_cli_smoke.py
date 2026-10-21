@@ -152,10 +152,9 @@ class TestIndexCommand:
     ) -> None:
         config_path = tmp_path / "config.toml"
         _write_config(config_path, tmp_path)
-        with patch("autodj.model.download_model_if_needed") as download:
+        with patch.dict("sys.modules", {"autodj.model": None}):
             result = runner.invoke(cli, ["--config", str(config_path), "index", "--limit", "1"])
         assert result.exit_code == 0, result.output
-        download.assert_not_called()
         assert (tmp_path / "index" / "libraries" / "main" / "library.db").is_file()
         assert not (tmp_path / "index" / "libraries" / "main" / "index-manifest.json").exists()
 

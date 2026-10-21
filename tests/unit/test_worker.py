@@ -48,6 +48,17 @@ class FakeModel:
         return vec / np.linalg.norm(vec)
 
 
+@pytest.fixture
+def simulated_model_runtime(monkeypatch):
+    """Command tests exercise orchestration with an explicitly simulated model."""
+    model = MagicMock(ModelLoadError=RuntimeError, MuqWrapper=FakeModel)
+    monkeypatch.setitem(sys.modules, "autodj.model", model)
+    monkeypatch.setitem(
+        sys.modules, "autodj.compute", MagicMock(device_description=Mock(return_value="CPU"))
+    )
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
+
+
 class ClientTransport:
     """The worker's transport, over a Starlette TestClient instead of the network."""
 
@@ -370,6 +381,7 @@ def test_hooks_run_without_a_shell_and_never_raise(tmp_path, caplog):
 
 
 def test_device_choice_uses_cuda_whenever_torch_sees_it():
+    pytest.importorskip("torch")
     with patch("torch.cuda.is_available", return_value=True):
         assert choose_device("auto") == "cuda"
         assert choose_device("cuda") == "cuda"
@@ -381,6 +393,7 @@ def test_device_choice_uses_cuda_whenever_torch_sees_it():
 
 
 def test_release_gpu_moves_the_model_off_and_empties_the_cache():
+    pytest.importorskip("torch")
     wrapper = Mock(device="cuda", model=Mock())
     with (
         patch("torch.cuda.is_available", return_value=True),
@@ -470,7 +483,9 @@ def test_http_transport_talks_to_a_real_socket(http_server, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(tmp_path):
+def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(
+    tmp_path, simulated_model_runtime
+):
     order = []
     fake_worker = MagicMock()
     fake_worker.connect.side_effect = lambda: order.append("connect")
@@ -504,7 +519,7 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(tmp_path):
     assert load.call_args.kwargs == {"device": "cuda"}
 
 
-def test_worker_command_runs_the_after_command_on_errors(tmp_path):
+def test_worker_command_runs_the_after_command_on_errors(tmp_path, simulated_model_runtime):
     order = []
     fake_worker = MagicMock()
     fake_worker.run.side_effect = WorkerError("token revoked")
@@ -568,7 +583,7 @@ def _run_idle_command(tmp_path, api, order, *args, record_model=False, load_erro
     return result
 
 
-def test_idle_release_keeps_an_empty_worker_unloaded(server, tmp_path):
+def test_idle_release_keeps_an_empty_worker_unloaded(server, tmp_path, simulated_model_runtime):
     order = []
     api = QueueApi(server.identity(), on_claim=lambda n: order.append("claim"))
     result = _run_idle_command(
@@ -578,7 +593,9 @@ def test_idle_release_keeps_an_empty_worker_unloaded(server, tmp_path):
     assert order == ["claim"] * 5
 
 
-def test_idle_release_frees_the_model_and_reloads_for_new_songs(server, tmp_path):
+def test_idle_release_frees_the_model_and_reloads_for_new_songs(
+    server, tmp_path, simulated_model_runtime
+):
     order = []
     song = {"lease": "a" * 32}
     api = QueueApi(
@@ -597,7 +614,9 @@ def test_idle_release_frees_the_model_and_reloads_for_new_songs(server, tmp_path
 
 
 @pytest.mark.parametrize("exit_args", [("--once",), ("--idle-exit", "1")])
-def test_idle_exit_wins_over_release_and_cleans_up_once(server, tmp_path, exit_args):
+def test_idle_exit_wins_over_release_and_cleans_up_once(
+    server, tmp_path, exit_args, simulated_model_runtime
+):
     order = []
     api = QueueApi(server.identity(), [[{"lease": "a" * 32}]])
     with patch.object(Worker, "_process", side_effect=lambda *args: order.append("analyse")):
@@ -611,7 +630,9 @@ def test_idle_exit_wins_over_release_and_cleans_up_once(server, tmp_path, exit_a
 
 @pytest.mark.parametrize("loaded", [False, True])
 @pytest.mark.parametrize("error", [KeyboardInterrupt(), WorkerError("token revoked")])
-def test_idle_release_exit_only_restores_an_acquired_model(server, tmp_path, loaded, error):
+def test_idle_release_exit_only_restores_an_acquired_model(
+    server, tmp_path, loaded, error, simulated_model_runtime
+):
     order = []
 
     def fail(count):
@@ -627,7 +648,9 @@ def test_idle_release_exit_only_restores_an_acquired_model(server, tmp_path, loa
     )
 
 
-def test_idle_release_restores_the_other_service_when_model_loading_fails(server, tmp_path):
+def test_idle_release_restores_the_other_service_when_model_loading_fails(
+    server, tmp_path, simulated_model_runtime
+):
     from autodj.model import ModelLoadError
 
     order = []
@@ -674,7 +697,9 @@ def test_heartbeats_keep_claims_alive_while_preparing_the_model(server):
     assert stats.done == model.calls == 3
 
 
-def test_idle_exit_runs_each_hook_once_around_all_the_empty_polls(server, tmp_path):
+def test_idle_exit_runs_each_hook_once_around_all_the_empty_polls(
+    server, tmp_path, simulated_model_runtime
+):
     identity = server.identity()
     order = []
     api = QueueApi(identity, on_claim=lambda n: order.append("claim"))
@@ -684,7 +709,9 @@ def test_idle_exit_runs_each_hook_once_around_all_the_empty_polls(server, tmp_pa
     assert order == ["Before-command", *["claim"] * 5, "release", "After-command"]
 
 
-def test_ctrl_c_while_waiting_for_new_songs_still_runs_the_after_command(server, tmp_path):
+def test_ctrl_c_while_waiting_for_new_songs_still_runs_the_after_command(
+    server, tmp_path, simulated_model_runtime
+):
     import signal
 
     identity = server.identity()
@@ -702,7 +729,7 @@ def test_ctrl_c_while_waiting_for_new_songs_still_runs_the_after_command(server,
     assert order == ["Before-command", "release", "After-command"]
 
 
-def test_worker_command_refuses_plain_http_to_another_machine():
+def test_worker_command_refuses_plain_http_to_another_machine(simulated_model_runtime):
     result = CliRunner().invoke(
         cli, ["worker", "--server", "http://192.168.1.5:8080", "--token", "adj1.x"]
     )
@@ -736,7 +763,10 @@ def test_cpu_analysis_waits_while_a_worker_is_connected_and_resumes_after(tmp_pa
     jobs = Mock()
     jobs.start.return_value = True
     try:
-        with patch("autodj.jobs.get_manager", return_value=jobs):
+        with (
+            patch("autodj.model_identity.model_analysis_available", return_value=True),
+            patch("autodj.jobs.get_manager", return_value=jobs),
+        ):
             assert manager.schedule_analysis() is True
             assert jobs.start.call_count == 1
             manager.analysis_queue.seen("token", "Studio PC")
@@ -828,7 +858,9 @@ def _norm(path):
     return _path(path)
 
 
-def test_worker_command_checks_the_weights_before_stopping_anything(tmp_path):
+def test_worker_command_checks_the_weights_before_stopping_anything(
+    tmp_path, simulated_model_runtime
+):
     order = []
     fake_worker = MagicMock()
     fake_worker.check_identity.side_effect = WorkerError("Update the model on the worker")

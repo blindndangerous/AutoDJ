@@ -109,7 +109,8 @@ def _tree_snapshot(root: Path) -> dict[Path, tuple[bool, int, int, str | None]]:
     return {
         path.relative_to(root): (
             path.is_dir(),
-            path.stat().st_size,
+            # Transient SQLite WAL sidecars can also change directory size.
+            None if path.is_dir() else path.stat().st_size,
             # Read-only SQLite connections may create transient WAL sidecars.
             None if path.is_dir() else path.stat().st_mtime_ns,
             None if path.is_dir() else sha256_file(path),
@@ -683,6 +684,7 @@ def test_missing_audio_modules_warn(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_complete_model_cache_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
     status = SimpleNamespace(path=tmp_path / "model", complete=True, reason="complete")
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
     monkeypatch.setattr(doctor, "inspect_model_cache", lambda *_args: status)
 
     assert doctor._model_cache_check(cfg).status is doctor.CheckStatus.PASS
@@ -700,6 +702,7 @@ def test_model_cache_inspection_errors_fail_safely_and_redact(
     def fail_inspection(*_args):
         raise error_type(secret)
 
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
     monkeypatch.setattr(doctor, "inspect_model_cache", fail_inspection)
 
     check = doctor._model_cache_check(cfg)
@@ -719,6 +722,7 @@ def test_model_cache_check_does_not_catch_system_exit(
     def stop(*_args):
         raise SystemExit(2)
 
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
     monkeypatch.setattr(doctor, "inspect_model_cache", stop)
 
     with pytest.raises(SystemExit, match="2"):
@@ -1192,3 +1196,17 @@ def test_new_library_needs_no_music_root(tmp_path: Path) -> None:
     check = doctor._music_paths_check(cfg)
     assert check.status is CheckStatus.PASS
     assert check.summary == "no music folders registered"
+
+
+@pytest.mark.parametrize("disabled", [True, False])
+def test_unavailable_model_analysis_warns_without_cache_inspection(tmp_path, monkeypatch, disabled):
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1" if disabled else "0")
+    if not disabled:
+        monkeypatch.setattr("autodj.model_identity.importlib.util.find_spec", lambda name: None)
+    monkeypatch.setattr(
+        doctor, "inspect_model_cache", lambda *_: pytest.fail("unavailable model inspected")
+    )
+    check = doctor._model_cache_check(_config(tmp_path))
+    assert check.status is doctor.CheckStatus.WARN
+    assert "autodj setup --backend cpu" in check.detail
+    assert check.repair is None

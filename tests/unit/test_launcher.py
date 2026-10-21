@@ -20,7 +20,12 @@ def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(launcher, "ROOT", root)
     monkeypatch.setattr(launcher.sys, "argv", ["autodj", "doctor"])
     monkeypatch.setenv("AUTODJ_RUNTIME", "")
-    for variable in ("AUTODJ_GPU", "MIOPEN_USER_DB_PATH", "MIOPEN_CUSTOM_CACHE_DIR"):
+    for variable in (
+        "AUTODJ_GPU",
+        "AUTODJ_NO_MODEL",
+        "MIOPEN_USER_DB_PATH",
+        "MIOPEN_CUSTOM_CACHE_DIR",
+    ):
         monkeypatch.delenv(variable, raising=False)
     return root
 
@@ -261,3 +266,29 @@ def test_setup_subprocess_bypasses_saved_runtime(tmp_path: Path, monkeypatch) ->
         "--dry-run",
     ]
     assert dispatch.call_args.kwargs["env"]["AUTODJ_RUNTIME"] == "current"
+
+
+@pytest.mark.parametrize("backend", ["cpu", "nvidia", "amd", "no-model"])
+@pytest.mark.parametrize("same_prefix", [False, True])
+def test_saved_model_mode_overrides_inherited_no_model(tmp_path, monkeypatch, backend, same_prefix):
+    root = _project(tmp_path, monkeypatch)
+    environment = root / "runtime"
+    _save(root, environment, backend)
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    if same_prefix:
+        monkeypatch.setattr(launcher.sys, "prefix", str(environment.resolve()))
+    cli = Mock(return_value=0)
+    dispatch = Mock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(launcher, "_cli", cli)
+    monkeypatch.setattr(launcher.subprocess, "run", dispatch)
+    assert launcher.main() == 0
+    if same_prefix:
+        cli.assert_called_once_with()
+        dispatch.assert_not_called()
+        env = os.environ
+    else:
+        env = dispatch.call_args.kwargs["env"]
+        cli.assert_not_called()
+    assert env.get("AUTODJ_NO_MODEL") == ("1" if backend == "no-model" else None)
+    if backend == "no-model":
+        assert env["AUTODJ_GPU"] == "0"
