@@ -36,6 +36,16 @@ from tests._layout import layout_index, point_index
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock, wav_bytes
 
 
+@pytest.fixture(params=[1, 2])
+async def _lyrics_executor(request):
+    """Keep observer waits from consuming the executor's limited read capacity."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=request.param) as executor:
+        asyncio.get_running_loop().set_default_executor(executor)
+        yield
+
+
 def _tls_files(tmp_path: Path) -> dict[str, str]:
     """Create placeholder certificate and key files; uvicorn is mocked, so never parsed."""
     cert = tmp_path / "radio.pem"
@@ -3706,83 +3716,110 @@ class TestMisc:
         assert response.status_code == 409
         assert "stale secret" not in response.text
 
-    async def test_cancelled_lyrics_waiter_never_starts_a_thread_read(self, bridge) -> None:
-        import contextlib
-
-        from httpx2 import ASGITransport, AsyncClient
-
-        first, second = (entry.path for entry in bridge.sim.entries[:2])
-        first_started = threading.Event()
-        release_first = threading.Event()
-        calls: list[str] = []
-
-        def slow_lyrics(path: str) -> list[dict]:
-            calls.append(path)
-            if path == first:
-                first_started.set()
-                assert release_first.wait(2.0)
-            return []
-
-        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
-        app = create_app(bridge)
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
-            assert await asyncio.to_thread(first_started.wait, 1.0)
-            queued = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
-            try:
-                await asyncio.sleep(0.05)
-                queued.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await queued
-            finally:
-                release_first.set()
-            assert (await active).status_code == 200
-
-        assert calls == [first]
-
-    async def test_cancelled_active_lyrics_read_holds_capacity_until_worker_finishes(
-        self, bridge
+    async def test_cancelled_lyrics_waiter_never_starts_a_thread_read(
+        self, bridge, _lyrics_executor
     ) -> None:
         import contextlib
 
         from httpx2 import ASGITransport, AsyncClient
 
+        loop = asyncio.get_running_loop()
         first, second = (entry.path for entry in bridge.sim.entries[:2])
-        first_started = threading.Event()
+        first_started = asyncio.Event()
+        second_requested = asyncio.Event()
         release_first = threading.Event()
-        second_started = threading.Event()
         calls: list[str] = []
+        entry_for_path = bridge.entry_for_path
+
+        def observe_request(path):
+            if path == second:
+                second_requested.set()
+            return entry_for_path(path)
 
         def slow_lyrics(path: str) -> list[dict]:
             calls.append(path)
             if path == first:
-                first_started.set()
-                assert release_first.wait(2.0)
-            else:
-                second_started.set()
+                loop.call_soon_threadsafe(first_started.set)
+                assert release_first.wait(10.0)
             return []
 
+        bridge.entry_for_path = observe_request  # type: ignore[assignment]
         bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
         app = create_app(bridge)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:
             active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
-            assert await asyncio.to_thread(first_started.wait, 1.0)
-            active.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await active
-
-            following = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
             try:
-                await asyncio.sleep(0.05)
+                await asyncio.wait_for(first_started.wait(), 5.0)
+                queued = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+                # The route proceeds synchronously from lookup to waiting on the gate.
+                await asyncio.wait_for(second_requested.wait(), 5.0)
+                queued.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await queued
+            finally:
+                release_first.set()
+                response = await active
+            assert response.status_code == 200
+
+        assert calls == [first]
+
+    async def test_cancelled_active_lyrics_read_holds_capacity_until_worker_finishes(
+        self, bridge, _lyrics_executor
+    ) -> None:
+        import contextlib
+
+        from httpx2 import ASGITransport, AsyncClient
+
+        loop = asyncio.get_running_loop()
+        first, second = (entry.path for entry in bridge.sim.entries[:2])
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        second_requested = asyncio.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+        entry_for_path = bridge.entry_for_path
+
+        def observe_request(path):
+            if path == second:
+                second_requested.set()
+            return entry_for_path(path)
+
+        def slow_lyrics(path: str) -> list[dict]:
+            calls.append(path)
+            if path == first:
+                loop.call_soon_threadsafe(first_started.set)
+                assert release_first.wait(10.0)
+            else:
+                loop.call_soon_threadsafe(second_started.set)
+            return []
+
+        bridge.entry_for_path = observe_request  # type: ignore[assignment]
+        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
+        read_gate = asyncio.Semaphore(1)
+        with patch("autodj.server.asyncio.Semaphore", return_value=read_gate):
+            app = create_app(bridge)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            active = asyncio.create_task(client.get("/api/lyrics", params={"path": first}))
+            try:
+                await asyncio.wait_for(first_started.wait(), 5.0)
+                active.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await active
+                assert read_gate.locked()
+
+                following = asyncio.create_task(client.get("/api/lyrics", params={"path": second}))
+                await asyncio.wait_for(second_requested.wait(), 5.0)
                 assert second_started.is_set() is False
             finally:
                 release_first.set()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await active
 
-            assert await asyncio.to_thread(second_started.wait, 1.0)
+            await asyncio.wait_for(second_started.wait(), 5.0)
             assert (await following).status_code == 200
 
         assert calls == [first, second]
