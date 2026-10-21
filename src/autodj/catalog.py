@@ -1166,27 +1166,31 @@ class LibraryCatalog:
             )
             if row is None:
                 return None
-            try:
-                loudness = json.loads(row["loudness"])
-            except (TypeError, json.JSONDecodeError):
-                loudness = {}
-            if not isinstance(loudness, dict):
-                loudness = {}
-            result = {
-                "id": row["id"],
-                "path": normalized,
-                "kind": row["kind"],
-                "mtime_ns": row["mtime_ns"],
-                "allow_outro": bool(row["allow_outro"]),
-                "points": json.loads(row["points"]),
-                "point_sources": json.loads(row["point_sources"]),
-                "intro_lift_db": row["intro_lift_db"],
-                "loudness": loudness,
-                "last_played": row["last_played"],
-                "user_tags": _user_tags(row["user_tags"], row["fingerprint"]),
-            }
-            result.update({n: row[n] for n in _ENTRY_FIELDS})
-            return result
+            return self._record(row)
+
+    @staticmethod
+    def _record(row: sqlite3.Row) -> dict:
+        try:
+            loudness = json.loads(row["loudness"])
+        except (TypeError, json.JSONDecodeError):
+            loudness = {}
+        if not isinstance(loudness, dict):
+            loudness = {}
+        result = {
+            "id": row["id"],
+            "path": row["path"],
+            "kind": row["kind"],
+            "mtime_ns": row["mtime_ns"],
+            "allow_outro": bool(row["allow_outro"]),
+            "points": json.loads(row["points"]),
+            "point_sources": json.loads(row["point_sources"]),
+            "intro_lift_db": row["intro_lift_db"],
+            "loudness": loudness,
+            "last_played": row["last_played"],
+            "user_tags": _user_tags(row["user_tags"], row["fingerprint"]),
+        }
+        result.update({n: row[n] for n in _ENTRY_FIELDS})
+        return result
 
     def record_for_id(self, record_id: str) -> dict | None:
         with self._lock:
@@ -1394,13 +1398,12 @@ class LibraryCatalog:
     def all_entries(self, kind: str | None = None) -> tuple[dict, ...]:
         """Return every stored record, including currently uncovered/missing files."""
         with self._lock:
-            sql = "SELECT path FROM catalog_entries"
+            sql = "SELECT * FROM catalog_entries"
             args: tuple[str, ...] = ()
             if kind is not None:
                 sql, args = sql + " WHERE kind=?", (kind,)
-            paths = [row[0] for row in self._db().execute(sql + " ORDER BY path", args)]
             return tuple(
-                record for path in paths if (record := self.record_for_path(path)) is not None
+                self._record(row) for row in self._db().execute(sql + " ORDER BY path", args)
             )
 
     def points(self, path: str | Path) -> dict:
