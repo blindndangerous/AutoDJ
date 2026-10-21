@@ -5590,6 +5590,7 @@ class Player:
                 if queued and not custom_order:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
+
         outro_point = points.get("outro")
         segue = points.get("segue") or points.get("end") or current.length
         safe_outro = max(

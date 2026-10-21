@@ -117,6 +117,8 @@ def test_custom_transition_order_is_used_by_the_live_render(station, source, act
         liner_frame = render.liner_events[0][0]
         break_frame = render.break_events[0][0]
         assert (break_frame < liner_frame) is (action == "before")
+
+
 @pytest.mark.parametrize("placement", ["auto", "talk_up", "standalone"])
 def test_manual_voice_is_dropped_when_its_full_chain_hits_a_hard_boundary(station, placement):
     player, (a, b, _c, _d), _points, desk = station

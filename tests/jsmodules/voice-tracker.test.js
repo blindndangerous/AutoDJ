@@ -296,6 +296,7 @@ describe("voice tracker", () => {
     expect(byId("vt-intro").textContent).toBe("8 seconds");
     expect(byId("vt-closes").textContent).toBe("2:05");
     expect(byId("vt-fit").hidden).toBe(true);
+    expect(byId("vt-timer").textContent).toBe("10:00 max");
     await advance(3);
     expect(byId("vt-closes").textContent).toBe("2:02");
     expect(byId("vt-airs").textContent).toBe("5:27");

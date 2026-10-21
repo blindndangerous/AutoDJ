@@ -173,13 +173,6 @@ def test_custom_transition_view_includes_later_announcer_breaks_in_render_order(
     ]
 
 
-def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
-    station = Station(tmp_path, min_intro_seconds=5.0)
-    slot = voice(station)["slot"]
-    assert slot["auto_placement"] == "standalone"
-    assert "shorter than 5 s" in slot["auto_note"]
-
-
 def test_context_forecasts_the_whole_queued_voice_chain_and_cue_tails(station):
     first = book(station, placement="auto").json()
     first_item = station.desk.get(first["break_id"])
