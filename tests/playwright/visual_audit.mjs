@@ -207,15 +207,24 @@ const ROTATION_SECTIONS = [
   ] },
   { title: "Songs", lines: [
     "The library has 77,000 songs; 2,604 played and 74,396 never played.",
-    { text: "Never played, first two:", items: [
-      "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
-      "Another Example — Song 2",
-    ] },
   ] },
+  { title: "Top 20 songs", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1} — Song ${i + 1}, ${100 - i} times.`) },
+  { title: "Songs never played, first 2", lines: [
+    "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
+    "Another Example — Song 2",
+  ] },
+  { title: "Top 20 artists", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1}, ${100 - i} times.`) },
   { title: "Categories", lines: [
     { text: "Power: six songs, 504 plays.", items: [
       "Plays per song: fewest 80, most 90, average 84.",
       "Its clockwheel step was skipped 40 times.",
+    ] },
+  ] },
+  { title: "Clockwheel steps", lines: [
+    { text: "Main, step 2 (category Power).", items: [
+      "Configured matching songs (static matches): six songs; 504 plays selected.",
+      "Plays per song: fewest 80, most 90, average 84.",
+      "Never played: no songs.",
     ] },
   ] },
   { title: "Rules relaxed", lines: ["Same artist: relaxed for 12 picks."] },

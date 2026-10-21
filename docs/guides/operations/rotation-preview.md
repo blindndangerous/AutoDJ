@@ -60,9 +60,15 @@ after six failed tries says it has stopped checking.
 
 The report, in words or JSON, gives:
 
-- plays per song, per category and per artist: the fewest, the most and the average, and the most
-  played;
+- plays per song, per category and per artist: the fewest, the most and the average;
+- the top 20 songs and artists by simulated plays, under separate headings (fewer when the run
+  plays fewer than 20);
 - songs never played, with a count and the first ten, overall and per category;
+- each clockwheel step seen during the run, including repeated steps separately: its configured
+  matching songs, simulated selections, play spread and songs never played. Matching counts are
+  static for the configured step; repeat rules and hours can change what is eligible on each pick.
+  Liner, settings and ad steps say when song statistics do not apply, and liner play counts are not
+  tracked;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
   title, related track, same daypart, same quarter hour, the track repeat window, dayparting and
   back-to-back repeats, plus fallbacks to a random
