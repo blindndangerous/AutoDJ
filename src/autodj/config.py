@@ -312,8 +312,10 @@ class PlaybackConfig(_Section):
             play a one-to-two-beat effect, at most 2 seconds, that ends
             on a beat when the tempo is trusted.  Browser playback keeps
             its own skip.
-        liners_talk_up: When ``True``, a liner due as a track starts in
-            the server mix is timed to end just before the incoming
+        liners_talk_up: Legacy server live overlays and time checks only.
+            Saved-point automatic liners always use the shared cue-based
+            handoff. When ``True``, a liner due as a track starts in
+            the legacy server mix is timed to end just before the incoming
             track's vocal (its first synced lyric line, else its detected
             intro end), starting over the crossfade when it is too long
             for the intro alone.  Without room for it, or with nothing to
@@ -452,8 +454,7 @@ class PlaybackConfig(_Section):
     liners_duck_db: float = -3.0
     # Matched song intros may take the automatic liner slot unless this is enabled.
     matched_intro_only_without_liner: bool = False
-    # Server mix only: time a liner due at a track start to end just
-    # before the incoming vocal ("hitting the post").
+    # Legacy live timing only; saved-point interval liners always use cue timing.
     liners_talk_up: bool = False
 
     def __post_init__(self) -> None:

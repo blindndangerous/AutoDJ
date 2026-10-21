@@ -1988,6 +1988,7 @@ def test_hard_stream_stop_trims_a_predicted_liner_overlay(tmp_path):
         liners=[],
         playback={
             "pick_mode": "random",
+            "transition_mode": "fixed",
             "liners_enabled": True,
             "liners_every_n_songs": 1,
             "liners_talk_up": False,

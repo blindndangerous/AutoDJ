@@ -4479,7 +4479,7 @@ class Player:
         return fit_chooser(target.at - at, seconds, hard=target.hard)
 
     def voice_track_crosses_hard_boundary(self, starts_at: float, duration: float) -> bool:
-        """Whether a voice chain overlaps a hard event or clock restart."""
+        """Check a whole voice chain against clock restarts and hard events."""
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
@@ -5223,6 +5223,7 @@ class Player:
             {"start": 0, "end": 0, "segue": 0} if is_liner else points_out,
             incoming_points_out,
             start_offset=0 if is_liner else source_start_out,
+            liner_start_offset=0 if is_liner else start_out,
             fade_seconds=self._cfg.playback.crossfade_seconds,
             liner=np.concatenate(clips) if clips else None,
             overlap_start=release,
@@ -5327,7 +5328,10 @@ class Player:
         intro_s = None if intro is None else max(0.0, float(intro) - float(start))
         spoken: list[tuple[int, str, int]] = []
         for index, item in enumerate(breaks):
-            if index < len(breaks) - 1 and item.kind == "dj":
+            manual_fit = item.source == "voice_track" and item.placement != "standalone"
+            if manual_fit:
+                placement, note = "talk_up", ""
+            elif index < len(breaks) - 1 and item.kind == "dj":
                 placement, note = "standalone", "another break follows it"
             else:
                 placement, note = placement_for(
@@ -5353,14 +5357,17 @@ class Player:
                 )
                 continue
             if item.source == "voice_track" and item.eta is not None:
-                prior_breaks = sum(
+                manual_fit = item.placement != "standalone"
+                queued_clip_s = sum(
                     max(0.0, prior.cues.end - prior.cues.start) for prior in breaks[:index]
                 )
-                outro_lead = outgoing_outro_s if item.allow_outro else 0.0
-                starts_at = item.eta - outro_lead
-                duration = (
-                    outro_lead + preceding_clip_s + prior_breaks + max(0.0, cues.end - cues.start)
-                )
+                clip_s = max(0.0, cues.end - cues.start)
+                if manual_fit:
+                    starts_at = item.eta - outgoing_outro_s
+                    duration = outgoing_outro_s + preceding_clip_s + queued_clip_s + clip_s
+                else:
+                    starts_at = item.eta + preceding_clip_s + queued_clip_s
+                    duration = clip_s
                 try:
                     crosses = self.voice_track_crosses_hard_boundary(starts_at, duration)
                 except Exception:
@@ -5375,7 +5382,10 @@ class Player:
                     )
                     continue
             added = add_clip(
-                audio, cues.points(placement == "talk_up"), cues.length, item.allow_outro
+                audio,
+                cues.points(placement == "talk_up"),
+                cues.length,
+                manual_fit or (item.source != "voice_track" and item.allow_outro),
             )
             if added is None:
                 self._drop_prepared_or_break(item, "it holds no audio")

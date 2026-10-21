@@ -102,7 +102,10 @@ def test_registered_liner_provider_rotates_duplicate_basenames_by_id(tmp_path: P
     assert bus.play_liner.call_count == 3
 
 
-def test_saved_points_plans_one_liner_until_heard_or_released(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_talk_up", [False, True])
+def test_saved_points_plans_one_liner_until_heard_or_released(
+    tmp_path: Path, legacy_talk_up: bool
+) -> None:
     first = tmp_path / "one" / "same.wav"
     second = tmp_path / "two" / "same.wav"
     first.parent.mkdir()
@@ -117,12 +120,11 @@ def test_saved_points_plans_one_liner_until_heard_or_released(tmp_path: Path) ->
         return [("id-one", first), ("id-two", second)]
 
     scheduler = LinerScheduler(
-        _cfg(transition_mode="saved_points", liners_talk_up=True),
+        _cfg(transition_mode="saved_points", liners_talk_up=legacy_talk_up),
         tmp_path / "flat",
         bus,
         registered_liners=registered,
         path_decoder=lambda _path: np.zeros((8, 2), np.float32),
-        vocal_start=lambda _entry: 1.0,
         can_fire=lambda: False,
     )
 

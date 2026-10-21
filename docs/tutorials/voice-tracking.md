@@ -67,8 +67,9 @@ the next song because the nearer transition is already prepared.
    points**. This control saves on change; move focus away and recheck the value.
 2. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
    book** and **Airs in about** under **Open song change**.
-3. Choose **Standalone, between the songs** in **Placement**. This avoids
-   depending on any particular intro length for your own music.
+3. Leave **Fit over outro and intro** selected to fit your voice against the
+   usable music in this song change. Choose **Between songs** when the take
+   should play on its own between the tracks.
 
 Checkpoint: with server audio and saved-point playback, the song-pair facts
 are present and the tab is accepting a take even when announcer uploads are off.
@@ -108,14 +109,15 @@ address from the prerequisites; permissions alone cannot fix an insecure context
 
 If the take is silent or clipped, check the input device and record again. A new
 recording replaces the old local take. **Discard recording** removes it without
-booking anything. Recording has a three-minute browser ceiling and can stop
-sooner under station limits; this short example should not approach either.
+booking anything. Recording has a three-minute browser ceiling and may stop
+sooner under station upload or storage limits; this short example should not
+approach either.
 
 ## Explicitly commit the take to Practice
 
 1. Re-read the current **Ending song** and **Next song**. The pair and deadline
    may have moved while you listened.
-2. Confirm **Placement** is **Standalone, between the songs**.
+2. Confirm the selected placement fits this take and the current song change.
 3. Press **Book voice track** once. This uploads and authorizes the take to play
    on Practice's server output. It would be on air for stream listeners if this
    were a streaming station.

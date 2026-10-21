@@ -203,6 +203,7 @@ def render_handoff(
     incoming_points: dict[str, Any],
     *,
     start_offset: int = 0,
+    liner_start_offset: int = 0,
     fade_seconds: float = 1.5,
     liner: np.ndarray | None = None,
     overlap_start: float | None = None,
@@ -218,6 +219,7 @@ def render_handoff(
     The current chunk ends at the actual incoming music entry. Any outgoing
     fade tail and the remaining voice tail are returned as ``next_overlay``.
     Point times are seconds in their source files; offsets are sample frames.
+    ``liner_start_offset`` excludes music already played by the preceding render.
     ``liner_segue`` is relative to the retained liner audio, excluding its tail.
     Blank overlap uses that segue; zero permits fitting under the incoming intro.
     A negative overlap starts the liner after music, capped by the remaining intro.
@@ -232,6 +234,8 @@ def render_handoff(
         raise ValueError("point sets must be dictionaries")
     if type(start_offset) is not int or start_offset < 0:
         raise ValueError("start_offset must be a non-negative sample offset")
+    if type(liner_start_offset) is not int or liner_start_offset < 0:
+        raise ValueError("liner_start_offset must be a non-negative sample offset")
     if (
         isinstance(fade_seconds, bool)
         or not isinstance(fade_seconds, (int, float))
@@ -290,6 +294,8 @@ def render_handoff(
         outro_point = _point(outgoing_points, "outro")
         safe_outro = max(
             start_frame,
+            start_offset,
+            liner_start_offset,
             min(
                 segue_frame,
                 _frames(outro_point, "outro") if outro_point is not None else segue_frame,

@@ -9,7 +9,9 @@ a session cookie, never a machine token.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 from fastapi.testclient import TestClient
@@ -68,15 +70,42 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
         "max_bytes": 64 * 1024 * 1024,
         "max_seconds": 600.0,
         "sample_rate": 44100,
-        "dj_placement": "auto",
-        "min_intro_s": 2.0,
         "max_per_slot": 2,
     }
     assert context["tracks"] == []
+    assert slot["queued_chain_speech_s"] == 0
+    assert slot["queued_chain_clip_s"] == 0
     assert "history" not in context and "requests" not in context
     # The same station by name.
     named = voice(station, "/api/stations/default/voice-tracks")
     assert named["slot"]["slot_id"] == slot["slot_id"]
+
+
+def test_context_forecasts_the_whole_queued_voice_chain_and_cue_tails(station):
+    first = book(station, placement="auto").json()
+    first_item = station.desk.get(first["break_id"])
+    context = voice(station)
+    slot = context["slot"]
+    assert slot["queued_chain_speech_s"] == pytest.approx(first_item.cues.speech)
+    assert slot["queued_chain_clip_s"] == pytest.approx(first_item.cues.end - first_item.cues.start)
+    assert slot["queued_chain_clip_s"] > slot["queued_chain_speech_s"]
+
+    second = book(station, placement="auto").json()
+    second_item = station.desk.get(second["break_id"])
+    slot = voice(station)["slot"]
+    assert slot["queued_chain_speech_s"] == pytest.approx(
+        first_item.cues.speech + second_item.cues.speech
+    )
+    assert slot["queued_chain_clip_s"] == pytest.approx(
+        first_item.cues.end - first_item.cues.start + second_item.cues.end - second_item.cues.start
+    )
+
+
+def test_manual_fit_ignores_announcer_intro_minimum(tmp_path):
+    station = Station(tmp_path, min_intro_seconds=5.0)
+    slot = voice(station)["slot"]
+    assert slot["auto_placement"] == "talk_up"
+    assert slot["auto_note"] is None
 
 
 def test_manual_voice_limits_do_not_change_announcer_limits(tmp_path, monkeypatch):
@@ -162,11 +191,147 @@ def test_hard_boundary_check_fails_closed_when_event_access_raises(station):
     assert files(station.desk) == []
 
 
-def test_a_short_intro_makes_auto_standalone_and_says_why(tmp_path):
-    station = Station(tmp_path, min_intro_seconds=5.0)
+def test_voice_forecast_uses_playback_rate_for_both_music_windows(station):
+    c, d = station.entries[2:]
+    c._prepared_points = {"start": 0.25, "outro": 14.0, "segue": 18.0, "end": 20.0}
+    d._prepared_points = {"start": 0.25, "intro": 2.25, "segue": 18.0, "end": 20.0}
+    station.player.music_playback_rate = lambda _entry: 2.0
     slot = voice(station)["slot"]
-    assert slot["auto_placement"] == "standalone"
-    assert "shorter than 5 s" in slot["auto_note"]
+    assert slot["upcoming_intro_s"] == pytest.approx(1.0)
+    assert slot["ending_outro_s"] == pytest.approx(2.0)
+
+
+def test_voice_forecast_query_is_read_only_and_validated(station):
+    plan = station.player._slot_plan
+    before = (plan.slot_id, plan.pinned, tuple(item.break_id for item in station.desk.listing()))
+    response = voice(station, "/api/voice-tracks?speech_s=5.25&tail_s=0.4&placement=talk_up")
+    forecast = response["slot"]["voice_forecast"]
+    assert set(forecast) == {
+        "recording_start_s",
+        "music_entry_s",
+        "chain_speech_s",
+        "chain_clip_s",
+        "speech_without_music_s",
+    }
+    assert forecast["chain_speech_s"] >= 5.25
+    assert forecast["chain_clip_s"] >= 5.65
+    assert (
+        plan.slot_id,
+        plan.pinned,
+        tuple(item.break_id for item in station.desk.listing()),
+    ) == before
+
+    for query in (
+        "speech_s=-0.1",
+        "placement=overlap",
+        "speech_s=600&tail_s=0.01",
+        "speech_s=5&transition_choices=%5B%5D",
+        urlencode(
+            {
+                "speech_s": 5,
+                "transition_revision": "rev",
+                "transition_choices": "[" * 1200 + "]" * 1200,
+            }
+        ),
+        "speech_s=5&transition_revision=rev&transition_choices=%7B%7D",
+        "speech_s=5&transition_revision=rev&transition_choices=%5B%7B%22id%22%3A%22x%22%2C%22action%22%3A%22move%22%7D%5D",
+    ):
+        reply = station.client.get(f"/api/voice-tracks?{query}")
+        assert reply.status_code == 422
+
+
+def test_voice_forecast_uses_frozen_matched_intro_order_and_its_full_cues(station, monkeypatch):
+    plan = station.player._slot_plan
+    intro = SimpleNamespace(intro_id="matched-intro", path="unused.wav", label="Matched")
+    candidate = SimpleNamespace(
+        item_id="intro",
+        kind="matched_intro",
+        source="matched_intro",
+        label="Matched",
+        intro=intro,
+        entry=None,
+        committed=False,
+        editable=True,
+        view=lambda: {
+            "id": "intro",
+            "kind": "matched_intro",
+            "source": "matched_intro",
+            "label": "Matched",
+            "committed": False,
+            "editable": True,
+        },
+    )
+    plan.transition_items = (candidate,)
+
+    def resolve(_plan, _break_id, choices):
+        selected = choices[0]["action"]
+        if selected == "replace":
+            return (("break:forecast",), ("intro",))
+        if selected == "before":
+            return (("break:forecast", "intro"), ())
+        return (("intro", "break:forecast"), ())
+
+    def add_intro(_intro, add_clip):
+        event = add_clip(
+            None,
+            {"start": 0.0, "segue": 2.0, "end": 2.75, "overlap_start": 0.0},
+            2.75,
+            True,
+        )
+        return [event] if event else []
+
+    monkeypatch.setattr(station.player, "_voice_transition_order", resolve, raising=False)
+    monkeypatch.setattr(station.player, "_add_intro", add_intro)
+    monkeypatch.setattr(
+        station.player, "_transition_revision", lambda _plan: "revision-1", raising=False
+    )
+    monkeypatch.setattr(station.player, "slot_status", lambda: (plan, 10.0, 20.0))
+
+    def forecast(action):
+        query = urlencode(
+            {
+                "speech_s": "5.25",
+                "tail_s": "0.4",
+                "placement": "talk_up",
+                "transition_revision": "revision-1",
+                "transition_choices": json.dumps([{"id": "intro", "action": action}]),
+            }
+        )
+        response = station.client.get(f"/api/voice-tracks?{query}")
+        assert response.status_code == 200, response.text
+        return response.json()["slot"]["voice_forecast"]
+
+    before, after, replaced = forecast("before"), forecast("after"), forecast("replace")
+    assert before["chain_speech_s"] == pytest.approx(7.25)
+    assert before["chain_clip_s"] == pytest.approx(8.4)
+    assert after["chain_speech_s"] == pytest.approx(7.25)
+    assert after["chain_clip_s"] == pytest.approx(8.4)
+    assert after["recording_start_s"] - before["recording_start_s"] == pytest.approx(2.75)
+    assert replaced["chain_speech_s"] == pytest.approx(5.25)
+    assert replaced["chain_clip_s"] == pytest.approx(5.65)
+
+
+def test_voice_forecast_refuses_transition_choices_without_a_supported_plan(station, monkeypatch):
+    monkeypatch.setattr(station.player, "_voice_transition_order", None, raising=False)
+    reply = station.client.get(
+        "/api/voice-tracks?speech_s=5&transition_revision=stale&transition_choices=%5B%5D"
+    )
+    assert reply.status_code == 409
+    assert "cannot be forecast" in reply.json()["detail"]
+
+
+def test_voice_track_admission_fails_closed_when_hard_event_timing_is_unavailable(
+    station, monkeypatch
+):
+    def unavailable(*_args):
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(station.player, "voice_track_crosses_hard_boundary", unavailable)
+    reply = book(station, placement="auto")
+    assert reply.status_code == 409
+    assert reply.json()["reason"] == "scheduled_boundary"
+    assert "could not be checked" in reply.json()["detail"]
+    assert files(station.desk) == []
 
 
 def test_a_voice_track_is_booked_as_a_dj_break_and_rendered(station):
