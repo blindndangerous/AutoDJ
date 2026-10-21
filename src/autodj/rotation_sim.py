@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import heapq
+import json
 import logging
 import math
 import os
@@ -1417,8 +1418,46 @@ def _report(
             }
         )
 
-    clock_step_rows = []
+    position_summary: dict[str, list[dict[str, int]]] = {}
+    grouped_steps: dict[tuple[str, str], dict[str, Any]] = {}
     for step_key, step in tally.clock_steps.items():
+        if step["kind"] == "liner":
+            continue
+        canonical = json.dumps(step["snapshot"]["step"], sort_keys=True, separators=(",", ":"))
+        group_key = (step["clockwheel"], canonical)
+        grouped = grouped_steps.setdefault(
+            group_key,
+            {
+                "clockwheel": step["clockwheel"],
+                "numbers": [],
+                "snapshot": step["snapshot"],
+                "kind": step["kind"],
+                "paths": step["paths"],
+                "plays_by_path": Counter(),
+                "skipped": 0,
+            },
+        )
+        grouped["numbers"].append(step["number"])
+        grouped["skipped"] += tally.clock_step_skips[step_key]
+        grouped["plays_by_path"].update(step["plays_by_path"])
+        if step["kind"] in {"music", "category", "track"}:
+            position_summary.setdefault(step["clockwheel"], []).append(
+                {
+                    "number": step["number"],
+                    "selections": sum(step["plays_by_path"].values()),
+                }
+            )
+
+    clockwheel_summary: list[dict[str, Any]] = [
+        {
+            "clockwheel": clock_name,
+            "steps": sorted(positions, key=lambda item: item["number"]),
+        }
+        for clock_name, positions in position_summary.items()
+    ]
+
+    clock_step_rows = []
+    for step in grouped_steps.values():
         matched = (
             [entry for entry in entries if entry.path in step["paths"]]
             if step["paths"] is not None
@@ -1440,7 +1479,7 @@ def _report(
         clock_step_rows.append(
             {
                 "clockwheel": step["clockwheel"],
-                "number": step["number"],
+                "numbers": sorted(step["numbers"]),
                 "snapshot": snapshot,
                 "kind": step["kind"],
                 "songs": len(step_songs) if supported else None,
@@ -1462,13 +1501,8 @@ def _report(
                         "never_played_sample": [],
                     }
                 ),
-                "skipped": tally.clock_step_skips[step_key],
+                "skipped": step["skipped"],
                 "match_basis": "static configured matches" if supported else None,
-                **(
-                    {"liner_plays": None, "liner_play_tracking": "not tracked"}
-                    if step["kind"] == "liner"
-                    else {}
-                ),
             }
         )
 
@@ -1516,6 +1550,7 @@ def _report(
             ],
         },
         "categories": category_rows,
+        "clockwheel_summary": clockwheel_summary,
         "clock_steps": clock_step_rows,
         "relaxed": {rule: tally.broken[rule] for rule in RULES if tally.broken[rule]},
         "ignored_by_steps": {rule: tally.ignored[rule] for rule in RULES if tally.ignored[rule]},
@@ -1607,6 +1642,12 @@ def _clock_step_label(row: Mapping[str, Any]) -> str:
     if folder:
         return f"{kind} {Path(str(folder)).name or folder}"
     return kind.replace("_", " ")
+
+
+def _clock_step_numbers(numbers: Sequence[int]) -> str:
+    if len(numbers) == 1:
+        return f"step {numbers[0]}"
+    return f"steps {', '.join(str(number) for number in numbers[:-1])} and {numbers[-1]}"
 
 
 _STOPPED_WORDS = {
@@ -1716,21 +1757,30 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             }
         )
     section("Categories", category_lines)
+    clockwheel_summary_lines: list[Any] = []
+    for wheel in report.get("clockwheel_summary", ()):
+        clockwheel_summary_lines.append(
+            {
+                "text": f"{wheel['clockwheel']}: music step selections.",
+                "items": [
+                    f"Step {step['number']}: {counted(step['selections'], 'music selection')}."
+                    for step in wheel["steps"]
+                ],
+            }
+        )
+    section("Clockwheel summary", clockwheel_summary_lines)
     clock_step_lines: list[Any] = []
     for row in report.get("clock_steps", ()):
-        label = f"{row['clockwheel']}, step {row['number']} ({_clock_step_label(row)})"
+        numbers = _clock_step_numbers(row["numbers"])
+        label = f"{row['clockwheel']}, {numbers} ({_clock_step_label(row)})"
         items = []
         if row["songs"] is None:
-            items.append(
-                "Song statistics do not apply to this step."
-                if row["kind"] != "liner"
-                else "Song statistics do not apply; liner plays are not tracked."
-            )
+            items.append("Song statistics do not apply.")
         else:
             items.extend(
                 [
                     f"Configured matching songs (static matches): {counted(row['songs'], 'song')}; "
-                    f"{counted(row['plays'], 'play')} selected.",
+                    f"{counted(row['plays'], 'music selection')}.",
                     f"Plays per song: fewest {_figure(row['min'])}, most "
                     f"{_figure(row['max'])}, average {_average(row['average'])}.",
                     f"Never played: {counted(row['never_played'], 'song')}"
@@ -1743,7 +1793,7 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
                 ]
             )
         if row["skipped"]:
-            items.append(f"Its clockwheel step was skipped {_times(row['skipped'])}.")
+            items.append(f"Skipped {_times(row['skipped'])}.")
         clock_step_lines.append({"text": label + ".", "items": items})
     section("Clockwheel steps", clock_step_lines)
     relaxed = report["relaxed"]

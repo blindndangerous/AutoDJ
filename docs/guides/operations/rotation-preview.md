@@ -64,11 +64,14 @@ The report, in words or JSON, gives:
 - the top 20 songs and artists by simulated plays, under separate headings (fewer when the run
   plays fewer than 20);
 - songs never played, with a count and the first ten, overall and per category;
-- each clockwheel step seen during the run, including repeated steps separately: its configured
-  matching songs, simulated selections, play spread and songs never played. Matching counts are
-  static for the configured step; repeat rules and hours can change what is eligible on each pick.
-  Liner, settings and ad steps say when song statistics do not apply, and liner play counts are not
-  tracked;
+- when a clockwheel is used, a summary of selections at each music step, including steps with
+  no selections. This shows which positions supplied music; a zero count does not identify why
+  a step was not selected or prove that a reset prevented it;
+- combined statistics for identical steps within each clockwheel: their configured matching
+  songs, total selections, play spread and songs never played. Steps with different settings
+  remain separate, and each group lists its step numbers. Matching counts are static for the
+  configured step; repeat rules and hours can change what is eligible on each pick. Liner steps
+  are omitted. Settings and ad steps say when song statistics do not apply;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
   title, related track, same daypart, same quarter hour, the track repeat window, dayparting and
   back-to-back repeats, plus fallbacks to a random

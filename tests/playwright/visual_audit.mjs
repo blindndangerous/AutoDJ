@@ -220,9 +220,16 @@ const ROTATION_SECTIONS = [
       "Its clockwheel step was skipped 40 times.",
     ] },
   ] },
+  { title: "Clockwheel summary", lines: [
+    { text: "Main: music step selections.", items: [
+      "Step 2: 300 music selections.",
+      "Step 4: 204 music selections.",
+      "Step 6: no music selections.",
+    ] },
+  ] },
   { title: "Clockwheel steps", lines: [
-    { text: "Main, step 2 (category Power).", items: [
-      "Configured matching songs (static matches): six songs; 504 plays selected.",
+    { text: "Main, steps 2, 4 and 6 (category Power).", items: [
+      "Configured matching songs (static matches): six songs; 504 music selections.",
       "Plays per song: fewest 80, most 90, average 84.",
       "Never played: no songs.",
     ] },
