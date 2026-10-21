@@ -195,15 +195,43 @@ def test_a_recording_over_the_stations_limits_is_refused(tmp_path):
     assert files(station.desk) == []
 
 
-def test_breaks_off_says_so_without_an_error(tmp_path):
+def test_manual_voice_track_booking_does_not_need_external_breaks(tmp_path):
     station = Station(tmp_path)
     station.player._cfg.breaks.enabled = False
     context = voice(station)
-    assert context["accepting"] is False and "off" in context["reason"]
-    assert context["slot"] is None
-    slot = {"slot_id": "a" * 32, "ending": {"id": "x"}, "upcoming": {"id": "y"}}
-    reply = book(station, slot)
-    assert reply.status_code == 409 and "off" in reply.json()["detail"]
+    assert context["accepting"] is True and context["reason"] is None
+    reply = book(station)
+    assert reply.status_code == 201, reply.text
+
+
+def test_voice_tracker_requests_slot_planning_only_when_supported_and_used(tmp_path):
+    station = Station(tmp_path, enabled=False)
+    assert station.player._voice_tracking_requested is False
+    assert station.player._slot_plan is None
+    context = voice(station)
+    assert station.player._voice_tracking_requested is True
+    assert context["accepting"] is False and "ask again" in context["reason"]
+    station.player._plan_slot(station.renders[1])
+    assert voice(station)["accepting"] is True
+
+
+def test_voice_tracker_reports_browser_playback_limitation(station):
+    station.player._dry_run = True
+    context = voice(station)
+    assert context["accepting"] is False and "server playback" in context["reason"]
+    assert station.player._voice_tracking_requested is False
+
+
+def test_turning_external_breaks_off_preserves_manual_voice_tracks(tmp_path):
+    from tests.unit.test_break_settings_api import SavingStation
+
+    station = SavingStation(tmp_path)
+    station.player._dry_run = False
+    track = book(station).json()
+    assert station.upload().status_code == 201
+    reply = station.client.post("/api/breaks/settings", json={"enabled": False}, headers=ORIGIN)
+    assert reply.status_code == 200 and reply.json()["dropped"] == 1
+    assert station.desk.get(track["break_id"]).state == QUEUED
 
 
 def test_changes_need_the_pages_origin(station):
@@ -242,6 +270,7 @@ def test_the_tracker_needs_a_session_and_takes_no_machine_token(tmp_path):
         allowed_origins=[LOCAL["base_url"]],
     )
     player, entries, _points, _desk = make_station(tmp_path, cfg)
+    player._dry_run = False
     app = create_app(SimpleNamespace(player=player, library=None))
     client = TestClient(app, **LOCAL)
     start_station(player, entries)

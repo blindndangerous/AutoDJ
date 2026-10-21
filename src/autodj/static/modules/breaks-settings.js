@@ -1,6 +1,6 @@
 // Settings > Breaks (#88): whether this station takes DJ breaks, news and
-// weather from an announcer program and voice tracks from the Voice tracks
-// tab, where a DJ break goes, the shortest intro talked up, and how far the
+// weather from an announcer program, where a DJ break goes, the shortest
+// intro talked up, and how far the
 // music drops under a break.  config.toml gives only the first values: what
 // is saved here is the station's from then on.
 //
@@ -18,7 +18,7 @@ import { announceStatus } from "./live-region.js";
 
 export const MIN_INTRO_ERROR = "Enter the shortest intro in seconds, from 0 to 60, such as 2 or 1.5.";
 export const DUCK_ERROR = "Enter how far the music drops in decibels, from minus 30 to 0, such as -12, or leave it blank.";
-export const OFF_REASON = "Breaks are off for this station: the announcer program is told so, and the Voice tracks tab cannot book a voice track.";
+export const OFF_REASON = "Breaks are off for this station: new announcer uploads are refused. Voice tracks can still be booked with server playback and saved-point transitions.";
 
 // A number typed with a dot or a comma, within low and high, or null.
 export function parseNumber(text, low, high) {
@@ -44,7 +44,7 @@ export function savedText(before, after) {
     const gone = dropped
       ? ` ${dropped} waiting break${dropped === 1 ? " was" : "s were"} dropped.`
       : "";
-    return `Breaks are off. The announcer program is told breaks are off.${gone}`;
+    return `Breaks are off. New announcer uploads are refused.${gone}`;
   }
   return "Break settings saved.";
 }

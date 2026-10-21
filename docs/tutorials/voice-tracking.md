@@ -65,17 +65,16 @@ the next song because the nearer transition is already prepared.
 
 1. In **Settings**, **Transitions**, set **Transition mode** to **Use saved segue
    points**. This control saves on change; move focus away and recheck the value.
-2. In **Settings**, **Breaks**, check **Take breaks on this station** and press
-   **Save break settings**.
-3. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
+2. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
    book** and **Airs in about** under **Open song change**.
-4. Choose **Standalone, between the songs** in **Placement**. This avoids
+3. Choose **Standalone, between the songs** in **Placement**. This avoids
    depending on any particular intro length for your own music.
 
-Checkpoint: the song-pair facts are present and the tab is accepting a take.
+Checkpoint: with server audio and saved-point playback, the song-pair facts
+are present and the tab is accepting a take even when announcer uploads are off.
 The ending song shown here need not be the song playing right now. If the tab
-says breaks are off, return to Breaks, enable them and save. If it requires
-saved-point playback, recheck the transition mode and server output. If no
+requires server playback and saved-point playback, recheck the transition mode
+and output. If no
 change is open yet, let the station prepare songs and check again after a few
 seconds. Use [voice tracking procedures](../operations.md#voice-tracking-from-the-browser)
 if the explanation remains. Do not record against an unavailable slot.
@@ -148,17 +147,15 @@ Discard any remaining local take. In **Settings**, **Stations**, use **Stop** on
 the Practice row, confirm with **Stop station**, and wait for its button to
 change to **Start**. Closing the browser alone does not stop server playback.
 
-The music, category and clockwheel remain saved, as do Server sound card output,
-saved-point transition mode and enabled breaks. A local unbooked take is not a
+The music, category and clockwheel remain saved, as do Server sound card output
+and saved-point transition mode. A local unbooked take is not a
 saved liner. To reuse the earlier Browser lessons:
 
-1. With Practice still selected and stopped, open **Settings**, **Breaks**,
-   uncheck **Take breaks on this station** and press **Save break settings**.
-2. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
+1. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
    outro**; it saves on change. Move focus away and recheck the value.
-3. In **Settings**, **Stations**, set **Playback output** to **Browser** and
+2. In **Settings**, **Stations**, set **Playback output** to **Browser** and
    press **Save station options**.
-4. In the Practice row, press **Start**. Check for a successful start, then use
+3. In the Practice row, press **Start**. Check for a successful start, then use
    **Play or Pause** in **Now Playing** if needed to leave browser playback paused.
 
 For a reusable spoken asset, follow [the recorded liner lesson](recorded-liners.md).

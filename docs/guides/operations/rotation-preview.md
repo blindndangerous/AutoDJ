@@ -106,8 +106,8 @@ Each row says in its Status column whether it is fixed or predicted:
   into it.
 - **Fixed: ready to play**: what the server has already rendered, with its liners, breaks and
   matched intros (server audio and stream mode only).
-- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
-  it (the open song change) and its liners.
+- **Fixed: picked**: the song chosen to follow, and when external breaks, a due ad break or a
+  manual voice tracker needs an open song change, the song after it and its liners.
 - **Fixed: booked break**: an announcer break, a voice track or an ad spot booked on the open
   song change. An ad spot reads as "Ad break" with its advertiser and title.
 - **Fixed: in the queue**: the request queue, which plays before any pick.

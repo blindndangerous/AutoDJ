@@ -403,7 +403,7 @@ class BreakDesk:
 
     @property
     def enabled(self) -> bool:
-        """Whether the station takes breaks from the announcer and the voice tracker."""
+        """Whether the station accepts external announcer uploads."""
         return self.config.enabled is True
 
     @property
@@ -525,15 +525,15 @@ class BreakDesk:
         Its reservation, if any, becomes the break.
 
         Raises:
-            BreakError: As :meth:`reserve`; 409 for an announcer's or voice
-                tracker's break while breaks are off.  Checked under the lock
+            BreakError: As :meth:`reserve`; 409 for an announcer's break
+                while external breaks are off. Checked under the lock
                 :meth:`drop_waiting_breaks` takes, so an upload that was let in
                 before breaks were turned off can never be booked after.
         """
         with self._lock:
             held = self._reserved.pop(item.break_id, None)
             try:
-                if item.source in (ANNOUNCER, VOICE_TRACK) and not self.enabled:
+                if item.source == ANNOUNCER and not self.enabled:
                     raise BreakError(409, BREAKS_OFF, "disabled")
                 if not item.keep_file:
                     self._room_locked(item.slot_id, item.size)
@@ -686,7 +686,7 @@ class BreakDesk:
         return len(items)
 
     def drop_waiting_breaks(self, reason: str) -> int:
-        """Drop the announcer's and voice tracker's breaks still waiting for their song change.
+        """Drop the announcer's breaks still waiting for their song change.
 
         Breaks turned off in Settings: a break already mixed into the next
         song change still airs, and ad spots booked by the ad schedule
@@ -696,7 +696,7 @@ class BreakDesk:
             items = [
                 item
                 for item in self._breaks.values()
-                if item.state == QUEUED and item.source in (ANNOUNCER, VOICE_TRACK)
+                if item.state == QUEUED and item.source == ANNOUNCER
             ]
             for item in items:
                 self._finish_locked(item, DROPPED, reason)

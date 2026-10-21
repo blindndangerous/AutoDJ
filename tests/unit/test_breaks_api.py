@@ -47,6 +47,7 @@ class Station:
     def __init__(self, tmp_path, **breaks: object) -> None:
         cfg = make_config(tmp_path)
         self.player, self.entries, self.points, _desk = make_station(tmp_path, cfg, **breaks)
+        self.player._dry_run = False
         self.app = create_app(SimpleNamespace(player=self.player, library=None))
         self.client = TestClient(self.app, **LOCAL)
         self.station = self.app.state.stations.default

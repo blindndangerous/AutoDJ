@@ -119,6 +119,9 @@ MIN_BODY_BYTES_PER_SECOND = 256 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
 #: ... and while the station does not play from saved segue points.
 NEEDS_SAVED_POINTS = "Breaks need saved-point playback (transition mode: use saved segue points)"
+VOICE_TRACK_NEEDS_RENDERER = (
+    "Voice tracks need server playback (server audio or stream) with saved-point playback"
+)
 #: Why the waiting breaks were dropped when breaks were turned off.
 TURNED_OFF = "breaks were turned off in Settings"
 
@@ -192,7 +195,7 @@ def _current_slot(station: StationRuntime) -> dict[str, Any] | None:
     return _slot_view(station, _Songs(station), plan, closes_in, airs_in)
 
 
-def _context(station: StationRuntime) -> dict[str, Any]:
+def _context(station: StationRuntime, *, voice_track: bool = False) -> dict[str, Any]:
     """Everything ``GET context`` says (blocking: it reads the catalog)."""
     player = station.player
     state = player._state
@@ -200,8 +203,10 @@ def _context(station: StationRuntime) -> dict[str, Any]:
     desk: BreakDesk = station.breaks
     config = desk.config
     reason = None
-    if not desk.enabled:
+    if not voice_track and not desk.enabled:
         reason = BREAKS_OFF
+    elif voice_track and not player.request_voice_track_slot():
+        reason = VOICE_TRACK_NEEDS_RENDERER
     elif not player._breaks_on():
         reason = NEEDS_SAVED_POINTS
     plan, closes_in, airs_in = player.slot_status() if reason is None else (None, 0.0, 0.0)
@@ -317,7 +322,10 @@ def install_breaks(router: StationRouter) -> None:
         together.  *who* names the sender in the log; *source* says where
         the break came from.
         """
-        require_breaks(station, desk)
+        if source == ANNOUNCER:
+            require_breaks(station, desk)
+        elif not station.player.request_voice_track_slot():
+            raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
         config = desk.config
         cap = config.max_upload_bytes
         declared = request.headers.get("content-length")
@@ -404,6 +412,8 @@ def install_breaks(router: StationRouter) -> None:
                 source=source,
             )
             try:
+                if source == VOICE_TRACK and not station.player.request_voice_track_slot():
+                    raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
                 await asyncio.to_thread(station.player.book_break, item)
             except BreakError as exc:
                 slot = await asyncio.to_thread(_current_slot, station)
@@ -546,9 +556,8 @@ def install_breaks(router: StationRouter) -> None:
     ) -> JSONResponse:
         """Change the break settings; saved for this station at once and used from now on.
 
-        Turning breaks off drops the breaks still waiting for their song
-        change (a break already mixed into the next one still airs), so the
-        announcer hears at once that breaks are off.
+        Turning breaks off drops the announcer uploads still waiting for
+        their song change; manual voice tracks and mixed breaks remain.
         """
         config = station.cfg.breaks
         was_on = config.enabled is True
@@ -624,7 +633,7 @@ def _voice_context(station: StationRuntime) -> dict[str, Any]:
             "slot": None,
         }
         if station.player is None
-        else _context(station)
+        else _context(station, voice_track=True)
     )
     desk: BreakDesk = station.breaks
     config = desk.config
