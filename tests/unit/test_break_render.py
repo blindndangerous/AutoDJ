@@ -97,11 +97,14 @@ def test_manual_voice_is_dropped_when_its_full_chain_hits_a_hard_boundary(statio
     rendered = player._render_track(a, b, 0, breaks=taken)
     assert rendered.break_events == ()
     assert all(desk.get(item.break_id).state == DROPPED for item in taken)
-    assert windows[0][0] == pytest.approx(-2.0)
-    assert windows[0][1] == pytest.approx(2.0 + first.cues.end - first.cues.start)
-    assert windows[1][1] == pytest.approx(
-        2.0 + first.cues.end - first.cues.start + second.cues.end - second.cues.start
-    )
+    first_clip = first.cues.end - first.cues.start
+    second_clip = second.cues.end - second.cues.start
+    if placement == "standalone":
+        assert windows == pytest.approx([(0.0, first_clip), (first_clip, second_clip)])
+    else:
+        assert windows == pytest.approx(
+            [(-2.0, 2.0 + first_clip), (-2.0, 2.0 + first_clip + second_clip)]
+        )
 
 
 def test_hard_boundary_window_includes_a_planned_liner_before_voice(station):
