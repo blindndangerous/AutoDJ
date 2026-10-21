@@ -58,6 +58,56 @@ previously saved GPU choice. You do not need an AMD environment or GPU drivers f
 Use the launcher for ordinary commands. You do not need to activate an environment or run
 `uv sync` separately.
 
+## No-model installation
+
+Use this mode when the server needs the web UI, basic library imports, browser
+playback or server streams, but will not run the music embedding model locally:
+
+```sh
+./autodj setup --no-model --yes
+./autodj serve
+```
+
+On Windows use `.\autodj.cmd` in place of `./autodj`. The saved selection is
+`.uv/setup-no-model`; later launcher calls reuse it. No MuQ, PyTorch or
+Transformers packages or model weights are installed. CPU audio processing still
+uses NumPy, librosa and FFmpeg; no-model does not mean dependency-free. Set
+`UV_NO_CACHE=1` during setup to avoid retaining a second installer cache.
+Fresh no-model setup omits sound-card output packages. Browser playback and
+server streaming are included; server sound-card output needs the `play` extra
+and platform audio support. Existing sound-card packages are not removed.
+
+Basic imports and previously saved analysis remain usable. `autodj index` imports
+playable songs successfully and reports pending analysis without loading a model
+or downloading weights. Automatic local MuQ analysis is disabled; explicit
+advanced-analysis and worker commands explain how to enable it.
+Queue, random, least-recently-played and category/clockwheel operation do not
+require local model weights. Similarity needs compatible saved or remote vectors.
+
+A remote model-capable worker can supply new analysis only when the server
+already has a compatible model cache at its configured `model_dir` or
+`manual_path`. The server uses that copy to validate the worker's exact weight
+identity without loading the model. A fresh no-model installation cannot
+bootstrap this cache with `autodj index`; preserve an existing compatible cache
+or use a model-capable runtime to obtain it before returning to no-model mode.
+See [remote worker requirements](guides/operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
+
+The ordinary setup still installs the complete CPU/GPU-capable runtime. To add
+local model analysis later, run `./autodj setup --backend cpu` or the appropriate
+supported GPU setup. Switching runtimes preserves the old environment; review
+its disk use before installing another one. Model weights are downloaded only
+when analysis is requested. `--no-model` cannot be combined with GPU setup or
+`--test-import`.
+
+For direct package installs, the base package is now the no-model serving set;
+the `index` extra adds model analysis, `play` adds sound-card output, and `all`
+adds both. Prefer guided CPU setup to select CPU wheels explicitly. The container
+continues to install the `index` extra and its pinned CPU model runtime.
+For a released wheel, use the [release-artifact install command](guides/install.md#release-artifacts)
+with no extra for base serving, `[index]` for model analysis, `[play]` for
+sound-card output without the model, or `[all]` for both. Keep the selected extra
+when upgrading that wheel.
+
 ## Finding uv and FFmpeg
 
 AutoDJ finds these programs on PATH, the operating system's list of executable directories.

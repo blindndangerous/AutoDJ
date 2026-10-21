@@ -4,14 +4,17 @@ import json
 
 import numpy as np
 import pytest
-import torch
-from easydict import EasyDict
-from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("muq")
+pytest.importorskip("transformers")
+from easydict import EasyDict  # noqa: E402 -- optional model packages checked above
+from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (  # noqa: E402
     Wav2Vec2ConformerConfig,
     Wav2Vec2ConformerEncoder,
 )
 
-from autodj.model import _MuqConformerAdapter, _prepare_muq_conformer, load_model
+from autodj.model import _MuqConformerAdapter, _prepare_muq_conformer, load_model  # noqa: E402
 
 
 def _tiny_config():

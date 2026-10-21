@@ -9,6 +9,9 @@ station with **Playback output** set to **Browser**, and no listeners.
 If you have not installed AutoDJ, follow [Install AutoDJ](../guides/install.md)
 first. This lesson changes saved station settings; do not follow it on a live station.
 
+[No-model setup](../setup.md#no-model-installation) supports this lesson's browser
+output, basic import and category rotation. Local model analysis is not required.
+
 In this series, Practice means your default practice station. Its displayed name
 may still be AutoDJ; note that name when choosing its row in Settings. The
 category and clockwheel you create below are both named `Practice`.

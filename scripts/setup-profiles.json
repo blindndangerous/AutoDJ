@@ -1,4 +1,7 @@
 {
+  "no-model": {
+    "notice": "Install UI, basic library, playback and streaming without MuQ, PyTorch or Transformers. Local model analysis is unavailable."
+  },
   "cpu": {
     "notice": "Install the official PyTorch CPU wheels for Windows or Linux x86-64 and force CPU processing.",
     "source": "https://download.pytorch.org/whl/cpu/",
