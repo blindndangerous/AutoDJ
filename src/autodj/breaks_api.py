@@ -10,8 +10,8 @@ The ``voice-tracks`` routes (#128) are the browser's: an operator signed in
 to the web UI records a DJ break for the open song change and books it.
 They take the session cookie and, for a change, the page's ``Origin``, as
 every other browser route does, and never a machine token.  A voice track
-is a break like any other: the same checks, caps, decoding, quota and
-placement.
+is a break like any other: the same validation, decode protections, shared
+station quota and placement, with its own 600-second and 64 MiB upload caps.
 
 The routes answer under ``/api/announcer/`` for the default station and
 ``/api/stations/<slug>/announcer/`` for any station by name:
@@ -103,9 +103,13 @@ ANNOUNCER_PREFIX = "/api/announcer/"
 ANNOUNCER_SCOPES = {ANNOUNCER_PREFIX: SCOPE_ANNOUNCER}
 #: The upload route, for the request-body cap.
 UPLOAD_PATH = ANNOUNCER_PREFIX + "breaks"
-#: The voice tracker's upload route (#128), a browser route with the same cap.
+#: The voice tracker's upload route (#128), with its own body cap.
 VOICE_UPLOAD_PATH = "/api/voice-tracks"
 MAX_FORECAST_SECONDS = 600.0
+# Manual browser recordings have their own budget; announcer integrations
+# continue to use the station's configured break limits.
+VOICE_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+VOICE_MAX_SECONDS = 600.0
 #: Room for the multipart framing and the form fields around the file.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 #: Plays and queued requests the context lists.
@@ -537,13 +541,14 @@ def install_breaks(router: StationRouter) -> None:
         elif not station.player.request_voice_track_slot():
             raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
         config = desk.config
-        cap = config.max_upload_bytes
+        cap = VOICE_MAX_UPLOAD_BYTES if source == VOICE_TRACK else config.max_upload_bytes
+        max_seconds = VOICE_MAX_SECONDS if source == VOICE_TRACK else config.max_seconds
         declared = request.headers.get("content-length")
         size = cap
         if declared is not None:
             if not declared.isdecimal() or int(declared) > cap + MULTIPART_OVERHEAD_BYTES:
                 raise HTTPException(
-                    status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                    status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                 )
             size = min(cap, int(declared))
         break_id = new_id()
@@ -594,12 +599,12 @@ def install_breaks(router: StationRouter) -> None:
                     )
                 except LinerTooLargeError as exc:
                     raise HTTPException(
-                        status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                        status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                     ) from exc
             finally:
                 await upload.close()
             assert path is not None  # stored, or the request has already answered
-            cues = await decode_one(path, config.max_seconds)
+            cues = await decode_one(path, max_seconds)
             if source == VOICE_TRACK:
                 checked_slot = await asyncio.to_thread(_current_slot, station)
                 manual_fit = fields.placement != "standalone"
@@ -607,6 +612,16 @@ def install_breaks(router: StationRouter) -> None:
                     return refused(
                         409, "That song change is no longer open", "slot_closed", checked_slot
                     )
+                if (checked_slot["ending"] or {}).get("id") != fields.ending_id or (
+                    checked_slot["upcoming"] or {}
+                ).get("id") != fields.upcoming_id:
+                    return refused(
+                        409,
+                        "The songs around that song change have changed",
+                        "pair_changed",
+                        checked_slot,
+                    )
+                slot = checked_slot
                 chain = sorted(
                     (
                         queued
@@ -664,6 +679,7 @@ def install_breaks(router: StationRouter) -> None:
                 created_at=now,
                 expires_at=now + (fields.expires_s or config.default_expires_seconds),
                 source=source,
+                limit_s=max_seconds if source == VOICE_TRACK else None,
             )
             try:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
@@ -822,10 +838,7 @@ def install_breaks(router: StationRouter) -> None:
 
     @router.post("/voice-tracks", status_code=201)
     async def voice_track_upload(station: StationDep, request: Request) -> JSONResponse:
-        """Book a voice track recorded in the browser for the open song change.
-
-        The same checks, caps, decoding and quota as an announcer's break.
-        """
+        """Book a browser voice track under its own duration/upload caps."""
         desk = voice_desk(station)
         return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
 
@@ -1009,8 +1022,8 @@ def _voice_context(
         "next": context["next"],
         "slot": slot,
         "limits": {
-            "max_bytes": config.max_upload_bytes,
-            "max_seconds": config.max_seconds,
+            "max_bytes": VOICE_MAX_UPLOAD_BYTES,
+            "max_seconds": VOICE_MAX_SECONDS,
             "sample_rate": SAMPLE_RATE,
             "max_per_slot": config.max_per_slot,
         },
@@ -1191,6 +1204,8 @@ __all__ = [
     "ANNOUNCER_SCOPES",
     "MULTIPART_OVERHEAD_BYTES",
     "UPLOAD_PATH",
+    "VOICE_MAX_SECONDS",
+    "VOICE_MAX_UPLOAD_BYTES",
     "VOICE_UPLOAD_PATH",
     "decode_gate",
     "install_breaks",

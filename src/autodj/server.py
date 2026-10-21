@@ -91,7 +91,12 @@ from autodj._bridge import LibraryServices, PlayerBridge
 from autodj.ads_api import BREAKS_PATH as AD_BREAKS_PATH
 from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
-from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
+from autodj.breaks_api import (
+    ANNOUNCER_SCOPES,
+    UPLOAD_PATH,
+    VOICE_MAX_UPLOAD_BYTES,
+    VOICE_UPLOAD_PATH,
+)
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
 from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
@@ -1271,7 +1276,7 @@ def create_app(
         "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
-        VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        VOICE_UPLOAD_PATH: lambda: _voice_upload_cap(stations),
         # Ad spots (#51): the largest any station takes; each checks its own.
         AD_UPLOAD_PATH: lambda: _ad_upload_cap(stations),
         AD_BREAKS_PATH: lambda: AD_JSON_BODY_MAX_BYTES,
@@ -2776,6 +2781,11 @@ def _break_upload_cap(stations: StationRegistry) -> int:
         default=BreaksConfig().max_upload_bytes,
     )
     return largest + BREAK_MULTIPART_OVERHEAD
+
+
+def _voice_upload_cap(stations: StationRegistry) -> int:
+    """The body cap of a browser voice recording, independent of announcer settings."""
+    return VOICE_MAX_UPLOAD_BYTES + BREAK_MULTIPART_OVERHEAD
 
 
 def _ad_upload_cap(stations: StationRegistry) -> int:

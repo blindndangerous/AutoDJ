@@ -79,9 +79,8 @@ export function microphoneProblem(error) {
   }
 }
 
-// The browser must decode its own recording (decodeAudioData has no streaming
-// form), so keep the page's decoded audio and prepared WAV within a safe bound.
-export const BROWSER_MAX_SECONDS = 180;
+// Booking decodes the take in the page (decodeAudioData has no streaming form).
+export const BROWSER_MAX_SECONDS = 600;
 // Frames converted between pauses that let the page handle input.
 const WAV_BLOCK_FRAMES = 44100 * 10;
 
@@ -998,9 +997,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         wav = recorded.wav;
         if (!wav) throw new Error("Recording preparation failed");
       } catch (_) {
+        if (asked !== generation) return;
         fail(bookButton, "This browser could not read the recording back. Record it again.");
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       if (wav.size + FORM_BYTES > data.limits.max_bytes) {
         fail(bookButton, "The recording is too large for this station. Record a shorter one.");
         return;
@@ -1027,6 +1028,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         }
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       dropTake();
       await refresh();
       renderTimer();

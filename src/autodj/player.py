@@ -26,7 +26,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import UTC, tzinfo
+from datetime import UTC, datetime, tzinfo
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from autodj.hour_fit import Target, fit_chooser, next_target
+from autodj.player import Player
 from autodj.scheduler import EventSpec
 from tests.unit._rotation_station import category_step, make_station, song
 
@@ -30,6 +31,26 @@ def test_next_target_uses_nearest_hour_restart_or_hard_event() -> None:
     assert next_target(START, 10, "UTC", START + 60, (hard,)) == Target(START + 60)
     assert next_target(START, 10, "UTC", START + 120, (hard,)) == Target(START + 120, True)
     assert next_target(START, 2, "UTC", None, (soft,)) is None
+
+
+def test_voice_tracks_cannot_cross_hard_schedule_or_clock_restart() -> None:
+    hard = EventSpec.model_validate(
+        {"name": "News", "action": "noop", "repeat": "daily", "time": "12:58", "timing": "hard"}
+    )
+    player = SimpleNamespace(
+        _cfg=SimpleNamespace(
+            station=SimpleNamespace(timezone="UTC"),
+            playback=SimpleNamespace(pick_mode="clock"),
+        ),
+        _hour_fit_events=(hard,),
+        _hour_fit_timezone="UTC",
+        _pending_clock_boundary=None,
+        _clock_next_boundary=START + 180,
+    )
+    assert Player.voice_track_crosses_hard_boundary(player, START, 90) is False
+    assert Player.voice_track_crosses_hard_boundary(player, START, 240) is True
+    player._hour_fit_events = ()
+    assert Player.voice_track_crosses_hard_boundary(player, START, 240) is True
 
 
 def test_repeated_top_of_hour_is_a_target() -> None:
