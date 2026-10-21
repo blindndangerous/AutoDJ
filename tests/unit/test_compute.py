@@ -2,6 +2,10 @@
 
 from unittest.mock import patch
 
+import pytest
+
+pytest.importorskip("torch")
+
 from autodj.compute import device_description, device_string
 
 

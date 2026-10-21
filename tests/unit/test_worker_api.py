@@ -4,6 +4,7 @@ import base64
 import logging
 import os
 import secrets
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -245,7 +246,13 @@ def test_audio_is_served_only_for_a_song_this_worker_claimed(server):
 # ---------------------------------------------------------------------------
 
 
-def test_a_valid_result_goes_into_the_live_catalog(server):
+@pytest.mark.parametrize("no_model", [False, True])
+def test_a_valid_result_goes_into_the_live_catalog(server, monkeypatch, no_model):
+    """ADR-0012-07: cached identity permits remote results without local inference."""
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1" if no_model else "0")
+    if no_model:
+        monkeypatch.setitem(sys.modules, "autodj.model", None)
+        monkeypatch.setitem(sys.modules, "torch", None)
     _token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, vector = server.result(song, song["lease"])
@@ -291,7 +298,10 @@ def test_results_from_other_weights_or_versions_are_refused(server, field, value
     assert not server.manager.catalog.has_vector(server.songs[0])
 
 
-def test_a_server_without_the_model_cannot_check_results(tmp_path):
+@pytest.mark.parametrize("no_model", [False, True])
+def test_a_server_without_the_model_cannot_check_results(tmp_path, monkeypatch, no_model):
+    """ADR-0012-07: absent identity is refused with usable cache recovery advice."""
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1" if no_model else "0")
     made = Server(tmp_path, model=False)
     try:
         _token, secret = made.token()
@@ -301,7 +311,11 @@ def test_a_server_without_the_model_cannot_check_results(tmp_path):
         ):
             reply = made.call("POST", path, secret, json=body)
             assert reply.status_code == 409
-            assert "no downloaded copy" in reply.json()["detail"]
+            detail = reply.json()["detail"]
+            assert "no downloaded copy" in detail
+            assert "existing compatible model cache" in detail
+            assert "model-capable runtime" in detail
+            assert "No-model indexing does not download weights" in detail
     finally:
         made.close()
 

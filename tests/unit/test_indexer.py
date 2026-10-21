@@ -14,6 +14,7 @@ import pytest
 
 from autodj.beets import Track
 from autodj.indexer import (
+    EMBEDDING_DIM,
     FEATURE_DIM,
     IndexEntry,
     _combine_features,
@@ -21,7 +22,6 @@ from autodj.indexer import (
     build_faiss_index,
     load_index,
 )
-from autodj.model import EMBEDDING_DIM
 from tests.unit._legacy_index import save_index
 
 # ---------------------------------------------------------------------------

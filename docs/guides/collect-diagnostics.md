@@ -31,6 +31,14 @@ used to start AutoDJ. First-run setup is a separate action: complete
 combined with `--fix`. Doctor takes the index lock during its check and may probe
 configured network endpoints. It does not prove continuous playback, a working
 speaker, or provider authentication; speech checks do not call providers.
+
+In [no-model mode](../setup.md#no-model-installation), the `model-cache` warning
+that local model analysis is unavailable is expected. That warning alone does
+not make Doctor fail or mean basic import, browser playback or streaming is
+broken. Keep this mode if those are the features you need; follow the setup
+guide to enable local model analysis. The warning does not certify that the
+server has the compatible cache required for remote analysis workers.
+
 Do not use `--fix` to collect evidence: it also approves supported recovery
 commands, including expensive analysis or indexing. See
 [Doctor details](../operations.md#diagnose-before-serving) before a repair.

@@ -102,6 +102,11 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Set up AutoDJ locally, outside Docker.")
     result.add_argument("--backend", choices=("auto", "cpu", "nvidia", "amd"), default="auto")
     result.add_argument(
+        "--no-model",
+        action="store_true",
+        help="Install playback and serving without the music-model dependencies.",
+    )
+    result.add_argument(
         "--port", type=port_number, help="Local web port for a new configuration (8080)."
     )
     result.add_argument(
@@ -167,10 +172,14 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         raise ValueError(
             "Invalid saved environment path in .uv/setup.json. Fix or remove that selection and rerun setup."
         )
-    backend = args.backend
+    if args.no_model and (args.backend not in {"auto", "cpu"} or args.test_import):
+        raise ValueError("--no-model cannot be combined with GPU setup or --test-import.")
+    backend = "no-model" if args.no_model else args.backend
     if backend == "auto":
         backend = previous.get("backend", hardware.recommendation)
-    if not isinstance(backend, str) or backend not in {"cpu", "nvidia", "amd"}:
+    if backend == "no-model" and args.test_import:
+        raise ValueError("--no-model cannot be combined with --test-import.")
+    if not isinstance(backend, str) or backend not in {"cpu", "nvidia", "amd", "no-model"}:
         raise ValueError("Choose cpu, nvidia, or amd.")
     reuse = args.environment is not None or (
         previous.get("backend") == backend and isinstance(previous.get("environment"), str)
@@ -178,11 +187,15 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     external = args.environment is not None or (
         previous.get("external") is True and previous.get("backend") == backend
     )
-    if backend != "cpu" and os.environ.get("AUTODJ_GPU") == "0":
+    if backend not in {"cpu", "no-model"} and os.environ.get("AUTODJ_GPU") == "0":
         raise ValueError(
             "AUTODJ_GPU=0 disables GPU processing. Remove that environment override or choose --backend cpu."
         )
-    if not reuse and backend != "cpu" and hardware.machine.lower() not in {"amd64", "x86_64"}:
+    if (
+        not reuse
+        and backend not in {"cpu", "no-model"}
+        and hardware.machine.lower() not in {"amd64", "x86_64"}
+    ):
         raise ValueError(
             "Automatic GPU installation currently supports x86-64 systems only. Use an existing compatible --environment or choose CPU."
         )
@@ -218,7 +231,8 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
             getattr(hardware, "amd_arch", None),
         ):
             print("Install: " + subprocess.list2cmdline(command))
-        print("Installing PyTorch and audio dependencies can download several GB.")
+        if backend != "no-model":
+            print("Installing PyTorch and audio dependencies can download several GB.")
     print(
         "After installation, setup will verify the runtime and run AutoDJ doctor to check for problems."
     )
@@ -250,23 +264,26 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
         )
     prepare_caches(environment, backend)
     env = runtime_environment(environment, backend)
-    runtime = probe_runtime(python, env=env)
-    device = runtime.get("device_name") or "CPU"
-    print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
-    print(str(runtime.get("reason", "")))
-    expected = {"nvidia": "cuda", "amd": "rocm"}.get(backend)
-    if runtime.get("torch_version") is None or runtime.get("error"):
-        if expected:
+    if backend == "no-model":
+        print("Runtime: no-model (playback, streaming and basic library; no local model analysis)")
+    else:
+        runtime = probe_runtime(python, env=env)
+        device = runtime.get("device_name") or "CPU"
+        print(f"Runtime: {device} (PyTorch {runtime.get('torch_version') or 'unavailable'})")
+        print(str(runtime.get("reason", "")))
+        expected = {"nvidia": "cuda", "amd": "rocm"}.get(backend)
+        if runtime.get("torch_version") is None or runtime.get("error"):
+            if expected:
+                raise ValueError(
+                    "The GPU runtime check failed. Fix the reported problem or rerun setup with --backend cpu."
+                )
             raise ValueError(
-                "The GPU runtime check failed. Fix the reported problem or rerun setup with --backend cpu."
+                "The Python runtime check failed. Fix the reported problem and rerun setup."
             )
-        raise ValueError(
-            "The Python runtime check failed. Fix the reported problem and rerun setup."
-        )
-    if expected and (runtime.get("backend") != expected or not runtime.get("gpu_available")):
-        raise ValueError(
-            "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
-        )
+        if expected and (runtime.get("backend") != expected or not runtime.get("gpu_available")):
+            raise ValueError(
+                "The selected GPU could not run a calculation. Check the driver and package compatibility, or rerun with --backend cpu."
+            )
     if not (root / "config.toml").exists():
         create_configuration(root, port)
     initialize_paths(root, python, env)
@@ -301,7 +318,8 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     print(".\\autodj.cmd serve" if os.name == "nt" else "./autodj serve")
     print("Your library is empty. Add music folders from the Library page in AutoDJ.")
     test_import = args.test_import or (
-        interactive
+        backend != "no-model"
+        and interactive
         and confirm("Test importing up to three tracks? This may download a large audio model.")
     )
     if test_import:

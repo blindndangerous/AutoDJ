@@ -122,3 +122,26 @@ def test_a_download_missing_only_ignored_files_still_counts(tmp_path):
     (repo / "trees" / ("3" * 40 + ".json")).write_text(json.dumps(listed), encoding="utf-8")
     assert local_model_folder(model, index) == snapshot
     assert local_model_commit(model, index) == "3" * 40
+
+
+@pytest.mark.parametrize("missing", [None, "torch", "muq", "transformers"])
+def test_model_analysis_availability_checks_packages_without_importing(monkeypatch, missing):
+    import autodj.model_identity as identity
+
+    monkeypatch.delenv("AUTODJ_NO_MODEL", raising=False)
+    monkeypatch.setattr(
+        identity.importlib.util, "find_spec", lambda name: None if name == missing else object()
+    )
+    assert identity.model_analysis_available() is (missing is None)
+
+
+def test_model_analysis_disabled_even_when_packages_are_installed(monkeypatch):
+    import autodj.model_identity as identity
+
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    monkeypatch.setattr(
+        identity.importlib.util,
+        "find_spec",
+        lambda name: pytest.fail("disabled analysis probed packages"),
+    )
+    assert not identity.model_analysis_available()

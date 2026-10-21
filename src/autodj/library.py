@@ -1388,6 +1388,10 @@ class LibraryManager:
             with self._lock:
                 self._yielded_to_worker = True
             return False
+        from autodj.model_identity import model_analysis_available
+
+        if not model_analysis_available():
+            return False
         with self._lock:
             if self._yielded_to_worker:
                 self._yielded_to_worker = False

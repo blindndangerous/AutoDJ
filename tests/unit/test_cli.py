@@ -993,14 +993,16 @@ class TestCmdIndex:
     def test_index_build_failure_exits_one(self) -> None:
         cfg_mock = _make_cfg()
         with (
-            patch("autodj.config.load_config", return_value=cfg_mock),
-            patch("autodj.model.download_model_if_needed"),
-            patch("autodj.model.load_model"),
+            patch("autodj.cli._load_cfg_or_exit", return_value=cfg_mock),
+            patch("autodj.cli._load_index_for_serve", return_value=_make_sim()),
+            patch("autodj.cli._can_import", return_value=True),
+            patch("autodj.model_identity.model_analysis_available", return_value=True),
+            patch.dict("sys.modules", {"autodj.model": MagicMock()}),
             patch("autodj.library.analyse_library", side_effect=RuntimeError("model crash")),
         ):
             result = CliRunner().invoke(cli, ["index"])
         assert result.exit_code == 1
-        assert "Indexing failed" in result.output
+        assert "Indexing failed: model crash" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1330,11 +1332,52 @@ def test_analyse_library_reports_embedded_track_count(completed: int, tmp_path: 
     cfg.huggingface = MagicMock()
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
-        patch("autodj.model.download_model_if_needed", return_value=tmp_path / "model"),
-        patch("autodj.model.load_model", return_value=object()),
+        patch("autodj.model_identity.model_analysis_available", return_value=True),
+        patch.dict("sys.modules", {"autodj.model": MagicMock()}),
         patch("autodj.library.analyse_library", return_value=completed),
     ):
         result = CliRunner().invoke(cli, ["analyse-library"])
 
     assert result.exit_code == 0
     assert f"Advanced analysis embedded {completed} tracks" in result.output
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["analyse-library"],
+        ["worker", "--server", "https://example.invalid", "--token", "unused"],
+    ],
+)
+def test_model_commands_reject_no_model_before_import_or_connection(monkeypatch, arguments):
+    import sys
+
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    with patch.dict(sys.modules, {"autodj.model": None}):
+        result = CliRunner().invoke(cli, arguments)
+    assert result.exit_code == 1
+    assert "autodj setup --backend cpu" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_index_in_no_model_mode_preserves_basic_import(monkeypatch, pending):
+    import sys
+
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    cfg = _make_cfg()
+    library = MagicMock()
+    library.analysis_pending.return_value = [object()] if pending else []
+    library.snapshot.return_value = {"tracks_ready": 1, "import": {"errors": []}}
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.cli._load_index_for_serve", return_value=MagicMock()),
+        patch("autodj.library.LibraryManager", return_value=library),
+        patch.dict(sys.modules, {"autodj.model": None}),
+    ):
+        result = CliRunner().invoke(cli, ["index", "--no-enrich", "--no-analyse"])
+    library.scan.assert_called_once()
+    assert "1 songs available" in result.output
+    assert result.exit_code == 0, result.output
+    if pending:
+        assert "analysis pending" in result.output.lower()

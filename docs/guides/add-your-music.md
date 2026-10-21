@@ -45,6 +45,14 @@ AutoDJ works through new songs in three steps. You can play music while it works
 Then, for folders with **Perform advanced analysis** ticked, AutoDJ runs **advanced analysis** in
 the background, one song at a time.
 
+With [no-model setup](../setup.md#no-model-installation), basic import and audio
+preparation still run, but local model analysis stays pending. `autodj index`
+finishes successfully and reports that pending work without downloading weights.
+Use categories, clockwheels or queues for songs without advanced analysis. To
+analyse them locally later, follow the setup guide's runtime upgrade steps.
+Remote analysis requires an existing compatible model cache on the server;
+see [worker requirements](operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
+
 ### Why advanced analysis matters
 
 Advanced analysis describes how each song sounds. AutoDJ uses it to find similar songs and

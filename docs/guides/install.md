@@ -10,12 +10,20 @@ shows how to open AutoDJ from other devices on your network.
   runs on the processor, not the graphics card.
 - **Docker**: for a home server or NAS that runs containers. Analysis runs on the processor.
 
+For a small host that needs browser playback or streaming without local music-model
+analysis, choose [no-model setup](../setup.md#no-model-installation). Clone using the
+platform steps below, then run that explicit setup before the first launcher start.
+It omits model packages, model downloads and sound-card output packages. Guided
+default setup and the container remain model-capable.
+
 Whichever you choose, AutoDJ runs on your own computer and processes your music locally by default. If you configure a remote analysis worker, that worker receives the songs it analyses; see [Using a GPU machine](../operations.md#using-a-gpu-machine).
 
 ## What you need
 
 - A computer that stays on while the station plays, with music it can read.
-- Several gigabytes of disk space and an internet connection for setup and the analysis model.
+- An internet connection and disk space for setup. Standard model-capable setup and
+  analysis downloads need several gigabytes; no-model setup reduces dependencies but
+  still needs space for Python, audio packages, music and saved station data.
 - An optional NVIDIA or recent AMD graphics card for faster analysis.
 
 ## Windows
