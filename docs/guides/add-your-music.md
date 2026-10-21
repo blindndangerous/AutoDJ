@@ -21,6 +21,9 @@ A new installation starts with an empty library. Importing does not move your fi
 1. Open the **Library tools** tab.
 2. Under **Music folders and Voice liner folders**, type the folder's full path in **Folder
    path**, such as `D:\Music` or `/srv/music`.
+   Or press **Browse…** beside it to choose a folder on the AutoDJ machine. In the dialog,
+   press Enter on a folder to open it, use **Up one folder** to go back, and press **Select
+   this folder**. **Cancel** or Escape leaves the field unchanged.
 3. Leave **Folder type** set to **Music**.
 4. Leave **Add subfolders** ticked to include every folder inside it.
 5. Leave **Perform advanced analysis** ticked unless you have a reason not to (see below).

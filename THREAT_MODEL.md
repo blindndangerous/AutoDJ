@@ -45,6 +45,14 @@ AutoDJ is a single-user local music player with these exposed surfaces:
   step must be a track the catalog holds; the browser never sends a full path. Unknown fields and
   step types are refused. PAL import parses a limited declarative subset and never executes
   uploaded text.
+- Browse buttons (`autodj.path_browse`) require a paired browser and only read names. `GET
+  /api/library/browse` lists the folders, never the files, in an absolute server folder, starting
+  from the file system's roots; it refuses relative paths and `..` parts. A paired browser can
+  already register any folder the server can read, so this adds folder names to what it can
+  learn, not access. `GET /api/library/folders/{id}/browse` lists folders and supported audio
+  files inside one registered library folder by a relative path with no `..`, drive letter,
+  colon or backslash; the resolved folder must stay inside the library folder, and linked
+  entries that resolve outside it are left out. Each listing stops at 2,000 entries.
 - Rotation category routes (`/api/categories`) require a paired browser and refuse unknown
   fields. A playlist category names a file inside the configured playlists folder by a relative
   path with no `..`, drive letter or backslash, and the resolved file must stay inside that

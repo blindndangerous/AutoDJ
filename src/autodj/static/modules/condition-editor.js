@@ -1,3 +1,5 @@
+import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
+
 export const NUMERIC_OPERATORS = [["eq", "is"], ["not_eq", "is not"], ["lt", "less than"], ["lte", "at most"], ["gt", "greater than"], ["gte", "at least"], ["between", "between"], ["outside", "outside range"]];
 export const TEXT_OPERATORS = [["is", "is"], ["is_not", "is not"], ["contains", "contains"], ["not_contains", "does not contain"], ["matches", "matches"], ["not_matches", "does not match"]];
 const BEETS_NUMERIC_OPERATORS = new Set(NUMERIC_OPERATORS.map(([value]) => value));
@@ -73,6 +75,7 @@ export function createConditionRow({
   const source = control("Library folder", "select", optionsWithMissing(sourceChoices, value.source));
   const folder = control("Subfolder");
   folder.type = "text";
+  const browse = addBrowseButton(folder, { source: libraryFolderSource(() => source.value), label: "subfolder" });
   const recursive = control("Include subfolders");
   recursive.type = "checkbox";
   const operator = control("Operator", "select");
@@ -113,6 +116,7 @@ export function createConditionRow({
     const isCategory = current === "category";
     const isBeets = current === "beets";
     for (const node of [source, folder, recursive]) node.hidden = node.previousElementSibling.hidden = !isFolder;
+    browse.hidden = !isFolder;
     genre.hidden = genre.previousElementSibling.hidden = !isGenre;
     name.hidden = name.previousElementSibling.hidden = !isBeets;
     if (category) category.hidden = category.previousElementSibling.hidden = !isCategory;

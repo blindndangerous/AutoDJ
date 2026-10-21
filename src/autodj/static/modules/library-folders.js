@@ -15,6 +15,7 @@ import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
 import { returnToView } from "./tabs.js";
+import { addBrowseButton, serverFolderSource } from "./path-picker.js";
 
 const POINTS = ["start", "intro", "outro", "segue", "end", "overlap_start"];
 
@@ -115,6 +116,8 @@ export function installLibraryFolders({ document: doc = document, request = requ
     progress.insertAdjacentElement("afterend", beetsPaths);
   }
   const pathInput = doc.getElementById("source-folder-path");
+  // The folder is on the AutoDJ machine, so the server lists its folders.
+  if (pathInput) addBrowseButton(pathInput, { source: serverFolderSource({ request }), label: "folder path" });
   const kindInput = doc.getElementById("source-folder-kind");
   const recursiveInput = doc.getElementById("source-folder-recursive");
   const advancedInput = doc.getElementById("source-folder-advanced");
