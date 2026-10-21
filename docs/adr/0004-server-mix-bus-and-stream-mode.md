@@ -128,7 +128,19 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-04` | Sound-card volume and mute are applied at the device output. | automated | `tests/unit/test_sound_output.py::test_volume_and_mute_are_applied` |
 | `ADR-0004-05` | Server-mode live input can air and hand control back to automated playout. | automated | `tests/integration/test_live_source.py::test_a_source_is_decoded_goes_on_the_air_and_hands_back` |
 | `ADR-0004-06` | Continuity under actual multi-station load requires measured soak evidence. | manual | Run the documented station soak test on the target hardware; report underruns and limits rather than promising hard real-time behavior. |
+| `ADR-0004-07` | Automatic saved-point liners use the shared queued-liner cue timing independently of the legacy talk-up flag. | automated | `tests/unit/test_station_liner_cadence.py::test_automatic_liners_use_saved_cues_without_talk_up` |
 
 ## Related proposal — 2026-10-17
 
 Prepared editions reuse the server renderer and local speech placement; initial edition playout supports server audio and streaming. Their source identity, approval and recovery proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.
+
+## Amendment, 2026-10-21: automatic liners share saved-point cue timing
+
+In saved-point server playback, interval-triggered liners use the existing handoff
+renderer and saved liner/music cues, as queued liners already do. The legacy
+`liners_talk_up` flag no longer gates this path; its settings checkbox is labelled
+for live server overlays.
+Trigger selection, heard-only reservation commits, rotation and preview isolation
+remain unchanged. The flag remains compatible with non-saved-point live scheduling
+and time checks; browser playback is unchanged. This consolidates current cue-based
+placement without extending beatmixed or browser playback in this change.

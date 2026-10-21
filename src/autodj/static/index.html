@@ -1761,11 +1761,11 @@
         How far the music drops under liners, from 0 to 30 dB. The default is 3 dB; 0 leaves music unchanged. Applies to overlays and scheduled IDs, with smooth fades down and back up.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="ln-talk-up">
-        <label for="ln-talk-up">Talk up to the vocal</label>
+        <input type="checkbox" id="ln-talk-up" aria-describedby="ln-talk-up-desc">
+        <label for="ln-talk-up">Talk up to the vocal (live server overlays)</label>
       </div>
       <span class="setting-desc" id="ln-talk-up-desc">
-        Time automatic liners to finish before the next song’s detected intro.
+        For non-saved-point liners and live time checks; saved-point automatic liners always use cues.
       </span>
       <button type="button" id="ln-test">Test now</button>
     </fieldset>
@@ -3045,9 +3045,6 @@
     <div id="voice-tracker">
       <p id="vt-help">
         Record a DJ break for the open song change, listen back, then book it.
-        The song change after the next song is the one still open: the next one is already mixed.
-        Your voice fits across the ending outro and next intro, or plays between songs.
-        Alt+R starts and stops recording.
       </p>
 
       <section class="card">
@@ -3056,9 +3053,9 @@
         <dl id="vt-slot" class="vt-facts" hidden>
           <dt>Ending song</dt><dd id="vt-ending"></dd>
           <dt>Next song</dt><dd id="vt-upcoming"></dd>
-          <dt>Usable ending outro</dt><dd id="vt-outro"></dd>
-          <dt>Usable next intro</dt><dd id="vt-intro"></dd>
-          <dt>Time available for speech</dt><dd id="vt-window"></dd>
+          <dt>Time available</dt><dd id="vt-window"></dd>
+          <dt>Outro</dt><dd id="vt-outro"></dd>
+          <dt>Intro</dt><dd id="vt-intro"></dd>
           <dt>Time left to book</dt><dd id="vt-closes"></dd>
           <dt>Airs in about</dt><dd id="vt-airs"></dd>
         </dl>
@@ -3078,26 +3075,20 @@
         <p id="vt-microphone-status" class="setting-desc" hidden></p>
         <button type="button" id="vt-microphone-test" aria-pressed="false">Test microphone</button>
         <audio id="vt-microphone-playback" preload="none" hidden data-preview-output></audio>
-        <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
-        <span class="setting-desc" id="vt-record-desc">
-          Press to start recording from your microphone, and again (or Alt+R) to stop.
-          The browser asks for the microphone the first time. Recording stops at 3 minutes,
-          or when you leave this tab or the page is hidden.
-        </span>
-        <p id="vt-timer">Not recording.</p>
+        <button type="button" id="vt-record" aria-pressed="false">Record (Alt+R)</button>
+        <p id="vt-timer"></p>
         <!-- Played by Listen back, never shown: one named toggle instead of
              the browser's own player controls.  A preview, so it plays on
              the Preview output device (modules/preview-output.js). -->
         <audio id="vt-playback" preload="auto" hidden data-preview-output></audio>
         <div class="settings-row">
           <label for="vt-placement">Placement</label>
-          <select id="vt-placement" aria-describedby="vt-placement-desc">
+          <select id="vt-placement">
             <option value="auto">Fit over outro and intro</option>
             <option value="standalone">Between songs</option>
           </select>
         </div>
-        <span class="setting-desc" id="vt-placement-desc"></span>
-        <p id="vt-fit">Record a take to estimate its fit.</p>
+        <p id="vt-fit" hidden></p>
         <div class="vt-actions">
           <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
           <button type="button" id="vt-book">Book voice track</button>

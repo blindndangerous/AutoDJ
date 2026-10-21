@@ -257,7 +257,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const timer = el("vt-timer");
   const playback = el("vt-playback");
   const placement = el("vt-placement");
-  const placementDesc = el("vt-placement-desc");
   const listenButton = el("vt-listen");
   const bookButton = el("vt-book");
   const discardButton = el("vt-discard");
@@ -495,11 +494,10 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   function renderPlacement() {
     const slot = data?.slot;
     const available = (slot?.ending_outro_s || 0) + (slot?.upcoming_intro_s || 0);
-    const text = placement.value === "standalone"
-      ? "The ending song fades, your voice plays, then the next song starts."
-      : "Your voice fits over the usable outro and intro. The next song waits when more time is needed, protecting its vocal.";
     setText(outro, introWords(slot?.ending_outro_s || 0));
     setText(windowText, introWords(available));
+    const fit = el("vt-fit");
+    if (fit) fit.hidden = !take;
     if (take) {
       const speech = take.cues?.speech ?? take.seconds;
       const forecast = slot?.voice_forecast;
@@ -507,8 +505,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         ? `The voice starts ${introWords(forecast.recording_start_s)} into the ending song; the next song starts ${introWords(forecast.music_entry_s)} after its segue. Full chain speech: ${introWords(forecast.chain_speech_s)}; ${introWords(forecast.speech_without_music_s)} is between songs without music.`
         : "The playout timing estimate is pending.";
       setText(el("vt-fit"), `${take.cues ? "Detected speech" : "Recording (speech estimate pending)"}: ${introWords(speech)}${take.cues?.tail ? ` plus ${introWords(take.cues.tail)} tail` : ""}. ${estimate} Original recording: ${introWords(take.seconds)}.`);
-    } else setText(el("vt-fit"), "Record a take to estimate its fit.");
-    setText(placementDesc, text);
+    } else setText(fit, "");
   }
 
   function renderTimer() {
@@ -518,7 +515,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     } else if (take) {
       setText(timer, `Recorded ${clock(take.seconds)}, not booked yet.`);
     } else {
-      setText(timer, `Not recording. A voice track may be up to ${clock(limitSeconds())} long.`);
+      setText(timer, `${clock(limitSeconds())} max`);
     }
   }
 

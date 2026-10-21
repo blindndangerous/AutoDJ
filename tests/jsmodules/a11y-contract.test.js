@@ -3214,9 +3214,9 @@ describe("static accessibility contracts", () => {
     }
     // Record is a toggle with a fixed name: the pressed state says recording.
     const record = document.getElementById("vt-record");
-    expect(record.textContent).toBe("Record");
+    expect(record.textContent).toBe("Record (Alt+R)");
     expect(record.getAttribute("aria-pressed")).toBe("false");
-    expect(document.getElementById(record.getAttribute("aria-describedby")).textContent).toMatch(/Alt\+R/);
+    expect(record.hasAttribute("aria-describedby")).toBe(false);
     // One polite region says the recording state; the timer, the time left
     // and the open song change are on the page and never live.
     const live = [...tracker.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
@@ -3232,7 +3232,7 @@ describe("static accessibility contracts", () => {
     expect(error.hidden).toBe(true);
     const placement = document.getElementById("vt-placement");
     expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
-    expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
+    expect(placement.hasAttribute("aria-describedby")).toBe(false);
     expect([...placement.options].map((option) => option.value)).toEqual(["auto", "standalone"]);
     expect([...placement.options].map((option) => option.textContent)).toEqual([
       "Fit over outro and intro", "Between songs",

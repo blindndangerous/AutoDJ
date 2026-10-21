@@ -5,7 +5,7 @@ Two mix features need to know when a track's vocals run:
 - The vocal-clash guard (``[djmix] vocal_guard``) shortens or moves a
   crossfade so the outgoing track's last sung line is over before the
   incoming track starts singing (:func:`guard_fade`).
-- Liner talk-ups (``[playback] liners_talk_up``) end a liner just before
+- Legacy live liner talk-ups (``[playback] liners_talk_up``) end a liner just before
   the incoming track's first sung line.
 
 A lyric line only gives its start time.  Its end is taken as the next

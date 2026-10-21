@@ -12,7 +12,9 @@ rotation semantics — and adds the one thing they intentionally do not
 do: decoding a file to the bus's stereo float32 format and calling
 :meth:`~autodj.mixbus.MixBus.play_liner`.
 
-With ``[playback] liners_talk_up`` on, a liner due as a track starts is
+Saved-point automatic liners are reserved for the shared cue-based handoff
+renderer. The legacy ``[playback] liners_talk_up`` setting affects live time
+checks and non-saved-point server liners, where a clip due as a track starts is
 timed like a radio talk-up: it ends just before the incoming track's
 vocal (:meth:`autodj.player.Player.vocal_start_s`).  When it fits the
 intro it is cued there; when it is too long for the intro but fits once
@@ -863,8 +865,8 @@ class LinerScheduler:
             self._play_locked(_Prepared("announcement", audio), None)
 
     def _planner_mode(self) -> bool:
-        """Whether saved-point talk-ups are owned by the renderer planner."""
-        return getattr(self._cfg, "transition_mode", None) == "saved_points" and self._talk_up()
+        """Whether saved-point liners are owned by the cue-based renderer."""
+        return getattr(self._cfg, "transition_mode", None) == "saved_points"
 
     def plan_for_handoff(self, key: str, tracks_ahead: int, seconds_ahead: float) -> str | None:
         """Reserve an automatic liner for a future saved-point handoff.

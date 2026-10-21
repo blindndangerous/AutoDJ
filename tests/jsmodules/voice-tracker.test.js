@@ -278,7 +278,7 @@ describe("voice tracker", () => {
     expect(byId("vt-upcoming").textContent).toBe("Artist, Fourth Song");
     expect(byId("vt-intro").textContent).toBe("8 seconds");
     expect(byId("vt-closes").textContent).toBe("2:05");
-    expect(byId("vt-placement-desc").textContent).toContain("protecting its vocal");
+    expect(byId("vt-fit").hidden).toBe(true);
     await advance(3);
     expect(byId("vt-closes").textContent).toBe("2:02");
     expect(byId("vt-airs").textContent).toBe("5:27");
@@ -647,7 +647,7 @@ describe("voice tracker", () => {
     const record = await press("vt-record");
     expect(byId("vt-error").textContent).toMatch(words);
     expect(byId("vt-error").hidden).toBe(false);
-    expect(record.getAttribute("aria-describedby")).toBe("vt-error vt-record-desc");
+    expect(record.getAttribute("aria-describedby")).toBe("vt-error");
     expect(record.getAttribute("aria-pressed")).toBe("false");
     expect(document.activeElement).toBe(record);
     await vi.waitFor(() => expect(status()).toMatch(words));
