@@ -423,3 +423,64 @@ def test_symlink_safety_case_skips_when_symlinks_are_unavailable(tmp_path, monke
     monkeypatch.setattr(Path, "symlink_to", refused)
     with pytest.raises(pytest.skip.Exception, match="symlinks unavailable"):
         test_symlink_result_and_audio_are_never_served(tmp_path)
+
+
+def test_cancel_waits_for_a_cooperative_worker_and_reports_the_stop(tmp_path):
+    """A Cancel press is answered with the job's end, not its running state."""
+    from autodj.review_jobs import ReviewJobs
+
+    entered = threading.Event()
+
+    def polling(stage, cancelled):
+        entered.set()
+        while not cancelled():
+            time.sleep(0.001)
+        return {}
+
+    jobs = ReviewJobs()
+    job = jobs.submit(tmp_path, "one", polling)
+    assert entered.wait(1)
+    answer = jobs.cancel(tmp_path, job["id"])
+    assert answer["state"] == "cancelled"
+    assert answer["error"] == "Review cancelled"
+    retry = jobs.submit(tmp_path, "retry", write_audio)
+    assert wait(jobs, tmp_path, retry["id"])["state"] == "done"
+    assert jobs.shutdown()
+
+
+def test_cancel_of_a_slow_worker_reports_that_cancellation_is_pending(tmp_path):
+    """A worker between cancellation checks keeps its slot; the reply says so."""
+    from autodj.review_jobs import ReviewJobs
+
+    entered, release = threading.Event(), threading.Event()
+
+    def busy(stage, cancelled):
+        entered.set()
+        release.wait(5)
+        return {}
+
+    jobs = ReviewJobs()
+    job = jobs.submit(tmp_path, "one", busy)
+    assert entered.wait(1)
+    answer = jobs.cancel(tmp_path, job["id"], wait=0.01)
+    assert answer["state"] == "running"
+    assert answer["cancel_requested"] is True
+    assert jobs.status(tmp_path, job["id"])["cancel_requested"] is True
+    assert jobs.current(tmp_path)["cancel_requested"] is True
+    with pytest.raises(RuntimeError, match="already running"):
+        jobs.submit(tmp_path, "two", write_audio)
+    release.set()
+    final = wait(jobs, tmp_path, job["id"])
+    assert final["state"] == "cancelled"
+    assert "cancel_requested" not in final
+    assert jobs.shutdown()
+
+
+def test_cancel_after_the_job_finished_returns_its_final_state(tmp_path):
+    from autodj.review_jobs import ReviewJobs
+
+    jobs = ReviewJobs()
+    job = jobs.submit(tmp_path, "one", write_audio)
+    assert wait(jobs, tmp_path, job["id"])["state"] == "done"
+    assert jobs.cancel(tmp_path, job["id"])["state"] == "done"
+    assert jobs.shutdown()

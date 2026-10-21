@@ -526,3 +526,15 @@ def test_configured_skip_effect_receives_actual_speed_and_consumed_source_offset
     output.mkdir()
     render_review(source, rows, output)
     assert observed == [(1.1, 11025)]
+
+
+def test_cancel_during_mp3_export_stays_a_cancellation(tmp_path, monkeypatch):
+    """InterruptedError is an OSError; Cancel must not read as an FFmpeg failure."""
+    import sys
+
+    from autodj import review_render
+
+    monkeypatch.setattr(review_render.shutil, "which", lambda name: sys.executable)
+    (tmp_path / "review.wav").write_bytes(b"")
+    with pytest.raises(InterruptedError):
+        review_render._encode(tmp_path, lambda: True)

@@ -311,7 +311,7 @@ class ReviewJobs:
         with self._lock:
             self._recover(root)
             status = self._latest.get(root)
-            return dict(status) if status is not None else None
+            return self._view(root, status) if status is not None else None
 
     def status(self, root: Path, identity: str) -> dict[str, Any]:
         """Read the current job or a completed result, scoped to its station."""
@@ -321,22 +321,43 @@ class ReviewJobs:
             self._recover(root)
             status = self._latest.get(root)
             if status is not None and status["id"] == identity:
-                return dict(status)
+                return self._view(root, status)
             result = self.result(root, identity)
             return {"id": result["id"], "state": "done"}
 
-    def cancel(self, root: Path, identity: str) -> dict[str, Any]:
-        """Request cancellation; capacity stays owned until the renderer returns."""
+    def _view(self, root: Path, status: dict[str, Any]) -> dict[str, Any]:
+        """A copy of *status*, marked while its renderer has been asked to stop."""
+        view = dict(status)
+        run = self._active
+        if (
+            run is not None
+            and (run.root, run.identity) == (root, view["id"])
+            and run.cancel.is_set()
+        ):
+            view["cancel_requested"] = True
+        return view
+
+    def cancel(self, root: Path, identity: str, *, wait: float = 3) -> dict[str, Any]:
+        """Request cancellation and wait up to *wait* seconds for the renderer to stop.
+
+        Capacity stays owned until the renderer returns.  A renderer still
+        between cancellation checks is reported running with ``cancel_requested``,
+        so the browser can say Cancel was accepted instead of offering it again.
+        A job that already ended is reported in its final state.
+        """
         _identity(identity)
         root = Path(root).resolve()
         with self._lock:
             status = self.status(root, identity)
-            if self._active is not None and (self._active.root, self._active.identity) == (
-                root,
-                identity,
-            ):
-                self._active.cancel.set()
-            return status
+            run = self._active
+            if run is None or (run.root, run.identity) != (root, identity):
+                return status
+            run.cancel.set()
+            thread = run.thread
+        # Join outside the lock: the worker takes it to record its final state.
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(max(0, wait))
+        return self.status(root, identity)
 
     def results(self, root: Path, current_fingerprint: str | None = None) -> list[dict[str, Any]]:
         root = Path(root).resolve()

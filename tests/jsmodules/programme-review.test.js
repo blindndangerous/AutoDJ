@@ -361,3 +361,96 @@ it.each([false, true])("leaves focus elsewhere untouched during generation, move
   await timers[0](); await settle();
   expect(document.activeElement).toBe(get("head"));
 });
+
+// The server answers Cancel with the job still running when its renderer is
+// between cancellation checks.  Generate stayed unavailable and Cancel kept
+// offering itself, with nothing said, until the worker stopped.
+function cancelHarness(cancelReply) {
+  const calls = [];
+  let poll = { id: "job", status: "running" };
+  const request = vi.fn(async (url, options) => {
+    calls.push([url, options?.method]);
+    if (url.endsWith("/cancel")) return cancelReply();
+    if (options?.method === "POST") return { id: "job", status: "running" };
+    if (url.includes("/jobs/")) return poll;
+    if (url === "/api/reviews") return { results: [result], job: null };
+    if (url === "/api/shows") return { shows: [] };
+    return result;
+  });
+  const setPoll = (value) => { poll = value; };
+  return { calls, request, setPoll };
+}
+
+async function startReview(request) {
+  const harnessed = harness({ request });
+  get("source").value = "forecast";
+  get("generate").focus();
+  get("form").dispatchEvent(new Event("submit", { cancelable: true })); await settle();
+  expect(document.activeElement).toBe(get("cancel"));
+  return harnessed;
+}
+
+it("says Cancel was accepted and resets the buttons once the worker stops", async () => {
+  const { request, setPoll, calls } = cancelHarness(() => ({ id: "job", status: "running", cancel_requested: true }));
+  const { timers, spoken } = await startReview(request);
+  get("cancel").click(); await settle();
+  expect(get("cancel").getAttribute("aria-disabled")).toBe("true");
+  expect(get("generate").disabled).toBe(true);
+  expect(spoken.at(-1)).toBe("Cancelling review generation…");
+  get("cancel").click(); await settle();
+  expect(calls.filter(([url]) => url.endsWith("/cancel"))).toHaveLength(1);
+  expect(spoken.at(-1)).toBe("Cancellation already requested. Waiting for the review to stop.");
+  setPoll({ id: "job", status: "cancelled", error: "Review cancelled" });
+  await timers.at(-1)(); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(get("cancel").hidden).toBe(true);
+  expect(get("cancel").hasAttribute("aria-disabled")).toBe(false);
+  expect(document.activeElement).toBe(get("generate"));
+  expect(spoken.at(-1)).toBe("Review cancelled. Previous results are retained.");
+});
+
+it("resets at once when the server answers Cancel with the stopped job", async () => {
+  const { request } = cancelHarness(() => ({ id: "job", status: "cancelled", error: "Review cancelled" }));
+  const { spoken } = await startReview(request);
+  get("cancel").click(); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(get("cancel").hidden).toBe(true);
+  expect(document.activeElement).toBe(get("generate"));
+  expect(spoken.at(-1)).toBe("Review cancelled. Previous results are retained.");
+});
+
+it("keeps Cancel available and polling after a failed cancel request", async () => {
+  const { request, setPoll } = cancelHarness(() => { throw new Error("Review worker is busy or shutting down"); });
+  const { timers, spoken } = await startReview(request);
+  const before = timers.length;
+  get("cancel").click(); await settle();
+  expect(spoken.at(-1)).toBe("Could not cancel the review: Review worker is busy or shutting down");
+  expect(get("cancel").hidden).toBe(false);
+  expect(get("cancel").hasAttribute("aria-disabled")).toBe(false);
+  expect(get("generate").disabled).toBe(true);
+  expect(timers.length).toBe(before);
+  setPoll({ id: "job", status: "done", result_id: result.id });
+  await timers.at(-1)(); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(get("cancel").hidden).toBe(true);
+});
+
+it("resets when Cancel finds the job already gone", async () => {
+  const { request } = cancelHarness(() => {
+    throw Object.assign(new Error("Review not found"), { status: 404 });
+  });
+  const { spoken } = await startReview(request);
+  get("cancel").click(); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(get("cancel").hidden).toBe(true);
+  expect(spoken.at(-1)).toBe("The review had already stopped. Previous results are retained.");
+});
+
+it("reports a review that finished before Cancel reached it", async () => {
+  const { request } = cancelHarness(() => ({ id: "job", status: "done", result_id: result.id }));
+  const { spoken } = await startReview(request);
+  get("cancel").click(); await settle();
+  expect(get("generate").disabled).toBe(false);
+  expect(get("cancel").hidden).toBe(true);
+  expect(spoken.at(-1)).toMatch(/^Review ready/);
+});
