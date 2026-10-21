@@ -28,7 +28,7 @@ from collections.abc import Set as AbstractSet
 from concurrent.futures import Future, wait
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import UTC, tzinfo
+from datetime import UTC, datetime, tzinfo
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -4824,6 +4824,36 @@ class Player:
 
         return fit_chooser(target.at - at, seconds, hard=target.hard)
 
+    def voice_track_crosses_hard_boundary(self, starts_at: float, duration: float) -> bool:
+        """Check a whole voice chain against clock restarts and hard events."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from autodj.scheduler import next_run, system_timezone
+
+        ends_at = starts_at + duration
+        playback = self._cfg.playback
+        boundary = (
+            self._pending_clock_boundary or self._clock_next_boundary
+            if playback.pick_mode == "clock"
+            else None
+        )
+        if boundary is not None and starts_at <= boundary <= ends_at:
+            return True
+        events = self._hour_fit_events
+        if callable(events):
+            events = events()
+        timezone = self._hour_fit_timezone or self._cfg.station.timezone or system_timezone()
+        zone = ZoneInfo(timezone)
+        after = datetime.fromtimestamp(max(0.0, starts_at - 0.000001), UTC)
+        for event in events or ():
+            if not event.enabled or event.timing != "hard":
+                continue
+            due = next_run(event, after, zone)
+            if due is not None and starts_at <= due.timestamp() <= ends_at:
+                return True
+        return False
+
     def restore_repeat_history(self, ledger: Any, *, refresh: bool = False) -> int:
         """Load the plays from before a restart into the repeat rules.
 
@@ -5560,6 +5590,13 @@ class Player:
                 if queued and not custom_order:
                     with self._state.queue_lock:
                         self._commit_queue_pick(liner_entry)
+        outro_point = points.get("outro")
+        segue = points.get("segue") or points.get("end") or current.length
+        safe_outro = max(
+            points.get("start") or 0.0,
+            start_offset / SAMPLE_RATE,
+            segue if outro_point is None else outro_point,
+        )
 
         def add_break(item: Break, dj_followed: bool = False) -> None:
             spoken.extend(
@@ -5568,6 +5605,8 @@ class Player:
                     incoming_points_out,
                     add_clip,
                     dj_followed=dj_followed,
+                    preceding_clip_s=frames / SAMPLE_RATE,
+                    outgoing_outro_s=max(0.0, segue - safe_outro) / rate_a,
                 )
             )
 
@@ -5620,7 +5659,13 @@ class Player:
             for liner_entry, queued in liners:
                 add_liner(liner_entry, queued)
             if breaks:
-                spoken = self._add_breaks(breaks, incoming_points_out, add_clip)
+                spoken = self._add_breaks(
+                    breaks,
+                    incoming_points_out,
+                    add_clip,
+                    preceding_clip_s=frames / SAMPLE_RATE,
+                    outgoing_outro_s=max(0.0, segue - safe_outro) / rate_a,
+                )
             if intro is not None:
                 introduced = self._add_intro(intro, add_clip)
         voiced = [*spoken, *((at, intro_id, end) for at, intro_id, end, _label in introduced)]
@@ -5635,6 +5680,7 @@ class Player:
             {"start": 0, "end": 0, "segue": 0} if is_liner else points_out,
             incoming_points_out,
             start_offset=0 if is_liner else source_start_out,
+            liner_start_offset=0 if is_liner else start_out,
             fade_seconds=self._cfg.playback.crossfade_seconds,
             liner=np.concatenate(clips) if clips else None,
             overlap_start=release,
@@ -5728,6 +5774,8 @@ class Player:
         incoming_points: dict[str, Any],
         add_clip: Callable[[np.ndarray, dict[str, Any], float, bool], tuple[int, int] | None],
         *,
+        preceding_clip_s: float = 0.0,
+        outgoing_outro_s: float = 0.0,
         dj_followed: bool = False,
     ) -> list[tuple[int, str, int]]:
         """Decode each break and append it to the handoff's voice chain (#88).
@@ -5746,7 +5794,10 @@ class Player:
         intro_s = None if intro is None else max(0.0, float(intro) - float(start))
         spoken: list[tuple[int, str, int]] = []
         for index, item in enumerate(breaks):
-            if (index < len(breaks) - 1 or dj_followed) and item.kind == "dj":
+            manual_fit = item.source == "voice_track" and item.placement != "standalone"
+            if manual_fit:
+                placement, note = "talk_up", ""
+            elif (index < len(breaks) - 1 or dj_followed) and item.kind == "dj":
                 placement, note = "standalone", "another break follows it"
             else:
                 placement, note = placement_for(
@@ -5771,8 +5822,36 @@ class Player:
                     item, "its file could not be decoded or holds no speech"
                 )
                 continue
+            if item.source == "voice_track" and item.eta is not None:
+                manual_fit = item.placement != "standalone"
+                queued_clip_s = sum(
+                    max(0.0, prior.cues.end - prior.cues.start) for prior in breaks[:index]
+                )
+                clip_s = max(0.0, cues.end - cues.start)
+                if manual_fit:
+                    starts_at = item.eta - outgoing_outro_s
+                    duration = outgoing_outro_s + preceding_clip_s + queued_clip_s + clip_s
+                else:
+                    starts_at = item.eta + preceding_clip_s + queued_clip_s
+                    duration = clip_s
+                try:
+                    crosses = self.voice_track_crosses_hard_boundary(starts_at, duration)
+                except Exception:
+                    logger.exception(
+                        "Cannot check hard event timing for voice track %s", item.break_id[:8]
+                    )
+                    crosses = True
+                if crosses:
+                    self._drop_prepared_or_break(
+                        item,
+                        "its voice chain would cross or could not be checked against a hard scheduled boundary",
+                    )
+                    continue
             added = add_clip(
-                audio, cues.points(placement == "talk_up"), cues.length, item.allow_outro
+                audio,
+                cues.points(placement == "talk_up"),
+                cues.length,
+                manual_fit or (item.source != "voice_track" and item.allow_outro),
             )
             if added is None:
                 self._drop_prepared_or_break(item, "it holds no audio")

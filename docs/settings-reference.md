@@ -159,7 +159,7 @@ Station section: `playback` in `station.json`.
 - `liners_pick_mode`. Values: `random` (Random) or `sequential` (Sequential). Default: `random` (Random). Selects which eligible liner plays next. **Rotation mode**.
 - `liners_duck_db`. Values: -30 to 0 decibels. Default: -3.0. Lowers music under voice liners. **Music duck (dB)**.
 - `matched_intro_only_without_liner`. Values: true or false. Default: false. Plays matched intros only when no liner is due. **Only when no liner is scheduled**.
-- `liners_talk_up`. Values: true or false. Default: false. Times a liner to end before the next song's vocal when possible. **Talk up to the vocal**.
+- `liners_talk_up`. Legacy server live overlays and time checks only; values true or false, default false. Retained for existing configurations and live time checks. Saved-point automatic liners always use the shared cue-based handoff; the checkbox applies only to live server overlays. Browser playback ignores this key.
 
 Songs of any length import and play. In **Library tools**, **Advanced analysis length**, set **Longest song, in minutes** to limit the expensive analysis; the default is 15. Set 0 to analyse every length. Longer songs still receive basic analysis.
 

@@ -12,11 +12,13 @@ Look up the effect of playback controls, speed, processing, volume and idle tran
   Each lasts one to two beats, at most 2 seconds, and ends on a beat when the song's tempo is
   trusted; then the next song starts. Skip style applies to stream mode and server audio only;
   browser playback keeps its own skip.
-- **Voice liners** fire on the same triggers as in the browser. With **Talk up to the vocal**
-  (Settings, Voice liners, Mix, or `[playback] liners_talk_up`), a liner due as a song starts is timed to end
-  just before the singing comes in: at the first line of the song's synced lyrics, or else at its
-  detected intro end. A liner too long for the intro starts during the crossfade when that fits,
-  and otherwise plays as the song starts. Liners played by the browser are not timed this way.
+- **Voice liners** use the configured song-count and time triggers. In saved-point playback,
+  automatic liners join the same cue-based handoff as queued liners: their saved Start, Segue,
+  End, Overlap start and outro permission determine placement across the outgoing Outro and
+  incoming Intro. The talk-up checkbox does not affect this path. Selection is committed only when heard.
+  Non-saved-point server playback retains the legacy `[playback] liners_talk_up` timing for
+  existing configurations; it uses synced lyrics or the detected intro to avoid the vocal when
+  the clip fits. Browser automatic liners keep their existing immediate playback path.
 - **Keep vocals apart** (Settings, DJ mixing, or `[djmix] vocal_guard`, on by default) shortens
   or moves a crossfade when both songs have synced lyrics, so the outgoing singer finishes before
   the incoming one starts. The fade never gets longer, or shorter than 1 second; when nothing

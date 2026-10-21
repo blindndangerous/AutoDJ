@@ -79,12 +79,8 @@ export function microphoneProblem(error) {
   }
 }
 
-// The longest take the browser records.  Booking decodes the whole take
-// in the page (decodeAudioData has no streaming form), so the length is
-// what bounds the page's memory: three minutes of stereo at 44.1 kHz is
-// about 64 MB decoded, plus 16 MB of WAV.  The station's own limit
-// applies too, when it is shorter.
-export const BROWSER_MAX_SECONDS = 180;
+// Booking decodes the take in the page (decodeAudioData has no streaming form).
+export const BROWSER_MAX_SECONDS = 600;
 // Frames converted between pauses that let the page handle input.
 const WAV_BLOCK_FRAMES = 44100 * 10;
 
@@ -109,13 +105,13 @@ function wavHeader(view, frames, rate) {
 
 // Frames *from* to *to* of *channels*, averaged to one, as 16-bit samples
 // straight into the WAV: no mono copy of the take is made.
-function writeFrames(view, channels, from, to) {
+function writeFrames(view, channels, from, to, offset = WAV_HEADER_BYTES) {
   for (let i = from; i < to; i += 1) {
     let sum = 0;
     for (const channel of channels) sum += channel[i];
     const value = sum / channels.length;
     const sample = Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0));
-    view.setInt16(WAV_HEADER_BYTES + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    view.setInt16(offset + (i - from) * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
 }
 
@@ -136,18 +132,50 @@ export function encodeWav(channels, rate) {
 // with a pause between blocks so the page stays responsive.
 export async function recordingToWav(
   blob, rate, Context = globalThis.OfflineAudioContext, pause = () => new Promise((resolve) => setTimeout(resolve, 0)),
+  onDecoded = () => {},
 ) {
   const audio = await new Context(1, 1, rate).decodeAudioData(await blob.arrayBuffer());
   const channels = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i));
   const frames = audio.length;
-  const buffer = new ArrayBuffer(WAV_HEADER_BYTES + frames * 2);
-  const view = new DataView(buffer);
-  wavHeader(view, frames, audio.sampleRate);
+  onDecoded(speechLength(channels, audio.sampleRate));
+  const parts = [];
+  const header = new ArrayBuffer(WAV_HEADER_BYTES);
+  wavHeader(new DataView(header), frames, audio.sampleRate);
+  parts.push(header);
   for (let from = 0; from < frames; from += WAV_BLOCK_FRAMES) {
-    writeFrames(view, channels, from, Math.min(frames, from + WAV_BLOCK_FRAMES));
+    const to = Math.min(frames, from + WAV_BLOCK_FRAMES);
+    const buffer = new ArrayBuffer((to - from) * 2);
+    const view = new DataView(buffer);
+    writeFrames(view, channels, from, to, 0);
+    parts.push(new Blob([buffer]));
     if (from + WAV_BLOCK_FRAMES < frames) await pause();
   }
-  return new Blob([buffer], { type: "audio/wav" });
+  return new Blob(parts, { type: "audio/wav" });
+}
+
+// Match the server's 20 ms, relative -45 dB speech-edge estimate; pauses stay.
+export function speechLength(channels, rate) {
+  const frame = Math.max(1, Math.round(rate * 0.02));
+  const levels = [];
+  let peak = 0;
+  for (let from = 0; from < (channels[0]?.length || 0); from += frame) {
+    let level = 0;
+    for (const channel of channels) {
+      let sum = 0;
+      for (let i = from; i < Math.min(channel.length, from + frame); i += 1) sum += channel[i] ** 2;
+      level = Math.max(level, Math.sqrt(sum / frame));
+    }
+    levels.push(level);
+    peak = Math.max(peak, level);
+  }
+  if (peak < 1e-4) return { speech: 0 };
+  const threshold = peak * 10 ** (-45 / 20);
+  const first = levels.findIndex((level) => level >= threshold);
+  const last = levels.findLastIndex((level) => level >= threshold);
+  const start = Math.max(0, first * frame / rate - 0.05);
+  const segue = Math.min(channels[0].length, (last + 1) * frame) / rate;
+  const end = Math.min(channels[0].length / rate, segue + 0.4);
+  return { speech: segue - start, clip: end - start, tail: end - segue };
 }
 
 // *text* as a sentence: the server's reasons have no full stop.
@@ -215,6 +243,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const ending = el("vt-ending");
   const upcoming = el("vt-upcoming");
   const intro = el("vt-intro");
+  const outro = el("vt-outro");
+  const windowText = el("vt-window");
   const closes = el("vt-closes");
   const airs = el("vt-airs");
   const recordButton = el("vt-record");
@@ -226,8 +256,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const timer = el("vt-timer");
   const playback = el("vt-playback");
   const placement = el("vt-placement");
-  const placementDesc = el("vt-placement-desc");
-  const allowOutro = el("vt-allow-outro");
   const listenButton = el("vt-listen");
   const bookButton = el("vt-book");
   const discardButton = el("vt-discard");
@@ -587,21 +615,19 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function renderPlacement() {
     const slot = data?.slot;
-    let text;
-    if (placement.value === "standalone") {
-      text = "The ending song fades, your voice plays, then the next song starts.";
-    } else if (placement.value === "talk_up") {
-      text = slot && slot.upcoming_intro_s == null
-        ? "The next song has no intro point, so your voice plays standalone."
-        : "Your voice plays over the next song's intro and ends as its vocal starts.";
-    } else if (!slot) {
-      text = "Talks up the next song's intro when it is long enough, otherwise plays between the songs.";
-    } else if (slot.auto_placement === "talk_up") {
-      text = `Here, a talk-up: the next song's intro is ${introWords(slot.upcoming_intro_s)}.`;
-    } else {
-      text = `Here, standalone between the songs${slot.auto_note ? `: ${slot.auto_note}` : ""}.`;
-    }
-    setText(placementDesc, text);
+    const available = (slot?.ending_outro_s || 0) + (slot?.upcoming_intro_s || 0);
+    setText(outro, introWords(slot?.ending_outro_s || 0));
+    setText(windowText, introWords(available));
+    const fit = el("vt-fit");
+    if (fit) fit.hidden = !take;
+    if (take) {
+      const speech = take.cues?.speech ?? take.seconds;
+      const forecast = slot?.voice_forecast;
+      const estimate = forecast
+        ? `The voice starts ${introWords(forecast.recording_start_s)} into the ending song; the next song starts ${introWords(forecast.music_entry_s)} after its segue. Full chain speech: ${introWords(forecast.chain_speech_s)}; ${introWords(forecast.speech_without_music_s)} is between songs without music.`
+        : "The playout timing estimate is pending.";
+      setText(el("vt-fit"), `${take.cues ? "Detected speech" : "Recording (speech estimate pending)"}: ${introWords(speech)}${take.cues?.tail ? ` plus ${introWords(take.cues.tail)} tail` : ""}. ${estimate} Original recording: ${introWords(take.seconds)}.`);
+    } else setText(fit, "");
   }
 
   function renderTimer() {
@@ -611,7 +637,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     } else if (take) {
       setText(timer, `Recorded ${clock(take.seconds)}, not booked yet.`);
     } else {
-      setText(timer, `Not recording. A voice track may be up to ${clock(limitSeconds())} long.`);
+      setText(timer, `${clock(limitSeconds())} max`);
     }
   }
 
@@ -684,10 +710,49 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function refresh() {
     const epoch = ++requestEpoch;
+    let url = "/api/voice-tracks";
+    let transitionForecast = false;
+    if (take?.cues?.speech > 0) {
+      const query = new URLSearchParams({
+        speech_s: String(take.cues.speech),
+        tail_s: String(take.cues.tail || 0),
+        placement: placement.value,
+      });
+      const slot = data?.slot;
+      if (slot?.transition_revision && Array.isArray(slot.transition_items) && transitionItems) {
+        const choices = slot.transition_items.filter((item) => item.editable).map((item) => {
+          const row = [...transitionItems.children]
+            .find((candidate) => candidate.dataset.transitionId === item.id);
+          const select = row?.querySelector("select");
+          return {
+            id: item.id,
+            action: select?.value || item.current_action || item.default_action || "replace",
+          };
+        });
+        query.set("transition_revision", slot.transition_revision);
+        query.set("transition_choices", JSON.stringify(choices));
+        transitionForecast = true;
+        slot.voice_forecast = null;
+        renderPlacement();
+      }
+      url += `?${query}`;
+    }
     try {
-      const response = await requestJson("/api/voice-tracks");
+      const response = await requestJson(url);
       if (epoch === requestEpoch) apply(response);
     } catch (problem) {
+      if (epoch === requestEpoch && transitionForecast && problem.status === 409) {
+        const latestEpoch = ++requestEpoch;
+        try {
+          const latest = await requestJson("/api/voice-tracks");
+          if (latestEpoch === requestEpoch) apply(latest);
+        } catch (_) {
+          if (latestEpoch === requestEpoch) {
+            setText(el("vt-fit"), "The transition changed. Refresh the voice tracker to get a new estimate.");
+          }
+        }
+        return;
+      }
       // Shown, not said: the page asks again every few seconds.
       if (epoch === requestEpoch && !data) {
         unavailable.hidden = false;
@@ -716,6 +781,17 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       retarget: null, heard: false, url: objectUrl(blob),
     };
     playback.src = take.url;
+    const recorded = take;
+    recorded.preparing = toWav(blob, rate(), undefined, undefined, (cues) => { recorded.cues = cues; })
+      .then((wav) => {
+        if (take === recorded) {
+          recorded.wav = wav;
+          renderPlacement();
+          void refresh();
+        }
+      }).catch(() => {
+        if (take === recorded) fail(bookButton, "This browser could not prepare the recording. Record it again.");
+      });
   }
 
   const samePair = (open) => open.ending?.id === take.endingId && open.upcoming?.id === take.upcomingId;
@@ -940,6 +1016,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     showTake(blob, seconds, current.slot);
     microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"));
     renderTimer();
+    renderPlacement();
     say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
   }
 
@@ -1038,12 +1115,16 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     try { await withDisabled(button, async () => {
       let wav;
       try {
-        wav = await toWav(recorded.blob, rate());
+        await recorded.preparing;
         if (asked !== generation || take !== recorded) return;
+        wav = recorded.wav;
+        if (!wav) throw new Error("Recording preparation failed");
       } catch (_) {
+        if (asked !== generation) return;
         fail(bookButton, "This browser could not read the recording back. Record it again.");
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       if (wav.size + FORM_BYTES > data.limits.max_bytes) {
         fail(bookButton, "The recording is too large for this station. Record a shorter one.");
         return;
@@ -1053,7 +1134,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       form.append("ending_id", slot.ending.id);
       form.append("upcoming_id", slot.upcoming.id);
       form.append("placement", placement.value);
-      form.append("allow_outro", allowOutro.checked ? "true" : "false");
+      form.append("allow_outro", placement.value === "auto" ? "true" : "false");
       if (slot.transition_revision) {
         form.append("transition_revision", slot.transition_revision);
         form.append("transition_choices", JSON.stringify((slot.transition_items || [])
@@ -1079,6 +1160,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         }
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       dropTake();
       await refresh();
       renderTimer();
@@ -1206,7 +1288,13 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   playback.addEventListener("ended", () => listenButton.setAttribute("aria-pressed", "false"));
   bookButton.addEventListener("click", (event) => void book(event.currentTarget));
   discardButton.addEventListener("click", () => discard());
-  placement.addEventListener("change", renderPlacement);
+  placement.addEventListener("change", () => {
+    renderPlacement();
+    if (take?.cues) void refresh();
+  });
+  transitionItems?.addEventListener("change", (event) => {
+    if (event.target instanceof doc.defaultView.HTMLSelectElement && take?.cues) void refresh();
+  });
   // Alt+R: start or stop from anywhere in the Voice tracks tab, focus staying put.
   doc.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.repeat || event.code !== "KeyR") return;

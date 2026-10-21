@@ -35,9 +35,8 @@ controls with every automatic trigger off.
 1. In **Settings**, **Voice liners**, check **Enable voice liners**.
 2. Set **Every N tracks** and **Every N minutes** to `0`. Set both **Random window
    minimum (minutes)** and **Random window maximum (minutes)** to `0`.
-3. Leave **Talk up to the vocal** off for this example.
-4. Set **Rotation mode** to **Sequential** and **Music duck (dB)** to `3`.
-5. Use **Choose liner file** to select `practice-id.mp3`. Leave **Replace existing file**
+3. Set **Rotation mode** to **Sequential** and **Music duck (dB)** to `3`.
+4. Use **Choose liner file** to select `practice-id.mp3`. Leave **Replace existing file**
    unchecked, then press **Upload**.
 
 These settings save on change; move focus away from a numeric field to finish its
