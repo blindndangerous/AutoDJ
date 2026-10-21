@@ -19,7 +19,7 @@ Each entry gives possible values, the default, and what the setting does. A page
 
 ## Programme review
 
-**Now Playing**, **Programme review** settings apply to the next explicit
+**Library tools**, **Programme review** settings apply to the next explicit
 generation. They are review request values, not new `config.toml` or station
 playback settings. Existing snapshots retain the settings used to make them.
 

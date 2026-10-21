@@ -127,7 +127,10 @@ def build(root: Path, port: int):
     )
     static = Path(__file__).resolve().parents[2] / "src/autodj/static"
     html = re.sub(
-        r"<script\b[^>]*>.*?</script>", "", (static / "index.html").read_text(), flags=re.S
+        r"<script\b[^>]*>.*?</script>",
+        "",
+        (static / "index.html").read_text(encoding="utf-8"),
+        flags=re.S,
     )
     html = html.replace("</body>", '<script type="module" src="/review-audit.js"></script></body>')
 
@@ -138,6 +141,8 @@ def build(root: Path, port: int):
     @app.get("/review-audit.js")
     async def audit_script():
         return Response(
+            'import { initViewRouter } from "/modules/tabs.js";\n'
+            "initViewRouter();\n"
             'import { installProgrammeReview } from "/modules/programme-review.js";\n'
             "window.reviewAudit = installProgrammeReview();\n",
             media_type="text/javascript",

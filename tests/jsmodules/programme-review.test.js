@@ -32,8 +32,16 @@ function harness(overrides = {}) {
 
 beforeEach(() => installIndexMarkup());
 
+it("places Programme review last in Library tools, collapsed by default", () => {
+  const card = get("card");
+  expect(document.querySelector("#panel-library > details.card:last-of-type")).toBe(card);
+  expect(document.querySelector("#panel-now #review-card")).toBeNull();
+  expect(card.open).toBe(false);
+});
+
 it("requests a complete pending edition target and exposes explicit approval readiness", async () => {
   const ready = vi.fn();
+  const openLibrary = vi.spyOn(document.getElementById("tab-library"), "click");
   document.addEventListener("autodj:edition-review-ready", ready, { once: true });
   const request = vi.fn(async (url, options) => {
     if (options?.method === "POST") return { id: "job", status: "done", result_id: "review" };
@@ -50,6 +58,8 @@ it("requests a complete pending edition target and exposes explicit approval rea
   const submitted = JSON.parse(request.mock.calls.find(([, options]) => options?.method === "POST")[1].body);
   expect(submitted).toMatchObject({ source: "edition", edition_id: "edition", target_take_id: "take",
     include_pending: true, selection_start: null, selection_end: null });
+  expect(openLibrary).toHaveBeenCalledOnce();
+  expect(get("card").open).toBe(true);
   expect(ready).toHaveBeenCalledOnce();
   expect(ready.mock.calls[0][0].detail).toMatchObject({ edition_id: "edition", take_id: "take", review_id: "review", revision: 3 });
   expect(request.mock.calls.some(([url]) => url.includes("/approve"))).toBe(false);

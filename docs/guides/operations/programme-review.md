@@ -6,7 +6,7 @@ Generate a private shortened mix, listen to its transitions and keep matching MP
 
 ## Programme review and export
 
-Use **Now Playing**, **Programme review** to hear a shortened planned mix of a
+Use **Library tools**, **Programme review** to hear a shortened planned mix of a
 transition, section or programme and download the same result as MP3 or WAV.
 This is private audio before final broadcast mastering. It neither starts nor
 changes station playout and does not record what actually aired. Automatic
