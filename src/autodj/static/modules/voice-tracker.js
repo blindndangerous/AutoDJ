@@ -335,8 +335,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     setText(microphoneStatus, message);
     if (microphoneStatus) microphoneStatus.hidden = !message;
     if (microphoneSelect) {
-      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-desc vt-microphone-status");
-      else microphoneSelect.setAttribute("aria-describedby", "vt-microphone-desc");
+      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
+      else microphoneSelect.removeAttribute("aria-describedby");
     }
   }
 
@@ -357,8 +357,6 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     renderMicrophones(microphoneListKnown ? !present : null);
     if (selectedMicrophone.id && microphoneListKnown && !present) {
       microphoneNote("The selected microphone is not connected. Choose another microphone or System default.");
-    } else if (!microphoneChoices.some((item) => item.label)) {
-      microphoneNote("Microphone names may appear after you allow access. Unnamed microphones can still be selected.");
     } else if (!testing && !session) microphoneNote("");
     const activeId = testing?.stream?.getAudioTracks?.()[0]?.getSettings?.()?.deviceId;
     if (testing && activeId && microphoneListKnown && !microphoneChoices.some((item) => item.deviceId === activeId)) {

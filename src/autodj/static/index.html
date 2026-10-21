@@ -3068,19 +3068,13 @@
         <p id="vt-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="vt-microphone">Microphone</label>
-          <select id="vt-microphone" aria-describedby="vt-microphone-desc">
+          <select id="vt-microphone">
             <option value="">System default</option>
           </select>
           <button type="button" id="vt-microphone-refresh">Refresh microphones</button>
         </div>
-        <span class="setting-desc" id="vt-microphone-desc">
-          The selected microphone is remembered in this browser. A missing or unavailable selection will not switch to another microphone.
-        </span>
         <p id="vt-microphone-status" class="setting-desc" hidden></p>
-        <button type="button" id="vt-microphone-test" aria-pressed="false" aria-describedby="vt-microphone-test-desc">Test microphone</button>
-        <span class="setting-desc" id="vt-microphone-test-desc">
-          Starts a private microphone monitor through the Preview output device. Use headphones to avoid feedback. Stop the test before recording or listening back.
-        </span>
+        <button type="button" id="vt-microphone-test" aria-pressed="false">Test microphone</button>
         <audio id="vt-microphone-playback" preload="none" hidden data-preview-output></audio>
         <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
         <span class="setting-desc" id="vt-record-desc">
