@@ -325,7 +325,6 @@ class ContinuousMaster:
         self._owed_blocks = 0
         self._stall_started: float | None = None
         self._stall_progress_at = 0.0
-        self._stall_blocks = 0
         self._stall_warning = _StallLog()
         self._stall_recovery = _StallLog()
         self._warmup_started = time.monotonic()
@@ -507,7 +506,6 @@ class ContinuousMaster:
                     self._stall_recovery.stalls += 1
                 self._error = message
                 self._owed_blocks += 1
-                self._stall_blocks += 1
                 for summary in (self._stall_warning, self._stall_recovery):
                     summary.blocks += 1
                     summary.longest = max(summary.longest, now - self._stall_started)
@@ -533,7 +531,6 @@ class ContinuousMaster:
         self._owed_blocks = 0
         self._stall_started = None
         self._stall_progress_at = 0.0
-        self._stall_blocks = 0
 
     def _switch(self, enabled: bool, mode: str | None = None) -> None:
         changing_processor = enabled and self._enabled
