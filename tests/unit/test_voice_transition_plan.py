@@ -10,6 +10,7 @@ from autodj.player import Player
 
 def _plan(items):
     return SimpleNamespace(
+        live=False,
         transition_items=tuple(items),
         transition_order=(),
         slot_id="slot",

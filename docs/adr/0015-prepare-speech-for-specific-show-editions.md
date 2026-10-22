@@ -178,6 +178,29 @@ approval. Operators retain control over deletion and export. Initial limits are
 resource bounds, not measured completion-time or real-time guarantees. Revisit
 them only with deployment evidence.
 
+## Amendment, 2026-10-22: live queue edits and current-airing speech
+
+[Issue #519](https://github.com/blindndangerous/AutoDJ/issues/519) defines a
+current-airing choice when a live queue edit changes an affected handoff. The
+preflight covers the current editable handoff, render-ahead ready handoff, and
+affected pinned slot plans. One revision-bound choice covers the affected
+speech contexts in that replan. **Keep voice track** carries affected speech
+with its changed music pair; a previously eligible prepared-edition recording
+can remain in that pair through an operator-kept copy that retains its source
+asset. **Discard voice track** removes affected speech from the replanned
+contexts only. **Cancel change** leaves the queue untouched. A stale conflict
+requires a fresh choice; a missing choice never approves speech implicitly.
+
+If a voice or liner chain has already started, its original timing and layers
+remain while unheard incoming music is replaced at the original boundary, so
+the speech is not repeated.
+
+This choice does not edit a saved edition, change its approval, or approve an
+ineligible take for future use. Source recordings and saved approval state stay
+under edition ownership. Automatic callers without an operator choice leave the
+protected queue intact and retry; they do not choose to keep or discard speech.
+Hour Preview continues to describe future live points as estimates.
+
 ## Current contracts
 
 Automated selectors identify behavioral checks, not completed execution or ADR
@@ -193,6 +216,7 @@ acceptance. Platform and human listening evidence remains a separate obligation.
 | `ADR-0015-06` | Station source assets survive backup/restore and browser-only authorization applies. | automated | `tests/unit/test_prepared_backup.py::test_backup_restores_editions_and_source_audio_but_not_partial_imports`; `tests/integration/test_prepared_api.py::test_edition_access_and_early_upload_cap` |
 | `ADR-0015-07` | Windows/Chrome/NVDA production, full-target review, approval and listening are demonstrated. | manual | Operator rehearsal occurs after both feature PRs are submitted. Record revision, versions, steps, focus/speech and audible joins; keep the feature open pending evidence. |
 | `ADR-0015-08` | Edits crossing the commit boundary preserve current-run approval honestly and invalidate future PCM. | automated | `tests/unit/test_prepared_tail.py::test_boundary_crossed_after_edit_preflight_freezes_current_run_approval`; `tests/unit/test_prepared_tail.py::test_future_take_edit_is_allowed_while_opening_clip_is_committed`; `tests/unit/test_prepared_api.py::test_closing_approval_succeeds_while_opening_clip_plays`; `tests/unit/test_prepared_tail.py::test_edit_lock_uses_rendered_speech_after_approval_changes` |
+| `ADR-0015-09` | One live queue choice covers affected current, ready and pinned-plan handoffs; keep/discard does not change saved edition approval or delete source audio, started speech retains timing/layers without repetition, and cancel/missing choice leaves the queue unchanged. | automated | `tests/unit/test_live_queue.py::test_keep_copies_prepared_voice_and_preserves_independent_ad_and_news`; `tests/unit/test_live_queue.py::test_discard_drops_only_song_specific_speech_and_intro`; `tests/unit/test_live_queue.py::test_missing_or_cancelled_choice_is_a_conflict`; `tests/unit/test_live_queue.py::test_pinned_slot_plan_breaks_and_intro_are_included_in_atomic_choice`; `tests/unit/test_live_queue.py::test_removed_pinned_ending_prompts_and_transfers_speech_to_replacement`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_server_audio_queue.py::test_bridge_queue_add_requires_a_fresh_voice_choice_and_keeps_speech`; `tests/unit/test_server_audio_queue.py::test_bridge_queue_add_discards_voice_only_after_matching_choice`; `tests/unit/test_server_audio_queue.py::test_cancelled_bridge_queue_add_has_no_mutation_or_approval` |
 
 ## Verification limits
 

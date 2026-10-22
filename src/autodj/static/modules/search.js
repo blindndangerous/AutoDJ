@@ -206,15 +206,15 @@ export function installSearch({
     // appends.  In DMCA mode a song over a limit waits for "Queue anyway".
     const url = now || next ? "/api/play-next" : "/api/queue/add";
     const fields = now || next ? { path, now } : { path };
-    const request = (confirm) => requestJson(url, {
+    const request = (confirm, voice = {}) => requestJson(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(confirm ? { ...fields, confirm: true } : fields),
+      body: JSON.stringify({ ...fields, ...(confirm ? { confirm: true } : {}), ...voice }),
     });
     // Called synchronously in the click (and in the "Play anyway" click):
     // a page that never pressed Play unlocks its audio inside the gesture.
-    const send = (confirm) => withDisabled(
-      btn, () => (now ? playNow(() => request(confirm)) : request(confirm)),
+    const send = (confirm, voice) => withDisabled(
+      btn, () => (now ? playNow(() => request(confirm, voice)) : request(confirm, voice)),
     );
     try {
       const sent = await sendWithDmcaConfirm(searchResults.ownerDocument, send, {

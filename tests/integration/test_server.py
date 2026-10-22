@@ -1413,6 +1413,35 @@ class TestSearch:
 
 
 class TestPlayNext:
+    def test_live_voice_conflict_is_returned_without_losing_its_revision(
+        self, bridge, monkeypatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.live_queue import VoiceQueueConflict
+
+        detail = {
+            "code": "voice_track_conflict",
+            "revision": "current-revision",
+            "message": "This change affects an upcoming voice track.",
+        }
+        received = {}
+
+        def conflict(path, *, now=False, voice_action=None, voice_revision=None):
+            received.update(path=path, action=voice_action, revision=voice_revision)
+            raise VoiceQueueConflict(detail)
+
+        monkeypatch.setattr(bridge, "play_next", conflict)
+        path = bridge.sim.entries[0].path
+        response = TestClient(create_app(bridge)).post(
+            "/api/play-next",
+            json={"path": path, "voice_action": "discard", "voice_revision": "old-revision"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == detail
+        assert received == {"path": path, "action": "discard", "revision": "old-revision"}
+
     def test_play_next_returns_200(self, bridge) -> None:
         from fastapi.testclient import TestClient
 
@@ -2992,6 +3021,37 @@ class TestApiDocsDisabled:
 
 
 class TestQueueEndpoints:
+    @pytest.mark.parametrize(
+        ("url", "body", "method"),
+        [
+            ("/api/queue/remove", {"path": "song.flac"}, "queue_remove"),
+            ("/api/queue/reorder", {"paths": ["song.flac"]}, "queue_reorder"),
+        ],
+    )
+    def test_voice_conflict_choice_fields_reach_queue_mutation_routes(
+        self, bridge, monkeypatch, url, body, method
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from autodj.live_queue import VoiceQueueConflict
+
+        detail = {"code": "voice_track_conflict", "revision": "fresh", "message": "Conflict."}
+        received = {}
+
+        def conflict(*_args, voice_action=None, voice_revision=None, **_kwargs):
+            received.update(action=voice_action, revision=voice_revision)
+            raise VoiceQueueConflict(detail)
+
+        monkeypatch.setattr(bridge, method, conflict)
+        response = TestClient(create_app(bridge)).post(
+            url,
+            json={**body, "voice_action": "keep", "voice_revision": "stale"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == detail
+        assert received == {"action": "keep", "revision": "stale"}
+
     def test_queue_add(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

@@ -45,7 +45,7 @@ The voice tracker's routes answer under ``/api/voice-tracks`` and
 
 Uploads stream to the station's announcements folder under a name the
 server makes up, are decoded off the event loop (one at a time, so a
-burst of uploads cannot starve the render-ahead worker of CPU), and are
+burst of uploads cannot starve the playout worker of CPU), and are
 deleted once the break airs, is dropped or expires.
 """
 
@@ -74,6 +74,8 @@ from autodj.breaks import (
     BREAKS_OFF,
     EXTENSIONS,
     KINDS,
+    QUEUED,
+    RENDERED,
     VOICE_TRACK,
     Break,
     BreakCues,
@@ -197,11 +199,8 @@ def _slot_view(
         speech_end = cue.get("segue") or last
         liner_spans.append((max(0.0, last - first), max(0.0, speech_end - first)))
     desk: BreakDesk = station.breaks
-    active_breaks = {
-        f"break:{item.break_id}"
-        for item in desk.listing()
-        if item.slot_id == plan.slot_id and item.state == "queued"
-    }
+    active_chain = _active_voice_chain(desk, plan)
+    active_breaks = {f"break:{item.break_id}" for item in active_chain}
     actions = dict(plan.transition_actions)
     transition_items = [
         {
@@ -223,9 +222,9 @@ def _slot_view(
         if not item.item_id.startswith("break:") or item.item_id in active_breaks
     ]
     known = {item["id"] for item in transition_items}
-    for item in desk.listing():
+    for item in active_chain:
         key = f"break:{item.break_id}"
-        if item.slot_id == plan.slot_id and item.state == "queued" and key not in known:
+        if key not in known:
             transition_items.append(
                 {
                     "id": key,
@@ -278,7 +277,10 @@ def _slot_view(
         "planned_liner_clip_s": round(sum(clip for clip, _speech in liner_spans), 3),
         "planned_liner_speech_s": round(sum(speech for _clip, speech in liner_spans), 3),
         "pinned": plan.pinned,
-        "breaks_booked": desk.waiting_in(plan.slot_id),
+        "breaks_booked": (
+            len(active_chain) if getattr(plan, "live", False) else desk.waiting_in(plan.slot_id)
+        ),
+        "live": bool(getattr(plan, "live", False)),
         "transition_revision": player._transition_revision(plan),
         "transition_items": transition_items,
         "transition_order": transition_order,
@@ -290,9 +292,41 @@ def _slot_view(
     }
 
 
-def _current_slot(station: StationRuntime) -> dict[str, Any] | None:
+def _voice_slot_status(player: Any) -> tuple[SlotPlan | None, float, float]:
+    """The voice tracker's handoff, using the active pair only while streaming."""
+    if getattr(player, "live_mixing", False):
+        return player.voice_slot_status()
+    return player.slot_status()
+
+
+def _active_voice_chain(desk: BreakDesk, plan: SlotPlan) -> list[Break]:
+    """Breaks in the selected slot plus speech already attached to a live handoff."""
+    live_ids = {
+        item.item_id.removeprefix("break:")
+        for item in plan.transition_items
+        if getattr(plan, "live", False)
+        and item.kind == "booked_voice"
+        and item.item_id.startswith("break:")
+    }
+    return sorted(
+        (
+            item
+            for item in desk.listing()
+            if (
+                item.slot_id == plan.slot_id
+                and item.state in ({QUEUED, RENDERED} if getattr(plan, "live", False) else {QUEUED})
+            )
+            or (item.break_id in live_ids and item.state == RENDERED)
+        ),
+        key=lambda item: (item.kind == "dj", item.created_at),
+    )
+
+
+def _current_slot(station: StationRuntime, *, voice_track: bool = False) -> dict[str, Any] | None:
     """The open slot now, or ``None`` (blocking: it reads the catalog)."""
-    plan, closes_in, airs_in = station.player.slot_status()
+    plan, closes_in, airs_in = (
+        _voice_slot_status(station.player) if voice_track else station.player.slot_status()
+    )
     if plan is None:
         return None
     return _slot_view(station, _Songs(station), plan, closes_in, airs_in)
@@ -312,7 +346,12 @@ def _context(station: StationRuntime, *, voice_track: bool = False) -> dict[str,
         reason = VOICE_TRACK_NEEDS_RENDERER
     elif not player._breaks_on():
         reason = NEEDS_SAVED_POINTS
-    plan, closes_in, airs_in = player.slot_status() if reason is None else (None, 0.0, 0.0)
+    if reason is not None:
+        plan, closes_in, airs_in = None, 0.0, 0.0
+    elif voice_track:
+        plan, closes_in, airs_in = _voice_slot_status(player)
+    else:
+        plan, closes_in, airs_in = player.slot_status()
     if reason is None and plan is None:
         reason = "No song change is open yet; ask again in a few seconds"
     playing = player._playing_render
@@ -421,14 +460,7 @@ def _voice_chain_forecast(
         record = player._library.catalog.record_for_path(entry.path) if player._library else None
         add(points, entry.length, bool(record and record.get("allow_outro", False)))
 
-    queued = sorted(
-        (
-            item
-            for item in desk.listing()
-            if item.slot_id == plan.slot_id and item.state == "queued"
-        ),
-        key=lambda item: (item.kind == "dj", item.created_at),
-    )
+    queued = _active_voice_chain(desk, plan)
     config = desk.config
 
     def add_break(item: Break, dj_followed: bool = False) -> None:
@@ -612,6 +644,12 @@ def install_breaks(router: StationRouter) -> None:
         together.  *who* names the sender in the log; *source* says where
         the break came from.
         """
+        is_voice_track = source == VOICE_TRACK
+        live_voice_track = bool(is_voice_track and getattr(station.player, "live_mixing", False))
+
+        async def current_slot() -> dict[str, Any] | None:
+            return await asyncio.to_thread(_current_slot, station, voice_track=is_voice_track)
+
         if source == ANNOUNCER:
             require_breaks(station, desk)
         elif not station.player.request_voice_track_slot():
@@ -654,7 +692,7 @@ def install_breaks(router: StationRouter) -> None:
                         status_code=422,
                         detail=f"expires_s must be at most {config.max_expires_seconds}",
                     )
-                slot = await asyncio.to_thread(_current_slot, station)
+                slot = await current_slot()
                 if slot is None or slot["slot_id"] != fields.slot_id:
                     return refused(409, "That song change is no longer open", "slot_closed", slot)
                 if (slot["ending"] or {}).get("id") != fields.ending_id or (
@@ -666,6 +704,13 @@ def install_breaks(router: StationRouter) -> None:
                 transition_revision = (
                     fields.transition_revision if isinstance(fields, _VoiceFields) else None
                 )
+                if live_voice_track and transition_revision is None:
+                    return refused(
+                        409,
+                        "The live handoff changed; refresh and choose again",
+                        "transition_changed",
+                        slot,
+                    )
                 transition_choices_text = (
                     fields.transition_choices if isinstance(fields, _VoiceFields) else None
                 )
@@ -713,7 +758,7 @@ def install_breaks(router: StationRouter) -> None:
             assert path is not None  # stored, or the request has already answered
             cues = await decode_one(path, max_seconds)
             if source == VOICE_TRACK:
-                checked_slot = await asyncio.to_thread(_current_slot, station)
+                checked_slot = await current_slot()
                 manual_fit = fields.placement != "standalone"
                 if checked_slot is None or checked_slot["slot_id"] != fields.slot_id:
                     return refused(
@@ -728,14 +773,40 @@ def install_breaks(router: StationRouter) -> None:
                         "pair_changed",
                         checked_slot,
                     )
+                if (
+                    live_voice_track
+                    and checked_slot.get("transition_revision") != transition_revision
+                ):
+                    return refused(
+                        409,
+                        "The live handoff changed; refresh and choose again",
+                        "transition_changed",
+                        checked_slot,
+                    )
                 slot = checked_slot
-                chain = sorted(
-                    (
-                        queued
-                        for queued in desk.listing()
-                        if queued.slot_id == fields.slot_id and queued.state == "queued"
-                    ),
-                    key=lambda queued: (queued.kind == "dj", queued.created_at),
+                chain_plan = None
+                if live_voice_track:
+                    chain_plan, _closes_in, _airs_in = await asyncio.to_thread(
+                        _voice_slot_status, station.player
+                    )
+                    if chain_plan is None or chain_plan.slot_id != fields.slot_id:
+                        return refused(
+                            409,
+                            "That song change is no longer open",
+                            "slot_closed",
+                            checked_slot,
+                        )
+                chain = (
+                    _active_voice_chain(desk, chain_plan)
+                    if chain_plan is not None and chain_plan.slot_id == fields.slot_id
+                    else sorted(
+                        (
+                            queued
+                            for queued in desk.listing()
+                            if queued.slot_id == fields.slot_id and queued.state == QUEUED
+                        ),
+                        key=lambda queued: (queued.kind == "dj", queued.created_at),
+                    )
                 )
                 queued_clip = sum(max(0.0, queued.cues.end - queued.cues.start) for queued in chain)
                 start_at = time.time() + float(checked_slot["airs_in_s"])
@@ -801,7 +872,7 @@ def install_breaks(router: StationRouter) -> None:
                         transition_choices=transition_choices or (),
                     )
             except BreakError as exc:
-                slot = await asyncio.to_thread(_current_slot, station)
+                slot = await current_slot()
                 return refused(exc.status, exc.detail, exc.reason, slot)
             booked = True
         finally:
@@ -813,7 +884,7 @@ def install_breaks(router: StationRouter) -> None:
                 desk.release(break_id, path)
                 if path is not None:
                     await asyncio.shield(asyncio.to_thread(_quiet_unlink, path))
-        slot = await asyncio.to_thread(_current_slot, station)
+        slot = await current_slot()
         view = item.view()
         view["airs_in_s"] = (
             slot["airs_in_s"] if slot and slot["slot_id"] == fields.slot_id else None
@@ -960,13 +1031,11 @@ def install_breaks(router: StationRouter) -> None:
     @router.delete("/voice-tracks/{break_id}")
     async def voice_track_cancel(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Cancel a voice track that is still waiting for its song change."""
-        desk = voice_desk(station)
+        voice_desk(station)
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No voice track has that id")
         try:
-            item = await asyncio.to_thread(
-                desk.cancel, break_id, "cancelled in the voice tracker", VOICE_TRACK
-            )
+            item = await asyncio.to_thread(station.player.cancel_voice_track, break_id)
         except BreakError as exc:
             detail = "No voice track has that id" if exc.status == 404 else exc.detail
             return refused(exc.status, detail, exc.reason, None)
@@ -1081,20 +1150,25 @@ def _voice_context(
     if slot is not None:
         slot["auto_placement"] = "talk_up"
         slot["auto_note"] = None
-        queued = sorted(
-            (
-                item
-                for item in desk.listing()
-                if item.slot_id == slot["slot_id"] and item.state == "queued"
-            ),
-            key=lambda item: (item.kind == "dj", item.created_at),
+        plan, _closes_in, _airs_in = _voice_slot_status(station.player)
+        queued = (
+            _active_voice_chain(desk, plan)
+            if plan is not None and plan.slot_id == slot["slot_id"]
+            else sorted(
+                (
+                    item
+                    for item in desk.listing()
+                    if item.slot_id == slot["slot_id"]
+                    and item.state in ({QUEUED, RENDERED} if slot.get("live", False) else {QUEUED})
+                ),
+                key=lambda item: (item.kind == "dj", item.created_at),
+            )
         )
         slot["queued_chain_speech_s"] = round(sum(item.cues.speech for item in queued), 3)
         slot["queued_chain_clip_s"] = round(
             sum(max(0.0, item.cues.end - item.cues.start) for item in queued), 3
         )
         if speech_s is not None:
-            plan, _closes_in, _airs_in = station.player.slot_status()
             if plan is not None and plan.slot_id == slot["slot_id"]:
                 if transition_choices is not None:
                     revision_for = getattr(station.player, "_transition_revision", None)
@@ -1142,7 +1216,14 @@ def _voice_context(
             "sample_rate": SAMPLE_RATE,
             "max_per_slot": config.max_per_slot,
         },
-        "tracks": [item.view() for item in desk.listing() if item.source == VOICE_TRACK],
+        "tracks": [
+            {
+                **item.view(),
+                "cancellable": station.player.can_cancel_voice_track(item.break_id),
+            }
+            for item in desk.listing()
+            if item.source == VOICE_TRACK
+        ],
     }
 
 

@@ -1087,7 +1087,14 @@ class RequestDesk:
             cursor = candidate_slot.clock_next
         return None
 
-    def _queue_where_it_fits(self, entry: IndexEntry, *, operator: bool = False) -> Placement:
+    def _queue_where_it_fits(
+        self,
+        entry: IndexEntry,
+        *,
+        operator: bool = False,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> Placement:
         """Place *entry* and queue it there (:meth:`PlayerBridge.insert_request`).
 
         The place is checked against the queue as it is when the song is
@@ -1107,7 +1114,14 @@ class RequestDesk:
                 else None
             )
 
-        self.bridge.insert_request(entry, self._horizon(), choose, with_view=True)
+        self.bridge.insert_request(
+            entry,
+            self._horizon(),
+            choose,
+            with_view=True,
+            voice_action=voice_action,
+            voice_revision=voice_revision,
+        )
         return chosen[-1]
 
     def _coming_up(self, entry: IndexEntry) -> bool:
@@ -1158,6 +1172,8 @@ class RequestDesk:
                 "The station has many requests waiting already. Please try again later.",
                 retry_after=600,
             )
+        from autodj.live_queue import VoiceQueueConflict
+
         try:
             placement = self._queue_where_it_fits(entry) if auto else self._placement(entry)
         except QueueChanged:
@@ -1166,6 +1182,28 @@ class RequestDesk:
                 "The station is busy",
                 "The station's queue was changing. Please send the request again.",
                 retry_after=5,
+            )
+        except VoiceQueueConflict:
+            # Auto approval cannot make a voice choice on the listener's
+            # behalf. Keep the request pending so the operator can decide.
+            if len(self.book.pending()) >= cfg.max_pending:
+                return Outcome(
+                    429,
+                    "Too many requests waiting",
+                    "The station has many requests waiting already. Please try again later.",
+                    retry_after=600,
+                )
+            note = (
+                "Waiting for an operator: changing the queue would affect an upcoming voice track."
+            )
+            self.accepted.hit(address)
+            self.book.add(entry, name, PENDING, note)
+            logger.info("Listener request waiting for voice-track choice: %s", entry.display_name)
+            return Outcome(
+                200,
+                "Request received",
+                f"Thanks{_for(name)}. {_song(entry)} is waiting for an operator's choice "
+                "because the change would affect an upcoming voice track.",
             )
         can_wait = placement.slot is None and (
             "no smooth spot" in placement.problems
@@ -1269,7 +1307,13 @@ class RequestDesk:
             raise LookupError("The song is no longer in the library.")
         return request, entry
 
-    def approve(self, request_id: str) -> ListenerRequest:
+    def approve(
+        self,
+        request_id: str,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> ListenerRequest:
         """Queue a waiting request where it fits best.
 
         Raises:
@@ -1280,7 +1324,12 @@ class RequestDesk:
         with self._lock:
             request, entry = self._waiting(request_id)
             try:
-                placement = self._queue_where_it_fits(entry, operator=True)
+                placement = self._queue_where_it_fits(
+                    entry,
+                    operator=True,
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
             except QueueChanged as exc:
                 raise ValueError(f"{exc} Try again.") from exc
             if placement.slot is None:
@@ -1292,7 +1341,13 @@ class RequestDesk:
             self.book.decide(request, QUEUED, placement.note, placement.bridges)
             return request
 
-    def play_next(self, request_id: str) -> ListenerRequest:
+    def play_next(
+        self,
+        request_id: str,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> ListenerRequest:
         """Queue a waiting request first, whatever fits; DMCA limits still hold.
 
         They hold for the queued songs after it too: a limit one of them
@@ -1319,7 +1374,13 @@ class RequestDesk:
                 )
 
             try:
-                self.bridge.insert_request(entry, 0.0, choose)
+                self.bridge.insert_request(
+                    entry,
+                    0.0,
+                    choose,
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
             except QueueChanged as exc:
                 raise ValueError(f"{exc} Try again.") from exc
             if first[-1].dmca:

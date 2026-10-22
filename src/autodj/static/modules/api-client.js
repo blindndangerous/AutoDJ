@@ -18,11 +18,12 @@ export function isAuthenticatedRequestCurrent(epoch) {
 class ApiError extends Error {
   // field: the request field the server blamed, when it named one (the
   // schedule form focuses it).
-  constructor(message, { status = null, cause, field = null } = {}) {
+  constructor(message, { status = null, cause, field = null, detail = null } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "ApiError";
     this.status = status;
     this.field = field;
+    this.detail = detail;
   }
 }
 
@@ -199,7 +200,11 @@ async function checkedResponse(response) {
   if (!response.ok) {
     throw new ApiError(
       payloadMessage(payload, httpFailureText(response.status)),
-      { status: response.status, field: typeof payload?.field === "string" ? payload.field : null },
+      {
+        status: response.status,
+        field: typeof payload?.field === "string" ? payload.field : null,
+        detail: payload?.detail ?? null,
+      },
     );
   }
   if (refusedPayload(payload)) {

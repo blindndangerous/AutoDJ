@@ -13,7 +13,7 @@ from .stereo import SAMPLE_RATE, audio_buffer
 
 
 @dataclass(frozen=True)
-class Handoff:
+class Handoff[Audio]:
     """One current-track chunk and the tail to overlay after music entry.
 
     ``segue_s``, ``incoming_s``, ``liner_s``, and ``fade_start_s`` use the
@@ -23,16 +23,32 @@ class Handoff:
     the whole render without copying the track again.
     """
 
-    audio: np.ndarray
-    next_overlay: np.ndarray
+    audio: Audio
+    next_overlay: Audio
     next_start_offset: int
     start_offset: int
     segue_s: float
     incoming_s: float
     liner_s: float | None
     fade_start_s: float
-    full_audio: np.ndarray
+    full_audio: Audio
     overlay_gain: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class HandoffTiming:
+    """Frame positions for one saved-point handoff, planned without PCM arrays."""
+
+    chunk_start: int
+    start_frame: int
+    end_frame: int
+    segue_frame: int
+    incoming_frame: int
+    next_start_offset: int
+    liner_start: int | None
+    fade_start: int
+    fade_end: int
+    overlay_end: int
 
 
 #: How long the music takes to drop under a ducked voice, and to come back.
@@ -197,15 +213,15 @@ def _audio(value: np.ndarray | None, name: str, *, optional: bool = False) -> np
     return value
 
 
-def render_handoff(
-    outgoing: np.ndarray,
+def plan_handoff(
+    outgoing_frames: int,
     outgoing_points: dict[str, Any],
     incoming_points: dict[str, Any],
     *,
     start_offset: int = 0,
     liner_start_offset: int = 0,
     fade_seconds: float = 1.5,
-    liner: np.ndarray | None = None,
+    liner_frames: int = 0,
     overlap_start: float | None = None,
     liner_segue: float | None = None,
     outro_lead_limit: float | None = 0.0,
@@ -213,23 +229,12 @@ def render_handoff(
     duck_db: float = 0.0,
     liner_duck_spans: tuple[tuple[float, float], ...] = (),
     liner_duck_db: float = 0.0,
-) -> Handoff:
-    """Plan a handoff from saved points without rendering incoming music.
-
-    The current chunk ends at the actual incoming music entry. Any outgoing
-    fade tail and the remaining voice tail are returned as ``next_overlay``.
-    Point times are seconds in their source files; offsets are sample frames.
-    ``liner_start_offset`` excludes music already played by the preceding render.
-    ``liner_segue`` is relative to the retained liner audio, excluding its tail.
-    Blank overlap uses that segue; zero permits fitting under the incoming intro.
-    A negative overlap starts the liner after music, capped by the remaining intro.
-    ``outro_lead_limit`` bounds how early a liner chain may start before the song
-    segue: zero for an ID, None for voices, or an ID's offset after preceding voices.
-    """
-    checked = _audio(outgoing, "outgoing")
-    assert checked is not None
-    outgoing = checked
-    liner = _audio(liner, "liner", optional=True)
+) -> HandoffTiming:
+    """Plan handoff positions from durations and cue points, without reading audio."""
+    if type(outgoing_frames) is not int or outgoing_frames < 0:
+        raise ValueError("outgoing_frames must be a non-negative sample count")
+    if type(liner_frames) is not int or liner_frames < 0:
+        raise ValueError("liner_frames must be a non-negative sample count")
     if not isinstance(outgoing_points, dict) or not isinstance(incoming_points, dict):
         raise ValueError("point sets must be dictionaries")
     if type(start_offset) is not int or start_offset < 0:
@@ -257,14 +262,13 @@ def render_handoff(
                 else "outro_lead_limit must be a non-negative finite number or None"
             )
 
-    frame_count = len(outgoing)
     start_frame = min(
-        _frames(max(0.0, _point(outgoing_points, "start") or 0.0), "start"), frame_count
+        _frames(max(0.0, _point(outgoing_points, "start") or 0.0), "start"), outgoing_frames
     )
     end_point = _point(outgoing_points, "end")
     end_frame = min(
-        max(start_frame, _frames(end_point, "end")) if end_point is not None else frame_count,
-        frame_count,
+        max(start_frame, _frames(end_point, "end")) if end_point is not None else outgoing_frames,
+        outgoing_frames,
     )
     segue_point = _point(outgoing_points, "segue")
     if segue_point is None:
@@ -280,14 +284,13 @@ def render_handoff(
     )
     next_start_offset = _frames(incoming_start, "start")
 
-    liner_frames = len(liner) if liner is not None else 0
     main_end = _point({"liner_segue": liner_segue}, "liner_segue")
     main_frames = (
         liner_frames
         if main_end is None
         else min(liner_frames, max(0, _frames(main_end, "liner_segue")))
     )
-    if liner is None:
+    if liner_frames == 0:
         liner_start = None
         incoming_frame = segue_frame
     else:
@@ -314,9 +317,98 @@ def render_handoff(
     fade_frames = _frames(float(fade_seconds), "fade_seconds")
     fade_start = max(start_frame, segue_frame - fade_frames // 3)
     fade_end = min(end_frame, fade_start + fade_frames)
-    fade_start_s = fade_start / SAMPLE_RATE
     incoming_frame = max(incoming_frame, start_frame)
     chunk_start = min(max(start_offset, start_frame), incoming_frame)
+    overlay_end = max(
+        incoming_frame,
+        fade_end,
+        (liner_start + liner_frames) if liner_start is not None else incoming_frame,
+    )
+    if liner_start is not None:
+        for spans, depth in ((duck_spans, duck_db), (liner_duck_spans, liner_duck_db)):
+            if depth < 0 and spans:
+                overlay_end = max(
+                    overlay_end,
+                    liner_start
+                    + max(_frames(last, "duck span") for _, last in spans)
+                    + _frames(DUCK_RAMP_SECONDS, "duck ramp"),
+                )
+        for depth in (duck_db, liner_duck_db):
+            if not math.isfinite(depth):
+                raise ValueError("duck_db must be finite")
+    return HandoffTiming(
+        chunk_start,
+        start_frame,
+        end_frame,
+        segue_frame,
+        incoming_frame,
+        next_start_offset,
+        liner_start,
+        fade_start,
+        fade_end,
+        overlay_end,
+    )
+
+
+def render_handoff(
+    outgoing: np.ndarray,
+    outgoing_points: dict[str, Any],
+    incoming_points: dict[str, Any],
+    *,
+    start_offset: int = 0,
+    liner_start_offset: int = 0,
+    fade_seconds: float = 1.5,
+    liner: np.ndarray | None = None,
+    overlap_start: float | None = None,
+    liner_segue: float | None = None,
+    outro_lead_limit: float | None = 0.0,
+    duck_spans: tuple[tuple[float, float], ...] = (),
+    duck_db: float = 0.0,
+    liner_duck_spans: tuple[tuple[float, float], ...] = (),
+    liner_duck_db: float = 0.0,
+) -> Handoff[np.ndarray]:
+    """Plan a handoff from saved points without rendering incoming music.
+
+    The current chunk ends at the actual incoming music entry. Any outgoing
+    fade tail and the remaining voice tail are returned as ``next_overlay``.
+    Point times are seconds in their source files; offsets are sample frames.
+    ``liner_start_offset`` excludes music already played by the preceding render.
+    ``liner_segue`` is relative to the retained liner audio, excluding its tail.
+    Blank overlap uses that segue; zero permits fitting under the incoming intro.
+    A negative overlap starts the liner after music, capped by the remaining intro.
+    ``outro_lead_limit`` bounds how early a liner chain may start before the song
+    segue: zero for an ID, None for voices, or an ID's offset after preceding voices.
+    """
+    checked = _audio(outgoing, "outgoing")
+    assert checked is not None
+    outgoing = checked
+    liner = _audio(liner, "liner", optional=True)
+    timing = plan_handoff(
+        len(outgoing),
+        outgoing_points,
+        incoming_points,
+        start_offset=start_offset,
+        liner_start_offset=liner_start_offset,
+        fade_seconds=fade_seconds,
+        liner_frames=len(liner) if liner is not None else 0,
+        overlap_start=overlap_start,
+        liner_segue=liner_segue,
+        outro_lead_limit=outro_lead_limit,
+        duck_spans=duck_spans,
+        duck_db=duck_db,
+        liner_duck_spans=liner_duck_spans,
+        liner_duck_db=liner_duck_db,
+    )
+    end_frame = timing.end_frame
+    segue_frame = timing.segue_frame
+    incoming_frame = timing.incoming_frame
+    next_start_offset = timing.next_start_offset
+    liner_start = timing.liner_start
+    fade_start = timing.fade_start
+    fade_end = timing.fade_end
+    chunk_start = timing.chunk_start
+    overlay_end = timing.overlay_end
+    fade_start_s = fade_start / SAMPLE_RATE
 
     def outgoing_segment(first: int, last: int) -> np.ndarray:
         # A long track's chunk goes to a mapped file, not ordinary memory.
@@ -340,29 +432,12 @@ def render_handoff(
             )
         return result
 
-    overlay_end = max(
-        incoming_frame,
-        fade_end,
-        (liner_start + liner_frames) if liner_start is not None else incoming_frame,
-    )
-    if liner_start is not None:
-        for spans, depth in ((duck_spans, duck_db), (liner_duck_spans, liner_duck_db)):
-            if depth < 0 and spans:
-                # Keep the incoming head through release so the next chunk cannot jump up.
-                overlay_end = max(
-                    overlay_end,
-                    liner_start
-                    + max(_frames(last, "duck span") for _, last in spans)
-                    + _frames(DUCK_RAMP_SECONDS, "duck ramp"),
-                )
     # One buffer for the chunk and the overlay, split at the incoming frame.
     full = outgoing_segment(chunk_start, overlay_end)
     split = max(0, incoming_frame - chunk_start)
     envelope = None
     if liner is not None and liner_start is not None:
         for spans, depth in ((duck_spans, duck_db), (liner_duck_spans, liner_duck_db)):
-            if not math.isfinite(depth):
-                raise ValueError("duck_db must be finite")
             if not spans or depth >= 0:
                 continue
             gain = duck_envelope(
@@ -384,7 +459,7 @@ def render_handoff(
             full *= envelope[:, None]
     if liner is not None and liner_start is not None:
         first = max(chunk_start, liner_start)
-        last = min(overlay_end, liner_start + liner_frames)
+        last = min(overlay_end, liner_start + len(liner))
         if last > first:
             full[first - chunk_start : last - chunk_start] += liner[
                 first - liner_start : last - liner_start

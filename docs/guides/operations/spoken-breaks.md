@@ -11,14 +11,12 @@ about the songs, news, weather or music news. It asks AutoDJ which song change i
 writes a break for that pair of songs, and uploads it. AutoDJ mixes the break into that song
 change, reports when it airs, and deletes the file afterwards.
 
-AutoDJ prepares each song change one song ahead: while one song plays, the next one is already
-rendered together with its handoff. So a break cannot join the change that is coming up; it joins
-the one after, the *open slot*. As soon as the next song is rendered, AutoDJ also picks the song
-that follows it, so the open slot names both songs: the one the break follows (*ending*) and the
-one it leads into (*upcoming*). A break booked for the slot pins that pair: the upcoming song
-stays, whatever happens to the queue, because the break names it. A song queued after the booking
-plays after the upcoming song. News and weather therefore air about one song later than a system
-that splices them in at once.
+External announcer uploads still use a future *open slot*, naming the song the break follows
+(*ending*) and the song it leads into (*upcoming*). This path schedules speech in advance even
+in stream mode; it differs from the browser voice tracker's current-song handoff. Local server
+output pins a booked pair. Streaming queue edits can change unheard music with the associated
+speech choice: keep, discard, or cancel the edit. News and weather uploaded through this path
+therefore retain their advance booking deadline.
 
 ## Turning breaks on
 
@@ -113,8 +111,12 @@ browser sends, is refused: these routes are for programs only.
 
 ## Voice tracking from the browser
 
-The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
-change, using the same booking desk as announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
+The **Voice tracks** tab records a DJ break with your microphone, using the same booking desk as
+announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)). In stream
+mode it targets the currently airing song and its selected successor. The booking window stays open
+until the current song's Outro, or closes earlier if existing speech or a tail begins before it.
+AutoDJ calculates the cutoff after decoding and checks it again atomically when it installs the
+take. Local server output retains its advance slot and render deadline.
 It works with server audio or stream output and saved-point transitions, even when external
 announcer uploads are off. Browser playback and stopped stations cannot render these tracks.
 Opening the tab requests advance slot planning; an unused tracker adds no planning work. No token
@@ -124,10 +126,9 @@ The browser lets a page use the microphone only over a secure connection: open A
 or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
 another computer the tab says so instead of recording.
 
-The tab shows the open song change: the ending song, the next song, how long the next song's
-intro is, the time left to book it and roughly when it airs. That change is the one after the next
-song, because the next one is already mixed. The time left counts down on the page; it is not
-read out on its own.
+The tab shows the open song change: the ending song, its selected successor, how long
+the next song's intro is, the time left to book it and roughly when it airs. The time left counts
+down on the page; it is not read out on its own.
 
 Choose **Microphone** before recording. The choice is remembered in this browser;
 **System default** forgets it. **Refresh microphones** updates the list; names may
@@ -150,8 +151,9 @@ The monitor never books a take or joins the station output.
    The tab shows usable outro, intro, recorded and detected speech lengths, and the estimated
    voice start, next-song entry and speech without song music. After WAV preparation, the
    estimate includes the planned liner and queued-break cues and uses the playout timing rules;
-   changing placement refreshes it. Time left to book is a separate render-ahead deadline: a
-   longer outro does not extend it.
+   changing placement refreshes it. The booking cutoff is calculated after decoding and checked
+   again when the take is installed. In stream mode it is the current song's Outro, or earlier if existing
+   speech or a tail begins before it.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
@@ -192,8 +194,10 @@ blocked or missing microphone or a Cancel that failed, are shown under the Recor
 linked to the control they are about.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
-aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
-song change. Voice tracks share the queue, per-song-change and disk quota limits with announcer
+aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In stream mode,
+it can also remove a recording installed in the current handoff before the affected speech or
+ducking starts. The server checks this again when applying the cancellation; audio already heard
+is preserved. Voice tracks share the queue, per-song-change and disk quota limits with announcer
 breaks: `max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
 `requests_per_minute` for the station.
 

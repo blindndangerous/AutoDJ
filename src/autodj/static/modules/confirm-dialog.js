@@ -113,3 +113,41 @@ export function confirmAction(doc, {
     cancelButton?.focus();
   });
 }
+
+// Three-way choice for a server conflict. It uses the same native modal,
+// title, focus handling, and button styling as ordinary confirmations.
+export async function chooseAction(doc, {
+  title, message, choices,
+}) {
+  const dialog = doc.getElementById("confirm-dialog");
+  const acceptButton = doc.getElementById("confirm-accept");
+  const cancelButton = doc.getElementById("confirm-cancel");
+  if (!dialog || dialog.open || !acceptButton || !cancelButton
+      || acceptButton.parentElement !== cancelButton.parentElement || choices.length !== 3) return null;
+
+  const [acceptLabel, alternateLabel, cancelLabel] = choices;
+  const originalCancel = cancelButton.textContent;
+  const alternate = doc.createElement("button");
+  alternate.type = "button";
+  alternate.textContent = alternateLabel;
+  const actions = acceptButton.parentElement;
+  actions.append(acceptButton, alternate, cancelButton);
+  cancelButton.textContent = cancelLabel;
+  const discard = (event) => {
+    event.preventDefault();
+    releaseDialogFocus(dialog);
+    dialog.close("alternate");
+  };
+  alternate.addEventListener("click", discard);
+  try {
+    const accepted = await confirmAction(doc, {
+      title, message, confirmLabel: acceptLabel,
+    });
+    return accepted ? "accept" : dialog.returnValue === "alternate" ? "alternate" : null;
+  } finally {
+    alternate.removeEventListener("click", discard);
+    alternate.remove();
+    actions.append(cancelButton, acceptButton);
+    cancelButton.textContent = originalCancel;
+  }
+}

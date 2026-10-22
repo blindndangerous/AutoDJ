@@ -38,6 +38,16 @@ describe("requestJson response checks", () => {
     });
   });
 
+  it("preserves structured error detail for conflict handling", async () => {
+    await expect(requestAnswered(jsonResponse(
+      { detail: { code: "voice_track_conflict", revision: "rev-7", message: "A voice track is upcoming." } },
+      { status: 409 },
+    ))).rejects.toMatchObject({
+      status: 409,
+      detail: { code: "voice_track_conflict", revision: "rev-7", message: "A voice track is upcoming." },
+    });
+  });
+
   it("rejects HTML, malformed JSON, and application-level failure", async () => {
     const html = new globalThis.Response("<h1>proxy failed</h1>", {
       status: 502,

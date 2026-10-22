@@ -12,7 +12,7 @@ was; a file that is not a file of rules is set aside as ``.bad-<id>``; one
 that cannot be read just now is left alone, the rules last read are used and
 saves are refused.
 
-:meth:`IntroRules.choose` runs on the render-ahead thread and rolls on the
+:meth:`IntroRules.choose` runs on the render-ahead worker and rolls on the
 matched intros' own random source, never the picker's.  A liner folder's
 clips are gathered by :meth:`IntroRules.upkeep` on the station's tick, so a
 render does not walk a large liner library; and at most :data:`MAX_TRIES`

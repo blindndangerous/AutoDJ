@@ -78,6 +78,18 @@ approval and continues without interruption. **Current committed audio continues
 is reported explicitly. Approval changes cannot retract audio already committed
 in this run; later uncommitted buffers are rebuilt without ineligible speech.
 
+During live streaming, a queue change can affect speech in the current editable
+handoff, the render-ahead ready handoff, or an affected pinned slot plan. One
+choice applies to those affected speech contexts: choose **Keep voice track**
+to carry the speech with its changed music pair, **Discard voice track** to
+remove it from the changed contexts, or **Cancel change** to leave the queue
+alone. If a voice or liner chain has already started, its timing and layers stay
+in place while unheard incoming music changes at the original boundary; the
+speech does not repeat. This does not alter the saved edition, its approval, or
+its source recording. If the prepared take is no longer eligible, keeping it
+for this one replan does not approve it for reuse. A stale choice requires a
+fresh confirmation.
+
 ## Schedule, re-air and resume
 
 Use **Air at (station time)**, **Schedule timing**, then **Schedule edition**, or

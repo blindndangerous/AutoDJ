@@ -2774,8 +2774,8 @@ describe("static accessibility contracts", () => {
     const help = document.getElementById("hour-preview-desc");
     expect(span.hasAttribute("aria-describedby")).toBe(false);
     expect(help.hidden).toBe(false);
-    expect(help.textContent).toContain("Fixed items");
-    expect(help.textContent).toContain("predicted items can change");
+    expect(help.textContent).toContain("Estimated start times");
+    expect(help.textContent).toContain("Upcoming audio can change");
     const button = document.getElementById("hour-preview-refresh");
     expect(button.getAttribute("type")).toBe("button");
     expect(button.textContent.trim()).toBe("Refresh preview");

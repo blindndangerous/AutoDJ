@@ -66,6 +66,9 @@ function fakeServer() {
     if (url.startsWith("/api/voice-tracks") && method === "GET") {
       const { calls: _calls, refuse: _refuse, ...view } = server;
       const response = JSON.parse(JSON.stringify(view));
+      response.tracks = response.tracks.map((track) => ({
+        ...track, cancellable: track.cancellable ?? track.state === "queued",
+      }));
       const query = Object.fromEntries((url.split("?")[1] || "").split("&")
         .filter(Boolean).map((part) => part.split("=").map(decodeURIComponent)));
       if (query.speech_s && response.slot) {
@@ -109,7 +112,7 @@ function fakeServer() {
     const match = url.match(/^\/api\/voice-tracks\/([0-9a-f]+)$/);
     if (match && method === "DELETE") {
       server.tracks = server.tracks.map((track) => (track.break_id === match[1]
-        ? { ...track, state: "dropped", reason: "cancelled in the voice tracker" } : track));
+        ? { ...track, state: "dropped", cancellable: false, reason: "cancelled in the voice tracker" } : track));
       return server.tracks.find((track) => track.break_id === match[1]);
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -918,10 +921,10 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("There is no recording to discard."));
   });
 
-  it("cancels a booked track and moves focus to the list heading when its button goes", async () => {
+  it.each(["queued", "rendered"])("cancels a cancellable %s track and preserves focus", async (state) => {
     const { controls, server } = tracker();
     server.tracks = [{
-      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued",
+      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state, cancellable: true,
       slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
     }];
     await controls.refresh();

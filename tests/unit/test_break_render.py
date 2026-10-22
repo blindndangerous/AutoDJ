@@ -189,7 +189,15 @@ def test_manual_standalone_forecast_excludes_the_outgoing_fade(station):
     player, (a, b, _c, _d), _points, desk = station
     player._cfg.playback.crossfade_seconds = 1.5
     slot_id = new_id()
-    plan = SimpleNamespace(slot_id=slot_id, ending=a, upcoming=b, liners=(), ending_offset_s=0)
+    plan = SimpleNamespace(
+        slot_id=slot_id,
+        ending=a,
+        upcoming=b,
+        liners=(),
+        ending_offset_s=0,
+        live=False,
+        transition_items=(),
+    )
     forecast = _voice_chain_forecast(
         SimpleNamespace(player=player, breaks=desk), plan, 3.0, 0.4, "standalone"
     )
@@ -753,7 +761,13 @@ def test_voice_forecast_matches_rendered_prefix_chain(station, rate, intro, over
     player.music_playback_rate = lambda _entry: rate
     slot_id = "a" * 32
     plan = SimpleNamespace(
-        slot_id=slot_id, ending=a, upcoming=b, liners=((liner, False),), ending_offset_s=0
+        slot_id=slot_id,
+        ending=a,
+        upcoming=b,
+        liners=((liner, False),),
+        ending_offset_s=0,
+        live=False,
+        transition_items=(),
     )
     # A queued news clip has its own tail and must remain between the songs.
     news = make_break(desk, slot_id, kind="news", seconds=1.1)

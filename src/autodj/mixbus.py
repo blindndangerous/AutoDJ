@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -14,10 +15,12 @@ import numpy as np
 
 from autodj.eq import apply_eq, make_eq_filters, make_eq_state, ramp_eq, reset_eq_state
 from autodj.kernels import duck_and_mix_in_place, nan_to_num_in_place
+from autodj.live_audio import AudioPending, BufferedFile, LiveAudio, read_audio
 from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
     from autodj.beatmatch import Glide
+    from autodj.breaks import Break
     from autodj.indexer import IndexEntry
     from autodj.live import LiveDesk, LiveSource, PcmBuffer
 
@@ -111,7 +114,7 @@ class RenderedTrack:
     """
 
     entry: IndexEntry
-    audio: np.ndarray
+    audio: np.ndarray | LiveAudio
     next_entry: IndexEntry | None
     next_start_offset: int
     transition_fx: str
@@ -149,8 +152,11 @@ class RenderedTrack:
     next_clock_revision: int | None = None
     next_clock_name: str | None = None
     liner_plan_key: str = ""
+    live_source: BufferedFile | None = None
+    next_live_source: BufferedFile | None = None
     incoming_intro: object | None = None
-    full_audio: np.ndarray | None = None
+    voice_breaks: tuple[Break, ...] = ()
+    full_audio: np.ndarray | LiveAudio | None = None
     source_start_offset: int = 0
     playback_rate: float = 1.0
     next_playback_rate: float = 1.0
@@ -315,7 +321,10 @@ class MixBus:
         self._events = events
         self._eq_gains = eq_gains
         self._clock: Clock = clock or SystemClock()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._handoff_hold: tuple[RenderedTrack, int] | None = None
+        self._unannounced: RenderedTrack | None = None
+        self.underruns = 0
         self._outputs: list[Output] = []
         self._master: MasterProcessor | None = None
         self._master_enabled: Callable[[], bool] = lambda: False
@@ -577,7 +586,12 @@ class MixBus:
             return None
         blend = min(_TAIL_BLEND_FRAMES, len(audio))
         dry = np.zeros((blend, 2), np.float32)
-        piece = tail.track.audio[self._pos : self._pos + blend]
+        try:
+            piece = read_audio(
+                tail.track.audio, self._pos, min(len(tail.track.audio), self._pos + blend)
+            )
+        except (AudioPending, OSError, RuntimeError, ValueError):
+            return None
         dry[: len(piece)] = piece
         mix = np.linspace(0.0, 1.0, blend, dtype=np.float32)[:, None]
         audio[:blend] = dry * (1.0 - mix) + audio[:blend] * mix
@@ -592,6 +606,46 @@ class MixBus:
                 and not self._skip_fade
                 and self._tail is None
             )
+
+    @contextlib.contextmanager
+    def queue_edit_guard(self) -> Iterator[None]:
+        """Keep a control edit and its audible-boundary check atomic."""
+        with self._lock:
+            yield
+
+    def incoming_started(self, track: RenderedTrack) -> bool:
+        with self._lock:
+            return self._current is track and self._pos > len(track.audio) - track.overlap_frames
+
+    def live_position(self, track: RenderedTrack) -> int:
+        with self._lock:
+            return self._pos if self._current is track else 0
+
+    def current_render(self) -> RenderedTrack | None:
+        with self._lock:
+            return self._current
+
+    def hold_handoff(self, track: RenderedTrack) -> None:
+        """Let current audio continue, but never air an explicitly displaced song."""
+        with self._lock:
+            boundary = len(track.audio) - track.overlap_frames
+            if self._current is track and self._pos <= boundary:
+                self._handoff_hold = (track, boundary)
+
+    def replace_live_plan(self, expected: RenderedTrack, replacement: RenderedTrack) -> bool:
+        with self._lock:
+            boundary = len(expected.audio) - expected.overlap_frames
+            if self._current is not expected or self._pos > boundary:
+                return False
+            if len(replacement.audio) < self._pos:
+                return False
+            self._current = replacement
+            if self._unannounced is expected:
+                self._unannounced = replacement
+            self._handoff_hold = None
+            if self._liner_cue is not None and self._liner_cue.track is expected:
+                self._liner_cue.track = replacement
+            return True
 
     def replace_unheard_tail(
         self, expected: RenderedTrack, replacement: RenderedTrack, *, before_frame: int
@@ -755,6 +809,8 @@ class MixBus:
             self._playing = False
             self._current = None
             self._pos = 0
+            self._handoff_hold = None
+            self._unannounced = None
             self._skip_fade = 0
             self._tail = None
             self._drop_liner()
@@ -775,7 +831,9 @@ class MixBus:
     def _advance(self, pending: list[Callable[[], None]]) -> None:
         """Pull the next track and queue announcing it, holding the bus lock."""
         self._current = self._events.on_need_track()
+        self._unannounced = None
         self._pos = 0
+        self._handoff_hold = None
         self._skip_fade = 0
         self._tail = None
         if self._liner_cue is not None and self._liner_cue.track is not self._current:
@@ -783,7 +841,16 @@ class MixBus:
             self._cued_liner = None
         if self._current is not None:
             track = self._current
+            if isinstance(track.audio, LiveAudio):
+                self._unannounced = track
+            else:
+                pending.append(lambda: self._events.on_track_start(track))
+
+    def _announce_live_audio(self, pending: list[Callable[[], None]]) -> None:
+        track = self._unannounced
+        if track is not None:
             pending.append(lambda: self._events.on_track_start(track))
+            self._unannounced = None
 
     def _music(self, frames: int, pending: list[Callable[[], None]]) -> np.ndarray:
         """Fill *frames* of music from the current (and subsequent) tracks.
@@ -800,9 +867,20 @@ class MixBus:
             and current is not None
             and self._tail is None
             and not self._skip_fade
+            and self._handoff_hold is None
             and self._pos + frames <= len(current.audio)
         ):
-            chunk = current.audio[self._pos : self._pos + frames]
+            try:
+                chunk = read_audio(current.audio, self._pos, self._pos + frames)
+            except AudioPending:
+                self.underruns += 1
+                return np.zeros((frames, 2), np.float32)
+            except (OSError, RuntimeError, ValueError):
+                logger.exception("Streaming decode failed; skipping %s", current.entry.path)
+                self._current = None
+                self._unannounced = None
+                return np.zeros((frames, 2), np.float32)
+            self._announce_live_audio(pending)
             self._pos += frames
             self._check_cue(current, self._pos)
             if self._pos >= len(current.audio):
@@ -822,12 +900,27 @@ class MixBus:
                 continue
             audio = self._current.audio
             take = min(frames - filled, len(audio) - self._pos)
+            if self._handoff_hold is not None and self._handoff_hold[0] is self._current:
+                take = min(take, self._handoff_hold[1] - self._pos)
+                if take <= 0:
+                    self.underruns += 1
+                    break
             if self._tail is not None:
                 take = min(take, self._tail.start - self._pos)
             fading = self._skip_fade > 0
             if fading:
                 take = min(take, self._skip_fade)
-            chunk = audio[self._pos : self._pos + take]
+            try:
+                chunk = read_audio(audio, self._pos, self._pos + take)
+            except AudioPending:
+                self.underruns += 1
+                break
+            except (OSError, RuntimeError, ValueError):
+                logger.exception("Streaming decode failed; skipping %s", self._current.entry.path)
+                self._current = None
+                self._unannounced = None
+                break
+            self._announce_live_audio(pending)
             if fading:
                 ramp = np.clip(
                     (self._skip_fade - np.arange(take)) / _SKIP_FADE_FRAMES, 0.0, 1.0
@@ -972,7 +1065,7 @@ class MixBus:
             block = self._mix_live(block)
             if not master_enabled:
                 np.clip(block, -1.0, 1.0, out=block)
-            if self._current is not None:
+            if self._current is not None and self._unannounced is None:
                 pos = self._pos
                 pending.append(lambda: self._events.on_position(pos))
             result = block.astype(np.float32, copy=False)
