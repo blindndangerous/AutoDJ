@@ -67,7 +67,9 @@ def test_live_transition_mixes_only_bounded_tail(monkeypatch) -> None:
         key_shift=False,
     )
     player = SimpleNamespace(
-        _render_live_file=lambda entry, **_kwargs: outgoing_deck if entry is current else incoming_deck,
+        _render_live_file=lambda entry, **_kwargs: (
+            outgoing_deck if entry is current else incoming_deck
+        ),
         music_playback_rate=lambda _entry: 1.0,
         _peek_incoming_meta=lambda _entry: None,
         _cfg=SimpleNamespace(
