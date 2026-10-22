@@ -42,7 +42,7 @@ class Harness:
 
     @property
     def worker(self):
-        return self.player._render_ahead
+        return self.player._playout
 
     def play_next_track(self) -> str:
         """Render blocks until the bus starts another track; return its path."""
@@ -110,16 +110,16 @@ def harness():
     player.bus = bus
     seed = sim.entries[0]
     player._record_seed(seed)
-    player.reset_render_ahead(seed, 0, pick_mode="seed")
+    player.reset_playout(seed, 0, pick_mode="seed")
     h = Harness(player, PlayerBridge(player=player, sim=sim), bus, list(sim.entries), gate)
     player.on_track_started = lambda _entry: h.queue_at_start.append(h.queue_paths())
-    player._render_ahead.start()
+    player._playout.start()
     bus.start_set()
     assert h.play_next_track() == seed.path
     h.settle()
     yield h
     gate.set()
-    player._render_ahead.stop(timeout=WAIT)
+    player._playout.stop(timeout=WAIT)
 
 
 def _queue_behind_upcoming(h: Harness, entry: IndexEntry) -> None:
@@ -145,9 +145,9 @@ def _add_voice_to_current_handoff(h: Harness):
     if h.player._playing_render is track:
         h.player._playing_render = decorated
     else:
-        with h.player._render_ahead._cond:
-            assert h.player._render_ahead._ready is track
-            h.player._render_ahead._ready = decorated
+        with h.player._playout._cond:
+            assert h.player._playout._ready is track
+            h.player._playout._ready = decorated
     return decorated, voice
 
 

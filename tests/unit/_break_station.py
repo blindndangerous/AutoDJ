@@ -34,7 +34,7 @@ def write_voice(
     return path
 
 
-def make_station(tmp_path: Path, cfg=None, **breaks: object):
+def make_station(tmp_path: Path, cfg=None, *, stream_mode: bool = False, **breaks: object):
     """A player in saved-point station mode with a break desk.
 
     Returns ``(player, entries, points, desk)``.  Songs: *a* has an outro
@@ -54,7 +54,7 @@ def make_station(tmp_path: Path, cfg=None, **breaks: object):
         liners_duck_db=0.0,
     )
     cfg.breaks = BreaksConfig(**{"enabled": True, **breaks})  # type: ignore[arg-type]
-    player = Player(cfg, make_sim_index(4), dry_run=True)
+    player = Player(cfg, make_sim_index(4), dry_run=True, stream_mode=stream_mode)
     points = {entries[0].path: {"start": 0, "outro": 8, "segue": 10, "end": 15}}
     for entry in entries[1:]:
         points[entry.path] = {"start": 0.25, "intro": 2.25, "segue": 18, "end": 20}

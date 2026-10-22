@@ -2345,10 +2345,10 @@ def test_render_track_does_not_load_lyrics_ahead_of_time() -> None:
 def test_reset_render_ahead_moves_the_cursor() -> None:
     player = Player(_make_cfg_mock(), _make_sim_index(3))
     entry = player._sim.entries[2]
-    player.reset_render_ahead(entry, offset=123)
+    player.reset_playout(entry, offset=123)
     assert player._pending_entry is entry
     assert player._pending_offset == 123
-    player.reset_render_ahead(player._sim.entries[0])
+    player.reset_playout(player._sim.entries[0])
     assert player._pending_offset == 0
 
 
@@ -2357,7 +2357,7 @@ def test_render_ahead_worker_uses_next_rendered() -> None:
 
     player = Player(_make_cfg_mock(), _make_sim_index(3))
     track = RenderedTrack(player._sim.entries[0], np.zeros((10, 2), np.float32), None, 0, "")
-    worker = player._render_ahead
+    worker = player._playout
     with patch.object(player, "_next_rendered", return_value=track):
         try:
             worker.start()
@@ -2369,9 +2369,9 @@ def test_render_ahead_worker_uses_next_rendered() -> None:
 
 def test_stop_signals_the_render_ahead_worker() -> None:
     player = Player(_make_cfg_mock(), _make_sim_index(3))
-    player._render_ahead = MagicMock()
+    player._playout = MagicMock()
     player.stop()
-    player._render_ahead.stop.assert_called_once_with(timeout=0)
+    player._playout.stop.assert_called_once_with(timeout=0)
     assert player._state.should_stop is True
 
 
@@ -2448,7 +2448,7 @@ class TestNextRenderedProvenance:
 
         player._choose_next = lambda _current, _context: (second, "discovery")  # type: ignore[method-assign]
         player._last_pick_mode = "what the UI shows"
-        player.reset_render_ahead(first, 7, pick_mode="seed")
+        player.reset_playout(first, 7, pick_mode="seed")
 
         rendered = player._next_rendered()
 
@@ -2465,10 +2465,10 @@ class TestNextRenderedProvenance:
         first, queued = player._sim.entries[0], player._sim.entries[4]
         player._render_track = _stub_render  # type: ignore[method-assign]
         player._state.queue.append(queued)
-        player.reset_render_ahead(first, 0)
+        player.reset_playout(first, 0)
         rendered = player._next_rendered()
         assert rendered is not None
-        assert rendered.pick_mode == "queue"  # reset_render_ahead's default
+        assert rendered.pick_mode == "queue"  # reset_playout's default
         assert rendered.next_entry is queued
         assert rendered.next_pick_mode == "queue"
         assert rendered.next_from_queue is True
@@ -2512,7 +2512,7 @@ class TestRenderAheadRepeatAvoidance:
         player._render_track = _stub_render  # type: ignore[method-assign]
         find = MagicMock(return_value=pick)
         player._sim.find_next_for_path = find  # type: ignore[method-assign]
-        player.reset_render_ahead(current, 0)
+        player.reset_playout(current, 0)
 
         player._next_rendered()
 
@@ -2548,7 +2548,7 @@ class TestRenderAheadRepeatAvoidance:
         find = MagicMock(return_value=pick)
         player._sim.find_next_for_path = find  # type: ignore[method-assign]
         # The worker rendered *starting* (which picked *pending*) last.
-        player.reset_render_ahead(starting, 0)
+        player.reset_playout(starting, 0)
         player._choose_next = lambda _current, _context: (pending, "similarity")  # type: ignore[method-assign]
         player._next_rendered()
         del player._choose_next
@@ -2579,7 +2579,7 @@ class TestRenderAheadRepeatAvoidance:
         current = player._sim.entries[0]
         player._render_track = _stub_render  # type: ignore[method-assign]
         for _ in range(10):
-            player.reset_render_ahead(current, 0)
+            player.reset_playout(current, 0)
             rendered = player._next_rendered()
             assert rendered is not None and rendered.next_entry is not current
 
@@ -2631,7 +2631,7 @@ class TestTrackStartRobustness:
             return second
 
         player._sim.find_next_for_path = slow_search  # type: ignore[method-assign]
-        player.reset_render_ahead(first, 0)
+        player.reset_playout(first, 0)
         picker = threading.Thread(target=player._next_rendered)
         picker.start()
         try:
@@ -2692,7 +2692,7 @@ class TestPeekThenCommit:
         player._state.queue.append(a)
         player._state.queued_next = x
         player._render_track = _stub_render  # type: ignore[method-assign]
-        player.reset_render_ahead(first, 0)
+        player.reset_playout(first, 0)
         rendered = player._next_rendered()
         assert rendered is not None and rendered.next_entry is x
         assert player._state.queued_next is x
@@ -2720,7 +2720,7 @@ class TestPeekThenCommit:
             return _stub_render(current, nxt, offset)
 
         player._render_track = render  # type: ignore[method-assign]
-        player.reset_render_ahead(bad, 0)
+        player.reset_playout(bad, 0)
         with patch("autodj.player.logger") as log:
             rendered = player._next_rendered()
         assert rendered is not None and rendered.entry is a
@@ -2758,8 +2758,8 @@ class TestPeekThenCommit:
 
         player._render_track = render  # type: ignore[method-assign]
         player._choose_next = lambda _current, _context: (good, "similarity")  # type: ignore[method-assign]
-        player.reset_render_ahead(bad, 0)
-        worker = player._render_ahead
+        player.reset_playout(bad, 0)
+        worker = player._playout
         try:
             worker.start()
             assert worker.wait_ready(5.0)
@@ -2811,11 +2811,11 @@ class TestPeekThenCommit:
         player = _bus_player()
         a, b = player._sim.entries[2:4]
         player._state.queue.extend([a, b])
-        player._render_ahead._ready = replace(_rendered_with(a), from_queue=True)
+        player._playout._ready = replace(_rendered_with(a), from_queue=True)
         taken = player._take_render()
         assert taken is not None and taken.entry is a
         assert player._state.queue == [b]
-        player._render_ahead._ready = _rendered_with(b)  # a similarity pick
+        player._playout._ready = _rendered_with(b)  # a similarity pick
         player._take_render()
         assert player._state.queue == [b]
         assert player._take_render() is None
@@ -2879,7 +2879,7 @@ class TestQueuePickStaleness:
         player = _bus_player()
         cursor = player._sim.entries[4]
         player._pending_entry = cursor
-        player.refresh_render_ahead()
+        player.refresh_playout()
         assert player._pending_entry is cursor
 
 

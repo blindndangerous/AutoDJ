@@ -29,7 +29,7 @@ def _player(track, *, heard=False, queue=(), queued_next=None):
         live_mixing=True,
         _playing_render=track,
         _heard_next_entry=heard,
-        _render_ahead=SimpleNamespace(ready=lambda: None),
+        _playout=SimpleNamespace(ready=lambda: None),
         _state=SimpleNamespace(queue=list(queue), queued_next=queued_next),
         _is_liner=lambda entry: entry.kind == "liner",
     )
@@ -149,7 +149,7 @@ def test_audible_incoming_delegates_to_ready_following_handoff() -> None:
     )
     candidate = _Entry("following-new")
     player = _player(audible, heard=True)
-    player._render_ahead = SimpleNamespace(ready=lambda: following)
+    player._playout = SimpleNamespace(ready=lambda: following)
 
     conflict = _conflict(player, candidate)
     assert conflict.detail["code"] == "voice_track_conflict"
@@ -263,7 +263,7 @@ def test_ready_handoff_change_is_detected_even_when_current_candidate_is_unchang
     primary = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(_Break("b-to-c", "dj", "announcer"),))
     player = _player(primary, queue=(b, c), queued_next=None)
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
 
     with pytest.raises(VoiceQueueConflict) as caught:
         plan_queue_edit(player, b, [e])
@@ -280,7 +280,7 @@ def test_ready_handoff_speech_is_carried_if_its_outgoing_occurrence_remains_queu
     primary = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(_Break("b-to-c", "dj", "announcer"),))
     player = _player(primary, queue=(b, c))
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
 
     result = plan_queue_edit(player, x, [b, c])
     assert result.track is primary and result.candidate is x
@@ -295,7 +295,7 @@ def test_ready_handoff_edit_keeps_duplicate_occurrences_distinct() -> None:
     primary = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(_Break("b-to-c", "dj", "announcer"),))
     player = _player(primary, queue=(b, c))
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
 
     # A same-path duplicate is a different occurrence; the exact B that is
     # playing remains present, so its speech stays attached to B.
@@ -303,114 +303,12 @@ def test_ready_handoff_edit_keeps_duplicate_occurrences_distinct() -> None:
     assert result.following[0].outgoing is b
 
 
-def test_pinned_slot_plan_breaks_and_intro_are_included_in_atomic_choice() -> None:
-    """ADR-0004-09, ADR-0015-09: preflight includes pinned slot speech and intro."""
-    a, b, c, d = (_Entry(name) for name in "ABCD")
-    current = _track(entry=a, next_entry=b)
-    player = _player(current, queue=(b, c))
-    planned_break = SimpleNamespace(
-        break_id="slot-dj", kind="dj", source="announcer", slot_id="slot-1", state="queued"
-    )
-    independent = SimpleNamespace(
-        break_id="slot-ad", kind="ad", source="ads", slot_id="slot-1", state="queued"
-    )
-    intro = SimpleNamespace(intro_id="slot-intro", path="intro.wav")
-    plan = SimpleNamespace(
-        slot_id="slot-1",
-        pinned=True,
-        ending=c,
-        upcoming=d,
-        transition_items=(SimpleNamespace(kind="matched_intro", intro=intro),),
-    )
-    player._slot_plan = plan
-    player.break_desk = SimpleNamespace(listing=lambda: (planned_break, independent))
-    replacement = _Entry("E")
-
-    # Keep the current A->B selection while changing the pinned C->D slot.
-    with pytest.raises(VoiceQueueConflict) as caught:
-        plan_queue_edit(player, b, [c, replacement])
-    result = plan_queue_edit(
-        player,
-        b,
-        [c, replacement],
-        voice_action="keep",
-        voice_revision=caught.value.detail["revision"],
-    )
-    assert result.track is plan
-    assert result.outgoing is c
-    assert result.breaks == (planned_break, independent)
-    assert result.intro is intro
-
-
-def test_removed_pinned_ending_prompts_and_transfers_speech_to_replacement() -> None:
-    """ADR-0004-09, ADR-0015-09: one keep transfers speech with a changed pinned pair."""
-    a, b, c, d = (_Entry(name) for name in "ABCD")
-    current = _track(entry=a, next_entry=b)
-    player = _player(current, queue=(b, c))
-    prepared = _Break("slot-prepared", "prepared", "prepared_edition")
-    plan = SimpleNamespace(
-        slot_id="slot-1", pinned=True, before=b, ending=c, upcoming=d, transition_items=()
-    )
-    player._slot_plan = plan
-    player.break_desk = SimpleNamespace(
-        listing=lambda: (
-            SimpleNamespace(
-                break_id=prepared.break_id,
-                kind=prepared.kind,
-                source=prepared.source,
-                slot_id="slot-1",
-                state="queued",
-                path=prepared.path,
-            ),
-        )
-    )
-    replacement, successor = _Entry("replacement"), _Entry("successor")
-
-    with pytest.raises(VoiceQueueConflict) as caught:
-        plan_queue_edit(player, b, [replacement, successor])
-    result = plan_queue_edit(
-        player,
-        b,
-        [replacement, successor],
-        voice_action="keep",
-        voice_revision=caught.value.detail["revision"],
-    )
-    assert result.track is plan
-    assert result.outgoing is replacement
-    assert result.candidate is successor
-    assert result.breaks[0].source == "operator_keep"
-
-
-def test_removed_pinned_ending_without_queued_replacement_uses_automatic_target() -> None:
-    a, b, c, d = (_Entry(name) for name in "ABCD")
-    current = _track(entry=a, next_entry=b)
-    player = _player(current, queue=(b, c))
-    voice = SimpleNamespace(
-        break_id="slot-dj", kind="dj", source="announcer", slot_id="slot-1", state="queued"
-    )
-    plan = SimpleNamespace(
-        slot_id="slot-1", pinned=True, before=b, ending=c, upcoming=d, transition_items=()
-    )
-    player._slot_plan = plan
-    player.break_desk = SimpleNamespace(listing=lambda: (voice,))
-
-    with pytest.raises(VoiceQueueConflict) as caught:
-        plan_queue_edit(player, None, [])
-    result = plan_queue_edit(
-        player, None, [], voice_action="discard", voice_revision=caught.value.detail["revision"]
-    )
-    assert result.following[0].track is plan
-    assert result.following[0].outgoing is None
-    assert result.following[0].candidate is None
-    assert result.following[0].breaks == ()
-
-
 def test_replacing_current_outgoing_transfers_following_voice_to_new_edge() -> None:
     a, b, c, x, e = (_Entry(name) for name in "ABCXE")
     current = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(_Break("b-to-c", "dj", "announcer"),))
     player = _player(current, queue=(b, c))
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
 
     with pytest.raises(VoiceQueueConflict) as caught:
         plan_queue_edit(player, x, [e])
@@ -428,7 +326,7 @@ def test_automatic_ready_successor_is_not_replanned_without_queue_occurrence() -
     current = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(_Break("automatic", "dj", "announcer"),))
     player = _player(current)
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
     assert plan_queue_edit(player, None, []) is None
 
 
@@ -438,75 +336,10 @@ def test_secondary_independent_context_is_not_lost_when_music_voice_unchanged() 
     current = _track(entry=a, next_entry=b)
     ready = _track(entry=b, next_entry=c, voice_breaks=(ad,))
     player = _player(current, queue=(b, c))
-    player._render_ahead = SimpleNamespace(ready=lambda: ready)
+    player._playout = SimpleNamespace(ready=lambda: ready)
 
     result = plan_queue_edit(player, x, [b, c])
     assert result.candidate is x
     assert len(result.following) == 1
     assert result.following[0].track is ready
     assert result.following[0].breaks == (ad,)
-
-
-def test_pinned_slot_last_queue_occurrence_projects_automatic_successor_change() -> None:
-    a, b, ending, upcoming = (_Entry(name) for name in ("A", "B", "ending", "upcoming"))
-    current = _track(entry=a, next_entry=b)
-    # The planned upcoming song is queued after the ending and is removed by
-    # the proposed replacement, leaving the pinned ending at the tail.
-    player = _player(current, queue=(b, ending, upcoming))
-    voice = SimpleNamespace(
-        break_id="slot-dj", kind="dj", source="announcer", slot_id="slot-1", state="queued"
-    )
-    slot = SimpleNamespace(
-        slot_id="slot-1",
-        pinned=True,
-        ending=ending,
-        upcoming=upcoming,
-        transition_items=(),
-    )
-    player._slot_plan = slot
-    player.break_desk = SimpleNamespace(
-        listing=lambda: (
-            SimpleNamespace(
-                break_id=voice.break_id,
-                kind=voice.kind,
-                source=voice.source,
-                slot_id=voice.slot_id,
-                state=voice.state,
-            ),
-        )
-    )
-
-    with pytest.raises(VoiceQueueConflict) as caught:
-        plan_queue_edit(player, b, [ending])
-    result = plan_queue_edit(
-        player, b, [ending], voice_action="discard", voice_revision=caught.value.detail["revision"]
-    )
-    assert result.track is slot
-    assert result.candidate is None
-    assert result.outgoing is ending
-    assert result.breaks == ()
-
-
-def test_unchanged_pinned_ending_with_automatic_successor_does_not_prompt() -> None:
-    a, b, ending, upcoming = (_Entry(name) for name in ("A", "B", "ending", "upcoming"))
-    current = _track(entry=a, next_entry=b)
-    player = _player(current, queue=(b, ending))
-    slot = SimpleNamespace(
-        slot_id="slot-1", pinned=True, ending=ending, upcoming=upcoming, transition_items=()
-    )
-    player._slot_plan = slot
-    player.break_desk = SimpleNamespace(
-        listing=lambda: (
-            SimpleNamespace(
-                break_id="slot-dj",
-                kind="dj",
-                source="announcer",
-                slot_id="slot-1",
-                state="queued",
-            ),
-        )
-    )
-
-    # The same ending remains last; its automatic successor is still the same
-    # projection as before the edit.
-    assert plan_queue_edit(player, b, [ending]) is None

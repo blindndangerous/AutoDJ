@@ -88,13 +88,13 @@ def test_real_ffmpeg_player_replaces_unheard_incoming_and_closes_decks(tmp_path,
     player._live_file = track_deck
 
     player.begin_set(a, "seed")
-    player._render_ahead.start()
+    player._playout.start()
     player.bus.start_set()
     try:
         deadline = time.monotonic() + WAIT
         while player._playing_render is None and time.monotonic() < deadline:
             if player.bus._current is None:
-                player._render_ahead.wait_ready(0.05)
+                player._playout.wait_ready(0.05)
             player.bus.render_block()
             time.sleep(0.002)
         assert player._playing_render is not None
@@ -130,7 +130,7 @@ def test_real_ffmpeg_player_replaces_unheard_incoming_and_closes_decks(tmp_path,
         deadline = time.monotonic() + WAIT
         while c.path not in started and time.monotonic() < deadline:
             if player.bus._current is None:
-                player._render_ahead.wait_ready(0.05)
+                player._playout.wait_ready(0.05)
             player.bus.render_block()
             time.sleep(0.002)
         assert started[0] == a.path

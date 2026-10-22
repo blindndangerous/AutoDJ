@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from autodj.breaks import SlotPlan
 from autodj.config import PlaybackConfig
 from autodj.live_audio import AudioLayer, BufferedFile, LiveAudio
 from autodj.live_queue import QueueEdit, plan_queue_edit
@@ -51,8 +50,8 @@ def _render(entry, next_entry, audio, *, overlap: int) -> RenderedTrack:
 
 
 def _install_bus(player: Player, track: RenderedTrack) -> None:
-    player._render_ahead.ready = lambda: track
-    player._render_ahead.pop = lambda: track
+    player._playout.ready = lambda: track
+    player._playout.pop = lambda: track
     player.bus = MixBus(
         BusEvents(
             on_track_start=lambda started: setattr(player, "_playing_render", started),
@@ -69,7 +68,7 @@ def _accept_changed_next(player: Player, track: RenderedTrack, chosen) -> None:
     assert decision is not None
     with player._state.queue_lock:
         player._state.queued_next = chosen
-        player.refresh_render_ahead()
+        player.refresh_playout()
     player.accept_live_queue_edit(decision)
 
 
@@ -89,7 +88,7 @@ def test_live_edit_preserves_heard_prefix_and_bus_cursor(player):
     _accept_changed_next(player, old, new_next)
     player._rewind_render_cursor = lambda _track: None
     player._next_rendered_serial = lambda: replacement
-    player._render_ahead.reset = MagicMock(side_effect=lambda prepare: None)
+    player._playout.reset = MagicMock(side_effect=lambda prepare: None)
 
     player._refresh_live_queue()
 
@@ -113,24 +112,24 @@ def test_after_incoming_is_audible_edit_targets_render_ahead_handoff(player):
     for _ in range(9):
         player.bus.render_block()
     assert player.bus.incoming_started(current_track)
-    player._render_ahead.ready = lambda: following
+    player._playout.ready = lambda: following
 
     assert player.live_editable_handoff() is following
     decision = plan_queue_edit(player, later, [])
     assert decision is not None and decision.track is following
     with player._state.queue_lock:
         player._state.queued_next = later
-        player.refresh_render_ahead()
+        player.refresh_playout()
     player.accept_live_queue_edit(decision)
     player._rewind_render_cursor = MagicMock()
     player._next_rendered_serial = MagicMock(
         side_effect=AssertionError("current handoff is audible")
     )
-    player._render_ahead.reset = MagicMock(side_effect=lambda prepare: prepare())
+    player._playout.reset = MagicMock(side_effect=lambda prepare: prepare())
 
     player._refresh_live_queue()
 
-    player._render_ahead.reset.assert_called_once()
+    player._playout.reset.assert_called_once()
     assert player._playing_render is current_track
     assert player.bus._current is current_track
     player._rewind_render_cursor.assert_called_once_with(following)
@@ -148,14 +147,14 @@ def test_concurrent_queue_revision_does_not_install_stale_replacement(player):
     _accept_changed_next(player, old, new_next)
     player._rewind_render_cursor = lambda _track: None
     requested = []
-    player._render_ahead.request_plan = lambda: requested.append(True)
+    player._playout.request_plan = lambda: requested.append(True)
 
     def render_and_race():
         player._live_queue_revision += 1
         return stale
 
     player._next_rendered_serial = render_and_race
-    player._render_ahead.reset = MagicMock()
+    player._playout.reset = MagicMock()
     before = player.bus.live_position(old)
 
     player._refresh_live_queue()
@@ -164,7 +163,7 @@ def test_concurrent_queue_revision_does_not_install_stale_replacement(player):
     assert player.bus._current is old
     assert player.bus.live_position(old) == before
     assert requested == [True]
-    player._render_ahead.reset.assert_not_called()
+    player._playout.reset.assert_not_called()
 
 
 def test_failed_replacement_leaves_boundary_held(player):
@@ -182,7 +181,7 @@ def test_failed_replacement_leaves_boundary_held(player):
     player._rewind_render_cursor = lambda _track: None
     player._next_rendered_serial = lambda: None
     requests = []
-    player._render_ahead.request_plan = lambda: requests.append(True)
+    player._playout.request_plan = lambda: requests.append(True)
 
     player._refresh_live_queue()
     assert player._live_queue_dirty
@@ -205,12 +204,12 @@ def test_take_render_does_not_pop_or_commit_queue_while_live_audio_pending(playe
     audio = LiveAudio(100, (AudioLayer(source, 0, 100),))
     rendered = _render(current, next_entry, audio, overlap=0)
     rendered = replace(rendered, from_queue=True)
-    player._render_ahead.ready = MagicMock(return_value=rendered)
-    player._render_ahead.pop = MagicMock(return_value=rendered)
+    player._playout.ready = MagicMock(return_value=rendered)
+    player._playout.pop = MagicMock(return_value=rendered)
     player._commit_queue_pick = MagicMock(return_value=True)
 
     assert player._take_render() is None
-    player._render_ahead.pop.assert_not_called()
+    player._playout.pop.assert_not_called()
     player._commit_queue_pick.assert_not_called()
 
 
@@ -223,7 +222,7 @@ def test_ready_only_replan_preserves_current_audio_and_cursor(player):
     player.bus.start_set()
     heard = player.bus.render_block()
     position = player.bus.live_position(current)
-    player._render_ahead.ready = lambda: ready
+    player._playout.ready = lambda: ready
     player._state.queued_next = b
     player._state.queue = [c]
 
@@ -233,11 +232,11 @@ def test_ready_only_replan_preserves_current_audio_and_cursor(player):
     with player._state.queue_lock:
         player._state.queued_next = b
         player._state.queue = [e]
-        player.refresh_render_ahead()
+        player.refresh_playout()
     player.accept_live_queue_edit(decision)
     rewound = []
     player._rewind_render_cursor = lambda track: rewound.append(track)
-    player._render_ahead.reset = MagicMock(side_effect=lambda prepare: prepare())
+    player._playout.reset = MagicMock(side_effect=lambda prepare: prepare())
 
     player._refresh_live_queue()
 
@@ -282,48 +281,3 @@ def test_later_ready_edit_does_not_override_pending_current_target(player):
 
     assert player._live_queue_target is current
     assert player._live_queue_edits[id(ready.entry)] is ready_decision
-
-
-def test_slot_plan_primary_rebuild_does_not_rewind_current_track(player):
-    player, (a, b, ending, upcoming) = player
-    block = MixBus.BLOCK
-    current = _render(a, b, _audio(block * 8, 0.1), overlap=0)
-    ready = _render(b, ending, _audio(100, 0.2), overlap=0)
-    _install_bus(player, current)
-    player.bus.start_set()
-    player.bus.render_block()
-    position = player.bus.live_position(current)
-    player._render_ahead.ready = lambda: ready
-    slot = SlotPlan(
-        slot_id="slot",
-        serial=0,
-        before=a,
-        before_s=1.0,
-        ending=ending,
-        upcoming=upcoming,
-        mode="queue",
-        liners=(),
-        next_cursor=None,
-        boundary_before=None,
-        boundary_after=None,
-        queue_reserved=None,
-        reserved=(),
-        pinned=True,
-    )
-    player._discard_plan = MagicMock()
-    player._slot_plan = slot
-    rebuilt = []
-    player._plan_slot_serial = lambda ready: rebuilt.append(ready)
-    player._live_queue_revision = 3
-    player._live_queue_dirty = True
-    player.accept_live_queue_edit(QueueEdit(slot, None, "discard", (), None, outgoing=ending))
-    player._rewind_render_cursor = MagicMock()
-
-    player._refresh_live_queue()
-
-    player._discard_plan.assert_called_once_with(slot, "the operator changed its upcoming music")
-    player._rewind_render_cursor.assert_not_called()
-    assert player._playing_render is current
-    assert player.bus._current is current
-    assert player.bus.live_position(current) == position
-    assert rebuilt == [ready]

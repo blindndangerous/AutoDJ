@@ -1138,7 +1138,7 @@ class PlayerBridge(LibraryAccess):
             New ``discovery_enabled`` state (``True`` = enabled).
         """
         enabled = self.settings.toggle_discovery()
-        if refresh := getattr(self.player, "refresh_render_ahead", None):
+        if refresh := getattr(self.player, "refresh_playout", None):
             refresh()
         return enabled
 
@@ -1602,7 +1602,7 @@ class PlayerBridge(LibraryAccess):
         head it picked, and stays playable until the replacement is ready.
         """
         if self._bus_mode():
-            self.player.refresh_render_ahead()
+            self.player.refresh_playout()
 
     @contextmanager
     def _queue_mutation_lock(self) -> Iterator[bool]:

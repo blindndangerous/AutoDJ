@@ -11,12 +11,12 @@ about the songs, news, weather or music news. It asks AutoDJ which song change i
 writes a break for that pair of songs, and uploads it. AutoDJ mixes the break into that song
 change, reports when it airs, and deletes the file afterwards.
 
-External announcer uploads still use a future *open slot*, naming the song the break follows
-(*ending*) and the song it leads into (*upcoming*). This path schedules speech in advance even
-in stream mode; it differs from the browser voice tracker's current-song handoff. Local server
-output pins a booked pair. Streaming queue edits can change unheard music with the associated
-speech choice: keep, discard, or cancel the edit. News and weather uploaded through this path
-therefore retain their advance booking deadline.
+In streaming mode, external announcer uploads target the currently airing song change and its
+selected successor, like browser voice tracks. AutoDJ checks the handoff again after decoding and
+preparing the upload, and installs it only if the same change is still open and within its outro
+cutoff and applicable scheduled boundary. Scheduled ads/news keep their independent due/expiry
+tick and retry if a handoff changes during booking. Local server output continues to pin a booked
+pair. Streaming queue edits that affect associated speech offer keep, discard, or cancel.
 
 ## Turning breaks on
 
@@ -119,8 +119,8 @@ AutoDJ calculates the cutoff after decoding and checks it again atomically when 
 take. Local server output retains its advance slot and render deadline.
 It works with server audio or stream output and saved-point transitions, even when external
 announcer uploads are off. Browser playback and stopped stations cannot render these tracks.
-Opening the tab requests advance slot planning; an unused tracker adds no planning work. No token
-is needed: the tab uses your signed-in browser.
+In stream mode the playout controller maintains the live handoff; local output plans an advance
+slot while the voice-tracking tab is open. No token is needed: the tab uses your signed-in browser.
 
 The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
 or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
@@ -195,9 +195,10 @@ linked to the control they are about.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
 aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In stream mode,
-it can also remove a recording installed in the current handoff before the affected speech or
-ducking starts. The server checks this again when applying the cancellation; audio already heard
-is preserved. Voice tracks share the queue, per-song-change and disk quota limits with announcer
+it can also remove a recording installed in the current or ready handoff before that recording
+starts. The server checks this again when applying the cancellation; other speech and approved
+assets are preserved, and audio already heard is unchanged. Voice tracks share the queue,
+per-song-change and disk quota limits with announcer
 breaks: `max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
 `requests_per_minute` for the station.
 

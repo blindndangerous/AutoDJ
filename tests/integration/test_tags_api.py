@@ -361,7 +361,7 @@ def test_the_mix_bus_cursor_counts_as_up_next(tagged, where: str) -> None:
     if where == "pending":
         player._pending_entry = entry
     elif where == "ready":
-        player._render_ahead = SimpleNamespace(_ready=SimpleNamespace(entry=None, next_entry=entry))
+        player._playout = SimpleNamespace(_ready=SimpleNamespace(entry=None, next_entry=entry))
     else:
         player._playing_render = SimpleNamespace(entry=None, next_entry=entry)
     response = client.post(

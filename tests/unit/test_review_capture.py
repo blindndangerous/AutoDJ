@@ -165,7 +165,7 @@ def test_booked_handoff_and_fixed_voice_rows_are_never_independent_overlays(tmp_
     booked = make_break(desk, plan.slot_id)
     desk._breaks[booked.break_id] = booked
     player.bus = object()
-    player._render_ahead._ready = ready
+    player._playout._ready = ready
     rows = hour_preview.read_station(player, desk, now=1000, capture_audio=True).items
     booked_rows = [row for row in rows if row.status == "booked"]
     assert len(booked_rows) == 1

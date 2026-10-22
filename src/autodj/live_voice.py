@@ -6,7 +6,7 @@ import hashlib
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from autodj.breaks import Break, BreakError, SlotPlan, TransitionItem, new_id
 from autodj.live_audio import LiveAudio, splice_audio
@@ -14,6 +14,7 @@ from autodj.live_queue import QueueEdit
 from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
+    from autodj.live_playout import LivePlayout
     from autodj.mixbus import RenderedTrack
     from autodj.player import Player
 
@@ -121,7 +122,7 @@ def _install_handoff(
         )
         if plan is not None:
             player._live_voice_slot = (replacement, plan)
-        ready = player._render_ahead.ready()
+        ready = player._playout.ready()
         if ready is not None:
             player._live_queue_edits.setdefault(
                 id(ready.entry),
@@ -135,7 +136,7 @@ def _install_handoff(
                     candidate_mode=ready.next_pick_mode,
                 ),
             )
-        player._render_ahead.reset(lambda: player._skip_past_render(replacement))
+        player._playout.reset(lambda: player._skip_past_render(replacement))
         retained_intros = {event[1] for event in replacement.intro_events}
         player._settle_intros(
             replace(
@@ -154,59 +155,81 @@ def _install_handoff(
     return replacement
 
 
-def _cancel_window(player: Player, item: Break) -> tuple[RenderedTrack, SlotPlan, int] | None:
-    """Return the live current handoff if *item* remains wholly unheard and replaceable."""
+def _cancel_window(player: Player, item: Break) -> tuple[RenderedTrack, SlotPlan, int, str] | None:
+    """Find the exact current or ready handoff that contains *item*."""
     desk, bus = player.break_desk, player.bus
     if desk is None or bus is None or not getattr(player, "live_mixing", False):
         return None
-    track = player._playing_render
-    if track is None or not isinstance(track.audio, LiveAudio) or track.next_entry is None:
-        return None
-    if not any(break_item.break_id == item.break_id for break_item in track.voice_breaks):
-        return None
-    starts = [start for start, identity, _end in track.break_events if identity == item.break_id]
-    if not starts:
-        return None
-    cutoff = player.prepared_tail_boundary(track)
-    with bus.queue_edit_guard(), player._slot_lock:
-        position = bus.live_position(track)
-        if (
-            player._live_queue_dirty
-            or position >= min(starts)
-            or not bus.can_replace_unheard_tail(track, before_frame=cutoff)
-            or player._playing_render is not track
-        ):
+    playout = player._playout
+    with bus.queue_edit_guard(), player._state.queue_lock:
+        if player._live_queue_dirty:
             return None
-        plan = _plan_for_track(player, track)
-        queue_revision = player._live_queue_revision
-    return track, plan, queue_revision
+        current = player._playing_render
+        if _contains_break(current, item.break_id) and isinstance(current.audio, LiveAudio):
+            starts = [
+                start for start, identity, _end in current.break_events if identity == item.break_id
+            ]
+            position = bus.live_position(current)
+            if (
+                starts
+                and position < min(starts)
+                and bus.can_replace_unheard_tail(
+                    current, before_frame=player.prepared_tail_boundary(current)
+                )
+                and bus.current_render() is current
+            ):
+                return (
+                    current,
+                    _plan_for_track(player, current),
+                    player._live_queue_revision,
+                    "current",
+                )
+        ready = playout.ready()
+        if _contains_break(ready, item.break_id) and isinstance(ready.audio, LiveAudio):
+            return (
+                ready,
+                _plan_for_track(player, ready, cache=False),
+                player._live_queue_revision,
+                "ready",
+            )
+    return None
 
 
-def can_cancel(player: Player, break_id: str) -> bool:
+def _contains_break(track: RenderedTrack | None, break_id: str) -> TypeGuard[RenderedTrack]:
+    return track is not None and any(item.break_id == break_id for item in track.voice_breaks)
+
+
+def can_cancel(player: Player, break_id: str, *, source: str = "voice_track") -> bool:
     """Whether a voice booking is queued or an unheard current live take."""
     desk = player.break_desk
     item = desk.get(break_id) if desk is not None else None
-    if item is None or item.source != "voice_track":
+    if item is None or item.source != source:
         return False
     if item.state == "queued":
         return True
     return item.state == "rendered" and _cancel_window(player, item) is not None
 
 
-def cancel(player: Player, break_id: str) -> Break:
+def cancel(
+    player: Player,
+    break_id: str,
+    *,
+    source: str = "voice_track",
+    reason: str = "cancelled in the voice tracker",
+) -> Break:
     """Cancel a queued take or remove an unheard take from the live handoff."""
     desk = player.break_desk
     if desk is None:
         raise BreakError(404, "No break has that id", "not_found")
     item = desk.get(break_id)
-    if item is None or item.source != "voice_track":
-        return desk.cancel(break_id, "cancelled in the voice tracker", "voice_track")
+    if item is None or item.source != source:
+        return desk.cancel(break_id, reason, source)
     if item.state == "queued":
-        return desk.cancel(break_id, "cancelled in the voice tracker", "voice_track")
+        return desk.cancel(break_id, reason, source)
     if not getattr(player, "live_mixing", False):
-        return desk.cancel(break_id, "cancelled in the voice tracker", "voice_track")
+        return desk.cancel(break_id, reason, source)
     if item.state != "rendered":
-        return desk.cancel(break_id, "cancelled in the voice tracker", "voice_track")
+        return desk.cancel(break_id, reason, source)
 
     with player._clock_selection_lock:
         selected = _cancel_window(player, item)
@@ -214,10 +237,10 @@ def cancel(player: Player, break_id: str) -> Break:
             raise BreakError(
                 409, "The voice track has started or can no longer be changed", item.state
             )
-        track, plan, queue_revision = selected
+        track, plan, queue_revision, location = selected
         bus = player.bus
         assert bus is not None
-        cutoff = player.prepared_tail_boundary(track)
+        cutoff = player.prepared_tail_boundary(track) if location == "current" else len(track.audio)
         retained_breaks = tuple(
             voice for voice in track.voice_breaks if voice.break_id != item.break_id
         )
@@ -246,30 +269,95 @@ def cancel(player: Player, break_id: str) -> Break:
             raise BreakError(
                 409, "The voice track could not be removed from this handoff", "render_failed"
             )
-        replacement = _install_handoff(
-            player,
-            track,
-            rendered,
-            cutoff=cutoff,
-            queue_revision=queue_revision,
-            plan=updated_plan,
-            unheard_break_id=item.break_id,
-        )
-        desk.drop(item.break_id, "cancelled in the voice tracker")
-        updated_plan.transition_revision = player._transition_revision(updated_plan)
-        player._live_voice_slot = (replacement, updated_plan)
+        if location == "current":
+            replacement = _install_handoff(
+                player,
+                track,
+                rendered,
+                cutoff=cutoff,
+                queue_revision=queue_revision,
+                plan=updated_plan,
+                unheard_break_id=item.break_id,
+            )
+            desk.drop(item.break_id, reason)
+            updated_plan.transition_revision = player._transition_revision(updated_plan)
+            player._live_voice_slot = (replacement, updated_plan)
+        else:
+            _replace_ready_handoff(
+                player,
+                track,
+                rendered,
+                retained_breaks,
+                queue_revision=queue_revision,
+            )
+            desk.drop(item.break_id, reason)
         return desk.get(item.break_id) or replace(item, state="dropped")
 
 
-def _plan_for_track(player: Player, track: RenderedTrack) -> SlotPlan:
+def _replace_ready_handoff(
+    player: Player,
+    expected: RenderedTrack,
+    rendered: RenderedTrack,
+    retained_breaks: Sequence[Break],
+    *,
+    queue_revision: int,
+) -> None:
+    """Replace only this exact future render, or reject if it was promoted."""
+    bus = player.bus
+    assert bus is not None
+    playout = cast("LivePlayout[RenderedTrack]", player._playout)
+    replacement = replace(
+        expected,
+        audio=rendered.audio,
+        full_audio=rendered.full_audio,
+        next_start_offset=rendered.next_start_offset,
+        next_entry_offset=rendered.next_entry_offset,
+        overlap_frames=rendered.overlap_frames,
+        liner_events=rendered.liner_events,
+        break_events=rendered.break_events,
+        intro_events=rendered.intro_events,
+        intro_assets=rendered.intro_assets,
+        intro_rng_traces=rendered.intro_rng_traces,
+        next_reserved_liners=rendered.next_reserved_liners,
+        incoming_intro=rendered.incoming_intro,
+        voice_breaks=rendered.voice_breaks,
+    )
+    key = id(expected.entry)
+    previous = player._live_queue_edits.get(key)
+    if previous is None:
+        edit = QueueEdit(
+            expected,
+            expected.next_entry,
+            None,
+            tuple(retained_breaks),
+            expected.incoming_intro,
+            outgoing=expected.entry,
+            candidate_mode=expected.next_pick_mode,
+        )
+    else:
+        edit = replace(previous, breaks=tuple(retained_breaks))
+    with bus.queue_edit_guard(), player._state.queue_lock:
+        if player._live_queue_dirty or player._live_queue_revision != queue_revision:
+            raise BreakError(409, "The ready song change has changed", "slot_closed")
+        player._live_queue_edits[key] = edit
+        if not playout.replace_ready(expected, replacement):
+            if previous is None:
+                player._live_queue_edits.pop(key, None)
+            elif player._live_queue_edits.get(key) is edit:
+                player._live_queue_edits[key] = previous
+            raise BreakError(409, "The ready song change has started", "slot_closed")
+        player._skip_past_render(replacement)
+
+
+def _plan_for_track(player: Player, track: RenderedTrack, *, cache: bool = True) -> SlotPlan:
     """Get the transition snapshot attached to this exact live render."""
     assert track.next_entry is not None
     cached = getattr(player, "_live_voice_slot", None)
-    if cached is not None and cached[0] is track:
+    if cache and cached is not None and cached[0] is track:
         plan = cached[1]
     else:
         plan = SlotPlan(
-            new_id(),
+            track.handoff_id or new_id(),
             player._cursor_serial,
             track.entry,
             0.0,
@@ -287,6 +375,7 @@ def _plan_for_track(player: Player, track: RenderedTrack) -> SlotPlan:
             clock_revision=track.next_clock_revision,
             clock_step=track.next_clock_step,
             live=True,
+            ad_steps=track.ad_steps,
         )
         items = []
         for index, (_at, entry, queued) in enumerate(track.liner_events):
@@ -316,16 +405,31 @@ def _plan_for_track(player: Player, track: RenderedTrack) -> SlotPlan:
             items.append(
                 TransitionItem(
                     f"break:{item.break_id}",
-                    "booked_voice",
+                    "booked_voice" if item.source == "voice_track" else "booked_break",
                     item.source,
-                    item.label or "Booked break",
+                    item.label
+                    or ("Booked voice" if item.source == "voice_track" else "Booked break"),
                     committed=True,
                     editable=False,
                 )
             )
         plan.transition_items = tuple(items)
-        plan.transition_seed = hashlib.sha256(plan.slot_id.encode()).hexdigest()
-        player._live_voice_slot = (track, plan)
+        plan.transition_seed = hashlib.sha256(
+            f"{plan.slot_id}\0{id(track.next_entry)}\0{player._live_queue_revision}".encode()
+        ).hexdigest()
+        if cache:
+            player._live_voice_slot = (track, plan)
+        else:
+            positions = [
+                (at, f"liner:{index}")
+                for index, (at, _entry, _queued) in enumerate(track.liner_events)
+            ]
+            positions.extend((at, f"break:{break_id}") for at, break_id, _end in track.break_events)
+            positions.extend(
+                (at, f"intro:{intro_id}") for at, intro_id, _end, _label in track.intro_events
+            )
+            valid = {item.item_id for item in plan.transition_items}
+            plan.transition_order = tuple(key for _at, key in sorted(positions) if key in valid)
     plan.transition_revision = player._transition_revision(plan)
     return plan
 
@@ -360,13 +464,24 @@ def book_voice(
     revision: str | None,
     choices: Sequence[Mapping[str, str]],
 ) -> SlotPlan:
-    """Prepare off the bus, then admit the result only before the same cutoff."""
+    return book_live_breaks(player, (item,), item.slot_id, revision, voice_choices=choices)
+
+
+def book_live_breaks(
+    player: Player,
+    items: Sequence[Break],
+    slot_id: str,
+    revision: str | None = None,
+    *,
+    voice_choices: Sequence[Mapping[str, str]] | None = None,
+) -> SlotPlan:
+    """Admit a complete speech batch to the exact current live handoff."""
     bus, desk = player.bus, player.break_desk
     if bus is None or desk is None:
         raise BreakError(409, "That song change is no longer open", "slot_closed")
     with player._clock_selection_lock:
         plan, _closes, airs = slot_status(player)
-        if plan is None or plan.slot_id != item.slot_id:
+        if plan is None or plan.slot_id != slot_id:
             raise BreakError(409, "That song change is no longer open", "slot_closed")
         cached = player._live_voice_slot
         if cached is None or cached[1].slot_id != plan.slot_id:
@@ -374,7 +489,7 @@ def book_voice(
         track = cached[0]
         cutoff = _cutoff(player, track)
         queue_revision = player._live_queue_revision
-        added = False
+        added: list[Break] = []
         installed = False
         try:
             with bus.queue_edit_guard(), player._slot_lock:
@@ -384,11 +499,39 @@ def book_voice(
                     or not bus.can_replace_unheard_tail(track, before_frame=cutoff)
                 ):
                     raise BreakError(409, "That song change is no longer open", "slot_closed")
-                plan = player._book_break_in_plan(item, plan, revision, choices)
-                added = True
+                if revision is not None and revision != player._transition_revision(plan):
+                    raise BreakError(409, "The planned transition changed", "transition_changed")
+                if voice_choices is not None:
+                    assert len(items) == 1
+                    plan = player._book_break_in_plan(items[0], plan, revision, voice_choices)
+                    added.append(items[0])
+                else:
+                    for item in items:
+                        if item.slot_id != slot_id:
+                            raise BreakError(
+                                409, "The speech batch names a different handoff", "slot_closed"
+                            )
+                        desk.add(item)
+                        added.append(item)
+                        plan.transition_items += (
+                            TransitionItem(
+                                f"break:{item.break_id}",
+                                "booked_break",
+                                item.source,
+                                item.label or "Booked break",
+                                committed=True,
+                                editable=False,
+                            ),
+                        )
+                        if plan.transition_order:
+                            plan.transition_order += (f"break:{item.break_id}",)
+                    plan.pinned = bool(added) or plan.pinned
+            if not added:
+                return replace(plan)
             taken = tuple(desk.take(plan.slot_id, time.time() + airs))
-            if not any(take.break_id == item.break_id for take in taken):
-                raise BreakError(409, "The recording expired before this song change", "expired")
+            expected = {item.break_id for item in added}
+            if not expected.issubset({item.break_id for item in taken}):
+                raise BreakError(409, "The speech expired before this song change", "expired")
             replaced = set(plan.transition_replaced)
             liners = tuple(
                 (content.entry, content.source in {"queued", "clockwheel"})
@@ -415,10 +558,15 @@ def book_voice(
             if (
                 rendered is None
                 or not isinstance(rendered.audio, LiveAudio)
-                or not any(event[1] == item.break_id for event in rendered.break_events)
+                or not expected.issubset({event[1] for event in rendered.break_events})
             ):
+                raise BreakError(409, "The speech could not join this song change", "render_failed")
+            first = min(event[0] for event in rendered.break_events)
+            last = max(event[2] for event in rendered.break_events)
+            starts_at = time.time() + max(0, first - bus.live_position(track)) / SAMPLE_RATE
+            if player.voice_track_crosses_hard_boundary(starts_at, (last - first) / SAMPLE_RATE):
                 raise BreakError(
-                    409, "The voice track could not join this song change", "render_failed"
+                    409, "The speech chain crosses a hard scheduled boundary", "scheduled_boundary"
                 )
             _install_handoff(
                 player,
@@ -429,9 +577,9 @@ def book_voice(
                 plan=plan,
             )
             installed = True
+            plan.transition_revision = player._transition_revision(plan)
             return replace(plan)
         finally:
-            if added and not installed:
-                desk.drop(
-                    item.break_id, "the voice-track booking did not reach the current handoff"
-                )
+            if not installed:
+                for item in added:
+                    desk.drop(item.break_id, "the speech batch did not reach the current handoff")

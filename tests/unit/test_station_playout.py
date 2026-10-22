@@ -279,7 +279,7 @@ def test_matched_intro_events_restore_at_output_frame_after_early_skip(
     rendered = player._render_track(music, next_music, 2 * SR, intro=intro)
     assert rendered is not None and rendered.intro_events
     expected_prefix = round((rendered.start_offset - rendered.source_start_offset) / 1.1)
-    monkeypatch.setattr(player._render_ahead, "pop", lambda: rendered)
+    monkeypatch.setattr(player._playout, "pop", lambda: rendered)
     player._skip_next_intro = True
 
     restored = player._take_render()
@@ -506,7 +506,7 @@ def test_early_skip_restores_unheard_intro_but_late_skip_does_not(station, monke
     assert following.start_offset > following.source_start_offset
     player._start_playing(current)
     player.bus = MagicMock()
-    monkeypatch.setattr(player._render_ahead, "pop", lambda: following)
+    monkeypatch.setattr(player._playout, "pop", lambda: following)
 
     player._on_position(2 * SR)
     player.skip_current()
@@ -567,14 +567,14 @@ def test_same_name_clock_edit_invalidates_old_buffer_without_moving_live_cursor(
         next_clock_revision=4,
         next_clock_boundary=None,
     )
-    with player._render_ahead._cond:
-        player._render_ahead._ready = old
+    with player._playout._cond:
+        player._playout._ready = old
     player.apply_clockwheel_update("Morning", "immediate")
 
     assert player._clock_revision == 5
     assert player._clock["cursor"] == 0
-    assert player._render_ahead._ready is None
-    assert player._render_ahead._fallback is old
+    assert player._playout._ready is None
+    assert player._playout._fallback is old
     assert player._pending_entry is a
     # The committed outgoing track still starts; its stale buffered cursor
     # and boundary cannot overwrite the newly applied same-name revision.
@@ -595,12 +595,12 @@ def test_immediate_clock_edit_marks_inflight_render_for_revalidation(station):
         {"name": "Morning", "steps": [{"new": True}], "resync_minutes": []},
         [object()],
     )
-    with player._render_ahead._cond:
-        player._render_ahead._rendering = True
+    with player._playout._cond:
+        player._playout._rendering = True
     player.apply_clockwheel_update("Morning", "immediate")
-    assert player._render_ahead._revalidate
-    with player._render_ahead._cond:
-        player._render_ahead._rendering = False
+    assert player._playout._revalidate
+    with player._playout._cond:
+        player._playout._rendering = False
 
 
 def test_continue_clock_edit_uses_baked_next_cursor_then_live_cursor(station):
@@ -665,8 +665,8 @@ def test_clock_revision_snapshot_survives_edit_during_audio_render(station, monk
         [object()],
     )
     result = []
-    with player._render_ahead._cond:
-        player._render_ahead._rendering = True
+    with player._playout._cond:
+        player._playout._rendering = True
     worker = threading.Thread(target=lambda: result.append(player._next_rendered()))
     worker.start()
     assert entered_render.wait(5)
@@ -677,8 +677,8 @@ def test_clock_revision_snapshot_survives_edit_during_audio_render(station, monk
     finish_render.set()
     worker.join(5)
     edit.join(5)
-    with player._render_ahead._cond:
-        player._render_ahead._rendering = False
+    with player._playout._cond:
+        player._playout._rendering = False
 
     assert not worker.is_alive()
     assert not edit.is_alive()
@@ -975,7 +975,7 @@ def test_seed_place_from_another_clockwheel_is_not_carried(
     player._cfg.playback.pick_mode = "random"
     player._state.queue[:] = [b]
     if path == "reset":
-        player.reset_render_ahead(a, 0, "seed")
+        player.reset_playout(a, 0, "seed")
     else:
         # The render worker seeds a playing bus with nothing to render.
         player.bus = MagicMock(playing=True)
@@ -1210,7 +1210,7 @@ def test_clock_music_span_uses_end_without_cues_and_preserves_zero(station):
 def test_hard_jump_clears_early_skip_flag(station):
     player, (a, *_), _points = station
     player._skip_next_intro = True
-    player.reset_render_ahead(a)
+    player.reset_playout(a)
     assert not player._skip_next_intro
 
 

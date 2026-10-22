@@ -512,7 +512,7 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
 
 
 def test_live_mixing_keeps_future_queue_and_show_as_estimates(tmp_path: Path) -> None:
-    """ADR-0004-10: future live queue/show points stay predictions, not commitments."""
+    """ADR-0004-10, ADR-0004-12: live estimates stay separate from stream preparation."""
     source, power, gold = _station(tmp_path)
     player = source.player
     player.live_mixing = True
@@ -753,7 +753,7 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(
     player.bus = object()
     player._playing_render = playing
     player._playback_pos[0] = round(50 * SR)
-    player._render_ahead._ready = ready
+    player._playout._ready = ready
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
@@ -810,7 +810,7 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(
     assert decided.handoff == pytest.approx(NOW + 953)
     assert (decided.clock_cursor, decided.clock_name) == (2, "Main")
     # The render worker's place and the open change are only read.
-    assert player._render_ahead._ready is ready
+    assert player._playout._ready is ready
     assert player._slot_plan.pinned and player._cursor_serial == 7
     assert list(player._state.queue) == [gold[2], power[4]]
     view = build_preview(source, 30, desk=desk, now=NOW, decided=decided)
@@ -906,7 +906,7 @@ def test_fixed_open_clockwheel_step_is_predicted_until_booked(tmp_path: Path) ->
     player.bus = object()
     player._playing_render = _render(gold[0], 200, gold[1], 5)
     player._playback_pos[0] = round(50 * SR)
-    player._render_ahead._ready = _render(gold[1], 190, gold[2], 5)
+    player._playout._ready = _render(gold[1], 190, gold[2], 5)
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
@@ -1034,7 +1034,7 @@ def test_fixed_render_keeps_its_actual_rate_after_the_setting_changes(tmp_path: 
     player.bus = object()
     player._playing_render = playing
     player._playback_pos[0] = round(50 * 0.9 * SR)
-    player._render_ahead._ready = ready
+    player._playout._ready = ready
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
