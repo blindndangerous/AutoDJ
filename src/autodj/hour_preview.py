@@ -2132,7 +2132,7 @@ def _ignore(_event: str, _detail: Any) -> None:
 
 def _choice_key(player: Any, current: Any) -> str:
     """Identify a logical pick position so changed fixed prefixes do not shift preferences."""
-    if not player._pure_shuffle and player._cfg.playback.pick_mode == "clock":
+    if player._cfg.playback.pick_mode == "clock":
         clock = player._clock or {}
         name = getattr(player, "_pending_clock_name", None) or clock.get("name")
         cursor = getattr(player, "_pending_clock_cursor", None)
@@ -2140,7 +2140,7 @@ def _choice_key(player: Any, current: Any) -> str:
             cursor = clock.get("cursor")
         boundary = getattr(player, "_pending_clock_boundary", None)
         return f"clock:{name}:{cursor}:{boundary}"
-    mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
+    mode = player._cfg.playback.pick_mode
     return f"{mode}:{current.path}"
 
 
@@ -2594,11 +2594,7 @@ def build_preview(
         "predicted": sum(1 for item in shown if not _is_fixed(item, live_mixing, now)),
     }
     clock = snapshot.clock or {}
-    clock_on = (
-        bool(clock.get("name"))
-        and snapshot.cfg.playback.pick_mode == "clock"
-        and not snapshot.settings.get("_pure_shuffle", False)
-    )
+    clock_on = bool(clock.get("name")) and snapshot.cfg.playback.pick_mode == "clock"
     points = fixed_points(
         now,
         end,
@@ -2902,7 +2898,6 @@ class HourPreviews:
         settings = tuple(
             (name, repr(getattr(player, name, None)))
             for name in (
-                "_pure_shuffle",
                 "_anchor_to_seed",
                 "_seed_path",
                 "_discovery_every",

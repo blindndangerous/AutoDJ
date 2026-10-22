@@ -70,7 +70,6 @@ def _player(
         repeat_rules=RepeatSettings.model_validate({**defaults, **(repeat_rules or {})}),
     )
     player = Player(cfg, _sim(tracks), dry_run=True)
-    player._pure_shuffle = pick_mode == "random"
     return player
 
 

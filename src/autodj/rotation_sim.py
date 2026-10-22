@@ -196,7 +196,6 @@ class SimulationSource:
 _COPIED = (
     "_preset",
     "_bpm_range",
-    "_pure_shuffle",
     "_anchor_to_seed",
     "_seed_path",
     "_discovery_every",
@@ -836,7 +835,6 @@ _EVENT_STATE = (
     "_pending_clock_name",
     "_seed_clock_name",
     "_pending_clock_boundary",
-    "_pure_shuffle",
     "_preset",
     "_discovery_every",
 )
@@ -1079,7 +1077,7 @@ def _simulate(
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=library, ledger=player._ledger)
     schedule = _Schedule(source.events, source.timezone, start)
-    initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
+    initial_mode = player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
     initial_clock_status = (
         player._clock_fallback_status() if initial_mode == "clock" and not initial_clock else None
@@ -1524,7 +1522,7 @@ def _report(
             "mode": initial_mode,
             "clockwheel": initial_clock,
             "clock_status": initial_clock_status,
-            "final_mode": "random" if player._pure_shuffle else player._cfg.playback.pick_mode,
+            "final_mode": player._cfg.playback.pick_mode,
             "final_clockwheel": clock.get("name"),
             "dmca": bool(player._state.dmca_enabled),
             "versions_as_one_song": bool(player._state.rules.versions_as_one_song),

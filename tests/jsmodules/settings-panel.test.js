@@ -168,7 +168,7 @@ describe("applySettingsState", () => {
     expect(els.pbPickMode.value).toBe("least_recent");
     expect(els.pbLoudness.value).toBe("smooth");
 
-    applySettingsState({ playback: { pure_shuffle: true, replaygain_enabled: true } }, els);
+    applySettingsState({ playback: { pick_mode: "random", replaygain_enabled: true } }, els);
     expect(els.pbPickMode.value).toBe("random");
     expect(els.pbLoudness.value).toBe("replaygain");
   });

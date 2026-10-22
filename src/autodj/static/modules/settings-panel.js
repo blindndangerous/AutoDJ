@@ -308,8 +308,7 @@ export function applySettingsState(st, els) {
     if (isToggle(control)) control.checked = value;
     else if (doc.activeElement !== control && control.value !== String(value)) control.value = value;
   }
-  const pickMode = st.playback?.pick_mode ??
-    (st.playback?.pure_shuffle ? "random" : "similarity");
+  const pickMode = st.playback?.pick_mode ?? "similarity";
   const pickModeOption = Array.from(pbPickMode?.options || []).some((option) => option.value === pickMode)
     ? pickMode
     : pickMode === "random" && Array.from(pbPickMode?.options || []).some((option) => option.value === "pure")

@@ -250,7 +250,6 @@ def make_station(
     sim = similarity_index(music) if similarity else SimilarityIndex.empty()
     player = Player(cfg, sim, dry_run=True)
     player._library = library
-    player._pure_shuffle = cfg.playback.pick_mode == "random"
     player.configure_clock()
     return SimulationSource(
         player=player,
