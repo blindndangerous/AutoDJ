@@ -667,6 +667,11 @@ class LibraryDjAnalysisBody(BaseModel):
     enabled: StrictBool
 
 
+class LibraryMusicFadeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    drop_db: StrictInt = Field(ge=1, le=30)
+
+
 class LibraryAdvancedLengthBody(BaseModel):
     """Longest song the advanced analysis takes, in minutes; 0 takes every length."""
 
@@ -1295,6 +1300,7 @@ def create_app(
         "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan/apply": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/music-fade": lambda: SMALL_BODY_MAX_BYTES,
         "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
@@ -2467,6 +2473,16 @@ def create_app(
     async def api_library_set_dj_analysis(body: LibraryDjAnalysisBody) -> dict[str, bool]:
         await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
         return {"enabled": body.enabled}
+
+    @app.get("/api/library/music-fade")
+    async def api_library_music_fade() -> dict[str, int]:
+        return {"drop_db": await asyncio.to_thread(_catalog_library().music_fade_drop_db)}
+
+    @app.put("/api/library/music-fade")
+    async def api_library_set_music_fade(body: LibraryMusicFadeBody) -> dict[str, int]:
+        library = _catalog_library()
+        await asyncio.to_thread(library.set_music_fade_drop_db, body.drop_db)
+        return {"drop_db": body.drop_db}
 
     @app.get("/api/library/advanced-length")
     async def api_library_advanced_length() -> dict[str, int]:

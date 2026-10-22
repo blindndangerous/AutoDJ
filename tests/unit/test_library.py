@@ -22,7 +22,7 @@ from autodj.config import (
     StationSpec,
 )
 from autodj.indexer import FEATURE_DIM, FINGERPRINT_BYTES, IndexEntry, file_fingerprint
-from autodj.library import LibraryManager, analyse_library
+from autodj.library import LibraryManager, analyse_library, music_fade_drop_db
 from autodj.station_store import StationStore
 from autodj.stations import DEFAULT_SLUG
 from tests.unit._catalog_vectors import set_vector, vectors_snapshot
@@ -115,8 +115,8 @@ def manager_factory(tmp_path):
         manager.close()
 
 
-def fake_basic(path: Path, kind: str = "music", audio=None):
-    del kind, audio
+def fake_basic(path: Path, kind: str = "music", audio=None, **kwargs):
+    del kind, audio, kwargs
     return make_entry(path), {
         "start": 0.0,
         "intro": 10.0,
@@ -233,6 +233,7 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
     song.write_bytes(b"music")
     liner.write_bytes(b"voice")
     manager = manager_factory(music=music, liners=liner_dir, processing="smooth")
+    manager.set_music_fade_drop_db(17)
     analyze = patch("autodj.library.analyze_basic", side_effect=fake_basic)
     loudness = patch("autodj.library.analyze_loudness", side_effect=fake_loudness)
     with (
@@ -246,6 +247,10 @@ def test_scan_imports_recursive_music_and_liners_and_reuses_loudness(manager_fac
         assert manager.entry_for_path(liner).title == "liner"
         assert manager.catalog.entry_for_path(liner).title == "liner"
         assert analyzed.call_count == measured.call_count == 2
+        music_call = next(call for call in analyzed.call_args_list if call.args[0] == song)
+        liner_call = next(call for call in analyzed.call_args_list if call.args[0] == liner)
+        assert music_call.kwargs["music_fade_drop_db"] == 17
+        assert "music_fade_drop_db" not in liner_call.kwargs
         manager.scan()
         assert analyzed.call_count == measured.call_count == 2
         assert manager.snapshot()["import"]["errors"] == []
@@ -338,7 +343,10 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
     good.write_bytes(b"good")
     manager = manager_factory(music=music)
 
-    def analyze(path, kind="music", audio=None):
+    fade_thresholds = []
+
+    def analyze(path, kind="music", audio=None, music_fade_drop_db=10):
+        fade_thresholds.append(music_fade_drop_db)
         if path == bad:
             raise ValueError("decode failed")
         return fake_basic(path, kind)
@@ -350,7 +358,25 @@ def test_scan_continues_after_per_file_failure(manager_factory, tmp_path):
         manager.scan()
     assert manager.entry_for_path(good) is not None
     assert manager.entry_for_path(bad) is None
+    assert fade_thresholds == [10, 10]
     assert any("bad.flac" in error for error in manager.snapshot()["import"]["errors"])
+
+
+def test_music_fade_setting_defaults_validates_and_persists(manager_factory):
+    manager = manager_factory()
+    assert manager.music_fade_drop_db() == 10
+    for corrupt in (True, 0, 31, 1.5, "14"):
+        manager.catalog.set_setting("music_fade_drop_db", corrupt)
+        assert music_fade_drop_db(manager.catalog) == 10
+    with patch.object(manager, "start_scan") as start_scan:
+        manager.set_music_fade_drop_db(14)
+        start_scan.assert_not_called()
+    assert manager.music_fade_drop_db() == 14
+    with LibraryCatalog(manager.catalog.path) as reopened:
+        assert music_fade_drop_db(reopened) == 14
+    for invalid in (True, 1.5, 0, 31):
+        with pytest.raises(ValueError):
+            manager.set_music_fade_drop_db(invalid)
 
 
 def test_folder_scan_counts_only_requested_sources(manager_factory, tmp_path):
@@ -531,7 +557,8 @@ def test_queued_folder_during_basic_is_ready_before_loudness(manager_factory, tm
     manager = manager_factory(music=music, processing="smooth")
     events = []
 
-    def basic(path, kind="music", audio=None):
+    def basic(path, kind="music", audio=None, **kwargs):
+        del kwargs
         events.append(("basic", path.name))
         if path == old_song:
             source_id = manager.catalog.add_source(new_folder)["id"]
@@ -667,8 +694,8 @@ def test_replaced_track_resets_manual_cues_and_derived_cache(
 
     song.write_bytes(b"replacement audio with different bytes and length")
 
-    def short_track(path: Path, kind: str = "music", audio=None):
-        del kind, audio
+    def short_track(path: Path, kind: str = "music", audio=None, **kwargs):
+        del kind, audio, kwargs
         fresh = make_entry(path)
         fresh.length = 100.0
         return fresh, {
@@ -1996,7 +2023,8 @@ def test_new_songs_are_listed_from_their_tags_before_they_are_decoded(manager_fa
     manager = manager_factory(music=music)
     listed = {}
 
-    def basic(path, kind="music", audio=None):
+    def basic(path, kind="music", audio=None, **kwargs):
+        del kwargs
         # Both songs are already listed, silent, when the first is decoded.
         for song in (good, bad):
             entry = manager.entry_for_path(song)
