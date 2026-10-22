@@ -12,6 +12,7 @@ from autodj import host_tools
 
 
 def test_path_refresh_preserves_process_paths_and_expands_registered_paths(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     registry = SimpleNamespace(
         HKEY_LOCAL_MACHINE=1,
         HKEY_CURRENT_USER=2,

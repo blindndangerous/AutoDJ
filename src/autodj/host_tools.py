@@ -10,6 +10,8 @@ import sys
 
 def _refresh_windows_path() -> None:
     """Pick up WinGet's registered paths in this process, without changing the registry."""
+    if sys.platform != "win32":
+        return
     import winreg
 
     paths = os.environ.get("PATH", "").split(os.pathsep)
