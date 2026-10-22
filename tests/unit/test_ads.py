@@ -818,7 +818,7 @@ def test_clockwheel_step_rendered_before_booking_is_reported(station):
     player._next_rendered()
     ads.tick()
     assert any(
-        "rendered before its spots could be booked" in line.reason for line in log_lines(ads)
+        "closed before its spots could be booked" in line.reason for line in log_lines(ads)
     )
 
 
