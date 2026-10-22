@@ -107,6 +107,7 @@ def _patch_execution(
 ):
     """Replace host probes and expensive actions while retaining setup state writes."""
     setup = modules.setup
+    monkeypatch.setattr(setup, "ensure_ffmpeg", Mock(return_value=True))
     monkeypatch.delenv("AUTODJ_GPU", raising=False)
     install_python = Mock()
     prepare_caches = Mock()
@@ -239,6 +240,7 @@ def test_dry_run_prints_plan_without_writing_or_installing(
     assert not (root / "config.toml").exists()
     assert not (root / ".uv").exists()
     assert {path.relative_to(root) for path in root.rglob("*")} == before
+    setup_modules.setup.ensure_ffmpeg.assert_not_called()
     mocks.install_python.assert_not_called()
     mocks.run.assert_not_called()
 
@@ -312,7 +314,8 @@ def test_explicit_existing_environment_skips_package_install(
     mocks.create_configuration.assert_called_once_with(root, 8181)
     generated = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     assert "music_dir" not in generated["library"]
-    assert "Your library is empty" in capsys.readouterr().out
+    assert "Manage music folders" in capsys.readouterr().out
+    setup_modules.setup.ensure_ffmpeg.assert_called_once_with(auto_install=True)
     selection = setup_modules.support.read_json(root / setup_modules.support.STATE)
     assert selection == {
         "environment": str(environment.resolve()),
@@ -322,7 +325,7 @@ def test_explicit_existing_environment_skips_package_install(
 
 
 def test_existing_configuration_is_preserved(
-    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
@@ -342,6 +345,20 @@ def test_existing_configuration_is_preserved(
     assert config.read_bytes() == config_bytes
     assert local_config.read_bytes() == local_bytes
     mocks.create_configuration.assert_not_called()
+    assert "Your library is empty" not in capsys.readouterr().out
+
+
+def test_failed_ffmpeg_install_keeps_setup_available(setup_modules, monkeypatch, tmp_path, capsys):
+    root, _ = _project(tmp_path)
+    environment = _environment(setup_modules.support, root)
+    _patch_execution(setup_modules, monkeypatch)
+    setup_modules.setup.ensure_ffmpeg.side_effect = RuntimeError("WinGet failed")
+    args = setup_modules.setup.parser().parse_args(
+        ["--yes", "--backend", "cpu", "--environment", str(environment)]
+    )
+    assert setup_modules.setup.execute(args, root) == 0
+    assert "FFmpeg installation failed" in capsys.readouterr().err
+    assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
 
 
 def test_doctor_failure_does_not_discard_verified_runtime(
@@ -371,6 +388,7 @@ def test_doctor_failure_does_not_discard_verified_runtime(
     assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
     output = capsys.readouterr().out
     assert "WARN library: music folder is empty" in output
+    assert "no tracks" in output
     assert "Run `autodj doctor` for details and repair guidance." in output
     assert '"checks"' not in output
     command = mocks.doctor.call_args.args[0]

@@ -170,7 +170,6 @@ def test_install_refreshes_path_and_forwards_setup_args(tmp_path: Path, unattend
     staging = tmp_path / "staging"
     staging.mkdir()
     _tool(staging / "uv.cmd", f'@echo off\r\necho %*>>"{tmp_path / "uv.log"}"\r\nexit /b 0\r\n')
-    _tool(staging / "ffmpeg.cmd")
     tools = tmp_path / "installer-bin"
     tools.mkdir()
     winget_log = tmp_path / "winget.log"
@@ -178,7 +177,6 @@ def test_install_refreshes_path_and_forwards_setup_args(tmp_path: Path, unattend
         tools / "winget.cmd",
         f'@echo off\r\necho %*>>"{winget_log}"\r\n'
         f'copy /Y "{staging / "uv.cmd"}" "{user_bin / "uv.cmd"}" >nul\r\n'
-        f'copy /Y "{staging / "ffmpeg.cmd"}" "{user_bin / "ffmpeg.cmd"}" >nul\r\n'
         "exit /b 0\r\n",
     )
     env = _env(tmp_path, tools)
@@ -191,10 +189,9 @@ def test_install_refreshes_path_and_forwards_setup_args(tmp_path: Path, unattend
 
     assert result.returncode == 0, result.stderr
     calls = winget_log.read_text().splitlines()
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert "--id astral-sh.uv --exact --source winget --scope user" in calls[0]
-    assert "--id Gyan.FFmpeg --exact --source winget --scope user" in calls[1]
-    assert (user_bin / "uv.cmd").is_file() and (user_bin / "ffmpeg.cmd").is_file()
+    assert (user_bin / "uv.cmd").is_file()
     assert "run --no-project --python 3.14" in (tmp_path / "uv.log").read_text()
     assert "setup --backend cpu" in (tmp_path / "uv.log").read_text()
     if unattended:
@@ -215,17 +212,20 @@ def test_missing_winget_reports_manual_uv_install(tmp_path: Path) -> None:
     assert "https://docs.astral.sh/uv/getting-started/installation/" in result.stderr
 
 
-def test_missing_optional_ffmpeg_does_not_block_setup(tmp_path: Path) -> None:
+def test_missing_ffmpeg_does_not_trigger_bootstrap_install_or_warning(tmp_path: Path) -> None:
     _, script = _project(tmp_path)
     tools = tmp_path / "tools"
     tools.mkdir()
     uv_log = tmp_path / "uv.log"
     _tool(tools / "uv.cmd", f'@echo off\r\necho %*>>"{uv_log}"\r\nexit /b 0\r\n')
+    winget_log = tmp_path / "winget.log"
+    _tool(tools / "winget.cmd", f'@echo off\r\necho called>>"{winget_log}"\r\nexit /b 0\r\n')
     result = _run(script, "setup", env=_env(tmp_path, tools))
 
     assert result.returncode == 0, result.stderr
-    assert "FFmpeg is optional for setup" in result.stderr
+    assert "FFmpeg" not in result.stderr
     assert uv_log.is_file()
+    assert not winget_log.exists()
 
 
 @pytest.mark.parametrize("answer", ["", "n", "no"])
@@ -282,18 +282,3 @@ def test_existing_runtime_without_state_checks_tools_for_interactive_setup(
     assert result.returncode == 0, result.stderr
     assert json.loads((tmp_path / "run.json").read_text()) == ["serve"]
     assert "uv" not in result.stderr
-
-
-def test_failed_ffmpeg_install_reports_exit_code_and_continues(tmp_path: Path) -> None:
-    _, script = _project(tmp_path, interactive=True)
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    _tool(tools / "uv.cmd")
-    _tool(tools / "winget.cmd", "@echo off\r\nexit /b 7\r\n")
-    env = _env(tmp_path, tools)
-    env["AUTODJ_TEST_ANSWER"] = "y"
-    result = _run(script, "setup", env=env)
-
-    assert result.returncode == 0, result.stderr
-    assert "WinGet could not install FFmpeg (exit code 7)" in result.stderr
-    assert "FFmpeg is optional for setup" in result.stderr

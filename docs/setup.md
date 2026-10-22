@@ -17,9 +17,10 @@ On Windows:
 .\autodj.cmd
 ```
 
-On first start, Windows offers to install missing [uv](https://docs.astral.sh/uv/getting-started/installation/)
-and [FFmpeg](https://ffmpeg.org/download.html) through WinGet. If WinGet is unavailable, the
-launcher prints the manual installation instructions. It reuses tools already on PATH.
+On first start, the Windows launcher offers to install missing
+[uv](https://docs.astral.sh/uv/getting-started/installation/) through WinGet.
+Setup then offers to install missing [FFmpeg](https://ffmpeg.org/download.html).
+Both reuse installed tools and give manual guidance when WinGet is unavailable.
 
 On Linux or macOS, install uv and FFmpeg first, then run:
 
@@ -115,11 +116,21 @@ FFmpeg handles common music formats and streaming. The Windows launcher includes
 user and machine PATH entries in its own process, so tools installed by WinGet can be used
 without opening a new terminal. This does not rewrite your PATH settings.
 
-First-run setup offers to install missing tools with WinGet package IDs `astral-sh.uv` and
-`Gyan.FFmpeg` for the current user. Starts that find an installed runtime do not install tools.
+The launcher bootstraps uv with WinGet package ID `astral-sh.uv`. Setup and Doctor share
+the FFmpeg installer, using `Gyan.FFmpeg` for the current user. Ordinary serving does not install tools.
 The prompt defaults to No. Use `.\autodj.cmd setup --yes` to approve these downloads and
 the setup plan without prompts. This also accepts the packages' installation agreements.
 For a manual installation, add the folder containing each executable to PATH.
+
+Interactive `autodj doctor` (or `.\autodj.cmd doctor`) offers to install missing FFmpeg
+on Windows. `doctor --fix` approves supported repairs, including that installation and
+its package agreements. `--no-fix`, `--json`, and unattended Doctor without `--fix`
+never install it. On other platforms, or without WinGet, install FFmpeg manually.
+Setup displays Doctor's diagnostic guidance after verifying the runtime.
+
+Doctor prints its report without saving it to the server log. To keep a read-only
+report, run `autodj doctor --no-fix --json > doctor-report.json` with the same configuration
+you use to serve.
 
 ## Moving an existing station
 

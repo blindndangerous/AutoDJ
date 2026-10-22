@@ -336,6 +336,9 @@ def test_missing_ffmpeg_warns_with_alac_fallback(monkeypatch: pytest.MonkeyPatch
 
     assert check.status is doctor.CheckStatus.WARN
     assert "raw ALAC fallback" in check.detail
+    assert "interactive `autodj doctor` offers installation" in check.detail
+    assert "https://ffmpeg.org/download.html" in check.detail
+    assert check.repair == ("install-ffmpeg" if sys.platform == "win32" else None)
     # The indexer decodes these through FFmpeg and skips them without it.
     assert ".m4a, .mp4 and .aac files, which are skipped" in check.detail
 
