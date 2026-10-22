@@ -4,8 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 
 def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:

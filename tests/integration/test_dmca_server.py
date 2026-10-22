@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 
 from autodj.config import DmcaConfig
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_entry
 

@@ -26,8 +26,8 @@ from autodj.server import (
     LibraryRescanBody,
     SongPointsBody,
     _apply_time_settings,
-    create_app,
 )
+from tests._server import create_app
 from tests.unit._catalog_vectors import set_vector
 from tests.unit.test_library import Similarity, make_config, make_entry
 

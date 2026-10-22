@@ -11,8 +11,8 @@ import soundfile as sf
 from fastapi.testclient import TestClient
 
 from autodj.config import TimeChecksConfig
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 

@@ -474,8 +474,8 @@ class TestLoadLyricsToggle:
         import asyncio
 
         from autodj._bridge import PlayerBridge
-        from autodj.server import create_app
         from autodj.settings_bodies import EqBody
+        from tests._server import create_app
 
         player = self._make()
         point_index(player._cfg.index, tmp_path)
@@ -697,7 +697,8 @@ class TestAnalyseTrackInBackground:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import DjMeta, DjMetaCache, get_cache
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
 
         player = self._make()
         cache = get_cache(tmp_path)
@@ -784,7 +785,8 @@ class TestAnalyseTrackInBackground:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import DjMeta, close_cache, get_cache
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
 
         player = self._make()
         cache = get_cache(tmp_path)

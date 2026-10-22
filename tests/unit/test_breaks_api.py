@@ -30,8 +30,8 @@ from autodj.breaks import (
 from autodj.live_audio import LiveAudio
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
 from autodj.mixbus import BusEvents, MixBus
-from autodj.server import create_app
 from autodj.stereo import SAMPLE_RATE as SR
+from tests._server import create_app
 from tests.unit._break_station import make_break, make_station, start_station
 from tests.unit.test_library import make_config
 

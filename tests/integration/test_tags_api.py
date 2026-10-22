@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from autodj.audio_meta import read_file_tags, read_reporting_tags
 from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
+from tests._server import create_app
 from tests.unit._catalog_vectors import set_vector
 from tests.unit._tagged_audio import make_audio
 from tests.unit.test_library import Similarity, make_config, make_entry

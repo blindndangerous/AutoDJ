@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from autodj.ads import AIR_OFF, AdLog, PlayRecord, latest
 from autodj.breaks import AD_SCHEDULE, QUEUED
 from autodj.config import AdsConfig, BreaksConfig
-from autodj.server import create_app
+from tests._server import create_app
 from tests.unit._break_station import make_station, start_station
 from tests.unit.test_breaks_api import LOCAL, wav
 from tests.unit.test_library import make_config
