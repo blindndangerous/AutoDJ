@@ -91,9 +91,10 @@ metadata work and bounded transition-effect windows stay with background workers
 This is a buffering and ownership bound, not a zero-gap or hardware timing
 guarantee.
 
-Queue-edit preflight projects the current editable handoff, the render-ahead
-ready handoff, and any affected pinned slot plan. One revision-bound choice
-covers the voice contexts affected by that queue replan. If an edit replaces
+Under the #519 model, queue-edit preflight projected the current editable
+handoff, the render-ahead ready handoff, and any affected pinned slot plan.
+One revision-bound choice covers the voice contexts affected by that queue
+replan. If an edit replaces
 music named by the live handoff, the bus holds its boundary until the replacement
 is ready; it does not fall back to the displaced incoming song. If a voice or
 liner chain has already started, its original timing and layers remain in place
@@ -107,12 +108,37 @@ Browser voice tracking targets the currently airing song and its selected
 successor. Its booking window closes at the current song's outro, or earlier
 if existing speech or a tail begins before it. The cutoff is calculated after
 decoding and checked again atomically when the take is
-installed; booking after the outro is not supported. An installed voice track can
-be cancelled while its current handoff's affected speech and ducking remain unheard.
-Cancellation prepares the remaining layers off the bus and rechecks the active
-handoff, queue revision and safe boundary before replacing its unheard tail.
+installed; booking after the outro is not supported. In the #519 model, an
+installed voice track could be cancelled while its current handoff's affected
+speech and ducking remained unheard. Cancellation prepared the remaining
+layers off the bus and rechecked the active handoff, queue revision and safe
+boundary before replacing its unheard tail.
 
-Implementation: [live audio](../../src/autodj/live_audio.py),
+## Amendment, 2026-10-22: stream playout and speech admission
+
+Issues [#521](https://github.com/blindndangerous/AutoDJ/issues/521),
+[#522](https://github.com/blindndangerous/AutoDJ/issues/522) and
+[#523](https://github.com/blindndangerous/AutoDJ/issues/523) revise the live
+worker and speech lifecycle described above.
+
+Streaming playout uses the independent `LivePlayout` controller and its
+progressive sources; `RenderAhead` remains the local path. Hour Preview is an
+estimate, and whole-show preview/export remains separate from either live
+worker. Streaming no longer creates future pinned `SlotPlan`s: queue preflight
+and cancellation target the current or ready `LivePlayout` handoff. Local
+playback retains its future slot planner. Stream announcer uploads and scheduled
+speech use the currently airing song change. Decode and preparation happen
+before final admission, which atomically rechecks the handoff, revision, outro cutoff and applicable hard
+schedule boundary. The scheduler keeps its independent due/expiry tick and
+retries a batch refused by a changed handoff. Cancellation may remove speech
+from an unheard ready occurrence, extending the prior current-handoff-only
+cancellation rule, while preserving other speech and approved assets. These rules
+do not claim hard real-time or hardware timing guarantees.
+
+Implementation: [live playout controller](../../src/autodj/live_playout.py),
+[stream speech admission and cancellation](../../src/autodj/live_voice.py),
+[announcer API](../../src/autodj/breaks_api.py), [scheduled ads](../../src/autodj/ads.py),
+[live audio](../../src/autodj/live_audio.py),
 [stream decoder](../../src/autodj/stream_decode.py),
 [live transitions](../../src/autodj/live_transitions.py), and
 [live queue planning](../../src/autodj/live_queue.py).
@@ -166,9 +192,10 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-06` | Continuity under actual multi-station load requires measured soak evidence. | manual | Run the documented station soak test on the target hardware; report underruns and limits rather than promising hard real-time behavior. |
 | `ADR-0004-07` | Automatic saved-point liners use the shared queued-liner cue timing independently of the legacy talk-up flag. | automated | `tests/unit/test_station_liner_cadence.py::test_automatic_liners_use_saved_cues_without_talk_up` |
 | `ADR-0004-08` | Live decoders progressively fill a backpressured two-second PCM cushion. | automated | `tests/unit/test_stream_decode.py::test_progressive_decoder_backpressures_and_preserves_every_frame` |
-| `ADR-0004-09` | Live layers follow the bus sample clock; preflight covers current, ready and affected pinned slot handoffs; edits hold the boundary without repeating started speech or airing displaced music; internal edits defer without an operator choice. | automated | `tests/unit/test_live_mixbus.py::test_pending_live_layer_holds_cursor_and_does_not_consume_ready_companion`; `tests/unit/test_live_mixbus.py::test_held_handoff_never_airs_displaced_incoming_and_atomic_replace_airs_new`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_live_queue_replan.py::test_after_incoming_is_audible_edit_targets_render_ahead_handoff`; `tests/unit/test_live_queue_replan.py::test_concurrent_queue_revision_does_not_install_stale_replacement`; `tests/unit/test_live_queue_replan.py::test_failed_replacement_leaves_boundary_held`; `tests/unit/test_live_queue.py::test_pinned_slot_plan_breaks_and_intro_are_included_in_atomic_choice`; `tests/unit/test_live_queue.py::test_removed_pinned_ending_prompts_and_transfers_speech_to_replacement`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice` |
+| `ADR-0004-09` | Live layers follow the bus sample clock; preflight covers current and ready handoffs; edits hold the boundary without repeating started speech or airing displaced music; internal edits defer without an operator choice. | automated | `tests/unit/test_live_mixbus.py::test_pending_live_layer_holds_cursor_and_does_not_consume_ready_companion`; `tests/unit/test_live_mixbus.py::test_held_handoff_never_airs_displaced_incoming_and_atomic_replace_airs_new`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_live_queue_replan.py::test_after_incoming_is_audible_edit_targets_render_ahead_handoff`; `tests/unit/test_live_queue_replan.py::test_concurrent_queue_revision_does_not_install_stale_replacement`; `tests/unit/test_live_queue_replan.py::test_failed_replacement_leaves_boundary_held`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice`; `tests/unit/test_live_stream_lifecycle.py::test_real_stream_selection_replans_audible_handoff_before_stale_queue_item_airs` |
 | `ADR-0004-10` | Live transition effects use bounded windows and worker dispatch; future live queue and show points remain estimates. | automated | `tests/unit/test_live_transitions.py::test_live_transition_mixes_only_bounded_tail`; `tests/unit/test_live_transitions.py::test_player_dispatches_live_non_saved_render_without_decoding_whole_track`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
-| `ADR-0004-11` | Streaming voice tracking books the current handoff before outro and cancels installed speech before its safe boundary; both recheck the handoff and queue revision and preserve heard audio. | automated | `tests/unit/test_live_voice.py::test_current_live_voice_books_before_outro_and_keeps_future_slot`; `tests/unit/test_live_voice.py::test_live_voice_render_race_drops_item_and_keeps_old_audio`; `tests/unit/test_live_voice.py::test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice` |
+| `ADR-0004-11` | Streaming speech admission (browser voice, announcer and scheduled batches) uses the current handoff and atomically rechecks pair/revision, outro cutoff and hard schedule boundaries; cancellation may remove unheard current/ready speech while preserving other speech and approved assets. | automated | `tests/unit/test_live_voice.py::test_current_live_voice_books_before_outro_and_keeps_future_slot`; `tests/unit/test_live_voice.py::test_live_voice_render_race_drops_item_and_keeps_old_audio`; `tests/unit/test_live_voice.py::test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice`; `tests/unit/test_live_voice.py::test_live_voice_cancel_replaces_exact_ready_occurrence_and_keeps_other_speech`; `tests/unit/test_live_voice.py::test_live_voice_cancel_rejects_ready_promotion_race_without_dropping_source`; `tests/unit/test_breaks_api.py::test_stream_announcer_slot_is_the_current_song_change`; `tests/unit/test_breaks_api.py::test_active_live_chain_keeps_transferred_announcer_break_from_old_slot`; `tests/unit/test_breaks_api.py::test_stream_announcer_upload_joins_current_song_change`; `tests/unit/test_breaks_api.py::test_stream_announcer_can_cancel_unheard_current_audio`; `tests/unit/test_breaks_api.py::test_stream_announcer_rejects_handoff_changed_during_decode`; `tests/unit/test_ads.py::test_schedule_booking_retries_after_atomic_handoff_refusal` |
+| `ADR-0004-12` | Streaming queue preparation is owned by the independent live playout controller; local render-ahead and whole-show preview/export retain their separate paths. | automated | `tests/unit/test_live_playout_controller.py::test_live_playout_prepares_one_handoff_and_pop_schedules_the_next`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
 
 ## Related proposal — 2026-10-17
 

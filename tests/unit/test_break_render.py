@@ -455,7 +455,7 @@ def test_a_booked_slot_keeps_its_songs_whatever_the_queue_does(station):
     _render_a, render_b, plan = start_station(player, entries)
     player.book_break(make_break(desk, plan.slot_id))
     player._state.queue[:] = [b, d, c]  # c moves after d
-    player.refresh_render_ahead()
+    player.refresh_playout()
     assert not player._queue_pick_is_stale(render_b)
     assert player._slot_plan is not None and not player._slot_plan.stale
     player._on_track_start(render_b)
@@ -470,11 +470,11 @@ def test_an_unbooked_slot_is_planned_again_after_a_queue_edit(station):
     player, entries, _points, _desk = station
     _a, b, c, _d = entries
     _render_a, render_b, plan = start_station(player, entries)
-    player._render_ahead.request_plan = MagicMock()
+    player._playout.request_plan = MagicMock()
     player._state.queue[:] = [b, c]  # d leaves the queue
-    player.refresh_render_ahead()
+    player.refresh_playout()
     assert player._slot_plan.stale
-    player._render_ahead.request_plan.assert_called_once()
+    player._playout.request_plan.assert_called_once()
     assert player.slot_status() == (None, 0.0, 0.0)
     # Planned again from the same cursor, the slot gets a new id.
     player._plan_slot(render_b)
@@ -589,7 +589,7 @@ def test_skipping_the_intro_moves_the_break_events_too(station):
     player.book_break(make_break(desk, plan.slot_id))
     player._on_track_start(render_b)
     render_c = player._next_rendered()
-    player._render_ahead._ready = render_c
+    player._playout._ready = render_c
     player._skip_next_intro = True
     taken = player._take_render()
     prefix = render_c.start_offset - render_c.source_start_offset
@@ -630,7 +630,7 @@ def test_a_render_thrown_away_drops_its_breaks(station):
     player._on_track_start(render_b)
     render_c = player._next_rendered()
     assert desk.get(item.break_id).state == RENDERED
-    player._render_ahead._discard(render_c)
+    player._playout._discard(render_c)
     assert desk.get(item.break_id).state == DROPPED
     assert desk.get(item.break_id).reason == "its render was thrown away before it played"
 
@@ -657,9 +657,9 @@ def test_a_slot_whose_breaks_all_went_is_unpinned(station):
     desk.cancel(item.break_id)
     assert not player._slot_plan.pinned
     # Unpinned, a queue edit may change the slot again.
-    player._render_ahead.request_plan = MagicMock()
+    player._playout.request_plan = MagicMock()
     player._state.queue[:] = [b, c]
-    player.refresh_render_ahead()
+    player.refresh_playout()
     assert player._slot_plan.stale
 
 

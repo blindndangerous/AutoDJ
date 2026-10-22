@@ -228,9 +228,7 @@ class StationSettings:
                 return
             if self._preset.discovery_every and self._discovery_every is None:
                 self._discovery_every = self._preset.discovery_every
-        if self.player is not None and (
-            refresh := getattr(self.player, "refresh_render_ahead", None)
-        ):
+        if self.player is not None and (refresh := getattr(self.player, "refresh_playout", None)):
             refresh()
         self.sync_to_player()
 
@@ -343,7 +341,7 @@ class StationSettings:
             if (
                 picking_changed
                 and not restoring
-                and (refresh := getattr(player, "refresh_render_ahead", None))
+                and (refresh := getattr(player, "refresh_playout", None))
             ):
                 refresh()
             if (
@@ -417,7 +415,7 @@ class StationSettings:
             self._discovery_enabled = False
         if self.player is not None:
             self.player._state.discovery_enabled = self._discovery_enabled
-            if not restoring and (refresh := getattr(self.player, "refresh_render_ahead", None)):
+            if not restoring and (refresh := getattr(self.player, "refresh_playout", None)):
                 refresh()
         self.sync_to_player()
 

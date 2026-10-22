@@ -332,7 +332,7 @@ def _play_until_a_track_starts(player: Player) -> None:
     before = player._playing_render
     for _ in range(400):
         if player.bus._current is None:
-            assert player._render_ahead.wait_ready(WAIT)
+            assert player._playout.wait_ready(WAIT)
         player.bus.render_block()
         if player._playing_render is not before:
             return
@@ -343,7 +343,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
     player, bridge, stream, station, now, sim = _real_rig()
     head = sim.entries[5]
     player._state.queue.append(head)
-    player._render_ahead.start()
+    player._playout.start()
     try:
         stream.listener_count = 1
         station.tick()
@@ -363,7 +363,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
         assert player._state.next_track is None
         assert bridge.history_snapshot() == []  # the cut-short track is forgotten
         # The worker is parked: nothing stale is (or gets) rendered for the next set.
-        assert not player._render_ahead.wait_ready(0.3)
+        assert not player._playout.wait_ready(0.3)
 
         stream.listener_count = 1
         station.tick()
@@ -371,7 +371,7 @@ def test_real_player_first_listener_plays_queue_head_then_stops_cleanly() -> Non
         assert player._state.current_track is not None
         assert station.state == "playing"
     finally:
-        player._render_ahead.stop(timeout=WAIT)
+        player._playout.stop(timeout=WAIT)
 
 
 def test_start_with_sets_the_next_sets_first_track_while_idle() -> None:
@@ -431,12 +431,12 @@ def test_play_now_during_a_set_plays_it_under_the_station_lock() -> None:
 
 def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set() -> None:
     player, bridge, stream, station, now, _sim = _real_rig()
-    player._render_ahead.start()
+    player._playout.start()
     try:
         stream.listener_count = 1
         station.tick()
         _play_until_a_track_starts(player)
-        assert player._render_ahead.wait_ready(WAIT)
+        assert player._playout.wait_ready(WAIT)
         leftover = player._take_render()  # the bus took it just before stopping
         assert leftover is not None
         numbered = player._state.track_number
@@ -449,4 +449,4 @@ def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set() -> Non
         assert player._state.track_number == numbered
         assert bridge.history_snapshot() == []
     finally:
-        player._render_ahead.stop(timeout=WAIT)
+        player._playout.stop(timeout=WAIT)

@@ -305,7 +305,7 @@ def _active_voice_chain(desk: BreakDesk, plan: SlotPlan) -> list[Break]:
         item.item_id.removeprefix("break:")
         for item in plan.transition_items
         if getattr(plan, "live", False)
-        and item.kind == "booked_voice"
+        and item.kind in {"booked_voice", "booked_break"}
         and item.item_id.startswith("break:")
     }
     return sorted(
@@ -739,6 +739,15 @@ def install_breaks(router: StationRouter) -> None:
                             status_code=422,
                             detail="Transition choices must name each item and its action",
                         )
+                # Announcer clients do not submit a transition revision. Keep
+                # the revision observed before upload/decode so a stream handoff
+                # that changes while the request is in flight cannot receive a
+                # recording intended for its predecessor.
+                expected_revision = transition_revision or (
+                    slot.get("transition_revision")
+                    if getattr(station.player, "live_mixing", False)
+                    else None
+                )
                 name = file_name(break_id, suffix)
                 try:
                     desk.retarget(break_id, fields.slot_id, name)
@@ -757,22 +766,32 @@ def install_breaks(router: StationRouter) -> None:
                 await upload.close()
             assert path is not None  # stored, or the request has already answered
             cues = await decode_one(path, max_seconds)
+            checked_slot = await current_slot()
+            if checked_slot is None or checked_slot["slot_id"] != fields.slot_id:
+                return refused(
+                    409, "That song change is no longer open", "slot_closed", checked_slot
+                )
+            if (checked_slot["ending"] or {}).get("id") != fields.ending_id or (
+                checked_slot["upcoming"] or {}
+            ).get("id") != fields.upcoming_id:
+                return refused(
+                    409,
+                    "The songs around that song change have changed",
+                    "pair_changed",
+                    checked_slot,
+                )
+            if (
+                expected_revision is not None
+                and checked_slot.get("transition_revision") != expected_revision
+            ):
+                return refused(
+                    409,
+                    "The live handoff changed; refresh and choose again",
+                    "transition_changed",
+                    checked_slot,
+                )
             if source == VOICE_TRACK:
-                checked_slot = await current_slot()
                 manual_fit = fields.placement != "standalone"
-                if checked_slot is None or checked_slot["slot_id"] != fields.slot_id:
-                    return refused(
-                        409, "That song change is no longer open", "slot_closed", checked_slot
-                    )
-                if (checked_slot["ending"] or {}).get("id") != fields.ending_id or (
-                    checked_slot["upcoming"] or {}
-                ).get("id") != fields.upcoming_id:
-                    return refused(
-                        409,
-                        "The songs around that song change have changed",
-                        "pair_changed",
-                        checked_slot,
-                    )
                 if (
                     live_voice_track
                     and checked_slot.get("transition_revision") != transition_revision
@@ -863,7 +882,14 @@ def install_breaks(router: StationRouter) -> None:
                 if source == VOICE_TRACK and not station.player.request_voice_track_slot():
                     raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
                 if transition_revision is None:
-                    await asyncio.to_thread(station.player.book_break, item)
+                    if expected_revision is None:
+                        await asyncio.to_thread(station.player.book_break, item)
+                    else:
+                        await asyncio.to_thread(
+                            station.player.book_break,
+                            item,
+                            transition_revision=expected_revision,
+                        )
                 else:
                     await asyncio.to_thread(
                         station.player.book_break,
@@ -919,13 +945,16 @@ def install_breaks(router: StationRouter) -> None:
         station: StationDep, request: Request, break_id: str
     ) -> JSONResponse:
         """Drop a break that is still waiting for its song change."""
-        _token, desk = announcer(request, station)
+        announcer(request, station)
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No break has that id")
         try:
             # Off the event loop: cancelling may unpin the player's slot.
             item = await asyncio.to_thread(
-                desk.cancel, break_id, "cancelled by the announcer", ANNOUNCER
+                station.player.cancel_break,
+                break_id,
+                "cancelled by the announcer",
+                ANNOUNCER,
             )
         except BreakError as exc:
             return refused(exc.status, exc.detail, exc.reason, None)

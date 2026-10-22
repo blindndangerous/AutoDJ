@@ -474,8 +474,8 @@ def _read_live(player: Any) -> _Live:
     for _attempt in range(_READ_TRIES):
         serial = getattr(player, "_cursor_serial", 0)
         playing, position, steady = _read_position(player)
-        render_ahead = getattr(player, "_render_ahead", None)
-        ready = render_ahead.ready() if render_ahead is not None else None
+        playout = getattr(player, "_playout", None)
+        ready = playout.ready() if playout is not None else None
         plan = None
         slot_lock = getattr(player, "_slot_lock", None)
         if slot_lock is not None:
@@ -926,7 +926,7 @@ def read_station(
     *desk* is the station's :class:`~autodj.breaks.BreakDesk`, for the
     breaks' names and the ones booked on the open song change.  *show* is
     the show on the air, its name and its songs not yet queued (#106): they
-    follow the queue. With live mixing, future render-ahead choices remain
+    follow the queue. With live mixing, future live handoff choices remain
     estimates while the song on the air stays fixed.
     """
     head = read_head(player, desk, now=now, capture_audio=capture_audio)

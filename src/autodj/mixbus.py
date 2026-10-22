@@ -151,6 +151,8 @@ class RenderedTrack:
     clock_revision: int | None = None
     next_clock_revision: int | None = None
     next_clock_name: str | None = None
+    handoff_id: str = ""
+    ad_steps: tuple[dict, ...] = ()
     liner_plan_key: str = ""
     live_source: BufferedFile | None = None
     next_live_source: BufferedFile | None = None

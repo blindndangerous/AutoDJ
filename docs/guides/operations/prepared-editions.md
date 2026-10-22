@@ -79,7 +79,7 @@ is reported explicitly. Approval changes cannot retract audio already committed
 in this run; later uncommitted buffers are rebuilt without ineligible speech.
 
 During live streaming, a queue change can affect speech in the current editable
-handoff, the render-ahead ready handoff, or an affected pinned slot plan. One
+handoff, the ready live playout handoff, or an affected pinned slot plan. One
 choice applies to those affected speech contexts: choose **Keep voice track**
 to carry the speech with its changed music pair, **Discard voice track** to
 remove it from the changed contexts, or **Cancel change** to leave the queue

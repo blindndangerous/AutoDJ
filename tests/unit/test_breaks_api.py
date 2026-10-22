@@ -18,11 +18,21 @@ import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
-from autodj.breaks import AIRED, DROPPED, QUEUED, RENDERED
+from autodj.breaks import (
+    AIRED,
+    DROPPED,
+    QUEUED,
+    RENDERED,
+    VOICE_TRACK,
+    BreakCues,
+    TransitionItem,
+)
+from autodj.live_audio import LiveAudio
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
+from autodj.mixbus import BusEvents, MixBus
 from autodj.server import create_app
 from autodj.stereo import SAMPLE_RATE as SR
-from tests.unit._break_station import make_station, start_station
+from tests.unit._break_station import make_break, make_station, start_station
 from tests.unit.test_library import make_config
 
 LOCAL = {"base_url": "http://127.0.0.1:8080", "client": ("127.0.0.1", 5)}
@@ -85,6 +95,41 @@ class Station:
         )
 
 
+def install_live_pair(station: Station) -> None:
+    """Give the station an actual stream bus handoff from its first two songs."""
+    from tests.unit.test_live_playout import _UnconsumedDeck
+
+    player = station.player
+    a, b, *_ = station.entries
+    player.live_mixing = True
+    player._voice_tracking_requested = True
+    decks = {
+        entry.path: _UnconsumedDeck(round(entry.length * SR), 0.4) for entry in station.entries
+    }
+    player._live_file = lambda entry, **_kwargs: decks[entry.path]
+    player._render_live_sources = (a, decks[a.path], b, decks[b.path])
+    current = player._render_track(a, b, 0)
+    player._render_live_sources = None
+    assert current is not None and isinstance(current.audio, LiveAudio)
+    current = replace(current, live_source=decks[a.path], next_live_source=decks[b.path])
+    player.bus = MixBus(
+        BusEvents(player._on_track_start, player._on_position, player._take_render),
+        eq_gains=lambda: (1.0, 1.0, 1.0),
+    )
+    player.bus._playing = True
+    player.bus._current = current
+    player._playing_render = current
+    player._state.current_track = a
+    player._state.next_track = b
+    player._live_queue_revision = 0
+    player._live_voice_slot = None
+    player._playout = SimpleNamespace(
+        ready=lambda: None,
+        reset=lambda callback=None: callback() if callback is not None else None,
+        request_plan=lambda: None,
+    )
+
+
 def _token_id(station: Station) -> str:
     return station.secret.split(".")[1]
 
@@ -116,6 +161,116 @@ def test_context_names_the_open_slot_and_what_is_playing(station):
     # The same station by name.
     by_name = station.call("GET", "/api/stations/default/announcer/context")
     assert by_name.json()["slot"]["slot_id"] == slot["slot_id"]
+
+
+def test_stream_announcer_slot_is_the_current_song_change(station):
+    """ADR-0004-11: stream announcer context identifies the current handoff."""
+    install_live_pair(station)
+    slot = station.context()["slot"]
+    a, b = station.entries[:2]
+    assert slot["live"] is True
+    assert slot["ending"]["title"] == a.title
+    assert slot["upcoming"]["title"] == b.title
+
+
+def test_live_slot_view_keeps_voice_and_announcer_breaks_in_the_chain(station):
+    install_live_pair(station)
+    plan, _closes, _airs = station.player.slot_status()
+    assert plan is not None
+    station.desk.folder.mkdir(parents=True, exist_ok=True)
+    voice = replace(make_break(station.desk, plan.slot_id), source=VOICE_TRACK)
+    announcer = make_break(station.desk, plan.slot_id)
+    station.desk.add(voice)
+    station.desk.add(announcer)
+
+    slot = station.context()["slot"]
+
+    assert slot["breaks_booked"] == 2
+    assert {item["kind"] for item in slot["transition_items"]} == {
+        "booked_voice",
+        "booked_break",
+    }
+
+
+def test_active_live_chain_keeps_transferred_announcer_break_from_old_slot(station):
+    """ADR-0004-11: transferred announcer speech remains attached across slot IDs."""
+    from autodj.breaks_api import _active_voice_chain
+
+    install_live_pair(station)
+    plan, _closes, _airs = station.player.slot_status()
+    assert plan is not None
+    old_slot_id = f"old-{plan.slot_id}"
+    station.desk.folder.mkdir(parents=True, exist_ok=True)
+    item = make_break(station.desk, old_slot_id)
+    station.desk.add(item)
+    rendered = station.desk.take(old_slot_id, 0.0)
+    assert rendered and rendered[0].state == RENDERED
+    item = rendered[0]
+    live_plan = replace(
+        plan,
+        live=True,
+        transition_items=(
+            TransitionItem(
+                item_id=f"break:{item.break_id}",
+                kind="booked_break",
+                source=item.source,
+                label="Announcer break",
+            ),
+        ),
+    )
+
+    assert [active.break_id for active in _active_voice_chain(station.desk, live_plan)] == [
+        item.break_id
+    ]
+
+
+def test_stream_announcer_upload_joins_current_song_change(station):
+    """ADR-0004-11: decoded announcer speech joins the still-current handoff."""
+    install_live_pair(station)
+    slot = station.context()["slot"]
+    reply = station.upload(slot)
+    assert reply.status_code == 201, reply.text
+    assert station.player._playing_render.entry is station.entries[0]
+    assert station.player._playing_render.next_entry is station.entries[1]
+    assert station.player._playing_render.voice_breaks[0].break_id == reply.json()["break_id"]
+
+
+def test_stream_announcer_can_cancel_unheard_current_audio(station):
+    """ADR-0004-11: unheard current announcer audio remains cancellable."""
+    install_live_pair(station)
+    reply = station.upload()
+    assert reply.status_code == 201, reply.text
+    break_id = reply.json()["break_id"]
+
+    cancelled = station.call("DELETE", f"/api/announcer/breaks/{break_id}")
+
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["state"] == DROPPED
+    assert all(item.break_id != break_id for item in station.player._playing_render.voice_breaks)
+
+
+def test_stream_announcer_rejects_handoff_changed_during_decode(station, monkeypatch):
+    """ADR-0004-11: admission rechecks the handoff after decoding."""
+    install_live_pair(station)
+    player = station.player
+    _a, b, c, _d = station.entries
+    slot = station.context()["slot"]
+    current = player._playing_render
+    assert current is not None
+    following = replace(current, entry=b, next_entry=c)
+
+    async def decode_then_change(_decoder, _path, _limit):
+        player.bus._current = following
+        player._playing_render = following
+        player._live_voice_slot = None
+        return BreakCues(0.0, 0.5, 0.6, 0.7)
+
+    monkeypatch.setattr("autodj.breaks_api._gated_decode", decode_then_change)
+    reply = station.upload(slot)
+    assert reply.status_code == 409
+    assert reply.json()["reason"] in {"slot_closed", "transition_changed"}
+    assert station.desk.listing() == []
+    assert files(station.desk) == []
 
 
 def test_a_break_is_booked_rendered_aired_and_cleaned_up(station, caplog):
@@ -286,7 +441,7 @@ def test_breaks_need_saved_point_playback(tmp_path):
 
 def test_a_station_with_no_open_slot_asks_to_try_again(station):
     station.player._slot_plan = None
-    station.player._render_ahead.request_plan = lambda: None
+    station.player._playout.request_plan = lambda: None
     context = station.context()
     assert context["slot"] is None and context["accepting"] is False
     assert "ask again" in context["reason"]

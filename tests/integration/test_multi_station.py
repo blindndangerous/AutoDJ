@@ -98,6 +98,7 @@ class FakeMaster:
         self.error = None
         self.preset_warning = None
         self.latency_seconds = 0.0
+        self.startup_pending = False
         self.restarts = 0
         FakeMaster.instances.append(self)
 
@@ -137,11 +138,11 @@ def _station_threads(slug: str) -> list[threading.Thread]:
 def _running_threads(slug: str) -> list[str]:
     """The names of *slug*'s threads once its player has started its mix bus.
 
-    The player thread starts the render-ahead worker and the bus's stop
+    The player thread starts the live playout worker and the bus's stop
     watcher only after it opens its cue cache, so a count taken as soon as
     the station starts can miss both; a slow machine (Windows CI) did.
     """
-    started = {f"autodj-render-ahead-{slug}", f"autodj-bus-stop-{slug}"}
+    started = {f"autodj-live-playout-{slug}", f"autodj-bus-stop-{slug}"}
     _wait_for(
         lambda: started <= {thread.name for thread in _station_threads(slug)},
         f"{slug}'s mix bus to start",

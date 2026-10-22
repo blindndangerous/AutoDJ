@@ -131,27 +131,6 @@ def _outgoing(track: Any) -> Any:
     return getattr(track, "entry", None) or getattr(track, "ending", None)
 
 
-def _slot_context(player: Any, plan: Any) -> tuple[tuple[Any, ...], Any]:
-    desk = getattr(player, "break_desk", None)
-    listing = getattr(desk, "listing", None)
-    breaks = tuple(
-        item
-        for item in (listing() if callable(listing) else ())
-        if getattr(item, "slot_id", None) == getattr(plan, "slot_id", None)
-        and getattr(item, "state", None) == "queued"
-    )
-    intro = next(
-        (
-            item.intro
-            for item in getattr(plan, "transition_items", ())
-            if getattr(item, "kind", None) == "matched_intro"
-            and getattr(item, "intro", None) is not None
-        ),
-        None,
-    )
-    return breaks, intro
-
-
 def _song_specific(item: Any) -> bool:
     if (
         getattr(item, "source", None) in _INDEPENDENT_SOURCES
@@ -246,7 +225,7 @@ def plan_queue_edit(
     else:
         track = getattr(player, "_playing_render", None)
         if track is None or getattr(player, "_heard_next_entry", False):
-            ahead = getattr(player, "_render_ahead", None)
+            ahead = getattr(player, "_playout", None)
             track = ahead.ready() if ahead is not None else None
     if track is None:
         return None
@@ -260,7 +239,7 @@ def plan_queue_edit(
         _same_occurrence(candidate, requested)
         or _same_occurrence(candidate, getattr(track, "next_entry", None))
     )
-    ahead = getattr(player, "_render_ahead", None)
+    ahead = getattr(player, "_playout", None)
     ready = ahead.ready() if ahead is not None else None
     following: list[QueueEdit] = []
     changed_contexts: list[tuple[Any, Any, tuple[Any, ...], Any]] = []
@@ -312,41 +291,6 @@ def plan_queue_edit(
             following.append(
                 QueueEdit(ready, following_candidate, None, rb, ri, outgoing=following_outgoing)
             )
-    slot = getattr(player, "_slot_plan", None)
-    if slot is not None and getattr(slot, "pinned", False):
-        if _contains_occurrence(slot.ending, proposed_values):
-            projected = _after_occurrence(player, slot.ending, proposed_values)
-            slot_outgoing = slot.ending
-            changed_slot = not (
-                _same_occurrence(projected, slot.upcoming)
-                or _same_occurrence(
-                    projected, _after_occurrence(player, slot.ending, previous_values)
-                )
-            )
-        elif _contains_occurrence(slot.ending, previous_values):
-            before = getattr(slot, "before", None)
-            slot_outgoing = (
-                _after_occurrence(player, before, proposed_values)
-                if before is not None and _contains_occurrence(before, proposed_values)
-                else candidate
-            )
-            projected = (
-                _after_occurrence(player, slot_outgoing, proposed_values)
-                if slot_outgoing is not None
-                else None
-            )
-            changed_slot = not (
-                _same_occurrence(slot_outgoing, slot.ending)
-                and _same_occurrence(projected, slot.upcoming)
-            )
-        else:
-            projected = None
-            slot_outgoing = None
-            changed_slot = False
-        if changed_slot:
-            sb, si = _slot_context(player, slot)
-            changed_contexts.append((slot, projected, sb, si))
-            outgoing_overrides[id(slot)] = slot_outgoing
     if not changed and not changed_contexts:
         return None
 

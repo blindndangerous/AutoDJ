@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -13,6 +12,23 @@ from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.stereo import SAMPLE_RATE
 from tests.unit._break_station import LEVELS, make_break, make_station
 from tests.unit.test_live_playout import _UnconsumedDeck
+
+
+class _FakePlayout:
+    def __init__(self, ready=None):
+        self._ready = ready
+
+    def ready(self):
+        return self._ready
+
+    def reset(self, callback):
+        callback()
+
+    def replace_ready(self, expected, replacement):
+        if self._ready is not expected:
+            return False
+        self._ready = replacement
+        return True
 
 
 def _current_handoff(tmp_path: Path):
@@ -40,7 +56,7 @@ def _current_handoff(tmp_path: Path):
     player._state.current_track = a
     player._playback_output_pos[0] = 0
     player._live_queue_revision = 0
-    player._render_ahead = SimpleNamespace(ready=lambda: None, reset=lambda callback: callback())
+    player._playout = _FakePlayout()
     future_plan = SlotPlan(new_id(), 0, b, 0.0, c, d, "queue", (), None, None, None, None, ())
     player._slot_plan = future_plan
     return player, entries, points, desk, current, future_plan
@@ -205,7 +221,7 @@ def test_live_voice_reset_preserves_queued_voice_for_future_ready_track(tmp_path
         "",
         voice_breaks=(future,),
     )
-    player._render_ahead = SimpleNamespace(ready=lambda: ready, reset=lambda callback: callback())
+    player._playout = _FakePlayout(ready)
 
     player.book_break(
         item,
@@ -241,7 +257,7 @@ def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
     ready_voice = _voice(desk, "ready-slot")
     desk.add(ready_voice)
     ready = RenderedTrack(entries[2], current.audio, entries[3], 0, "", voice_breaks=(ready_voice,))
-    player._render_ahead = SimpleNamespace(ready=lambda: ready, reset=lambda callback: callback())
+    player._playout = _FakePlayout(ready)
     before = current.audio.read(0, position)
     current_plan = player._live_voice_slot[1]
     assert player.bus._pos > round(8.0 * SAMPLE_RATE)  # The current song's saved outro.
@@ -274,7 +290,7 @@ def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
         replacement.audio.read(position, SAMPLE_RATE),
         without_voice.audio.read(position, SAMPLE_RATE),
     )
-    assert player._render_ahead.ready() is ready
+    assert player._playout.ready() is ready
     assert player._live_queue_edits[id(entries[2])].breaks == (ready_voice,)
     assert desk.get(ready_voice.break_id).state == "queued"
     assert not player.can_cancel_voice_track(item.break_id)
@@ -317,6 +333,113 @@ def test_live_voice_cancel_rejects_races_without_dropping_audio(tmp_path, monkey
     np.testing.assert_array_equal(current.audio.read(0, SAMPLE_RATE), before)
     if race == "voice_start":
         assert not player.can_cancel_voice_track(item.break_id)
+
+
+def test_live_voice_cancel_replaces_exact_ready_occurrence_and_keeps_other_speech(tmp_path):
+    """ADR-0004-11: ready cancellation preserves occurrence identity and other speech."""
+    player, entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
+    target = _voice(desk, "ready-slot")
+    sibling = _voice(desk, "ready-slot")
+    desk.add(target)
+    desk.add(sibling)
+    rendered_breaks = tuple(desk.take("ready-slot", 0.0))
+    target, sibling = (
+        next(item for item in rendered_breaks if item.break_id == item_id)
+        for item_id in (target.break_id, sibling.break_id)
+    )
+    repeated_entry = replace(entries[0])
+    ready = RenderedTrack(
+        repeated_entry,
+        current.audio,
+        entries[1],
+        1234,
+        "",
+        next_pick_mode="clock",
+        next_from_queue=True,
+        next_clock_cursor=17,
+        next_clock_boundary=321.5,
+        next_clock_name="overnight",
+        next_clock_step={"step": 4},
+        next_clock_revision=8,
+        handoff_id="stable-live-handoff",
+        break_events=(
+            (round(10 * SAMPLE_RATE), target.break_id, round(12 * SAMPLE_RATE)),
+            (round(12 * SAMPLE_RATE), sibling.break_id, round(14 * SAMPLE_RATE)),
+        ),
+        live_source=player._live_file(repeated_entry),
+        next_live_source=player._live_file(entries[1]),
+        voice_breaks=rendered_breaks,
+    )
+    playout = _FakePlayout(ready)
+    player._playout = playout
+
+    assert ready.entry.path == current.entry.path and ready.entry is not current.entry
+    assert player.can_cancel_voice_track(target.break_id)
+    cancelled = player.cancel_voice_track(target.break_id)
+    replacement = playout.ready()
+
+    assert cancelled.state == "dropped"
+    assert replacement is not None and replacement is not ready
+    assert replacement.entry is repeated_entry and replacement.next_entry is entries[1]
+    assert replacement.handoff_id == "stable-live-handoff"
+    assert replacement.next_pick_mode == "clock" and replacement.next_from_queue
+    assert replacement.live_source is ready.live_source
+    assert replacement.next_live_source is ready.next_live_source
+    assert player._pending_entry is entries[1]
+    assert player._pending_offset == replacement.next_start_offset
+    assert player._pending_pick_mode == "clock" and player._pending_from_queue
+    assert player._pending_live_source is ready.next_live_source
+    assert player._pending_clock_cursor == 17
+    assert player._pending_clock_boundary == 321.5
+    assert player._pending_clock_name == "overnight"
+    assert player._pending_clock_step == {"step": 4}
+    assert player._pending_clock_cursor_revision == 8
+    assert all(event[1] != target.break_id for event in replacement.break_events)
+    assert any(event[1] == sibling.break_id for event in replacement.break_events)
+    assert all(item.break_id != target.break_id for item in replacement.voice_breaks)
+    assert any(item.break_id == sibling.break_id for item in replacement.voice_breaks)
+    assert desk.get(sibling.break_id).state == "rendered"
+    edit = player._live_queue_edits[id(repeated_entry)]
+    assert tuple(item.break_id for item in edit.breaks) == (sibling.break_id,)
+
+
+def test_live_voice_cancel_rejects_ready_promotion_race_without_dropping_source(
+    tmp_path, monkeypatch
+):
+    """ADR-0004-11: cancellation revalidates a ready occurrence promotion race."""
+    player, entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
+    item = _voice(desk, "ready-slot")
+    desk.add(item)
+    item = desk.take("ready-slot", 0.0)[0]
+    ready = RenderedTrack(
+        entries[2],
+        current.audio,
+        entries[3],
+        0,
+        "",
+        live_source=player._live_file(entries[2]),
+        next_live_source=player._live_file(entries[3]),
+        break_events=((round(10 * SAMPLE_RATE), item.break_id, round(12 * SAMPLE_RATE)),),
+        voice_breaks=(item,),
+    )
+    playout = _FakePlayout(ready)
+    player._playout = playout
+    before = ready.audio.read(0, SAMPLE_RATE)
+    assert player.can_cancel_voice_track(item.break_id)
+    render = player._render_track
+
+    def render_then_promote(*args, **kwargs):
+        result = render(*args, **kwargs)
+        playout._ready = None
+        return result
+
+    monkeypatch.setattr(player, "_render_track", render_then_promote)
+    with pytest.raises(BreakError, match="started"):
+        player.cancel_voice_track(item.break_id)
+
+    assert playout.ready() is None
+    assert desk.get(item.break_id).state == "rendered"
+    np.testing.assert_array_equal(ready.audio.read(0, SAMPLE_RATE), before)
 
 
 def test_live_voice_cancel_keeps_other_current_speech(tmp_path):
