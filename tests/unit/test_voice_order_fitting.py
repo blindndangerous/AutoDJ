@@ -35,6 +35,7 @@ def test_edited_liner_order_forecast_matches_actual_voice_and_music_frames(
         editable=True,
     )
     plan = SimpleNamespace(
+        live=False,
         ending=ending,
         upcoming=upcoming,
         ending_offset_s=0.0,
