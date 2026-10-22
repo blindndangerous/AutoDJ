@@ -1,12 +1,12 @@
-"""Auto-DJ player: next-track picking and the server-side crossfade mix.
+"""Auto-DJ player: next-track picking and server-side audio playback.
 
 ``autodj serve`` drives the player; the web page is its control surface.
-Server audio (``--server-audio`` or ``--stream``) plays through a
-:class:`~autodj.mixbus.MixBus` fed by a render-ahead worker thread
-(:class:`~autodj.render_ahead.RenderAhead`): each track is rendered in stereo
-with the head of the next track crossfaded into its tail, and the bus streams
-the result to the sound card (:class:`~autodj.sound_output.SoundDeviceOutput`)
-or the stream encoder in 20 ms blocks.
+Offline/local server audio prepares stereo PCM tracks with the next song
+crossfaded into the tail. Stream mode progressively decodes live sources and
+mixes them on the :class:`~autodj.mixbus.MixBus` sample clock; the playout
+worker handles selection and bounded transition work. Outputs receive bus
+blocks, including the sound card (:class:`~autodj.sound_output.SoundDeviceOutput`)
+or stream encoder.
 """
 
 from __future__ import annotations
@@ -4021,6 +4021,18 @@ class Player:
             ):
                 raise BreakError(409, "That song change is no longer open", "slot_closed")
             return self._book_break_in_plan(item, plan, transition_revision, transition_choices)
+
+    def can_cancel_voice_track(self, break_id: str) -> bool:
+        """Whether this voice take is queued or still unheard in the live mix."""
+        from autodj.live_voice import can_cancel
+
+        return can_cancel(self, break_id)
+
+    def cancel_voice_track(self, break_id: str) -> Break:
+        """Cancel a queued voice take or remove its unheard live audio."""
+        from autodj.live_voice import cancel
+
+        return cancel(self, break_id)
 
     def _book_break_in_plan(
         self,

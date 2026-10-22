@@ -1,11 +1,13 @@
 """The hour preview: what plays next, when it starts, and how the hour lands (#126).
 
 The preview lists what a station plays over the next hour (from 15 minutes
-to three hours), each item with its estimated start time, and says which
-of it is already fixed and which is a guess:
+to three hours), each item with its estimated start time. For local playout,
+it distinguishes choices already fixed by a prepared render from guesses. For
+live server mixing, only audio evidenced as heard is fixed; prepared future
+choices and their start times remain estimates:
 
-* fixed: the song on the air; what the render-ahead worker has rendered,
-  with the liners and announcer breaks mixed into it; the song picked to
+* fixed (local playout): the song on the air; what the render-ahead worker
+  has rendered, with the liners and announcer breaks mixed into it; the song picked to
   follow it; the open song change and the breaks booked on it (#88), ad
   spots among them (#51); and the request queue, which plays before any
   pick; and the songs of a show (#106): the rest of the one on the air, and a

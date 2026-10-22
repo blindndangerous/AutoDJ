@@ -5,7 +5,9 @@ and attaches it in Track info, either to that song or to every song by the
 song's artist.  When the song comes up, the clip is mixed into its song change:
 detected speech cues use liner placement across the outgoing outro and
 incoming intro, delaying the song when needed to finish before its vocals.
-Only saved-point playback mixes them, as it does announcer breaks.
+Saved-point playback mixes them during its prepared song change. Live server
+playout streams the music body and prepares only the bounded intro/transition
+audio needed for the handoff.
 
 Each station keeps its own intros: ``matched_intros.json`` in its state
 folder, by intro ID, and the audio in its ``intros`` folder as

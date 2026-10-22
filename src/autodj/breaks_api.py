@@ -45,7 +45,7 @@ The voice tracker's routes answer under ``/api/voice-tracks`` and
 
 Uploads stream to the station's announcements folder under a name the
 server makes up, are decoded off the event loop (one at a time, so a
-burst of uploads cannot starve the render-ahead worker of CPU), and are
+burst of uploads cannot starve the playout worker of CPU), and are
 deleted once the break airs, is dropped or expires.
 """
 
@@ -1031,13 +1031,11 @@ def install_breaks(router: StationRouter) -> None:
     @router.delete("/voice-tracks/{break_id}")
     async def voice_track_cancel(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Cancel a voice track that is still waiting for its song change."""
-        desk = voice_desk(station)
+        voice_desk(station)
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No voice track has that id")
         try:
-            item = await asyncio.to_thread(
-                desk.cancel, break_id, "cancelled in the voice tracker", VOICE_TRACK
-            )
+            item = await asyncio.to_thread(station.player.cancel_voice_track, break_id)
         except BreakError as exc:
             detail = "No voice track has that id" if exc.status == 404 else exc.detail
             return refused(exc.status, detail, exc.reason, None)
@@ -1218,7 +1216,14 @@ def _voice_context(
             "sample_rate": SAMPLE_RATE,
             "max_per_slot": config.max_per_slot,
         },
-        "tracks": [item.view() for item in desk.listing() if item.source == VOICE_TRACK],
+        "tracks": [
+            {
+                **item.view(),
+                "cancellable": station.player.can_cancel_voice_track(item.break_id),
+            }
+            for item in desk.listing()
+            if item.source == VOICE_TRACK
+        ],
     }
 
 

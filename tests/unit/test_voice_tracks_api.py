@@ -661,6 +661,26 @@ def test_an_announcer_token_neither_sees_nor_cancels_voice_tracks(station):
     assert cancelled.status_code == 200 and cancelled.json()["state"] == DROPPED
 
 
+def test_voice_tracker_reports_and_uses_player_cancellation(station, monkeypatch):
+    booked = book(station).json()
+    break_id = booked["break_id"]
+    station.desk.take(booked["slot_id"], 0.0)
+    monkeypatch.setattr(station.player, "can_cancel_voice_track", lambda key: key == break_id)
+    calls = []
+
+    def cancel(key):
+        calls.append(key)
+        station.desk.drop(key, "cancelled in the voice tracker")
+        return station.desk.get(key)
+
+    monkeypatch.setattr(station.player, "cancel_voice_track", cancel)
+    track = voice(station)["tracks"][0]
+    assert track["state"] == RENDERED and track["cancellable"]
+    response = station.client.delete(f"/api/voice-tracks/{break_id}", headers=ORIGIN)
+    assert response.status_code == 200 and response.json()["state"] == DROPPED
+    assert calls == [break_id]
+
+
 def test_voice_tracks_and_announcer_breaks_share_the_slot_and_the_quota(tmp_path):
     station = Station(tmp_path, max_per_slot=1)
     assert station.upload().status_code == 201

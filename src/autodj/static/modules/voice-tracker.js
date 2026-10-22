@@ -670,7 +670,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       }
       row.track = track;
       setText(row.text, trackText(track));
-      const cancellable = track.state === "queued";
+      const cancellable = track.cancellable === true;
       if (cancellable && !row.button) {
         const current = row;
         row.button = rowButton(doc, "Cancel", `Cancel voice track ${track.label || ""}`.trim(),

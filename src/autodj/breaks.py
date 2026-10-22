@@ -2,18 +2,17 @@
 
 An announcer program on the same host writes a spoken break for
 one song change and hands it to AutoDJ through the breaks API
-(:mod:`autodj.breaks_api`).  AutoDJ renders each song change one song
-ahead, so a break cannot join the change that is already rendered: it
-joins the *open slot*, the change after the next song.
+(:mod:`autodj.breaks_api`). External announcer uploads and scheduled breaks
+still join a future *open slot*. Browser voice tracking in stream mode uses
+the current handoff until its booking cutoff; streamed music stays editable
+until it enters the mix. Local playout retains prepared PCM handoffs.
 
-The player plans that change as soon as the next song is rendered
+The future-slot planner chooses that change after preparing the next handoff
 (:meth:`autodj.player.Player._plan_slot`): it picks the song that will
 follow, so the slot names both songs, the *ending* one and the *upcoming*
-one.  A break booked for the slot pins that pair: the upcoming song stays
-whatever the queue does, because the break names it.  When the slot's
-change is rendered, its breaks are mixed in (talk-up over the upcoming
-song's intro, or standalone between the songs) and they air about one
-song later.
+one. Local playout pins a booked pair. Streaming queue edits instead require
+an explicit keep/discard choice for associated speech. Breaks use talk-up
+placement over the upcoming intro or standalone placement between songs.
 
 :class:`BreakDesk` keeps one station's breaks: their files in the
 station's ``announcements`` folder (never in liner rotation), their state

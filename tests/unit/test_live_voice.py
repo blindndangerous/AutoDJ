@@ -217,3 +217,120 @@ def test_live_voice_reset_preserves_queued_voice_for_future_ready_track(tmp_path
     assert edit.breaks == (future,)
     assert desk.get(future.break_id).state == "queued"
     assert desk.get(item.break_id).state == "rendered"
+
+
+@pytest.mark.parametrize("rebuild_plan", (False, True))
+def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
+    tmp_path, rebuild_plan
+) -> None:
+    """ADR-0004-11: unheard installed speech can be removed without changing heard audio."""
+    from autodj import live_voice
+
+    player, entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
+    plan, _closes, _airs = player.voice_slot_status()
+    assert plan is not None
+    item = _voice(desk, plan.slot_id)
+    player.book_break(
+        item,
+        transition_revision=plan.transition_revision,
+        transition_choices=(),
+    )
+    current = player._playing_render
+    assert current is not None
+    player.bus._pos = position = round(9.0 * SAMPLE_RATE)
+    ready_voice = _voice(desk, "ready-slot")
+    desk.add(ready_voice)
+    ready = RenderedTrack(entries[2], current.audio, entries[3], 0, "", voice_breaks=(ready_voice,))
+    player._render_ahead = SimpleNamespace(ready=lambda: ready, reset=lambda callback: callback())
+    before = current.audio.read(0, position)
+    current_plan = player._live_voice_slot[1]
+    assert player.bus._pos > round(8.0 * SAMPLE_RATE)  # The current song's saved outro.
+    without_voice = live_voice._render_handoff(
+        player,
+        current,
+        (),
+        tuple(key for key in current_plan.transition_order if key != f"break:{item.break_id}"),
+        tuple(
+            content
+            for content in current_plan.transition_items
+            if content.item_id != f"break:{item.break_id}"
+        ),
+    )
+    assert without_voice is not None
+
+    if rebuild_plan:
+        player._live_voice_slot = None
+    assert player.can_cancel_voice_track(item.break_id)
+    cancelled = player.cancel_voice_track(item.break_id)
+    replacement = player._playing_render
+
+    assert cancelled.state == "dropped"
+    assert replacement is not None and replacement is not current
+    assert replacement.entry is entries[0] and replacement.next_entry is entries[1]
+    assert all(event[1] != item.break_id for event in replacement.break_events)
+    assert all(voice.break_id != item.break_id for voice in replacement.voice_breaks)
+    np.testing.assert_array_equal(replacement.audio.read(0, position), before)
+    np.testing.assert_array_equal(
+        replacement.audio.read(position, SAMPLE_RATE),
+        without_voice.audio.read(position, SAMPLE_RATE),
+    )
+    assert player._render_ahead.ready() is ready
+    assert player._live_queue_edits[id(entries[2])].breaks == (ready_voice,)
+    assert desk.get(ready_voice.break_id).state == "queued"
+    assert not player.can_cancel_voice_track(item.break_id)
+
+
+@pytest.mark.parametrize("race", ("queue_revision", "voice_start"))
+def test_live_voice_cancel_rejects_races_without_dropping_audio(tmp_path, monkeypatch, race):
+    player, _entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
+    plan, _closes, _airs = player.voice_slot_status()
+    assert plan is not None
+    player.bus._pos = SAMPLE_RATE
+    item = _voice(desk, plan.slot_id)
+    player.book_break(
+        item,
+        transition_revision=plan.transition_revision,
+        transition_choices=(),
+    )
+    current = player._playing_render
+    assert current is not None
+    before = current.audio.read(0, SAMPLE_RATE)
+    assert player.can_cancel_voice_track(item.break_id)
+    render = player._render_track
+
+    def render_then_race(*args, **kwargs):
+        result = render(*args, **kwargs)
+        if race == "queue_revision":
+            player._live_queue_revision += 1
+        else:
+            player.bus._pos = next(
+                start for start, identity, _end in current.break_events if identity == item.break_id
+            )
+        return result
+
+    monkeypatch.setattr(player, "_render_track", render_then_race)
+    with pytest.raises(BreakError, match="no longer open"):
+        player.cancel_voice_track(item.break_id)
+
+    assert desk.get(item.break_id).state == "rendered"
+    assert player._playing_render is current and player.bus._current is current
+    np.testing.assert_array_equal(current.audio.read(0, SAMPLE_RATE), before)
+    if race == "voice_start":
+        assert not player.can_cancel_voice_track(item.break_id)
+
+
+def test_live_voice_cancel_keeps_other_current_speech(tmp_path):
+    player, _entries, _points, desk, _current, _future_plan = _current_handoff(tmp_path)
+    booked = []
+    for _ in range(2):
+        plan, _closes, _airs = player.voice_slot_status()
+        assert plan is not None
+        item = _voice(desk, plan.slot_id)
+        player.book_break(item, transition_revision=plan.transition_revision)
+        booked.append(item)
+    player.cancel_voice_track(booked[0].break_id)
+    current = player._playing_render
+    assert [event[1] for event in current.break_events] == [booked[1].break_id]
+    assert [item.break_id for item in current.voice_breaks] == [booked[1].break_id]
+    assert desk.get(booked[0].break_id).state == "dropped"
+    assert desk.get(booked[1].break_id).state == "rendered"

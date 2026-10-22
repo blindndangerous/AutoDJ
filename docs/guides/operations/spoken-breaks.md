@@ -11,14 +11,12 @@ about the songs, news, weather or music news. It asks AutoDJ which song change i
 writes a break for that pair of songs, and uploads it. AutoDJ mixes the break into that song
 change, reports when it airs, and deletes the file afterwards.
 
-AutoDJ prepares each song change one song ahead: while one song plays, the next one is already
-rendered together with its handoff. So a break cannot join the change that is coming up; it joins
-the one after, the *open slot*. As soon as the next song is rendered, AutoDJ also picks the song
-that follows it, so the open slot names both songs: the one the break follows (*ending*) and the
-one it leads into (*upcoming*). A break booked for the slot pins that pair: the upcoming song
-stays, whatever happens to the queue, because the break names it. A song queued after the booking
-plays after the upcoming song. News and weather therefore air about one song later than a system
-that splices them in at once.
+External announcer uploads still use a future *open slot*, naming the song the break follows
+(*ending*) and the song it leads into (*upcoming*). This path schedules speech in advance even
+in stream mode; it differs from the browser voice tracker's current-song handoff. Local server
+output pins a booked pair. Streaming queue edits can change unheard music with the associated
+speech choice: keep, discard, or cancel the edit. News and weather uploaded through this path
+therefore retain their advance booking deadline.
 
 ## Turning breaks on
 
@@ -196,8 +194,10 @@ blocked or missing microphone or a Cancel that failed, are shown under the Recor
 linked to the control they are about.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
-aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
-song change. Voice tracks share the queue, per-song-change and disk quota limits with announcer
+aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In stream mode,
+it can also remove a recording installed in the current handoff before the affected speech or
+ducking starts. The server checks this again when applying the cancellation; audio already heard
+is preserved. Voice tracks share the queue, per-song-change and disk quota limits with announcer
 breaks: `max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
 `requests_per_minute` for the station.
 
