@@ -32,6 +32,7 @@ class QueueEdit:
     intro: Any
     following: tuple[QueueEdit, ...] = ()
     outgoing: Any = None
+    candidate_mode: str | None = None
 
 
 def _entry_identity(entry: Any) -> list[Any] | None:

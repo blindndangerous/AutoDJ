@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.breaks import ANNOUNCER, DROPPED, QUEUED, RENDERED, VOICE_TRACK
+from autodj.breaks import ANNOUNCER, DROPPED, QUEUED, RENDERED, VOICE_TRACK, TransitionItem
 from autodj.config import ServerConfig
 from autodj.machine_tokens import SCOPE_ANNOUNCER
 from autodj.server import create_app
@@ -79,6 +79,184 @@ def test_the_tracker_shows_the_open_slot_its_placement_and_the_limits(station):
     # The same station by name.
     named = voice(station, "/api/stations/default/voice-tracks")
     assert named["slot"]["slot_id"] == slot["slot_id"]
+
+
+def test_voice_context_uses_live_voice_slot_without_changing_regular_slot_status(
+    station, monkeypatch
+):
+    player = station.player
+    plan = player._slot_plan
+    calls = []
+    monkeypatch.setattr(player, "live_mixing", True, raising=False)
+    monkeypatch.setattr(player, "request_voice_track_slot", lambda: True)
+    monkeypatch.setattr(player, "_breaks_on", lambda: True)
+
+    def live_status():
+        calls.append("voice")
+        return plan, 1.0, 8.0
+
+    monkeypatch.setattr(player, "voice_slot_status", live_status, raising=False)
+
+    def regular_status():
+        calls.append("regular")
+        return plan, 3.0, 9.0
+
+    monkeypatch.setattr(player, "slot_status", regular_status)
+
+    context = voice(station)
+
+    assert calls == ["voice", "voice"]
+    assert context["slot"]["slot_id"] == plan.slot_id
+    assert context["slot"]["airs_in_s"] == 8.0
+    from autodj.breaks_api import _current_slot
+
+    assert _current_slot(station.station)["airs_in_s"] == 9.0
+    assert calls == ["voice", "voice", "regular"]
+
+
+def test_live_voice_upload_rechecks_slot_after_decode_and_cleans_up_closed_cutoff(
+    station, monkeypatch
+):
+    slot = voice(station)["slot"]
+    plan = station.player._slot_plan
+    statuses = iter(((plan, 0.0, 2.0), (None, 0.0, 0.0)))
+    monkeypatch.setattr(station.player, "live_mixing", True, raising=False)
+    monkeypatch.setattr(station.player, "request_voice_track_slot", lambda: True)
+    monkeypatch.setattr(station.player, "_breaks_on", lambda: True)
+    monkeypatch.setattr(station.player, "voice_slot_status", lambda: next(statuses), raising=False)
+    monkeypatch.setattr(
+        station.player,
+        "slot_status",
+        lambda: pytest.fail("live voice upload must use the live voice slot"),
+    )
+
+    response = book(
+        station,
+        slot,
+        transition_revision=slot["transition_revision"],
+        transition_choices="[]",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == "slot_closed"
+    assert not [item for item in station.desk.listing() if item.source == VOICE_TRACK]
+    assert files(station.desk) == []
+
+
+@pytest.mark.parametrize(("live", "visible"), [(True, True), (False, False)])
+def test_voice_context_keeps_rendered_breaks_only_for_live_plan(
+    station, monkeypatch, live, visible
+):
+    initial = voice(station)["slot"]
+    booked = book(station, initial)
+    assert booked.status_code == 201, booked.text
+    item = station.desk.get(booked.json()["break_id"])
+    taken = station.desk.take(initial["slot_id"], 0.0)
+    assert any(break_item.break_id == item.break_id for break_item in taken)
+    plan = station.player._slot_plan
+    plan.live = live
+
+    if live:
+        monkeypatch.setattr(station.player, "live_mixing", True, raising=False)
+        monkeypatch.setattr(station.player, "request_voice_track_slot", lambda: True)
+        monkeypatch.setattr(station.player, "_breaks_on", lambda: True)
+        monkeypatch.setattr(
+            station.player,
+            "voice_slot_status",
+            lambda: (plan, 0.0, 1.0),
+            raising=False,
+        )
+
+    current_slot = voice(station)["slot"]
+    choices = [
+        {
+            "id": row["id"],
+            "action": row.get("current_action") or row.get("default_action") or "replace",
+        }
+        for row in current_slot["transition_items"]
+        if row["editable"]
+    ]
+    context = voice(
+        station,
+        "/api/voice-tracks?"
+        + urlencode(
+            {
+                "speech_s": 5,
+                "transition_revision": current_slot["transition_revision"],
+                "transition_choices": json.dumps(choices),
+            }
+        ),
+    )
+    live_slot = context["slot"]
+    break_key = f"break:{item.break_id}"
+
+    assert any(row["id"] == break_key for row in live_slot["transition_items"]) is visible
+    assert live_slot["breaks_booked"] == int(visible)
+    if visible:
+        assert live_slot["queued_chain_clip_s"] == pytest.approx(item.cues.end - item.cues.start)
+        assert live_slot["voice_forecast"]["chain_clip_s"] >= live_slot["queued_chain_clip_s"] + 5.0
+    else:
+        assert live_slot["queued_chain_clip_s"] == 0.0
+
+
+def test_live_voice_context_keeps_rendered_break_attached_to_current_pair(station, monkeypatch):
+    slot = voice(station)["slot"]
+    response = book(station, slot)
+    assert response.status_code == 201, response.text
+    item = station.desk.get(response.json()["break_id"])
+    station.desk.take(slot["slot_id"], 0.0)
+    item.slot_id = "previous-slot"
+    plan = station.player._slot_plan
+    plan.live = True
+    plan.transition_items = (
+        *plan.transition_items,
+        TransitionItem(
+            f"break:{item.break_id}",
+            "booked_voice",
+            VOICE_TRACK,
+            item.label or "Booked break",
+            committed=True,
+            editable=False,
+        ),
+    )
+    plan.transition_order = (*plan.transition_order, f"break:{item.break_id}")
+    plan.transition_revision = station.player._transition_revision(plan)
+    monkeypatch.setattr(station.player, "live_mixing", True, raising=False)
+    monkeypatch.setattr(station.player, "request_voice_track_slot", lambda: True)
+    monkeypatch.setattr(station.player, "_breaks_on", lambda: True)
+    monkeypatch.setattr(
+        station.player, "voice_slot_status", lambda: (plan, 0.0, 1.0), raising=False
+    )
+
+    live_slot = voice(station)["slot"]
+    break_key = f"break:{item.break_id}"
+
+    assert any(row["id"] == break_key for row in live_slot["transition_items"])
+    assert live_slot["breaks_booked"] == 1
+    assert live_slot["queued_chain_clip_s"] == pytest.approx(item.cues.end - item.cues.start)
+    forecast = voice(
+        station,
+        "/api/voice-tracks?" + urlencode({"speech_s": 5}),
+    )["slot"]["voice_forecast"]
+    assert forecast["chain_clip_s"] >= live_slot["queued_chain_clip_s"] + 5.0
+
+    durations = []
+    monkeypatch.setattr(
+        station.player,
+        "voice_track_crosses_hard_boundary",
+        lambda _start, duration: durations.append(duration) or True,
+    )
+    response = book(
+        station,
+        live_slot,
+        transition_revision=live_slot["transition_revision"],
+        transition_choices="[]",
+        placement="talk_up",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == "scheduled_boundary"
+    assert durations and durations[0] >= live_slot["queued_chain_clip_s"] + 2.4
 
 
 def test_deeply_nested_transition_choices_are_refused_before_storing_audio(station):

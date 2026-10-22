@@ -103,6 +103,12 @@ holding programme position. These live-path rules do not alter the established
 offline/local soft-refresh fallback, and they do not guarantee zero gaps. Future
 points in Hour Preview remain predictions, not booked or committed playout.
 
+Browser voice tracking targets the currently airing song and its selected
+successor. Its booking window closes at the current song's outro, or earlier
+if existing speech or a tail begins before it. The cutoff is calculated after
+decoding and checked again atomically when the take is
+installed; booking after the outro is not supported.
+
 Implementation: [live audio](../../src/autodj/live_audio.py),
 [stream decoder](../../src/autodj/stream_decode.py),
 [live transitions](../../src/autodj/live_transitions.py), and
@@ -159,6 +165,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-08` | Live decoders progressively fill a backpressured two-second PCM cushion. | automated | `tests/unit/test_stream_decode.py::test_progressive_decoder_backpressures_and_preserves_every_frame` |
 | `ADR-0004-09` | Live layers follow the bus sample clock; preflight covers current, ready and affected pinned slot handoffs; edits hold the boundary without repeating started speech or airing displaced music; internal edits defer without an operator choice. | automated | `tests/unit/test_live_mixbus.py::test_pending_live_layer_holds_cursor_and_does_not_consume_ready_companion`; `tests/unit/test_live_mixbus.py::test_held_handoff_never_airs_displaced_incoming_and_atomic_replace_airs_new`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_live_queue_replan.py::test_after_incoming_is_audible_edit_targets_render_ahead_handoff`; `tests/unit/test_live_queue_replan.py::test_concurrent_queue_revision_does_not_install_stale_replacement`; `tests/unit/test_live_queue_replan.py::test_failed_replacement_leaves_boundary_held`; `tests/unit/test_live_queue.py::test_pinned_slot_plan_breaks_and_intro_are_included_in_atomic_choice`; `tests/unit/test_live_queue.py::test_removed_pinned_ending_prompts_and_transfers_speech_to_replacement`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice` |
 | `ADR-0004-10` | Live transition effects use bounded windows and worker dispatch; future live queue and show points remain estimates. | automated | `tests/unit/test_live_transitions.py::test_live_transition_mixes_only_bounded_tail`; `tests/unit/test_live_transitions.py::test_player_dispatches_live_non_saved_render_without_decoding_whole_track`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
+| `ADR-0004-11` | Streaming voice tracking books the current song-to-next-song handoff before the current outro, rechecking the cutoff and queue revision before installation. | automated | `tests/unit/test_live_voice.py::test_current_live_voice_books_before_outro_and_keeps_future_slot`; `tests/unit/test_live_voice.py::test_live_voice_render_race_drops_item_and_keeps_old_audio` |
 
 ## Related proposal — 2026-10-17
 

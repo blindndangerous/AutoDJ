@@ -1001,6 +1001,7 @@ class Player:
         self._stream_mode = stream_mode
         self.live_mixing = stream_mode
         self._live_files: dict[tuple, BufferedFile] = {}
+        self._live_voice_slot: tuple[RenderedTrack, SlotPlan] | None = None
         self._pending_live_source: BufferedFile | None = None
         self._render_live_sources: (
             tuple[IndexEntry, BufferedFile | None, IndexEntry | None, BufferedFile | None] | None
@@ -2756,7 +2757,8 @@ class Player:
         active = {
             f"break:{item.break_id}"
             for item in (self.break_desk.listing() if self.break_desk is not None else ())
-            if item.slot_id == plan.slot_id and item.state == "queued"
+            if item.slot_id == plan.slot_id
+            and (item.state == "queued" or (plan.live and item.state == "rendered"))
         }
         order = tuple(
             key for key in plan.transition_order if not key.startswith("break:") or key in active
@@ -3230,7 +3232,7 @@ class Player:
                 next_entry, next_mode = None, "similarity"
             if edit is not None:
                 if edit.candidate is not None:
-                    next_entry, next_mode = edit.candidate, "queue"
+                    next_entry, next_mode = edit.candidate, edit.candidate_mode or "queue"
                 if (
                     intro is not None
                     and intro is not edit.intro
@@ -3854,6 +3856,14 @@ class Player:
             else:
                 desk.drop(break_id, "skipped before it aired")
 
+    def voice_slot_status(self) -> tuple[SlotPlan | None, float, float]:
+        """Use the current streaming handoff until its outro cutoff."""
+        if not getattr(self, "live_mixing", False):
+            return self.slot_status()
+        from autodj.live_voice import slot_status
+
+        return slot_status(self)
+
     def slot_status(self) -> tuple[SlotPlan | None, float, float]:
         """The open song change, when its slot closes and when it airs.
 
@@ -3905,8 +3915,18 @@ class Player:
         protected = [
             f"break:{item.break_id}"
             for item in (desk.listing() if desk is not None else ())
-            if item.slot_id == plan.slot_id and item.state == "queued"
+            if item.slot_id == plan.slot_id
+            and (item.state == "queued" or (plan.live and item.state == "rendered"))
         ]
+        if plan.live:
+            protected = list(
+                dict.fromkeys(
+                    [
+                        *protected,
+                        *(item.item_id for item in plan.transition_items if not item.editable),
+                    ]
+                )
+            )
         matched_at = next(
             (index for index, item in enumerate(editable) if item.kind == "matched_intro"),
             len(editable),
@@ -3983,6 +4003,10 @@ class Player:
                 or the desk has no room (see
                 :meth:`~autodj.breaks.BreakDesk.reserve`).
         """
+        if getattr(self, "live_mixing", False) and item.source == "voice_track":
+            from autodj.live_voice import book_voice
+
+            return book_voice(self, item, transition_revision, transition_choices)
         desk = self.break_desk
         if desk is None:
             raise BreakError(409, "Breaks are off for this station", "disabled")
@@ -3996,49 +4020,59 @@ class Player:
                 or (transition_revision is not None and self._slot_plan_is_stale(plan))
             ):
                 raise BreakError(409, "That song change is no longer open", "slot_closed")
-            if transition_revision is not None:
-                plan.transition_revision = self._transition_revision(plan)
-            if transition_revision is not None and transition_revision != plan.transition_revision:
-                raise BreakError(
-                    409,
-                    "The planned transition changed; refresh and choose again",
-                    "transition_changed",
-                )
-            if transition_revision is not None:
-                order, replaced = self._voice_transition_order(
-                    plan, item.break_id, transition_choices
-                )
-            desk.add(item)
-            if transition_revision is not None:
-                plan.transition_order = order
-                plan.transition_replaced = replaced
-                plan.transition_actions = tuple(
-                    (
-                        item.item_id,
-                        str(
-                            next(
-                                choice["action"]
-                                for choice in transition_choices
-                                if choice["id"] == item.item_id
-                            )
-                        ),
-                    )
-                    for item in plan.transition_items
-                    if item.editable
-                )
-                plan.transition_items += (
-                    TransitionItem(
-                        f"break:{item.break_id}",
-                        "booked_voice",
-                        "voice_track",
-                        item.label or "Voice track",
-                        committed=True,
-                        editable=False,
+            return self._book_break_in_plan(item, plan, transition_revision, transition_choices)
+
+    def _book_break_in_plan(
+        self,
+        item: Break,
+        plan: SlotPlan,
+        transition_revision: str | None,
+        transition_choices: Sequence[Mapping[str, str]],
+    ) -> SlotPlan:
+        """Validate and book against a caller-locked handoff plan."""
+        desk = self.break_desk
+        assert desk is not None
+        if transition_revision is not None:
+            plan.transition_revision = self._transition_revision(plan)
+        if transition_revision is not None and transition_revision != plan.transition_revision:
+            raise BreakError(
+                409,
+                "The planned transition changed; refresh and choose again",
+                "transition_changed",
+            )
+        if transition_revision is not None:
+            order, replaced = self._voice_transition_order(plan, item.break_id, transition_choices)
+        desk.add(item)
+        if transition_revision is not None:
+            plan.transition_order = order
+            plan.transition_replaced = replaced
+            plan.transition_actions = tuple(
+                (
+                    item.item_id,
+                    str(
+                        next(
+                            choice["action"]
+                            for choice in transition_choices
+                            if choice["id"] == item.item_id
+                        )
                     ),
                 )
-                plan.transition_revision = self._transition_revision(plan)
-            plan.pinned = True
-            return replace(plan)
+                for item in plan.transition_items
+                if item.editable
+            )
+            plan.transition_items += (
+                TransitionItem(
+                    f"break:{item.break_id}",
+                    "booked_voice",
+                    "voice_track",
+                    item.label or "Voice track",
+                    committed=True,
+                    editable=False,
+                ),
+            )
+            plan.transition_revision = self._transition_revision(plan)
+        plan.pinned = True
+        return replace(plan)
 
     def book_breaks(self, items: Sequence[Break], slot_id: str) -> SlotPlan:
         """Book *items* together for the open song change *slot_id* and pin its pair.
@@ -4104,6 +4138,7 @@ class Player:
         """
         with self._slot_lock:
             self._slot_plan = None
+            self._live_voice_slot = None
         if self.break_desk is not None:
             self.break_desk.drop_unaired(reason)
         with self._state.queue_lock:

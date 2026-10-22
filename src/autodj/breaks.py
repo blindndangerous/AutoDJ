@@ -347,6 +347,7 @@ class SlotPlan:
     transition_order: tuple[str, ...] = ()
     transition_replaced: tuple[str, ...] = ()
     transition_actions: tuple[tuple[str, str], ...] = ()
+    live: bool = False
 
 
 class BreakError(Exception):
