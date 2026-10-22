@@ -1001,6 +1001,10 @@ class Player:
         self._stream_mode = stream_mode
         self.live_mixing = stream_mode
         self._live_files: dict[tuple, BufferedFile] = {}
+        self._pending_live_source: BufferedFile | None = None
+        self._render_live_sources: (
+            tuple[IndexEntry, BufferedFile | None, IndexEntry | None, BufferedFile | None] | None
+        ) = None
         self._live_queue_dirty = False
         self._live_queue_revision = 0
         self._live_queue_target: Any = None
@@ -3257,11 +3261,26 @@ class Player:
                                 self._live_queue_edits[id(next_entry)] = replace(
                                     following, outgoing=next_entry
                                 )
+            render_live_source = getattr(self, "_pending_live_source", None)
+            render_next_live_source = None
             try:
                 if next_entry is not None:
                     # Plan the effect knowing how next_entry was picked;
                     # the render then finds this plan.
                     self.planned_transition(current, next_entry, next_mode)
+                if getattr(self, "live_mixing", False):
+                    if render_live_source is None or not self._live_source_is_current(
+                        current, render_live_source
+                    ):
+                        render_live_source = self._live_file(current, fresh=True)
+                    if next_entry is not None:
+                        render_next_live_source = self._live_file(next_entry, fresh=True)
+                    self._render_live_sources = (
+                        current,
+                        render_live_source,
+                        next_entry,
+                        render_next_live_source,
+                    )
                 voice: dict[str, Any] = {"intro": intro} if intro is not None else {}
                 if prepared is not None:
                     voice["prepared_plan"] = prepared
@@ -3295,6 +3314,7 @@ class Player:
             except Exception:
                 logger.exception("Rendering %s failed; skipping it.", current.path)
                 rendered = None
+            self._render_live_sources = None
             if (
                 liner_key
                 and self.liner_scheduler is not None
@@ -3313,6 +3333,12 @@ class Player:
                 for item in breaks:
                     if item.break_id not in mixed:
                         self.break_desk.drop(item.break_id, "its song change could not be rendered")
+            if rendered is not None and getattr(self, "live_mixing", False):
+                rendered = replace(
+                    rendered,
+                    live_source=render_live_source,
+                    next_live_source=render_next_live_source,
+                )
             if rendered is None and current_from_queue and current is not None:
                 with self._state.queue_lock:
                     self._commit_queue_pick(current)  # it will never start
@@ -3323,6 +3349,7 @@ class Player:
                 from_queue=next_mode == "queue",
                 # A track that failed to render never starts.
                 previous=current if rendered is not None else previous,
+                live_source=rendered.next_live_source if rendered is not None else None,
                 mixed_in=_mixed_in_by(rendered),
                 glide=rendered.next_glide if rendered else None,
                 reserved_liners=rendered.next_reserved_liners if rendered else (),
@@ -3386,6 +3413,7 @@ class Player:
         clock_name: str | None = None,
         clock_step: dict | None = None,
         clock_revision: int | None = None,
+        live_source: BufferedFile | None = None,
     ) -> None:
         """Point the render-ahead cursor at *entry* (worker idle or queued).
 
@@ -3399,6 +3427,7 @@ class Player:
         """
         self._cursor_serial += 1
         self._pending_entry = entry
+        self._pending_live_source = live_source
         self._pending_offset = offset
         self._pending_pick_mode = pick_mode
         self._pending_from_queue = from_queue
@@ -3435,6 +3464,7 @@ class Player:
             clock_name=track.clock_name,
             clock_step=track.clock_step,
             clock_revision=track.clock_revision,
+            live_source=track.live_source,
         )
 
     def _skip_past_render(self, track: RenderedTrack) -> None:
@@ -3457,6 +3487,7 @@ class Player:
             clock_name=track.next_clock_name,
             clock_step=track.next_clock_step,
             clock_revision=track.next_clock_revision,
+            live_source=track.next_live_source,
         )
 
     # ------------------------------------------------------------------
@@ -4198,16 +4229,43 @@ class Player:
                     and item.source != "prepared_edition"
                 )
                 breaks += ordinary
-            rendered = self._render_track(
-                track.entry,
-                next_entry,
-                track.start_offset,
-                glide_in=track.glide_in,
-                liners=tuple((entry, queued) for _at, entry, queued in track.liner_events),
-                breaks=breaks,
-                intro=track.incoming_intro,
-                prepared_plan=prepared_plan,
+            current_source = track.live_source
+            if getattr(self, "live_mixing", False) and (
+                current_source is None
+                or not self._live_source_is_current(track.entry, current_source)
+            ):
+                current_source = self._live_file(track.entry, fresh=True)
+            incoming_source = (
+                track.next_live_source
+                if next_entry is not None
+                and next_entry is track.next_entry
+                and track.next_live_source is not None
+                and self._live_source_is_current(next_entry, track.next_live_source)
+                else self._live_file(next_entry, fresh=True)
+                if next_entry is not None and getattr(self, "live_mixing", False)
+                else None
             )
+            old_sources = getattr(self, "_render_live_sources", None)
+            if getattr(self, "live_mixing", False):
+                self._render_live_sources = (
+                    track.entry,
+                    current_source,
+                    next_entry,
+                    incoming_source,
+                )
+            try:
+                rendered = self._render_track(
+                    track.entry,
+                    next_entry,
+                    track.start_offset,
+                    glide_in=track.glide_in,
+                    liners=tuple((entry, queued) for _at, entry, queued in track.liner_events),
+                    breaks=breaks,
+                    intro=track.incoming_intro,
+                    prepared_plan=prepared_plan,
+                )
+            finally:
+                self._render_live_sources = old_sources
             if rendered is None or rendered.playback_rate != track.playback_rate:
                 self._render_ahead.reset(lambda: self._skip_past_render(track))
                 return
@@ -4227,6 +4285,8 @@ class Player:
             replacement = replace(
                 track,
                 audio=owned,
+                live_source=current_source,
+                next_live_source=rendered.next_live_source or incoming_source,
                 next_entry=rendered.next_entry,
                 next_start_offset=rendered.next_start_offset,
                 next_glide=rendered.next_glide,
@@ -4390,16 +4450,16 @@ class Player:
             and isinstance(replacement.audio, LiveAudio)
             and replacement_next is not None
         ):
-            incoming_source = self._live_file(replacement_next)
+            incoming_source = replacement.next_live_source or self._live_file(
+                replacement_next, fresh=True
+            )
             incoming_rate = replacement.next_playback_rate
             incoming_points = self.saved_points(replacement_next)
             incoming_source_start = round(float(incoming_points.get("start") or 0.0) * SAMPLE_RATE)
             incoming_source_end = round(
                 float(incoming_points.get("end") or replacement_next.length) * SAMPLE_RATE
             )
-            original_incoming = (
-                self._live_file(track.next_entry) if track.next_entry is not None else None
-            )
+            original_incoming = track.next_live_source if track.next_entry is not None else None
         with self._set_lock, self.bus.queue_edit_guard(), self._state.queue_lock:
             if revision != self._live_queue_revision:
                 self._render_ahead.request_plan()
@@ -5650,12 +5710,13 @@ class Player:
             self._library.catalog.set_loudness(source, measurement)
         return audio
 
-    def _live_file(self, entry: IndexEntry) -> BufferedFile:
-        """Open a bounded file deck; reuse its cursor across the incoming overlap."""
+    def _live_file(self, entry: IndexEntry, *, fresh: bool = False) -> BufferedFile:
+        """Open a bounded file deck, optionally isolated for one queue occurrence."""
         from autodj.processing import _processing_filters, analyze_loudness, loudness_matches
 
         rate = self.music_playback_rate(entry)
-        key = (id(entry), self._playout_key(entry), rate)
+        occurrence = object() if fresh else id(entry)
+        key = (occurrence, self._playout_key(entry), rate)
         cached = self._live_files.get(key)
         if cached is not None:
             return cached
@@ -5670,7 +5731,7 @@ class Player:
                 measurement = analyze_loudness(path, kind)
                 if record and not self._dry_run:
                     self._library.catalog.set_loudness(path, measurement)
-                key = (id(entry), self._playout_key(entry), rate)
+                key = (occurrence, self._playout_key(entry), rate)
             filters = f"{_processing_filters(kind)},volume={measurement['gain_db']:.9f}dB"
         elif (
             not prepared_clip
@@ -5733,6 +5794,23 @@ class Player:
         self._live_files[key] = source
         return source
 
+    def _render_live_file(self, entry: IndexEntry, *, incoming: bool) -> BufferedFile:
+        """Return the source assigned to this render occurrence."""
+        sources = getattr(self, "_render_live_sources", None)
+        if sources is not None:
+            current, current_source, upcoming, incoming_source = sources
+            if incoming and upcoming is entry and incoming_source is not None:
+                return incoming_source
+            if not incoming and current is entry and current_source is not None:
+                return current_source
+        return self._live_file(entry)
+
+    def _live_source_is_current(self, entry: IndexEntry, source: BufferedFile) -> bool:
+        """Whether a carried occurrence deck still reflects its entry/settings."""
+        key = next((key for key, value in self._live_files.items() if value is source), None)
+        rate = self.music_playback_rate(entry)
+        return key is not None and key[1:] == (self._playout_key(entry), rate)
+
     def _prune_live_files(self, ready: RenderedTrack) -> None:
         """Release finished decks on the control worker, never on the bus."""
         retained: set[BufferedFile] = set()
@@ -5740,6 +5818,11 @@ class Player:
         for track in (self._playing_render, current, ready):
             if track is None:
                 continue
+            retained.update(
+                source
+                for source in (track.live_source, track.next_live_source)
+                if source is not None
+            )
             for audio in (track.audio, track.full_audio):
                 if isinstance(audio, LiveAudio):
                     retained.update(
@@ -5906,7 +5989,7 @@ class Player:
 
         live = getattr(self, "live_mixing", False)
         source = (
-            self._live_file(current)
+            self._render_live_file(current, incoming=False)
             if live and not self._is_liner(current)
             else self._playout_audio(current, source_decode)
         )
@@ -6148,7 +6231,9 @@ class Player:
         )
         main_frames, release, outro_lead_limit = liner_chain_timing(timing, incoming_intro)
         handoff_renderer: Callable[..., Handoff] = (
-            partial(mix_handoff, incoming=self._live_file(next_entry)) if live else render_handoff
+            partial(mix_handoff, incoming=self._render_live_file(next_entry, incoming=True))
+            if live
+            else render_handoff
         )
         handoff = handoff_renderer(
             np.zeros((1, 2), dtype=np.float32) if is_liner else source,

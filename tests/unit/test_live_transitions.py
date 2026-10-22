@@ -35,7 +35,7 @@ def test_live_transition_without_next_streams_only_remaining_body() -> None:
     entry = SimpleNamespace(path="track.wav", length=10.0)
     deck = _Deck(441_000)
     player = SimpleNamespace(
-        _live_file=lambda _entry: deck,
+        _render_live_file=lambda _entry, **_kwargs: deck,
         music_playback_rate=lambda _entry: 1.1,
         saved_points=lambda _entry: {"start": 0, "end": 10},
         _peek_incoming_meta=lambda _entry: None,
@@ -67,7 +67,7 @@ def test_live_transition_mixes_only_bounded_tail(monkeypatch) -> None:
         key_shift=False,
     )
     player = SimpleNamespace(
-        _live_file=lambda entry: outgoing_deck if entry is current else incoming_deck,
+        _render_live_file=lambda entry, **_kwargs: outgoing_deck if entry is current else incoming_deck,
         music_playback_rate=lambda _entry: 1.0,
         _peek_incoming_meta=lambda _entry: None,
         _cfg=SimpleNamespace(

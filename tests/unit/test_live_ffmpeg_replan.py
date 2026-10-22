@@ -79,8 +79,8 @@ def test_real_ffmpeg_player_replaces_unheard_incoming_and_closes_decks(tmp_path,
     decks = []
     original_live_file = player._live_file
 
-    def track_deck(entry):
-        deck = original_live_file(entry)
+    def track_deck(entry, **kwargs):
+        deck = original_live_file(entry, **kwargs)
         if deck not in decks:
             decks.append(deck)
         return deck

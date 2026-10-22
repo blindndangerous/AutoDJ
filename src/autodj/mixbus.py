@@ -15,7 +15,7 @@ import numpy as np
 
 from autodj.eq import apply_eq, make_eq_filters, make_eq_state, ramp_eq, reset_eq_state
 from autodj.kernels import duck_and_mix_in_place, nan_to_num_in_place
-from autodj.live_audio import AudioPending, LiveAudio, read_audio
+from autodj.live_audio import AudioPending, BufferedFile, LiveAudio, read_audio
 from autodj.stereo import SAMPLE_RATE
 
 if TYPE_CHECKING:
@@ -152,6 +152,8 @@ class RenderedTrack:
     next_clock_revision: int | None = None
     next_clock_name: str | None = None
     liner_plan_key: str = ""
+    live_source: BufferedFile | None = None
+    next_live_source: BufferedFile | None = None
     incoming_intro: object | None = None
     voice_breaks: tuple[Break, ...] = ()
     full_audio: np.ndarray | LiveAudio | None = None

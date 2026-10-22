@@ -30,6 +30,26 @@ class _UnconsumedDeck(BufferedFile):
         return np.full((frames, 2), self.value, dtype=np.float32)
 
 
+class _CursorDeck(BufferedFile):
+    """Tiny seekable fake with the same single-cursor readiness contract."""
+
+    def __init__(self, frames: int, start: int = 0) -> None:
+        self.frames = frames
+        self.rate = 1.0
+        self.position = start
+
+    def ready(self, position: int, _frames: int) -> bool:
+        if position != self.position:
+            self.position = position
+            return False
+        return True
+
+    def read(self, position: int, frames: int) -> np.ndarray:
+        assert position == self.position
+        self.position += frames
+        return np.zeros((frames, 2), np.float32)
+
+
 def test_stream_saved_track_planning_does_not_consume_either_song(monkeypatch) -> None:
     music, upcoming, station_id, voice = (make_entry(i) for i in range(4))
     music.length = upcoming.length = 4.0
@@ -62,7 +82,7 @@ def test_stream_saved_track_planning_does_not_consume_either_song(monkeypatch) -
         music.path: _UnconsumedDeck(round(music.length * SAMPLE_RATE), 0.7),
         upcoming.path: _UnconsumedDeck(round(upcoming.length * SAMPLE_RATE), 0.2),
     }
-    monkeypatch.setattr(player, "_live_file", lambda entry: decks[entry.path])
+    monkeypatch.setattr(player, "_live_file", lambda entry, **_kwargs: decks[entry.path])
     liner_audio = {
         station_id.path: np.full((round(station_id.length * SAMPLE_RATE), 2), 0.05, np.float32),
         voice.path: np.full((round(voice.length * SAMPLE_RATE), 2), 0.1, np.float32),
@@ -115,7 +135,7 @@ def test_stream_saved_track_offset_stops_at_incoming_end_cue(monkeypatch) -> Non
         music.path: _UnconsumedDeck(round(music.length * SAMPLE_RATE), 0.7),
         upcoming.path: _UnconsumedDeck(round(upcoming.length * SAMPLE_RATE), 0.2),
     }
-    monkeypatch.setattr(player, "_live_file", lambda entry: decks[entry.path])
+    monkeypatch.setattr(player, "_live_file", lambda entry, **_kwargs: decks[entry.path])
 
     rendered = player._render_saved_track(music, upcoming, 0)
 
@@ -156,7 +176,7 @@ def _live_prepared_speech_setup(monkeypatch):
         entry.path: _UnconsumedDeck(round(entry.length * SAMPLE_RATE), value)
         for entry, value in ((music, 0.1), (old_next, 0.2), (new_next, 0.4), (following, 0.6))
     }
-    monkeypatch.setattr(player, "_live_file", lambda entry: decks[entry.path])
+    monkeypatch.setattr(player, "_live_file", lambda entry, **_kwargs: decks[entry.path])
     speech = np.linspace(0.2, 0.8, round(0.6 * SAMPLE_RATE), dtype=np.float32)
     speech = np.repeat(speech[:, None], 2, axis=1)
     voice = SimpleNamespace(
@@ -287,3 +307,67 @@ def test_live_queue_keep_preserves_started_speech_and_changes_incoming_song(monk
     (planned_again,) = edited_again.voice_breaks
     assert planned_again.source == "operator_keep"
     assert planned_again.keep_file is True
+
+
+def test_live_decks_follow_queue_occurrences_across_duplicate_and_returning_tracks(
+    monkeypatch,
+) -> None:
+    import autodj.player as player_module
+    from autodj.live_audio import AudioLayer
+    from autodj.mixbus import RenderedTrack
+
+    player, _bridge, a, b, _c, _d, _voice, _speech = _live_prepared_speech_setup(monkeypatch)
+    original_live_file = Player._live_file.__get__(player, Player)
+    monkeypatch.setattr(player, "_live_file", original_live_file)
+    monkeypatch.setattr(
+        player_module,
+        "BufferedFile",
+        lambda _path, frames, **kwargs: _CursorDeck(frames, kwargs.get("start", 0)),
+    )
+    picks = iter((a, b, a))
+    monkeypatch.setattr(player, "_pick_context", lambda **_kwargs: SimpleNamespace(at=0.0))
+    monkeypatch.setattr(player, "_choose_next", lambda *_args: (next(picks), "queue"))
+    monkeypatch.setattr(player, "planned_transition", lambda *_args: None)
+
+    def render(current, upcoming, offset, **_kwargs):
+        outgoing = player._render_live_file(current, incoming=False)
+        incoming = player._render_live_file(upcoming, incoming=True)
+        audio = LiveAudio(
+            256,
+            (
+                AudioLayer(outgoing, 0, 256, 100),
+                AudioLayer(incoming, 0, 256, 0),
+            ),
+        )
+        return RenderedTrack(
+            current,
+            audio,
+            upcoming,
+            128,
+            "",
+            start_offset=offset,
+            overlap_frames=128,
+            full_audio=audio,
+        )
+
+    monkeypatch.setattr(player, "_render_track", render)
+    player._set_render_cursor(a, 0, "seed")
+
+    aa = player._next_rendered_serial()
+    assert aa is not None and aa.entry is a and aa.next_entry is a
+    assert aa.live_source is not aa.next_live_source
+    for _ in range(4):
+        if aa.audio.ready(0, 1):
+            break
+    assert aa.audio.ready(0, 1)
+
+    player._skip_past_render(aa)
+    ab = player._next_rendered_serial()
+    assert ab is not None and ab.entry is a and ab.next_entry is b
+    assert ab.live_source is aa.next_live_source
+
+    player._skip_past_render(ab)
+    ba = player._next_rendered_serial()
+    assert ba is not None and ba.entry is b and ba.next_entry is a
+    assert ba.live_source is ab.next_live_source
+    assert ba.next_live_source not in {aa.live_source, aa.next_live_source}

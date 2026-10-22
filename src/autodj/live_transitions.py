@@ -143,7 +143,7 @@ def build_live_transition(
     from autodj.player import _music_output_frame, _music_segment
 
     try:
-        source = player._live_file(current)
+        source = player._render_live_file(current, incoming=False)
         rate_a = player.music_playback_rate(current)
         source_frames = round(float(current.length or 0) * SAMPLE_RATE)
         if start_offset >= source_frames:
@@ -186,7 +186,7 @@ def build_live_transition(
                 playback_rate=rate_a,
             )
 
-        incoming_source = player._live_file(next_entry)
+        incoming_source = player._render_live_file(next_entry, incoming=True)
         incoming_audio = _WindowAudio(player, next_entry, incoming_source)
         meta_b = player._peek_incoming_meta(next_entry)
         _metadata_warning(player, current, next_entry, meta_a, meta_b)
