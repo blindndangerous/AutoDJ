@@ -22,6 +22,7 @@ from autodj.server import (
     LibraryDjAnalysisBody,
     LibraryFolderBody,
     LibraryFolderUpdateBody,
+    LibraryMusicFadeBody,
     LibraryRescanBody,
     SongPointsBody,
     _apply_time_settings,
@@ -156,6 +157,25 @@ def test_dj_analysis_route_saves_the_library_setting(library_api):
     }
     assert manager.dj_analysis_enabled() is False
     assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
+
+
+def test_music_fade_route_persists_shared_threshold_and_rejects_invalid_json(library_api):
+    manager, call, app = library_api
+    assert call("GET", "/api/library/music-fade") == {"drop_db": 10}
+    assert call("PUT", "/api/library/music-fade", LibraryMusicFadeBody(drop_db=17)) == {
+        "drop_db": 17
+    }
+    assert manager.music_fade_drop_db() == 17
+    assert manager.catalog.get_setting("music_fade_drop_db") == 17
+    assert call("GET", "/api/library/music-fade") == {"drop_db": 17}
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    headers = {"host": urlsplit(origin).netloc, "origin": origin}
+    for bad in (True, 0, 31, 1.5, "17"):
+        response = TestClient(app).put(
+            "/api/library/music-fade", json={"drop_db": bad}, headers=headers
+        )
+        assert response.status_code == 422, bad
+    assert manager.music_fade_drop_db() == 17
 
 
 def test_advanced_length_route_saves_the_cutoff(library_api):

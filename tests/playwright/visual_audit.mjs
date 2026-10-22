@@ -1525,6 +1525,11 @@ async function eachTarget(page, measure) {
       if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
+        await page.locator("#music-fade-drop").fill("0");
+        await page.locator("#music-fade-drop-save").click();
+        await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
+        await visit("library/music-fade-error");
+        await page.locator("#music-fade-drop").fill("10");
         await openAutoRescanError(page, visit);
         await openIntroRuleError(page, visit);
         await openDaypartErrors(page, visit);

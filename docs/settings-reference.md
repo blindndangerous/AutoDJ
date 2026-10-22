@@ -355,6 +355,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
+- **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Live DJ**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
 - **Time format for all stations** in **Settings**, **Stations**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
 - **Theme** in **Settings**, **Display and keys**: System, Light, or Dark; default System. Changes this browser's colors.

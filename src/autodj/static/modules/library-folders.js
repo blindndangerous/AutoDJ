@@ -11,6 +11,7 @@ import { formatPlayedAt } from "./history-format.js";
 import { NBSP, announceStatus, sayIfStillPending } from "./live-region.js";
 import { installAutoRescan } from "./auto-rescan.js";
 import { installAdvancedLength } from "./advanced-length.js";
+import { installMusicFadeDrop } from "./music-fade-drop.js";
 import { showBeetsPaths } from "./beets-paths.js";
 import { installMatchedIntros } from "./matched-intros.js";
 import { installTagEditor } from "./tag-editor.js";
@@ -338,6 +339,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
       void refresh();
       void autoRescan?.load();
       void advancedLength?.load();
+      void musicFadeDrop?.load();
       timer = setInterval(refresh, 3000);
     } else if (!visible() && timer != null) {
       clearInterval(timer);
@@ -434,6 +436,12 @@ export function installLibraryFolders({ document: doc = document, request = requ
     isCurrent: () => !suspended,
   });
   const advancedLength = installAdvancedLength({
+    document: doc,
+    request,
+    say: announceAction,
+    isCurrent: () => !suspended,
+  });
+  const musicFadeDrop = installMusicFadeDrop({
     document: doc,
     request,
     say: announceAction,
@@ -994,6 +1002,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     clearAddError();
     autoRescan?.clear();
     advancedLength?.clear();
+    musicFadeDrop?.clear();
     errorSignature = "";
     importRunning = false;
     errorList.hidden = true;

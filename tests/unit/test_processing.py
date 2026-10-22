@@ -455,3 +455,16 @@ def test_new_liner_recipe_invalidates_old_measurements_but_keeps_music_cache(tmp
     assert not processing.loudness_matches(dict(liner, version="loudness-v1"), source, "liner")
     assert processing.loudness_matches(liner, source, "liner")
     assert not processing.loudness_matches(liner, source, "voice")
+
+
+def test_music_fade_threshold_moves_the_segue_later_for_a_deeper_drop():
+    rate = 1000
+    audio = np.full(60 * rate, 0.2, dtype=np.float32)
+    audio[40 * rate :] *= np.linspace(1, 0.01, 20 * rate)
+    early = processing._suggest_segue(audio, rate, 6)
+    default = processing._suggest_segue(audio, rate, 10)
+    late = processing._suggest_segue(audio, rate, 20)
+    assert early < default < late
+    assert 49 <= early <= 51
+    assert 53 <= default <= 55
+    assert late == pytest.approx(60)

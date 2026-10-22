@@ -57,9 +57,11 @@ class CueRescan:
                 raise FileNotFoundError(record["path"])
             identity = self._identity(resolved)
             kind = record["kind"]
-            from autodj.library import LibraryManager
+            from autodj.library import LibraryManager, music_fade_drop_db
 
-            fresh, detected = analyze_basic(resolved, kind=kind)
+            fresh, detected = analyze_basic(
+                resolved, kind=kind, music_fade_drop_db=music_fade_drop_db(catalog)
+            )
 
             detected = LibraryManager._valid_basic_points(detected, fresh)
             if record["length"] > 0 and abs(fresh.length - record["length"]) > 0.1:

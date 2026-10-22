@@ -619,6 +619,8 @@ def analyze_basic(
     source: Path,
     kind: str = "music",
     audio: np.ndarray | TrackWindows | None = None,
+    *,
+    music_fade_drop_db: float = 10,
 ) -> tuple[IndexEntry, dict[str, float | None]]:
     """Return basic library metadata and conservative timing suggestions.
 
@@ -633,6 +635,7 @@ def analyze_basic(
         kind: ``"music"`` or ``"liner"``.
         audio: The track already decoded by :func:`load_for_analysis`, so
             the caller can reuse it; decoded here when ``None``.
+        music_fade_drop_db: Relative level drop required for a music fade Segue.
 
     """
     from autodj.audio_meta import load_lrc_for, read_file_tags
@@ -648,13 +651,13 @@ def analyze_basic(
         length, energy, found = (
             audio.seconds,
             audio.energy,
-            _window_points(audio, kind),
+            _window_points(audio, kind, music_fade_drop_db),
         )
     else:
         length = len(audio) / SAMPLE_RATE
         mono = audio.mean(axis=1)
         energy = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
-        found = _whole_points(audio, mono, kind)
+        found = _whole_points(audio, mono, kind, music_fade_drop_db)
     start, end, segue, detected_intro, detected_outro = found
     tags = read_file_tags(source)
     lines = load_lrc_for(source)
@@ -704,7 +707,9 @@ def _padded(mono: np.ndarray) -> np.ndarray:
     return np.pad(mono, (0, window - remainder)) if remainder else mono
 
 
-def _whole_points(audio: np.ndarray, mono: np.ndarray, kind: str) -> _Found:
+def _whole_points(
+    audio: np.ndarray, mono: np.ndarray, kind: str, fade_drop_db: float = 10
+) -> _Found:
     """Start, End, Segue and the detected intro and outro of a whole track."""
     from autodj.dj_meta import detect_intro_outro, detect_intro_start
 
@@ -719,11 +724,11 @@ def _whole_points(audio: np.ndarray, mono: np.ndarray, kind: str) -> _Found:
         if segue is None or segue > end:
             segue = end
     else:
-        segue = _suggest_segue(audio, SAMPLE_RATE)
+        segue = _suggest_segue(audio, SAMPLE_RATE, fade_drop_db)
     return start, end, segue, detected_intro, detected_outro
 
 
-def _window_points(windows: TrackWindows, kind: str) -> _Found:
+def _window_points(windows: TrackWindows, kind: str, fade_drop_db: float = 10) -> _Found:
     """The same points for a long track, from its start and end windows.
 
     The intro and outro detector sees the two windows joined, so it
@@ -759,7 +764,7 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
         found = _suggest_liner_segue(tail_mono, SAMPLE_RATE)
         segue = end if found is None else min(end, windows.tail_start_s + found)
     else:
-        found = _suggest_segue(windows.tail, SAMPLE_RATE)
+        found = _suggest_segue(windows.tail, SAMPLE_RATE, fade_drop_db)
         segue = end if found is None else windows.tail_start_s + found
     return start, end, segue, detected_intro, detected_outro
 
@@ -796,7 +801,7 @@ def _suggest_liner_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     return point if point < duration else None
 
 
-def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
+def _suggest_segue(audio: np.ndarray, sample_rate: int, drop_db: float = 10) -> float | None:
     """Suggest only a sustained final energy drop, never a vocal cue."""
     window = sample_rate
     last = _audible_end(audio)
@@ -816,7 +821,7 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     reference = _segue_reference(rms, 5)
     if reference <= 1e-6:
         return last / sample_rate
-    threshold = reference * 10 ** (-10 / 20)
+    threshold = reference * 10 ** (-drop_db / 20)
     index = len(rms) - 1
     while index >= 0 and rms[index] <= threshold:
         index -= 1
