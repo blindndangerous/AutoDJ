@@ -496,10 +496,13 @@ def _read_live(player: Any) -> _Live:
             heard_next=bool(getattr(player, "_heard_next_entry", False)),
             played_frames=max(
                 0,
-                round((position - playing.start_offset) / max(
-                    0.01, float(getattr(playing, "playback_rate", 1.0) or 1.0)
-                )),
-            ) if playing is not None else 0,
+                round(
+                    (position - playing.start_offset)
+                    / max(0.01, float(getattr(playing, "playback_rate", 1.0) or 1.0))
+                ),
+            )
+            if playing is not None
+            else 0,
         )
         if (
             steady
@@ -1076,7 +1079,13 @@ def _read_bus(
     )
     items.extend(
         _mixed_in(
-            playing, base, now, desk, "ready", queued, player=player,
+            playing,
+            base,
+            now,
+            desk,
+            "ready",
+            queued,
+            player=player,
             actual_frames=live.played_frames,
         )
     )
@@ -1139,7 +1148,9 @@ def _read_bus(
         )
     )
     unplayed.append((following, enters))
-    items.extend(_mixed_in(ready, ready_at, now, desk, "ready", queued, player=player, actual_frames=0))
+    items.extend(
+        _mixed_in(ready, ready_at, now, desk, "ready", queued, player=player, actual_frames=0)
+    )
     after_starts = ready_at + len(ready.audio) / SAMPLE_RATE
     handoff = after_starts + _remaining(
         player, after, live.offset / SAMPLE_RATE, average, rate=after_rate
@@ -2569,9 +2580,7 @@ def build_preview(
         ends = max(ends, last.starts + last.seconds)
     shown = [item for item in timeline if item.starts < end]
     live_mixing = bool(getattr(source.player, "live_mixing", False))
-    view["items"] = [
-        _item_view(item, zone, live_mixing=live_mixing, now=now) for item in shown
-    ]
+    view["items"] = [_item_view(item, zone, live_mixing=live_mixing, now=now) for item in shown]
     bridge_of = attached(source.player, "_request_bridge_of")
     for item, row in zip(shown, view["items"], strict=True):
         request = bridge_of.get(item.entry) if item.entry is not None else None
@@ -2701,7 +2710,9 @@ def _point_view(
         "landing": short,
         "reason_fixed": (
             _is_audible(landing.playing, now) if live_mixing else landing.playing.fixed
-        ) if landing.playing is not None else None,
+        )
+        if landing.playing is not None
+        else None,
         "text": sentence,
     }
 

@@ -523,11 +523,15 @@ def test_live_mixing_keeps_future_queue_and_show_as_estimates(tmp_path: Path) ->
     items = view["items"]
 
     assert items[0]["status"] == "on_air" and items[0]["fixed"]
-    planned = [item for item in items if item["path"] in {
-        str(power[3].path), str(power[4].path), str(gold[5].path)
-    }]
+    planned = [
+        item
+        for item in items
+        if item["path"] in {str(power[3].path), str(power[4].path), str(gold[5].path)}
+    ]
     assert [item["path"] for item in planned] == [
-        str(power[3].path), str(power[4].path), str(gold[5].path)
+        str(power[3].path),
+        str(power[4].path),
+        str(gold[5].path),
     ]
     assert all(item["status"] == "predicted" and not item["fixed"] for item in planned)
     assert view["counts"]["fixed"] == 1
@@ -833,8 +837,15 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(
         str(item.entry.path) if item.entry is not None else None for item in decided.items
     ]
     assert [row["status"] for row in live_rows] == [
-        "on_air", "predicted", "predicted", "predicted", "predicted",
-        "predicted", "predicted", "predicted", "predicted",
+        "on_air",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
     ]
     assert live_view["counts"]["fixed"] == 1
     overlapping = replace(
