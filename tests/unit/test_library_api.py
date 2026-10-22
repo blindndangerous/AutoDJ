@@ -424,3 +424,54 @@ def test_track_browse_rejects_unknown_source_and_invalid_kind(library_api):
         headers={"host": urlsplit(origin).netloc, "origin": origin},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("kind", ["music", "liner"])
+def test_cue_rescan_compares_then_applies_only_selected_points(library_api, monkeypatch, kind):
+    from autodj import cue_rescan
+    from autodj.server import CueRescanApplyBody, CueRescanBody
+
+    manager, call, _app = library_api
+    if kind == "liner":
+        folder = manager.cfg.index.stations_dir / "default" / "liners" / "cue-rescan"
+        folder.mkdir(parents=True)
+        manager.catalog.add_source(folder, kind="liner")
+    else:
+        folder = manager.cfg.library.music_dir
+    path = folder / "cue-test.flac"
+    path.write_bytes(b"test audio")
+    entry = make_entry(path)
+    manager.catalog.put_entry(
+        entry, kind=kind, points={"start": 0, "segue": 150, "end": 180}, point_source="user"
+    )
+    manager.refresh()
+    before = manager.catalog.record_for_path(path)
+
+    def analyze(*args, **kwargs):
+        with pytest.raises(RuntimeError):
+            asyncio.get_running_loop()
+        assert kwargs["kind"] == kind
+        return entry, {"start": 0.1, "intro": 5, "outro": 179, "segue": 175, "end": 180}
+
+    monkeypatch.setattr(cue_rescan, "analyze_basic", analyze)
+    result = call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path)))
+    assert manager.catalog.record_for_path(path) == before
+    assert ("intro" in result["points"]) == (kind == "music")
+    body = CueRescanApplyBody(path=str(path), token=result["token"], fields=["segue"])
+    applied = call("POST", "/api/library/points/rescan/apply", body)
+    assert applied["points"]["segue"] == 175
+    assert applied["points"]["start"] == 0
+    assert applied["point_sources"]["segue"] == "analysis"
+    assert applied["point_sources"]["start"] == "user"
+    assert applied["title"] == before["title"]
+    with pytest.raises(HTTPException) as expired:
+        call("POST", "/api/library/points/rescan/apply", body)
+    assert expired.value.status_code == 409
+    with pytest.raises(HTTPException) as station:
+        call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path), station="missing"))
+    assert station.value.status_code == 404
+    path.unlink()
+    with pytest.raises(HTTPException) as missing:
+        call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path)))
+    assert missing.value.status_code == 409
+    assert manager.catalog.points(path)["segue"] == 175

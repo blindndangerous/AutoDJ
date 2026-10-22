@@ -329,6 +329,14 @@ async function standInForTrackInfo(page) {
   await page.route("**/api/library/points?*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
   }));
+  await page.route("**/api/library/points/rescan", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({
+      token: "visual-cue-scan", current_points: TRACK_RECORD.points,
+      current_sources: { ...TRACK_RECORD.point_sources, intro: "imported" },
+      points: { ...TRACK_RECORD.points, intro: 10, outro: 214, segue: 215 },
+      point_sources: { ...TRACK_RECORD.point_sources, intro: "lyrics" },
+    }),
+  }));
   await page.route("**/api/library/tags", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
   }));
@@ -380,6 +388,17 @@ async function openTrackTags(page, visit) {
   await page.locator("#tags-form").waitFor({ state: "visible" });
   await checkTrackLandmarks(page);
   await visit("track-info/tags");
+  await page.locator("#points-rescan").click();
+  await page.locator("#points-rescan-results").waitFor({ state: "visible" });
+  if (await page.locator('[data-rescan-field="intro"]').isChecked()
+      || !await page.locator('[data-rescan-field="segue"]').isChecked()) {
+    throw new Error("Cue rescan did not protect imported cues or select automatic changes");
+  }
+  await visit("track-info/cue-rescan");
+  await page.locator("#points-rescan-discard").click();
+  if (!await page.locator("#points-rescan").evaluate((button) => button === document.activeElement)) {
+    throw new Error("Discarding a cue scan did not restore focus");
+  }
   await page.locator("#tag-year").fill("99");
   await page.locator("#tag-isrc").fill("123");
   await page.locator("#tags-save").click();

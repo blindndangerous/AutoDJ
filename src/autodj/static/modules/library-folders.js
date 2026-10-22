@@ -144,6 +144,9 @@ export function installLibraryFolders({ document: doc = document, request = requ
   let folderSignature = null;
   let protectedGeneration = 0;
   let actionAnnouncement = 0;
+  let rescanResult = null;
+  let rescanGeneration = 0;
+  let rescanBusy = false;
   let suspended = false;
   let addError = null;
   let returnTarget = null;
@@ -446,6 +449,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   });
 
   function setPointFields(points, sources = {}) {
+    clearRescan();
     const heading = doc.getElementById("points-heading");
     if (heading) heading.textContent = "Cue points";
     const linerHelp = doc.getElementById("points-liner-help");
@@ -484,6 +488,129 @@ export function installLibraryFolders({ document: doc = document, request = requ
     for (const selector of ['[data-preview="overlap_start"]', '[data-set-current="overlap_start"]']) {
       const button = doc.querySelector(selector);
       if (button) button.disabled = negative;
+    }
+  }
+  function clearRescan(message = "") {
+    rescanGeneration += 1;
+    rescanBusy = false;
+    const rescanButton = doc.getElementById("points-rescan");
+    if (rescanButton) rescanButton.disabled = false;
+    rescanResult = null;
+    const results = doc.getElementById("points-rescan-results");
+    if (results) results.hidden = true;
+    const comparison = doc.getElementById("points-rescan-comparison");
+    if (comparison) comparison.replaceChildren();
+    const status = doc.getElementById("points-rescan-status");
+    if (status) status.textContent = message;
+  }
+  const pointLabel = (name) => `${name[0].toUpperCase()}${name.slice(1)}`;
+  function renderRescan(data, identity) {
+    const available = currentKind === "liner" ? ["start", "segue", "end"] : ["start", "intro", "outro", "segue", "end"];
+    const comparison = doc.getElementById("points-rescan-comparison");
+    const rows = [];
+    for (const name of available) {
+      const current = data.current_points?.[name] ?? null;
+      const proposed = data.points?.[name] ?? null;
+      const source = data.current_sources?.[name] || "not set";
+      const proposedSource = data.point_sources?.[name] || "not set";
+      const changed = current !== proposed;
+      const protectedValue = ["user", "imported"].includes(source);
+      const row = doc.createElement("div");
+      const label = doc.createElement("label");
+      const checkbox = doc.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.rescanField = name;
+      checkbox.checked = changed && !protectedValue;
+      checkbox.disabled = !changed;
+      label.append(checkbox, doc.createTextNode(` ${pointLabel(name)}: current ${formatPointTime(current) || "Not set"} (${source}); proposed ${formatPointTime(proposed) || "Not set"} (${proposedSource})`));
+      row.append(label);
+      if (proposed != null) {
+        const preview = doc.createElement("button");
+        preview.type = "button";
+        preview.dataset.rescanPreview = name;
+        preview.textContent = `Preview proposed ${pointLabel(name)}`;
+        row.append(preview);
+      }
+      rows.push(row);
+    }
+    comparison.replaceChildren(...rows);
+    rescanResult = identity;
+    doc.getElementById("points-rescan-results").hidden = false;
+    doc.getElementById("points-rescan-status").textContent = "Cue point suggestions are ready.";
+    doc.getElementById("points-rescan-heading").focus();
+  }
+  async function rescanPoints() {
+    if (suspended || !currentPath || saving || opening || rescanBusy) return;
+    if (savedFields !== fieldSnapshot()) {
+      doc.getElementById("points-rescan-status").textContent = "Save your cue edits before rescanning.";
+      doc.getElementById("points-save").focus();
+      return;
+    }
+    clearRescan("Scanning cue points…");
+    rescanBusy = true;
+    doc.getElementById("points-rescan").disabled = true;
+    const identity = { path: currentPath, station: currentStation, epoch: captureAuthenticatedRequestEpoch(), generation: protectedGeneration, scan: rescanGeneration };
+    const body = { path: identity.path, ...(identity.station === "default" ? {} : { station: identity.station }) };
+    let focusAfter = null;
+    try {
+      const data = await request("/api/library/points/rescan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!requestCurrent(identity.epoch, identity.generation) || identity.scan !== rescanGeneration || currentPath !== identity.path || getStation() !== identity.station) return;
+      renderRescan(data, { ...identity, token: data.token, points: data.points, point_sources: data.point_sources, current_points: data.current_points, current_sources: data.current_sources });
+    } catch (error) {
+      if (requestCurrent(identity.epoch, identity.generation) && identity.scan === rescanGeneration && currentPath === identity.path && getStation() === identity.station) {
+        const status = doc.getElementById("points-rescan-status");
+        status.textContent = `Could not rescan cue points: ${error.message}`;
+        focusAfter = doc.getElementById("points-rescan");
+      }
+    } finally {
+      if (identity.scan === rescanGeneration) {
+        rescanBusy = false;
+        const button = doc.getElementById("points-rescan");
+        button.disabled = false;
+        focusAfter?.focus();
+      }
+    }
+  }
+  async function applyRescan() {
+    const result = rescanResult;
+    if (!result || saving) return;
+    const fields = [...doc.querySelectorAll("[data-rescan-field]:checked")].map((input) => input.dataset.rescanField);
+    if (!fields.length) {
+      doc.getElementById("points-rescan-status").textContent = "Choose at least one cue point to apply.";
+      doc.querySelector("[data-rescan-field]:not(:disabled)")?.focus();
+      return;
+    }
+    if (savedFields !== fieldSnapshot()) {
+      doc.getElementById("points-rescan-status").textContent = "Save your cue edits before applying these suggestions.";
+      doc.getElementById("points-save").focus();
+      return;
+    }
+    saving = true;
+    editor.inert = true;
+    const button = doc.getElementById("points-rescan-apply");
+    let focusAfter = null;
+    button.setAttribute("aria-busy", "true");
+    doc.getElementById("points-rescan-status").textContent = "Applying cue points…";
+    try {
+      const body = { path: result.path, ...(result.station === "default" ? {} : { station: result.station }), token: result.token, fields };
+      const data = await request("/api/library/points/rescan/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!requestCurrent(result.epoch, result.generation) || currentPath !== result.path || getStation() !== result.station) return;
+      currentRecord = { ...(currentRecord || {}), ...data };
+      setPointFields(data.points || {}, data.point_sources || {});
+      renderDetails(currentRecord);
+      landmarks.refresh();
+      doc.getElementById("points-rescan-status").textContent = "Selected cue points applied.";
+      focusAfter = doc.getElementById("points-rescan");
+    } catch (error) {
+      if (requestCurrent(result.epoch, result.generation) && currentPath === result.path && getStation() === result.station) {
+        const status = doc.getElementById("points-rescan-status");
+        status.textContent = `Could not apply cue points: ${error.message}`;
+        focusAfter = doc.getElementById("points-rescan-apply");
+      }
+    } finally {
+      if (result.generation === protectedGeneration) { saving = false; editor.inert = false; }
+      button.removeAttribute("aria-busy");
+      focusAfter?.focus();
     }
   }
   function fieldSnapshot() {
@@ -679,6 +806,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     if (!path) { rememberReturn(opener); showTrackInfo(); pointSay("Choose a track first.", true); return; }
     if (path === currentPath && unsaved()) { rememberReturn(opener); showTrackInfo(); return; }
     opening = true;
+    clearRescan();
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
     let switched = false;
@@ -778,6 +906,14 @@ export function installLibraryFolders({ document: doc = document, request = requ
   doc.addEventListener("autodj:edit-points", onEditPoints);
   doc.getElementById("points-load")?.addEventListener("click", () => void openEditor(pointPath.value.trim(), currentKind));
   doc.getElementById("points-save").addEventListener("click", () => void savePoints());
+  doc.getElementById("points-rescan")?.addEventListener("click", () => void rescanPoints());
+  doc.getElementById("points-rescan-apply")?.addEventListener("click", () => void applyRescan());
+  doc.getElementById("points-rescan-discard")?.addEventListener("click", () => {
+    clearRescan("Cue point suggestions discarded.");
+    doc.getElementById("points-rescan").focus();
+  });
+  editor.addEventListener("input", (event) => { if (event.target.matches("[data-point]")) clearRescan(); });
+  allowOutro?.addEventListener("change", () => clearRescan());
   doc.querySelector('[data-point="overlap_start"]').addEventListener("input", updateNegativeOverlapHelp);
   editor.addEventListener("click", async (event) => {
     const setButton = event.target.closest("button[data-set-current]");
@@ -792,15 +928,18 @@ export function installLibraryFolders({ document: doc = document, request = requ
         const value = currentKind === "liner" && name === "overlap_start"
           ? Math.max(0, time - (parsePointTime(doc.querySelector('[data-point="start"]').value) ?? 0))
           : time;
+        clearRescan();
         doc.querySelector(`[data-point="${name}"]`).value = formatPointTime(value);
       } catch (error) { pointSay(error.message, true); }
       return;
     }
-    const button = event.target.closest("button[data-preview]");
+    const button = event.target.closest("button[data-preview], button[data-rescan-preview]");
     if (!button) return;
     try {
-      const name = button.dataset.preview;
-      let time = parsePointTime(doc.querySelector(`[data-point="${name}"]`).value);
+      const proposed = button.dataset.rescanPreview;
+      const name = proposed || button.dataset.preview;
+      let time = proposed ? rescanResult?.points?.[name] : parsePointTime(doc.querySelector(`[data-point="${name}"]`).value);
+      if (proposed && time != null && ["outro", "segue", "end"].includes(name)) time = Math.max(0, time - 2);
       if (currentKind === "liner" && name === "overlap_start") {
         if (time == null) {
           time = parsePointTime(doc.querySelector('[data-point="segue"]').value)
@@ -825,6 +964,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
   function clearProtectedData() {
     pendingFolderEdits.clear();
     suspended = true;
+    clearRescan();
     protectedGeneration += 1;
     actionAnnouncement += 1;
     if (timer != null) clearInterval(timer);
@@ -889,6 +1029,7 @@ export function installLibraryFolders({ document: doc = document, request = requ
     landmarks.refresh();
     const station = getStation();
     const changedStation = station !== currentStation;
+    if (changedStation) clearRescan();
     currentStation = station;
     const epoch = captureAuthenticatedRequestEpoch();
     const generation = protectedGeneration;
