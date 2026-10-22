@@ -1,8 +1,6 @@
-// DMCA mode: a song the server says would break a performance-complement
-// limit is queued only after the operator chooses "Queue anyway" (or "Play
-// anyway" for Play now) in the shared confirm dialog, which shows the
-// server's sentence naming the limit.  Nothing is dropped silently: the
-// caller says out loud whether the song was queued.
+// DMCA limit and upcoming voice-track conflicts are resolved in the shared
+// dialog before the same search action is retried. Nothing is dropped
+// silently: the caller says out loud whether the song was queued.
 //
 // send(confirm) makes the request; for Play now it goes through playNow, so
 // a page that has not started playing starts in the same click, the first
@@ -11,38 +9,56 @@
 // confirm-dialog.js).
 
 import { confirmAction } from "./confirm-dialog.js";
+import { chooseVoiceTrackAction, voiceTrackConflict } from "./voice-track-conflict.js";
 
 // The server's 409 for a DMCA limit names the "confirm" field.
 function isDmcaWarning(errorValue) {
   return errorValue?.status === 409 && errorValue.field === "confirm";
 }
 
-// Resolves to { value, confirmed } once the request is sent (value is what
-// send resolved to), or null when the operator chose Cancel.  A failed
-// request, first or confirmed, is thrown for the caller to report.
+// Resolves to { value, confirmed } once sent (value is what send resolved
+// to), or null when the operator cancels either choice. Other failures are
+// thrown for the caller to report.
 export async function sendWithDmcaConfirm(doc, send, { now = false, opener = null } = {}) {
-  let warning;
-  try {
-    return { value: await send(false), confirmed: false };
-  } catch (errorValue) {
-    if (!isDmcaWarning(errorValue)) throw errorValue;
-    warning = errorValue.message;
-  }
-  let value;
-  let failure = null;
-  const accepted = await confirmAction(doc, {
-    title: "Over the DMCA limit",
-    message: `${warning} ${now ? "Play it now anyway?" : "Queue it anyway?"}`,
-    confirmLabel: now ? "Play anyway" : "Queue anyway",
-    onConfirm: async () => {
-      try {
-        value = await send(true);
-      } catch (errorValue) {
-        failure = errorValue;
+  let confirmed = false;
+  let voice = {};
+  for (;;) {
+    try {
+      return { value: await send(confirmed, voice), confirmed };
+    } catch (errorValue) {
+      if (voiceTrackConflict(errorValue)) {
+        voice = await chooseVoiceTrackAction(doc, errorValue);
+        if (!voice) return null;
+        continue;
       }
-      return opener;
-    },
-  });
-  if (failure) throw failure;
-  return accepted ? { value, confirmed: true } : null;
+      if (!isDmcaWarning(errorValue) || confirmed) throw errorValue;
+
+      let value;
+      let failure = null;
+      let voiceConflict = null;
+      const accepted = await confirmAction(doc, {
+        title: "Over the DMCA limit",
+        message: `${errorValue.message} ${now ? "Play it now anyway?" : "Queue it anyway?"}`,
+        confirmLabel: now ? "Play anyway" : "Queue anyway",
+        onConfirm: async () => {
+          confirmed = true;
+          try {
+            value = await send(true, voice);
+          } catch (retryError) {
+            if (voiceTrackConflict(retryError)) voiceConflict = retryError;
+            else failure = retryError;
+          }
+          return opener;
+        },
+      });
+      if (!accepted) return null;
+      if (failure) throw failure;
+      if (voiceConflict) {
+        voice = await chooseVoiceTrackAction(doc, voiceConflict);
+        if (!voice) return null;
+        continue;
+      }
+      return { value, confirmed: true };
+    }
+  }
 }

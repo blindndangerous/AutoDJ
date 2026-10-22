@@ -11,7 +11,8 @@ only when the track starts, so the queue the listener sees stays true.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -19,6 +20,7 @@ import pytest
 
 from autodj._bridge import PlayerBridge
 from autodj.indexer import IndexEntry
+from autodj.live_queue import VoiceQueueConflict
 from autodj.mixbus import BusEvents, MixBus, RenderedTrack
 from autodj.player import Player
 from tests.unit._fakes import FakeClock
@@ -126,6 +128,99 @@ def _queue_behind_upcoming(h: Harness, entry: IndexEntry) -> None:
     assert _next_path(h.settle()) == entry.path
     h.play_next_track()
     assert h.upcoming().path == entry.path
+
+
+def _add_voice_to_current_handoff(h: Harness):
+    h.player.live_mixing = True
+    track = h.player.live_editable_handoff()
+    assert track is not None
+    voice = SimpleNamespace(
+        break_id="test-prepared-break",
+        kind="prepared",
+        source="prepared_edition",
+        keep_file=False,
+        path="voice.wav",
+    )
+    decorated = replace(track, voice_breaks=(voice,))
+    if h.player._playing_render is track:
+        h.player._playing_render = decorated
+    else:
+        with h.player._render_ahead._cond:
+            assert h.player._render_ahead._ready is track
+            h.player._render_ahead._ready = decorated
+    return decorated, voice
+
+
+def test_bridge_queue_add_requires_a_fresh_voice_choice_and_keeps_speech(harness: Harness) -> None:
+    """ADR-0015-09: the bridge holds live mutation until a revision-bound keep choice."""
+    track, voice = _add_voice_to_current_handoff(harness)
+    entry = harness.others(track.entry, track.next_entry)[-1]
+    original_queue = harness.queue_paths()
+
+    with pytest.raises(VoiceQueueConflict) as caught:
+        harness.bridge.queue_add(entry.path)
+    assert caught.value.detail["code"] == "voice_track_conflict"
+    revision = caught.value.detail["revision"]
+    assert harness.queue_paths() == original_queue
+
+    assert harness.bridge.queue_add(entry.path, voice_action="keep", voice_revision=revision)
+    decision = harness.player._live_queue_edits[id(track.entry)]
+    assert decision.voice_action == "keep"
+    (kept,) = decision.breaks
+    assert kept is not voice
+    assert (kept.source, kept.keep_file) == ("operator_keep", True)
+
+
+def test_bridge_queue_add_discards_voice_only_after_matching_choice(harness: Harness) -> None:
+    """ADR-0015-09: discard is applied only after the fresh handoff revision is supplied."""
+    track, voice = _add_voice_to_current_handoff(harness)
+    entry = harness.others(track.entry, track.next_entry)[-1]
+
+    with pytest.raises(VoiceQueueConflict) as caught:
+        harness.bridge.queue_add(entry.path)
+    revision = caught.value.detail["revision"]
+    assert harness.bridge.queue_add(entry.path, voice_action="discard", voice_revision=revision)
+    decision = harness.player._live_queue_edits[id(track.entry)]
+    assert decision.voice_action == "discard"
+    assert decision.breaks == ()
+    assert voice.source == "prepared_edition"
+
+
+def test_cancelled_bridge_queue_add_has_no_mutation_or_approval(harness: Harness) -> None:
+    """ADR-0015-09: cancel leaves the actual Player queue and prepared voice unchanged."""
+    track, _voice = _add_voice_to_current_handoff(harness)
+    entry = harness.others(track.entry, track.next_entry)[-1]
+    before = harness.queue_paths()
+
+    with pytest.raises(VoiceQueueConflict):
+        harness.bridge.queue_add(entry.path, voice_action="cancel")
+
+    assert harness.queue_paths() == before
+    assert id(track.entry) not in harness.player._live_queue_edits
+
+
+def test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice(harness: Harness) -> None:
+    """ADR-0004-09: show insertion defers rather than implicitly choosing for speech."""
+    track, _voice = _add_voice_to_current_handoff(harness)
+    entry = harness.others(track.entry, track.next_entry)[-1]
+    view = harness.bridge._queue_view()
+
+    assert harness.bridge.queue_insert_if(entry, 0, view) is False
+    assert harness.queue_paths() == []
+    assert id(track.entry) not in harness.player._live_queue_edits
+
+
+def test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice(harness: Harness) -> None:
+    """ADR-0004-09: show removal preserves the queue when there is no operator choice."""
+    track, _voice = _add_voice_to_current_handoff(harness)
+    entry = harness.others(track.entry, track.next_entry)[-1]
+    with harness.player._state.queue_lock:
+        harness.player._state.queue.append(entry)
+    view = harness.bridge._queue_view()
+
+    assert harness.bridge.queue_remove_if(0, view) is False
+    assert harness.queue_paths() == [entry.path]
+    assert id(track.entry) not in harness.player._live_queue_edits
 
 
 def test_play_now_plays_the_chosen_track_next(harness: Harness) -> None:

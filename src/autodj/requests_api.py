@@ -13,16 +13,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
+from pydantic import BaseModel, StrictStr
 
 from autodj.listener_requests import RequestDesk, request_settings
+from autodj.live_queue import VoiceQueueConflict
 from autodj.settings_bodies import PAGE_SAVED_REQUESTS, RequestSettingsBody
 from autodj.station_routes import SavedStationDep, StationDep, StationRouter, request_desk
 from autodj.stations import StationRuntime
 
 logger = logging.getLogger(__name__)
+
+
+class ListenerQueueActionBody(BaseModel):
+    """Optional operator choice for an upcoming voice-track conflict."""
+
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: StrictStr | None = None
 
 
 def taking_requests(station: StationRuntime) -> RequestDesk | None:
@@ -53,17 +62,32 @@ def _view(station: StationRuntime) -> dict[str, Any]:
     return desk.snapshot()
 
 
-async def _decide(station: StationRuntime, action: str, request_id: str) -> dict[str, Any]:
+async def _decide(
+    station: StationRuntime,
+    action: str,
+    request_id: str,
+    body: ListenerQueueActionBody | None = None,
+) -> dict[str, Any]:
     desk = _desk(station)
-    call = {"approve": desk.approve, "reject": desk.reject, "play-next": desk.play_next}[action]
     try:
-        request = await asyncio.to_thread(call, request_id)
+        if action in {"approve", "play-next"}:
+            call = desk.approve if action == "approve" else desk.play_next
+            request = await asyncio.to_thread(
+                call,
+                request_id,
+                voice_action=body.voice_action if body else None,
+                voice_revision=body.voice_revision if body else None,
+            )
+        else:
+            request = await asyncio.to_thread(desk.reject, request_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="No such request is waiting") from None
     except LookupError as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except VoiceQueueConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
     return {"request": request.public(), **await asyncio.to_thread(desk.snapshot)}
 
 
@@ -127,14 +151,22 @@ def install_requests(router: StationRouter) -> None:
         return await asyncio.to_thread(_view, station)
 
     @router.post("/requests/{request_id}/approve")
-    async def approve_request(station: StationDep, request_id: str) -> dict[str, Any]:
+    async def approve_request(
+        station: StationDep,
+        request_id: str,
+        body: ListenerQueueActionBody | None = None,
+    ) -> dict[str, Any]:
         """Queue a waiting request where it fits best; 409 says which rule stops it."""
-        return await _decide(station, "approve", request_id)
+        return await _decide(station, "approve", request_id, body)
 
     @router.post("/requests/{request_id}/play-next")
-    async def play_request_next(station: StationDep, request_id: str) -> dict[str, Any]:
+    async def play_request_next(
+        station: StationDep,
+        request_id: str,
+        body: ListenerQueueActionBody | None = None,
+    ) -> dict[str, Any]:
         """Queue a waiting request first; DMCA and clockwheel limits still hold."""
-        return await _decide(station, "play-next", request_id)
+        return await _decide(station, "play-next", request_id, body)
 
     @router.post("/requests/{request_id}/reject")
     async def reject_request(station: StationDep, request_id: str) -> dict[str, Any]:

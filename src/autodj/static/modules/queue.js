@@ -14,6 +14,7 @@ import {
   staleActionText,
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
+import { sendWithVoiceTrackConflict, voiceTrackConflict } from "./voice-track-conflict.js";
 
 let _lastKey = "";
 let _renderGeneration = 0;
@@ -231,6 +232,12 @@ export function installQueueClear({ queueList, queueAnnounce, queueClear, queueC
     const plural = count === 1 ? "track" : "tracks";
     const epoch = captureAuthenticatedRequestEpoch();
     let result = null;
+    let voiceConflict = null;
+    const clear = (voice = {}) => requestJson("/api/queue/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: [], ...voice }),
+    });
     // Cleared while the confirmation is still open, so focus comes back
     // to the button with the list already empty (see confirmAction).  The
     // result is said after the dialog has closed.
@@ -240,24 +247,36 @@ export function installQueueClear({ queueList, queueAnnounce, queueClear, queueC
       confirmLabel: "Clear queue",
       onConfirm: async () => {
         try {
-          await requestJson("/api/queue/reorder", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ paths: [] }),
-          });
+          await clear();
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
           _lastKey = _queueKey([]);
           renderQueue([], { queueList, queueCount });
           result = [`Cleared the queue.  Removed ${count} ${plural}.`, { dwellMs: 3000, force: true }];
         } catch (errorValue) {
           if (!isAuthenticatedRequestCurrent(epoch)) return null;
-          result = [`Could not clear the queue: ${errorValue.message}`,
+          if (voiceTrackConflict(errorValue)) voiceConflict = errorValue;
+          else result = [`Could not clear the queue: ${errorValue.message}`,
             { dwellMs: 6000, force: true, tone: "error" }];
         }
         return queueClear;
       },
     });
     queueClear.focus();
+    if (confirmed && voiceConflict && isAuthenticatedRequestCurrent(epoch)) {
+      try {
+        const sent = await sendWithVoiceTrackConflict(doc, clear, voiceConflict);
+        if (!sent) result = ["Queue clear canceled.", { dwellMs: 3000, force: true }];
+        else {
+          _lastKey = _queueKey([]);
+          renderQueue([], { queueList, queueCount });
+          result = [`Cleared the queue.  Removed ${count} ${plural}.`, { dwellMs: 3000, force: true }];
+        }
+      } catch (errorValue) {
+        result = [`Could not clear the queue: ${errorValue.message}`,
+          { dwellMs: 6000, force: true, tone: "error" }];
+      }
+      queueClear.focus();
+    }
     if (confirmed && result && isAuthenticatedRequestCurrent(epoch)) {
       announceStatus(queueAnnounce, ...result);
     }
@@ -369,23 +388,32 @@ export function installQueueButtons(els) {
 
     try {
       const duplicateRemoval = action === "remove" && paths.indexOf(path) !== idx;
-      await requestJson(
-        action === "remove" && !duplicateRemoval ? "/api/queue/remove" : "/api/queue/reorder",
-        {
+      const url = action === "remove" && !duplicateRemoval ? "/api/queue/remove" : "/api/queue/reorder";
+      const body = action === "remove" && !duplicateRemoval
+        ? { path, position: idx }
+        : { paths: newPaths, from_paths: paths, order: newQueue.map((item) => snapshot.indexOf(item)) };
+      const sent = await sendWithVoiceTrackConflict(queueList.ownerDocument, (voice) => requestJson(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // The place in the queue as shown, so the server moves or removes
         // that very entry, not another of the same file (a show's copy, #106).
-        body: JSON.stringify(action === "remove" && !duplicateRemoval
-          ? { path, position: idx }
-          : { paths: newPaths, from_paths: paths, order: newQueue.map((item) => snapshot.indexOf(item)) }),
-        },
-      );
+        body: JSON.stringify({ ...body, ...voice }),
+      }));
       if (!isAuthenticatedRequestCurrent(epoch)) return;
-      ownsRenderedQueue = _renderGeneration === optimisticGeneration;
-      // force: a second "Move up" on the same track is a second action,
-      // and silence would read as the button not working.
-      announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
+      if (!sent) {
+        if (_renderGeneration === optimisticGeneration) {
+          renderQueue(snapshot, els);
+          _lastKey = _queueKey(snapshot);
+          focusIndex = idx;
+          focusAction = action;
+        } else ownsRenderedQueue = false;
+        announceStatus(queueAnnounce, "Queue change canceled.", { dwellMs: 3000, force: true });
+      } else {
+        ownsRenderedQueue = _renderGeneration === optimisticGeneration;
+        // force: a second "Move up" on the same track is a second action,
+        // and silence would read as the button not working.
+        announceStatus(queueAnnounce, announceMsg, { dwellMs: 3000, force: true });
+      }
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;
       // Answered after a station switch: the queue on screen is the new

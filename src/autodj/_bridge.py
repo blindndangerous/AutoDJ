@@ -18,8 +18,9 @@ import os
 import secrets
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -1603,6 +1604,39 @@ class PlayerBridge(LibraryAccess):
         if self._bus_mode():
             self.player.refresh_render_ahead()
 
+    @contextmanager
+    def _queue_mutation_lock(self) -> Iterator[bool]:
+        """Hold the live bus boundary, when present, then the queue lock."""
+        state = self.player._state
+        if getattr(self.player, "live_mixing", False):
+            with self.player.live_queue_guard(), state.queue_lock:
+                yield True
+        else:
+            with state.queue_lock:
+                yield False
+
+    def _plan_live_queue_edit(
+        self,
+        queued_next: Any,
+        queue: list[Any],
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> Any:
+        from autodj.live_queue import plan_queue_edit
+
+        return plan_queue_edit(
+            self.player,
+            queued_next,
+            queue,
+            voice_action=voice_action,
+            voice_revision=voice_revision,
+        )
+
+    def _accept_live_queue_edit(self, decision: Any) -> None:
+        if decision is not None:
+            self.player.accept_live_queue_edit(decision)
+
     def _capture_pre_queue_seed(self) -> None:
         """Capture the currently playing track as the pre-queue seed.
 
@@ -1655,7 +1689,14 @@ class PlayerBridge(LibraryAccess):
         except Exception:  # pragma: no cover -- defensive log-only path
             logger.debug("_sync_next_for_prefetch: _pick_next failed", exc_info=True)
 
-    def play_next(self, path: str, now: bool = False) -> bool:
+    def play_next(
+        self,
+        path: str,
+        now: bool = False,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> bool:
         """Queue a track by path to play after the current one.
 
         Args:
@@ -1670,9 +1711,18 @@ class PlayerBridge(LibraryAccess):
         entry = self.entry_for_path(path)
         if entry is None:
             return False
-        return self.play_next_entry(entry, now)
+        return self.play_next_entry(
+            entry, now, voice_action=voice_action, voice_revision=voice_revision
+        )
 
-    def play_next_entry(self, entry: IndexEntry, now: bool = False) -> bool:
+    def play_next_entry(
+        self,
+        entry: IndexEntry,
+        now: bool = False,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> bool:
         """Queue this exact owned occurrence, preserving prepared-edition identity."""
         if now and (self.stream_mode or self._bus_mode()):
             # Play now on the mix bus: render *entry* from its start and fade
@@ -1691,11 +1741,23 @@ class PlayerBridge(LibraryAccess):
             else:
                 play()
             return True
-        with self.player._state.queue_lock:
+        with self._queue_mutation_lock() as live:
+            state = self.player._state
+            decision = (
+                self._plan_live_queue_edit(
+                    entry,
+                    list(state.queue),
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
+                if live
+                else None
+            )
             self._capture_pre_queue_seed()
-            self.player._state.queued_next = entry
+            state.queued_next = entry
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
+            self._accept_live_queue_edit(decision)
         if now:
             self.skip()
         return True
@@ -1798,16 +1860,34 @@ class PlayerBridge(LibraryAccess):
                 records, when = self.history_ahead(queue, 0, entry)
         return complement(records, when, player._track_keys()).broken(entry)
 
-    def queue_add(self, path: str) -> bool:
+    def queue_add(
+        self,
+        path: str,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> bool:
         """Append a track by path to the end of the user queue."""
         entry = self.entry_for_path(path)
         if entry is None:
             return False
-        with self.player._state.queue_lock:
+        with self._queue_mutation_lock() as live:
+            state = self.player._state
+            decision = (
+                self._plan_live_queue_edit(
+                    state.queued_next,
+                    [*state.queue, entry],
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
+                if live
+                else None
+            )
             self._capture_pre_queue_seed()
-            self.player._state.queue.append(entry)
+            state.queue.append(entry)
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
+            self._accept_live_queue_edit(decision)
         return True
 
     def _queue_view(self) -> QueueView:
@@ -2054,6 +2134,8 @@ class PlayerBridge(LibraryAccess):
         choose: Callable[..., RequestSlot | RequestInsert | None],
         *,
         with_view: bool = False,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
     ) -> RequestSlot | None:
         """Work out *entry*'s places, let *choose* pick one, and queue it there.
 
@@ -2081,16 +2163,27 @@ class PlayerBridge(LibraryAccess):
                 return None
             plan = selected if isinstance(selected, RequestInsert) else RequestInsert(selected)
             slot = plan.slot
-            with state.queue_lock:
+            with self._queue_mutation_lock() as live:
                 if self._queue_view_unlocked() != view:
                     continue
-                self._capture_pre_queue_seed()
                 position = min(slot.position, len(state.queue))
                 # Each queued item is its own copy, so the request's marks and
                 # bridges belong to it alone, never to a same-path song the
                 # operator queued.
                 request = copy.copy(entry)
                 bridges = [copy.copy(song) for song in plan.bridges]
+                proposed = [*state.queue[:position], *bridges, request, *state.queue[position:]]
+                decision = (
+                    self._plan_live_queue_edit(
+                        state.queued_next,
+                        proposed,
+                        voice_action=voice_action,
+                        voice_revision=voice_revision,
+                    )
+                    if live
+                    else None
+                )
+                self._capture_pre_queue_seed()
                 state.queue[position:position] = [*bridges, request]
                 bridge_of = attached(self.player, "_request_bridge_of", create=True)
                 marks = attached(self.player, "_request_clock_steps", create=True)
@@ -2104,6 +2197,7 @@ class PlayerBridge(LibraryAccess):
                         marks[song] = next_cursor
                 self._refresh_bus_queue()
                 self._sync_next_for_prefetch()
+                self._accept_live_queue_edit(decision)
                 return slot
         raise QueueChanged("The queue kept changing while the request was being placed.")
 
@@ -2169,27 +2263,46 @@ class PlayerBridge(LibraryAccess):
         ``False`` says the queue changed meanwhile.
         """
         state = self.player._state
-        with state.queue_lock:
-            if self._queue_view_unlocked() != view:
-                return False
-            self._capture_pre_queue_seed()
-            state.queue.insert(max(0, min(position, len(state.queue))), entry)
-            self._refresh_bus_queue()
-            self._sync_next_for_prefetch()
+        from autodj.live_queue import VoiceQueueConflict
+
+        try:
+            with self._queue_mutation_lock() as live:
+                if self._queue_view_unlocked() != view:
+                    return False
+                place = max(0, min(position, len(state.queue)))
+                proposed = [*state.queue[:place], entry, *state.queue[place:]]
+                decision = self._plan_live_queue_edit(state.queued_next, proposed) if live else None
+                self._capture_pre_queue_seed()
+                state.queue.insert(place, entry)
+                self._refresh_bus_queue()
+                self._sync_next_for_prefetch()
+                self._accept_live_queue_edit(decision)
+        except VoiceQueueConflict:
+            # This internal show feed has no operator choice; leave the queue untouched.
+            return False
         return True
 
     def queue_remove_if(self, position: int, view: QueueView) -> bool:
         """Remove the user queue's item at *position* if the queue still matches *view*."""
         state = self.player._state
-        with state.queue_lock:
-            if self._queue_view_unlocked() != view or not 0 <= position < len(state.queue):
-                return False
-            del state.queue[position]
-            self._forget_queue_marks()
-            if not state.queue and state.queued_next is None:
-                state.pre_queue_seed = None
-            self._refresh_bus_queue()
-            self._sync_next_for_prefetch()
+        from autodj.live_queue import VoiceQueueConflict
+
+        try:
+            with self._queue_mutation_lock() as live:
+                if self._queue_view_unlocked() != view or not 0 <= position < len(state.queue):
+                    return False
+                proposed = [*state.queue[:position], *state.queue[position + 1 :]]
+                decision = self._plan_live_queue_edit(state.queued_next, proposed) if live else None
+                del state.queue[position]
+                self._forget_queue_marks()
+                if not state.queue and state.queued_next is None:
+                    state.pre_queue_seed = None
+                self._refresh_bus_queue()
+                self._sync_next_for_prefetch()
+                self._accept_live_queue_edit(decision)
+        except VoiceQueueConflict:
+            # Internal show cleanup has no operator choice; keep its entry queued for retry.
+            return False
         return True
 
     def _queue_snapshot(self) -> list[IndexEntry]:
@@ -2202,7 +2315,14 @@ class PlayerBridge(LibraryAccess):
         check = self.show_entry
         return bool(check is not None and check(entry))
 
-    def queue_remove(self, path: str, position: int | None = None) -> bool:
+    def queue_remove(
+        self,
+        path: str,
+        position: int | None = None,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> bool:
         """Remove one queued *path*: the one at *position* when it is there, else the first.
 
         *position* is the entry's place in the queue as the page showed it;
@@ -2211,7 +2331,7 @@ class PlayerBridge(LibraryAccess):
         passing over a show's own copy (#106) when another entry has the path.
         """
         state = self.player._state
-        with state.queue_lock:
+        with self._queue_mutation_lock() as live:
             q = state.queue
             if position is not None and 0 <= position < len(q) and q[position].path == path:
                 index: int | None = position
@@ -2221,34 +2341,74 @@ class PlayerBridge(LibraryAccess):
                 if not found:
                     return False
                 index = (others or found)[0]
-            removed = q.pop(index)
+            removed = q[index]
             # A listener request takes its own bridges with it, by
             # identity: a same-path song queued separately stays.
             bridge_of = attached(self.player, "_request_bridge_of")
-            q[:] = [song for song in q if bridge_of.get(song) is not removed]
+            proposed = [
+                song
+                for i, song in enumerate(q)
+                if i != index and bridge_of.get(song) is not removed
+            ]
+            decision = (
+                self._plan_live_queue_edit(
+                    state.queued_next,
+                    proposed,
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
+                if live
+                else None
+            )
+            q[:] = proposed
             self._forget_queue_marks()
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
+            self._accept_live_queue_edit(decision)
             return True
 
-    def requeue_play_next(self, position: int) -> bool:
+    def requeue_play_next(
+        self,
+        position: int,
+        *,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
+    ) -> bool:
         """Move a waiting "play next" song into the user queue at *position*; whether one moved.
 
         A show that starts at once in browser playback (#106) plays its first
         song first and the operator's "play next" song right after it.
         """
         state = self.player._state
-        with state.queue_lock:
-            waiting = state.queued_next
-            if waiting is None:
-                return False
-            state.queued_next = None
-            queue = state.queue
-            queue.insert(max(0, min(position, len(queue))), waiting)
-            self._refresh_bus_queue()
-            self._sync_next_for_prefetch()
+        from autodj.live_queue import VoiceQueueConflict
+
+        try:
+            with self._queue_mutation_lock() as live:
+                waiting = state.queued_next
+                if waiting is None:
+                    return False
+                place = max(0, min(position, len(state.queue)))
+                proposed = [*state.queue[:place], waiting, *state.queue[place:]]
+                decision = (
+                    self._plan_live_queue_edit(
+                        None,
+                        proposed,
+                        voice_action=voice_action,
+                        voice_revision=voice_revision,
+                    )
+                    if live
+                    else None
+                )
+                state.queued_next = None
+                state.queue.insert(place, waiting)
+                self._refresh_bus_queue()
+                self._sync_next_for_prefetch()
+                self._accept_live_queue_edit(decision)
+        except VoiceQueueConflict:
+            # Internal show startup has no operator choice; leave the queue intact.
+            return False
         return True
 
     def queue_reorder(
@@ -2257,6 +2417,8 @@ class PlayerBridge(LibraryAccess):
         *,
         from_paths: list[str] | None = None,
         order: list[int] | None = None,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
     ) -> bool:
         """Reorder the queue to match the given list of paths.
 
@@ -2278,7 +2440,7 @@ class PlayerBridge(LibraryAccess):
         # server-audio thread could pop the head between the read and the
         # write, and the write would put the popped entry back so it played
         # twice.
-        with state.queue_lock:
+        with self._queue_mutation_lock() as live:
             q = state.queue
             if (
                 from_paths is not None
@@ -2312,16 +2474,28 @@ class PlayerBridge(LibraryAccess):
             # One write, so a reader never sees a half-built queue.
             kept = {id(entry) for entry in ordered}
             bridge_of = attached(self.player, "_request_bridge_of")
-            q[:] = [
+            proposed = [
                 entry
                 for entry in ordered
                 if (request := bridge_of.get(entry)) is None or id(request) in kept
             ]
+            decision = (
+                self._plan_live_queue_edit(
+                    state.queued_next,
+                    proposed,
+                    voice_action=voice_action,
+                    voice_revision=voice_revision,
+                )
+                if live
+                else None
+            )
+            q[:] = proposed
             self._forget_queue_marks()
             if not q and state.queued_next is None:
                 state.pre_queue_seed = None
             self._refresh_bus_queue()
             self._sync_next_for_prefetch()
+            self._accept_live_queue_edit(decision)
         return True
 
     # ------------------------------------------------------------------

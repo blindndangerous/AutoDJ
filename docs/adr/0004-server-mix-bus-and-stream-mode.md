@@ -81,6 +81,33 @@ formats, continuous/idle policy, and public addresses are defined by
 [stream operations](../operations.md#radio-stream-sonos-vlc-and-other-players).
 The 2026-10-11 removal of keyed links above remains applicable.
 
+## Amendment, 2026-10-22: progressive live mixing and queue edits
+
+[Issue #519](https://github.com/blindndangerous/AutoDJ/issues/519) adds live
+stream mixing alongside the existing offline/local `RenderAhead` policy. Each
+live decoder progressively fills a backpressured cushion capped at two seconds.
+The mix bus layers live sources on its sample clock; decoder calibration,
+metadata work and bounded transition-effect windows stay with background workers.
+This is a buffering and ownership bound, not a zero-gap or hardware timing
+guarantee.
+
+Queue-edit preflight projects the current editable handoff, the render-ahead
+ready handoff, and any affected pinned slot plan. One revision-bound choice
+covers the voice contexts affected by that queue replan. If an edit replaces
+music named by the live handoff, the bus holds its boundary until the replacement
+is ready; it does not fall back to the displaced incoming song. If a voice or
+liner chain has already started, its original timing and layers remain in place
+while the unheard incoming music is replaced at the original boundary, so speech
+does not repeat. If a needed source is unavailable, the bus emits silence while
+holding programme position. These live-path rules do not alter the established
+offline/local soft-refresh fallback, and they do not guarantee zero gaps. Future
+points in Hour Preview remain predictions, not booked or committed playout.
+
+Implementation: [live audio](../../src/autodj/live_audio.py),
+[stream decoder](../../src/autodj/stream_decode.py),
+[live transitions](../../src/autodj/live_transitions.py), and
+[live queue planning](../../src/autodj/live_queue.py).
+
 Current boundaries: server audio is stereo float32 at 44.1 kHz; expensive decode,
 beat matching, and track preparation happen outside the bus callback. The
 existing render-ahead soft-refresh path keeps a usable fallback while replacing
@@ -123,12 +150,15 @@ or evidence limits. Narrative above retains rationale and scope.
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
 | `ADR-0004-01` | Paused server playout emits silence while holding track position. | automated | `tests/unit/test_mixbus.py::test_pause_emits_silence_and_holds_position` |
-| `ADR-0004-02` | A soft refresh keeps the stale prepared track usable until its replacement is ready. | automated | `tests/unit/test_render_ahead.py::test_stale_ready_track_stays_available_until_replaced` |
+| `ADR-0004-02` | Offline/local `RenderAhead` soft refresh keeps the stale prepared track usable until its replacement is ready. | automated | `tests/unit/test_render_ahead.py::test_stale_ready_track_stays_available_until_replaced` |
 | `ADR-0004-03` | A slow stream listener is dropped without preventing other listeners receiving audio. | automated | `tests/unit/test_stream_output.py::test_slow_listener_is_dropped_others_continue` |
 | `ADR-0004-04` | Sound-card volume and mute are applied at the device output. | automated | `tests/unit/test_sound_output.py::test_volume_and_mute_are_applied` |
 | `ADR-0004-05` | Server-mode live input can air and hand control back to automated playout. | automated | `tests/integration/test_live_source.py::test_a_source_is_decoded_goes_on_the_air_and_hands_back` |
 | `ADR-0004-06` | Continuity under actual multi-station load requires measured soak evidence. | manual | Run the documented station soak test on the target hardware; report underruns and limits rather than promising hard real-time behavior. |
 | `ADR-0004-07` | Automatic saved-point liners use the shared queued-liner cue timing independently of the legacy talk-up flag. | automated | `tests/unit/test_station_liner_cadence.py::test_automatic_liners_use_saved_cues_without_talk_up` |
+| `ADR-0004-08` | Live decoders progressively fill a backpressured two-second PCM cushion. | automated | `tests/unit/test_stream_decode.py::test_progressive_decoder_backpressures_and_preserves_every_frame` |
+| `ADR-0004-09` | Live layers follow the bus sample clock; preflight covers current, ready and affected pinned slot handoffs; edits hold the boundary without repeating started speech or airing displaced music; internal edits defer without an operator choice. | automated | `tests/unit/test_live_mixbus.py::test_pending_live_layer_holds_cursor_and_does_not_consume_ready_companion`; `tests/unit/test_live_mixbus.py::test_held_handoff_never_airs_displaced_incoming_and_atomic_replace_airs_new`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_live_queue_replan.py::test_after_incoming_is_audible_edit_targets_render_ahead_handoff`; `tests/unit/test_live_queue_replan.py::test_concurrent_queue_revision_does_not_install_stale_replacement`; `tests/unit/test_live_queue_replan.py::test_failed_replacement_leaves_boundary_held`; `tests/unit/test_live_queue.py::test_pinned_slot_plan_breaks_and_intro_are_included_in_atomic_choice`; `tests/unit/test_live_queue.py::test_removed_pinned_ending_prompts_and_transfers_speech_to_replacement`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice` |
+| `ADR-0004-10` | Live transition effects use bounded windows and worker dispatch; future live queue and show points remain estimates. | automated | `tests/unit/test_live_transitions.py::test_live_transition_mixes_only_bounded_tail`; `tests/unit/test_live_transitions.py::test_player_dispatches_live_non_saved_render_without_decoding_whole_track`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
 
 ## Related proposal — 2026-10-17
 

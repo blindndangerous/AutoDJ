@@ -511,6 +511,28 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert later["counts_text"].endswith("through 13:10:31.")
 
 
+def test_live_mixing_keeps_future_queue_and_show_as_estimates(tmp_path: Path) -> None:
+    """ADR-0004-10: future live queue/show points stay predictions, not commitments."""
+    source, power, gold = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    _playing(source, gold[0], NOW - 50)
+    player._state.queue.extend([power[3], power[4]])
+    decided = read_station(player, now=NOW, show=("Scheduled show", [gold[5]]))
+    view = build_preview(source, 60, now=NOW, decided=decided)
+    items = view["items"]
+
+    assert items[0]["status"] == "on_air" and items[0]["fixed"]
+    planned = [item for item in items if item["path"] in {
+        str(power[3].path), str(power[4].path), str(gold[5].path)
+    }]
+    assert [item["path"] for item in planned] == [
+        str(power[3].path), str(power[4].path), str(gold[5].path)
+    ]
+    assert all(item["status"] == "predicted" and not item["fixed"] for item in planned)
+    assert view["counts"]["fixed"] == 1
+
+
 def test_the_summary_skips_a_plain_top_of_the_hour(tmp_path: Path) -> None:
     source, _power, gold = _station(
         tmp_path,
@@ -802,6 +824,41 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(
     ]
     # Step 3 of the clockwheel (Gold) follows the open change's place.
     assert view["items"][9]["title"].startswith("Gold ")
+
+    player.live_mixing = True
+    live_view = build_preview(source, 30, desk=desk, now=NOW, decided=decided)
+    live_rows = live_view["items"][: len(decided.items)]
+    assert live_rows[0]["status"] == "on_air" and live_rows[0]["fixed"]
+    assert [row["path"] for row in live_rows] == [
+        str(item.entry.path) if item.entry is not None else None for item in decided.items
+    ]
+    assert [row["status"] for row in live_rows] == [
+        "on_air", "predicted", "predicted", "predicted", "predicted",
+        "predicted", "predicted", "predicted", "predicted",
+    ]
+    assert live_view["counts"]["fixed"] == 1
+    overlapping = replace(
+        decided,
+        items=tuple(
+            replace(item, starts=NOW - 1)
+            if item.kind == "song" and item.status == "ready"
+            else item
+            for item in decided.items
+        ),
+    )
+    overlap_view = build_preview(source, 30, desk=desk, now=NOW, decided=overlapping)
+    overlap_row = next(row for row in overlap_view["items"] if row["path"] == str(gold[1].path))
+    assert overlap_row["status"] == "predicted" and not overlap_row["fixed"]
+
+    # A wall-clock estimate can pass while the bus is still held on an
+    # underrun; only the mix bus's heard-next signal fixes the overlap.
+    player._heard_next_entry = True
+    heard = read_station(player, desk, now=NOW)
+    heard_view = build_preview(source, 30, desk=desk, now=NOW, decided=heard)
+    heard_row = next(row for row in heard_view["items"] if row["path"] == str(gold[1].path))
+    assert heard_row["status"] == "on_air" and heard_row["fixed"]
+    player._heard_next_entry = False
+    player.live_mixing = False
 
     # A customized frozen slot order must be the same in the fixed rows and
     # in the audio-review handoff, without asking the live chooser again.
