@@ -915,14 +915,6 @@ class Player:
         self._settings._bpm_range = value
 
     @property
-    def _pure_shuffle(self) -> bool:
-        return self._settings._pure_shuffle
-
-    @_pure_shuffle.setter
-    def _pure_shuffle(self, value: bool) -> None:
-        self._settings._pure_shuffle = value
-
-    @property
     def _anchor_to_seed(self) -> bool:
         return self._settings._anchor_to_seed
 
@@ -5539,7 +5531,7 @@ class Player:
 
     def _choose_by_mode(self, current: IndexEntry, context: _PickContext) -> tuple[IndexEntry, str]:
         """Pick by pure shuffle, discovery or similarity (see :meth:`_choose_next`)."""
-        if self._pure_shuffle or self._cfg.playback.pick_mode in {"random", "least_recent"}:
+        if self._cfg.playback.pick_mode in {"random", "least_recent"}:
             mode = (
                 "least_recent" if self._cfg.playback.pick_mode == "least_recent" else "pure_shuffle"
             )

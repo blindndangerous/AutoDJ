@@ -2646,7 +2646,7 @@ class TestSettingsEndpoints:
         )
         assert bridge.player._cfg.playback.crossfade_seconds == 5.5
         assert bridge.player._cfg.playback.crossfade_eq_duck is True
-        assert bridge.player._pure_shuffle is True
+        assert bridge.player._cfg.playback.pick_mode == "random"
         assert bridge.player._cfg.replaygain.enabled is True
 
     def test_post_playback_settings_transition_mode(self, bridge, tmp_path) -> None:
@@ -2715,7 +2715,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"pure_shuffle": True})
-        assert bridge.player._pure_shuffle is True
+        assert bridge.player._cfg.playback.pick_mode == "random"
 
     def test_post_playback_show_lyrics_false_clears_buffer(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
