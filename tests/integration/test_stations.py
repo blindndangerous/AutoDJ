@@ -16,8 +16,14 @@ from autodj._bridge import PlayerBridge
 from autodj.breaks import BreakDesk, new_id
 from autodj.carts import CartStore
 from autodj.config import AutoDJConfig, load_config
-from autodj.server import create_app
-from autodj.stations import SharedLibrary, StationPaths, StationRegistry, StationRuntime
+from autodj.stations import (
+    ExtraStation,
+    SharedLibrary,
+    StationPaths,
+    StationRegistry,
+    StationRuntime,
+)
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
@@ -191,7 +197,16 @@ def _rig(
     library: Any = SimpleNamespace(
         start_scan=lambda: None, tick=lambda: None, close=lambda: log.append("library closed")
     )
-    registry = StationRegistry(runtime)
+    registry = StationRegistry(
+        ExtraStation(
+            slug="default",
+            name=runtime.name,
+            autostart=True,
+            paths=runtime.paths,
+            preset="included",
+            build=lambda _registry: runtime,
+        )
+    )
     return runtime, registry, SharedLibrary(library, registry), bridge
 
 
@@ -210,7 +225,7 @@ async def test_station_start_sweeps_old_break_files_before_starting_services(
         assert not leftover.exists()
 
     runtime.schedule.start = start_schedule
-    await runtime.start()
+    await registry.start_all()
     assert not leftover.exists()
     await registry.shutdown(shared, 1.0)
 
@@ -220,7 +235,7 @@ async def test_shutdown_keeps_the_order_of_the_single_station_server(
 ) -> None:
     log: list[str] = []
     runtime, registry, shared, bridge = _rig(tmp_path, monkeypatch, log)
-    await runtime.start()
+    await registry.start_all()
     await shared.start()
     assert bridge.scheduler_track_changed is not None
 
@@ -252,9 +267,9 @@ async def test_a_busy_writer_leaves_the_cache_open_but_still_closes_the_rest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     log: list[str] = []
-    runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
+    _runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
     monkeypatch.setattr(_Player, "_quiet", False)
-    await runtime.start()
+    await registry.start_all()
     await shared.start()
 
     assert await registry.shutdown(shared, 0.0) == (False, False)
@@ -268,8 +283,8 @@ async def test_a_reader_still_running_keeps_the_library_open(
 ) -> None:
     """An hour preview that did not stop must not have the library closed under it (#126)."""
     log: list[str] = []
-    runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
-    await runtime.start()
+    _runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
+    await registry.start_all()
     await shared.start()
 
     assert await registry.shutdown(shared, 1.0, readers_stopped=False) == (True, True)

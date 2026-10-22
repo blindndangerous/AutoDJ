@@ -27,8 +27,8 @@ from autodj.live import LiveDesk, PcmBuffer
 from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.live_routes import SourceEndpoint
 from autodj.playlog import plays_between, plays_csv, soundexchange_report
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 PASSWORD = "correct horse battery"
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")

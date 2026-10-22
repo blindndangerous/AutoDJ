@@ -3,8 +3,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from tests._layout import point_index
+from tests._server import create_app
 from tests.integration._helpers import _make_player_mock, _make_sim_mock
 from tests.integration.test_multi_station import rig  # noqa: F401
 

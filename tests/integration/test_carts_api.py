@@ -19,9 +19,10 @@ from fastapi.testclient import TestClient
 
 from autodj.carts import CartError, CartSlot, StationCarts, install_carts
 from autodj.scheduler import Action
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.station_routes import StationRouter, current_station, editable_station
 from tests._layout import layout_index, point_index
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 
