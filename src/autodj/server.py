@@ -693,6 +693,20 @@ class SongPointsBody(BaseModel):
     station: str = DEFAULT_SLUG
 
 
+class CueRescanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    station: str = DEFAULT_SLUG
+
+
+class CueRescanApplyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    station: str = DEFAULT_SLUG
+    token: str
+    fields: list[str]
+
+
 class PairBody(BaseModel):
     """Short-lived code and operator-visible name for one browser."""
 
@@ -1112,6 +1126,12 @@ def create_app(
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            cue_rescan = getattr(app.state, "cue_rescan", None)
+            if cue_rescan is not None and not await asyncio.to_thread(
+                cue_rescan.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error("A cue rescan is still reading; the library remains open")
             review_jobs = getattr(app.state, "review_jobs", None)
             if review_jobs is not None and not await asyncio.to_thread(
                 review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
@@ -1159,6 +1179,9 @@ def create_app(
     )
     app.state.listener_access = listener_access
     app.state.stations = stations
+    from autodj.cue_rescan import CueRescan
+
+    app.state.cue_rescan = CueRescan()
 
     from autodj.speech_api import SPEECH_BODY_LIMIT, WRITE_ROUTES, install_speech
 
@@ -1270,6 +1293,8 @@ def create_app(
         "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/points/rescan": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/points/rescan/apply": lambda: SMALL_BODY_MAX_BYTES,
         "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
@@ -2551,6 +2576,50 @@ def create_app(
         record = await asyncio.to_thread(library.catalog.record_for_path, body.path)
         record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
         return record
+
+    @app.post("/api/library/points/rescan")
+    async def api_library_points_rescan(body: CueRescanBody) -> dict:
+        station = library_station(body.station)
+        library = _catalog_library()
+        if await asyncio.to_thread(library.entry_for_path, body.path) is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        try:
+            return await asyncio.to_thread(
+                app.state.cue_rescan.scan, library.catalog, body.path, station
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Recording not in library") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail="Recording is no longer available") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/library/points/rescan/apply")
+    async def api_library_points_rescan_apply(body: CueRescanApplyBody) -> dict:
+        station = library_station(body.station)
+        library = _catalog_library()
+        if await asyncio.to_thread(library.entry_for_path, body.path) is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        cue_rescan = getattr(app.state, "cue_rescan", None)
+        if cue_rescan is None:
+            raise HTTPException(status_code=409, detail="Scan expired; scan the cues again")
+        try:
+            await asyncio.to_thread(
+                cue_rescan.apply, library.catalog, body.path, station, body.token, body.fields
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Recording not in library") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=409, detail="Recording or lyrics changed; scan again"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _track_info(library, body.path, station)
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:

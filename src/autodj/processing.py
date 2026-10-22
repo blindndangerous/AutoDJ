@@ -645,7 +645,11 @@ def analyze_basic(
     if audio is None:
         audio = load_for_analysis(source)
     if isinstance(audio, TrackWindows):
-        length, energy, found = audio.seconds, audio.energy, _window_points(audio, kind)
+        length, energy, found = (
+            audio.seconds,
+            audio.energy,
+            _window_points(audio, kind),
+        )
     else:
         length = len(audio) / SAMPLE_RATE
         mono = audio.mean(axis=1)
@@ -705,8 +709,9 @@ def _whole_points(audio: np.ndarray, mono: np.ndarray, kind: str) -> _Found:
     from autodj.dj_meta import detect_intro_outro, detect_intro_start
 
     start = detect_intro_start(audio, SAMPLE_RATE)
-    detected_intro, detected_outro = detect_intro_outro(_padded(mono), SAMPLE_RATE)
     last = _audible_end(audio)
+    analysis_mono = mono[:last] if last is not None else mono
+    detected_intro, detected_outro = detect_intro_outro(_padded(analysis_mono), SAMPLE_RATE)
     end = last / SAMPLE_RATE if last is not None else 0.0
     segue: float | None
     if kind == "liner":
@@ -714,7 +719,7 @@ def _whole_points(audio: np.ndarray, mono: np.ndarray, kind: str) -> _Found:
         if segue is None or segue > end:
             segue = end
     else:
-        segue = _suggest_segue(mono, SAMPLE_RATE)
+        segue = _suggest_segue(audio, SAMPLE_RATE)
     return start, end, segue, detected_intro, detected_outro
 
 
@@ -729,6 +734,7 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
 
     head_mono = windows.head.mean(axis=1)
     tail_mono = windows.tail.mean(axis=1)
+    last = _audible_end(windows.tail)
     head_padded = _padded(head_mono)
     head_s = len(head_padded) / SAMPLE_RATE
     offset = windows.tail_start_s - head_s
@@ -738,11 +744,11 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
         else detect_intro_start(windows.head, SAMPLE_RATE)
     )
     intro, outro = detect_intro_outro(
-        np.concatenate((head_padded, _padded(tail_mono))), SAMPLE_RATE
+        np.concatenate((head_padded, _padded(tail_mono[:last] if last is not None else tail_mono))),
+        SAMPLE_RATE,
     )
     detected_intro = intro if intro < len(head_mono) / SAMPLE_RATE else 0.0
     detected_outro = outro + offset if outro > head_s else windows.seconds
-    last = _audible_end(windows.tail)
     end = (
         (windows.tail_start + last) / SAMPLE_RATE
         if last is not None
@@ -753,8 +759,8 @@ def _window_points(windows: TrackWindows, kind: str) -> _Found:
         found = _suggest_liner_segue(tail_mono, SAMPLE_RATE)
         segue = end if found is None else min(end, windows.tail_start_s + found)
     else:
-        found = _suggest_segue(tail_mono, SAMPLE_RATE)
-        segue = None if found is None else windows.tail_start_s + found
+        found = _suggest_segue(windows.tail, SAMPLE_RATE)
+        segue = end if found is None else windows.tail_start_s + found
     return start, end, segue, detected_intro, detected_outro
 
 
@@ -800,7 +806,7 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     tail_start = max(0, last - 60 * sample_rate)
     tail = audio[tail_start : min(len(audio), last + 5 * sample_rate)]
     if len(tail) < 6 * window:
-        return None
+        return last / sample_rate
     rms = np.asarray(
         [
             np.sqrt(np.mean(tail[start : start + window].astype(np.float64) ** 2) + 1e-12)
@@ -809,15 +815,26 @@ def _suggest_segue(audio: np.ndarray, sample_rate: int) -> float | None:
     )
     reference = _segue_reference(rms, 5)
     if reference <= 1e-6:
-        return None
+        return last / sample_rate
     threshold = reference * 10 ** (-10 / 20)
     index = len(rms) - 1
     while index >= 0 and rms[index] <= threshold:
         index -= 1
     point = (tail_start + (index + 1) * window) / sample_rate
-    quiet_duration = len(audio) - tail_start - (index + 1) * window
+    quiet_duration = last - tail_start - (index + 1) * window
+    suffix = tail[(index + 1) * window : last - tail_start]
+    short_window = max(1, round(sample_rate * 0.05))
+    for start in range(0, len(suffix), window):
+        block = suffix[start : start + window]
+        short_rms = max(
+            np.sqrt(np.mean(block[offset : offset + short_window].astype(np.float64) ** 2) + 1e-12)
+            for offset in range(0, len(block), short_window)
+        )
+        block_rms = np.sqrt(np.mean(block.astype(np.float64) ** 2) + 1e-12)
+        if short_rms >= reference * 0.05 and short_rms >= block_rms * 1.6:
+            return last / sample_rate
     return (
         point
         if quiet_duration >= 5 * sample_rate and 0 < point < len(audio) / sample_rate
-        else None
+        else last / sample_rate
     )

@@ -98,6 +98,22 @@ It applies to the tracks `autodj index` embeds and the tracks `autodj index` and
 `autodj analyse` analyse. The default, 0, means no pause.
 
 
+## Rescan cue points in Track info
+
+Open a song or registered voice liner in **Track info**, save any cue edits,
+then choose **Rescan cue points**. Compare the saved and suggested times and
+their sources, and preview the points using the track's preview player.
+Changed automatic cues are selected initially; select a user or imported cue
+explicitly to replace it. Choose **Apply selected** to save the selected cues,
+or **Discard** to keep the saved cues.
+
+The scan uses the same basic detectors as library analysis. Music offers Start,
+Intro, Outro, Segue and End; liners offer Start, Segue and End. Lyric-derived
+Intro and Outro describe vocal timing, which can differ from the acoustic ending.
+Overlap preferences, play dates, tags and history stay unchanged. If the audio
+file or saved cues change before applying, rescan again to get current suggestions.
+
+
 ## Related tasks and contracts
 
 - [How long tracks use memory and disk](../../explanation/operations/long-tracks.md)

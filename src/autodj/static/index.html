@@ -526,8 +526,17 @@
         <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
       <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
+      <button type="button" id="points-rescan">Rescan cue points</button>
+      <section id="points-rescan-results" aria-labelledby="points-rescan-heading" hidden>
+        <h4 id="points-rescan-heading" tabindex="-1">Proposed cue points</h4>
+        <p>User and imported cues start unchecked.</p>
+        <div id="points-rescan-comparison"></div>
+        <button type="button" id="points-rescan-apply">Apply selected</button>
+        <button type="button" id="points-rescan-discard">Discard</button>
+      </section>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </details>
+    <p id="points-rescan-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <!-- Matched intros (modules/matched-intros.js, #127): voice clips that
          play as this song starts.  The lists change in place; a refused

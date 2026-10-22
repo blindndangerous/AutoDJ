@@ -236,7 +236,7 @@ def test_decode_holds_one_full_copy_of_the_samples(tmp_path: Path) -> None:
     assert peak < 1.6 * audio.nbytes
 
 
-def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
+def test_basic_suggestions_use_audible_end_without_sustained_tail_drop(
     tmp_path: Path,
 ) -> None:
     source = _source(tmp_path / "song.wav")
@@ -245,23 +245,40 @@ def test_basic_suggestions_keep_segue_unset_without_sustained_tail_drop(
     assert entry.length == pytest.approx(3.0)
     assert points["start"] == pytest.approx(0.0, abs=1 / processing.SAMPLE_RATE)
     assert points["end"] == pytest.approx(3.0, abs=1 / processing.SAMPLE_RATE)
-    assert points["segue"] is None
+    assert points["segue"] == pytest.approx(points["end"])
 
 
 def test_music_segue_requires_a_quiet_final_suffix_including_partial_bin() -> None:
     rate = processing.SAMPLE_RATE
     audio = np.full(rate * 12 + rate // 2, 0.2, dtype=np.float32)
     audio[rate * 2 : rate * 5] = 0.0  # Interior breakdown followed by a loud return.
-    assert processing._suggest_segue(audio, rate) is None
+    assert processing._suggest_segue(audio, rate) == pytest.approx(12.5)
 
     audio[rate * 7 :] = 0.0
     assert processing._suggest_segue(audio, rate) == pytest.approx(7.0)
 
     audio[-rate // 2 :] = 0.2  # A loud return in the fractional final bin cancels the cue.
-    assert processing._suggest_segue(audio, rate) is None
+    assert processing._suggest_segue(audio, rate) == pytest.approx(12.5)
 
-    assert processing._suggest_segue(np.full(rate * 6 - 1, 0.2), rate) is None
-    assert processing._suggest_segue(np.full(rate * 8, 0.2), rate) is None
+    assert processing._suggest_segue(np.full(rate * 6 - 1, 0.2), rate) == pytest.approx(
+        6.0, abs=1 / rate
+    )
+    assert processing._suggest_segue(np.full(rate * 8, 0.2), rate) == pytest.approx(8.0)
+
+
+def test_music_segue_uses_audible_end_after_sparse_final_vocal_and_padding() -> None:
+    rate = 1000
+    audio = np.zeros(163 * rate + rate // 10, dtype=np.float32)
+    audio[: 150 * rate] = 0.2
+    for start in range(160 * rate, 163 * rate, rate // 4):
+        audio[start : start + rate // 20] = 0.04
+    audio[163 * rate - rate // 20 : 163 * rate] = 0.04
+    padded = np.pad(audio, (0, 10 * rate))
+
+    assert processing._suggest_segue(audio, rate) == pytest.approx(163.0)
+    assert processing._suggest_segue(padded, rate) == pytest.approx(163.0)
+    stereo = np.column_stack((padded, -padded))
+    assert processing._suggest_segue(stereo, rate) == pytest.approx(163.0)
 
 
 def test_liner_segue_uses_only_a_sustained_final_drop() -> None:
@@ -283,7 +300,7 @@ def test_liner_without_a_final_drop_falls_back_to_end(tmp_path: Path) -> None:
     _, music_points = processing.analyze_basic(source)
     _, liner_points = processing.analyze_basic(source, kind="liner")
 
-    assert music_points["segue"] is None
+    assert music_points["segue"] == music_points["end"]
     assert liner_points["segue"] == liner_points["end"]
 
 
