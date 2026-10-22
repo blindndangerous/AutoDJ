@@ -6,7 +6,7 @@ import contextlib
 import logging
 import math
 import shutil
-import subprocess
+import subprocess  # nosec B404 -- fixed FFmpeg argv, no shell
 import threading
 from collections import deque
 from pathlib import Path
