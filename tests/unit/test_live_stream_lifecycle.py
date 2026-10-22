@@ -218,14 +218,160 @@ def test_real_stream_selection_replans_audible_handoff_before_stale_queue_item_a
                 player.bus.render_block()
         assert last_overlap is not None
         assert np.mean(last_overlap[:, 0]) > 0.4
-        for _ in range(100):
-            if player.bus.current_render() is not None:
-                break
+
+        def resumed():
             player.bus.render_block()
-        assert player.bus.current_render() is not None
+            return player.bus.current_render() is not None
+
+        assert _wait_for(resumed)
         assert player.bus.current_render().entry is c
         assert player.bus.current_render().entry is not b
         assert b not in started
     finally:
         player._playout.stop(timeout=2.0)
         player.end_set()
+
+
+@pytest.mark.parametrize("case", ["overlap", "cut", "exhausted", "repeat", "delayed"])
+def test_stream_selects_successor_only_when_continuation_becomes_current(
+    tmp_path, monkeypatch, case
+):
+    """ADR-0004-12: B continues its deck; C is not opened while A is current."""
+    player, entries, points, _desk = make_station(tmp_path, stream_mode=True)
+    a, b, c, d = entries
+    if case == "cut":
+        points[a.path]["segue"] = points[a.path]["end"]
+    elif case == "exhausted":
+        b.length = 0.5
+        points[b.path].update(intro=0.5, segue=0.5, end=0.5)
+    decks = {
+        entry.path: _UnconsumedDeck(round(entry.length * SAMPLE_RATE), level)
+        for entry, level in zip(entries, LEVELS, strict=True)
+    }
+    opened = []
+    entered, release = threading.Event(), threading.Event()
+    prepare = player._next_rendered_serial
+
+    def delayed_prepare():
+        if case == "delayed" and player._pending_entry is b:
+            entered.set()
+            assert release.wait(2)
+        return prepare()
+
+    monkeypatch.setattr(player, "_next_rendered_serial", delayed_prepare)
+
+    def open_deck(entry, **_kwargs):
+        opened.append(entry)
+        deck = decks[entry.path]
+        return _UnconsumedDeck(len(deck), deck.value)
+
+    monkeypatch.setattr(player, "_live_file", open_deck)
+    monkeypatch.setattr(player, "_live_source_is_current", lambda *_args: True)
+    monkeypatch.setattr(
+        "autodj.live_transitions._read_window",
+        lambda _player, _entry, deck, first, last: np.full(
+            (max(0, last - first), 2), deck.value, np.float32
+        ),
+    )
+    player.bus = MixBus(
+        BusEvents(player._on_track_start, player._on_position, player._take_render),
+        eq_gains=lambda: (1.0, 1.0, 1.0),
+    )
+    queued = [b, b, d] if case == "repeat" else [b, c, d]
+    player._state.queue[:] = queued
+    player.begin_set(a, "seed")
+    player._playout.start()
+    player.bus.start_set()
+    try:
+        assert player._playout.wait_ready(2)
+        first = player._playout.ready()
+        assert first.entry is a and first.next_entry is b
+        player.bus.render_block()
+        assert player._playout.wait_ready(2)
+        continuation = player._playout.ready()
+        assert continuation.entry is b and continuation.next_entry is None
+        assert continuation.handoff_pending
+        assert continuation.live_source is first.next_live_source
+        assert continuation.start_offset == first.next_start_offset
+        assert opened == [a, b]
+        assert player._state.queue == queued
+        for _ in range(1500):
+            player.bus.render_block()
+            if player.bus.current_render() is None:
+                break
+        assert player.bus.current_render() is None
+        if case == "delayed":
+            player.bus.render_block()
+            assert entered.wait(1)
+            for _ in range(3):
+                assert not np.any(player.bus.render_block())
+            assert player._state.queue == queued
+            assert opened == [a, b]
+            release.set()
+
+        expected = c if case == "exhausted" else b
+
+        def promoted():
+            player.bus.render_block()
+            return player._playing_render.entry is expected
+
+        assert _wait_for(promoted)
+        current = player._playing_render
+        assert not current.handoff_pending
+        assert player.bus.live_position(current) > 0
+        assert player._playout.wait_ready(2)
+        assert player._playout.ready().next_entry is None
+        if case == "exhausted":
+            assert first.next_start_offset >= round(b.length * SAMPLE_RATE)
+            assert current.next_entry is d
+            assert opened == [a, b, c, d]
+            assert player._state.queue == [d]
+        elif case == "repeat":
+            assert current.entry is b and current.next_entry is b
+            assert current.live_source is continuation.live_source
+            assert current.next_live_source is not current.live_source
+            assert opened == [a, b, b]
+            assert player._state.queue == [b, d]
+        else:
+            assert current.next_entry is c
+            assert current.live_source is continuation.live_source
+            assert current.start_offset == continuation.start_offset
+            assert opened == [a, b, c]
+            assert player._state.queue == [c, d]
+            assert player._playout.ready().entry is c
+            assert d not in opened
+    finally:
+        release.set()
+        player._playout.stop(timeout=2)
+        player.end_set()
+
+
+def test_live_cursor_carries_glide_and_reservations_without_rendering(monkeypatch):
+    player = _player()
+    a, b, liner = player._sim.entries[:3]
+    glide, source = object(), object()
+    player._set_render_cursor(
+        b,
+        12345,
+        "queue",
+        from_queue=True,
+        previous=a,
+        mixed_in=("stretch", 1.05),
+        glide=glide,
+        reserved_liners=(liner,),
+        live_source=source,
+    )
+    monkeypatch.setattr(
+        player, "_render_track", lambda *_a, **_k: pytest.fail("rendered future music")
+    )
+    cursor = player._live_continuation()
+    assert cursor.handoff_pending and len(cursor.audio) == 0
+    assert cursor.next_entry is None and cursor.next_live_source is None
+    player._set_render_cursor(None, 0, "seed")
+    player._rewind_render_cursor(cursor)
+    assert player._pending_entry is b
+    assert player._pending_offset == 12345
+    assert player._pending_glide is glide
+    assert player._pending_live_source is source
+    assert player._pending_reserved_liners == (liner,)
+    assert player._pending_mixed_in == ("stretch", 1.05)

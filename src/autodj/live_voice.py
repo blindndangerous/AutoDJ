@@ -122,20 +122,6 @@ def _install_handoff(
         )
         if plan is not None:
             player._live_voice_slot = (replacement, plan)
-        ready = player._playout.ready()
-        if ready is not None:
-            player._live_queue_edits.setdefault(
-                id(ready.entry),
-                QueueEdit(
-                    ready,
-                    ready.next_entry,
-                    None,
-                    ready.voice_breaks,
-                    ready.incoming_intro,
-                    outgoing=ready.entry,
-                    candidate_mode=ready.next_pick_mode,
-                ),
-            )
         player._playout.reset(lambda: player._skip_past_render(replacement))
         retained_intros = {event[1] for event in replacement.intro_events}
         player._settle_intros(
@@ -185,7 +171,12 @@ def _cancel_window(player: Player, item: Break) -> tuple[RenderedTrack, SlotPlan
                     "current",
                 )
         ready = playout.ready()
-        if _contains_break(ready, item.break_id) and isinstance(ready.audio, LiveAudio):
+        if (
+            _contains_break(ready, item.break_id)
+            and not getattr(ready, "handoff_pending", False)
+            and ready.next_entry is not None
+            and isinstance(ready.audio, LiveAudio)
+        ):
             return (
                 ready,
                 _plan_for_track(player, ready, cache=False),
