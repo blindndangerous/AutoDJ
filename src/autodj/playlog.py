@@ -397,11 +397,6 @@ def soundexchange_filename(service: str, start: datetime, last_day: datetime) ->
     return f"{stem}{start:%Y%m%d}-{last_day:%Y%m%d}.txt"
 
 
-def unmatchable_count(plays: Iterable[Play]) -> int:
-    """Return how many songs SoundExchange cannot match (see :attr:`Play.matchable`)."""
-    return sum(1 for item in missing_fields(plays) if item[5] == "no")
-
-
 def summary(plays: Sequence[Play]) -> str:
     """Return a line on the plays, the incomplete songs and the unmatchable ones."""
     count = len(plays)
@@ -440,5 +435,4 @@ __all__ = [
     "soundexchange_filename",
     "soundexchange_report",
     "summary",
-    "unmatchable_count",
 ]
