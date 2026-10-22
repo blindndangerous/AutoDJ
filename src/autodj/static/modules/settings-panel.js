@@ -7,7 +7,6 @@
 
 import { escHtml } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
-import { musicSpeedSliderBusy } from "./music-speed.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -304,7 +303,6 @@ export function applySettingsState(st, els) {
   for (const spec of FIELDS) {
     const control = els[spec.key];
     if (!control) continue;
-    if (spec.key === "pbMusicSpeed" && musicSpeedSliderBusy(els.pbMusicSpeedSlider)) continue;
     const value = pushedValue(spec, control, st);
     if (value == null || saveHolds(control, value)) continue;
     if (isToggle(control)) control.checked = value;
