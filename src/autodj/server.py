@@ -2997,11 +2997,11 @@ def _extra_station(
         )
         if speakers and _missing_audio_modules():
             raise RuntimeError("Server audio requires soundfile and sounddevice.")
-        if streams:
+        if streams or speakers:
             import shutil
 
             if shutil.which("ffmpeg") is None:
-                raise RuntimeError("Streaming requires ffmpeg on PATH.")
+                raise RuntimeError("Server-mixed audio requires ffmpeg on PATH.")
         first_track = seed_entry
         paths = StationPaths.for_station(cfg, slug)
         paths.state_dir.mkdir(parents=True, exist_ok=True)

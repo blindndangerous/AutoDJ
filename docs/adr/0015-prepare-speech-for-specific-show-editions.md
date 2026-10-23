@@ -221,6 +221,16 @@ continue to cover the current/imminent transition; a pending cursor is never a
 speech target. Saved edition approval, recordings and source assets remain
 unchanged by live selection or cancellation.
 
+## Amendment, 2026-10-23: local sound-card editions use live playout
+
+[Issue #538](https://github.com/blindndangerous/AutoDJ/issues/538) applies the
+live speech and queue-edit lifecycle to local sound-card playback as well as
+streaming. Local playout no longer depends on future pinned slots or a rendered
+fallback. Occurrence identity, explicit keep/discard decisions, committed-audio
+protection, source recordings and saved approval retain their existing ownership.
+Private review/export still uses the isolated offline renderer under ADR 14.
+See [ADR 4](0004-server-mix-bus-and-stream-mode.md) for the shared engine boundary.
+
 ## Current contracts
 
 Automated selectors identify behavioral checks, not completed execution or ADR

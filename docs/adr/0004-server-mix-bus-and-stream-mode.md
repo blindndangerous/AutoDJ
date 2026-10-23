@@ -204,6 +204,29 @@ reconstructed wider workload boundary. Multi-station load needs the documented
 certification. Revisit for a changed audio clock, mix topology, or output ownership.
 Record actual checks and their limits in the relevant PR.
 
+## Amendment, 2026-10-23: one live engine for server outputs
+
+[Issue #538](https://github.com/blindndangerous/AutoDJ/issues/538) moves
+local sound-card playback onto the same progressive decoder, live handoff and
+speech lifecycle as streaming. Output selection does not choose the mixing
+strategy. Local-only playback still creates no stream encoder or listener-driven
+set controller; device selection, volume and mute remain at the sound-card output.
+All server-mixed playback now requires FFmpeg, including formats that the old
+local whole-file decoder could read with soundfile alone.
+
+Local speech and prepared-edition changes use the live admission, occurrence,
+cancellation and heard-only accounting rules. The former future local slot
+planner is no longer the policy for sound-card playback. Saved recordings and
+approval remain under [ADR 15](0015-prepare-speech-for-specific-show-editions.md).
+The isolated programme review/export renderer remains offline under
+[ADR 14](0014-isolate-programme-review-and-export.md).
+
+This replaces the local/stream distinction in the earlier amendments, not the
+browser playback contract. [Issue #537](https://github.com/blindndangerous/AutoDJ/issues/537)
+separately changes when the shared live worker prepares the next handoff.
+Decoder and effect work stay off the bus callback. Hardware continuity, seeking,
+takeover and multi-output operation still need listening and soak evidence.
+
 ## Current contracts
 
 IDs are stable and are never recycled. Automated means an existing regression
@@ -214,7 +237,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
 | `ADR-0004-01` | Paused server playout emits silence while holding track position. | automated | `tests/unit/test_mixbus.py::test_pause_emits_silence_and_holds_position` |
-| `ADR-0004-02` | Offline/local `RenderAhead` soft refresh keeps the stale prepared track usable until its replacement is ready. | automated | `tests/unit/test_render_ahead.py::test_stale_ready_track_stays_available_until_replaced` |
+| `ADR-0004-02` | Retired for local sound-card output by #538: server outputs use live playout instead of a stale prepared-audio fallback. The RenderAhead utility's test remains historical implementation coverage. | retired | Replaced by the shared live ownership and editing contracts ADR-0004-09 and ADR-0004-14. |
 | `ADR-0004-03` | A slow stream listener is dropped without preventing other listeners receiving audio. | automated | `tests/unit/test_stream_output.py::test_slow_listener_is_dropped_others_continue` |
 | `ADR-0004-04` | Sound-card volume and mute are applied at the device output. | automated | `tests/unit/test_sound_output.py::test_volume_and_mute_are_applied` |
 | `ADR-0004-05` | Server-mode live input can air and hand control back to automated playout. | automated | `tests/integration/test_live_source.py::test_a_source_is_decoded_goes_on_the_air_and_hands_back` |
@@ -224,8 +247,9 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0004-09` | Live layers follow the bus sample clock; current/imminent edits hold the boundary without repeating started speech or airing displaced music; internal edits defer without an operator choice. | automated | `tests/unit/test_live_mixbus.py::test_pending_live_layer_holds_cursor_and_does_not_consume_ready_companion`; `tests/unit/test_live_mixbus.py::test_held_handoff_never_airs_displaced_incoming_and_atomic_replace_airs_new`; `tests/unit/test_live_queue_replan.py::test_live_edit_preserves_heard_prefix_and_bus_cursor`; `tests/unit/test_live_queue_replan.py::test_after_incoming_is_audible_queue_edit_waits_for_continuation_promotion`; `tests/unit/test_live_queue_replan.py::test_ready_only_queue_edit_waits_for_later_selection_and_preserves_current_audio`; `tests/unit/test_live_queue_replan.py::test_concurrent_queue_revision_does_not_install_stale_replacement`; `tests/unit/test_live_queue_replan.py::test_failed_replacement_leaves_boundary_held`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_insert_defers_when_it_needs_a_voice_choice`; `tests/unit/test_server_audio_queue.py::test_internal_show_queue_remove_defers_when_it_needs_a_voice_choice`; `tests/unit/test_live_stream_lifecycle.py::test_real_stream_selection_replans_audible_handoff_before_stale_queue_item_airs` |
 | `ADR-0004-10` | Live transition effects use bounded windows and worker dispatch; future live queue and show points remain estimates. | automated | `tests/unit/test_live_transitions.py::test_live_transition_mixes_only_bounded_tail`; `tests/unit/test_live_transitions.py::test_player_dispatches_live_non_saved_render_without_decoding_whole_track`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
 | `ADR-0004-11` | Streaming speech admission uses the selected current/upcoming occurrence and atomically rechecks pair/revision, outro cutoff and hard schedule boundaries; pending cursors are not speech targets and cancellation preserves other speech and approved assets. | automated | `tests/unit/test_live_voice.py::test_current_live_voice_books_before_outro_and_keeps_future_slot`; `tests/unit/test_live_voice.py::test_live_voice_render_race_drops_item_and_keeps_old_audio`; `tests/unit/test_live_voice.py::test_live_voice_cancel_removes_unheard_audio_without_preparing_ready_voice`; `tests/unit/test_live_voice.py::test_live_voice_cancel_replaces_exact_ready_occurrence_and_keeps_other_speech`; `tests/unit/test_breaks_api.py::test_stream_announcer_slot_is_the_current_song_change`; `tests/unit/test_breaks_api.py::test_active_live_chain_keeps_transferred_announcer_break_from_old_slot`; `tests/unit/test_breaks_api.py::test_stream_announcer_upload_joins_current_song_change`; `tests/unit/test_breaks_api.py::test_stream_announcer_can_cancel_unheard_current_audio`; `tests/unit/test_breaks_api.py::test_stream_announcer_rejects_handoff_changed_during_decode`; `tests/unit/test_ads.py::test_schedule_booking_retries_after_atomic_handoff_refusal` |
-| `ADR-0004-12` | Streaming retains the imminent transition and promotes its incoming source cursor before selecting and preparing the next transition; local render-ahead and whole-show preview/export retain their separate paths. | automated | `tests/unit/test_live_playout_controller.py::test_live_playout_pop_waits_for_explicit_cursor_promotion`; `tests/unit/test_live_stream_lifecycle.py::test_stream_selects_successor_only_when_continuation_becomes_current`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
+| `ADR-0004-12` | Streaming retains the imminent transition and promotes its incoming source cursor before selecting and preparing the next transition; both server outputs share this path and whole-show preview/export stays offline. | automated | `tests/unit/test_live_playout_controller.py::test_live_playout_pop_waits_for_explicit_cursor_promotion`; `tests/unit/test_live_stream_lifecycle.py::test_stream_selects_successor_only_when_continuation_becomes_current`; `tests/unit/test_hour_preview.py::test_live_mixing_keeps_future_queue_and_show_as_estimates` |
 | `ADR-0004-13` | The newly selected stream boundary may emit silence while programme position holds; zero-gap behavior requires manual listening and soak evidence. | manual | Listen through repeated files, short tracks, cuts, overlaps and incoming glides, then run the documented station soak on target hardware; record boundary latency, silence and underruns without claiming a zero-gap guarantee. |
+| `ADR-0004-14` | Server sound-card and stream playback share live playout; local-only output creates no streaming lifecycle, and whole-show preview/export stays offline. | automated | `tests/unit/test_player_stream_mode.py::test_local_soundcard_uses_live_playout_without_stream_lifecycle` |
 
 ## Related proposal — 2026-10-17
 

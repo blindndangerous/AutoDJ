@@ -886,7 +886,7 @@ class TestRenderTrackLoading:
         cfg = _make_cfg_mock()
         cfg.playback.crossfade_seconds = 2.0
         cfg.index.library_dir = MagicMock()
-        return Player(cfg, _make_sim_index())
+        return Player(cfg, _make_sim_index(), dry_run=True)
 
     def test_renders_normal_tracks_with_an_overlap(self) -> None:
         player = self._make_player()
@@ -1234,7 +1234,7 @@ class TestRenderTrackFeatures:
         cfg.library.beets_db = None
         cfg.library.music_dir = None
         cfg.index.library_dir = MagicMock()  # not a Path -> DJ cache lazy init bails
-        return Player(cfg, _make_sim_index(n=3))
+        return Player(cfg, _make_sim_index(n=3), dry_run=True)
 
     def _render(self, player: Player, seconds: float = 4.0):
         cur, nxt = player._sim.entries[0], player._sim.entries[1]
@@ -2305,8 +2305,8 @@ class TestOnTrackStart:
         assert player._playback_pos[0] == 8820
 
 
-def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
-    """The bus renders the next track while this one plays.
+def test_offline_rendering_leaves_the_playing_tracks_state_alone() -> None:
+    """An offline render of the next track leaves current UI state alone.
 
     The UI's transition effect and beat-match ratio must keep describing
     the playing track until the next one actually starts.
@@ -2316,7 +2316,7 @@ def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
     cfg.djmix.beatmatch = True
     cfg.transitions.effect = "echo_out"
     cfg.index.library_dir = MagicMock()
-    player = Player(cfg, _make_sim_index(3))
+    player = Player(cfg, _make_sim_index(3), dry_run=True)
     cur, nxt = player._sim.entries[0], player._sim.entries[1]
     cur.bpm, nxt.bpm = 120.0, 124.0
     player._last_transition_fx = "playing-fx"
@@ -2337,7 +2337,7 @@ def test_rendering_ahead_leaves_the_playing_tracks_state_alone() -> None:
 def test_render_track_does_not_load_lyrics_ahead_of_time() -> None:
     cfg = _make_cfg_mock()
     cfg.index.library_dir = MagicMock()
-    player = Player(cfg, _make_sim_index(3))
+    player = Player(cfg, _make_sim_index(3), dry_run=True)
     player._current_lyrics_plain = "playing song words"
     with (
         patch("autodj.player.load_stereo", return_value=np.zeros((44100, 2), np.float32)),
