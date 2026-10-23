@@ -43,8 +43,7 @@ function installDom() {
     <select id="preview-device">
       <option value="">System default</option>
     </select>
-    <button type="button" id="preview-device-choose"
-            aria-describedby="preview-device-choose-desc">Show preview device names</button>
+    <button type="button" id="preview-device-choose">Show preview device names</button>
     <span id="preview-device-desc">Help <span id="preview-device-choose-desc"></span></span>
     <p id="preview-device-note" hidden></p>
     <audio id="points-preview" data-preview-output></audio>
@@ -205,7 +204,7 @@ describe("installPreviewOutput", () => {
     expect(button.hidden).toBe(true);
     expect(note.hidden).toBe(false);
     expect(note.textContent).toBe(UNSUPPORTED_TEXT);
-    expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
+    expect(select.hasAttribute("aria-describedby")).toBe(false);
     expect(preview.setSinkId).not.toHaveBeenCalled();
     expect(announce).not.toHaveBeenCalled();
   });
@@ -226,7 +225,7 @@ describe("installPreviewOutput", () => {
     expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones (not connected)"]);
     expect(select.value).toBe("phones");
     expect(note.textContent).toBe(MISSING_TEXT);
-    expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
+    expect(select.hasAttribute("aria-describedby")).toBe(false);
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
     expect(announce).toHaveBeenCalledTimes(1);
     expect(announce).toHaveBeenLastCalledWith(MISSING_TEXT, expect.anything());
@@ -385,7 +384,7 @@ describe("installPreviewOutput", () => {
       button.click();
       await settle();
       expect(note.textContent).toBe(text);
-      expect(select.getAttribute("aria-describedby")).toBe("preview-device-note");
+      expect(select.hasAttribute("aria-describedby")).toBe(false);
       expect(announce).toHaveBeenLastCalledWith(text, expect.objectContaining({ tone: "error" }));
       expect(document.activeElement).toBe(button);
 
@@ -474,7 +473,7 @@ describe("installPreviewOutput", () => {
     const names = setup({ devices: [{ kind: "audiooutput", deviceId: "a", label: "" }] });
     await settle();
     const desc = () => document.getElementById("preview-device-choose-desc");
-    expect(names.button.getAttribute("aria-describedby")).toBe("preview-device-choose-desc");
+    expect(names.button.hasAttribute("aria-describedby")).toBe(false);
     expect(desc().textContent).toBe(NAMES_DESC_TEXT);
     expect(desc().hidden).toBe(false);
 

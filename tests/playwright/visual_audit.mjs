@@ -2618,24 +2618,21 @@ async function previewOutputProblems(page) {
       disabled: element.disabled,
       select: box(element),
       button: box(button),
-      buttonDesc: button && !button.hidden
-        ? (document.getElementById(button.getAttribute("aria-describedby") || "")?.textContent || "").trim()
-        : null,
+      buttonDescribedBy: button?.getAttribute("aria-describedby") || "",
       noteShown: Boolean(note && !note.hidden && note.textContent.trim()),
     };
   });
   if (info.label !== "Preview output device") problems.push(`label is ${JSON.stringify(info.label)}`);
   if (!info.helpShown) problems.push("help is not visible");
-  if (info.buttonDesc === "") problems.push("button has no description");
+  if (info.buttonDescribedBy || info.describedBy) problems.push("device controls repeat help on focus");
   for (const [what, rect] of [["select", info.select], ["button", info.button]]) {
     if (rect && (rect.width < 24 || rect.height < 24)) {
       problems.push(`${what} is ${Math.round(rect.width)}x${Math.round(rect.height)}`);
     }
   }
   if (info.disabled) {
-    // No setSinkId: the reason is words on the page, linked to the select.
+    // No setSinkId: the reason remains visible beside the select.
     if (!info.noteShown) problems.push("unsupported browser shows no reason");
-    if (!info.describedBy.includes("preview-device-note")) problems.push("reason is not linked");
     return problems;
   }
   await select.focus();

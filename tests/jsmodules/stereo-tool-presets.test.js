@@ -116,11 +116,19 @@ describe("Stereo Tool preset markup", () => {
   it("puts Save sound settings after the Sound controls and describes Stereo Tool restart", () => {
     const save = page.getElementById("mastering-save");
     expect(save.textContent.trim()).toBe("Save sound settings");
-    expect(save.getAttribute("aria-describedby")).toBe("mastering-save-note");
+    expect(save.hasAttribute("aria-describedby")).toBe(false);
     expect(page.getElementById("mastering-save-note").textContent)
       .toMatch(/preset or AGC drive restarts Stereo Tool.*brief bypass/i);
     expect(save.compareDocumentPosition(page.getElementById("pb-silence-trigger"))
       & document.defaultView.Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+  });
+
+  it("keeps Sound controls named without focus help", () => {
+    for (const control of panel.querySelectorAll("input, select, button")) {
+      expect(control.hasAttribute("aria-describedby"), control.id).toBe(false);
+      expect(control.hasAttribute("aria-label"), control.id).toBe(false);
+      expect(control.hasAttribute("title"), control.id).toBe(false);
+    }
   });
 
   it("wires AGC drive to the shared settings module", () => {
@@ -156,7 +164,7 @@ describe("Stereo Tool preset markup", () => {
       const desc = page.getElementById(`${input.id}-desc`);
       expect(input.hasAttribute("aria-describedby")).toBe(false);
       expect(desc.hidden).toBe(false);
-      expect(desc.textContent).toMatch(/from (0|minus 12) to (6|plus 6)/);
+      expect(desc.textContent).toContain(`from ${input.min} to ${input.max}`);
     }
   });
 });

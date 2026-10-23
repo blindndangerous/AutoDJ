@@ -3134,8 +3134,7 @@ describe("static accessibility contracts", () => {
     const help = document.getElementById("preview-device-desc");
     expect(help.hidden).toBe(false);
     expect(help.textContent).toMatch(/previews/);
-    // The unsupported or permission note starts hidden and unlinked: the
-    // script links it only while it is shown.
+    // Device status stays available through normal browsing.
     const note = document.getElementById("preview-device-note");
     expect(note.hidden).toBe(true);
     expect(note.classList.contains("setting-desc")).toBe(true);
