@@ -1739,6 +1739,12 @@ describe("static accessibility contracts", () => {
       .toBe("token-secret-warning");
   });
 
+  it("never hides an empty status region with display: none", () => {
+    // A region shown only once its words arrive is a new region, and NVDA
+    // in Firefox did not say the Settings save result.
+    expect(cssSource).not.toMatch(/:empty\s*\{[^}]*display:\s*none/);
+  });
+
   it("gives the status message a Dismiss button that is never announced with it", () => {
     installDocument();
     const toast = document.querySelector("#status-toast");

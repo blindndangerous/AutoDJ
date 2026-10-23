@@ -53,7 +53,7 @@ describe("Settings drafts", () => {
   it("does not write on edit and submits changed fields once on Save", async () => {
     register(); drafts.applySettingsDrafts(snapshot()); edit(3);
     expect(mocks.request).not.toHaveBeenCalled();
-    expect(panel.querySelector('[data-settings-save]').disabled).toBe(false);
+    expect(panel.querySelector('[data-settings-save]').getAttribute("aria-disabled")).toBe("false");
     mocks.request.mockResolvedValue({ revision: "two", applied: ["playback"], settings: snapshot("two", 3) });
     expect(await drafts.saveSettingsPanel(panel)).toBe(true);
     expect(JSON.parse(mocks.request.mock.calls[0][1].body)).toEqual({ revision: "one", changes: { playback: { music_speed_percent: 3 } } });
@@ -155,6 +155,75 @@ describe("Settings drafts", () => {
     register(); drafts.applySettingsDrafts(snapshot()); edit(2);
     mocks.choose.mockResolvedValue("accept"); mocks.request.mockRejectedValue(new Error("offline"));
     expect(await drafts.confirmSettingsNavigation()).toBe(false); expect(drafts.settingsHaveChanges()).toBe(true);
+  });
+  // Disabling the pressed button dropped focus to the page body, and NVDA
+  // in Firefox said nothing of the result.
+  it("keeps focus on Save and says the result in a status region already on the page", async () => {
+    register(); drafts.applySettingsDrafts(snapshot()); edit(3);
+    const save = panel.querySelector("[data-settings-save]");
+    const status = panel.querySelector(".settings-save-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(save.getAttribute("aria-disabled")).toBe("false");
+    let finish; mocks.request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    save.focus(); save.click();
+    expect(save.disabled).toBe(false);
+    expect(save.getAttribute("aria-busy")).toBe("true");
+    expect(save.getAttribute("aria-disabled")).toBe("false");
+    finish({ revision: "two", applied: ["playback"], settings: snapshot("two", 3) });
+    await vi.waitFor(() => expect(status.textContent).toBe("Settings saved for default."));
+    expect(panel.querySelector(".settings-save-status")).toBe(status);
+    expect(document.activeElement).toBe(save);
+    expect(save.disabled).toBe(false);
+    expect(save.hasAttribute("aria-busy")).toBe(false);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(panel.querySelector("[data-settings-discard]").disabled).toBe(false);
+  });
+  it("says a failed save in the status region and keeps focus on Save", async () => {
+    register(); drafts.applySettingsDrafts(snapshot()); edit(3);
+    const save = panel.querySelector("[data-settings-save]");
+    mocks.request.mockRejectedValue(new Error("offline"));
+    save.focus(); save.click();
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent)
+      .toBe("Could not save all settings: offline Unsaved changes remain."));
+    expect(document.activeElement).toBe(save);
+    expect(save.getAttribute("aria-disabled")).toBe("false");
+  });
+  it("says Saving changes when the reply is slow", async () => {
+    register(); drafts.applySettingsDrafts(snapshot()); edit(3);
+    let finish; mocks.request.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const saving = drafts.saveSettingsPanel(panel);
+    const status = panel.querySelector(".settings-save-status");
+    await vi.waitFor(() => expect(status.textContent).toBe("Saving changes…"));
+    finish({ revision: "two", applied: ["playback"], settings: snapshot("two", 3) });
+    await saving;
+    await vi.waitFor(() => expect(status.textContent).toBe("Settings saved for default."));
+  });
+  it("keeps focus on Discard and says the result", async () => {
+    register(); drafts.applySettingsDrafts(snapshot()); edit(3);
+    const discard = panel.querySelector("[data-settings-discard]");
+    mocks.request.mockResolvedValue(snapshot());
+    discard.focus(); discard.click();
+    expect(input.value).toBe("0");
+    expect(document.activeElement).toBe(discard);
+    expect(discard.disabled).toBe(false);
+    expect(discard.getAttribute("aria-disabled")).toBe("true");
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent).toBe("Changes discarded."));
+  });
+  it("ignores a press of Save or Discard with no changes", async () => {
+    register(); drafts.applySettingsDrafts(snapshot());
+    panel.querySelector("[data-settings-save]").click();
+    panel.querySelector("[data-settings-discard]").click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(panel.querySelector(".settings-save-status").textContent).toBe("");
+  });
+  it("says what each changed part did after the save result", async () => {
+    register("playback", { describe: (value, before) => `Speed ${before.music_speed_percent} to ${value.music_speed_percent}.` });
+    drafts.applySettingsDrafts(snapshot()); edit(3);
+    mocks.request.mockResolvedValue({ revision: "two", applied: ["playback"], settings: snapshot("two", 3), message: "Restart to apply." });
+    expect(await drafts.saveSettingsPanel(panel)).toBe(true);
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent)
+      .toBe("Settings saved for default. Speed 0 to 3. Restart to apply."));
   });
   it("lets the operator stay or discard before navigation", async () => {
     register(); drafts.applySettingsDrafts(snapshot()); edit(2);

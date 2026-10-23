@@ -134,6 +134,44 @@ def test_a_container_follows_the_branch_of_its_mounted_checkout(tmp_path: Path) 
     assert found.inferred_channel == "development"
 
 
+def test_a_published_image_follows_the_channel_it_was_published_for(tmp_path: Path) -> None:
+    """ADR-0016-01: not the branch of the checkout that holds compose.yaml."""
+    marker = tmp_path / ".dockerenv"
+    marker.touch()
+    config = tmp_path / "config"
+    (config / ".git").mkdir(parents=True)
+    (config / ".git" / "HEAD").write_text("ref: refs/heads/master\n", encoding="ascii")
+    image = updates.IMAGE_REPOSITORY + ":stable"
+
+    found = updates.detect_installation(
+        root=tmp_path / "no-checkout",
+        environ={
+            "AUTODJ_COMMIT": MASTER_SHA,
+            "AUTODJ_IMAGE": image,
+            "AUTODJ_IMAGE_CHANNEL": "stable",
+        },
+        markers=(marker,),
+        version="0.22.0",
+        working_dir=config,
+    )
+    assert (found.kind, found.branch, found.image, found.image_channel) == (
+        "container",
+        None,
+        image,
+        "stable",
+    )
+    assert found.inferred_channel == "stable"
+
+    development = updates.detect_installation(
+        root=tmp_path / "no-checkout",
+        environ={"AUTODJ_IMAGE": "ghcr.io/a/b:x; rm -rf /", "AUTODJ_IMAGE_CHANNEL": "development"},
+        markers=(marker,),
+        version="0.22.0",
+        working_dir=tmp_path,
+    )
+    assert (development.image, development.inferred_channel) == (None, "development")
+
+
 def test_a_package_without_git_follows_stable(tmp_path: Path) -> None:
     """ADR-0016-01."""
     found = updates.detect_installation(
@@ -504,10 +542,26 @@ def test_the_notice_gives_the_commands_for_each_installation(tmp_path: Path) -> 
         "./autodj setup",
         "./autodj doctor --no-fix",
     ]
-    container = updates.update_commands(Installation(kind="container", version="0.21.0"), available)
-    assert container[-2:] == [
-        "AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build",
-        "AUTODJ_COMMIT=$(git rev-parse --short HEAD) podman compose up -d --build",
+    built_here = updates.update_commands(
+        Installation(kind="container", version="0.21.0", image="autodj:local"), available
+    )
+    assert built_here == [
+        "git fetch --tags origin",
+        "git switch --detach v0.22.0",
+        "AUTODJ_COMMIT=$(git rev-parse --short HEAD) "
+        "docker compose -f compose.yaml -f compose.build.yaml up -d --build",
+        "AUTODJ_COMMIT=$(git rev-parse --short HEAD) "
+        "podman compose -f compose.yaml -f compose.build.yaml up -d --build",
+    ]
+    published = Installation(
+        kind="container",
+        version="0.21.0",
+        image=updates.IMAGE_REPOSITORY + ":stable",
+        image_channel="stable",
+    )
+    assert updates.update_commands(published, available) == [
+        "docker compose pull && docker compose up -d",
+        "podman compose pull && podman compose up -d",
     ]
     package = updates.update_commands(Installation(kind="package", version="0.21.0"), available)
     assert package == [
@@ -521,9 +575,54 @@ def test_the_notice_gives_the_commands_for_each_installation(tmp_path: Path) -> 
         "git merge --ff-only origin/master",
     ]
     assert updates.update_commands(Installation(kind="package", version="0.21.0"), master) == []
+    assert updates.update_commands(replace(published, image_channel="development"), master)[
+        -2:
+    ] == [
+        "docker compose pull && docker compose up -d",
+        "podman compose pull && podman compose up -d",
+    ]
     assert (
         updates.update_commands(_git_checkout(tmp_path), replace(available, status="current")) == []
     )
+
+
+def test_a_container_on_another_channel_or_pinned_is_told_which_image_to_name() -> None:
+    """ADR-0016-09: pulling updates only a moving tag on the image's own channel."""
+    release = updates.UpdateCheck(
+        status="available",
+        channel="stable",
+        channel_source="installation",
+        message="Release v0.22.0 is available.",
+        latest="v0.22.0",
+        target="v0.22.0",
+    )
+    development = replace(release, channel="development", latest="1234567", target="master")
+    repository = "registry.example:5000/radio/autodj"
+
+    def switch(image: str | None, channel: str, result: updates.UpdateCheck) -> str | None:
+        container = Installation(
+            kind="container", version="0.21.0", image=image, image_channel=channel
+        )
+        commands = updates.update_commands(container, result)
+        assert commands[-2:] == [
+            "docker compose pull && docker compose up -d",
+            "podman compose pull && podman compose up -d",
+        ]
+        prefix = "# In .env beside compose.yaml, set AUTODJ_IMAGE="
+        return commands[0].removeprefix(prefix) if commands[0].startswith(prefix) else None
+
+    assert switch(f"{repository}:stable", "stable", release) is None
+    assert switch(f"{repository}:latest", "stable", release) is None
+    assert switch(f"{repository}:development", "development", development) is None
+    assert switch(None, "stable", release) is None
+    assert switch(f"{repository}:0.21.0", "stable", release) == f"{repository}:0.22.0"
+    assert switch(f"{repository}@sha256:{'c' * 64}", "stable", release) == f"{repository}:0.22.0"
+    assert switch(f"{repository}:stable", "stable", development) == f"{repository}:development"
+    assert switch(f"{repository}:development", "development", release) == f"{repository}:stable"
+    assert switch(f"{repository}:sha-abcdef0", "development", development) == (
+        f"{repository}:sha-1234567"
+    )
+    assert switch(None, "stable", development) == updates.IMAGE_REPOSITORY + ":development"
 
 
 # ---------------------------------------------------------------------------

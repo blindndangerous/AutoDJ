@@ -10,9 +10,10 @@ In Docker, AutoDJ always runs `serve --lan` on the host network: it listens on a
 machine's interfaces (`0.0.0.0`), detects the machine's own names and addresses, and requires every
 browser to pair. A bare-metal `autodj serve` stays local-only unless you pass `--lan`.
 
-Settings come from three places beside `compose.yaml`:
+`compose.yaml` runs the image AutoDJ publishes, so nothing is built on your computer; see
+[Choose an image](#choose-an-image). Settings come from three places beside `compose.yaml`:
 
-- `.env` holds the host folders and the user the container runs as. Set `AUTODJ_UID` and
+- `.env` holds the image, the host folders and the user the container runs as. Set `AUTODJ_UID` and
   `AUTODJ_GID` to the owner of the folders (`id -u` and `id -g`), so the container writes files
   you own and nothing needs a `chown`. Without them it runs as UID and GID 10001.
 - `config.toml` and `config.local.toml` hold everything else, as on bare metal. The container
@@ -37,7 +38,8 @@ volumes `autodj-index` and `autodj-models`. Add `/music` in Library after starti
 mounting a folder does not register it automatically.
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs autodj
 ```
 
@@ -69,13 +71,99 @@ that `docker compose up -d` does wait up to 90 seconds before they kill AutoDJ. 
 is 10 seconds. If you copied an older `compose.yaml`, add the same line beside `restart:`. To stop
 the container with plain Docker, give it the same time: `docker stop --time 90 autodj`.
 
+## Choose an image
+
+AutoDJ publishes its image on GitHub Container Registry as `ghcr.io/blindndangerous/autodj`. The
+package is public, so pulling it needs no GitHub account or login. The project's GitHub Actions
+build each image, run the same container smoke test and vulnerability scan as for every pull
+request, then push it. The tags:
+
+- `stable`, the default in `compose.yaml`: the newest release. `latest` is the same image.
+- `development`: the newest commit on `master`, published after every change to it.
+- A version such as `0.22.0`: that release. It never changes.
+- `sha-` and the first seven digits of a commit, such as `sha-0db0a92`: that development build.
+  It never changes.
+
+To choose one, set `AUTODJ_IMAGE` in `.env` beside `compose.yaml`, then pull and start it:
+
+```dotenv
+AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:development
+```
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The image tells AutoDJ its update channel. An image published as `stable` follows Stable, and
+one published as `development` follows Development, whichever checkout holds `compose.yaml`.
+A channel chosen in **Settings**, **Updates** still wins; the update commands then say which
+image to name in `.env`.
+
+The published image is for 64-bit x86 computers (`linux/amd64`). On an ARM computer, such as a
+Raspberry Pi or an ARM NAS, [build the image yourself](#build-the-image-yourself).
+
+To check that an image was built by AutoDJ's own workflow, verify its build provenance with the
+[GitHub CLI](https://cli.github.com/manual/gh_attestation_verify):
+
+```bash
+gh attestation verify oci://ghcr.io/blindndangerous/autodj:stable --repo blindndangerous/AutoDJ
+```
+
+## Build the image yourself
+
+Build the image from the checkout instead of pulling it, for example to run your own changes.
+`compose.build.yaml` adds the build to `compose.yaml` and names the image `autodj:local`, which
+Compose never pulls. To use it for every Compose command in this folder, add this line to `.env`:
+
+```dotenv
+COMPOSE_FILE=compose.yaml:compose.build.yaml
+```
+
+Then build and start AutoDJ, passing the [build stamp](#build-stamp):
+
+```bash
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+```
+
+Compose builds the image when it is missing or when you pass `--build`; otherwise `up` starts the
+image you built last. podman-compose 1.0 does not read `COMPOSE_FILE` from `.env`. With it, run
+`export COMPOSE_FILE=compose.yaml:compose.build.yaml` in the shell first, or name both files on
+every command, for example
+`podman compose -f compose.yaml -f compose.build.yaml up -d --build`. Without either, Compose
+runs the published image instead.
+
+An image you build follows the channel of the checkout it is built from: `master` is
+Development, anything else is Stable.
+
 ## Update the container
 
 AutoDJ in a container checks for updates like any installation and says in **Settings**,
 **Updates** when one is available, with a link to its release notes and the commands to run. It
-does not update itself, and nothing in the Compose file gets the Docker or Podman socket. Make a
-backup, then, on the computer that runs the container, in the folder with `compose.yaml`, update
-the checkout and rebuild. For a release:
+does not update itself, and nothing in the Compose file gets the Docker or Podman socket. Read
+the release notes, make a backup, then, on the computer that runs the container, in the folder
+with `compose.yaml`, run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+`pull` downloads the newest image for the tag in `AUTODJ_IMAGE`, and `up` starts a new container
+from it. The library, settings and models stay in their folders. With Podman, use
+`podman compose` in place of `docker compose`. `docker image prune` removes the replaced image.
+
+A version or `sha-` tag never changes, so pulling it changes nothing: set `AUTODJ_IMAGE` in `.env`
+to the new tag first. To switch channels, set `AUTODJ_IMAGE` to the `stable` or `development` tag
+the same way.
+
+Pulling updates AutoDJ itself. Keep the checkout matched to the image too, so `compose.yaml` and
+the example settings fit it: for a release, run `git fetch --tags origin` and
+`git switch --detach vX.Y.Z` with the new version; for the development image, `git pull` on
+`master`.
+
+If you [build the image yourself](#build-the-image-yourself), update the checkout and rebuild
+instead. For a release:
 
 ```bash
 git fetch --tags origin
@@ -87,9 +175,23 @@ The rebuild replaces the running container, which gets the
 [time to stop](#stop-the-container) set in `compose.yaml`.
 
 For the development channel, replace the two `git` lines with `git fetch origin`,
-`git switch master` and `git merge --ff-only origin/master`. With Podman, use `podman compose` in
-place of `docker compose`. The container's channel follows the checkout's branch: `master` is
-Development, anything else is Stable.
+`git switch master` and `git merge --ff-only origin/master`.
+
+### Move an installation that builds its own image
+
+Before AutoDJ published images, `compose.yaml` built `autodj:local` with
+`docker compose up -d --build`. Once the checkout has the new `compose.yaml`, that command starts
+the published Stable image instead. If you followed the development channel, Stable can be older
+than what you ran, and an older AutoDJ may read newer settings differently (see
+[Going back to an older release](upgrade.md#going-back-to-an-older-release)). Choose one way
+before you run it:
+
+- **Use the published image.** Make a backup and update the checkout. For the development
+  channel, add `AUTODJ_IMAGE=ghcr.io/blindndangerous/autodj:development` to `.env`. Then run
+  `docker compose pull` and `docker compose up -d`, and remove the old image with
+  `docker image rm autodj:local`.
+- **Keep building it yourself.** Add `COMPOSE_FILE=compose.yaml:compose.build.yaml` to `.env`,
+  then update as before.
 
 **Restart AutoDJ** works in a container when the Compose file says how the container restarts.
 `compose.yaml` sets `restart: unless-stopped` and, beside it, the environment variable
@@ -101,8 +203,9 @@ copied an older `compose.yaml`, add the variable with the same value as `restart
 ## Build stamp
 
 The footer of the web page names the commit the server runs, linked to that commit on GitHub,
-once the browser is paired. A bare-metal checkout reads it from git. The image has no git and
-its build leaves out `.git`, so pass the commit when you build it:
+once the browser is paired. A bare-metal checkout reads it from git. A published image carries
+the commit it was built from. An image you build has no git, and its build leaves out `.git`, so
+pass the commit when you [build it](#build-the-image-yourself):
 
 ```bash
 AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build

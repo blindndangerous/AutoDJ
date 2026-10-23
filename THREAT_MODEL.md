@@ -1361,6 +1361,8 @@ one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothin
 remote that lies can only make the page say an update exists; the check changes nothing.
 AutoDJ does not update itself: the notice links the release notes on GitHub (a URL built from
 the fixed repository address and a validated tag) and lists commands for the operator to run.
+For a container those name the image from `AUTODJ_IMAGE`, which Compose sets and AutoDJ shows only
+when it is a plain image name (letters, digits and `._/:@-`).
 Updating from the web page is a later decision in
 [#552](https://github.com/blindndangerous/AutoDJ/issues/552); nothing gets the Docker socket.
 
@@ -1389,6 +1391,14 @@ folder read-only for `config.toml`. Base images and the copied `uv` binary use i
 CI builds and smoke-tests the image. It verifies the host network, pairing before any API access,
 folder ownership, and the health check, generates a CycloneDX SBOM, and blocks on Trivy HIGH or
 CRITICAL findings with fixes available.
+
+The published image on GitHub Container Registry is built by `.github/workflows/image.yml`
+only from a push to `master` or, through the release workflow, a verified `vX.Y.Z` tag whose
+commit is on `master`. A read-only job runs the same smoke test, SBOM and Trivy scan and saves the
+image it checked. A separate job, the only one holding `packages: write`, `id-token: write` and
+`attestations: write`, runs none of the downloaded scanners: it loads that saved image, pushes it
+and attests its digest with Sigstore. The GitHub release waits for the image. Pull requests build
+and check without registry credentials. Operators can check an image with `gh attestation verify`.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces

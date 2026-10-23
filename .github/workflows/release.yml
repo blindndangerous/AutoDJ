@@ -111,8 +111,23 @@ jobs:
           name: release-artifacts
           path: dist/
 
-  publish:
+  # Publishes ghcr.io/<owner>/autodj:X.Y.Z, :stable and :latest once the tag,
+  # version and changelog are verified.
+  image:
     needs: build-and-verify
+    uses: ./.github/workflows/image.yml
+    with:
+      release: true
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  # The GitHub release, which the update check reads as the latest release,
+  # appears only once the image it points to is published.
+  publish:
+    needs: [build-and-verify, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write

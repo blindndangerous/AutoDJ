@@ -31,7 +31,7 @@ Only add `--force` when deliberately replacing known destination data after pres
 
 ## Check for updates and restart
 
-**Settings**, **Updates** shows the version AutoDJ runs, its update channel and the latest version on that channel. **Stable** follows releases (tags such as `v0.21.0`); **Development** follows the newest code on `master`. **Automatic** follows what the installation runs: a release tag is Stable, a checkout of `master` is Development. Choose **Check now** to ask again; AutoDJ otherwise reuses an answer for six hours.
+**Settings**, **Updates** shows the version AutoDJ runs, its update channel and the latest version on that channel. **Stable** follows releases (tags such as `v0.21.0`); **Development** follows the newest code on `master`. **Automatic** follows what the installation runs: a release tag is Stable, a checkout of `master` is Development, and a published container image follows the tag it was published as (`stable` or `development`). Choose **Check now** to ask again; AutoDJ otherwise reuses an answer for six hours.
 
 A source checkout asks its `origin` remote with `git ls-remote`, which changes nothing in the checkout. Other installations ask GitHub. If the computer is offline, the page says it could not check; AutoDJ keeps working. Turn off **Check for updates** for an offline or private installation: AutoDJ then never asks. `autodj check-update` gives the same answer in a terminal, and `autodj doctor` reports it as its `updates` check; `autodj doctor --offline` skips it.
 
@@ -65,7 +65,7 @@ uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases
 python -m pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"
 ```
 
-See [Release artifacts](install.md#release-artifacts) for verification. For Docker, update the checkout, then run `docker compose up -d --build`; the Compose file gives the old container [time to stop](operations/containers-and-windows.md#stop-the-container). After a bind-mounted configuration change alone, run `docker compose restart autodj`.
+See [Release artifacts](install.md#release-artifacts) for verification. For Docker, run `docker compose pull`, then `docker compose up -d`; the Compose file gives the old container [time to stop](operations/containers-and-windows.md#stop-the-container), and [Update the container](operations/containers-and-windows.md#update-the-container) covers pinned versions, channels and images you build yourself. After a bind-mounted configuration change alone, run `docker compose restart autodj`.
 
 On first start, the current catalog's older layout moves into shared and station folders. AutoDJ moves older station settings from `config.toml` into each `station.json`, and imports station history from `library.db` into station databases. A published schema-3 or schema-4 index needs `autodj migrate-index --apply` before serving; preview with `autodj migrate-index` first. Check the result with Doctor. The [migration notes](../operations.md#moved-files) cover older indexes.
 
@@ -77,6 +77,6 @@ independent retention. See [edition retention](operations/prepared-editions.md#r
 
 Stop AutoDJ and keep a backup if you might return. A source checkout can be removed with its `.venv`, optional `node_modules`, data folder `index`, model folder `models`, and `config.toml`, `config.local.toml`, or `.env`. Keep any music you copied there if it is your only copy. A Hugging Face model cache may also live under `~/.cache/huggingface` or `HF_HOME`.
 
-For Docker, `docker compose down --volumes` removes containers and Compose named volumes, including `autodj-index` and `autodj-models` when present. Compose may prefix volume names with the project name. Bind-mounted music, index, and model folders remain on the host; remove them separately only if you no longer need them. Remove the local image with `docker image rm autodj:local` if desired. For a wheel install, run `uv pip uninstall autodj` or `pip uninstall autodj` in the environment where you installed it. AutoDJ installs no system service by default.
+For Docker, `docker compose down --volumes` removes containers and Compose named volumes, including `autodj-index` and `autodj-models` when present. Compose may prefix volume names with the project name. Bind-mounted music, index, and model folders remain on the host; remove them separately only if you no longer need them. Remove the image with `docker image rm ghcr.io/blindndangerous/autodj:stable` (or the tag you chose), or `docker image rm autodj:local` if you built it yourself. For a wheel install, run `uv pip uninstall autodj` or `pip uninstall autodj` in the environment where you installed it. AutoDJ installs no system service by default.
 
 AutoDJ and this page were developed with AI assistance.
