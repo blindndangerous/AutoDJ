@@ -266,7 +266,7 @@ class SecurityPolicy:
                 return PairingBlock(
                     retry_after,
                     "Pairing is paused after too many wrong codes. "
-                    f"Try again in {retry_after} seconds with a new code.",
+                    f"Try again in {seconds_text(retry_after)} with a new code.",
                 )
         return None
 
@@ -288,7 +288,7 @@ class SecurityPolicy:
                 return PairingBlock(
                     retry_after,
                     "Too many wrong pairing codes from this device. "
-                    f"Try again in {retry_after} seconds.",
+                    f"Try again in {seconds_text(retry_after)}.",
                 )
         return None
 
@@ -461,6 +461,11 @@ class SecurityPolicy:
         except (TypeError, ValueError):
             return False
         return canonical in set(self.effective_allowed_origins())
+
+
+def seconds_text(count: int) -> str:
+    """``"1 second"`` or ``"N seconds"``, for a wait the page says aloud."""
+    return f"{count} second" if count == 1 else f"{count} seconds"
 
 
 def new_request_id() -> str:

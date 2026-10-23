@@ -32,7 +32,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, StrictBool
 
-from autodj.security import emit_audit, new_request_id
+from autodj.security import emit_audit, new_request_id, seconds_text
 from autodj.updates import (
     RestartSupport,
     UpdateCheck,
@@ -245,7 +245,7 @@ def install_updates(
             wait = int(CHECK_INTERVAL_SECONDS - (now - last_check[0]) + 0.999)
             audit(request, "update-check", "rejected", route, 429)
             return JSONResponse(
-                {"detail": f"AutoDJ checked a moment ago. Try again in {wait} seconds."},
+                {"detail": f"AutoDJ checked a moment ago. Try again in {seconds_text(wait)}."},
                 status_code=429,
                 headers={"Retry-After": str(wait)},
             )
@@ -298,7 +298,7 @@ def install_updates(
         if wait is not None:
             audit(request, "server-restart", "rejected", route, 429)
             return JSONResponse(
-                {"detail": f"AutoDJ restarted a moment ago. Try again in {wait} seconds."},
+                {"detail": f"AutoDJ restarted a moment ago. Try again in {seconds_text(wait)}."},
                 status_code=429,
                 headers={"Retry-After": str(wait)},
             )
