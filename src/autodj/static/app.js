@@ -408,6 +408,7 @@ function clearStationViews() {
   applyCamelotWheel(null, "compatible");
   resetQueueState(_queueEls);
   resetMixSettings(_mixEls);
+  _stereoToolPresets?.reset();
   resetRepeatSettings(_repeatEls);
   _profileEls.list.replaceChildren();
   _profileEls.status.textContent = "";
@@ -893,6 +894,10 @@ function applySavedSettings(settings) {
   if (!settings) return;
   applySettingsState(settings, _settingsEls());
   applyMixSettings(settings, _mixEls);
+  if (typeof settings.playback?.stereotool_preset === "string"
+      && _mixEls.stereoPreset?.value === settings.playback.stereotool_preset) {
+    _stereoToolPresets?.setActive(settings.playback.stereotool_preset);
+  }
   applyRepeatSettings(settings, _repeatEls);
 }
 
@@ -921,7 +926,6 @@ const _settingsEls = () => ({
   djBeatmatch, djDropMix, djKeyShift, djPhraseAlign, djOutroIntro, djVocalGuard,
   pbEqDuck, pbPickMode, pbShowLyrics, pbAnchorSeed,
   pbHourFit: document.getElementById("pb-hour-fit"),
-  pbReplayGain, pbLoudness: pbReplayGain,
   pbSavedPointsNote: document.getElementById("pb-saved-points-note"),
   pbBeatSyncFx, pbKeySyncFx, pbBeatmatchSkip, pbSkipStyle, lnTalkUp,
   lnMatchedIntroOnlyWithoutLiner,
@@ -929,9 +933,6 @@ const _settingsEls = () => ({
   keyNotation, keyPreferFlats,
   bpmLo, bpmHi,
   discEnabled, discEvery,
-  pbPrefetch: document.getElementById("pb-prefetch"),
-  pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
-  pbMusicSpeed: _musicSpeedNumber,
 });
 
 function postSettings(url, body, control, { onError } = {}) {
@@ -1284,6 +1285,11 @@ import {
 } from "./modules/repeat-settings.js";
 
 const _mixEls = {
+  pbLoudness:    pbReplayGain,
+  pbPrefetch: document.getElementById("pb-prefetch"),
+  pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
+  pbMusicSpeed: _musicSpeedNumber,
+  stereoPreset: document.getElementById("stereo-preset"),
   pbCrossfade:    document.getElementById("pb-crossfade"),
   pbFadeIn:       document.getElementById("pb-fade-in"),
   djPhraseBars:   document.getElementById("dj-phrase-bars"),
@@ -1301,14 +1307,21 @@ const _mixEls = {
   pbQuietBoost:   document.getElementById("pb-quiet-boost"),
   pbIntroLift:    document.getElementById("pb-intro-lift"),
   pbStereoTrim:   document.getElementById("pb-stereo-trim"),
+  pbStereoAgcDrive: document.getElementById("pb-stereo-agc-drive"),
+  masteringSave: document.getElementById("mastering-save"),
 };
+import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
+const _stereoToolPresets = installStereoToolPresets({ status: settingsStatus });
 installMixSettings(_mixEls, {
   postSettings,
   settingsStatus,
+  getStation: currentStation,
+  onSaved: (values) => {
+    if (typeof values.stereotool_preset === "string") {
+      _stereoToolPresets?.setActive(values.stereotool_preset);
+    }
+  },
 });
-
-import { installStereoToolPresets } from "./modules/stereo-tool-presets.js";
-installStereoToolPresets({ status: settingsStatus });
 
 import { installStereoToolSetup } from "./modules/stereo-tool-setup.js";
 installStereoToolSetup({ status: settingsStatus });

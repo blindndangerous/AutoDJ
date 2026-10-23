@@ -213,6 +213,15 @@ function setControlVisible(control, visible) {
   }
 }
 
+export function applySoundModeVisibility(els, st = {}, doc = Object.values(els).find(Boolean)?.ownerDocument || globalThis.document) {
+  const loudness = els.pbLoudness?.value || doc.getElementById("pb-replaygain")?.value
+    || st.playback?.loudness_processing || (st.playback?.replaygain_enabled ? "replaygain" : "off");
+  setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
+    loudness === "replaygain");
+  setControlVisible(els.pbQuietBoost || doc.getElementById("pb-quiet-boost"),
+    loudness === "smooth" || loudness === "stereotool");
+}
+
 function applyModeVisibility(st, els, doc) {
   const savedPoints = (els.pbTransitionMode?.value || st.playback?.transition_mode)
     === "saved_points";
@@ -238,12 +247,7 @@ function applyModeVisibility(st, els, doc) {
   for (const note of doc.querySelectorAll('[data-saved-points="note"]')) {
     note.hidden = !savedPoints;
   }
-  const loudness = els.pbLoudness?.value || st.playback?.loudness_processing ||
-    (st.playback?.replaygain_enabled ? "replaygain" : "off");
-  setControlVisible(els.pbRgTarget || doc.getElementById("pb-rg-target"),
-    loudness === "replaygain");
-  setControlVisible(els.pbQuietBoost || doc.getElementById("pb-quiet-boost"),
-    loudness === "smooth" || loudness === "stereotool");
+  applySoundModeVisibility(els, st, doc);
   const note = els.pbSavedPointsNote || doc.getElementById("pb-saved-points-note");
   if (note) note.hidden = !savedPoints;
 }

@@ -1378,58 +1378,50 @@
           <option value="stereotool">Stereo Tool</option>
         </select>
       </div>
-      <span class="setting-desc" id="pb-rg-desc">
-        <em>Off</em> leaves levels unchanged. <em>ReplayGain</em> adjusts tracks using their loudness tags. <em>Smooth</em> balances source levels and compresses the mix. <em>Stereo Tool</em> balances sources and runs the mix through the Stereo Tool preset chosen below; get Stereo Tool with the Download Stereo Tool button below first. For stream and server audio playback.
-      </span>
+      <span class="setting-desc" id="pb-rg-desc">For stream and server audio. Off leaves levels unchanged; ReplayGain uses loudness tags; Smooth balances and compresses the mix; Stereo Tool uses the selected preset.</span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-intro-lift">Quiet intro lift limit (decibels)</label>
         <input type="number" id="pb-intro-lift" min="0" max="6" step="0.1" value="4"
                inputmode="decimal">
       </div>
-      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain=replaygain">
-        Raise a song's quiet opening by up to this much, from 0 to 6. For ReplayGain playback.
-      </span>
+      <span class="setting-desc" id="pb-intro-lift-desc" data-show-when="pb-replaygain=replaygain">Boost quiet openings by up to this amount, from 0 to 6 dB.</span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-target">ReplayGain target loudness (decibels)</label>
         <input type="number" id="pb-rg-target" min="-30" max="0" step="1" value="-14"
                inputmode="decimal" data-help="pb-rg-target-desc">
       </div>
-      <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain=replaygain">
-        The loudness every tagged track is brought to, from minus 30 to 0.  Minus 14 is the default; minus 18 is the original ReplayGain reference and plays quieter.  For stream and server audio playback.
-      </span>
+      <span class="setting-desc" id="pb-rg-target-desc" data-show-when="pb-replaygain=replaygain">Target loudness for tagged tracks. Default: -14 dB; -18 dB is quieter.</span>
       <div class="settings-row" data-show-when="pb-replaygain=replaygain">
         <label for="pb-rg-clip">ReplayGain peak limit</label>
         <input type="number" id="pb-rg-clip" min="0.1" max="2" step="0.05" value="1"
-               inputmode="decimal" aria-describedby="pb-rg-clip-desc">
+               inputmode="decimal">
       </div>
-      <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">
-        ReplayGain never raises a track so far that its tagged peak goes above this level, from 0.1 to 2.  1, the default, prevents clipping; above 1 allows some.  For stream and server audio playback.
-      </span>
+      <span class="setting-desc" id="pb-rg-clip-desc" data-show-when="pb-replaygain=replaygain">1 prevents tagged peaks from clipping. Higher values allow clipping.</span>
     </fieldset>
 
     <fieldset id="stereo-setup" data-show-when="pb-replaygain=stereotool">
       <legend>Stereo Tool</legend>
       <p class="setting-desc" id="stereo-install-status">Checking whether Stereo Tool is installed.</p>
-      <p class="setting-desc" id="stereo-install-desc">Downloads Stereo Tool from thimeo.com, about 320 MB. Press it again to update.</p>
+      <p class="setting-desc" id="stereo-install-desc">Downloads about 320 MB from thimeo.com. Use again to update.</p>
       <div class="settings-check">
-        <input type="checkbox" id="stereo-accept-terms" aria-describedby="stereo-terms-desc">
+        <input type="checkbox" id="stereo-accept-terms">
         <label for="stereo-accept-terms">I accept Thimeo's terms for Stereo Tool</label>
       </div>
       <p class="setting-desc" id="stereo-terms-desc"><a href="https://www.thimeo.com/terms-and-conditions/" target="_blank" rel="noopener noreferrer">Thimeo's terms (opens in a new tab)</a> and <a href="https://www.thimeo.com/stereo-tool/licenses/" target="_blank" rel="noopener noreferrer">licensing (opens in a new tab)</a>.</p>
       <div class="settings-row">
-        <button type="button" id="stereo-download" aria-describedby="stereo-install-status">Download Stereo Tool</button>
+        <button type="button" id="stereo-download">Download Stereo Tool</button>
       </div>
       <p class="setting-desc" id="stereo-license-status">Checking the licence.</p>
       <div class="settings-row">
         <label for="stereo-license-key">Stereo Tool licence key</label>
-        <input type="password" id="stereo-license-key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096" aria-describedby="stereo-license-status stereo-license-desc">
+        <input type="password" id="stereo-license-key" autocomplete="new-password" spellcheck="false" autocapitalize="off" maxlength="4096">
       </div>
       <span class="setting-desc" id="stereo-license-desc">Kept private and never shown again.</span>
       <div class="settings-check" id="stereo-license-station-row" hidden>
-        <input type="checkbox" id="stereo-license-station-only" aria-describedby="stereo-license-station-desc">
+        <input type="checkbox" id="stereo-license-station-only">
         <label for="stereo-license-station-only">For this station only</label>
       </div>
-      <span class="setting-desc" id="stereo-license-station-desc" hidden>Unticked, it is for every station without its own key.</span>
+      <span class="setting-desc" id="stereo-license-station-desc" hidden>Otherwise applies to stations without their own key.</span>
       <p class="field-error" id="stereo-license-error" hidden></p>
       <div class="settings-row">
         <button type="button" id="stereo-license-save">Save licence key</button>
@@ -1437,38 +1429,31 @@
       </div>
       <div class="settings-row">
         <label for="stereo-preset">Preset</label>
-        <select id="stereo-preset" aria-describedby="stereo-preset-warning stereo-preset-desc">
+        <select id="stereo-preset">
           <option value="included">Included</option>
         </select>
         <button type="button" id="stereo-preset-delete" disabled>Delete selected preset</button>
       </div>
       <p class="setting-desc" id="stereo-preset-warning" hidden></p>
-      <span class="setting-desc" id="stereo-preset-desc">
-        Stereo Tool restarts with the chosen preset; the sound bypasses it for a moment while it does.
-      </span>
-      <p class="setting-desc">Included is the free preset that comes with AutoDJ and cannot be deleted. Uploaded presets are kept with the station's data and saved in backups.</p>
+      <p class="setting-desc">Included is the built-in preset and cannot be deleted. Uploaded presets are saved in backups.</p>
       <div class="settings-row">
-        <label for="stereo-preset-file">Preset file to upload (.sts, up to 2 MB)</label>
+        <label for="stereo-preset-file">Preset file (.sts)</label>
         <input type="file" id="stereo-preset-file" accept=".sts">
         <button type="button" id="stereo-preset-upload">Upload preset</button>
       </div>
+      <p class="setting-desc">Maximum file size: 2 MB.</p>
       <div class="settings-row">
         <label for="pb-stereo-trim">Input trim (decibels)</label>
         <input type="number" id="pb-stereo-trim" min="-12" max="6" step="0.5" value="0"
                inputmode="decimal">
       </div>
-      <span class="setting-desc" id="pb-stereo-trim-desc">
-        Lower or raise the mix before Stereo Tool, from minus 12 to plus 6. Lower it when the preset sounds squashed; raise it when it barely acts.
-      </span>
+      <span class="setting-desc" id="pb-stereo-trim-desc">Adjust the level entering Stereo Tool, from -12 to 6 dB.</span>
       <div class="settings-row">
         <label for="pb-stereo-agc-drive">AGC drive boost (dB)</label>
         <input type="number" id="pb-stereo-agc-drive" min="0" max="12" step="0.1" value="7"
-               inputmode="decimal" aria-describedby="pb-stereo-agc-drive-desc">
+               inputmode="decimal">
       </div>
-      <span class="setting-desc" id="pb-stereo-agc-drive-desc">
-        Changing this reloads Stereo Tool, with a brief bypass while it warms up.
-      </span>
-      <p class="setting-desc">Controls how strongly Stereo Tool brings up quieter passages. 7 dB is the default. 0 keeps the selected preset's original drive; it does not turn AGC off. For stream and server audio playback.</p>
+      <span class="setting-desc" id="pb-stereo-agc-drive-desc">Boosts quieter passages. 0 keeps the preset's AGC drive; it does not disable AGC.</span>
     </fieldset>
 
     <fieldset>
@@ -1482,7 +1467,6 @@
         Adjust music speed from 10% slower to 10% faster.
       </span>
     </fieldset>
-
     <fieldset>
       <legend>Browser playback</legend>
       <div class="settings-row">
@@ -1490,14 +1474,11 @@
         <select id="audio-device">
           <option value="">System default</option>
         </select>
-        <button type="button" id="audio-device-refresh"
-                title="Grant the browser microphone permission so device names show up.  Permission is dropped immediately — no audio is captured.">
+        <button type="button" id="audio-device-refresh">
           Show device names
         </button>
       </div>
-      <span class="setting-desc" id="audio-device-desc">
-        Choose the browser’s speakers or headphones.
-      </span>
+      <span class="setting-desc" id="audio-device-desc">Choose the browser's speakers or headphones. Showing names briefly requests microphone permission.</span>
       <div class="settings-row">
         <label for="preview-device">Preview output device</label>
         <select id="preview-device">
@@ -1511,17 +1492,17 @@
         <input type="checkbox" id="pb-prefetch" checked>
         <label for="pb-prefetch">Load the next song early</label>
       </div>
-      <span class="setting-desc" id="pb-prefetch-desc">
-        Start loading the next song as soon as it is picked, so it starts without a gap.  Turn this off only on a slow or metered connection.  On by default.  For browser playback.
-      </span>
+      <span class="setting-desc" id="pb-prefetch-desc">Loads the next track early to reduce gaps.</span>
       <div class="settings-check">
         <input type="checkbox" id="pb-silence-trigger" checked>
         <label for="pb-silence-trigger">Crossfade when a song goes quiet</label>
       </div>
-      <span class="setting-desc" id="pb-silence-trigger-desc">
-        Start the crossfade early when the playing song has gone silent past its halfway point, so long fade-outs leave no dead air.  On by default.  For browser playback.
-      </span>
+      <span class="setting-desc" id="pb-silence-trigger-desc">Starts the crossfade when a track goes silent after its halfway point.</span>
     </fieldset>
+    <div class="settings-row">
+      <button type="button" id="mastering-save">Save sound settings</button>
+    </div>
+    <p class="setting-desc" id="mastering-save-note">Changing the Stereo Tool preset or AGC drive restarts Stereo Tool, with a brief bypass.</p>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-display" aria-labelledby="stab-display" hidden>

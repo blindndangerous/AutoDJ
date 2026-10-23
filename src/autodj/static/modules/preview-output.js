@@ -179,14 +179,10 @@ export function installPreviewOutput({
     return run;
   }
 
-  // A hidden description is still read, so the note is linked only while
-  // it is shown.
   function showNote(text) {
     if (!note) return;
     note.textContent = text || "";
     note.hidden = !text;
-    if (text) select.setAttribute("aria-describedby", note.id);
-    else select.removeAttribute("aria-describedby");
   }
 
   function clearFallbackNote() {
