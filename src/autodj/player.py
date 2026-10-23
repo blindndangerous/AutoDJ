@@ -1,12 +1,11 @@
 """Auto-DJ player: next-track picking and server-side audio playback.
 
 ``autodj serve`` drives the player; the web page is its control surface.
-Offline/local server audio prepares stereo PCM tracks with the next song
-crossfaded into the tail. Stream mode progressively decodes live sources and
-mixes them on the :class:`~autodj.mixbus.MixBus` sample clock; the playout
-worker handles selection and bounded transition work. Outputs receive bus
-blocks, including the sound card (:class:`~autodj.sound_output.SoundDeviceOutput`)
-or stream encoder.
+Server audio progressively decodes live sources and mixes them on the
+:class:`~autodj.mixbus.MixBus` sample clock; offline review keeps its separate
+whole-program renderer. The playout worker handles selection and bounded
+transition work. Outputs receive bus blocks, including the sound card
+(:class:`~autodj.sound_output.SoundDeviceOutput`) or stream encoder.
 """
 
 from __future__ import annotations
