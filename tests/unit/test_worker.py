@@ -1543,9 +1543,10 @@ def test_worker_pair_saves_the_token_and_later_runs_use_it(token_home, simulated
         result = _invoke_worker(["--server", "https://nas.local:8765", "--pair", "1234 5678"], used)
     assert result.exit_code == 0, result.output
     assert paired.call_args.args == ("https://nas.local:8765", "12345678")
-    words = " ".join(result.output.split())  # the console wraps long lines
+    # The console wraps long lines, even inside the file name.
+    words = "".join(result.output.split())
     assert "worker-tokens.json" in words
-    assert "delete that file" in words
+    assert "deletethatfile" in words
     assert token not in result.output
     assert used == [token]
     used.clear()
