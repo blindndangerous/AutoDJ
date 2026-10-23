@@ -1551,7 +1551,6 @@ class LibraryManager:
         from autodj.audio_meta import load_lrc_for
         from autodj.vocals import first_vocal_s, sung_spans
 
-        record = self.catalog.record_for_path(path)
         spans = sung_spans(load_lrc_for(path))
         return {
             "music_fade_drop_db": self.music_fade_drop_db(),
@@ -1559,13 +1558,7 @@ class LibraryManager:
             "loudness": self.cfg.playback.loudness_processing in {"smooth", "stereotool"},
             "lyrics": {"intro": first_vocal_s(spans), "outro": spans[-1][1]} if spans else {},
             "suggestions": self._legacy_point_suggestions(path),
-            "saved_points": {
-                name: value
-                for name, value in record["points"].items()
-                if record["point_sources"].get(name) in {"user", "imported"}
-            }
-            if record
-            else {},
+            "saved_points": self.catalog.pending_scan_points(path),
         }
 
     def store_scan_dj(self, path: Path, meta: Any, *, force: bool = False) -> None:
@@ -1578,9 +1571,9 @@ class LibraryManager:
                 raise RuntimeError("DJ analysis cache is unavailable")
             return
         with self._lock:
+            automatic_markers = (meta.intro_start_s, meta.intro_end_s, meta.outro_start_s)
             saved = [cue for cue in cache.get(str(path)).cues if cue.source != "auto"]
             meta.cues = merge_cues(meta.cues, saved)
-            apply_imported_markers(meta)
             if self.cfg.playback.import_external_cues:
                 from autodj.dj_cues_import import merge_imported_cues
 
@@ -1589,6 +1582,18 @@ class LibraryManager:
                     self._dj_cues_requested = True
                     self._dj_cues_pending.add(str(path))
             record = self.catalog.record_for_path(path)
+            if record is not None:
+                for cue in meta.cues:
+                    if cue.time_s > record["length"]:
+                        logger.debug(
+                            "Dropping cue at %s s past measured length %s s for %s",
+                            cue.time_s,
+                            record["length"],
+                            path,
+                        )
+                meta.cues = [cue for cue in meta.cues if cue.time_s <= record["length"]]
+            meta.intro_start_s, meta.intro_end_s, meta.outro_start_s = automatic_markers
+            apply_imported_markers(meta)
             if record is not None:
                 # Catalog edits may be newer than the worker's scan options or cached markers.
                 # Use the just-validated saved points, including explicit clears, in both stores.
@@ -1606,7 +1611,7 @@ class LibraryManager:
                         for cue in meta.cues
                         if cue.type != marker or value is not None
                     ]
-                meta.cues.sort(key=lambda cue: cue.time_s)
+                meta.cues = merge_cues(meta.cues)
             cache.set(str(path), meta)
             cache.flush(force=force)
 

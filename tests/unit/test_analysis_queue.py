@@ -440,3 +440,25 @@ def test_closed_queue_refuses_work(tmp_path):
         q.held_paths()
     with pytest.raises(RuntimeError):
         q.renew("w", 1)
+
+
+def test_scan_pending_upgrade_retains_rows_without_edit_evidence(tmp_path):
+    """ADR-0008-23. Upgrading a queue cannot invent post-deferral edits for existing rows."""
+    import sqlite3
+
+    path = tmp_path / "library.db"
+    db = sqlite3.connect(path)
+    with db:
+        db.execute(
+            "CREATE TABLE scan_pending (path TEXT PRIMARY KEY, size INTEGER NOT NULL, "
+            "fingerprint TEXT NOT NULL, deadline REAL NOT NULL)"
+        )
+        db.execute("INSERT INTO scan_pending VALUES (?,?,?,?)", (*SONGS[0], 123.0))
+    db.close()
+    queue = AnalysisQueue(path)
+    try:
+        queue.defer_scan(*SONGS[0])
+        assert queue.scan_identity(SONGS[0][0]) == SONGS[0][1:]
+        assert queue._read("SELECT deadline,edit_snapshot FROM scan_pending") == [(123.0, None)]
+    finally:
+        queue.close()

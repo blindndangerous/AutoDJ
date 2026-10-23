@@ -100,8 +100,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-20` | Idle recovery checks run outside the library lock at most every 30 seconds; worker progress limits candidate work to indexed handoffs and failed, stale or expired leases. | automated | `tests/unit/test_library.py::test_idle_recovery_checks_are_throttled_outside_library_lock`; `tests/unit/test_analysis_queue.py::test_busy_worker_recovery_does_not_walk_pending_backlog` |
 | `ADR-0008-21` | Claims check pending membership per candidate, back off unavailable paths and preserve unpublished rows until their deadline, then hand them to recovery under the scan lock. | automated | `tests/unit/test_worker_api.py::test_claim_backs_off_dead_scans_and_reaches_live_song`; `tests/unit/test_worker_api.py::test_claim_hands_off_expired_pending_without_catalog_record`; `tests/unit/test_worker_api.py::test_claim_during_new_scan_tag_read_preserves_work` |
 | `ADR-0008-22` | Decoding recovery reports busy state without completion speech; cue-only refreshes remain idle. Pending cue merges survive snapshot loading. Recovery reloads the catalog at most every 30 seconds plus once on exit. External cue imports run lazily once per pass or drain; remote results request bounded snapshot refreshes off the request path. | automated | `tests/unit/test_library.py::test_recovery_drains_backlog_in_one_run`; `tests/unit/test_library.py::test_recovery_refreshes_catalog_at_bounded_intervals`; `tests/unit/test_library.py::test_external_cues_load_once_per_long_scan_or_drain`; `tests/unit/test_library.py::test_remote_cue_refresh_is_bounded_and_runs_off_request_thread`; `tests/unit/test_library.py::test_remote_scan_before_snapshot_merges_imported_cues`; `tests/unit/test_library.py::test_cue_only_refresh_leaves_import_state_idle`; `tests/unit/test_library.py::test_recovery_resets_count_after_worker_handoff`; `tests/jsmodules/library-folders.test.js::shows recovery progress without completion announcements` |
-| `ADR-0008-23` | Pending scan completion preserves current user/imported points, explicit clears, manual key/BPM and DJ cues on worker and local paths. Saved points use the new measured duration; automatic trim cannot exclude valid manual mix points. | automated | `tests/unit/test_worker_api.py::test_pending_replacement_keeps_current_edits`; `tests/unit/test_library.py::test_pending_tag_refresh_keeps_edits_before_local_decode` |
-| `ADR-0008-24` | Unique pending identities participate in moves; catalog rekey moves pending provenance and retry state transactionally and cancels path-bound leases. Ambiguous or present identities never transfer history. | automated | `tests/unit/test_worker_api.py::test_pending_move_rejects_old_worker_result`; `tests/unit/test_library.py::test_pending_move_requires_unique_identity`; `tests/unit/test_library.py::test_pending_move_preserves_retry_state` |
+| `ADR-0008-23` | Pending scan completion preserves user/imported points, explicit clears and manual key/BPM only when changed after deferral. Both completion paths clamp saved points to measured bounds, fall back to analysis for impossible bounds, deduplicate aligned cues and discard cues past the new length. | automated | `tests/unit/test_worker_api.py::test_pending_replacement_keeps_current_edits`; `tests/unit/test_library.py::test_pending_tag_refresh_keeps_edits_before_local_decode`; `tests/unit/test_worker_api.py::test_pending_completion_preserves_only_edits_after_defer`; `tests/unit/test_worker_api.py::test_scan_saved_cues_are_unique_and_within_duration`; `tests/unit/test_analysis_queue.py::test_scan_pending_upgrade_retains_rows_without_edit_evidence` |
+| `ADR-0008-24` | Unique pending identities participate in moves; catalog rekey moves pending provenance, retry state and failed/stale holds with unchanged expiry transactionally, cancelling only claimed path-bound leases. Ambiguous or present identities never transfer history. | automated | `tests/unit/test_worker_api.py::test_pending_move_rejects_old_worker_result`; `tests/unit/test_library.py::test_pending_move_requires_unique_identity`; `tests/unit/test_library.py::test_pending_move_preserves_retry_state`; `tests/unit/test_worker_api.py::test_pending_move_preserves_lease_hold` |
 
 ## Verification
 
@@ -371,27 +371,35 @@ contracts ADR-0008-11 and ADR-0008-13; this ADR remains Proposed.
 
 ### Amendment clarification 2026-10-22: Edits and moves during pending decoding
 
-Completion reads current catalog provenance instead of the claim-time values. Both worker
-results and local fallback retain user/imported points, including explicit clears, and manual
-key/BPM values. Their provenance follows the new fingerprint. Analysis values are replaced.
-Automatic Start/End suggestions expand when needed to include a valid saved mix point.
-The combined choices then use the existing local normalization: invalid Start/End become the
-whole measured song, and Intro/Outro/Segue outside the resulting range become null. Overlap
-is limited to that range. This preservation applies to deferred completion; ordinary replacement
-scans retain their existing reset behavior.
+Completion compares current catalog choices with a snapshot stored in `scan_pending` at
+initial deferral. The nullable `edit_snapshot` column is added through the queue's existing
+additive schema migration. It records points, point sources, manual tag provenance and
+BPM/key/mode values. Repeated deferral of the same bytes and identity refreshes retain this
+baseline. Worker results and local fallback preserve only user/imported choices that differ
+from that snapshot, including newly explicit clears. Edits made before replacement deferral
+follow ordinary changed-byte rescan behavior. Existing pending rows without a snapshot provide
+no evidence of later edits and preserve none. Retained provenance follows the new fingerprint.
 
-DJ result storage merges the current saved cues and aligns protected mix markers with the
-catalog's validated points, including explicit clears. Catalog and DJ writes remain separate
-transactions, with the existing recovery behavior on cache failure. Editing a tag-only
-listing does not establish measured duration or let local recovery skip decoding. A pending
-tag refresh retains saved choices until decoded measurements can validate their range.
+Saved Start/End are clamped to the measured duration first. Bounds that cannot form a valid
+interval yield to analysis with analysis provenance. Automatic trim expands to include valid
+saved mix points. Intro/Outro/Segue then clamp into the resulting Start/End interval, in the
+same validation order as local normalization. Explicit clears remain clears; numeric points
+never become permanent user clears because the replacement is shorter. Overlap is limited
+to that range.
+
+DJ result storage merges current saved cues, drops cues past the new measured length with a
+debug log, and aligns protected mix markers with the catalog's validated points. A second cue
+merge removes duplicates created by alignment, preferring user over imported over analysis.
+Catalog and DJ writes remain separate transactions, with existing recovery on cache failure.
+Editing a tag-only listing does not establish measured duration or let recovery skip decoding.
+A pending tag refresh retains eligible saved choices until decoded measurements validate them.
 
 Move detection uses pending size/fingerprint for pending records. A present pending record
 blocks matches on both its catalog and pending identities. The one-missing/one-candidate rule
 remains required. Rekey moves the pending row, including new-listing provenance, attempts,
 failure evidence, deadline and retry time, with the catalog key and shared historical rows in
 one transaction. Station-owned history continues through the existing station rekey path.
-Path-bound analysis leases are cancelled rather than transferred: a downloaded result cannot
-gain authority over another path. Old lease submissions are rejected; the new path can receive
-a fresh claim subject to its unchanged retry state. Contracts ADR-0008-23 and ADR-0008-24
+Claimed path-bound analysis leases are cancelled: a downloaded result cannot gain authority
+over another path. Failed and stale holds move with their original expiry. Old lease submissions
+are rejected; the new path can receive a fresh claim subject to its unchanged holds and retry state. Contracts ADR-0008-23 and ADR-0008-24
 cover these refinements. This ADR remains Proposed.

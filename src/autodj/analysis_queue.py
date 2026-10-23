@@ -27,6 +27,7 @@ suppresses local scan decoding and a busy capable worker keeps its backlog.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -117,6 +118,7 @@ class AnalysisQueue:
             self._conn.executescript(_SCHEMA)
             with self._write() as db:
                 for table, column, definition in (
+                    ("scan_pending", "edit_snapshot", "TEXT"),
                     ("scan_pending", "attempts", "INTEGER NOT NULL DEFAULT 0"),
                     ("scan_pending", "retry_at", "REAL NOT NULL DEFAULT 0"),
                     ("scan_pending", "new_listing", "INTEGER NOT NULL DEFAULT 0"),
@@ -445,14 +447,39 @@ class AnalysisQueue:
     ) -> None:
         """Remember scan work durably, with a bounded wait even if nobody claims it."""
         with self._write() as db:
+            snapshot = {}
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='catalog_entries'"
+            ).fetchone():
+                row = db.execute(
+                    "SELECT points,point_sources,user_tags,bpm,key,mode FROM catalog_entries WHERE path=?",
+                    (path,),
+                ).fetchone()
+                if row is not None:
+                    snapshot = {
+                        "points": json.loads(row[0]),
+                        "point_sources": json.loads(row[1]),
+                        "user_tags": json.loads(row[2]),
+                        "bpm": row[3],
+                        "key": row[4],
+                        "mode": row[5],
+                    }
             db.execute(
-                "INSERT INTO scan_pending (path, size, fingerprint, deadline, new_listing) VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO scan_pending (path, size, fingerprint, deadline, new_listing, edit_snapshot) VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(path) "
                 "DO UPDATE SET size=excluded.size, fingerprint=excluded.fingerprint, "
-                "deadline=excluded.deadline, attempts=0, retry_at=0, non_access_failure=0 "
+                "deadline=excluded.deadline, attempts=0, retry_at=0, non_access_failure=0, "
+                "edit_snapshot=excluded.edit_snapshot "
                 "WHERE scan_pending.size != excluded.size "
                 "OR scan_pending.fingerprint != excluded.fingerprint",
-                (path, size, fingerprint, self._now() + WORKER_LEASE_SECONDS, int(new_listing)),
+                (
+                    path,
+                    size,
+                    fingerprint,
+                    self._now() + WORKER_LEASE_SECONDS,
+                    int(new_listing),
+                    json.dumps(snapshot),
+                ),
             )
 
     def scan_created_listing(self, path: str, size: int, fingerprint: str) -> bool:

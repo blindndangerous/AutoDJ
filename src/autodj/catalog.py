@@ -914,6 +914,48 @@ class LibraryCatalog:
                 db.rollback()
                 raise
 
+    def _pending_edits(self, row: sqlite3.Row) -> tuple[dict, list[str]]:
+        """Compare current manual choices with the durable baseline for this pending scan."""
+        pending = (
+            self._db()
+            .execute("SELECT edit_snapshot FROM scan_pending WHERE path=?", (row["path"],))
+            .fetchone()
+        )
+        if pending is None or pending["edit_snapshot"] is None:
+            return {}, []
+        snapshot = json.loads(pending["edit_snapshot"])
+        sources = json.loads(row["point_sources"])
+        saved = {
+            name: value
+            for name, value in json.loads(row["points"]).items()
+            if sources.get(name) in {"user", "imported"}
+            and (
+                name not in snapshot.get("points", {})
+                or value != snapshot["points"][name]
+                or sources[name] != snapshot.get("point_sources", {}).get(name)
+            )
+        }
+        tags = [
+            name
+            for name in _user_tags(row["user_tags"], row["fingerprint"])
+            if name not in snapshot.get("user_tags", {})
+            or any(
+                row[column] != snapshot.get(column)
+                for column in (("key", "mode") if name == "key" else (name,))
+            )
+        ]
+        return saved, tags
+
+    def pending_scan_points(self, path: str | Path) -> dict:
+        """Return only post-deferral point edits for remote scan hints."""
+        with self._lock:
+            row = (
+                self._db()
+                .execute("SELECT * FROM catalog_entries WHERE path=?", (_path(path),))
+                .fetchone()
+            )
+            return self._pending_edits(row)[0] if row is not None else {}
+
     def _put(
         self,
         entry: IndexEntry,
@@ -943,6 +985,7 @@ class LibraryCatalog:
             size, fingerprint = file_fingerprint(path)
             values[_ENTRY_FIELDS.index("size")] = entry.size or size
             values[_ENTRY_FIELDS.index("fingerprint")] = entry.fingerprint or fingerprint
+        saved, tags = self._pending_edits(row) if preserve_edits and row else ({}, [])
         if row:
             old_identity = (row["size"], row["fingerprint"])
             new_identity = (
@@ -962,7 +1005,9 @@ class LibraryCatalog:
             ):
                 # Same file: a key or BPM set by hand in Track info outlives
                 # an analysis that measured its own.
-                for name in _user_tags(row["user_tags"], row["fingerprint"]):
+                for name in (
+                    tags if preserve_edits else _user_tags(row["user_tags"], row["fingerprint"])
+                ):
                     for column in ("key", "mode") if name == "key" else (name,):
                         values[_ENTRY_FIELDS.index(column)] = row[column]
         cols = ",".join(_ENTRY_FIELDS)
@@ -983,11 +1028,25 @@ class LibraryCatalog:
             from autodj.scan_analysis import normalize_basic_points
 
             sources = json.loads(row["point_sources"])
-            saved = {
-                name: value
-                for name, value in json.loads(row["points"]).items()
-                if sources.get(name) in {"user", "imported"}
-            }
+            if points is not None:
+                # Clamp measured bounds first. A start at EOF or an end at zero cannot
+                # form a playable interval and must yield to the analysis suggestion.
+                for name in ("start", "end"):
+                    value = saved.get(name)
+                    if value is not None:
+                        value = min(max(value, 0.0), entry.length)
+                        if (name == "start" and value >= entry.length) or (
+                            name == "end" and value <= 0
+                        ):
+                            del saved[name]
+                        else:
+                            saved[name] = value
+                if (
+                    saved.get("start") is not None
+                    and saved.get("end") is not None
+                    and saved["start"] >= saved["end"]
+                ):
+                    del saved["start"], saved["end"]
             choices = {**(points or {}), **saved}
             start, end = saved.get("start"), saved.get("end")
             if (
@@ -1020,8 +1079,13 @@ class LibraryCatalog:
                 if points is not None
                 else saved.copy()
             )
-            # The current saved choices win before validation against the new duration.
-            # Preserve explicit clears and provenance even when normalization clears a point.
+            # Preserve explicit clears, but clamp numeric mix points into the validated
+            # Start/End interval instead of turning an out-of-range edit into a user clear.
+            if points is not None:
+                for name in ("intro", "outro", "segue"):
+                    value = saved.get(name)
+                    if value is not None:
+                        merged[name] = min(max(value, merged["start"]), merged["end"])
             merged.update({name: value for name, value in saved.items() if name not in merged})
             if points is not None and merged.get("overlap_start") is not None:
                 merged["overlap_start"] = min(
@@ -1036,7 +1100,7 @@ class LibraryCatalog:
                     ),
                     json.dumps(
                         dict.fromkeys(
-                            _user_tags(row["user_tags"], row["fingerprint"]),
+                            tags,
                             values[_ENTRY_FIELDS.index("fingerprint")],
                         )
                     ),
@@ -1980,7 +2044,12 @@ class LibraryCatalog:
                     # Claims name a path. Cancel them so in-flight downloads/results cannot
                     # gain authority over a renamed file; the new path can be claimed afresh.
                     db.execute(
-                        "DELETE FROM analysis_leases WHERE path IN (?,?)", (old_path, new_path)
+                        "DELETE FROM analysis_leases WHERE path IN (?,?) AND state='claimed'",
+                        (old_path, new_path),
+                    )
+                    db.execute(
+                        "UPDATE analysis_leases SET path=? WHERE path=? AND state IN ('failed','stale')",
+                        (new_path, old_path),
                     )
                 db.execute(
                     "UPDATE catalog_entries SET path=? WHERE id=?", (new_path, old_row["id"])

@@ -486,10 +486,10 @@ def test_changed_playable_song_accepts_only_pending_bytes(server, with_vector, r
     assert after["album"] == "New album"
     assert after["genre"] == "Rock"
     assert after["year"] == 2026
-    assert after["bpm"] == 133.0
-    assert (after["key"], after["mode"]) == (7, 1)
+    assert after["bpm"] == 131.0
+    assert (after["key"], after["mode"]) == ((4, 0) if with_vector else (-1, -1))
     assert after["tempo_confidence"] == (0.8 if with_vector else 0.0)
-    assert set(after["user_tags"]) == {"bpm", "key"}
+    assert after["user_tags"] == []
     assert after["points"] == measurements["points"]
     if with_vector:
         np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1][0], vector)
@@ -994,6 +994,8 @@ def test_worker_scan_preserves_user_cues_and_manual_tags(server):
         "manual_tags",
         "dj",
         "shorter",
+        "shorter_intro_only",
+        "invalid_start",
         "analysis",
     ],
 )
@@ -1037,8 +1039,13 @@ def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, 
                 cues=[Cue(25.0, "intro_end", source="user"), Cue(40.0, "hot", "Current", "user")],
             ),
         )
-    elif edit == "shorter":
-        catalog.set_points(path, {"start": 0.0, "end": 180.0, "intro": 170.0})
+    elif edit in {"shorter", "shorter_intro_only", "invalid_start"}:
+        catalog.set_points(
+            path,
+            {"intro": 170.0}
+            if edit == "shorter_intro_only"
+            else {"start": 0.0, "end": 180.0, "intro": 170.0},
+        )
         measurements.update(length=120.0, dj=None)
         measurements["points"] = {
             "start": 1.0,
@@ -1047,6 +1054,8 @@ def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, 
             "outro": 110.0,
             "segue": 115.0,
         }
+        if edit == "invalid_start":
+            catalog.set_points(path, {"start": 170.0, "end": 180.0})
         monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
 
     if fallback:
@@ -1104,10 +1113,141 @@ def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, 
     elif edit == "shorter":
         assert record["points"]["start"] == 0.0
         assert record["points"]["end"] == 120.0
-        assert record["points"]["intro"] is None
+        assert record["points"]["intro"] == 120.0
+        assert record["point_sources"]["intro"] == "user"
+    elif edit == "shorter_intro_only":
+        assert record["points"]["intro"] == 119.0
+        assert record["point_sources"]["intro"] == "user"
+    elif edit == "invalid_start":
+        assert record["points"]["start"] == 1.0
+        assert record["point_sources"]["start"] == "analysis"
+        catalog.set_points(path, {"start": 2.0}, source="analysis")
+        assert catalog.points(path)["start"] == 2.0
     else:
         assert record["points"]["intro"] == 10.0
         assert record["point_sources"]["intro"] == "analysis"
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("timing", ["before", "after", "legacy"])
+@pytest.mark.parametrize("source", ["user", "imported"])
+def test_pending_completion_preserves_only_edits_after_defer(
+    server, monkeypatch, fallback, timing, source
+):
+    """ADR-0008-23. Replacement edits need evidence that they changed after deferral."""
+    from autodj.audio_meta import FileTags
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    catalog, queue = manager.catalog, manager.analysis_queue
+    catalog.set_points(path, {"intro": 50.0}, source=source)
+    catalog.retag(path, {"bpm": 99.0, "key": 7, "mode": 0})
+    path.write_bytes(b"replacement recording")
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    if timing != "before":
+        catalog.set_points(path, {"intro": 55.0}, source=source)
+        catalog.retag(path, {"bpm": 101.0, "mode": 1})
+    if timing == "legacy":
+        with queue._write() as db:
+            db.execute("UPDATE scan_pending SET edit_snapshot=NULL WHERE path=?", (_path(path),))
+    # Repeated discovery must not overwrite the original edit baseline.
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(
+        "autodj.audio_meta.read_file_tags", lambda p: FileTags(length=120.0, bpm=131.0)
+    )
+    assert manager.scan_options(path)["saved_points"] == (
+        {"intro": 55.0} if timing == "after" else {}
+    )
+    measurements = scan_result()
+    measurements["dj"] = None
+    if fallback:
+        entry = replace(make_entry(path), bpm=131.0, key=-1, mode=-1)
+        monkeypatch.setattr(
+            "autodj.library.analyze_basic", lambda *a, **k: (entry, measurements["points"])
+        )
+        monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+        with manager._scan_lock:
+            assert manager._recover_scan_one(False)
+    else:
+        _token, secret = server.token()
+        song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()[
+            "songs"
+        ][0]
+        body, _ = server.result(song, song["lease"], vector=None, scan=measurements)
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+        assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(path)
+    assert record["points"]["intro"] == (55.0 if timing == "after" else 10.0)
+    assert record["point_sources"]["intro"] == (source if timing == "after" else "analysis")
+    assert record["bpm"] == (101.0 if timing == "after" else 131.0)
+    assert (record["key"], record["mode"]) == ((7, 1) if timing == "after" else (-1, -1))
+    assert set(record["user_tags"]) == ({"bpm", "key"} if timing == "after" else set())
+
+
+@pytest.mark.parametrize("cue_case", ["duplicate", "past_end"])
+def test_scan_saved_cues_are_unique_and_within_duration(server, monkeypatch, caplog, cue_case):
+    """ADR-0008-23. Saved markers merge after alignment; old cues cannot exceed new duration."""
+    from autodj.dj_meta import Cue, DjMeta
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    path.write_bytes(b"replacement recording")
+    manager.analysis_queue.defer_scan(_path(path), *file_fingerprint(path))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    manager.catalog.set_points(path, {"intro": 25.0})
+    manager._dj_cache().set(
+        str(path),
+        DjMeta(
+            analysed=True,
+            cues=[
+                Cue(25.0, "intro_end", source="user"),
+                Cue(30.0, "intro_end", source="mixxx"),
+                Cue(180.0, "hot", "Boundary", "user"),
+                Cue(200.0, "hot", "Old", "user"),
+            ],
+        ),
+    )
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    with caplog.at_level(logging.DEBUG, logger="autodj.library"):
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    cues = manager._dj_cache().get(str(path)).cues
+    if cue_case == "duplicate":
+        assert [cue for cue in cues if cue.type == "intro_end"] == [
+            Cue(25.0, "intro_end", source="user")
+        ]
+    else:
+        assert all(cue.time_s <= 180.0 for cue in cues)
+        assert Cue(180.0, "hot", "Boundary", "user") in cues
+        assert any(
+            record.levelno == logging.DEBUG and "200" in record.message for record in caplog.records
+        )
+
+
+@pytest.mark.parametrize("state", ["failed", "stale"])
+def test_pending_move_preserves_lease_hold(server, state):
+    """ADR-0008-24. Moving a held song cannot bypass its original lease expiry."""
+    from autodj.indexer import file_fingerprint
+
+    manager, old = server.manager, server.songs[0]
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    lease = queue.claim("worker", [(_path(old), *identity)], 600)[0]
+    queue.finish(lease, state)
+    queue.defer_scan(_path(old), *identity)
+    expiry = queue._read("SELECT expires_at FROM analysis_leases WHERE path=?", (_path(old),))[0][0]
+    new = old.with_name("moved.flac")
+    old.rename(new)
+    assert manager.catalog.rekey(old, new)
+    assert queue._read(
+        "SELECT state,expires_at FROM analysis_leases WHERE path=?", (_path(new),)
+    ) == [(state, expiry)]
+    assert queue.claim("worker", [(_path(new), *identity)], 600) == []
+    server.clock.now = expiry + 1
+    assert queue.claim("worker", [(_path(new), *identity)], 600)
 
 
 @pytest.mark.parametrize("new_listing", [False, True])

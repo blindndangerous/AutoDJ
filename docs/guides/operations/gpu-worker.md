@@ -83,18 +83,20 @@ bytes change, it discards the measurements, retains the attempt already counted,
 60 seconds for the new bytes to settle. Other eligible songs can proceed during that wait.
 Repeated changes during decoding exhaust the same three-attempt automatic recovery budget.
 
-Edits made while a song waits survive worker completion and local recovery. User/imported
-cue points, explicit clears and manual key/BPM override automatic measurements. Saved points
-are validated against the decoded length: invalid Start/End reset to the whole song, and
-Intro/Outro/Segue outside that range clear. Automatic trim suggestions expand to include valid
-manual mix points. DJ metadata retains current saved cues and uses the catalog's protected
-mix markers. Editing a new listing does not make it measured or skip its pending decoding.
+Edits made after a song is deferred survive worker completion and local recovery. The server
+compares points, point sources and manual BPM/key values with a snapshot taken at deferral.
+Older edits follow ordinary changed-file rescan rules. Pending rows from older versions without
+that snapshot preserve no edits. Explicit point clears remain clears. Saved Start/End clamp to
+the decoded length; an impossible bound yields to analysis. Intro/Outro/Segue clamp to the
+resulting Start/End range. Automatic trim expands to include valid saved mix points.
+DJ metadata deduplicates aligned markers and drops cues beyond the new length, logging those
+drops at debug level. Editing a new listing does not make it measured or skip pending decoding.
 
 A rename or move preserves pending work and play history when exactly one missing song and
 one new file share the pending byte identity, with no present song holding that identity.
 Ambiguous matches remain separate removals and additions. Pending retry state follows the
-new path. Existing worker claims are cancelled, so an old-path result is rejected and a new
-claim can take the song at its new path without resetting its retry budget.
+new path. Existing worker claims are cancelled, so an old-path result is rejected. Failed and stale
+holds move with their original expiry; new claims still respect those holds and the retry budget.
 
 Remote claims select at most one requested batch of
 eligible pending paths in SQL before reading files; local reservations and retry holds are excluded.

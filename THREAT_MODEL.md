@@ -434,15 +434,19 @@ What a worker can do with a valid token:
   the playable record. Tag edits during a pending replacement preserve the record's analysis
   identity and update pending identity in the same transaction. Tag-only listings update both
   identities while retaining the pending row's new-listing provenance.
-  Deferred completion retains current user/imported point provenance and manual key/BPM;
-  worker suggestions cannot overwrite those choices, including explicit clears. Saved points
-  use the local duration-normalization rules, and automatic trim expands to include valid
-  manual mix points. DJ storage uses current saved cues and aligns protected mix markers with
-  the catalog. Editing an unmeasured new listing does not establish measured duration.
-  A confirmed unique pending move transfers pending identity, provenance and retry state in
-  the catalog rekey transaction. Present catalog and pending identities both block ambiguous
-  matches. Path-bound leases are cancelled, so old lease submissions cannot write to either
-  path; fresh claims at the destination remain subject to the preserved retry state.
+  Deferred completion compares current user/imported points and manual key/BPM with a durable
+  deferral snapshot. Only changed choices override results, including explicit point clears;
+  rows without snapshots preserve none. Old-byte edits follow ordinary replacement rules.
+  Saved bounds clamp to measured duration; impossible bounds revert to analysis provenance.
+  Mix points clamp inside those bounds, never becoming user clears solely because the new
+  recording is shorter. Automatic trim expands to include valid saved mix points. DJ storage
+  aligns protected markers, merges duplicates by source priority and drops cues beyond measured
+  length with debug logging. Editing an unmeasured listing does not establish measured duration.
+  A confirmed unique pending move transfers pending identity, edit snapshot, provenance and
+  retry state in the catalog rekey transaction. Present catalog and pending identities both
+  block ambiguous matches. Claimed path-bound leases are cancelled, so old submissions cannot
+  write to either path. Failed and stale holds move with unchanged expiry; destination claims
+  remain subject to those holds and the preserved retry state.
   Scan numbers require numeric types and finite values. Length is positive, at most 24 hours,
   and within the larger of two seconds or two percent of the known catalog duration when that
   duration describes measured, claimed bytes. Silent tag-only listings (zero energy and no
