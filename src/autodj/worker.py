@@ -995,6 +995,11 @@ class Worker:
                         continue
                     empty_since = None
                     held = [str(song["lease"]) for song in songs]
+                    if self.paused:
+                        # Paused by a heartbeat since the claim: nothing to prepare for.
+                        self._release(held)
+                        held = []
+                        continue
                     if not prepared:
                         if self.prepare is not None:
                             self.prepare()

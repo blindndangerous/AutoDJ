@@ -1697,3 +1697,25 @@ def test_command_line_values_are_fixed_and_server_idle_release_reaches_the_worke
         assert made["prepare"] is not None and made["release"] is not None
         CliRunner().invoke(cli, ["worker", "--server", "https://nas:1", "--token", "adj1.x"])
         assert made["fixed"] == frozenset()
+
+
+def test_a_pause_between_claim_and_load_gives_the_songs_back_unprepared(server):
+    """ADR-0008-26. A heartbeat's pause after a claim: no before-command, no model, songs back."""
+    identity = server.identity()
+    steps = []
+    api = QueueApi(identity, [[{"lease": "a" * 32}, {"lease": "b" * 32}]])
+    api.release = lambda leases: steps.append(("given back", list(leases)))
+    clock = [0.0]
+    worker = idle_worker(
+        api,
+        identity,
+        clock,
+        once=True,
+        prepare=lambda: steps.append("prepare"),
+        release=lambda: steps.append("release"),
+    )
+    # The heartbeat thread applies the pause while the claim's reply is on its way.
+    api.on_claim = lambda count: worker.apply_settings({"revision": count, "paused": True})
+    worker._process = lambda *args: steps.append("analyse")
+    worker.run()
+    assert steps == [("given back", ["a" * 32, "b" * 32])]

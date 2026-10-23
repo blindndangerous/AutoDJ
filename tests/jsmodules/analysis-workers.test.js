@@ -409,7 +409,9 @@ describe("managing workers from Settings (#554)", () => {
     expect(byId(`worker-${id}-idle`).value).toBe("5");
     byId("workers-status").textContent = "";
     byId(`worker-${id}-paused`).closest("fieldset").querySelector("button").click();
-    expect(await said()).toMatch(/^Settings for Studio PC saved: paused\./);
+    expect(await said()).toBe("Settings for Studio PC saved: paused, the worker's own batch "
+      + "size, idle release after 5 minutes.  The worker applies them at its next heartbeat, "
+      + "within a minute.");
     const put = request.mock.calls.find(([, options]) => options?.method === "PUT");
     expect(put[0]).toBe(`/api/analysis/workers/${id}/settings`);
     expect(JSON.parse(put[1].body)).toEqual({ paused: true, batch: null, idle_release_minutes: 5 });
@@ -575,5 +577,40 @@ describe("worker rows across refreshes (#554 review)", () => {
       message: "It sent a token whose secret is wrong." }];
     poll();
     expect(await said()).toMatch(/secret is wrong/);
+  });
+});
+
+describe("dismissing refusal notices (#554 review)", () => {
+  // ADR-0008-30
+  it("moves focus to the next notice, then Refresh workers, before a notice goes", async () => {
+    const other = { ...REFUSAL, token_id: "d".repeat(32), name: "Spare PC" };
+    const { request } = install({ refusals: [REFUSAL, other] });
+    // Where focus is as each notice disappears: the reload after the DELETE.
+    const focusAtReload = [];
+    const real = request.getMockImplementation();
+    request.mockImplementation(async (url, options = {}) => {
+      if (url === "/api/analysis/workers" && focusAtReload.length < 9) {
+        focusAtReload.push(document.activeElement);
+      }
+      return real(url, options);
+    });
+    open();
+    await vi.waitFor(() => expect(byId("workers-refusals").children).toHaveLength(2));
+    const [oldPc, sparePc] = byId("workers-refusals").querySelectorAll("button");
+    expect(oldPc.getAttribute("aria-label")).toBe("Dismiss the notice for Old PC");
+    focusAtReload.length = 0;
+    oldPc.focus();
+    oldPc.click();
+    expect(await said()).toBe("Notice for Old PC dismissed.");
+    expect(focusAtReload[0]).toBe(sparePc);
+    expect(document.activeElement).toBe(sparePc);
+    expect(oldPc.isConnected).toBe(false);
+    focusAtReload.length = 0;
+    byId("workers-status").textContent = "";
+    sparePc.click();
+    expect(await said()).toBe("Notice for Spare PC dismissed.");
+    expect(focusAtReload[0]).toBe(byId("workers-refresh"));
+    expect(document.activeElement).toBe(byId("workers-refresh"));
+    expect(byId("workers-refusals").hidden).toBe(true);
   });
 });

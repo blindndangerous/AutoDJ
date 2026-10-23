@@ -77,14 +77,19 @@ export function queueWords(view) {
 
 // "Settings: paused, 2 songs per claim, the worker's own idle release.
 // The worker has applied them."
-export function settingsWords(worker) {
-  const settings = worker.settings || {};
+// "paused, 2 songs per claim, the worker's own idle release"
+function settingsValues(settings = {}) {
   const batch = settings.batch == null
     ? "the worker's own batch size" : `${plural(settings.batch, "song")} per claim`;
   const idle = settings.idle_release_minutes == null
     ? "the worker's own idle release"
     : `idle release after ${plural(settings.idle_release_minutes, "minute")}`;
-  const text = `Settings: ${settings.paused ? "paused" : "running"}, ${batch}, ${idle}.`;
+  return `${settings.paused ? "paused" : "running"}, ${batch}, ${idle}`;
+}
+
+export function settingsWords(worker) {
+  const settings = worker.settings || {};
+  const text = `Settings: ${settingsValues(settings)}.`;
   if (!settings.revision) return text;
   if (worker.settings_applied === true) return `${text}  The worker has applied them.`;
   if (worker.settings_applied === false) return `${text}  Waiting for the worker to apply them.`;
@@ -358,7 +363,7 @@ export function installAnalysisWorkers({
     row.dirty = false;
     fillWorkerRow(row, { ...row.worker, settings: saved,
       settings_applied: row.worker.settings_applied == null ? null : false });
-    say(`Settings for ${name} saved: ${saved.paused ? "paused" : "running"}.  `
+    say(`Settings for ${name} saved: ${settingsValues(saved)}.  `
       + "The worker applies them at its next heartbeat, within a minute.");
   }
 
@@ -429,8 +434,6 @@ export function installAnalysisWorkers({
 
   async function dismissRefusal(row, button) {
     const { refusal } = row;
-    const rows = [...refusalList.querySelectorAll('button[data-action="dismiss-refusal"]')];
-    const index = rows.indexOf(button);
     try {
       await withDisabled(button, () => request(
         `/api/analysis/workers/${encodeURIComponent(refusal.token_id)}/refusal`,
@@ -439,10 +442,19 @@ export function installAnalysisWorkers({
       say(`Could not dismiss the notice for ${refusal.name}: ${errorValue.message}`, "error");
       return;
     }
+    // Focus moves first: removing the focused button would drop it to the page.
+    // The next notice's Dismiss, else the one before, else Refresh workers
+    // (the heading hides with the last notice).
+    const buttons = [...refusalList.querySelectorAll('button[data-action="dismiss-refusal"]')];
+    const index = buttons.indexOf(button);
+    (buttons[index + 1] || buttons[index - 1] || refresh).focus();
+    row.li.remove();
+    refusalRows.delete(refusal.token_id);
+    if (!refusalRows.size) {
+      refusalHeading.hidden = true;
+      refusalList.hidden = true;
+    }
     await loadWorkers();
-    const next = nextRowControl(refusalList, 'button[data-action="dismiss-refusal"]', index,
-      refresh);
-    next.focus();
     say(`Notice for ${refusal.name} dismissed.`);
   }
 

@@ -334,6 +334,9 @@ heartbeat or claim, within about a minute, without a restart. The row says wheth
 applied the latest settings. A worker from an older release cannot apply settings, but Paused still
 stops the server handing it songs; it finishes the batch it holds first.
 
+After restoring the server from an older backup, restart the workers so they take the server's
+settings again: a worker ignores a settings revision at or below the one it already applied.
+
 The server never sends anything for the worker to run. `--before-command` and `--after-command`
 come only from the worker's own command line.
 
