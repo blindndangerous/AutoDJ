@@ -1883,8 +1883,8 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
     url = _print_serve_url_banner(console, staged_server)
     cfg.server = staged_server
     if stream is not None:
-        cfg.station.output = "stream" if stream else "browser"
-        cfg.station.server_audio_too = bool(stream and server_audio)
+        cfg.station.output = "stream" if stream else "local"
+        cfg.station.server_audio_too = bool(server_audio)
         if cfg.default_station is not None:
             cfg.default_station.cfg.station = cfg.station
     if stream is not None or server_cli_override:

@@ -739,6 +739,7 @@ def test_a_runtime_stops_and_closes_once(tmp_path: Path) -> None:
 
     calls: list[str] = []
     runtime = StationRuntime.__new__(StationRuntime)
+    runtime.monitor_output = None
     runtime._stop_task = None
     runtime._close_task = None
 
@@ -969,6 +970,7 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
         _state=SimpleNamespace(should_stop=False), _skip_event=threading.Event()
     )
     runtime = StationRuntime.__new__(StationRuntime)
+    runtime.monitor_output = None
     runtime.slug = "nightowl"
     runtime.stopped = False
     runtime.bridge = SimpleNamespace(  # type: ignore[assignment]
@@ -1007,6 +1009,7 @@ def test_every_stop_step_is_tried_and_a_failed_stop_is_not_remembered() -> None:
         return True
 
     again = StationRuntime.__new__(StationRuntime)
+    again.monitor_output = None
     again._stop_task = None
     again._stop = fails_once  # type: ignore[method-assign]
 
@@ -1045,6 +1048,7 @@ def test_new_station_runtime_ignores_thread_from_previous_run(
     assert started.wait(1)
 
     runtime = StationRuntime.__new__(StationRuntime)
+    runtime.monitor_output = None
     runtime.slug = "nightowl"
     runtime.thread_scope = new_station_scope("nightowl")
     runtime.player_thread = None
@@ -1092,6 +1096,7 @@ def test_station_close_warns_when_background_thread_outlives_deadline(
     assert entered.wait(1)
 
     runtime = StationRuntime.__new__(StationRuntime)
+    runtime.monitor_output = None
     runtime.slug = "nightowl"
     runtime.thread_scope = scope
     runtime.stopped = False

@@ -970,6 +970,7 @@ class Player:
         dry_run: bool = False,
         stream_mode: bool = False,
         server_audio_too: bool = False,
+        server_audio_output: bool = True,
         settings: Any = None,
     ) -> None:
         """Initialise the player with configuration and index.
@@ -992,7 +993,8 @@ class Player:
         self._sim = sim_index
         self._dry_run = dry_run
         self._stream_mode = stream_mode
-        self.live_mixing = stream_mode
+        self.live_mixing = stream_mode or not dry_run
+        self._server_audio_output = server_audio_output
         self._live_files: dict[tuple, BufferedFile] = {}
         self._live_voice_slot: tuple[RenderedTrack, SlotPlan] | None = None
         self._pending_live_source: BufferedFile | None = None
@@ -1293,7 +1295,7 @@ class Player:
         self._record_seed(seed_entry)
         current = seed_entry
 
-        # Browser mode: the page plays the audio; this thread only picks.
+        # Dry-run simulation picks tracks without running an audio bus.
         if self._dry_run:
             self._run_headless(current)
             return
@@ -2975,19 +2977,18 @@ class Player:
                 output.close()
 
     def _run_server_audio(self, current: IndexEntry) -> None:  # pragma: no cover -- sound card
-        """Play the set from *current* through the sound card on the mix bus.
+        """Run the local programme, optionally feeding the server sound card.
 
-        A render-ahead worker keeps the next rendered track ready; the bus
-        pulls it when the playing one ends.  Blocks until the player stops.
-        Not exercised in CI because it needs a real sound device; its parts (the worker, the bus, the output, the callbacks)
-        are tested on their own.
+        Live playout feeds the mix bus until the player stops.
         """
         from autodj.sound_output import SoundDeviceOutput
 
         self.reset_playout(current, 0, pick_mode="seed")
         assert self.bus is not None  # built in __init__ unless dry-run
-        output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
-        self.bus.add_output(output)
+        output = None
+        if self._server_audio_output:
+            output = SoundDeviceOutput(self._state, self._cfg.playback.audio_device or None)
+            self.bus.add_output(output)
         stop = threading.Event()
         watcher = station_thread(
             target=self._stop_when_requested, args=(stop,), name="autodj-bus-stop", daemon=True
@@ -3006,7 +3007,9 @@ class Player:
             self.bus.run(stop)
         finally:
             self._playout.stop()
-            output.close()
+            if output is not None:
+                self.bus.remove_output(output)
+                output.close()
 
     def _record_seed(self, seed: IndexEntry) -> None:
         """Make *seed* the current track and record it as played.

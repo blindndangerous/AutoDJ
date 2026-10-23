@@ -1906,12 +1906,12 @@ describe("static accessibility contracts", () => {
     expect(listen.getAttribute("type")).toBe("button");
     expect(listen.getAttribute("aria-pressed")).toBe("false");
     expect(listen.hasAttribute("aria-label")).toBe(false);
-    expect(spokenText(listen).replace(/\s+/g, " ").trim()).toBe("Listen here");
+    expect(spokenText(listen).replace(/\s+/g, " ").trim()).toBe("Listen");
     expect(listen.querySelector('[aria-hidden="true"]')).not.toBeNull();
-    // Browser mode renders no Listen here button until stream mode shows it.
-    expect(listen.hidden).toBe(true);
-    // Sits in the transport group straight after Play / Pause.
-    expect(listen.previousElementSibling.id).toBe("btn-pause");
+    // Route availability is announced beside a persistent Listen control.
+    expect(listen.hidden).toBe(false);
+    // The route selector names the device path directly before Listen.
+    expect(listen.previousElementSibling.id).toBe("listen-route");
     expect(listen.closest('[role="group"]').getAttribute("aria-label"))
       .toBe("Playback controls");
 

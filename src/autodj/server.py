@@ -123,6 +123,7 @@ from autodj.matched_intros_api import RULE_BODY_MAX_BYTES
 from autodj.matched_intros_api import RULES_PATH as INTRO_RULES_PATH
 from autodj.matched_intros_api import UPLOAD_PATH as INTRO_UPLOAD_PATH
 from autodj.model_identity import CachedModelCommit
+from autodj.monitor_routes import install_monitor_routes
 from autodj.pairing import DeviceRegistry
 from autodj.player_page import install_player_pages
 from autodj.request_page import install_request_pages
@@ -1360,6 +1361,7 @@ def create_app(
         "stutter-worklet.js",
         "freeze-worklet.js",
         "glitch-worklet.js",
+        "local-monitor-worklet.js",
     ):
         app.get(f"/{_asset_name}")(_asset_route(_asset_name))
 
@@ -2794,6 +2796,7 @@ def create_app(
         policy,
         allow_lan_plain_http=bool(getattr(cfg.server, "live_plain_http_lan", False)),
     )
+    install_monitor_routes(app, policy)
 
     def prepare(station: StationRuntime) -> None:
         """Wire a station that is about to start to this app."""
@@ -2997,11 +3000,10 @@ def _extra_station(
         )
         if speakers and _missing_audio_modules():
             raise RuntimeError("Server audio requires soundfile and sounddevice.")
-        if streams:
-            import shutil
+        import shutil
 
-            if shutil.which("ffmpeg") is None:
-                raise RuntimeError("Streaming requires ffmpeg on PATH.")
+        if shutil.which("ffmpeg") is None:
+            raise RuntimeError("Server-mixed audio requires ffmpeg on PATH.")
         first_track = seed_entry
         paths = StationPaths.for_station(cfg, slug)
         paths.state_dir.mkdir(parents=True, exist_ok=True)
@@ -3010,9 +3012,10 @@ def _extra_station(
         player = Player(
             cfg,
             sim,
-            dry_run=not speakers and not streams,
+            dry_run=False,
             stream_mode=streams,
             server_audio_too=streams and speakers,
+            server_audio_output=speakers,
         )
         player._library = library
         ledger = library.station_ledger(slug)
@@ -3046,13 +3049,11 @@ def _extra_station(
                 timezone=cfg.station.timezone or system_timezone(),
                 player_thread=player_thread,
                 stream_mode=streams,
-                server_audio=speakers and not streams,
+                server_audio=not streams,
                 first_track=first_track if streams else None,
                 slug=slug,
                 paths=paths,
             )
-            if not speakers and not streams:
-                bridge.record_seed(first_track)
             runtime.defined_in = spec.defined_in
             seed_entry = None
             return runtime
@@ -3179,8 +3180,7 @@ def serve(
             for a random track.
         host: Interface to bind uvicorn to.
         port: Port to bind uvicorn to.
-        no_playback: Skip server-side audio playback (browser drives audio).
-            With *stream*, ``False`` also plays the mix on the sound card.
+        no_playback: Disable the server sound card; the server still mixes audio.
         stream: Serve the live mix as an MP3 radio stream: the server mixes,
             a station starts a set on the first listener, and the page is a
             remote.  *seed_entry* starts the first set; later sets start
@@ -3296,11 +3296,15 @@ def serve(
     elif startup_policy.pairing_required:
         logger.info("%s", PAIRING_ON_REQUEST_HINT)
 
-    if stream:
-        audio_mode = "radio stream" + (" + server-audio" if not no_playback else "")
+    broadcasts = stream if stream is not None else default.cfg.station.output == "stream"
+    speakers = not no_playback if no_playback is not None else default.cfg.station.server_audio_too
+    if broadcasts:
+        audio_mode = "radio stream"
         logger.info("Stream mode: copy the stream link from Settings, Stream.")
     else:
-        audio_mode = "server-audio" if not no_playback else "browser-driven"
+        audio_mode = "local programme"
+    if speakers:
+        audio_mode += " + server sound card"
     for extra in extra_stations:
         logger.info(
             "Station %s (%s): %s/%s.mp3, status page %s/stations/%s/status%s",

@@ -8,7 +8,7 @@ Start the stream, copy an address reachable from the player, configure access wh
 
 Stream mode serves the live AutoDJ mix as an MP3 radio station that any network audio player can
 open, with AutoDJ's own crossfades, EQ, transition effects and voice liners already mixed in.
-Speakers hear exactly what the web page would play in server-audio mode; there is only one mix.
+Speakers and the browser's Local listening route receive the same station mix.
 
 Turn it on at startup with `autodj serve --stream`, combined with `--lan` so other devices on
 the network can reach it:
@@ -17,7 +17,7 @@ the network can reach it:
 uv run autodj serve --lan --stream
 ```
 
-Choose **Stream** as the station's output in Settings > Stations. Existing installations
+Choose **Radio stream** under **Broadcast** in Settings > Stations. Existing installations
 migrate legacy `[stream] enabled` and `AUTODJ_STREAM_ENABLED` settings into the default station
 definition at startup; the old TOML key and environment variable are migration inputs only.
 For automation, use `AUTODJ_STATION_DEFAULT_STREAM_*` variables for supported stream settings.
@@ -64,7 +64,7 @@ the station's private `secrets.json` and restart AutoDJ:
 Give a player `http://user:pass@host/stream.mp3` (or use `https://` when AutoDJ serves HTTPS).
 The password protects `/stream.mp3` and `/stream.m3u`; the playlist itself never contains
 credentials, so a player opening it must already know them. Some players, possibly Sonos, cannot
-send HTTP Basic credentials. The page's **Listen here** button may also fail when a password is
+send HTTP Basic credentials. The page's **Listen** button with **Stream** selected may also fail when a password is
 set. HTTP sends the password across the network in plain text; use HTTPS if the network is not
 trusted. Settings, Stream shows whether a password is set; edits to this private file require a
 restart. For the default station, the file is `<index_dir>/stations/default/secrets.json`.
@@ -113,10 +113,9 @@ Media, then Open Network Stream, then paste the stream address (or point VLC at 
 
 ## Troubleshooting
 
-- **"Stream mode needs ffmpeg on the PATH"** — install ffmpeg and make sure it is on the PATH
+- **"Server-mixed audio requires ffmpeg on PATH"** — install ffmpeg and make sure it is on the PATH
   for the account running AutoDJ, then start again. `autodj doctor` reports this too, and the
-  container image already includes ffmpeg. AutoDJ never falls back to browser-only mode
-  silently; it refuses to start until ffmpeg is available or `--stream` is dropped.
+  container image already includes ffmpeg. Both Local and Stream playback require it.
 - **The stream address gives a 403 or the player cannot connect** — the host name in the address
   is not in the allowed list. Start with `--lan` so this machine's own names and addresses are
   allowed automatically, or add the exact name the player uses with `--allowed-host` (and its

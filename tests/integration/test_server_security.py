@@ -776,6 +776,22 @@ def test_websocket_rejects_origin_then_missing_cookie(
     assert all(record["route"] == "/ws" for record in rejected[-2:])
 
 
+def test_monitor_websocket_requires_paired_session_and_trusted_origin() -> None:
+    """ADR-0007-03: the private local monitor uses browser control checks."""
+    client = _security_client()
+    assert client.get("/local-monitor-worklet.js").status_code == 200
+    for headers, code in (
+        ({"Origin": "http://evil.example"}, 4403),
+        ({"Origin": "http://testserver"}, 4401),
+    ):
+        with (
+            pytest.raises(WebSocketDisconnect) as denied,
+            client.websocket_connect("/api/monitor", headers=headers),
+        ):
+            raise AssertionError("unauthorized monitor socket unexpectedly opened")
+        assert denied.value.code == code
+
+
 def test_websocket_rejects_duplicate_security_headers() -> None:
     client = _security_client()
 

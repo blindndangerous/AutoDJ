@@ -143,7 +143,7 @@ def test_restored_history_and_browser_seed_advance_do_not_duplicate_seed(
         bridge.player._pick_next.side_effect = [_make_entry(2)]
         bridge.load_persistent_state()
         if record_seed_first:
-            bridge.record_seed(seed)
+            bridge.on_track_started(seed)
         bridge.advance_now()
         assert [row["title"] for row in bridge.history_snapshot()] == [
             "Song 9",

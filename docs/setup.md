@@ -112,7 +112,8 @@ when upgrading that wheel.
 ## Finding uv and FFmpeg
 
 AutoDJ finds these programs on PATH, the operating system's list of executable directories.
-FFmpeg handles common music formats and streaming. The Windows launcher includes registered
+FFmpeg is required for every running station's live mixing, including Local browser
+listening without public broadcasting or server speakers. The Windows launcher includes registered
 user and machine PATH entries in its own process, so tools installed by WinGet can be used
 without opening a new terminal. This does not rewrite your PATH settings.
 

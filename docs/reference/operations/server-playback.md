@@ -4,21 +4,46 @@ Look up the effect of playback controls, speed, processing, volume and idle tran
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
+## Choose how to listen
+
+On Now Playing, choose **Local** or **Stream** in **Listen through**, then press
+**Listen**. This choice belongs to your browser. Changing it stops the previous
+listening route before starting the new one; the station and queue keep running.
+Play, Next and other station controls affect the same programme on both routes.
+
+Local receives the server's mixed programme through a private audio connection.
+It needs HTTPS or localhost and a browser with AudioWorklet support. A remote
+browser can use Local over HTTPS; network and device buffering still affect
+delay. Stream receives the existing encoded broadcast and is unavailable when
+broadcasting is off. Neither route promises a measured DJ monitoring latency.
+
+Page volume, mute and the browser output device affect only this browser.
+Private track, speech and programme previews retain their separate preview
+device and do not go on air. Listening stays with its station when the page
+switches to control another station; the Listen context names that station.
+
+Under Settings, Stations, **Broadcast** selects Local only or Radio stream.
+**Play on the server sound card** separately enables speakers attached to the
+server, off by default. Broadcast and server device configuration apply on the
+next station start; browser listening switches take effect immediately.
+Saved Browser output becomes Local only with server speakers off; saved Server
+sound card output becomes Local only with speakers on. All running stations now
+need FFmpeg. See [ADR 16](../../adr/0016-one-programme-with-browser-listening-routes.md).
+
 ## Controls while streaming
 
 - **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few
   seconds later, once its own playback buffer catches up. **Skip style** (Settings, Transitions, or
   `[playback] skip_style`) can make it a DJ-style exit instead: Echo out, Backspin or Loop roll.
   Each lasts one to two beats, at most 2 seconds, and ends on a beat when the song's tempo is
-  trusted; then the next song starts. Skip style applies to stream mode and server audio only;
-  browser playback keeps its own skip.
+  trusted; then the next song starts. Both listening routes hear the same skip.
 - **Voice liners** use the configured song-count and time triggers. In saved-point playback,
   automatic liners join the same cue-based handoff as queued liners: their saved Start, Segue,
   End, Overlap start and outro permission determine placement across the outgoing Outro and
   incoming Intro. The talk-up checkbox does not affect this path. Selection is committed only when heard.
   Non-saved-point server playback retains the legacy `[playback] liners_talk_up` timing for
   existing configurations; it uses synced lyrics or the detected intro to avoid the vocal when
-  the clip fits. Browser automatic liners keep their existing immediate playback path.
+  the clip fits.
 - **Keep vocals apart** (Settings, DJ mixing, or `[djmix] vocal_guard`, on by default) shortens
   or moves a crossfade when both songs have synced lyrics, so the outgoing singer finishes before
   the incoming one starts. The fade never gets longer, or shorter than 1 second; when nothing
@@ -30,15 +55,14 @@ Look up the effect of playback controls, speed, processing, volume and idle tran
   and full-stop keyboard shortcuts announce "Seeking is not available while streaming."
 - **EQ** is applied once, on the server, so every listener hears the same shaped sound.
 - **Music speed** (Settings, Sound) runs music from 10% slower to 10% faster, with 0 as the
-  default. Type up to two decimal places; the slider's arrow keys move one percentage point.
+  default. Type up to two decimal places in the numeric control.
   Pitch changes with speed. Liners, voice tracks, matched intros and cue previews keep their
   normal speed. Saved cues and seek positions still refer to the original file; clock fitting,
   forecasts and the DMCA and repeat checks on queued songs and listener requests account for the
   changed playing time.
-  Stream and server audio apply changes at the next safe rendered-buffer handoff, keeping the
-  current audio and booked speech intact. Browser playback applies a change immediately when
-  no transition is running. At nonzero speed, ordinary music/liner crossfades use a plain fade
-  so effects cannot change the voice; browser beatmatching also changes pitch. The setting is
+  Server playout applies changes at the next safe handoff, keeping the
+  current audio and booked speech intact. At nonzero speed, ordinary music/liner crossfades use a plain fade
+  so effects cannot change the voice. The setting is
   saved per station as `[playback] music_speed_percent` and creates no audio files.
 - **Sound processing** is chosen in Settings, Sound. Stereo Tool loads the selected `.sts` preset
   when its processor starts; changing the preset restarts it. The bundled Included preset is
@@ -76,11 +100,10 @@ Look up the effect of playback controls, speed, processing, volume and idle tran
   ReplayGain browser, server audio and stream playback use the cached lift, with decoded server
   audio checked against its peak again. Smooth and Stereo Tool use their continuous processors instead of this intro-only lift.
   Off leaves the source unchanged.
-- **Page volume and mute** affect only the page's own "Listen here" playback in the browser.
+- **Page volume and mute** affect only the page's own Listen playback in the browser.
   Each speaker keeps its own volume, set on the speaker or in its own app.
-- **With `--server-audio` as well**, the page's volume and Mute also set the volume and mute of
-  the machine's own speakers, and the page's "Listen here" playback follows them. Stream
-  listeners and speakers still hear the stream at full level.
+- **With server sound-card output enabled**, the server speakers remain an independent
+  output. Browser listening volume and mute do not change them or the broadcast level.
 - Quality (bitrate) is chosen under Settings, Stream: 128, 192, 256 or 320 kbps, default 320.
 - **Station name**, also under Settings, Stream, is the name Sonos, VLC and other players show
   for the station (`[stream] station_name`, default AutoDJ). A player shows a new name the next

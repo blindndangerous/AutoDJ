@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const moduleMocks = [
   "../../src/autodj/static/modules/library-jobs.js",
@@ -248,6 +248,7 @@ function cleanupApp() {
   // A switch remembers its station per browser (#70); every test starts fresh.
   try {
     globalThis.localStorage?.removeItem("autodj.station");
+    globalThis.localStorage?.removeItem("autodj.listenRoute");
   } catch {
     // No storage here: nothing was remembered.
   }
@@ -2683,6 +2684,7 @@ describe("app request behavior", () => {
 });
 
 describe("stream mode", () => {
+  beforeEach(() => globalThis.localStorage?.setItem("autodj.listenRoute", "stream"));
   const streamState = {
     browser_playback: false,
     current_track: { path: "a.mp3", artist: "Artist", title: "Song", bpm: 128 },
@@ -2767,7 +2769,7 @@ describe("stream mode", () => {
 
   it("leaves browser mode unchanged", async () => {
     await setupApp();
-    expect(document.getElementById("btn-listen").hidden).toBe(true);
+    expect(document.getElementById("btn-listen").hidden).toBe(false);
     expect(document.getElementById("stream-idle-note").hidden).toBe(true);
     expect(document.getElementById("now-playing-idle").hidden).toBe(true);
     expect(document.getElementById("progress-track").hidden).toBe(false);
@@ -3055,7 +3057,7 @@ describe("stream mode", () => {
     expect(serverCalls()).toHaveLength(0);
   });
 
-  it("drives the server's speakers too when stream mode has server audio", async () => {
+  it("keeps stream volume and mute browser-local even when server audio is enabled", async () => {
     const serverState = { ...streamState, stream_server_audio: true, volume: 1, is_muted: false };
     const { fetchImpl, webSocket } = await setupApp({
       initialState: serverState,
@@ -3068,28 +3070,24 @@ describe("stream mode", () => {
     const audio = document.getElementById("stream-audio");
     const slider = document.querySelector("#vol");
     const mute = document.querySelector("#btn-mute");
-    const calls = (path) => fetchImpl.mock.calls.filter(([url]) => url === path);
-
     slider.value = "50";
     slider.dispatchEvent(new Event("input"));
     expect(audio.volume).toBeCloseTo(10 ** (-30 / 20), 4);
-    await vi.waitFor(() => expect(calls("/api/volume")).toHaveLength(1));
-    expect(JSON.parse(calls("/api/volume")[0][1].body).volume).toBeCloseTo(10 ** (-30 / 20), 4);
 
     mute.click();
-    await vi.waitFor(() => expect(audio.muted).toBe(true));
-    expect(calls("/api/mute")).toHaveLength(1);
+    await Promise.resolve();
+    expect(audio.muted).toBe(true);
     expect(mute.getAttribute("aria-pressed")).toBe("true");
 
-    // A change made elsewhere (another page, the terminal) reaches this
-    // page's listening as well as the slider and Mute, once the server
-    // has echoed this page's own change.
+    // Station volume and mute updates do not overwrite this browser's level.
     webSocket.onmessage({ data: JSON.stringify({ ...serverState, volume: 0.03, is_muted: true }) });
     webSocket.onmessage({ data: JSON.stringify({ ...serverState, volume: 0.1, is_muted: false }) });
-    expect(slider.value).toBe(String(Math.round((20 * Math.log10(0.1) / 30 + 2) * 50)));
-    expect(audio.volume).toBeCloseTo(0.1, 4);
-    expect(audio.muted).toBe(false);
-    expect(mute.getAttribute("aria-pressed")).toBe("false");
+    expect(slider.value).toBe("50");
+    expect(audio.volume).toBeCloseTo(10 ** (-30 / 20), 4);
+    expect(audio.muted).toBe(true);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+    expect(fetchImpl.mock.calls.some(([url]) => url === "/api/volume" || url === "/api/mute"))
+      .toBe(false);
   });
 
   it("starts a fresh stream-mode page at the server's saved volume and mute", async () => {
@@ -3214,9 +3212,11 @@ describe("stream mode", () => {
       }
     }
     expect(found.detached).toEqual([]);
-    // Web Audio reaches the speakers through the master alone.
+    // Decks use the master; the Local monitor worklet applies its browser
+    // level and connects directly to the destination.
     expect(found.destinations).toEqual([
       "modules/audio-engine.js: _master.connect(_ctx.destination);",
+      "modules/local-monitor.js: current.node.connect(current.context.destination);",
     ]);
     // The decks play through the master; the stream sets the page level
     // on its element first.  The public player page (not the web UI) has
@@ -3374,7 +3374,7 @@ describe("stream mode", () => {
     expect(await options.onPlay()).toBe(true);
   });
 
-  it("moves focus to Play / Pause when a mode change hides the focused control", async () => {
+  it("keeps Listen visible across mode changes and moves focus when seek is hidden", async () => {
     const track = { path: "a.mp3", title: "A" };
     const { webSocket } = await setupApp({
       initialState: { ...streamState, current_track: track },
@@ -3385,8 +3385,8 @@ describe("stream mode", () => {
     webSocket.onmessage({ data: JSON.stringify({
       ...streamState, current_track: track, stream_mode: false,
     }) });
-    expect(listen.hidden).toBe(true);
-    expect(document.activeElement.id).toBe("btn-pause");
+    expect(listen.hidden).toBe(false);
+    expect(document.activeElement).toBe(listen);
 
     const seek = document.getElementById("progress-track");
     seek.focus();
@@ -4252,6 +4252,7 @@ describe("several stations (#70)", () => {
   });
 
   it("keeps Listen here on the station it started on, and says so", async () => {
+    globalThis.localStorage?.setItem("autodj.listenRoute", "stream");
     const app = await setupApp({
       initialState: { stream_mode: true, stream_state: "playing" },
       stations: [AUTODJ, OWL],

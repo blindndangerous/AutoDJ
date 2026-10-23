@@ -286,7 +286,7 @@ def _player(**djmix: object) -> tuple[Player, MagicMock, MagicMock]:
     cfg.djmix.drop_mix = True
     for name, value in djmix.items():
         setattr(cfg.djmix, name, value)
-    player = Player(cfg, make_sim_index(3))
+    player = Player(cfg, make_sim_index(3), dry_run=True)
     cur, nxt = player._sim.entries[0], player._sim.entries[1]
     cur.bpm, nxt.bpm = 120.0, 123.0
     return player, cur, nxt
@@ -549,7 +549,7 @@ def test_both_options_on_change_nothing_when_they_do_not_apply() -> None:
         cfg.djmix.beatmatch = True
         cfg.djmix.drop_mix = on
         cfg.djmix.key_shift = on
-        player = Player(cfg, make_sim_index(3))
+        player = Player(cfg, make_sim_index(3), dry_run=True)
         cur, nxt = player._sim.entries[0], player._sim.entries[1]
         cur.bpm, nxt.bpm = 120.0, 123.0
         rng = np.random.default_rng(7)

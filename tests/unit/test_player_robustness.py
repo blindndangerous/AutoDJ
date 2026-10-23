@@ -217,7 +217,7 @@ class TestFailedPickRecovers:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
-        player = _player()
+        player = _player(dry_run=True)
         current = player._sim.entries[0]
         player._sim.find_next_for_path = MagicMock(  # type: ignore[method-assign]
             side_effect=SimilarityError("Track not in index")

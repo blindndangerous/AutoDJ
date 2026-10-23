@@ -264,7 +264,7 @@ class TestDefaultAndEnvironmentConfig:
         )
         assert old.default_station is not None
         assert old.default_station.cfg.stream.bitrate == 320
-        assert old.default_station.cfg.station.output == "browser"
+        assert old.default_station.cfg.station.output == "local"
         assert move_station_tables(old)
         migrated = load_config(None, environ={})
         assert migrated.default_station is not None
@@ -285,7 +285,8 @@ class TestDefaultAndEnvironmentConfig:
         later = load_config(None, environ={})
         assert later.default_station is not None
         assert later.default_station.cfg.stream.bitrate == 128
-        assert later.default_station.cfg.station.output == "server"
+        assert later.default_station.cfg.station.output == "local"
+        assert later.default_station.cfg.station.server_audio_too is True
 
         scoped = load_config(
             None,
@@ -856,13 +857,14 @@ class TestServerConfig:
         assert cfg.effective_allowed_origins() == ["http://127.0.0.1:8080"]
 
     def test_output_and_monitoring_modes_validate(self) -> None:
-        assert StationConfig.from_dict({}).output == "browser"
-        assert StationConfig.from_dict({"output": "server"}).output == "server"
+        assert StationConfig.from_dict({}).output == "local"
+        assert StationConfig.from_dict({"output": "server"}).output == "local"
         assert StationConfig.from_dict(
             {"output": "stream", "server_audio_too": True}
         ).server_audio_too
-        with pytest.raises(ValueError, match="server_audio_too requires"):
-            StationConfig.from_dict({"output": "browser", "server_audio_too": True})
+        assert StationConfig.from_dict(
+            {"output": "local", "server_audio_too": True}
+        ).server_audio_too
         with pytest.raises(ValueError, match=r"station\.output"):
             StationConfig.from_dict({"output": "invalid"})
 

@@ -1,7 +1,7 @@
 # 3. Web UI defaults to browser-driven audio playback
 
 Date: 2026-05-05
-Status: Accepted. Superseded in part by [ADR 4](0004-server-mix-bus-and-stream-mode.md):
+Status: Accepted historical decision; superseded for runtime playback by [ADR 16](0016-one-programme-with-browser-listening-routes.md). Previously superseded in part by [ADR 4](0004-server-mix-bus-and-stream-mode.md):
 the server-side modes and where their playback effects live. The `autodj play` command this
 record mentions was removed in 0.19.0; the notes marked "Superseded" below say what holds now.
 
@@ -85,6 +85,14 @@ with fake audio contexts do not prove every browser/device combination. Follow
 a changed default output or browser-delivery architecture. This amendment adds
 no new output path. Record actual checks and their limits in the relevant PR.
 
+## Amendment, 2026-10-22: one programme, browser listening routes
+
+[ADR 16](0016-one-programme-with-browser-listening-routes.md) replaces the
+browser-owned runtime playback clock with one server programme. Browser Local
+and Stream choices only select how that browser hears the programme. Private
+preview routing and device-local controls remain independent of the broadcast.
+Dry-run players remain available for isolated simulation and review.
+
 ## Current contracts
 
 IDs are stable and are never recycled. Automated means an existing regression
@@ -94,5 +102,5 @@ or evidence limits. Narrative above retains rationale and scope.
 
 | ID | Constraint | Method | Evidence |
 | --- | --- | --- | --- |
-| `ADR-0003-01` | Browser output constructs no server mix bus; explicit server-audio output does. | automated | `tests/unit/test_player_stream_mode.py::test_server_audio_builds_the_bus_up_front_and_browser_mode_has_none` |
+| `ADR-0003-01` | Retired: runtime browser-owned playback is superseded by ADR 16's server programme. | retired | Dry-run simulation still constructs no bus, but is not a browser station output. |
 | `ADR-0003-02` | Native browser playback/device behavior needs supported browser/device evidence. | manual | Exercise browser playback and device selection on the affected engine/device; unit audio-context doubles are insufficient. |

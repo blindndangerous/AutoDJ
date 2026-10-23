@@ -31,7 +31,7 @@ class _Cache:
 def _player() -> Player:
     cfg = make_cfg_mock()
     cfg.playback.transition_mode = "fixed"
-    return Player(cfg, make_sim_index(4))
+    return Player(cfg, make_sim_index(4), dry_run=True)
 
 
 def _lyrics(player: Player, by_path: dict[str, list[tuple[float, str]]]) -> MagicMock:

@@ -43,7 +43,8 @@ import { installSchedulerPanel } from "./modules/scheduler-panel.js";
 import { installCartWall } from "./modules/cart-wall.js";
 import { installVoiceTracker } from "./modules/voice-tracker.js";
 import { installAdsPanel } from "./modules/ads-panel.js";
-import { createStreamMode, createStreamSettings } from "./modules/stream-mode.js";
+import { createStreamSettings } from "./modules/stream-mode.js";
+import { createListening } from "./modules/listening.js";
 import { createRecordingControls } from "./modules/recording-controls.js";
 import { installRelaySettings } from "./modules/relay-settings.js";
 import { installLiveDesk } from "./modules/live-talk.js";
@@ -185,13 +186,19 @@ announceTrackChanges.addEventListener("change", () => {
   }
 });
 
-// Stream mode (`autodj serve --stream`): the server mixes, so this page is
-// a remote plus an optional listener.  See modules/stream-mode.js.
-const streamMode = createStreamMode({
+// The listener chooses a Local PCM monitor or the encoded Stream for this
+// browser; station playout remains on the server. See listening.js.
+const streamMode = createListening({
   audio: streamAudio,
   button: btnListen,
+  select: document.getElementById("listen-route"),
+  note: document.getElementById("listen-unavailable"),
+  monitorUrl: () => pinnedStationApi("/api/monitor", listenStation),
+  level: () => ({ volume: _pageGain, muted: _pageMuted }),
+  sinkId: () => audioDeviceSelect.value,
   idleNote: document.getElementById("stream-idle-note"),
   srStatus: document.getElementById("sr-status"),
+  onState: () => renderListenContext(),
   // Listen here plays the station it was started on, whichever station the
   // page controls later (#70); a reconnect asks that station again.
   fetchInfo: () => requestJson(pinnedStationApi("/api/stream", listenStation)),
@@ -287,9 +294,7 @@ window.addEventListener("hashchange", () => {
 });
 // Last pushed stream_mode, for the handlers that run between pushes.
 let _lastStreamMode = false;
-// Stream mode with --server-audio: the page's volume and Mute also drive
-// the machine's own speakers.
-let _lastStreamServerAudio = false;
+// Listener level and mute are local to this browser.
 // Live DJ (#48): the live line and Talk on Now Playing, and Settings >
 // Live DJ.  The tab shows in stream mode (saying why when the station
 // cannot go live) or whenever the server says it can; Talk shows only
@@ -622,15 +627,12 @@ function applyState(s, { announceTrack = true } = {}) {
   // Stream mode never starts the deck engine, whatever browser_playback
   // says, so every browser-playback branch below reads browserMode.
   const inStream = Boolean(s.stream_mode);
-  // A mode flip (server restart) can hide the control that has focus:
-  // Listen here leaving stream mode, or the seek slider entering it.
+  // A mode flip can hide the seek slider when stream mode starts.
   // Focus goes to Play / Pause instead of falling to the page top.
   const focused = document.activeElement;
-  const losesFocus = (!inStream && focused === btnListen)
-    || (inStream && focused && focused.id === "progress-track");
+  const losesFocus = inStream && focused && focused.id === "progress-track";
   _lastStreamMode = inStream;
-  _lastStreamServerAudio = inStream && Boolean(s.stream_server_audio);
-  streamMode.apply(s);
+  streamMode.apply(s, currentStation());
   streamSettings.apply(s);
   if (s.stream_mode) recordingControls.apply(s.recording);
   else recordingControls.reset();
@@ -780,13 +782,10 @@ function applyState(s, { announceTrack = true } = {}) {
   // turned into 0.  Skip the overwrite while the user
   // is actively dragging / arrow-keying so the in-flight POST round-trip
   // can't fight the input.
-  // In stream mode the slider and Mute belong to this page's own
-  // listening, so the station's volume and mute are not mirrored, except
-  // once: a page with no level of its own yet starts from the server's
-  // saved volume and mute, never from the slider's 100 % default.  With
-  // --server-audio as well they drive the machine's speakers, and this
-  // page's listening follows the server's volume and mute.
-  const pageOnlyVolume = inStream && !_lastStreamServerAudio;
+  // In stream or local monitor mode the slider and Mute belong to this
+  // page's own listening. A page with no level of its own yet starts from
+  // the server's saved volume and mute, never from the slider's default.
+  const pageOnlyVolume = Boolean(s.monitor_available) || inStream;
   const takeServerLevel = !pageOnlyVolume || !_pageLevelSet;
   if (takeServerLevel && !volumeSaveHolds(s.volume)) {
     // After the link has dropped, a server volume above the page's own
@@ -1039,11 +1038,15 @@ async function _applySink(sinkId, { userInitiated = false } = {}) {
   // ctx.setSinkId (Firefox 116+) AND only works when we're playing the
   // <audio> directly without Web Audio interception (rare path).
   let lastErr = null;
+  try {
+    await streamMode.setSink(sinkId || "");
+    if (typeof streamAudio.setSinkId === "function") await streamAudio.setSinkId(sinkId || "");
+  } catch (err) { lastErr = err; }
   if (_ctxSinkSupported()) {
     try {
       // Chromium accepts "" or string id; null = system default.
       await _ctx.setSinkId(sinkId || "");
-      return true;
+      if (!lastErr) return true;
     } catch (err) {
       lastErr = err;
       console.warn("AudioContext.setSinkId failed:", err);
@@ -1487,7 +1490,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
       applyPageLevel();
       setPlaybackStale(false);
       // An advance or a deck load that failed in the outage goes again,
-      // and so does Listen here waiting for the stream.
+      // and so does this page's listener waiting for its audio route.
       setLinkUp(true);
       streamMode.setLinkUp(true);
     }
@@ -1538,9 +1541,9 @@ function connectWS({ quiet = false, switching = false } = {}) {
     setPlaybackStale(true);
     // A dropped link is not a stop.  A tunnel in front of AutoDJ closes
     // the websocket every few minutes (codes 1005 and 1006), and stopping
-    // here silently ended Listen here and the decks while the next "Live"
-    // claimed all was well.  The music plays on: Listen here is its own
-    // connection, and the decks have their buffered files and retry a
+    // here silently ended listening and the decks while the next "Live"
+    // claimed all was well. The listener has its own connection, and the
+    // decks have their buffered files and retry a
     // load or an advance once the link is back.  Playback stops only when
     // the session really ended: a 4401 close (handled above), any request
     // answered 401, or the auth recheck below, which all end in
@@ -1662,7 +1665,7 @@ function titleSegments(track) {
   return track ? [track.artist, track.title].filter(Boolean) : [];
 }
 
-// Listen here says which station it plays once the page controls another.
+// The listener note names its pinned station when the page controls another.
 function renderListenContext() {
   const elsewhere = streamMode.isListening() && listenStation !== currentStation();
   const text = elsewhere ? `Playing ${stationName(listenStation)}` : "";
@@ -1673,6 +1676,7 @@ function renderListenContext() {
 
 function setOffAir(offAir) {
   stationOffAir = offAir;
+  if (offAir) streamMode.setMonitorAvailable(false, currentStation());
   setStoppedPlaybackControls(offAir);
   if (offAir) stoppedActionsObserver.observe(document.body, { childList: true, subtree: true });
   else stoppedActionsObserver.disconnect();
@@ -1918,6 +1922,7 @@ async function switchStation(slug) {
   if (!await confirmLeavingStation(entry.name)) return;
   if (slug === currentStation()) return;
   selectStation(slug);
+  streamMode.setMonitorAvailable(false, slug);
   rememberStationInAddress(slug);
   rememberLastStation(slug);
   const socket = _ws;
@@ -2329,9 +2334,9 @@ function sayMuteState(muted) {
 }
 
 btnMute.addEventListener("click", async () => {
-  // Stream mode: mute this page's listening only, never the station.
-  // With --server-audio as well, the server's mute covers both.
-  if (_lastStreamMode && !_lastStreamServerAudio) {
+  // Stream and local monitor mute this page's listening only, never the
+  // station.
+  if (_lastStreamMode || _lastState?.monitor_available) {
     _pageMuted = !_pageMuted;
     applyPageLevel();
     renderMute(_pageMuted);
@@ -2496,6 +2501,7 @@ let _pageLevelSet = false;
 // and before any element starts playing.
 const _ownLevelPreviews = new WeakSet();
 function applyPageLevel() {
+  streamMode.setLevel(_pageGain, _pageMuted);
   setVolume(_pageGain);
   setMuted(_pageMuted);
   const deckElements = new Set(decks.map((deck) => deck.audio));
@@ -2524,13 +2530,11 @@ volSlider.addEventListener("input", () => {
   // Down arrow shortcuts); otherwise NVDA said the volume twice.
   volSlider.setAttribute("aria-valuetext", `${val}%`);
   const spokenBySlider = document.activeElement === volSlider;
-  // Stream mode drives this page's listening, and goes to the server only
-  // when --server-audio plays the mix on the machine's speakers too.  The
-  // station's listeners never hear the change.
+  // Stream and local monitor volume drive this page's listening only.
   _pageGain = _sliderToGain(val);
   _pageLevelSet = true;
   applyPageLevel();
-  if (!_lastStreamMode || _lastStreamServerAudio) sendVolume(val);
+  if (!_lastStreamMode && !_lastState?.monitor_available) sendVolume(val);
   // Polite announce for shortcut presses, debounced so holding the key
   // does not read every intermediate step.
   // Cleared 3 s after the announcement so AT users running with a
@@ -2648,15 +2652,15 @@ installHotkeys({
     void switchStation(all[(at + by + all.length) % all.length].slug);
     return true;
   },
-  // In stream mode Play / Pause stops the station for every listener, so
-  // Space and k toggle Listen here (this page only) instead.
+  // During server-mixed playout Play / Pause stops the station for every
+  // listener, so Space and K toggle this browser's listener instead.
   togglePlay:  () => {
-    if (!_lastStreamMode) {
+    if (!_lastStreamMode && !_lastState?.monitor_available) {
       btnPause.click();
       return;
     }
     btnListen.click();
-    // A focused Listen here speaks its own pressed state.
+    // A focused Listen button speaks its own pressed state.
     if (document.activeElement !== btnListen) {
       srSpeak(streamMode.isListening() ? "Listening" : "Stopped listening");
     }
@@ -2671,14 +2675,15 @@ import {
 
 // The OS media keys (and the system's media overlay) can reach any tab,
 // including one where the listener never played, so they never start
-// sound on a page that has not opted in with its own Play or Listen here.
-// In stream mode they start and stop Listen here, like Space.  Pause only
+// sound on a page that has not opted in with its own Play or Listen button.
+// For server-mixed playout they start and stop this browser's listener.
+// Pause only
 // ever stops: a page that is not playing ignores it, where the server's
 // pause toggle would have unpaused the station.  Each returns true when
 // the key is dealt with here, ignored included; false lets the server's
 // pause toggle run.
 async function mediaKeyPlay() {
-  if (_lastStreamMode) {
+  if (_lastStreamMode || _lastState?.monitor_available) {
     if (_listenOptedIn && !streamMode.isListening()) await streamMode.toggleListen();
     return true;
   }
@@ -2695,7 +2700,7 @@ async function mediaKeyPlay() {
 }
 
 function mediaKeyPause() {
-  if (_lastStreamMode) {
+  if (_lastStreamMode || _lastState?.monitor_available) {
     streamMode.stop();
     return true;
   }
@@ -3233,9 +3238,8 @@ function startAuthenticatedApp(initialState) {
   installLibraryJobs(_libEls);
   // Audio dependencies are owned by the audio engine. Inject closures
   // that read its live bindings and stop liner playback after auth expiry.
-  // Whenever the server mixes the audio (stream mode or --server-audio),
-  // Test asks the server to play the liner or time check into that mix;
-  // only browser playback plays it on this page.
+  // When playout is server-mixed, Test asks the server to play the liner
+  // or time check into that mix; browser playback plays it on this page.
   const testOnServer = () => _lastStreamMode || _lastState?.browser_playback === false;
   // Scheduled liners and the time check after the hour join music that is
   // playing: none plays while paused, or after a hard stop (the session

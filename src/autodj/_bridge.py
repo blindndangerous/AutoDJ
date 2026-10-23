@@ -31,6 +31,7 @@ from autodj.settings_bodies import PAGE_SAVED_BREAKS, PAGE_SAVED_REQUESTS
 
 if TYPE_CHECKING:
     from autodj.indexer import IndexEntry
+    from autodj.monitor import MonitorOutput
     from autodj.repeat_rules import PlayRecord
     from autodj.settings_bodies import PlaybackSettingsBody
 
@@ -419,6 +420,7 @@ class PlayerBridge(LibraryAccess):
     # set together by :meth:`attach_stream`.
     stream: Any = None
     station: Any = None
+    monitor_output: MonitorOutput | None = field(default=None, init=False)
     # The relays to other servers (:class:`~autodj.relay.RelayManager`),
     # when any are configured.
     relays: Any = None
@@ -782,13 +784,6 @@ class PlayerBridge(LibraryAccess):
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
-
-    def record_seed(self, entry: Any) -> None:
-        """Append the seed track to history before the first advance fires."""
-        with self._history_lock:
-            if entry is not None and not self._history_started:
-                row = self._append_history(entry)
-                self._open_play = (entry, row)
 
     def seek(
         self,
@@ -1494,15 +1489,13 @@ class PlayerBridge(LibraryAccess):
             "library_job": _library_job_snapshot(),
             # A library problem that changes what plays (#386), or None.
             "library_problem": _library_problem(self.player._cfg),
-            # Browser-side audio drives playback only when the server is
-            # headless (dry_run: no --server-audio, or missing audio deps) and
-            # not serving a stream.
+            # Runtime stations own a bus; dry-run consumers retain this signal.
             "browser_playback": bool(getattr(self.player, "_dry_run", False))
             and not self.stream_mode,
             "settings": self.get_settings(),
             "stream_mode": self.stream_mode,
-            # Stream mode with --server-audio: the machine's sound card plays
-            # the mix too, so the page's volume and Mute drive it.
+            "monitor_available": self.player.bus is not None,
+            # Server speakers are independent of this browser's listening route.
             "stream_server_audio": self.stream_mode
             and bool(getattr(self.player, "_server_audio_too", False)),
             "stream_state": self.station.state if self.stream_mode else None,

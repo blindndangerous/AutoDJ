@@ -57,7 +57,7 @@ export async function audit(name, launcher) {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       const ctx = new Ctx();
       out.audio_state = ctx.state;
-      const names = ["bitcrusher", "stutter", "freeze", "glitch"];
+      const names = ["bitcrusher", "stutter", "freeze", "glitch", "local-monitor"];
       for (const n of names) {
         try {
           await ctx.audioWorklet.addModule(`${origin}/${n}-worklet.js`);

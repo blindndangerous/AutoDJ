@@ -97,12 +97,12 @@ listeners" or "Oldies Hour, off air"; the station the page controls has a tick a
   chosen and opens it when the address names none; the address wins. An address naming a
   station that is not configured opens the default station and says so; if the station list
   cannot be loaded, the page keeps the station the address names and loads the list again.
-- **Listen here** keeps playing the station it was started on. While the page controls another
+- **Listen** keeps playing the station it was started on. While the page controls another
   station, a line under the controls says which, for example "Playing AutoDJ"; pressing Listen
-  here stops it, and pressing it again plays the station the page now controls.
-- **Browser playback:** when the selected station plays in the browser, only that
-  page's own decks play it. Switching away asks first, because the page then stops playing it;
-  the station itself goes on for everyone else.
+  stops it, and pressing it again plays the station the page now controls.
+- **Local / Stream:** either listening route receives the same server-owned
+  programme. Its volume and mute belong to the browser; private previews remain
+  separate. Switching the route does not restart the station.
 - **A stopped station:** choosing one, or having the station stopped while the page controls it,
   shows "Night Owl Radio is off air." with a **Start Night Owl Radio** button on Now Playing. The
   page looks every 10 seconds whether the station is back. **Settings, Stations** has Stop and

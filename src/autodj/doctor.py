@@ -468,7 +468,7 @@ def _dependency_check() -> DoctorCheck:
         issues.append("FFmpeg missing")
         details.append(
             "Install FFmpeg to index, analyse and mix .mp3, .m4a, .mp4 and .aac files, "
-            "which are skipped without it, and to use stream mode. Optional ALAC browser transcoding is "
+            "which are skipped without it, and for server-mixed playback. Optional ALAC browser transcoding is "
             "unavailable; raw ALAC fallback remains available. "
             "On Windows, interactive `autodj doctor` offers installation through WinGet. "
             "Otherwise install FFmpeg from https://ffmpeg.org/download.html "
@@ -603,10 +603,12 @@ def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     Returns:
         A DoctorCheck describing stream-mode readiness.
     """
-    if cfg.station.output != "stream":
-        return DoctorCheck("stream", CheckStatus.PASS, "stream mode off")
     if shutil.which("ffmpeg") is None:
-        return DoctorCheck("stream", CheckStatus.FAIL, "FFmpeg missing; stream mode cannot start")
+        return DoctorCheck(
+            "stream", CheckStatus.FAIL, "FFmpeg missing; server-mixed playback cannot start"
+        )
+    if cfg.station.output != "stream":
+        return DoctorCheck("stream", CheckStatus.PASS, "local server-mixed playback; broadcast off")
     if is_loopback_bind(cfg.server.host) and not cfg.server.lan:
         return DoctorCheck(
             "stream",

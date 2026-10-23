@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from autodj.pairing import DeviceRegistry
 from autodj.server import _version_info
@@ -68,6 +70,29 @@ def test_revoked_device_loses_api_access_without_server_restart(bridge, tmp_path
     status = client.get("/api/auth/status").json()
     assert status["authenticated"] is False
     assert status["device_id"] is None
+
+
+def test_revoked_browser_session_loses_monitor_socket(bridge, tmp_path) -> None:
+    """ADR-0007-01: a monitor socket loses authority after its browser is revoked."""
+    from autodj.monitor import MonitorOutput
+
+    client, registry = _paired_client(bridge, tmp_path)
+    paired = client.post(
+        "/api/pair",
+        json={"code": client.app.state.request_pairing_code()[0], "device_name": "Monitor"},
+    ).json()
+    station = client.app.state.stations.default
+    output = MonitorOutput()
+    bridge.player.bus = MagicMock()
+    station.monitor_output = output
+    bridge.monitor_output = output
+
+    with client.websocket_connect("/api/monitor") as websocket:
+        assert registry.revoke(paired["device_id"])
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_bytes()
+    assert closed.value.code == 4401
+    assert output.listener_count == 0
 
 
 def test_pairing_rejects_oversized_body_before_json_parsing(bridge, tmp_path) -> None:

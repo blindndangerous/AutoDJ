@@ -1,5 +1,14 @@
 # Threat model: AutoDJ
 
+Private Local listening uses the paired-operator `/api/monitor` WebSocket and
+its named-station alias. It checks Host, Origin and browser authentication and
+revalidates socket sessions, including trusted-proxy expiry. Public stream,
+announcer and worker credentials do not authorize this monitor. A station caps
+monitor clients at eight, bounds each audio queue and drops old audio for slow
+consumers; blocked sends time out. The connection only sends programme audio to
+the browser and rejects incoming application messages. It never receives
+private preview audio or commands that advance the station.
+
 Architecture discovery starts at the [ADR index](docs/adr/README.md).
 [Proposed access-boundary ADR 7](docs/adr/0007-separate-browser-worker-and-listener-access.md)
 summarizes existing trust separation for review and links its code/tests;

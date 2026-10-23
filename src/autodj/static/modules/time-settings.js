@@ -22,13 +22,8 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   function showOptions(value) {
     output.value = value.output;
     monitor.checked = value.server_audio_too;
-    monitor.disabled = output.value !== "stream";
     cap.value = value.liner_upload_max_mib;
   }
-  output?.addEventListener("change", () => {
-    monitor.disabled = output.value !== "stream";
-    if (monitor.disabled) monitor.checked = false;
-  });
   optionsSave?.addEventListener("click", async () => {
     try {
       showOptions(await request("/api/station-settings", {

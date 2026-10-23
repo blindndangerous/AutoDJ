@@ -199,6 +199,8 @@ jobs:
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
       - run: npx --no-install playwright install --with-deps chromium firefox
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Check rendered documentation
         shell: bash
         env:

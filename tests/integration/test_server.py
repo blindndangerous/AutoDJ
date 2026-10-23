@@ -1537,24 +1537,6 @@ class TestPlayerBridge:
         assert bridge.toggle_mute() is True
         assert bridge.toggle_mute() is False
 
-    def test_record_seed_appends_when_history_empty(self, bridge) -> None:
-        seed = _make_entry(1)
-        bridge._play_history = []
-        bridge.record_seed(seed)
-        assert len(bridge._play_history) == 1
-
-    def test_record_seed_skipped_when_entry_none(self, bridge) -> None:
-        bridge._play_history = []
-        bridge.record_seed(None)
-        assert bridge._play_history == []
-
-    def test_record_seed_skipped_when_history_already_populated(self, bridge) -> None:
-        seed = _make_entry(1)
-        bridge.on_track_started(seed)
-        bridge.record_seed(seed)
-        assert len(bridge._play_history) == 1
-        assert bridge._play_history[0]["title"] == seed.title
-
     def test_search_by_title(self, bridge) -> None:
         results = bridge.search("song")
         assert len(results) > 0
@@ -2049,8 +2031,8 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = _test_config(tmp_path)
-        cfg.station.output = "browser"
-        cfg.default_station.cfg.station.output = "browser"
+        cfg.station.output = "local"
+        cfg.default_station.cfg.station.output = "local"
         sim = _make_sim_mock()
         player_run = MagicMock()
 
@@ -2078,7 +2060,7 @@ class TestServeFunction:
             assert client.get("/api/version").status_code == 200
             runtime = app.state.stations.get("default")
             assert runtime.stream_mode is False
-            assert runtime.server_audio is False
+            assert runtime.server_audio is True
             assert runtime.bridge.player.on_track_started is not None
             player_run.assert_called_once_with(seed_entry=None)
 
@@ -2097,15 +2079,10 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg_mock = _test_config(tmp_path)
-        output = (
-            "stream"
-            if serve_kwargs.get("stream")
-            else ("server" if not serve_kwargs.get("no_playback", False) else "browser")
-        )
+        output = "stream" if serve_kwargs.get("stream") else "local"
+        speakers = not serve_kwargs.get("no_playback", True)
         cfg_mock.station.output = output
-        cfg_mock.station.server_audio_too = output == "stream" and not serve_kwargs.get(
-            "no_playback", False
-        )
+        cfg_mock.station.server_audio_too = output == "stream" and speakers
         cfg_mock.default_station.cfg.station.output = output
         cfg_mock.default_station.cfg.station.server_audio_too = cfg_mock.station.server_audio_too
         cfg_mock.stations = stations
@@ -2142,6 +2119,9 @@ class TestServeFunction:
         assert captured["dry_run"] is False
         assert captured["runtime"].stream_mode is True
         assert captured["runtime"].server_audio is False
+        assert captured["player"].live_mixing is True
+        assert captured["player"].bus is not None
+        assert captured["server_audio_output"] is False
         # Keyed stream links are gone: stream mode keeps no secret file.
         assert not (tmp_path / ".stream-secret").exists()
         assert captured["uvicorn_kwargs"]["timeout_graceful_shutdown"] == 3
@@ -2156,6 +2136,7 @@ class TestServeFunction:
         assert captured["runtime"].stream_mode is True
         assert captured["player"]._stream_mode is True
         assert captured["player"]._server_audio_too is True
+        assert captured["server_audio_output"] is True
 
     def test_serve_hands_the_other_stations_to_the_app(self, tmp_path) -> None:
         """[stations.<slug>] stations are built when the app starts; they always stream."""
@@ -2182,11 +2163,14 @@ class TestServeFunction:
         # The default station is browser-driven, but radio players still need h11.
         assert captured["uvicorn_kwargs"]["http"] is IcecastSourceH11Protocol
 
-    def test_serve_without_stream_is_unchanged(self, tmp_path) -> None:
+    def test_local_browser_mode_uses_the_server_bus_without_speakers(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=True)
-        assert captured["dry_run"] is True
+        assert captured["dry_run"] is False
         assert captured["runtime"].stream_mode is False
-        assert captured["runtime"].server_audio is False
+        assert captured["runtime"].server_audio is True
+        assert captured["player"].live_mixing is True
+        assert captured["player"].bus is not None
+        assert captured["server_audio_output"] is False
         assert captured["create_app_kwargs"]["extra_stations"] == []
         assert "timeout_graceful_shutdown" not in captured["uvicorn_kwargs"]
         # Trusted proxies apply in every mode (the request limits key on the
@@ -2195,6 +2179,19 @@ class TestServeFunction:
         assert "127.0.0.1/32" in captured["uvicorn_kwargs"]["forwarded_allow_ips"]
         assert not (tmp_path / ".stream-secret").exists()
 
+    def test_serve_local_soundcard_is_separate_from_stream_lifecycle(self, tmp_path) -> None:
+        from autodj.live_playout import LivePlayout
+
+        captured = self._serve_capturing_player(tmp_path, no_playback=False)
+        assert captured["dry_run"] is False
+        assert captured["runtime"].stream_mode is False
+        assert captured["runtime"].server_audio is True
+        assert captured["player"].live_mixing is True
+        assert captured["player"]._stream_mode is False
+        assert captured["player"]._server_audio_too is False
+        assert captured["server_audio_output"] is True
+        assert isinstance(captured["player"]._playout, LivePlayout)
+
     def test_serve_stream_leaves_an_old_secret_file_alone(self, tmp_path) -> None:
         """An old ``.stream-secret`` is no longer read, changed or deleted."""
         old = tmp_path / ".stream-secret"
@@ -2202,14 +2199,6 @@ class TestServeFunction:
         captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
         assert captured["runtime"].stream_mode is True
         assert old.read_bytes() == b"x" * 43 + b"\n"
-
-    def test_serve_records_the_seed_only_in_browser_mode(self, tmp_path) -> None:
-        with patch("autodj.server.PlayerBridge.record_seed") as record:
-            self._serve_capturing_player(tmp_path, no_playback=True)
-        record.assert_called_once()
-        with patch("autodj.server.PlayerBridge.record_seed") as record:
-            self._serve_capturing_player(tmp_path, no_playback=False)
-        record.assert_not_called()
 
     def test_serve_stream_starts_the_first_set_with_the_seed(self, tmp_path) -> None:
         captured = self._serve_capturing_player(tmp_path, no_playback=True, stream=True)
@@ -2229,8 +2218,10 @@ class TestServeFunction:
         from autodj.server import serve
 
         cfg = _test_config(tmp_path)
-        cfg.station.output = "server"
-        cfg.default_station.cfg.station.output = "server"
+        cfg.station.output = "local"
+        cfg.station.server_audio_too = True
+        cfg.default_station.cfg.station.output = "local"
+        cfg.default_station.cfg.station.server_audio_too = True
         with (
             patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
             patch("uvicorn.run") as uvicorn_run,
@@ -4570,6 +4561,7 @@ class TestStaticAssets:
             ("/stutter-worklet.js", "text/javascript"),
             ("/freeze-worklet.js", "text/javascript"),
             ("/glitch-worklet.js", "text/javascript"),
+            ("/local-monitor-worklet.js", "text/javascript"),
         ],
     )
     def test_asset_is_revalidated_by_etag(self, client, path: str, media_type: str) -> None:

@@ -822,15 +822,19 @@ def test_missing_index_and_dj_meta_warn_explicitly(tmp_path: Path) -> None:
     assert dj_meta.summary == "database absent"
 
 
-def test_stream_check_passes_when_disabled(tmp_path: Path) -> None:
+def test_stream_check_passes_when_disabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: "/usr/bin/ffmpeg")
 
     assert doctor._stream_check(cfg).status is doctor.CheckStatus.PASS
 
 
-def test_stream_check_fails_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("output", ["local", "stream"])
+def test_stream_check_fails_without_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
     cfg = _config(tmp_path)
-    cfg.station.output = "stream"
+    cfg.station.output = output
     monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
 
     result = doctor._stream_check(cfg)

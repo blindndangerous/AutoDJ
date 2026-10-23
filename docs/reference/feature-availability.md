@@ -8,24 +8,23 @@ for procedures.
 
 ## Station outputs
 
-Choose **Browser**, **Server sound card** or **Radio stream** in **Settings,
-Stations**. Every station supports these choices. Startup flags
-`serve --server-audio` and `serve --stream` override the default station for that run.
+Every station uses the server live mix and requires FFmpeg. In **Settings,
+Stations**, **Broadcast** chooses Local only or Radio stream; **Play on the
+server sound card** independently enables the server's speakers. On Now Playing,
+each browser chooses **Local** or **Stream** and presses **Listen**.
 
-| Capability | Browser | Server sound card | Radio stream |
-| --- | --- | --- | --- |
-| Mixing | Selected browser's Web Audio graph | Server mix bus | Server mix bus |
-| Listening | Browser device | Server audio device | Connected stream players; optional browser listening |
-| Browser must stay running for this output | Yes | No | No; listener/continuous policy still applies |
-| Crossfades, EQ, transitions, liners | Browser path | Server path | Server path |
-| DJ mixing beatmatching | Separate Beatmatch on skip control | Server DJ mixing | Server DJ mixing |
-| Record and book a voice track | No server song-change slot | Available with saved-point transitions; external breaks may stay off | Available with saved-point transitions; external breaks may stay off |
-| Volume, mute, device | Local browser controls | Server sound-card controls | Listening-device controls; no change to broadcast level |
-| Live DJ and browser talkover | Unavailable | Unavailable | Available with live-input requirements |
-| Broadcast recording and outbound relays | Unavailable | Unavailable | Available when configured |
+| Listening route | Audio source | Device and requirements |
+| --- | --- | --- |
+| Local | Private connection to the shared server mix | This browser's device; HTTPS or localhost and AudioWorklet support |
+| Stream | Existing encoded broadcast of that mix | Browser or network player; broadcasting must be enabled |
+| Server sound card | Same server mix | Hardware attached to the server; optional and off by default |
 
-The mixing paths need separate checks. Server preparation does not guarantee
-continuity under arbitrary load. Seeking is restricted in server-mixed playback.
+Crossfades, EQ, beatmatching, liners and station controls apply to the shared
+programme. Private preview audio stays separate. Browser volume/mute affect only
+that browser. Recording, relays, live DJ input and talkover retain their stream
+configuration requirements. Server preparation does not guarantee continuity
+under arbitrary load; local monitoring has no measured DJ latency guarantee.
+Seeking remains unavailable while broadcasting.
 Stream start/stop depends on listeners, continuous-play settings and components
 keeping the station active. Closing the control page is not a stream stop command.
 
@@ -55,8 +54,8 @@ enables the documented trusted-LAN exception. See [access management](../guides/
 - Follow [setup](../setup.md) for current CPU/GPU choices and driver limits.
   Detection alone does not prove working inference. Playback does not require
   GPU analysis. Node.js is a contributor-tool dependency, not a runtime step.
-- FFmpeg is required for streaming and analysis/server decoding of MP3, M4A,
-  MP4 and AAC. Other formats use soundfile with FFmpeg fallback. Server sound-card
+- FFmpeg is required for all live playout and analysis decoding of MP3, M4A,
+  MP4 and AAC. Offline decoding can use soundfile with FFmpeg fallback. Server sound-card
   output needs a usable system audio device and its platform audio support.
 - [No-model setup](../setup.md#no-model-installation) includes browser playback,
   streaming and basic imports. It omits local model analysis and sound-card output

@@ -19,7 +19,7 @@ globalThis.MediaError ??= {
 };
 
 const IDLE_TEXT =
-  "Waiting for a listener. Press Listen here, or start the AutoDJ station on a speaker.";
+  "Waiting for a listener. Press Listen, or start the AutoDJ station on a speaker.";
 const NOT_LOADED = "The stream did not load. It may be full or not running.";
 const DROPPED = "The stream connection dropped.";
 const STALLED = "The stream stopped responding.";
@@ -31,7 +31,7 @@ function mediaError(audio, code) {
 function setup({ fetchInfo, beforePlay = vi.fn() } = {}) {
   document.body.innerHTML = `
     <audio id="stream-audio" hidden></audio>
-    <button id="btn-listen" type="button" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen here</button>
+    <button id="btn-listen" type="button" aria-pressed="false" hidden><span aria-hidden="true">🔊</span> Listen</button>
     <p id="stream-idle-note" hidden></p>
     <button id="elsewhere" type="button">Elsewhere</button>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
@@ -63,7 +63,7 @@ describe("stream mode", () => {
     expect(document.getElementById("stream-idle-note").hidden).toBe(true);
   });
 
-  it("shows Listen here and the idle note when idle", () => {
+  it("shows Listen and the idle note when idle", () => {
     const { mode } = setup();
     mode.apply({ stream_mode: true, stream_state: "idle" });
     const note = document.getElementById("stream-idle-note");
@@ -102,13 +102,13 @@ describe("stream mode", () => {
     expect(audio.src).toContain("/stream.mp3");
     expect(audio.play).toHaveBeenCalled();
     expect(button.getAttribute("aria-pressed")).toBe("true");
-    expect(button.textContent.trim()).toContain("Listen here");
+    expect(button.textContent.trim()).toContain("Listen");
     expect(mode.isListening()).toBe(true);
     await mode.toggleListen();
     expect(audio.pause).toHaveBeenCalled();
     expect(audio.getAttribute("src")).toBeNull();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(button.textContent.trim()).toContain("Listen here");
+    expect(button.textContent.trim()).toContain("Listen");
     expect(mode.isListening()).toBe(false);
   });
 
@@ -195,7 +195,7 @@ describe("stream mode", () => {
     await mode.toggleListen();
     await tick();
     expect(button.getAttribute("aria-pressed")).toBe("false");
-    expect(sr.textContent).toBe("The browser blocked playback. Press Listen here again.");
+    expect(sr.textContent).toBe("The browser blocked playback. Press Listen again.");
     expect(audio.getAttribute("src")).toBeNull();
   });
 
@@ -327,7 +327,7 @@ describe("stream mode", () => {
       return { state, ...setup({ fetchInfo }) };
     }
 
-    it("keeps Listen here on through a long outage and plays again once the link is back", async () => {
+    it("keeps Listen on through a long outage and plays again once the link is back", async () => {
       vi.useFakeTimers();
       const { state, mode, audio, button, fetchInfo, sr } = outage();
       const say = vi.spyOn(sr, "textContent", "set");
@@ -357,7 +357,7 @@ describe("stream mode", () => {
       expect(say).not.toHaveBeenCalled();
     });
 
-    it("keeps Listen here on after a drop and asks again at the old pace, not in a tight loop", async () => {
+    it("keeps Listen on after a drop and asks again at the old pace, not in a tight loop", async () => {
       vi.useFakeTimers();
       const { mode, audio, button, fetchInfo, sr } = outage();
       mode.apply({ stream_mode: true, stream_state: "playing" });
@@ -396,7 +396,7 @@ describe("stream mode", () => {
       expect(sr.textContent).toBe(DROPPED);
     });
 
-    it("leaves a stopped Listen here off when the link comes back", async () => {
+    it("leaves a stopped Listen off when the link comes back", async () => {
       const { mode, audio, button, fetchInfo } = outage();
       mode.apply({ stream_mode: true, stream_state: "playing" });
       await mode.toggleListen();

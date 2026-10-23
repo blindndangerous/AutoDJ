@@ -1093,7 +1093,7 @@ def resolve_trusted_proxy_secret(cfg: ServerConfig) -> str | None:
     return secret
 
 
-STATION_OUTPUTS = ("browser", "server", "stream")
+STATION_OUTPUTS = ("local", "stream")
 
 
 @dataclass
@@ -1104,7 +1104,7 @@ class StationConfig(_Section):
 
     timezone: str | None = None
     liner_upload_max_mib: int = 50
-    output: str = "browser"
+    output: str = "local"
     server_audio_too: bool = False
 
     def __post_init__(self) -> None:
@@ -1119,11 +1119,14 @@ class StationConfig(_Section):
         )
         if not 1 <= self.liner_upload_max_mib <= MAX_LINER_UPLOAD_MIB:
             raise ValueError("station.liner_upload_max_mib must be between 1 and 1024")
-        self.output = _one_of(self.output, STATION_OUTPUTS, "station.output")
         if not isinstance(self.server_audio_too, bool):
             raise TypeError("station.server_audio_too must be true or false")
-        if self.server_audio_too and self.output != "stream":
-            raise ValueError("station.server_audio_too requires station.output = 'stream'")
+        # Migrate saved output modes without turning on broadcasting or speakers.
+        if self.output == "server":
+            self.output, self.server_audio_too = "local", True
+        elif self.output == "browser":
+            self.output = "local"
+        self.output = _one_of(self.output, STATION_OUTPUTS, "station.output")
 
 
 def is_loopback_bind(host: str) -> bool:

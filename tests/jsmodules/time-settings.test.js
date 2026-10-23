@@ -38,12 +38,12 @@ describe("time format", () => {
 });
 
 
-it("saves output and cap for the selected station and clears incompatible monitoring", async () => {
+it("saves broadcasting and independent server speakers for the selected station", async () => {
   document.body.innerHTML = `
     <div id="spanel-stations"><div id="stations-status"></div>
     <select id="time-zone"></select><select id="time-format"></select>
     <button id="time-settings-save"></button>
-    <select id="station-output"><option value="browser">Browser</option><option value="stream">Stream</option></select>
+    <select id="station-output"><option value="local">Local only</option><option value="stream">Stream</option></select>
     <input id="station-monitor" type="checkbox"><input id="station-upload-cap" type="number">
     <button id="station-options-save"></button></div>`;
   const options = { output: "stream", server_audio_too: true, liner_upload_max_mib: 80 };
@@ -55,12 +55,12 @@ it("saves output and cap for the selected station and clears incompatible monito
   const output = document.getElementById("station-output");
   const monitor = document.getElementById("station-monitor");
   expect(monitor.checked).toBe(true);
-  output.value = "browser";
+  output.value = "local";
   output.dispatchEvent(new Event("change"));
-  expect(monitor.checked).toBe(false);
-  expect(monitor.disabled).toBe(true);
+  expect(monitor.checked).toBe(true);
+  expect(monitor.disabled).toBe(false);
   document.getElementById("station-options-save").click();
   await vi.waitFor(() => expect(request).toHaveBeenLastCalledWith("/api/station-settings", expect.objectContaining({
-    method: "PUT", body: JSON.stringify({ output: "browser", server_audio_too: false, liner_upload_max_mib: 80 }),
+    method: "PUT", body: JSON.stringify({ output: "local", server_audio_too: true, liner_upload_max_mib: 80 }),
   })));
 });

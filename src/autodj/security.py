@@ -41,6 +41,7 @@ _PUBLIC_FILES = frozenset(
         "/stutter-worklet.js",
         "/freeze-worklet.js",
         "/glitch-worklet.js",
+        "/local-monitor-worklet.js",
         "/healthz",
         "/api/version",
         "/api/auth/status",

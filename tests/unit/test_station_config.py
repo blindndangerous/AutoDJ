@@ -75,6 +75,26 @@ def test_a_single_station_config_has_no_other_stations(tmp_path: Path) -> None:
     cfg = _load(tmp_path, BASE)
     assert cfg.stations == ()
     assert cfg.stream.station_name == "AutoDJ"
+    assert cfg.default_station is not None
+    assert cfg.default_station.cfg.station.output == "local"
+    assert cfg.default_station.cfg.station.server_audio_too is False
+
+
+@pytest.mark.parametrize(
+    ("legacy_output", "expected_speakers"),
+    [("browser", False), ("server", True)],
+)
+def test_legacy_station_output_migrates_to_local_with_speaker_preference(
+    tmp_path: Path, legacy_output: str, expected_speakers: bool
+) -> None:
+    text = BASE + f'\n[stations.default.station]\noutput = "{legacy_output}"\n'
+
+    cfg = _load(tmp_path, text)
+
+    assert cfg.default_station is not None
+    station = cfg.default_station.cfg.station
+    assert station.output == "local"
+    assert station.server_audio_too is expected_speakers
 
 
 def test_loader_does_not_read_legacy_station_tables_without_startup_migration(
@@ -446,7 +466,7 @@ def test_the_configuration_examples_load(tmp_path: Path) -> None:
     assert cfg.server.host == "127.0.0.1"
     assert cfg.index.index_dir == Path("/srv/autodj/index")
     assert cfg.default_station is not None
-    assert cfg.default_station.cfg.station.output == "browser"
+    assert cfg.default_station.cfg.station.output == "local"
 
 
 def test_a_station_without_a_name_is_called_by_its_slug(

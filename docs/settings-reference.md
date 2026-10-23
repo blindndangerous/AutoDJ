@@ -203,8 +203,8 @@ Station section: `station` in `station.json`.
 
 - `timezone`. Values: IANA time zone or blank. Default: blank. Sets this station's schedule time zone; blank uses the system time zone. **Time zone**.
 - `liner_upload_max_mib`. Values: whole number from 1 to 1024 MiB. Default: 50. Limits voice liner and cart uploads. **Maximum liner upload size (MiB)**.
-- `output`. Values: `browser` (Browser), `server` (Server sound card), or `stream` (Radio stream). Default: `browser`. Chooses where this station plays; a newly created named station defaults to stream even though the dataclass default is browser. **Playback output**.
-- `server_audio_too`. Values: true or false. Default: false. Also plays the stream mix through this computer's speakers. **Also play the radio stream on the server sound card**.
+- `output`. Values: `local` (Local only) or `stream` (Radio stream). Default: `local`; a newly created named station defaults to stream. Both use the same server mix. Legacy `browser` migrates to `local`; legacy `server` migrates to `local` with server speakers enabled. **Broadcast**.
+- `server_audio_too`. Values: true or false. Default: false. Plays the station mix through the server's sound card independently of broadcasting and browser listening. **Play on the server sound card**.
 
 ### Stream
 

@@ -174,6 +174,7 @@ export const STATION_ROUTES = Object.freeze([
   "/live/djs",
   "/live/djs/{username}",
   "/live/mic",
+  "/monitor",
   "/stereo-tool",
   "/stereo-tool/license",
 ]);

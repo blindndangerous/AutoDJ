@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from autodj.listener_access import ListenerAccess
     from autodj.listener_requests import RequestDesk
     from autodj.matched_intros import MatchedIntros
+    from autodj.monitor import MonitorClient, MonitorOutput
     from autodj.recorder import Recorder
     from autodj.scheduler import Scheduler
     from autodj.shows import ShowRunner, ShowStore
@@ -440,7 +441,10 @@ def start_stream_station(
             on_event=bridge.announce_station_event,
             forget_track=bridge.forget_track,
             continuous=lambda: (
-                cfg.stream.continuous or relays.active or bool(recorder and recorder.wanted)
+                cfg.stream.continuous
+                or relays.active
+                or bool(recorder and recorder.wanted)
+                or bool(bridge.monitor_output and bridge.monitor_output.listener_count)
             ),
         )
         scheduler = LinerScheduler(
@@ -847,6 +851,7 @@ class StationRuntime:
     show_runner: ShowRunner
     # Pushes the state to this station's WebSocket clients once a second.
     broadcast: Callable[[], Coroutine[Any, Any, None]]
+    monitor_output: MonitorOutput | None
 
     def __init__(
         self,
@@ -877,6 +882,7 @@ class StationRuntime:
         from autodj._bridge import PlayerBridge
         from autodj.listener_access import ListenerAccess
         from autodj.listener_stats import ListenerStats
+        from autodj.monitor import MonitorOutput
         from autodj.nowplaying import NowPlaying
         from autodj.webhooks import WebhookWorker
 
@@ -943,6 +949,8 @@ class StationRuntime:
         # Listener requests, when [requests] is on (built by equip_station).
         self.requests: RequestDesk | None = None
         self.stream_out: StreamOutput | None = None
+        self.monitor_output = MonitorOutput() if bridge.player.bus is not None else None
+        bridge.monitor_output = self.monitor_output
         self.ws_clients: set[Any] = set()
         self.ws_lock = asyncio.Lock()
         self._schedule_ticker: asyncio.Task[None] | None = None
@@ -1024,6 +1032,41 @@ class StationRuntime:
     def ledger(self) -> Any:
         """The station's plays and settings in the shared library, or ``None`` without one."""
         return self.bridge._ledger()
+
+    @property
+    def monitor_available(self) -> bool:
+        """Whether this station has a server-side mixed programme bus."""
+        return self.monitor_output is not None and not self.stopped
+
+    def subscribe_monitor(self, loop: asyncio.AbstractEventLoop) -> MonitorClient | None:
+        """Attach the monitor to its bus on the first local listener."""
+        output, bus = self.monitor_output, self.player.bus
+        if output is None or bus is None or self.stopped:
+            return None
+        client = output.subscribe(loop)
+        if client is not None and output.listener_count == 1:
+            bus.add_output(output)
+        return client
+
+    def unsubscribe_monitor(self, client: MonitorClient) -> None:
+        """Detach the bus output after its last local listener leaves."""
+        output = self.monitor_output
+        if output is None:
+            return
+        output.unsubscribe(client)
+        if output.listener_count == 0 and self.player.bus is not None:
+            self.player.bus.remove_output(output)
+
+    def _close_monitor_output(self) -> None:
+        """Detach and close the local output when its station stops."""
+        output = self.monitor_output
+        if output is None:
+            return
+        try:
+            if self.player.bus is not None:
+                self.player.bus.remove_output(output)
+        finally:
+            output.close()
 
     # Both run on playout threads (mix bus, station), so a fault here is
     # logged and never reaches playback.
@@ -1234,6 +1277,12 @@ class StationRuntime:
             Whether every cache writer stopped in time.
         """
         self.stopped = True
+        if self.monitor_output is not None:
+            await _step(
+                "closing its local monitor",
+                self._close_monitor_output,
+                self.stop_problems,
+            )
         if (source := self.live.source) is not None:
             await _step(
                 "disconnecting its live DJ",

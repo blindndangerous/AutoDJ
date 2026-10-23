@@ -34,6 +34,7 @@ SHARED = frozenset(
         "/stutter-worklet.js",
         "/freeze-worklet.js",
         "/glitch-worklet.js",
+        "/local-monitor-worklet.js",
         "/modules",
         "/healthz",
         "/api/version",
@@ -274,6 +275,7 @@ STATION = frozenset(
         "/live/djs",
         "/live/djs/{username}",
         "/live/mic",
+        "/monitor",
         # Stereo Tool (Settings, Sound): which program and licence this station uses.
         "/stereo-tool",
         "/stereo-tool/license",
@@ -416,6 +418,40 @@ def test_each_station_has_its_own_socket_address() -> None:
     with pytest.raises(WebSocketDisconnect) as closed, client.websocket_connect("/ws"):
         pass
     assert closed.value.code == 4409
+
+
+def test_monitor_socket_keeps_station_resolution_and_origin_policy() -> None:
+    """ADR-0007-04: monitor aliases retain named-station and browser-origin checks."""
+    client, _bridge = _app()
+    for path, headers, code in (
+        ("/api/monitor", {"Origin": "http://evil.example"}, 4403),
+        ("/api/stations/nope/monitor", {}, 4404),
+    ):
+        with (
+            pytest.raises(WebSocketDisconnect) as closed,
+            client.websocket_connect(path, headers=headers) as socket,
+        ):
+            socket.receive_bytes()
+        assert closed.value.code == code
+
+
+def test_named_station_monitor_sends_pcm_and_detaches_on_disconnect() -> None:
+    """ADR-0005-04: a named monitor streams its station's PCM and releases its output."""
+    from types import SimpleNamespace
+
+    from autodj.monitor import MonitorOutput
+
+    client, _bridge = _app()
+    output = MonitorOutput()
+    station = SimpleNamespace(slug="nightowl", stopped=False, monitor_available=True)
+    station.subscribe_monitor = lambda loop: output.subscribe(loop)
+    station.unsubscribe_monitor = output.unsubscribe
+    client.app.state.stations._running["nightowl"] = station
+
+    with client.websocket_connect("/api/stations/nightowl/monitor") as socket:
+        output.write([[0.0, 0.0] for _ in range(882)])
+        assert len(socket.receive_bytes()) == 882 * 2 * 4
+    assert output.listener_count == 0
 
 
 def test_station_relative_maps_only_configured_stations() -> None:

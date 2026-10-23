@@ -18,7 +18,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | --- | --- | --- |
 | [1: Record decisions](0001-record-architecture-decisions.md) | Accepted; proposed process amendments 2026-10-16 and 2026-10-20 | Requirements, lifecycle, scoped validation, designated CI evidence, agent discovery, GitHub/Beads boundary |
 | [2: FAISS](0002-faiss-for-vector-search.md) | Accepted search choice; storage description historical | Exact similarity search; see Proposed ADR 6 for current storage |
-| [3: Browser playback](0003-browser-driven-playback.md) | Accepted default; partially superseded by ADR 4 | Browser audio ownership and device-local controls |
+| [3: Browser playback](0003-browser-driven-playback.md) | Accepted historical decision; superseded for runtime playback by ADR 16 | Historical browser audio ownership; device-local controls |
 | [4: Server mix bus](0004-server-mix-bus-and-stream-mode.md) | Accepted; amendments apply | Server audio, stream fan-out, mastering, live input, recordings |
 | [5: Station ownership](0005-a-station-owns-its-playout-chain.md) | Accepted; current ownership amendment 2026-10-16 | Station lifecycle, settings, routes, state paths, shared library |
 | [6: Catalog and migrations](0006-use-a-catalog-with-explicit-migrations.md) | Proposed; retrospective | Playable records, derived vectors, model identity, legacy migration |
@@ -31,6 +31,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
 | [14: Programme review](0014-isolate-programme-review-and-export.md) | Accepted | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
 | [15: Prepared editions](0015-prepare-speech-for-specific-show-editions.md) | Accepted | Occurrence-bound recordings, full-target review receipts, explicit approval, local playout and interrupted-edition recovery |
+| [16: Browser listening routes](0016-one-programme-with-browser-listening-routes.md) | Accepted | One server programme; per-browser Local/Stream listening, private monitoring and output migration |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

@@ -3,7 +3,7 @@
 // mixing engine (decks, worklets, prefetch) is never started here.
 //
 // Speech rules (docs/accessibility-testing.md, Announcement contract):
-//   - "Listen here" keeps a fixed name; only aria-pressed changes, so NVDA
+//   - "Listen" keeps a fixed name; only aria-pressed changes, so NVDA
 //     says "pressed" / "not pressed" and nothing on the 1 Hz push.  The
 //     listen state is never also spoken through a live region.
 //   - Failures are spoken in plain words, never as raw browser error text.
@@ -13,7 +13,7 @@
 //     after page load is only remembered, so a reload never repeats it.
 //   - While the page's own connection to AutoDJ is down, a stream that
 //     drops or stalls is not reported: the connection status already says
-//     the link is down.  Listen here stays on (pressed) and asks for the
+//     the link is down.  Listen stays on (pressed) and asks for the
 //     stream again until the link is back, and at once when it is; only a
 //     stream that still fails then is reported and turned off.
 
@@ -23,12 +23,12 @@ export const STREAM_DELAY_ESTIMATE_S = 3;
 // A buffer reading beyond this is a stalled or bogus element, not a delay.
 const MAX_MEASURED_DELAY_S = 30;
 const IDLE_TEXT =
-  "Waiting for a listener. Press Listen here, or start the AutoDJ station on a speaker.";
+  "Waiting for a listener. Press Listen, or start the AutoDJ station on a speaker.";
 const EVENT_TEXT = {
   set_started: "New set started.",
   set_stopped: "Set stopped. Nobody is listening.",
 };
-const BLOCKED_TEXT = "The browser blocked playback. Press Listen here again.";
+const BLOCKED_TEXT = "The browser blocked playback. Press Listen again.";
 const NOT_LOADED_TEXT = "The stream did not load. It may be full or not running.";
 const DROPPED_TEXT = "The stream connection dropped.";
 const STALLED_TEXT = "The stream stopped responding.";
@@ -82,6 +82,7 @@ function mediaFailureText(audio, hasPlayed) {
 // default full volume.
 export function createStreamMode({
   audio, button, idleNote, srStatus, fetchInfo, beforePlay,
+  manageButton = true, onListening = () => {},
 }) {
   let listening = false;
   // Bumped by every start and stop, so a start still waiting on the link
@@ -104,9 +105,10 @@ export function createStreamMode({
   function setListening(value) {
     listening = value;
     const pressed = value ? "true" : "false";
-    if (button.getAttribute("aria-pressed") !== pressed) {
+    if (manageButton && button.getAttribute("aria-pressed") !== pressed) {
       button.setAttribute("aria-pressed", pressed);
     }
+    onListening(value);
   }
 
   function release() {
@@ -292,7 +294,7 @@ export function createStreamMode({
 
   function apply(state) {
     const active = Boolean(state && state.stream_mode);
-    if (button.hidden === active) button.hidden = !active;
+    if (manageButton && button.hidden === active) button.hidden = !active;
     const idle = active && state.stream_state === "idle";
     if (idle && idleNote.textContent !== IDLE_TEXT) idleNote.textContent = IDLE_TEXT;
     if (idleNote.hidden === idle) idleNote.hidden = !idle;
