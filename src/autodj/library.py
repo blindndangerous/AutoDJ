@@ -335,6 +335,15 @@ class LibraryManager:
         versions = self.catalog.change_versions()
         return any(versions[kind] != seen[kind] for kind in ("entries", "vectors", "sources"))
 
+    def _refresh_unless_closing(self) -> None:
+        """Load what changed in the catalog, unless the library is closing.
+
+        A big library takes seconds to reload, and nothing plays from it
+        after shutdown begins.
+        """
+        if not self._stop.is_set():
+            self.refresh()
+
     def refresh(self, *, force_vectors: bool = False) -> tuple[IndexEntry, ...]:
         """Load what changed in the catalog since the last refresh.
 
@@ -574,7 +583,8 @@ class LibraryManager:
         if source is not None:
             self.start_scan({source})
 
-    def _flush_ledgers(self) -> None:
+    def flush_ledgers(self) -> None:
+        """Write every station's buffered plays; the tick does it every two seconds."""
         with self._lock:
             ledgers = list(self._ledgers)
         for ledger in ledgers:
@@ -620,12 +630,13 @@ class LibraryManager:
             self._analysis_idle = None
 
     def tick(self) -> None:
-        self._flush_ledgers()
+        self.flush_ledgers()
         with self._lock:
             # A scan publishes its own tracks and reloads when it has read
             # them; while it measures loudness, analysis may add vectors.
             scanning = self._scan_lock.locked() and self._state["phase"] != "measuring loudness"
-        if not scanning and self._changed():
+        # A closing library is not reloaded: nothing plays from it any more.
+        if not scanning and not self._stop.is_set() and self._changed():
             self.refresh()
         if (
             self._auto_rescan_minutes > 0
@@ -910,6 +921,9 @@ class LibraryManager:
 
                 allowed = set(LINER_EXTS)
             for current, directories, files in os.walk(root, onerror=self._walk_error):
+                if self._stop.is_set():
+                    # Closing: the caller drops this partial listing unused.
+                    break
                 directories.sort()
                 if not source["recursive"]:
                     directories.clear()
@@ -1107,6 +1121,9 @@ class LibraryManager:
         self._scan_cues_loaded = False
         self._set_state(phase="discovering", current="")
         found = self._discover(source_ids)
+        if self._stop.is_set():
+            # A partial listing must not mark anything gone or moved.
+            return found
         self._set_state(phase="reading tracks", total=len(found), done=0)
         self._reconcile_moves(found, source_ids)
         # New music is listed from its tags first, then decoded below, so a
@@ -1150,7 +1167,7 @@ class LibraryManager:
             with self._lock:
                 self._state["done"] += 1
             self._recover_scan_between_files()
-        self.refresh()
+        self._refresh_unless_closing()
         return found
 
     def _add_from_tags(
@@ -1584,10 +1601,11 @@ class LibraryManager:
                 self._recover_scan_between_files()
             self._dj_backlog()
             self._set_state(phase="complete")
-            completed = True
+            # A scan cut short by shutdown stopped; the next one finishes it.
+            completed = not self._stop.is_set()
         finally:
             self._scan_pending = None
-            self.refresh()
+            self._refresh_unless_closing()
             self._set_state(running=False, current="")
             counts, self._scan_counts = self._scan_counts, None
             _log_scan_summary(counts or Counter(), self._clock() - started, completed)
@@ -1775,16 +1793,18 @@ class LibraryManager:
         Stops early for a scan waiting its turn; the rest is picked up by the
         next scan.
         """
-        if not self.dj_analysis_enabled():
+        if self._stop.is_set() or not self.dj_analysis_enabled():
             return
         cache = self._dj_cache()
         if cache is None:
             return
-        backlog = [
-            Path(record["path"])
-            for record in self.catalog.all_entries("music")
-            if not cache.get(record["path"]).analysed and Path(record["path"]).is_file()
-        ]
+        backlog = []
+        for record in self.catalog.all_entries("music"):
+            # Reading every song's row takes a while in a big library.
+            if self._stop.is_set():
+                return
+            if not cache.get(record["path"]).analysed and Path(record["path"]).is_file():
+                backlog.append(Path(record["path"]))
         self._set_state(phase="analysing beats", done=0, total=len(backlog), current="")
         for done, path in enumerate(backlog, start=1):
             with self._lock:
@@ -1901,7 +1921,7 @@ class LibraryManager:
         finally:
             self._scan_fallback_running = False
             try:
-                self.refresh()
+                self._refresh_unless_closing()
             except Exception as exc:
                 self._warn_scan_fallback(exc)
             if recovering:
@@ -1978,7 +1998,9 @@ class LibraryManager:
     def schedule_analysis(self) -> bool:
         with self._lock:
             phase = self._state["phase"]
-            if self._scan_lock.locked() and phase != "measuring loudness":
+            # Closing: shutdown has stopped the job runner, and a job started
+            # now would outlive the server.
+            if self._closed or (self._scan_lock.locked() and phase != "measuring loudness"):
                 return False
         # A connected analysis worker takes the whole queue; the CPU job
         # waits, and runs again for whatever is left once it has gone.
@@ -2023,16 +2045,27 @@ class LibraryManager:
             self._analysis_started_generation = generation
         return True
 
-    def close(self) -> None:
+    def stop_scan(self, timeout: float | None = None) -> bool:
+        """Stop the scan at its next check and start no other, for :meth:`close`.
+
+        Returns:
+            Whether the scan thread ended within *timeout* seconds (``None``
+            waits for it).
+        """
         with self._lock:
             self._closed = True
             self._stop.set()
             thread = self._thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join()
+            thread.join(timeout)
+            return not thread.is_alive()
+        return True
+
+    def close(self) -> None:
+        self.stop_scan()
         with self._scan_lock:
             pass
-        self._flush_ledgers()
+        self.flush_ledgers()
         self.analysis_queue.close()
         with self._lock:
             ledgers = list(self._ledgers)

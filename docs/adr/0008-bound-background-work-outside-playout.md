@@ -108,6 +108,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-28` | The server sends a worker nothing to run: settings hold only pause, batch and idle release, other names are refused or ignored, and hooks come only from the worker's own command line. | automated | `tests/unit/test_worker_api.py::test_worker_settings_out_of_range_are_refused`; `tests/unit/test_worker.py::test_server_settings_never_carry_a_command_to_run` |
 | `ADR-0008-29` | The latest refusal of each known worker token (identity, scan version, revoked, wrong secret or scope) is kept in one bounded row without secrets, shown with advice, cleared by the next successful connect and hidden by Dismiss until the reason changes. | automated | `tests/unit/test_worker_api.py::test_an_identity_mismatch_is_refused_noted_and_cleared_on_the_next_connect`; `tests/unit/test_worker_api.py::test_an_older_workers_mismatched_result_is_noted`; `tests/unit/test_worker_api.py::test_a_scan_version_mismatch_is_noted_until_the_versions_match`; `tests/unit/test_worker_api.py::test_token_refusals_are_noted_once_per_token_without_secrets`; `tests/unit/test_worker_api.py::test_refusal_details_are_cut_short`; `tests/unit/test_worker_api.py::test_a_dismissed_refusal_stays_hidden_until_another_reason`; `tests/unit/test_worker.py::test_a_worker_reports_its_weights_so_the_server_can_say_why_it_refused`; `tests/unit/test_worker_api.py::test_alternating_refusals_write_once_a_minute_per_token` |
 | `ADR-0008-30` | Settings, Analysis workers gives each worker labelled native settings with its own Save, keeps unsaved edits through refreshes, links and focuses errors, says results and new refusals through the panel's status region, and shows a pairing code in digits for speech with Copy buttons. NVDA 2026.2 with Firefox 158 passed on 2026-10-23 at 975a9891; its two minor points (saved values not repeated, focus briefly on the page after Dismiss) are fixed. | automated | `tests/jsmodules/analysis-workers.test.js::gives each worker labelled native settings, filled from the server`; `tests/jsmodules/analysis-workers.test.js::saves a row, says so, and a refresh keeps changes not yet saved`; `tests/jsmodules/analysis-workers.test.js::marks a value out of range, says why and moves focus to it`; `tests/jsmodules/analysis-workers.test.js::shows refusal notices in words, says a new one once, and dismisses them`; `tests/jsmodules/analysis-workers.test.js::pairs a worker with a spoken code, a selected command and Copy buttons`; `tests/jsmodules/analysis-workers.test.js::keeps focus on a field in any row while polls reorder last-seen times`; `tests/jsmodules/analysis-workers.test.js::says an ongoing refusal once, though its time keeps moving`; `tests/jsmodules/analysis-workers.test.js::moves focus to the next notice, then Refresh workers, before a notice goes` |
+| `ADR-0008-31` | Shutdown tells the library scan to stop when it begins; listing folders and the DJ backlog stop at the request; neither a stopping scan nor the tick reloads the catalog, a scan cut short is logged as stopped, and a closing library starts no scan or analysis job. The cache closes only after the scan ends within the shutdown timeout; a scan still running keeps the cache and the library open, logs it and still saves buffered plays. Independent workers stop concurrently within their own timeouts, and each shutdown step logs its duration. | automated | `tests/unit/test_library.py::test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes`; `tests/unit/test_library.py::test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped`; `tests/unit/test_library.py::test_discovery_stops_between_folders_once_the_library_closes`; `tests/unit/test_library.py::test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes`; `tests/unit/test_library.py::test_a_closing_library_starts_no_analysis_job`; `tests/unit/test_library.py::test_the_tick_does_not_reload_a_library_that_is_closing`; `tests/integration/test_stations.py::test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open`; `tests/integration/test_stations.py::test_each_shutdown_step_logs_how_long_it_took`; `tests/integration/test_server.py::TestLifespan::test_independent_shutdown_steps_stop_together_and_are_timed` |
 
 ## Verification
 
@@ -467,3 +468,26 @@ Worker pairing changes the access boundary in [ADR 7](0007-separate-browser-work
 Contracts ADR-0008-25 to ADR-0008-30 cover this amendment. An NVDA 2026.2 and Firefox 158
 sample of the new Settings controls passed on 2026-10-23 at 975a9891 (recorded in PR #556); its
 two minor points are fixed in the next commit.
+## Amendment clarification 2026-10-23: Bounded server shutdown
+
+The lifecycle rule above applies to the library scan: it writes the DJ-meta cache, so the cache
+must not close while the scan still runs. Shutdown used to close the cache first and only then
+stop the scan, which reopened the cache to list its backlog and reloaded the catalog before it
+noticed the stop. On a large library that took far longer than a container's default stop
+timeout.
+
+Shutdown now tells the scan to stop as soon as it begins, so the scan winds down while the other
+workers and the stations stop. Folder listing checks the stop between folders; a partial listing
+marks nothing gone or moved. The DJ backlog checks it while listing songs. A stopping library
+does not reload the catalog, from the scan or its tick, and starts no scan or analysis job, since
+the job runner has already stopped. Its summary says the scan stopped rather than finished. The
+cache closes only after the scan thread ends, so the scan cannot open it again. The wait for the
+scan uses the existing shutdown timeout, counted from the stop request. A scan still
+running then keeps the cache and the library open, which is logged and reported as a degraded
+shutdown; buffered station plays are written anyway. The next scan repeats work cut short.
+
+The maintenance job, speech, rotation tests, show generations, hour previews, cue rescans and
+review renderers stop concurrently, each within its own existing timeout, before the stations
+stop. Each shutdown step logs its duration at debug level, or at info level above two seconds.
+These are bounds and diagnostics, not a promised shutdown time. Contract ADR-0008-31 records them;
+this ADR remains Proposed.

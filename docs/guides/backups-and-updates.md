@@ -65,7 +65,7 @@ uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases
 python -m pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/vX.Y.Z/autodj-X.Y.Z-py3-none-any.whl"
 ```
 
-See [Release artifacts](install.md#release-artifacts) for verification. For Docker, run `docker compose pull`, then `docker compose up -d`; [Update the container](operations/containers-and-windows.md#update-the-container) covers pinned versions, channels and images you build yourself. After a bind-mounted configuration change alone, run `docker compose restart autodj`.
+See [Release artifacts](install.md#release-artifacts) for verification. For Docker, run `docker compose pull`, then `docker compose up -d`; the Compose file gives the old container [time to stop](operations/containers-and-windows.md#stop-the-container), and [Update the container](operations/containers-and-windows.md#update-the-container) covers pinned versions, channels and images you build yourself. After a bind-mounted configuration change alone, run `docker compose restart autodj`.
 
 On first start, the current catalog's older layout moves into shared and station folders. AutoDJ moves older station settings from `config.toml` into each `station.json`, and imports station history from `library.db` into station databases. A published schema-3 or schema-4 index needs `autodj migrate-index --apply` before serving; preview with `autodj migrate-index` first. Check the result with Doctor. The [migration notes](../operations.md#moved-files) cover older indexes.
 
