@@ -44,10 +44,11 @@ Read each affected ADR's Current contracts table and follow its stable IDs to
 specific tests. Update both mapping and test annotation when tests move. Keep
 retired IDs and explain gaps; never infer acceptance from code or a green gate.
 Follow the [constraint rules](docs/adr/README.md#constraint-traceability-and-local-checks).
-Run `uv run --frozen --no-sync python scripts/check_architecture_docs.py`, then
-the mapped behavioral tests and applicable contributor gates. Report structural
-validation separately from execution and manual/platform evidence. Record the
-manual ADR disposition and rationale in the PR; investigate conflicting intent
+Run `uv run --frozen --no-sync python scripts/check_architecture_docs.py`. Select
+behavioral execution or explicit reuse of unaffected evidence using the
+[change-to-check table](CONTRIBUTING.md#choose-checks-for-the-change). Report
+structural validation separately from execution and manual/platform evidence.
+Record the manual ADR disposition and rationale in the PR; investigate conflicting intent
 before changing policy or runtime behavior. No sibling checkout is required.
 
 ## Implementation and verification
@@ -59,10 +60,9 @@ before changing policy or runtime behavior. No sibling checkout is required.
 - A station owns its settings, state, and playout; the library and server have
   separate shared ownership. Use the paths and route conventions linked from
   [ADR 5](docs/adr/0005-a-station-owns-its-playout-chain.md).
-- Run focused tests while iterating. Follow CONTRIBUTING's validation rules;
-  full CI must pass on the final revision before merging. For documentation,
-  check links, examples, and agreement with the cited code and tests. Add a
-  test only when it catches a meaningful missing invariant.
+- Follow CONTRIBUTING's [change-to-check table](CONTRIBUTING.md#choose-checks-for-the-change),
+  supported contributor environments, failure/retry protocol and final-head CI
+  requirements. Agent skills do not expand the repository's selected check scope.
 - Existing test links establish where to verify a claim, not that the test
   has passed. Report commands actually run, outcomes, and limits, including
   untested hardware, browsers, platforms, and performance guarantees.
