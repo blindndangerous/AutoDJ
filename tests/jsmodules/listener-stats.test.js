@@ -47,7 +47,7 @@ function stats(overrides = {}) {
   };
 }
 
-function setup({ request, download, save, saveKeepDays } = {}) {
+function setup({ request, download, save } = {}) {
   document.body.innerHTML = `<div id="settings-status" role="status"></div>
     <div id="status-toast" hidden></div><span id="station-context">Default station</span>${section}`;
   const deps = {
@@ -57,7 +57,6 @@ function setup({ request, download, save, saveKeepDays } = {}) {
       headers: { get: () => 'attachment; filename="autodj-listeners-default.csv"' },
     })),
     save: save || vi.fn(),
-    saveKeepDays: saveKeepDays || vi.fn(async () => true),
   };
   const view = installListenerStats({
     doc: document, ...deps, settingsStatus: document.getElementById("settings-status"), locale: "en-GB",
@@ -155,8 +154,8 @@ describe("listener statistics view", () => {
       .toContain("No listening recorded in the last 30 days.");
   });
 
-  it("says what Refresh, Show and Days to keep did, once each", async () => {
-    const { view, request, saveKeepDays } = setup();
+  it("keeps Refresh and Show immediate and stages Days to keep", async () => {
+    const { view, request } = setup();
     view.apply({ stream_mode: true });
     await tick();
     document.getElementById("listener-stats-refresh").click();
@@ -169,33 +168,22 @@ describe("listener statistics view", () => {
     const keep = document.getElementById("listener-stats-keep");
     keep.value = "30";
     keep.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(status()).toBe("Listener statistics are kept for 30 days."));
-    expect(saveKeepDays).toHaveBeenCalledWith(30, keep);
-    keep.value = "0";
-    keep.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(status())
-      .toBe("Listener statistics are off, and those kept are deleted."));
+    expect(status()).toBe("Showing the last 7 days.");
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
-  it("refuses a bad number of days without saving and keeps focus on the field", async () => {
-    const { view, saveKeepDays } = setup();
+  it("refuses an invalid retention period when Save is pressed", async () => {
+    const { view } = setup();
     view.apply({ stream_mode: true });
     await tick();
     const keep = document.getElementById("listener-stats-keep");
-    // The Listener statistics card is closed by default; a refused value
-    // opens it before focus moves to the field.
     const card = keep.closest("details");
-    for (const bad of ["-1", "3651", "2.5", ""]) {
-      card.open = false;
-      keep.value = bad;
-      keep.dispatchEvent(new Event("change"));
-      await vi.waitFor(() => expect(status())
-        .toBe("Days to keep statistics must be a whole number from 0 to 3650."));
-      expect(card.open).toBe(true);
-      expect(document.activeElement).toBe(keep);
-      document.getElementById("settings-status").textContent = "";
-    }
-    expect(saveKeepDays).not.toHaveBeenCalled();
+    card.open = true;
+    keep.value = "3651";
+    keep.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("[data-settings-save]").click();
+    expect(keep.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(keep);
   });
 
   it("says a failed load once with the error tone, and nothing after a sign-out", async () => {

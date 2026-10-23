@@ -48,7 +48,7 @@
 //       - Settings > Sound > Preview output device: a named select with
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
-//         politely without moving focus;
+//         staged without moving focus or announcing a save;
 //       - Settings > Analysis workers, Machine tokens: the Station choice
 //         is hidden until Token use is an announcer, then shows as a
 //         named select with linked help and 24 px targets, focus staying
@@ -831,7 +831,7 @@ async function openRepeatHoursError(page, visit) {
   await hours.waitFor({ state: "visible" });
   const before = await hours.inputValue();
   await hours.fill("6, 6");
-  await page.locator("#repeat-save").click();
+  await page.locator('#spanel-picking [data-settings-save]').click();
   await page.locator('#repeat-daypart-hours[aria-invalid="true"]').waitFor();
   await page.locator("#repeat-error").waitFor({ state: "visible" });
   await visit("settings/picking/repeat-hours-error");
@@ -1597,8 +1597,7 @@ async function newPage(context) {
   return page;
 }
 
-// Every view, and with Settings every subtab this server shows (Stream only
-// in stream mode).  `measure` runs once per target with that target shown,
+// Every view and Settings subtab. `measure` runs once per target with that target shown,
 // after the running transitions have ended: the states opened by a click
 // (a refused form, a dialog) are measured too.  After the click on
 // #clock-add-step that shows its hours error, WebKit was still running the
@@ -1666,6 +1665,10 @@ async function eachTarget(page, measure) {
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
       (tabs) => tabs.map((tab) => tab.id));
     for (const id of ids) {
+      // Reset fixture drafts only if they still differ when the click runs.
+      await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
+        for (const button of buttons) if (!button.disabled) button.click();
+      });
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
       await openEveryCard(page);
@@ -2135,7 +2138,7 @@ async function checkSystemTheme(browser, mode, out) {
 }
 
 // Choosing Dark in Settings, Display and keys: the page changes at once,
-// nothing is announced, and a reload keeps it.
+// the preview says nothing; Save persists it across reloads.
 async function themeSettingProblems(page) {
   const problems = [];
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
@@ -2157,9 +2160,10 @@ async function themeSettingProblems(page) {
   if (after.theme !== "dark" || after.background !== THEME_BG.dark) {
     problems.push(`after choosing Dark: ${JSON.stringify(after)}`);
   }
-  if (after.stored !== "dark") problems.push(`Dark not stored: ${after.stored}`);
   if (after.toast === false) problems.push(`choosing a theme showed a status message: ${after.toastText}`);
   if (await regions() !== before) problems.push("choosing a theme wrote a live region");
+  await page.locator('#spanel-display [data-settings-save]').click();
+  await page.waitForFunction(() => localStorage.getItem("autodj.theme") === "dark");
   await page.reload({ waitUntil: "networkidle" });
   const reloaded = await page.evaluate(() => ({
     theme: document.documentElement.getAttribute("data-theme"),
@@ -2171,6 +2175,8 @@ async function themeSettingProblems(page) {
   await page.locator("#tab-settings").click();
   await page.locator("#stab-display").click();
   await page.locator("#theme-system").click();
+  await page.locator('#spanel-display [data-settings-save]').click();
+  await page.waitForFunction(() => localStorage.getItem("autodj.theme") === "system");
   const system = await page.evaluate(() => ({
     theme: document.documentElement.getAttribute("data-theme"),
     stored: window.localStorage.getItem("autodj.theme"),
@@ -2758,12 +2764,10 @@ async function previewOutputProblems(page) {
     return problems;
   }
   await select.focus();
+  const statusBefore = await page.locator("#settings-status").textContent();
   await select.selectOption("");
-  try {
-    await page.waitForFunction(() => /Previews play on/.test(
-      document.getElementById("settings-status").textContent), null, { timeout: 3000 });
-  } catch {
-    problems.push("a change was not said in the status region");
+  if (await page.locator("#settings-status").textContent() !== statusBefore) {
+    problems.push("an unsaved device selection announced a result");
   }
   if (!await page.evaluate(() => document.activeElement?.id === "preview-device")) {
     problems.push("a change moved focus");

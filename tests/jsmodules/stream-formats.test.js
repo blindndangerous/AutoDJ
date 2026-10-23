@@ -3,12 +3,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  FORMAT_SETTLE_MS,
-  formatLine,
-  formatSavedText,
-  installStreamFormats,
-} from "../../src/autodj/static/modules/stream-formats.js";
+import { formatLine, installStreamFormats } from "../../src/autodj/static/modules/stream-formats.js";
 
 const html = readFileSync(join(process.cwd(), "src", "autodj", "static", "index.html"), "utf8");
 const start = html.indexOf('<fieldset id="stream-formats"');
@@ -22,34 +17,28 @@ const INFO = {
   ],
 };
 
-function setup(save = vi.fn(async () => true)) {
+function setup() {
   document.body.innerHTML = `<div id="settings-status" role="status"></div>
     <div id="sr-status" role="status"></div><div id="status-toast" hidden></div>
-    <span id="station-context">Default station</span>${fieldset}`;
-  const refresh = vi.fn();
+    <span id="station-context">Default station</span><div id="spanel-stream">${fieldset}</div>`;
   const view = installStreamFormats({
     doc: document,
-    save,
-    refresh,
     srStatus: document.getElementById("sr-status"),
-    settingsStatus: document.getElementById("settings-status"),
   });
-  return { view, save, refresh };
+  return { view };
 }
 
 const text = (id) => document.getElementById(id).textContent;
 
 describe("stream formats", () => {
-  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => { delete navigator.clipboard; delete document.execCommand; });
 
-  it("words each address and each save", () => {
+  it("words each address", () => {
     expect(formatLine(INFO.formats[1], "http://radio.local:8080"))
       .toBe("AAC, 96 kbps: http://radio.local:8080/stream.aac");
     expect(formatLine({ ...INFO.formats[1], error: "Encoder not found" }, "http://h"))
       .toBe("AAC, 96 kbps: http://h/stream.aac. Its encoder last said: Encoder not found");
-    expect(formatSavedText("Opus", 64)).toBe("Opus stream on at 64 kbps.");
-    expect(formatSavedText("AAC", 0)).toBe("AAC stream off.");
   });
 
   it("starts off, then shows each format that is on with a named Copy button", () => {
@@ -75,39 +64,14 @@ describe("stream formats", () => {
     expect(document.getElementById("stream-formats-list").hidden).toBe(false);
   });
 
-  it("saves once the choice settles and says what happened", async () => {
-    const { view, save, refresh } = setup();
+  it("stages a quality change and preserves it across server pushes", () => {
+    const { view } = setup();
     view.fill(INFO);
     const opus = document.getElementById("stream-opus-bitrate");
-    for (const value of ["48", "64"]) {
-      opus.value = value;
-      opus.dispatchEvent(new Event("change"));
-    }
-    expect(save).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(FORMAT_SETTLE_MS + 10);
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith("opus", 64, opus);
-    await vi.waitFor(() => expect(text("settings-status")).toBe("Opus stream on at 64 kbps."));
-    expect(refresh).toHaveBeenCalled();
-    // A pushed value never overwrites a select while its save is settling.
-    opus.value = "0";
-    opus.dispatchEvent(new Event("change"));
+    opus.value = "64";
     view.apply({ settings: { playback: { stream_opus_bitrate: 64, stream_aac_bitrate: 128 } } });
-    expect(opus.value).toBe("0");
+    expect(opus.value).toBe("64");
     expect(document.getElementById("stream-aac-bitrate").value).toBe("128");
-    await vi.advanceTimersByTimeAsync(FORMAT_SETTLE_MS + 10);
-    await vi.waitFor(() => expect(text("settings-status")).toBe("Opus stream off."));
-  });
-
-  it("puts a refused choice back to what the server has", async () => {
-    const { view, save } = setup(vi.fn(async () => false));
-    view.fill(INFO);
-    const aac = document.getElementById("stream-aac-bitrate");
-    aac.value = "256";
-    aac.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(FORMAT_SETTLE_MS + 10);
-    await vi.waitFor(() => expect(aac.value).toBe("96"));
-    expect(save).toHaveBeenCalledTimes(1);
   });
 
   it("copies an address and says so, or says the address when it cannot", async () => {

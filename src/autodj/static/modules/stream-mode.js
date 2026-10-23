@@ -18,6 +18,7 @@
 //     stream that still fails then is reported and turned off.
 
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 export const STREAM_DELAY_ESTIMATE_S = 3;
 // A buffer reading beyond this is a stalled or bogus element, not a delay.
@@ -358,17 +359,11 @@ export function createStreamMode({
 //     would read the whole address aloud.
 //   - Failures of a user action go to the settings region with the error
 //     tone, like every other settings failure.
-//   - The quality select is never rewritten while it has focus or while
-//     a change of it is still being saved.
 // ----------------------------------------------------------------
 
 const COPIED_TEXT = "Stream address copied.";
 const COPY_FAILED_TEXT = "Could not copy. Select the address and copy it yourself.";
 export const NOT_LOADED_NOTE = "Stream address not loaded yet.";
-// Arrowing through a closed select fires change on every step, and each
-// save restarts the encoder and drops every speaker, so saves wait for
-// the choice to settle.
-export const BITRATE_SETTLE_MS = 600;
 // While the address is missing, a state push retries at most this often.
 export const ADDRESS_RETRY_MS = 10000;
 // The copied address is built from this page's origin, so a page opened
@@ -414,16 +409,10 @@ function isAuthFailure(err) {
 export function createStreamSettings({
   doc,
   fetchInfo,
-  saveBitrate,
-  saveContinuous = async () => false,
-  saveStationName = async () => false,
   onRelays = () => {},
   // Told when the Stream settings appear and go, so the Settings subtab
   // for them can follow.
   setAvailable = () => {},
-  // Where focus goes when the Stream settings vanish while focus is in
-  // them.  The default suits a page that keeps them in a <details> card.
-  focusAway = null,
   srStatus,
   settingsStatus,
   hostname = doc.location.hostname,
@@ -448,7 +437,6 @@ export function createStreamSettings({
   const m3u = doc.getElementById("stream-m3u");
   const bitrate = doc.getElementById("stream-bitrate");
   const continuous = doc.getElementById("stream-continuous");
-  const stationName = doc.getElementById("stream-station-name");
   const listeners = doc.getElementById("stream-listeners");
   const relayBox = doc.getElementById("stream-relays");
   const relayList = doc.getElementById("stream-relays-list");
@@ -461,14 +449,19 @@ export function createStreamSettings({
   let lookup = null;
   let lastAttempt = -Infinity;
   let failureSpoken = false;
-  // Quality saves: the value the server last confirmed, the newest
-  // choice not yet sent, the settle timer and whether a save is out.
-  let savedBitrate = bitrate.value;
-  // The station name the server last confirmed.
-  let savedStationName = stationName?.value ?? "";
-  let pendingBitrate = null;
-  let settleTimer = null;
-  let saving = false;
+  const panel = doc.getElementById("spanel-stream");
+  const settingsDraft = {
+    bitrate: registerSettingsGroup({
+      panel, group: "stream", controls: [bitrate],
+      read: () => ({ bitrate: Number(bitrate.value) }),
+      write: (body) => { if (body.bitrate != null) bitrate.value = String(body.bitrate); },
+    }),
+    continuous: registerSettingsGroup({
+      panel, group: "stream", controls: [continuous],
+      read: () => ({ continuous: continuous.checked }),
+      write: (body) => { if (body.continuous != null) continuous.checked = Boolean(body.continuous); },
+    }),
+  };
 
   function showNote(missing) {
     if (!note) return;
@@ -476,31 +469,20 @@ export function createStreamSettings({
     if (note.hidden === missing) note.hidden = !missing;
   }
 
-  function bitrateBusy() {
-    return saving || settleTimer !== null || pendingBitrate !== null;
-  }
-
   function fill(info) {
     generation += 1;
+    if (typeof info?.path !== "string" || !info.path) {
+      url.value = "";
+      m3u.removeAttribute("href");
+      showNote(true);
+      return;
+    }
     url.value = `${doc.location.origin}${info.path}`;
     m3u.setAttribute("href", info.m3u_path);
     showNote(false);
     failureSpoken = false;
-    if (bitrateBusy()) return;
-    savedBitrate = String(info.bitrate);
-    if (doc.activeElement !== bitrate) bitrate.value = savedBitrate;
-    if (doc.activeElement !== continuous) continuous.checked = Boolean(info.continuous);
-    showStationName(info.station_name);
-    for (const [field, key] of [["genre", "genre"], ["description", "description"], ["url", "url"]]) {
-      const input = doc.getElementById(`stream-station-${field}`);
-      if (input && doc.activeElement !== input && typeof info[key] === "string") input.value = info[key];
-    }
-  }
-
-  function showStationName(name) {
-    if (!stationName || typeof name !== "string") return;
-    savedStationName = name;
-    if (doc.activeElement !== stationName && stationName.value !== name) stationName.value = name;
+    settingsDraft.bitrate.accept({ bitrate: info.bitrate });
+    settingsDraft.continuous.accept({ continuous: info.continuous });
   }
 
   async function refresh() {
@@ -532,17 +514,10 @@ export function createStreamSettings({
     void refresh();
   }
 
-  function stopBitrateSaves() {
-    clearTimeout(settleTimer);
-    settleTimer = null;
-    pendingBitrate = null;
-  }
-
   function hide() {
     active = false;
     generation += 1;
     lookup = null;
-    stopBitrateSaves();
     fieldset.hidden = true;
     setAvailable(false);
   }
@@ -576,37 +551,33 @@ export function createStreamSettings({
     if (relayBox.hidden !== (lines.length === 0)) relayBox.hidden = lines.length === 0;
   }
 
-  function applyPushedBitrate(state) {
-    const pushed = state.settings?.playback?.stream_bitrate;
-    if (pushed == null || bitrateBusy()) return;
-    savedBitrate = String(pushed);
-    if (doc.activeElement !== bitrate && bitrate.value !== savedBitrate) {
-      bitrate.value = savedBitrate;
-    }
-  }
-
   function apply(state) {
-    if (!state || !state.stream_mode) {
-      if (!active) return;
-      // A server restart without --stream: focus inside the section
-      // would fall to the page top, so it goes to the Settings heading.
-      const hadFocus = fieldset.contains(doc.activeElement);
-      hide();
-      if (hadFocus) {
-        if (focusAway) focusAway();
-        else fieldset.closest("details")?.querySelector("summary")?.focus();
-      }
-      return;
-    }
+    if (!state) return;
     if (fieldset.hidden) {
       fieldset.hidden = false;
       setAvailable(true);
     }
+    const playback = state.settings?.playback;
+    if (playback) {
+      settingsDraft.bitrate.accept({ bitrate: playback.stream_bitrate });
+      settingsDraft.continuous.accept({ continuous: playback.stream_continuous });
+    }
+    if (!state.stream_mode) {
+      active = false;
+      generation += 1;
+      lookup = null;
+      lastAttempt = -Infinity;
+      failureSpoken = false;
+      url.value = "";
+      m3u.removeAttribute("href");
+      listeners.textContent = "";
+      showRelays([]);
+      showNote(true);
+      return;
+    }
     const text = listenerText(Number(state.stream_listeners) || 0);
     if (listeners.textContent !== text) listeners.textContent = text;
     showRelays(state.stream_relays);
-    applyPushedBitrate(state);
-    showStationName(state.settings?.playback?.stream_station_name);
     if (!active) {
       active = true;
       showNote(!url.value);
@@ -650,57 +621,6 @@ export function createStreamSettings({
       }
     }
     announceStatus(srStatus, COPIED_TEXT, { dwellMs: 3000, force: true });
-  });
-
-  // Sends the newest settled choice, one save at a time.  A choice made
-  // while a save is out waits for it, then goes only if it still differs
-  // from what the server has.
-  async function flushBitrate() {
-    settleTimer = null;
-    if (saving || pendingBitrate === null) return;
-    const chosen = pendingBitrate;
-    pendingBitrate = null;
-    if (chosen === savedBitrate) return;
-    saving = true;
-    let ok = false;
-    try {
-      ok = await saveBitrate(Number(chosen), bitrate);
-    } finally {
-      saving = false;
-    }
-    if (!active) return;
-    if (ok) savedBitrate = chosen;
-    if (pendingBitrate !== null) {
-      if (settleTimer === null) void flushBitrate();
-      return;
-    }
-    // postSettings has said why; the select shows what the server has.
-    if (!ok && bitrate.value === chosen) bitrate.value = savedBitrate;
-  }
-
-  bitrate.addEventListener("change", () => {
-    pendingBitrate = bitrate.value;
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => void flushBitrate(), BITRATE_SETTLE_MS);
-  });
-  continuous.addEventListener("change", async () => {
-    const chosen = continuous.checked;
-    continuous.disabled = true;
-    try {
-      if (!await saveContinuous(chosen, continuous)) continuous.checked = !chosen;
-    } finally {
-      continuous.disabled = false;
-    }
-  });
-  stationName?.addEventListener("change", async () => {
-    const chosen = stationName.value.trim();
-    if (chosen === savedStationName) {
-      stationName.value = savedStationName;
-      return;
-    }
-    // The server refuses a blank name and says so; the field goes back.
-    if (await saveStationName(chosen, stationName)) savedStationName = chosen;
-    else stationName.value = savedStationName;
   });
 
   return {

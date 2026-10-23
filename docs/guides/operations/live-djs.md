@@ -123,7 +123,8 @@ started and, once over, when it ended and its length. It is in the CSV play log 
 DJ's own software, which AutoDJ cannot see. Report a DJ's songs from their own software.
 
 The routes, for scripts: `GET /api/live` (the DJ on the air, the DJs without their passwords,
-the talkover settings and the source mount), `PUT /api/live/settings`, `POST /api/live/djs`
+the talkover settings and the source mount), `PATCH /api/settings` with the `live` group,
+`POST /api/live/djs`
 (`username`, `display_name`, and `password`, or `null` to keep the saved one),
 `DELETE /api/live/djs/<username>`, each also under `/api/stations/<name>/`. They need a paired
 browser session like the rest of the page.

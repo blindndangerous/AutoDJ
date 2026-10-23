@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installIndexMarkup as installIndex } from "./helpers.js";
+import { invalidateAuthenticatedRequestEpoch } from "../../src/autodj/static/modules/api-client.js";
 
 import {
   checkNewStation,
@@ -26,13 +27,16 @@ const OWL = {
 
 function setup({ request, stations = [AUTODJ], onSwitch = vi.fn(async () => true) } = {}) {
   installIndex();
-  let list = [...stations];
+  // Each test models a fresh GET /api/stations response. The row editor updates
+  // its station record after a successful PUT, so keep the shared fixtures pristine.
+  let list = stations.map((station) => ({ ...station }));
   const onCreated = vi.fn(async (entry) => { list = [...list, entry]; });
   const onChanged = vi.fn(async () => {});
   const controls = installStationCreator({
     request, stations: () => list, onCreated, onChanged, onSwitch,
   });
-  return { controls, onCreated, onChanged, onSwitch };
+  return { controls, onCreated, onChanged, onSwitch,
+    refresh: (next) => { list = next.map((station) => ({ ...station })); controls.render(); } };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -103,18 +107,73 @@ describe("Settings > Stations", () => {
       .toEqual([["", "AutoDJ defaults"], ["default", "Copy of AutoDJ"], ["nightowl", "Copy of Night Owl Radio"]]);
   });
 
-  it("saves Start with the server and says it once", async () => {
+  it("stages Start with the server until the named row is saved", async () => {
     const request = vi.fn(async (_url, options) => ({ ...OWL, autostart: JSON.parse(options.body).enabled }));
     const { onChanged } = setup({ request, stations: [AUTODJ, OWL] });
-    const box = byId("stations-list").children[1].children[3].querySelector("input");
+    const row = byId("stations-list").children[1];
+    const box = row.children[3].querySelector("input");
     box.checked = true;
     box.dispatchEvent(new window.Event("change"));
-    await settle();
+    expect(request).not.toHaveBeenCalled();
+    const [save, discard] = row.children[3].querySelectorAll("button");
+    expect(save.hidden).toBe(false);
+    expect(save.getAttribute("aria-label")).toBe("Save Start with the server for Night Owl Radio");
+    save.click();
+    expect(save.disabled).toBe(true);
+    expect(discard.disabled).toBe(true);
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     expect(request).toHaveBeenCalledWith("/api/stations/nightowl/autostart", expect.objectContaining({ method: "PUT" }));
     expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ enabled: true });
     await vi.waitFor(() => expect(byId("stations-status").textContent.trim())
       .toBe("Night Owl Radio starts with the server."));
     expect(onChanged).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a staged row value across refresh and discards it", () => {
+    const { refresh } = setup({ request: vi.fn(), stations: [AUTODJ, OWL] });
+    const row = byId("stations-list").children[1];
+    const box = row.children[3].querySelector("input");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    refresh([AUTODJ, { ...OWL, title: "Updated title" }]);
+    expect(byId("stations-list").children[1].children[3].querySelector("input").checked).toBe(true);
+    row.children[3].querySelectorAll("button")[1].click();
+    expect(box.checked).toBe(false);
+    expect(row.children[3].querySelector('[role="group"]').hidden).toBe(true);
+  });
+
+  it("retains a failed row edit and ignores a reply from an old login", async () => {
+    let finish;
+    const request = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const { onChanged } = setup({ request, stations: [AUTODJ, OWL] });
+    const row = byId("stations-list").children[1];
+    const box = row.children[3].querySelector("input");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    row.children[3].querySelector("button").click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(box.disabled).toBe(true);
+    invalidateAuthenticatedRequestEpoch();
+    finish({ ...OWL, autostart: true });
+    await settle();
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+    expect(row.children[3].querySelector("button").hidden).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed row save staged so it can be retried", async () => {
+    const request = vi.fn().mockRejectedValueOnce(new Error("The server is busy."));
+    setup({ request, stations: [AUTODJ, OWL] });
+    const row = byId("stations-list").children[1];
+    const box = row.children[3].querySelector("input");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    row.children[3].querySelector("button").click();
+    await vi.waitFor(() => expect(byId("stations-status").textContent)
+      .toContain("Could not save the Start with the server change for Night Owl Radio."));
+    expect(box.checked).toBe(true);
+    expect(row.children[3].querySelector("button").hidden).toBe(false);
   });
 
   it("starts a station at once and asks before stopping one", async () => {

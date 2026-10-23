@@ -47,6 +47,8 @@ For initial configuration, describe each relay in the station's `relays.json` fi
 
 Or set it in the environment as `AUTODJ_STATION_DEFAULT_RELAY_<NAME>_PASSWORD`, with the name
 upper-cased and `-` written as `_`, for example `AUTODJ_STATION_DEFAULT_RELAY_MAIN_PASSWORD`.
+Names containing spaces use an uppercase SHA-256 variable segment, for example the relay name
+`Stream madness` uses `AUTODJ_STATION_DEFAULT_RELAY_NAME_SHA256_16DDB67590CA8DD1B551666647C75FEDC901ECD7A718195DCF3D6D96984604D1_PASSWORD`.
 For another station, replace `DEFAULT` with its slug. Legacy
 `AUTODJ_STREAM_RELAY_<NAME>_PASSWORD` values are copied into the default station's private
 `relays.json` on startup migration only. A relay

@@ -6,6 +6,16 @@ import { installIndexMarkup as installIndex } from "./helpers.js";
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
 import { installTimeChecks } from "../../src/autodj/static/modules/time-checks.js";
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  settingsHaveChanges: () => false,
+  confirmSettingsNavigation: async () => true,
+  registerSettingsGroup: (spec) => {
+    groups.push(spec);
+    return { accept: (body) => spec.write(body), dirty: () => false };
+  },
+}));
+
 // The real Settings markup, so the ids, labels and live region the module
 // relies on are the ones the page ships.
 
@@ -33,7 +43,7 @@ function server(overrides = {}) {
   });
 }
 
-beforeEach(installIndex);
+beforeEach(() => { groups.length = 0; installIndex(); });
 
 describe("Time checks panel markup", () => {
   it("is a Settings subtab between Voice liners and Breaks, with no aria-controls", () => {
@@ -193,7 +203,7 @@ describe("voice packs", () => {
       "Could not save the play dates. Not before: Input should be a valid date");
   });
 
-  it("saves ticked packs and the order by name, out loud, and keeps focus on refresh", async () => {
+  it("reads ticked packs and their order into one draft, and keeps focus on refresh", async () => {
     const request = server();
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
@@ -201,32 +211,26 @@ describe("voice packs", () => {
     night.focus();
     night.checked = true;
     night.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/time-checks",
-      expect.objectContaining({ method: "PUT" })));
-    const put = request.mock.calls.find(([, options]) => options?.method === "PUT")[1];
-    expect(JSON.parse(put.body)).toMatchObject({
-      enabled_packs: ["Studio", "Night & Day"], pack_order: "rotate" });
-    expect(await liveText()).toBe("Time check settings saved.");
-    await controls.refresh();
-    expect(document.activeElement).toBe(night);
     const order = byId("tc-pack-order");
     order.value = "random";
     order.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(request.mock.calls.some(([, options]) =>
-      options?.body?.includes('"pack_order":"random"'))).toBe(true));
+    expect(groups.find((group) => group.group === "time_checks").read()).toMatchObject({
+      enabled_packs: ["Studio", "Night & Day"], pack_order: "random" });
+    expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
+    await controls.refresh();
+    expect(document.activeElement).toBe(night);
   });
 
-  it("puts the ticks back when the save fails", async () => {
-    const base = server();
-    const request = vi.fn((url, options = {}) => options.method === "PUT"
-      ? Promise.reject(new Error("No voice pack named Old")) : base(url, options));
+  it("does not persist an edited pack selection from the feature module", async () => {
+    const request = server();
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
     const studio = byId("tc-pack-list").querySelector("input");
     studio.checked = false;
     studio.dispatchEvent(new Event("change"));
-    expect(await liveText()).toBe("Could not save time check settings: No voice pack named Old");
-    expect(studio.checked).toBe(true);
+    expect(groups.find((group) => group.group === "time_checks").read().enabled_packs)
+      .toEqual([]);
+    expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
   });
 
   it("tests a chosen pack on the server and says where the voice came from", async () => {
@@ -257,7 +261,7 @@ describe("voice packs", () => {
 });
 
 describe("time checks panel", () => {
-  it("shows clip coverage and the time zone, and saves a changed switch out loud", async () => {
+  it("shows clip coverage and reads a changed setting into the draft", async () => {
     const request = server();
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
@@ -270,9 +274,8 @@ describe("time checks panel", () => {
     const format = byId("tc-hour-format");
     format.value = "24";
     format.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/time-checks",
-      expect.objectContaining({ method: "PUT", body: expect.stringContaining('"hour_format":"24"') })));
-    expect(await liveText()).toBe("Time check settings saved.");
+    expect(groups.find((group) => group.group === "time_checks").read().hour_format).toBe("24");
+    expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
   });
 
   it("keeps the newest load when an older reply lands late", async () => {
@@ -317,6 +320,7 @@ describe("time checks panel", () => {
   it("says nothing for a failed load that was for the station just left (#70)", async () => {
     const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    selectStation("default");
     let reply;
     const fetchImpl = vi.fn(() => new Promise((resolve) => { reply = resolve; }));
     vi.stubGlobal("fetch", fetchImpl);
@@ -334,9 +338,10 @@ describe("time checks panel", () => {
     }
   });
 
-  it("says what a save, a test or new dates answered after a switch did, leaving the form alone (#70)", async () => {
+  it("says what a test or new dates answered after a switch did, leaving the form alone (#70)", async () => {
     const { selectStation, setKnownStations } = await import("../../src/autodj/static/modules/stations.js");
     setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
+    selectStation("night");
     const json = (body, status = 200) => new globalThis.Response(JSON.stringify(body),
       { status, headers: { "Content-Type": "application/json" } });
     const loaded = await server()("/api/time-checks");
@@ -358,15 +363,6 @@ describe("time checks panel", () => {
     try {
       const controls = installTimeChecks({ interval: () => {}, testOnServer: () => true });
       await controls.refresh();
-      const enabled = byId("tc-enabled");
-      enabled.checked = false;
-      expect(await answeredAfterSwitch(() => enabled.dispatchEvent(new Event("change")),
-        { ...loaded, enabled: false }, 200, "night"))
-        .toBe("Done on Main, the station this page has just left.");
-      // Not put back to the old station's saved value.
-      expect(enabled.checked).toBe(false);
-      byId("tc-status").textContent = "";
-
       expect(await answeredAfterSwitch(() => byId("tc-test").click(), { detail: "No" }, 409, "default"))
         .toBe("Night did not do that; it is the station this page has just left.");
       byId("tc-status").textContent = "";
@@ -389,19 +385,6 @@ describe("time checks panel", () => {
     await controls.refresh();
     expect(byId("tc-clips-status").textContent).toContain(
       "0 of 1440 minute clips recorded. No text to speech is set up");
-  });
-
-  it("puts a failed save back and says why", async () => {
-    const base = server();
-    const request = vi.fn((url, options = {}) => options.method === "PUT"
-      ? Promise.reject(new Error("Server busy")) : base(url, options));
-    const controls = installTimeChecks({ request, interval: () => {} });
-    await controls.refresh();
-    const enabled = byId("tc-enabled");
-    enabled.checked = false;
-    enabled.dispatchEvent(new Event("change"));
-    expect(await liveText()).toBe("Could not save time check settings: Server busy");
-    expect(enabled.checked).toBe(true);
   });
 
   it("refreshes the coverage when its subtab is shown", async () => {

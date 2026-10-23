@@ -72,11 +72,11 @@ Record the original settings before changing them so you can restore them later.
 3. In **Voice liners**, leave **Enable voice liners** unchecked.
 4. In **Settings**, **Stations**, set **Playback output** to **Radio stream**.
    Leave **Also play the radio stream on the server sound card** unchecked.
-5. Press **Save station options**. In Practice's station row press **Stop**,
+5. Press **Save changes** in the Stations tab. In Practice's station row press **Stop**,
    confirm **Stop station**, wait for **Off air**, then press **Start**.
 
-Transition controls save on change. Output has two boundaries: **Save station options**
-saves the choice, and restarting the station applies it. The **Beatmatch** option
+Press **Save changes** in each Settings tab after editing. Output has two boundaries:
+the Stations tab saves the choice, and restarting the station applies it. The **Beatmatch** option
 in **DJ mixing** serves server mixing. Browser **Beatmatch on skip** is a separate
 control and is not used here. **Use saved segue points** would bypass these mixing
 options, which is why the lesson chooses another transition mode.
@@ -141,7 +141,7 @@ forces a change. Restore `8` after checking your answer.
 
 Stop **Listen here** if pressed. Stop Practice and confirm **Off air**. Restore
 the transition settings you recorded, select **Browser** output and press
-**Save station options**. Start Practice, then pause browser playback with
+**Save changes** in the Stations tab. Start Practice, then pause browser playback with
 **Play or Pause** if needed. Check that elapsed time stops advancing.
 
 Your category, clockwheel, songs and analysis remain. No cue edits were necessary;

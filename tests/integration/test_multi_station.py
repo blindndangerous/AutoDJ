@@ -32,6 +32,7 @@ from autodj.library import LibraryManager
 from autodj.repeat_rules import TrackKeyCache
 from autodj.similarity import SimilarityIndex
 from autodj.stream import Listener
+from tests.integration._helpers import patch_station_settings
 from tests.unit._fakes import FakeEncoder
 from tests.unit.test_library import make_entry
 
@@ -463,7 +464,10 @@ def test_queue_pause_and_settings_stay_in_their_station(rig: Any) -> None:
     assert owl.player._state.is_paused
     assert not default.player._state.is_paused
 
-    assert client.post(f"{OWL}/transition", json={"effect": "echo_out"}).status_code == 200
+    assert (
+        patch_station_settings(client, {"transition": {"effect": "echo_out"}}, base=OWL).status_code
+        == 200
+    )
     assert owl.cfg.transitions.effect == "echo_out"
     assert cfg.transitions.effect == "none"
     saved = json.loads((owl.paths.state_dir / "web_state.json").read_text(encoding="utf-8"))
@@ -615,45 +619,51 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
     original_format = timefmt.time_format
     assert _stations(client)["nightowl"]["state"] == "stopped"
 
-    time_response = client.put(
-        time_settings,
-        json={"timezone": "America/New_York", "time_format": "12"},
+    time_response = patch_station_settings(
+        client,
+        {"time": {"timezone": "America/New_York", "time_format": "12"}},
+        base=OWL,
         headers={"Origin": "http://testserver"},
     )
     assert time_response.status_code == 200
-    assert time_response.json()["timezone"] == "America/New_York"
-    assert time_response.json()["running_timezone"] is None
-    assert time_response.json()["time_format"] == "12"
+    time_values = time_response.json()["settings"]["values"]["time"]
+    assert time_values["timezone"] == "America/New_York"
+    assert time_values["time_format"] == "12"
 
-    output_response = client.put(
-        station_settings,
-        json={
-            "output": "stream",
-            "server_audio_too": True,
-            "liner_upload_max_mib": 12,
+    output_response = patch_station_settings(
+        client,
+        {
+            "station": {
+                "output": "stream",
+                "server_audio_too": True,
+                "liner_upload_max_mib": 12,
+            }
         },
+        base=OWL,
         headers={"Origin": "http://testserver"},
     )
     assert output_response.status_code == 200
-    assert output_response.json() == {
-        "timezone": "America/New_York",
+    station_values = output_response.json()["settings"]["values"]["station"]
+    assert station_values == {
         "liner_upload_max_mib": 12,
         "output": "stream",
         "server_audio_too": True,
     }
     assert client.get(time_settings).json()["timezone"] == "America/New_York"
-    assert client.get(station_settings).json() == output_response.json()
+    assert client.get(station_settings).json()["output"] == "stream"
     assert _stations(client)["nightowl"]["state"] == "stopped"
 
     unchanged = definition.read_bytes()
     invalid_updates = [
-        (station_settings, {"liner_upload_max_mib": 0}),
-        (station_settings, {"output": "headphones"}),
-        (station_settings, {"timezone": "Mars/Olympus_Mons"}),
-        (time_settings, {"timezone": "Mars/Olympus_Mons", "time_format": "24"}),
+        {"station": {"liner_upload_max_mib": 0}},
+        {"station": {"output": "headphones"}},
+        {"station": {"timezone": "Mars/Olympus_Mons"}},
+        {"time": {"timezone": "Mars/Olympus_Mons", "time_format": "24"}},
     ]
-    for path, body in invalid_updates:
-        response = client.put(path, json=body, headers={"Origin": "http://testserver"})
+    for changes in invalid_updates:
+        response = patch_station_settings(
+            client, changes, base=OWL, headers={"Origin": "http://testserver"}
+        )
         assert response.status_code == 400
         assert definition.read_bytes() == unchanged
 
@@ -663,25 +673,30 @@ def test_stopped_station_time_and_output_settings_round_trip(rig: Any) -> None:
 def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
     client, _library, cfg, *_ = rig
     registry = client.app.state.stations
-    path = f"{OWL}/public-settings"
     definition = registry._extras["nightowl"].paths.definition
     headers = {"Origin": "http://testserver"}
     default_before = client.get("/api/public-settings").json()
 
-    enabled = client.put(path, json={"dmca_enabled": True}, headers=headers)
+    enabled = patch_station_settings(
+        client, {"public": {"dmca_enabled": True}}, base=OWL, headers=headers
+    )
     assert enabled.status_code == 200, enabled.text
-    assert enabled.json()["dmca_enabled"] is True
+    assert enabled.json()["settings"]["values"]["public"]["dmca_enabled"] is True
     assert registry.get("nightowl").player._state.dmca_enabled is True
     assert client.get("/stations/nightowl/player").status_code == 200
 
-    origin = client.put(path, json={"embed_origins": ["https://example.org"]}, headers=headers)
+    origin = patch_station_settings(
+        client, {"public": {"embed_origins": ["https://example.org"]}}, base=OWL, headers=headers
+    )
     assert origin.status_code == 200, origin.text
     assert (
         client.get("/stations/nightowl/embed")
         .headers["content-security-policy"]
         .endswith("frame-ancestors 'self' https://example.org")
     )
-    wildcard = client.put(path, json={"embed_origins": ["*"]}, headers=headers)
+    wildcard = patch_station_settings(
+        client, {"public": {"embed_origins": ["*"]}}, base=OWL, headers=headers
+    )
     assert wildcard.status_code == 200, wildcard.text
     assert (
         client.get("/stations/nightowl/embed")
@@ -689,13 +704,16 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
         .endswith("frame-ancestors *")
     )
 
-    changed = client.put(
-        path,
-        json={
-            "player_page_enabled": False,
-            "embed_enabled": False,
-            "embed_origins": ["https://example.org"],
+    changed = patch_station_settings(
+        client,
+        {
+            "public": {
+                "player_page_enabled": False,
+                "embed_enabled": False,
+                "embed_origins": ["https://example.org"],
+            }
         },
+        base=OWL,
         headers=headers,
     )
     assert changed.status_code == 200, changed.text
@@ -718,8 +736,8 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
         {"unknown": True},
         {},
     ):
-        invalid = client.put(path, json=body, headers=headers)
-        assert invalid.status_code == 400, invalid.text
+        invalid = patch_station_settings(client, {"public": body}, base=OWL, headers=headers)
+        assert invalid.status_code in (400, 422), invalid.text
         if body == {"embed_origins": ["ftp://example.org"]}:
             assert invalid.json() == {
                 "detail": "Sites allowed to embed: 'ftp://example.org' is not an http:// or "
@@ -729,7 +747,9 @@ def test_public_settings_save_live_and_while_stopped(rig: Any) -> None:
         assert definition.read_bytes() == unchanged
 
     assert client.post(f"{OWL}/stop").status_code == 200
-    stopped = client.put(path, json={"player_page_enabled": True}, headers=headers)
+    stopped = patch_station_settings(
+        client, {"public": {"player_page_enabled": True}}, base=OWL, headers=headers
+    )
     assert stopped.status_code == 200, stopped.text
     assert client.get("/stations/nightowl/player").status_code == 503
     assert client.get("/stations/nightowl/embed").status_code == 404
@@ -774,9 +794,10 @@ def test_enabling_dmca_refreshes_public_feed_and_saved_play_limits(rig: Any) -> 
     )
     assert not any(record.path.endswith("played-0.flac") for record in state.play_history)
 
-    response = client.put(
-        f"{OWL}/public-settings",
-        json={"dmca_enabled": True},
+    response = patch_station_settings(
+        client,
+        {"public": {"dmca_enabled": True}},
+        base=OWL,
         headers={"Origin": "http://testserver"},
     )
     assert response.status_code == 200, response.text
@@ -784,14 +805,6 @@ def test_enabling_dmca_refreshes_public_feed_and_saved_play_limits(rig: Any) -> 
     assert client.get(f"{OWL}/nowplaying").json()["next_track"] is None
     assert (
         '<section id="status-next-section" hidden>' in client.get("/stations/nightowl/status").text
-    )
-    assert (
-        client.put(
-            f"{OWL}/public-settings",
-            content=b" " * (8 * 1024 + 1),
-            headers={"Origin": "http://testserver"},
-        ).status_code
-        == 413
     )
     assert {Path(record.path).stem for record in state.play_history} >= {
         "played-0",
@@ -802,9 +815,10 @@ def test_enabling_dmca_refreshes_public_feed_and_saved_play_limits(rig: Any) -> 
         "more than 3 songs from the album" in limit
         for limit in complement(list(state.play_history), time.time(), TrackKeyCache()).broken(song)
     )
-    disabled = client.put(
-        f"{OWL}/public-settings",
-        json={"dmca_enabled": False},
+    disabled = patch_station_settings(
+        client,
+        {"public": {"dmca_enabled": False}},
+        base=OWL,
         headers={"Origin": "http://testserver"},
     )
     assert disabled.status_code == 200, disabled.text
@@ -904,10 +918,12 @@ def test_two_stations_can_start_with_independent_stereo_tool_instances(rig: Any)
 def test_two_running_stations_can_switch_to_stereo_tool_independently(rig: Any) -> None:
     client, *_ = rig
     owl = client.app.state.stations.get("nightowl")
-    changed = client.post(f"{OWL}/playback-settings", json={"loudness_processing": "stereotool"})
+    changed = patch_station_settings(
+        client, {"playback": {"loudness_processing": "stereotool"}}, base=OWL
+    )
     assert changed.status_code == 200, changed.text
     assert owl.cfg.playback.loudness_processing == "stereotool"
-    kept = client.post("/api/playback-settings", json={"loudness_processing": "stereotool"})
+    kept = patch_station_settings(client, {"playback": {"loudness_processing": "stereotool"}})
     assert kept.status_code == 200, kept.text
     assert client.app.state.stations.default.cfg.playback.loudness_processing == "stereotool"
 
@@ -919,7 +935,9 @@ def test_a_preset_any_station_uses_cannot_be_deleted(rig: Any) -> None:
         files={"file": ("Owl.sts", b"[Stereo Tool]\nVersion=1\n", "text/plain")},
     )
     assert upload.status_code == 200, upload.text
-    chosen = client.post(f"{OWL}/playback-settings", json={"stereotool_preset": "Owl.sts"})
+    chosen = patch_station_settings(
+        client, {"playback": {"stereotool_preset": "Owl.sts"}}, base=OWL
+    )
     assert chosen.status_code == 200
     refused = client.delete("/api/stereo-tool-presets/Owl.sts")
     assert refused.status_code == 409

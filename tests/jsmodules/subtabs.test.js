@@ -107,6 +107,8 @@ describe("initSubtabs", () => {
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stations"));
     press(document.activeElement, "ArrowLeft");
+    expect(document.activeElement).toBe(byId("stab-live"));
+    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-stream"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-schedule"));

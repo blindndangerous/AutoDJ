@@ -75,11 +75,11 @@ def test_create_station_needs_session_origin_and_small_body() -> None:
     assert client.post("/api/stations", json=body).status_code == 503
 
 
-def test_settings_request_bodies_are_capped() -> None:
+def test_settings_and_relay_request_bodies_are_capped() -> None:
     client = _security_client()
     assert _pair(client).status_code == 200
-    for path in ("/api/time-settings", "/api/station-settings", "/api/public-settings"):
-        assert client.put(path, content=b" " * (8 * 1024 + 1)).status_code == 413
+    assert client.patch("/api/settings", content=b" " * (64 * 1024 + 1)).status_code == 413
+    assert client.post("/api/stream/relays", content=b" " * (8 * 1024 + 1)).status_code == 413
 
 
 def _security_app():
@@ -381,8 +381,7 @@ def test_secured_route_categories_require_session(path: str) -> None:
         ("post", "/api/library/run", {"json": {}}),
         ("post", "/api/library/remove-missing", {"json": {}}),
         ("put", "/api/library/auto-rescan", {"json": {}}),
-        ("put", "/api/time-settings", {"json": {}}),
-        ("put", "/api/public-settings", {"json": {}}),
+        ("patch", "/api/settings", {"json": {}}),
     ],
 )
 def test_unsafe_route_categories_reject_before_parsing_body(
@@ -652,12 +651,7 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/advance"),
         ("post", "/api/repick-next"),
         ("post", "/api/random-track"),
-        ("post", "/api/preset"),
-        ("post", "/api/transition"),
-        ("post", "/api/djmix"),
-        ("post", "/api/playback-settings"),
-        ("post", "/api/bpm-range"),
-        ("post", "/api/discovery"),
+        ("patch", "/api/settings"),
         ("post", "/api/discovery/toggle"),
         ("post", "/api/eq"),
         ("post", "/api/library/stop"),
@@ -665,8 +659,6 @@ def test_options_has_no_cors_bypass() -> None:
         ("post", "/api/library/remove-missing"),
         ("put", "/api/library/auto-rescan"),
         ("put", "/api/library/advanced-length"),
-        ("put", "/api/time-settings"),
-        ("put", "/api/public-settings"),
     ],
 )
 def test_every_mutation_route_requires_session_before_body_validation(
