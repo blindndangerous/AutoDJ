@@ -102,6 +102,22 @@ describe("local monitor", () => {
     expect(log.states).toEqual([true, false]);
   });
 
+  it("uses the latest page level when it changes while the worklet loads", async () => {
+    let finishModule;
+    const addModule = vi.fn(() => new Promise((resolve) => { finishModule = resolve; }));
+    const { monitor, log } = fakes({ addModule });
+    const started = monitor.start({ url: "/api/monitor", volume: 0.2, muted: false });
+    await vi.waitFor(() => expect(addModule).toHaveBeenCalledOnce());
+
+    monitor.setLevel(0.65, true);
+    finishModule();
+    await vi.waitFor(() => expect(log.sockets).toHaveLength(1));
+    expect(log.messages[0]).toMatchObject({ level: true, volume: 0.65, muted: true });
+    log.sockets[0].open();
+    await expect(started).resolves.toBe(true);
+    monitor.stop();
+  });
+
   it("bounds worklet messages to one outstanding chunk and drops malformed audio", async () => {
     const { monitor, log } = fakes();
     const started = monitor.start({ url: "/api/monitor" });

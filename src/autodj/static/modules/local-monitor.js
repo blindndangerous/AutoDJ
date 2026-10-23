@@ -83,7 +83,10 @@ export function createLocalMonitor({
     const Context = AudioContextClass();
     const Socket = WebSocketClass();
     const asked = ++generation;
-    const current = { done: false, context: null, socket: null, node: null, inFlight: false, bufferedFrames: 0 };
+    const current = {
+      done: false, context: null, socket: null, node: null, inFlight: false, bufferedFrames: 0,
+      level: { volume: Math.max(0, Math.min(1, Number(volume) || 0)), muted: Boolean(muted) },
+    };
     session = current;
     try {
       current.context = new Context();
@@ -109,7 +112,7 @@ export function createLocalMonitor({
       const Node = AudioWorkletNodeClass();
       current.node = new Node(current.context, "autodj-local-monitor", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       current.node.connect(current.context.destination);
-      current.node.port.postMessage({ level: true, volume: Math.max(0, Math.min(1, Number(volume) || 0)), muted: Boolean(muted) });
+      current.node.port.postMessage({ level: true, ...current.level });
       current.node.port.onmessage = (event) => {
         current.inFlight = false;
         current.bufferedFrames = event.data?.bufferedFrames || 0;
@@ -145,7 +148,9 @@ export function createLocalMonitor({
   }
 
   function setLevel(volume, muted = false) {
-    session?.node?.port?.postMessage({ level: true, volume: Math.max(0, Math.min(1, Number(volume) || 0)), muted: Boolean(muted) });
+    if (!session || session.done) return;
+    session.level = { volume: Math.max(0, Math.min(1, Number(volume) || 0)), muted: Boolean(muted) };
+    session.node?.port?.postMessage({ level: true, ...session.level });
   }
 
   function isListening() { return Boolean(session && !session.done); }
