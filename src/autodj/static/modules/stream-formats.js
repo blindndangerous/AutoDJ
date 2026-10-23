@@ -3,6 +3,8 @@
 //
 // Speech rules:
 //   - A select is never rewritten while it has an unsaved draft.
+//   - Save changes says what each changed format now does, after the
+//     tab's result.
 //   - The address list is plain text, rebuilt only when its text changes,
 //     so reading it is not disturbed by the once-a-second push.
 //   - Copy is a user action: its confirmation is forced, and focus stays
@@ -18,6 +20,11 @@ const FORMATS = ["aac", "opus"];
 export function formatLine(item, origin) {
   const line = `${item.label}, ${item.bitrate} kbps: ${origin}${item.path}`;
   return item.error ? `${line}. Its encoder last said: ${item.error}` : line;
+}
+
+// What a save did, in words.
+export function formatSavedText(label, bitrate) {
+  return bitrate ? `${label} stream on at ${bitrate} kbps.` : `${label} stream off.`;
 }
 
 async function copyText(doc, text) {
@@ -52,6 +59,7 @@ export function installStreamFormats({
   const selects = Object.fromEntries(FORMATS.map((name) => [
     name, doc.getElementById(`stream-${name}-bitrate`),
   ]));
+  const labels = { aac: "AAC", opus: "Opus" };
   const settingsDrafts = Object.fromEntries(FORMATS.map((name) => [name, registerSettingsGroup({
     panel: doc.getElementById("spanel-stream"),
     group: "stream",
@@ -60,6 +68,7 @@ export function installStreamFormats({
     write: (body) => {
       if (body[`${name}_bitrate`] != null) selects[name].value = String(body[`${name}_bitrate`]);
     },
+    describe: (body) => formatSavedText(labels[name], body[`${name}_bitrate`]),
   })]));
 
   function showList(items) {

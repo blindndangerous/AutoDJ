@@ -1667,7 +1667,7 @@ async function eachTarget(page, measure) {
     for (const id of ids) {
       // Reset fixture drafts only if they still differ when the click runs.
       await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
-        for (const button of buttons) if (!button.disabled) button.click();
+        for (const button of buttons) if (button.getAttribute("aria-disabled") !== "true") button.click();
       });
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
