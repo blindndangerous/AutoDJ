@@ -279,7 +279,6 @@ def _player(pick_mode: str = "similarity", tracks=TRACKS, *, dmca: bool = True) 
     )
     cfg.dmca = DmcaConfig(enabled=dmca)
     player = Player(cfg, _sim(tracks), dry_run=True)
-    player._pure_shuffle = pick_mode == "random"
     return player
 
 

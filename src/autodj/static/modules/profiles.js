@@ -35,7 +35,7 @@ export function profileFromSettings(name, st) {
   for (const key of [
     "transition_mode", "post_queue_seed", "beat_sync_fx", "key_sync_fx",
     "beatmatch_on_skip", "crossfade_seconds", "fade_in_seconds",
-    "pure_shuffle", "anchor_to_seed", "liners_enabled",
+    "anchor_to_seed", "liners_enabled",
     "liners_pick_mode", "pick_mode", "loudness_processing",
   ]) {
     body[key] = pb[key] ?? null;

@@ -37,7 +37,17 @@ function mount() {
           <button type="submit" id="requests-settings-save">Save request settings</button>
         </form>
       </details>
-    </section>`;
+    </section>
+    <dialog id="confirm-dialog"><h1 id="confirm-title"></h1><p id="confirm-message"></p>
+      <div><button id="confirm-cancel">Cancel</button><button id="confirm-accept"></button></div>
+    </dialog>`;
+  const dialog = byId("confirm-dialog");
+  dialog.showModal = () => { dialog.open = true; };
+  dialog.close = (value) => {
+    dialog.returnValue = value;
+    dialog.open = false;
+    dialog.dispatchEvent(new Event("close"));
+  };
 }
 
 const A = "a".repeat(32);
@@ -420,6 +430,30 @@ describe("listener requests card", () => {
     release();
     await vi.waitFor(() => expect(row(A)).toBeUndefined());
   });
+
+  it.each(["approve", "play-next"])(
+    "retries listener %s with the selected voice action and revision", async (action) => {
+    install();
+    await flush();
+    const conflict = Object.assign(new Error("Voice track changed."), {
+      status: 409,
+      detail: { code: "voice_track_conflict", revision: "rev-1" },
+    });
+    request.mockImplementation((url, options) => {
+      if (options?.method !== "POST") return Promise.resolve(STATE);
+      if (!options.body) return Promise.reject(conflict);
+      return Promise.resolve(STATE);
+    });
+    row(A).querySelector(`[data-action="${action}"]`).click();
+    await vi.waitFor(() => expect(byId("confirm-dialog").open).toBe(true));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(request.mock.calls.filter(([, options]) => options?.method === "POST"))
+      .toHaveLength(2));
+    const posts = request.mock.calls.filter(([, options]) => options?.method === "POST");
+    expect(posts[0][0]).toBe(`/api/requests/${A}/${action}`);
+    expect(posts[1][1].body).toBe(JSON.stringify({ voice_action: "keep", voice_revision: "rev-1" }));
+    },
+  );
 
   it("says a short line when the reply is slow, and only the result when it is quick (#384)", async () => {
     install();

@@ -201,6 +201,17 @@ def _can_import(name: str) -> bool:
     return True
 
 
+def _require_model_analysis() -> None:
+    """Reject unavailable local model analysis before model imports or downloads."""
+    from autodj.model_identity import model_analysis_available
+
+    if not model_analysis_available():
+        raise click.ClickException(
+            "Local model analysis is disabled or its packages are not installed. "
+            "Run `autodj setup --backend cpu` to enable it. Imported songs remain available."
+        )
+
+
 def _configured_allowed_hosts(
     cfg: AutoDJConfig, allowed_hosts: tuple[str, ...]
 ) -> list[str] | None:
@@ -1043,6 +1054,7 @@ def cmd_index(
     manual cues, history, settings and usable old vectors if a song fails.
     """
     from autodj.library import LibraryManager, analyse_library
+    from autodj.model_identity import model_analysis_available
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     console.print(Panel("[bold green]AutoDJ library import[/]", expand=False))
@@ -1064,7 +1076,14 @@ def cmd_index(
         console.print(f"[green]{state['tracks_ready']} songs available.[/]")
         for error in state["import"]["errors"]:
             console.print(f"[yellow]{escape(error)}[/]")
-        if library.analysis_pending(force=force):
+        pending = library.analysis_pending(force=force)
+        if pending and not model_analysis_available():
+            console.print(
+                "[yellow]Advanced analysis pending: local model analysis is unavailable. "
+                "Imported songs remain available; run `autodj setup --backend cpu` "
+                "to enable local analysis.[/]"
+            )
+        elif pending:
             from autodj.model import download_model_if_needed, load_model
 
             missing = [
@@ -1259,6 +1278,7 @@ def cmd_enrich(ctx: click.Context) -> None:
 @click.pass_context
 def cmd_analyse_library(ctx: click.Context) -> None:
     """Analyse basic-ready songs from folders with advanced analysis enabled."""
+    _require_model_analysis()
     from autodj.library import analyse_library
     from autodj.model import download_model_if_needed, load_model
 
@@ -1378,6 +1398,7 @@ def cmd_worker(
       autodj worker --server https://nas.local:8765 --idle-release 5 \
         --before-command "podman stop tts-service" --after-command "podman start tts-service"
     """
+    _require_model_analysis()
     import signal
     import threading
 

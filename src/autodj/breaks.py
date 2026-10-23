@@ -2,18 +2,17 @@
 
 An announcer program on the same host writes a spoken break for
 one song change and hands it to AutoDJ through the breaks API
-(:mod:`autodj.breaks_api`).  AutoDJ renders each song change one song
-ahead, so a break cannot join the change that is already rendered: it
-joins the *open slot*, the change after the next song.
+(:mod:`autodj.breaks_api`). External announcer uploads and scheduled breaks
+still join a future *open slot*. Browser voice tracking in stream mode uses
+the current handoff until its booking cutoff; streamed music stays editable
+until it enters the mix. Local playout retains prepared PCM handoffs.
 
-The player plans that change as soon as the next song is rendered
+The future-slot planner chooses that change after preparing the next handoff
 (:meth:`autodj.player.Player._plan_slot`): it picks the song that will
 follow, so the slot names both songs, the *ending* one and the *upcoming*
-one.  A break booked for the slot pins that pair: the upcoming song stays
-whatever the queue does, because the break names it.  When the slot's
-change is rendered, its breaks are mixed in (talk-up over the upcoming
-song's intro, or standalone between the songs) and they air about one
-song later.
+one. Local playout pins a booked pair. Streaming queue edits instead require
+an explicit keep/discard choice for associated speech. Breaks use talk-up
+placement over the upcoming intro or standalone placement between songs.
 
 :class:`BreakDesk` keeps one station's breaks: their files in the
 station's ``announcements`` folder (never in liner rotation), their state
@@ -263,6 +262,30 @@ class Break:
         }
 
 
+@dataclass(frozen=True)
+class TransitionItem:
+    """One frozen spoken item in an open song-change plan."""
+
+    item_id: str
+    kind: str
+    source: str
+    label: str
+    entry: Any = None
+    intro: Any = None
+    committed: bool = False
+    editable: bool = True
+
+    def view(self) -> dict[str, Any]:
+        return {
+            "id": self.item_id,
+            "kind": self.kind,
+            "source": self.source,
+            "label": self.label,
+            "committed": self.committed,
+            "editable": self.editable,
+        }
+
+
 @dataclass
 class SlotPlan:
     """The open song change: the player's pick for the song after the next one.
@@ -315,6 +338,15 @@ class SlotPlan:
     stale: bool = False
     clock_step: dict | None = None
     ad_steps: tuple[dict, ...] = ()
+    queue_liner_paths: tuple[Path, ...] = ()
+    clock_liner: Any = None
+    transition_items: tuple[TransitionItem, ...] = ()
+    transition_revision: str = ""
+    transition_seed: str = ""
+    transition_order: tuple[str, ...] = ()
+    transition_replaced: tuple[str, ...] = ()
+    transition_actions: tuple[tuple[str, str], ...] = ()
+    live: bool = False
 
 
 class BreakError(Exception):
@@ -403,7 +435,7 @@ class BreakDesk:
 
     @property
     def enabled(self) -> bool:
-        """Whether the station takes breaks from the announcer and the voice tracker."""
+        """Whether the station accepts external announcer uploads."""
         return self.config.enabled is True
 
     @property
@@ -525,15 +557,15 @@ class BreakDesk:
         Its reservation, if any, becomes the break.
 
         Raises:
-            BreakError: As :meth:`reserve`; 409 for an announcer's or voice
-                tracker's break while breaks are off.  Checked under the lock
+            BreakError: As :meth:`reserve`; 409 for an announcer's break
+                while external breaks are off. Checked under the lock
                 :meth:`drop_waiting_breaks` takes, so an upload that was let in
                 before breaks were turned off can never be booked after.
         """
         with self._lock:
             held = self._reserved.pop(item.break_id, None)
             try:
-                if item.source in (ANNOUNCER, VOICE_TRACK) and not self.enabled:
+                if item.source == ANNOUNCER and not self.enabled:
                     raise BreakError(409, BREAKS_OFF, "disabled")
                 if not item.keep_file:
                     self._room_locked(item.slot_id, item.size)
@@ -686,7 +718,7 @@ class BreakDesk:
         return len(items)
 
     def drop_waiting_breaks(self, reason: str) -> int:
-        """Drop the announcer's and voice tracker's breaks still waiting for their song change.
+        """Drop the announcer's breaks still waiting for their song change.
 
         Breaks turned off in Settings: a break already mixed into the next
         song change still airs, and ad spots booked by the ad schedule
@@ -696,7 +728,7 @@ class BreakDesk:
             items = [
                 item
                 for item in self._breaks.values()
-                if item.state == QUEUED and item.source in (ANNOUNCER, VOICE_TRACK)
+                if item.state == QUEUED and item.source == ANNOUNCER
             ]
             for item in items:
                 self._finish_locked(item, DROPPED, reason)
@@ -892,6 +924,7 @@ __all__ = [
     "BreakDesk",
     "BreakError",
     "SlotPlan",
+    "TransitionItem",
     "file_name",
     "new_id",
     "placement_for",

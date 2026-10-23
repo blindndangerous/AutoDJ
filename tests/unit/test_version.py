@@ -10,13 +10,14 @@ import pytest
 
 import autodj
 from autodj.config import TimeChecksConfig
-from autodj.server import _version_info, create_app
+from autodj.server import _version_info
 from autodj.version import (
     _project_version,
     _source_pyproject,
     current_version,
 )
 from tests._layout import point_index
+from tests._server import create_app
 
 ROOT = Path(__file__).resolve().parents[2]
 

@@ -27,6 +27,7 @@ import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
 import { describeStep } from "./clockwheel-step.js";
+import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
 
@@ -119,6 +120,14 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const stepCountCurrent = (epoch, mine) => !suspended && stepCountGeneration === mine && isAuthenticatedRequestCurrent(epoch);
   const say = (message, error = false) => announceStatus(stepEditor.region(status), message, { force: true, tone: error ? "error" : "info" });
   const clockUrl = (name) => `/api/library/clock/${encodeURIComponent(name)}`;
+  // A track step's file, inside the library folder chosen above it.
+  const stepPath = el("clock-step-path");
+  if (stepPath) {
+    addBrowseButton(stepPath, {
+      source: libraryFolderSource(() => el("clock-step-source")?.value || "", { files: true, request }),
+      label: "track",
+    });
+  }
   const send = (url, method, body) => request(url, body === undefined ? { method } : { method, headers: JSON_HEADERS, body: JSON.stringify(body) });
   const count = (n) => `${n} ${n === 1 ? "step" : "steps"}`;
   // A step with days and hours says them after what it plays.

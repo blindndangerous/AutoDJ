@@ -7,8 +7,8 @@ import pytest
 import soundfile as sf
 from fastapi.testclient import TestClient
 
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 from tests.unit.test_review_source import station_content
 
 

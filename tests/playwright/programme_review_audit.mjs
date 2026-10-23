@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { chromium, expect } from "@playwright/test";
 
 const root = await mkdtemp(join(tmpdir(), "autodj-review-browser-"));
@@ -14,8 +14,8 @@ const base = `http://127.0.0.1:${port}`;
 const python = process.env.AUTODJ_PYTHON || resolve(".venv/bin/python");
 const fixture = "tests/playwright/programme_review_fixture.py";
 const server = spawn(python, [fixture, "--root", root, "--port", port], {
-  env: { ...process.env, PYTHONPATH: "src:.", TMPDIR: root,
-    PATH: `${resolve(".venv/bin")}:${process.env.PATH}` },
+  env: { ...process.env, PYTHONPATH: ["src", "."].join(delimiter), TMPDIR: root,
+    PATH: `${dirname(python)}${delimiter}${process.env.PATH}` },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let logs = "";
@@ -43,7 +43,12 @@ try {
   page.on("pageerror", (error) => report.page_errors.push(String(error)));
   await page.goto(`${base}/review-audit`);
   await page.waitForFunction(() => Boolean(window.reviewAudit));
-  await page.locator("#review-card > summary").click();
+  await page.getByRole("tab", { name: "Library tools", exact: true }).click();
+  await expect(page.locator("#panel-library > details.card").last()).toHaveAttribute("id", "review-card");
+  await expect(page.locator("#review-card")).not.toHaveAttribute("open");
+  await page.locator("#review-card > summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#review-card")).toHaveAttribute("open");
   await expect(page.locator("#review-show option")).toHaveCount(1);
   await page.locator("#review-card details > summary").click();
   await page.locator("#review-head").fill("0.2");
@@ -88,7 +93,7 @@ try {
     await (await downloaded).saveAs(join(root, `download.${format}`));
   }
   const checked = spawnSync(python, [fixture, "--verify", join(root, "download.wav"), join(root, "download.mp3")], {
-    env: { ...process.env, PYTHONPATH: "src:.", PATH: `${resolve(".venv/bin")}:${process.env.PATH}` },
+    env: { ...process.env, PYTHONPATH: ["src", "."].join(delimiter), PATH: `${dirname(python)}${delimiter}${process.env.PATH}` },
     encoding: "utf8",
   });
   assert.equal(checked.status, 0, checked.stderr);

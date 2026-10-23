@@ -57,3 +57,16 @@ def test_offline_settings_use_running_setter_validation(tmp_path) -> None:
         settings.set_transition("not-an-effect")
     with pytest.raises(ValueError):
         settings.set_playback_settings(PlaybackSettingsBody(post_queue_seed="invalid"))
+
+
+def test_pick_mode_is_the_only_shuffle_state(tmp_path) -> None:
+    settings = StationSettings(_make_player()._cfg, paths=SimpleNamespace(state_dir=tmp_path))
+    settings.set_playback_settings(PlaybackSettingsBody(pure_shuffle=True))
+    assert settings.cfg.playback.pick_mode == "random"
+    settings.cfg.playback.pick_mode = "least_recent"
+    assert settings.get_settings()["playback"]["pick_mode"] == "least_recent"
+
+    settings.save()
+    saved = json.loads((tmp_path / "web_state.json").read_text())["playback"]
+    assert saved["pick_mode"] == "least_recent"
+    assert "pure_shuffle" not in saved

@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `autodj setup --no-model` installs basic music import, browser playback and
+  streaming without MuQ, PyTorch, Transformers or model weights. Local model
+  analysis and worker execution remain disabled until a model-capable runtime
+  is selected. Sound-card output packages are optional too. See
+  [no-model setup](docs/setup.md#no-model-installation) for capabilities and upgrades.
 - `autodj worker --idle-release MINUTES` keeps a GPU worker running between batches without
   holding the graphics card. It loads the model, and runs `--before-command`, only when songs
   arrive, and frees it and runs `--after-command` once the queue has been empty that long. Its
@@ -62,6 +67,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** plain package installs now omit MuQ and Transformers. Direct
+  wheel installations that need local model analysis must select `index`,
+  sound-card output needs `play`, and `all` includes both. Preserve the desired
+  extra when upgrading. Guided default CPU/GPU setup and the container retain
+  model analysis. In no-model mode, `autodj index` saves playable songs and
+  reports pending analysis successfully; remote analysis requires an existing
+  compatible server-side model cache. See [setup](docs/setup.md#no-model-installation).
 - Liners and voice tracks use the same preparation loudness as music in Smooth and Stereo Tool.
   Produced IDs no longer receive an extra compressor; spoken breaks and matched intros use
   lighter 2:1 compression. AGC drive and master processing stay unchanged. **Music duck (dB)**

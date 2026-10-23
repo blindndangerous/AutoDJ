@@ -66,7 +66,7 @@ class TestFailedPickRecovers:
     def test_pending_track_gone_from_the_index_still_gets_a_successor(self) -> None:
         player = _player()
         gone = make_entry(99)  # not in the index any more (reloaded)
-        player.reset_render_ahead(gone, 0)
+        player.reset_playout(gone, 0)
 
         rendered = player._next_rendered()
 
@@ -134,7 +134,7 @@ class TestFailedPickRecovers:
 
     def test_pure_shuffle_with_nothing_in_the_bpm_range_falls_back(self) -> None:
         player = _player(4)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         player._bpm_range = (200.0, 210.0)
         current = player._sim.entries[0]
         entry, mode = player._choose_next(current, player._pick_context(current))
@@ -205,7 +205,7 @@ class TestFailedPickRecovers:
         player = _player()
         current = player._sim.entries[0]
         player._sim = SimilarityIndex.empty()
-        player.reset_render_ahead(current, 0)
+        player.reset_playout(current, 0)
 
         rendered = player._next_rendered()
 
@@ -222,13 +222,13 @@ class TestFailedPickRecovers:
         player._sim.find_next_for_path = MagicMock(  # type: ignore[method-assign]
             side_effect=SimilarityError("Track not in index")
         )
-        player.reset_render_ahead(current, 0)
-        player._render_ahead.start()
+        player.reset_playout(current, 0)
+        player._playout.start()
         try:
-            assert player._render_ahead.wait_ready(WAIT)
+            assert player._playout.wait_ready(WAIT)
         finally:
-            player._render_ahead.stop(timeout=WAIT)
-        track = player._render_ahead.pop()
+            player._playout.stop(timeout=WAIT)
+        track = player._playout.pop()
         assert track is not None and track.next_pick_mode == "fallback"
 
 
@@ -256,7 +256,7 @@ class TestRelaxedPicksKeepTheirHistory:
     ) -> None:
         player = _player(4)
         player._state = PlayerState(no_repeat_window=4, artist_repeat_window=0)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         pending, starting, _c, _d = player._sim.entries
         for entry in player._sim.entries:
             player._state.record_played(entry)  # every track is recent
@@ -313,7 +313,7 @@ class TestSetStopRacingATrackStart:
         queued, later = player._sim.entries[2:4]
         player._state.queue.extend([queued, later])
         track = _rendered(queued, later, from_queue=True, set_generation=player._set_generation)
-        player._render_ahead._ready = track
+        player._playout._ready = track
         assert player._take_render() is track
         assert player._state.queue == [later]
         return track, queued, later
@@ -339,7 +339,7 @@ class TestSetStopRacingATrackStart:
         player = _player(stream_mode=True)
         queued = player._sim.entries[2]
         track = _rendered(queued, from_queue=True, set_generation=player._set_generation)
-        player._render_ahead._ready = track
+        player._playout._ready = track
         player._take_render()  # already removed from the queue: nothing to commit
         player.end_set()
         player._on_track_start(track)
@@ -425,7 +425,7 @@ class TestShutdownWaitsForTheRenderWorker:
             return None
 
         player._next_rendered = slow_render  # type: ignore[method-assign]
-        player._render_ahead.start()
+        player._playout.start()
         assert rendering.wait(WAIT)
         return player, release
 
@@ -436,7 +436,7 @@ class TestShutdownWaitsForTheRenderWorker:
         finally:
             release.set()
         assert player.wait_for_background_analysis(timeout=WAIT) is True
-        assert player._render_ahead._thread is None
+        assert player._playout._thread is None
 
     def test_quiesce_waits_for_the_render_worker_before_the_cache_closes(self) -> None:
         from autodj._bridge import PlayerBridge

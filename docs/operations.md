@@ -127,6 +127,15 @@ See [Take and moderate listener requests — Listener requests](guides/operation
 
 See [Listen through Sonos, VLC and other stream players — Radio stream (Sonos, VLC and other players)](guides/operations/stream-listening.md#radio-stream-sonos-vlc-and-other-players).
 
+Live mixing uses progressive decoder buffers capped at two seconds each. If a
+needed source is not ready, the programme position holds and the stream may emit
+silence; this is not a zero-gap or hardware timing guarantee. Queue edits
+affecting the current, ready, or pinned-slot handoff ask the operator to keep
+affected speech with its changed music pair, discard it from the changed
+contexts, or cancel the change. Started voice or liner layers keep their
+original timing while unheard incoming music changes at its original boundary,
+so speech does not repeat. See [ADR 4](adr/0004-server-mix-bus-and-stream-mode.md#amendment-2026-10-22-progressive-live-mixing-and-queue-edits).
+
 ### Finding the stream address
 
 See [Listen through Sonos, VLC and other stream players — Finding the stream address](guides/operations/stream-listening.md#finding-the-stream-address).

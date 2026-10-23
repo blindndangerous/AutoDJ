@@ -17,9 +17,10 @@ On Windows:
 .\autodj.cmd
 ```
 
-On first start, Windows offers to install missing [uv](https://docs.astral.sh/uv/getting-started/installation/)
-and [FFmpeg](https://ffmpeg.org/download.html) through WinGet. If WinGet is unavailable, the
-launcher prints the manual installation instructions. It reuses tools already on PATH.
+On first start, the Windows launcher offers to install missing
+[uv](https://docs.astral.sh/uv/getting-started/installation/) through WinGet.
+Setup then offers to install missing [FFmpeg](https://ffmpeg.org/download.html).
+Both reuse installed tools and give manual guidance when WinGet is unavailable.
 
 On Linux or macOS, install uv and FFmpeg first, then run:
 
@@ -58,6 +59,56 @@ previously saved GPU choice. You do not need an AMD environment or GPU drivers f
 Use the launcher for ordinary commands. You do not need to activate an environment or run
 `uv sync` separately.
 
+## No-model installation
+
+Use this mode when the server needs the web UI, basic library imports, browser
+playback or server streams, but will not run the music embedding model locally:
+
+```sh
+./autodj setup --no-model --yes
+./autodj serve
+```
+
+On Windows use `.\autodj.cmd` in place of `./autodj`. The saved selection is
+`.uv/setup-no-model`; later launcher calls reuse it. No MuQ, PyTorch or
+Transformers packages or model weights are installed. CPU audio processing still
+uses NumPy, librosa and FFmpeg; no-model does not mean dependency-free. Set
+`UV_NO_CACHE=1` during setup to avoid retaining a second installer cache.
+Fresh no-model setup omits sound-card output packages. Browser playback and
+server streaming are included; server sound-card output needs the `play` extra
+and platform audio support. Existing sound-card packages are not removed.
+
+Basic imports and previously saved analysis remain usable. `autodj index` imports
+playable songs successfully and reports pending analysis without loading a model
+or downloading weights. Automatic local MuQ analysis is disabled; explicit
+advanced-analysis and worker commands explain how to enable it.
+Queue, random, least-recently-played and category/clockwheel operation do not
+require local model weights. Similarity needs compatible saved or remote vectors.
+
+A remote model-capable worker can supply new analysis only when the server
+already has a compatible model cache at its configured `model_dir` or
+`manual_path`. The server uses that copy to validate the worker's exact weight
+identity without loading the model. A fresh no-model installation cannot
+bootstrap this cache with `autodj index`; preserve an existing compatible cache
+or use a model-capable runtime to obtain it before returning to no-model mode.
+See [remote worker requirements](guides/operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
+
+The ordinary setup still installs the complete CPU/GPU-capable runtime. To add
+local model analysis later, run `./autodj setup --backend cpu` or the appropriate
+supported GPU setup. Switching runtimes preserves the old environment; review
+its disk use before installing another one. Model weights are downloaded only
+when analysis is requested. `--no-model` cannot be combined with GPU setup or
+`--test-import`.
+
+For direct package installs, the base package is now the no-model serving set;
+the `index` extra adds model analysis, `play` adds sound-card output, and `all`
+adds both. Prefer guided CPU setup to select CPU wheels explicitly. The container
+continues to install the `index` extra and its pinned CPU model runtime.
+For a released wheel, use the [release-artifact install command](guides/install.md#release-artifacts)
+with no extra for base serving, `[index]` for model analysis, `[play]` for
+sound-card output without the model, or `[all]` for both. Keep the selected extra
+when upgrading that wheel.
+
 ## Finding uv and FFmpeg
 
 AutoDJ finds these programs on PATH, the operating system's list of executable directories.
@@ -65,11 +116,21 @@ FFmpeg handles common music formats and streaming. The Windows launcher includes
 user and machine PATH entries in its own process, so tools installed by WinGet can be used
 without opening a new terminal. This does not rewrite your PATH settings.
 
-First-run setup offers to install missing tools with WinGet package IDs `astral-sh.uv` and
-`Gyan.FFmpeg` for the current user. Starts that find an installed runtime do not install tools.
+The launcher bootstraps uv with WinGet package ID `astral-sh.uv`. Setup and Doctor share
+the FFmpeg installer, using `Gyan.FFmpeg` for the current user. Ordinary serving does not install tools.
 The prompt defaults to No. Use `.\autodj.cmd setup --yes` to approve these downloads and
 the setup plan without prompts. This also accepts the packages' installation agreements.
 For a manual installation, add the folder containing each executable to PATH.
+
+Interactive `autodj doctor` (or `.\autodj.cmd doctor`) offers to install missing FFmpeg
+on Windows. `doctor --fix` approves supported repairs, including that installation and
+its package agreements. `--no-fix`, `--json`, and unattended Doctor without `--fix`
+never install it. On other platforms, or without WinGet, install FFmpeg manually.
+Setup displays Doctor's diagnostic guidance after verifying the runtime.
+
+Doctor prints its report without saving it to the server log. To keep a read-only
+report, run `autodj doctor --no-fix --json > doctor-report.json` with the same configuration
+you use to serve.
 
 ## Moving an existing station
 

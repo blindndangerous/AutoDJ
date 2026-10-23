@@ -76,6 +76,8 @@ describe("Breaks panel markup", () => {
       const help = byId(byId(id).getAttribute("aria-describedby").split(" ")[0]);
       expect(help?.textContent.trim(), id).toBeTruthy();
     }
+    expect(panel.querySelector('label[for="brk-enabled"]').textContent.trim())
+      .toBe("Accept announcer uploads");
     expect(byId("brk-placement").tagName).toBe("FIELDSET");
     expect(byId("brk-placement").querySelector("legend").textContent).toBe("Where a DJ break goes");
     // The group's help is read as part of the group, not through aria-describedby,
@@ -128,9 +130,9 @@ describe("Break settings words", () => {
     expect(savedText({ enabled: false }, { enabled: true, reason: "Breaks need saved-point playback" }))
       .toBe("Breaks are on. Breaks need saved-point playback.");
     expect(savedText({ enabled: true }, { enabled: false, dropped: 0 }))
-      .toBe("Breaks are off. The announcer program is told breaks are off.");
+      .toBe("Breaks are off. New announcer uploads are refused.");
     expect(savedText({ enabled: true }, { enabled: false, dropped: 1 }))
-      .toBe("Breaks are off. The announcer program is told breaks are off. 1 waiting break was dropped.");
+      .toBe("Breaks are off. New announcer uploads are refused. 1 waiting break was dropped.");
     expect(savedText({ enabled: true }, { enabled: true })).toBe("Break settings saved.");
   });
 });
@@ -196,14 +198,14 @@ describe("Break settings panel", () => {
     expect(JSON.parse(request.mock.calls.at(-1)[1].body).duck_db).toBeNull();
   });
 
-  it("turning breaks off says the announcer is told and how many waiting breaks went", async () => {
+  it("turning breaks off says announcer uploads are refused and how many were dropped", async () => {
     const request = server();
     await install(request);
     byId("brk-enabled").checked = false;
     byId("brk-form").dispatchEvent(new Event("change"));
     submit();
     expect(await said())
-      .toBe("Breaks are off. The announcer program is told breaks are off. 2 waiting breaks were dropped.");
+      .toBe("Breaks are off. New announcer uploads are refused. 2 waiting breaks were dropped.");
     expect(JSON.parse(request.mock.calls.at(-1)[1].body).enabled).toBe(false);
     expect(byId("brk-reason").textContent).toBe(OFF_REASON);
   });

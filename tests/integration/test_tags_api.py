@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 from autodj.audio_meta import read_file_tags, read_reporting_tags
 from autodj.indexer import FEATURE_DIM, IndexEntry, file_fingerprint
 from autodj.library import LibraryManager
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
+from tests._server import create_app
 from tests.unit._catalog_vectors import set_vector
 from tests.unit._tagged_audio import make_audio
 from tests.unit.test_library import Similarity, make_config, make_entry
@@ -361,7 +362,7 @@ def test_the_mix_bus_cursor_counts_as_up_next(tagged, where: str) -> None:
     if where == "pending":
         player._pending_entry = entry
     elif where == "ready":
-        player._render_ahead = SimpleNamespace(_ready=SimpleNamespace(entry=None, next_entry=entry))
+        player._playout = SimpleNamespace(_ready=SimpleNamespace(entry=None, next_entry=entry))
     else:
         player._playing_render = SimpleNamespace(entry=None, next_entry=entry)
     response = client.post(

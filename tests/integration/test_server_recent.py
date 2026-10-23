@@ -19,7 +19,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from autodj.indexer import IndexEntry
-from autodj.server import create_app
+from tests._server import create_app
 
 from ._helpers import _make_entry
 

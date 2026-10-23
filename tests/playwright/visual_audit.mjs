@@ -207,15 +207,31 @@ const ROTATION_SECTIONS = [
   ] },
   { title: "Songs", lines: [
     "The library has 77,000 songs; 2,604 played and 74,396 never played.",
-    { text: "Never played, first two:", items: [
-      "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
-      "Another Example — Song 2",
-    ] },
   ] },
+  { title: "Top 20 songs", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1} — Song ${i + 1}, ${100 - i} times.`) },
+  { title: "Songs never played, first 2", lines: [
+    "Example Artist — An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0001",
+    "Another Example — Song 2",
+  ] },
+  { title: "Top 20 artists", lines: Array.from({ length: 20 }, (_, i) => `Artist ${i + 1}, ${100 - i} times.`) },
   { title: "Categories", lines: [
     { text: "Power: six songs, 504 plays.", items: [
       "Plays per song: fewest 80, most 90, average 84.",
       "Its clockwheel step was skipped 40 times.",
+    ] },
+  ] },
+  { title: "Clockwheel summary", lines: [
+    { text: "Main: music step selections.", items: [
+      "Step 2: 300 music selections.",
+      "Step 4: 204 music selections.",
+      "Step 6: no music selections.",
+    ] },
+  ] },
+  { title: "Clockwheel steps", lines: [
+    { text: "Main, steps 2, 4 and 6 (category Power).", items: [
+      "Configured matching songs (static matches): six songs; 504 music selections.",
+      "Plays per song: fewest 80, most 90, average 84.",
+      "Never played: no songs.",
     ] },
   ] },
   { title: "Rules relaxed", lines: ["Same artist: relaxed for 12 picks."] },
@@ -313,6 +329,14 @@ async function standInForTrackInfo(page) {
   await page.route("**/api/library/points?*", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify(TRACK_RECORD),
   }));
+  await page.route("**/api/library/points/rescan", (route) => route.fulfill({
+    status: 200, contentType: "application/json", body: JSON.stringify({
+      token: "visual-cue-scan", current_points: TRACK_RECORD.points,
+      current_sources: { ...TRACK_RECORD.point_sources, intro: "imported" },
+      points: { ...TRACK_RECORD.points, intro: 10, outro: 214, segue: 215 },
+      point_sources: { ...TRACK_RECORD.point_sources, intro: "lyrics" },
+    }),
+  }));
   await page.route("**/api/library/tags", (route) => route.fulfill({
     status: 200, contentType: "application/json", body: JSON.stringify({ ...TRACK_RECORD, beets: "updated" }),
   }));
@@ -364,6 +388,17 @@ async function openTrackTags(page, visit) {
   await page.locator("#tags-form").waitFor({ state: "visible" });
   await checkTrackLandmarks(page);
   await visit("track-info/tags");
+  await page.locator("#points-rescan").click();
+  await page.locator("#points-rescan-results").waitFor({ state: "visible" });
+  if (await page.locator('[data-rescan-field="intro"]').isChecked()
+      || !await page.locator('[data-rescan-field="segue"]').isChecked()) {
+    throw new Error("Cue rescan did not protect imported cues or select automatic changes");
+  }
+  await visit("track-info/cue-rescan");
+  await page.locator("#points-rescan-discard").click();
+  if (!await page.locator("#points-rescan").evaluate((button) => button === document.activeElement)) {
+    throw new Error("Discarding a cue scan did not restore focus");
+  }
   await page.locator("#tag-year").fill("99");
   await page.locator("#tag-isrc").fill("123");
   await page.locator("#tags-save").click();
@@ -861,20 +896,33 @@ async function openShowStates(page, visit) {
   await page.locator("#shows-cancel").click();
 }
 
-// Voice tracks (#128): the open song change and a booked list are stood
-// in for (the audit server takes no breaks), and the microphone and the
-// recorder are stubbed before any page script, so Record works with no
-// device and no permission prompt.  window.__micRefusal names the error
-// the next request for the microphone fails with.
+// Voice tracks (#128): the open song change includes explicit queued and
+// predicted transition candidates plus a protected booked voice track.  The
+// editable rows exercise the native per-item selectors in the audit.  The
+// microphone and recorder are stubbed before any page script, so Record
+// works with no device or permission prompt.  window.__micRefusal names the
+// error the next request for the microphone fails with.
 const VOICE_CONTEXT = {
   station: "default", accepting: true, reason: null, now: null, next: null,
   slot: {
     slot_id: "a".repeat(32), closes_in_s: 125, airs_in_s: 330, upcoming_intro_s: 8.5,
+    ending_outro_s: 5, queued_chain_speech_s: 4, queued_chain_clip_s: 4.4,
     pinned: true, breaks_booked: 1, auto_placement: "talk_up", auto_note: null,
+    transition_revision: "d".repeat(64),
+    transition_items: [
+      { id: "e".repeat(24), kind: "liner", source: "automatic", label: "Predicted station ID",
+        committed: false, editable: true, deferred: true, current_action: "replace", default_action: "replace" },
+      { id: "f".repeat(24), kind: "liner", source: "queued", label: "Queued weather liner",
+        committed: true, editable: true, deferred: false, current_action: "after", default_action: "after" },
+      { id: `break:${"b".repeat(32)}`, kind: "booked_voice", source: "voice_track",
+        label: "Third Song into Fourth Song", committed: true, editable: false, deferred: false, default_action: "" },
+    ],
+    transition_order: ["e".repeat(24), "f".repeat(24), `break:${"b".repeat(32)}`],
+    transition_summary: ["Queued weather liner", "Third Song into Fourth Song"],
     ending: { id: "song-c", title: "An_Exceptionally_Long_Title_Without_Any_Spaces_From_A_Tagless_File_0002", artist: "Example Artist", album: "", year: null, duration_s: 214 },
     upcoming: { id: "song-d", title: "Fourth Song", artist: "Another Example", album: "", year: null, duration_s: 187 },
   },
-  limits: { max_bytes: 41943040, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+  limits: { max_bytes: 67108864, max_seconds: 600, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
   tracks: [
     { break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued", slot_id: "a".repeat(32),
       mixed_as: null, reason: null, eta: null, source: "voice_track" },
@@ -915,10 +963,47 @@ async function standInForVoiceTracker(page) {
         this.dispatchEvent(new Event("stop"));
       }
     };
+    window.OfflineAudioContext = class {
+      constructor(channels, length, sampleRate) {
+        this.channels = channels;
+        this.length = length;
+        this.sampleRate = sampleRate;
+      }
+
+      async decodeAudioData() {
+        // recordingToWav asks the browser to decode/resample at its target
+        // WAV rate. Keep this synthetic decoded buffer at that requested rate.
+        const rate = this.sampleRate;
+        const samples = new Float32Array(rate * 5);
+        samples.fill(0.5, rate / 2, rate * 3.5);
+        return {
+          numberOfChannels: 1, length: samples.length, sampleRate: rate,
+          getChannelData: () => samples,
+        };
+      }
+    };
   });
-  await page.route("**/api/voice-tracks", (route) => (route.request().method() === "GET"
-    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(VOICE_CONTEXT) })
-    : route.continue()));
+  await page.route("**/api/voice-tracks**", (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = JSON.parse(JSON.stringify(VOICE_CONTEXT));
+    const url = new URL(route.request().url());
+    const speech = Number(url.searchParams.get("speech_s"));
+    if (url.searchParams.has("speech_s")) {
+      const tail = Number(url.searchParams.get("tail_s") || 0);
+      // Mirror the forecast response fields used by the page, using the
+      // fixture's queued speech/clip totals and the decoded take cues.
+      response.slot.voice_forecast = {
+        recording_start_s: 1,
+        music_entry_s: 2,
+        chain_speech_s: (response.slot.planned_liner_speech_s || 0)
+          + (response.slot.queued_chain_speech_s || 0) + speech,
+        chain_clip_s: (response.slot.planned_liner_clip_s || 0)
+          + (response.slot.queued_chain_clip_s || 0) + speech + tail,
+        speech_without_music_s: speech,
+      };
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(response) });
+  });
 }
 
 // Voice tracks while recording, with a take to book, and with the
@@ -931,6 +1016,11 @@ async function openVoiceStates(page, visit) {
   await visit("voice/recording");
   await record.click();
   await page.waitForFunction(() => /^Recorded/.test(document.getElementById("vt-timer").textContent));
+  await page.waitForFunction(() => document.getElementById("vt-fit").textContent.includes("Full chain speech"));
+  const forecast = await page.locator("#vt-fit").textContent();
+  if (!forecast.includes("Full chain speech") || !forecast.includes("tail")) {
+    throw new Error(`prepared voice forecast is missing queued speech or cue tail: ${forecast}`);
+  }
   await visit("voice/recorded");
   await page.locator("#vt-discard").click();
   await page.evaluate(() => { window.__micRefusal = "NotAllowedError"; });
@@ -1435,6 +1525,11 @@ async function eachTarget(page, measure) {
       if (view === "queue") await openRequestSettingsError(page, visit);
       if (view === "track-info") await openTrackTags(page, visit);
       if (view === "library") {
+        await page.locator("#music-fade-drop").fill("0");
+        await page.locator("#music-fade-drop-save").click();
+        await page.locator("#music-fade-drop-error").waitFor({ state: "visible" });
+        await visit("library/music-fade-error");
+        await page.locator("#music-fade-drop").fill("10");
         await openAutoRescanError(page, visit);
         await openIntroRuleError(page, visit);
         await openDaypartErrors(page, visit);
@@ -2204,6 +2299,28 @@ async function voiceTrackerProblems(page) {
   await page.locator("#tab-voice").click();
   await page.locator("#vt-slot").waitFor({ state: "visible" });
   const problems = [];
+  await page.waitForFunction(() => location.hash === "#voice"
+    && document.getElementById("tab-voice").getAttribute("aria-selected") === "true");
+  const predictedChoice = page.locator(`#vt-transition-choice-${"e".repeat(24)}`);
+  await predictedChoice.press("End");
+  await page.waitForFunction(() => document.getElementById(`vt-transition-choice-${"e".repeat(24)}`).value === "after");
+  await predictedChoice.press("Home");
+  await page.waitForFunction(() => document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)
+    ?.textContent.includes("skipped in this transition"));
+  const choices = await page.evaluate(() => ({
+    focus: document.activeElement?.id,
+    predicted: document.querySelector(`[data-transition-id="${"e".repeat(24)}"] span`)?.textContent,
+    booked: document.querySelector(`[data-transition-id="break:${"b".repeat(32)}"] span`)?.textContent,
+  }));
+  if (choices.focus !== `vt-transition-choice-${"e".repeat(24)}`) {
+    problems.push(`changing a transition choice moved focus to ${choices.focus}`);
+  }
+  if (!choices.predicted?.includes("skipped in this transition")) {
+    problems.push(`replaced predicted liner reads ${JSON.stringify(choices.predicted)}`);
+  }
+  if (!choices.booked?.includes("committed")) {
+    problems.push(`protected booked voice track reads ${JSON.stringify(choices.booked)}`);
+  }
   await page.evaluate(() => {
     window.__voiceSaid = [];
     const region = document.getElementById("vt-status");

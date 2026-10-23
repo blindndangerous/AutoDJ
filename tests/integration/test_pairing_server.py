@@ -5,8 +5,9 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from autodj.pairing import DeviceRegistry
-from autodj.server import _version_info, create_app
+from autodj.server import _version_info
 from tests._layout import point_index
+from tests._server import create_app
 
 _SECRET = "pairing-secret-that-is-at-least-32-bytes"
 

@@ -98,6 +98,31 @@ It applies to the tracks `autodj index` embeds and the tracks `autodj index` and
 `autodj analyse` analyse. The default, 0, means no pause.
 
 
+## Rescan cue points in Track info
+
+Open a song or registered voice liner in **Track info**, save any cue edits,
+then choose **Rescan cue points**. Compare the saved and suggested times and
+their sources, and preview the points using the track's preview player.
+Changed automatic cues are selected initially; select a user or imported cue
+explicitly to replace it. Choose **Apply selected** to save the selected cues,
+or **Discard** to keep the saved cues.
+
+The scan uses the same basic detectors as library analysis. Music offers Start,
+Intro, Outro, Segue and End; liners offer Start, Segue and End. Lyric-derived
+Intro and Outro describe vocal timing, which can differ from the acoustic ending.
+Overlap preferences, play dates, tags and history stay unchanged. If the audio
+file or saved cues change before applying, rescan again to get current suggestions.
+
+**Library tools > Music fade drop (dB)** controls the relative drop required for
+a music Segue suggestion, from 1 to 30 dB (default 10). A smaller drop can hand
+off earlier; a larger drop waits for a quieter fade. The detector compares the
+ending with the preceding audio, requires at least five seconds of quieter
+audio, and checks for late bursts such as a final vocal. Without a qualifying
+fade, Segue uses the final audible End. End trims near-silence below −60 dBFS.
+Changing this shared setting affects new library analysis and cue rescans;
+saved cues stay unchanged until explicitly replaced. Preview unusual endings
+before applying: energy detection does not recognize speech or musical intent.
+
 ## Related tasks and contracts
 
 - [How long tracks use memory and disk](../../explanation/operations/long-tracks.md)

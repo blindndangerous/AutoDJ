@@ -87,12 +87,12 @@ def test_parked_worker_renders_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
         side_effect=AssertionError("must not render while parked")
     )
     monkeypatch.setattr("autodj.render_ahead._RETRY_SECONDS", 0.01)
-    player.reset_render_ahead(None)
-    player._render_ahead.start()
+    player.reset_playout(None)
+    player._playout.start()
     try:
-        assert not player._render_ahead.wait_ready(0.1)
+        assert not player._playout.wait_ready(0.1)
     finally:
-        player._render_ahead.stop(timeout=WAIT)
+        player._playout.stop(timeout=WAIT)
     player._render_track.assert_not_called()
 
 
@@ -173,7 +173,7 @@ def test_run_stream_renders_ahead_once_a_set_begins() -> None:
         thread = _run_stream_in_thread(player)
         try:
             player.begin_set(player._sim.entries[0], "seed")
-            assert player._render_ahead.wait_ready(WAIT)
+            assert player._playout.wait_ready(WAIT)
         finally:
             player._state.should_stop = True
             thread.join(WAIT)

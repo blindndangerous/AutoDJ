@@ -452,7 +452,14 @@ class FakeBridge:
         return QueueView(self.playing, None, tuple(self.entry_for_path(p) for p in self.queue))
 
     def insert_request(
-        self, entry: IndexEntry, horizon_s: float, choose: Any, *, with_view: bool = False
+        self,
+        entry: IndexEntry,
+        horizon_s: float,
+        choose: Any,
+        *,
+        with_view: bool = False,
+        voice_action: str | None = None,
+        voice_revision: str | None = None,
     ) -> Any:
         slots = self.request_slots(entry, horizon_s)
         selected = choose(slots, self._queue_view()) if with_view else choose(slots)
@@ -536,6 +543,29 @@ def test_auto_approval_queues_at_the_best_place_at_once(tmp_path: Path) -> None:
     assert outcome.detail == "Thanks. Song 4 by Artist 4 should play within the next half hour."
     assert bridge.queue == [bridge.entries[4].path]
     assert desk.book.recent()[0].note.startswith("Fits after Artist 1 — Song 1")
+
+
+def test_auto_request_voice_conflict_waits_for_operator_without_queue_mutation(
+    tmp_path: Path,
+) -> None:
+    from autodj.live_queue import VoiceQueueConflict
+
+    desk, bridge, ids, _clock = _desk(tmp_path, approval="auto")
+
+    def conflict(*_args: Any, **_kwargs: Any) -> None:
+        raise VoiceQueueConflict(
+            {"code": "voice_track_conflict", "revision": "rev", "message": "Conflict."}
+        )
+
+    bridge.insert_request = conflict
+    outcome = desk.submit(ids.shown(bridge.entries[4].path), "Sam", "192.0.2.1")
+
+    assert outcome.status == 200
+    assert outcome.headline == "Request received"
+    assert "upcoming voice track" in outcome.detail
+    assert bridge.queue == []
+    (waiting,) = desk.snapshot()["pending"]
+    assert "upcoming voice track" in waiting["note"]
 
 
 def test_auto_request_waits_when_no_smooth_spot_is_allowed(tmp_path: Path) -> None:

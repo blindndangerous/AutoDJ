@@ -40,7 +40,7 @@ from autodj.ads import (
     spot_file_name,
     summary_csv,
 )
-from autodj.breaks import AD, AD_SCHEDULE, DROPPED, QUEUED, RENDERED
+from autodj.breaks import AD, AD_SCHEDULE, DROPPED, QUEUED, RENDERED, BreakError
 from autodj.config import AdsConfig, BreaksConfig
 from autodj.stereo import SAMPLE_RATE as SR
 from tests.unit._break_station import make_station, start_station
@@ -515,6 +515,45 @@ def test_a_break_due_within_the_plan_ahead_time_plans_the_change(station):
     assert not ads.wants_slots()
 
 
+def test_due_ads_wake_the_playout_controller(station):
+    player, _entries, _desk, ads, _clock, _break_id, _renders = station
+    requested = []
+    player._playout = type("Playout", (), {"request_plan": lambda _self: requested.append(1)})()
+
+    ads._ask_for_plan()
+
+    assert requested == [1]
+
+
+def test_schedule_booking_retries_after_atomic_handoff_refusal(station, monkeypatch):
+    """ADR-0004-11: scheduled batch booking retries after handoff revision refusal."""
+    player, _entries, desk, ads, _clock, _break_id, _renders = station
+    run_now(station)
+    original = player.book_breaks
+    calls = []
+
+    def refuse_once(items, slot_id, *, transition_revision=None):
+        calls.append(transition_revision)
+        if len(calls) == 1:
+            raise BreakError(409, "The handoff changed", "slot_closed")
+        return original(items, slot_id, transition_revision=transition_revision)
+
+    monkeypatch.setattr(player, "book_breaks", refuse_once)
+    ads.tick()
+
+    assert ads._pending
+    assert not booked_spots(desk)
+    assert not ads._booked
+    assert len(calls) == 1 and calls[0]
+
+    ads.tick()
+
+    assert not ads._pending
+    assert booked_spots(desk)
+    assert ads._booked
+    assert len(calls) == 2 and calls[1]
+
+
 def test_a_schedule_event_due_soon_plans_the_change(station, tmp_path):
     _player, _entries, _desk, ads, clock, _break_id, _renders = station
     from autodj.scheduler import ScheduledEvent
@@ -600,7 +639,7 @@ def test_the_mix_bus_never_plans_or_rechecks_a_song_change(station, monkeypatch)
         bus_thread(
             lambda first=first, end=end: (player._on_position(first + 1), player._on_position(end))
         )
-    player.refresh_render_ahead()  # a queue edit, from an API thread
+    player.refresh_playout()  # a queue edit, from an API thread
     assert {name for name, _thread in seen} >= {"_claim_slot_plan", "_recheck_slot_plan"}
     assert not [entry for entry in seen if entry[1] == "mix-bus"]
     # And by the source: no bus callback reaches them.
@@ -632,7 +671,7 @@ def test_the_mix_bus_never_plans_or_rechecks_a_song_change(station, monkeypatch)
         "_claim_slot_plan",
         "_recheck_slot_plan",
         "_plan_slot",
-        "refresh_render_ahead",
+        "refresh_playout",
     }
 
 
@@ -778,9 +817,7 @@ def test_clockwheel_step_rendered_before_booking_is_reported(station):
     player._on_track_start(renders[1])
     player._next_rendered()
     ads.tick()
-    assert any(
-        "rendered before its spots could be booked" in line.reason for line in log_lines(ads)
-    )
+    assert any("closed before its spots could be booked" in line.reason for line in log_lines(ads))
 
 
 def test_clockwheel_forecast_does_not_book_or_log(station):

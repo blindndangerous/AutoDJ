@@ -22,11 +22,13 @@ class RenderAhead:
     """Keep at most one rendered track ready on a daemon thread.
 
     The mix bus asks for its next track while holding its lock, so
-    ``on_need_track`` must return at once, but rendering a track (decode,
-    beat-match, transition effect) takes seconds.  This worker renders
-    the next track as soon as the previous one is taken, and :meth:`pop`
-    only ever hands over a finished result -- or ``None`` when nothing is
-    rendered yet, in which case the bus plays silence briefly.
+    ``on_need_track`` must return at once, but preparing a track (decode,
+    beat-match, transition effect) takes time. Local playout prepares rendered
+    audio; live server playout streams music bodies and prepares bounded
+    transition windows. This worker prepares the next track as soon as the
+    previous one is taken, and :meth:`pop` only hands over a finished result
+    -- or ``None`` when nothing is ready, in which case the bus plays silence
+    briefly.
 
     The *render* callable owns the "what comes next" cursor (for the
     player, ``Player._next_rendered``).  Two ways to change course:

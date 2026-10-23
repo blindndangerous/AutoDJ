@@ -128,7 +128,7 @@ def _on_air(player: Any) -> Iterator[tuple[str, Any]]:
     yield "up next", getattr(state, "next_track", None)
     yield "up next", getattr(playing, "next_entry", None)
     yield "up next", getattr(player, "_pending_entry", None)
-    ahead = getattr(player, "_render_ahead", None)
+    ahead = getattr(player, "_playout", None)
     for name in ("_ready", "_fallback"):
         render = getattr(ahead, name, None)
         yield "up next", getattr(render, "entry", None)

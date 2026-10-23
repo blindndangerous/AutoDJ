@@ -16,9 +16,10 @@ from autodj.catalog import LibraryCatalog
 from autodj.config import ServerConfig
 from autodj.indexer import IndexEntry
 from autodj.playlog import COLUMNS
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.station_store import StationStore, migrate_legacy
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
 

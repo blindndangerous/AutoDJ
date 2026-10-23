@@ -14,6 +14,12 @@ listens on port 8080.
 Songs are described as objects with `id` (the library's id for the song, stable across
 restarts), `title`, `artist`, `album`, `year` and `duration_s`.
 
+In stream mode, `slot` describes the currently airing song change and its selected successor;
+`closes_in_s` is bounded by the current song's outro and may be earlier if existing speech or a
+transition tail starts first. The server decodes/prepares an upload before atomically checking the
+same pair, revision and cutoff at booking. Local server output continues to expose its advance
+booked pair.
+
 ### GET context
 
 What is playing, what is next, and the open slot.
@@ -52,8 +58,9 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/announcer/co
 - `slot` is `null` and `accepting` is `false` while no change is open: breaks are off, the station
   does not use saved-point playback, nothing is playing, or the next song is still being rendered.
   `reason` says which in words; ask again a few seconds later.
-- `closes_in_s` is how long until the slot's change is rendered and the slot closes; plan to
-  upload well before then. `airs_in_s` is roughly when the song change itself happens.
+- `closes_in_s` is the remaining booking window; plan to upload well before then. For stream
+  output this is bounded by the current song's outro, possibly earlier if speech or a tail begins
+  first. `airs_in_s` is roughly when the song change itself happens.
 - `upcoming_intro_s` is the upcoming song's intro in seconds, or `null` without an intro point:
   what a talk-up has to fit.
 - `history` is the latest plays, newest first; `requests` is the queue.
@@ -139,8 +146,9 @@ context again.
 
 ### DELETE breaks/{break_id}
 
-Drops a break that is still `queued`; the reply is the dropped break. A break already rendered
-into the stream cannot be taken back: the reply is `409` with its state in `reason`.
+Drops a break that is still `queued`, or removes its speech from an unheard current/ready stream
+handoff when the safe boundary remains open; the reply is the dropped break. Once the affected
+speech has started, it cannot be taken back: the reply is `409` with its state in `reason`.
 
 ```bash
 curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \

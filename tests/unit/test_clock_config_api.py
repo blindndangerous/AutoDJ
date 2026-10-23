@@ -20,11 +20,11 @@ from autodj.config import (
     StreamConfig,
     TimeChecksConfig,
 )
-from autodj.server import create_app
 from autodj.station_ledger import StationLedger
 from autodj.station_routes import ClockBody, ClockNameBody, NewClockNameBody, PalImportBody
 from autodj.station_store import StationStore, migrate_legacy
 from tests._layout import layout_index
+from tests._server import create_app
 
 PAL = """Queue.Clear;
 Dir['{music}/top'].QueueBottom(smLRP, EnforceRules);

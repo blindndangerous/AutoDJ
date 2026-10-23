@@ -91,7 +91,12 @@ from autodj._bridge import LibraryServices, PlayerBridge
 from autodj.ads_api import BREAKS_PATH as AD_BREAKS_PATH
 from autodj.ads_api import JSON_BODY_MAX_BYTES as AD_JSON_BODY_MAX_BYTES
 from autodj.ads_api import UPLOAD_PATH as AD_UPLOAD_PATH
-from autodj.breaks_api import ANNOUNCER_SCOPES, UPLOAD_PATH, VOICE_UPLOAD_PATH
+from autodj.breaks_api import (
+    ANNOUNCER_SCOPES,
+    UPLOAD_PATH,
+    VOICE_MAX_UPLOAD_BYTES,
+    VOICE_UPLOAD_PATH,
+)
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
 from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
@@ -138,7 +143,6 @@ from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
     install_log_prefix,
-    new_station_scope,
     station_thread,
 )
 from autodj.station_routes import (
@@ -662,6 +666,11 @@ class LibraryDjAnalysisBody(BaseModel):
     enabled: StrictBool
 
 
+class LibraryMusicFadeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    drop_db: StrictInt = Field(ge=1, le=30)
+
+
 class LibraryAdvancedLengthBody(BaseModel):
     """Longest song the advanced analysis takes, in minutes; 0 takes every length."""
 
@@ -686,6 +695,20 @@ class SongPointsBody(BaseModel):
     points: dict[str, Any]
     allow_outro: StrictBool | None = None
     station: str = DEFAULT_SLUG
+
+
+class CueRescanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    station: str = DEFAULT_SLUG
+
+
+class CueRescanApplyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    station: str = DEFAULT_SLUG
+    token: str
+    fields: list[str]
 
 
 class PairBody(BaseModel):
@@ -976,63 +999,21 @@ SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
 
 def create_app(
-    bridge: PlayerBridge | None = None,
-    player_thread: threading.Thread | None = None,
     *,
+    services: LibraryServices,
+    default_station: ExtraStation,
     secure_cookie: bool = False,
-    stream_mode: bool = False,
-    stream_first_track: IndexEntry | None = None,
-    server_audio: bool = False,
     extra_stations: Sequence[ExtraStation] = (),
-    services: LibraryServices | None = None,
-    default_station: ExtraStation | None = None,
 ) -> FastAPI:
-    """Create and return the FastAPI application.
-
-    Args:
-        bridge: A fully initialised :class:`PlayerBridge`.
-        player_thread: Optional main player thread to join during shutdown.
-        stream_mode: Start the stream output and station when the app
-            starts up (the bridge's player must have been built in stream
-            mode).
-        stream_first_track: In stream mode, the track the first set
-            starts with (``--seed``).
-        server_audio: Plain ``--server-audio`` (no stream): voice liners
-            fire into the player's mix bus, which must already exist.
-        extra_stations: The stations besides the default one; those with
-            ``autostart`` start with the app, the others when asked.
-
-    Returns:
-        A configured :class:`fastapi.FastAPI` instance.
-    """
+    """Create the server with shared library services and station factories."""
     _lyrics_read_gate = asyncio.Semaphore(1)
     install_log_prefix()
-    shared: PlayerBridge | LibraryServices
-    if bridge is not None:
-        cfg = bridge.player._cfg
-        shared = bridge
-        scope = new_station_scope(DEFAULT_SLUG)
-        runtime = StationRuntime(
-            bridge,
-            timezone=cfg.station.timezone or system_timezone(),
-            player_thread=player_thread,
-            stream_mode=stream_mode,
-            server_audio=server_audio,
-            first_track=stream_first_track,
-            thread_scope=scope,
-        )
-        stations = StationRegistry(runtime, extra_stations)
-    else:
-        if services is None or default_station is None:
-            raise ValueError("Library services and a default station factory are required")
-        cfg = services.cfg
-        shared = services
-        runtime = None
-        stations = StationRegistry(default_station, extra_stations)
+    cfg = services.cfg
+    shared = services
+    stations = StationRegistry(default_station, extra_stations)
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
-    listener_access = runtime.listener_access if runtime is not None else None
     listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
@@ -1107,6 +1088,12 @@ def create_app(
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
+            cue_rescan = getattr(app.state, "cue_rescan", None)
+            if cue_rescan is not None and not await asyncio.to_thread(
+                cue_rescan.shutdown, _SHUTDOWN_TIMEOUT_S
+            ):
+                readers_stopped = False
+                logger.error("A cue rescan is still reading; the library remains open")
             review_jobs = getattr(app.state, "review_jobs", None)
             if review_jobs is not None and not await asyncio.to_thread(
                 review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
@@ -1152,8 +1139,11 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
-    app.state.listener_access = listener_access
+    app.state.listener_access = None
     app.state.stations = stations
+    from autodj.cue_rescan import CueRescan
+
+    app.state.cue_rescan = CueRescan()
 
     from autodj.speech_api import SPEECH_BODY_LIMIT, WRITE_ROUTES, install_speech
 
@@ -1215,10 +1205,6 @@ def create_app(
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
-    if runtime is not None:
-        runtime.bridge.public_state_changed = runtime.public_state_changed
-        runtime.bridge.track_started_callback = runtime.track_started
-        _share_station(stations, runtime)
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -1265,13 +1251,16 @@ def create_app(
         "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/points/rescan": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/points/rescan/apply": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/library/music-fade": lambda: SMALL_BODY_MAX_BYTES,
         "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
-        VOICE_UPLOAD_PATH: lambda: _break_upload_cap(stations),
+        VOICE_UPLOAD_PATH: lambda: _voice_upload_cap(stations),
         # Ad spots (#51): the largest any station takes; each checks its own.
         AD_UPLOAD_PATH: lambda: _ad_upload_cap(stations),
         AD_BREAKS_PATH: lambda: AD_JSON_BODY_MAX_BYTES,
@@ -2263,6 +2252,40 @@ def create_app(
         library.start_scan({source["id"]})
         return await asyncio.to_thread(library.snapshot)
 
+    # Browse buttons: the server's folders, for typing a new library folder,
+    # and the folders and audio files inside a registered one (path_browse).
+    @app.get("/api/library/browse")
+    async def api_library_browse(path: Annotated[str, Query(max_length=4096)] = "") -> dict:
+        from autodj.path_browse import BrowseError, list_server_folder
+
+        try:
+            return await asyncio.to_thread(list_server_folder, path)
+        except BrowseError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+    @app.get("/api/library/folders/{source_id}/browse")
+    async def api_library_folder_browse(
+        source_id: str,
+        path: Annotated[str, Query(max_length=4096)] = "",
+        files: bool = False,
+    ) -> dict:
+        from autodj.path_browse import BrowseError, list_library_folder
+
+        library = _catalog_library()
+        sources = await asyncio.to_thread(library.catalog.sources)
+        source = next((s for s in sources if s["id"] == source_id), None)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Folder not registered")
+        extensions = {f".{ext.lower().lstrip('.')}" for ext in cfg.library.supported_formats}
+        try:
+            return await asyncio.to_thread(
+                lambda: list_library_folder(
+                    source["path"], path, files=files, extensions=extensions
+                )
+            )
+        except BrowseError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
     @app.patch("/api/library/folders/{source_id}")
     async def api_library_update_folder(source_id: str, body: LibraryFolderUpdateBody) -> dict:
         library = _catalog_library()
@@ -2404,6 +2427,16 @@ def create_app(
         await asyncio.to_thread(_catalog_library().set_dj_analysis_enabled, body.enabled)
         return {"enabled": body.enabled}
 
+    @app.get("/api/library/music-fade")
+    async def api_library_music_fade() -> dict[str, int]:
+        return {"drop_db": await asyncio.to_thread(_catalog_library().music_fade_drop_db)}
+
+    @app.put("/api/library/music-fade")
+    async def api_library_set_music_fade(body: LibraryMusicFadeBody) -> dict[str, int]:
+        library = _catalog_library()
+        await asyncio.to_thread(library.set_music_fade_drop_db, body.drop_db)
+        return {"drop_db": body.drop_db}
+
     @app.get("/api/library/advanced-length")
     async def api_library_advanced_length() -> dict[str, int]:
         """The advanced analysis length cutoff in minutes; 0 analyses every length."""
@@ -2512,6 +2545,50 @@ def create_app(
         record = await asyncio.to_thread(library.catalog.record_for_path, body.path)
         record["last_played"] = library.station_ledger(station).last_played().get(record["path"], 0)
         return record
+
+    @app.post("/api/library/points/rescan")
+    async def api_library_points_rescan(body: CueRescanBody) -> dict:
+        station = library_station(body.station)
+        library = _catalog_library()
+        if await asyncio.to_thread(library.entry_for_path, body.path) is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        try:
+            return await asyncio.to_thread(
+                app.state.cue_rescan.scan, library.catalog, body.path, station
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Recording not in library") from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=409, detail="Recording is no longer available") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/library/points/rescan/apply")
+    async def api_library_points_rescan_apply(body: CueRescanApplyBody) -> dict:
+        station = library_station(body.station)
+        library = _catalog_library()
+        if await asyncio.to_thread(library.entry_for_path, body.path) is None:
+            raise HTTPException(status_code=404, detail="Recording not in library")
+        cue_rescan = getattr(app.state, "cue_rescan", None)
+        if cue_rescan is None:
+            raise HTTPException(status_code=409, detail="Scan expired; scan the cues again")
+        try:
+            await asyncio.to_thread(
+                cue_rescan.apply, library.catalog, body.path, station, body.token, body.fields
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Recording not in library") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=409, detail="Recording or lyrics changed; scan again"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await _track_info(library, body.path, station)
 
     @app.get("/api/library/job")
     async def api_library_job_status() -> dict:
@@ -2718,9 +2795,6 @@ def create_app(
         allow_lan_plain_http=bool(getattr(cfg.server, "live_plain_http_lan", False)),
     )
 
-    for station in stations.all():
-        _equip_station(station)
-
     def prepare(station: StationRuntime) -> None:
         """Wire a station that is about to start to this app."""
         station.bridge.public_state_changed = station.public_state_changed
@@ -2776,6 +2850,11 @@ def _break_upload_cap(stations: StationRegistry) -> int:
         default=BreaksConfig().max_upload_bytes,
     )
     return largest + BREAK_MULTIPART_OVERHEAD
+
+
+def _voice_upload_cap(stations: StationRegistry) -> int:
+    """The body cap of a browser voice recording, independent of announcer settings."""
+    return VOICE_MAX_UPLOAD_BYTES + BREAK_MULTIPART_OVERHEAD
 
 
 def _ad_upload_cap(stations: StationRegistry) -> int:

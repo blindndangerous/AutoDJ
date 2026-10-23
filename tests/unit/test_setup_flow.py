@@ -107,6 +107,7 @@ def _patch_execution(
 ):
     """Replace host probes and expensive actions while retaining setup state writes."""
     setup = modules.setup
+    monkeypatch.setattr(setup, "ensure_ffmpeg", Mock(return_value=True))
     monkeypatch.delenv("AUTODJ_GPU", raising=False)
     install_python = Mock()
     prepare_caches = Mock()
@@ -239,6 +240,7 @@ def test_dry_run_prints_plan_without_writing_or_installing(
     assert not (root / "config.toml").exists()
     assert not (root / ".uv").exists()
     assert {path.relative_to(root) for path in root.rglob("*")} == before
+    setup_modules.setup.ensure_ffmpeg.assert_not_called()
     mocks.install_python.assert_not_called()
     mocks.run.assert_not_called()
 
@@ -312,7 +314,8 @@ def test_explicit_existing_environment_skips_package_install(
     mocks.create_configuration.assert_called_once_with(root, 8181)
     generated = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
     assert "music_dir" not in generated["library"]
-    assert "Your library is empty" in capsys.readouterr().out
+    assert "Manage music folders" in capsys.readouterr().out
+    setup_modules.setup.ensure_ffmpeg.assert_called_once_with(auto_install=True)
     selection = setup_modules.support.read_json(root / setup_modules.support.STATE)
     assert selection == {
         "environment": str(environment.resolve()),
@@ -322,7 +325,7 @@ def test_explicit_existing_environment_skips_package_install(
 
 
 def test_existing_configuration_is_preserved(
-    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
 ) -> None:
     root, _ = _project(tmp_path)
     environment = _environment(setup_modules.support, root)
@@ -342,6 +345,20 @@ def test_existing_configuration_is_preserved(
     assert config.read_bytes() == config_bytes
     assert local_config.read_bytes() == local_bytes
     mocks.create_configuration.assert_not_called()
+    assert "Your library is empty" not in capsys.readouterr().out
+
+
+def test_failed_ffmpeg_install_keeps_setup_available(setup_modules, monkeypatch, tmp_path, capsys):
+    root, _ = _project(tmp_path)
+    environment = _environment(setup_modules.support, root)
+    _patch_execution(setup_modules, monkeypatch)
+    setup_modules.setup.ensure_ffmpeg.side_effect = RuntimeError("WinGet failed")
+    args = setup_modules.setup.parser().parse_args(
+        ["--yes", "--backend", "cpu", "--environment", str(environment)]
+    )
+    assert setup_modules.setup.execute(args, root) == 0
+    assert "FFmpeg installation failed" in capsys.readouterr().err
+    assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
 
 
 def test_doctor_failure_does_not_discard_verified_runtime(
@@ -371,6 +388,7 @@ def test_doctor_failure_does_not_discard_verified_runtime(
     assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"
     output = capsys.readouterr().out
     assert "WARN library: music folder is empty" in output
+    assert "no tracks" in output
     assert "Run `autodj doctor` for details and repair guidance." in output
     assert '"checks"' not in output
     command = mocks.doctor.call_args.args[0]
@@ -575,3 +593,87 @@ def test_create_configuration_rejects_invalid_port_without_a_file(
     with pytest.raises(ValueError, match="Port must be between"):
         setup_modules.support.create_configuration(root, 0)
     assert not (root / "config.toml").exists()
+
+
+def test_no_model_core_metadata_keeps_analysis_optional() -> None:
+    """ADR-0012-06: the serving install cannot pull the model stack."""
+    data = tomllib.loads((REPOSITORY / "pyproject.toml").read_text())
+    names = {
+        requirement.split(">", 1)[0].split("[", 1)[0]
+        for requirement in data["project"]["dependencies"]
+    }
+    assert not names & {"torch", "muq", "transformers", "torchaudio", "torchvision"}
+    optional = data["project"]["optional-dependencies"]
+    assert any(requirement.startswith("muq") for requirement in optional["index"])
+    assert any(requirement.startswith("transformers") for requirement in optional["index"])
+
+
+def test_no_model_setup_saves_runtime_without_torch_probe(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """ADR-0012-06: no-model setup verifies serving imports without Torch."""
+    root, _ = _project(tmp_path)
+    mocks = _patch_execution(setup_modules, monkeypatch)
+    args = setup_modules.setup.parser().parse_args(["--no-model", "--yes"])
+    assert setup_modules.setup.execute(args, root) == 0
+    state = setup_modules.support.read_json(root / setup_modules.support.STATE)
+    assert state["backend"] == "no-model"
+    assert state["environment"].endswith("setup-no-model")
+    mocks.probe_runtime.assert_not_called()
+    commands = setup_modules.support.install_commands(
+        root, Path(state["environment"]), "no-model", "Linux"
+    )
+    assert commands[-1][-2:] == ["-e", "."]
+    assert all("torch" not in str(command) for command in commands)
+    assert setup_modules.support.runtime_environment(root, "no-model")["AUTODJ_NO_MODEL"] == "1"
+
+
+def test_no_model_setup_rejects_gpu_and_test_import_before_writes(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root, _ = _project(tmp_path)
+    mocks = _patch_execution(setup_modules, monkeypatch)
+    for flags in (["--no-model", "--backend", "nvidia"], ["--no-model", "--test-import"]):
+        args = setup_modules.setup.parser().parse_args([*flags, "--yes"])
+        with pytest.raises(ValueError, match="no-model"):
+            setup_modules.setup.execute(args, root)
+    assert not (root / ".uv").exists()
+    mocks.install_python.assert_not_called()
+
+
+def test_saved_no_model_rejects_test_import_before_writes(setup_modules, monkeypatch, tmp_path):
+    root, _ = _project(tmp_path)
+    mocks = _patch_execution(setup_modules, monkeypatch)
+    environment = _environment(setup_modules.support, root)
+    setup_modules.support.write_json(
+        root / setup_modules.support.STATE,
+        {"backend": "no-model", "environment": str(environment)},
+    )
+    before = (root / setup_modules.support.STATE).read_bytes()
+    args = setup_modules.setup.parser().parse_args(["--test-import", "--yes"])
+    with pytest.raises(ValueError, match="no-model"):
+        setup_modules.setup.execute(args, root)
+    assert (root / setup_modules.support.STATE).read_bytes() == before
+    mocks.initialize_paths.assert_not_called()
+    mocks.run.assert_not_called()
+
+
+def test_interactive_no_model_never_offers_model_test_import(setup_modules, monkeypatch, tmp_path):
+    root, _ = _project(tmp_path)
+    mocks = _patch_execution(setup_modules, monkeypatch)
+    monkeypatch.setattr(setup_modules.setup.sys.stdin, "isatty", lambda: True)
+    confirm = Mock(return_value=True)
+    monkeypatch.setattr(setup_modules.setup, "confirm", confirm)
+    args = setup_modules.setup.parser().parse_args(["--no-model", "--port", "8080"])
+    assert setup_modules.setup.execute(args, root) == 0
+    confirm.assert_called_once_with("Apply this setup plan?")
+    mocks.run.assert_not_called()
+
+
+@pytest.mark.parametrize("backend", ["cpu", "nvidia", "amd", "no-model"])
+def test_runtime_environment_uses_selected_model_mode(
+    setup_modules, monkeypatch, tmp_path, backend
+):
+    monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
+    env = setup_modules.support.runtime_environment(tmp_path, backend)
+    assert env.get("AUTODJ_NO_MODEL") == ("1" if backend == "no-model" else None)

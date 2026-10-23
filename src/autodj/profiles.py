@@ -108,7 +108,11 @@ class ProfileSnapshot:
 
     def to_dict(self) -> dict:
         """Return a plain JSON-serialisable representation."""
-        return asdict(self)
+        data = asdict(self)
+        legacy_shuffle = data.pop("pure_shuffle")
+        if legacy_shuffle is not None and data["pick_mode"] is None:
+            data["pick_mode"] = "random" if legacy_shuffle else "similarity"
+        return data
 
     @classmethod
     def from_dict(cls, data: object) -> ProfileSnapshot:

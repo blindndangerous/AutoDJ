@@ -18,7 +18,7 @@ from autodj.landmarks import (
     station_landmarks,
 )
 from autodj.library import LibraryManager
-from autodj.server import create_app
+from tests._server import create_app
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 # 120 BPM from 0.5 s: a beat every half second, a bar every 2 s.

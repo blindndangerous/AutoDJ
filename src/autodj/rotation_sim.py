@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import heapq
+import json
 import logging
 import math
 import os
@@ -195,7 +196,6 @@ class SimulationSource:
 _COPIED = (
     "_preset",
     "_bpm_range",
-    "_pure_shuffle",
     "_anchor_to_seed",
     "_seed_path",
     "_discovery_every",
@@ -583,6 +583,8 @@ class _SimPlayer(Player):
     """A :class:`Player` whose clock is the dry run's."""
 
     _sim_now: float = 0.0
+    _sim_tally: _Tally | None = None
+    _sim_last_clock_pick: dict[str, Any] | None = None
     # A clockwheel that is not saved, played by its name (see SimulationSource).
     _clock_override: tuple[Mapping[str, Any], Sequence[Any]] | None = None
 
@@ -594,6 +596,72 @@ class _SimPlayer(Player):
         if override is not None and override[0].get("name") == name:
             return dict(override[0]), list(override[1])
         return super()._load_clockwheel(name)
+
+    def _clock_pick(self, context: Any, cursor: int | None) -> Any:
+        """Remember the simulated wheel scan and its configured step pools."""
+        tally = getattr(self, "_sim_tally", None)
+        if tally is None:
+            return super()._clock_pick(context, cursor)
+        clock_name = self._clock_name()
+        tally.active_clock = clock_name
+        slots = tuple(getattr(self, "_clock_slots", ()) or ())
+        steps = tuple(getattr(self, "_clock_steps", ()) or ())
+        missing = [
+            index
+            for index in range(min(len(slots), len(steps)))
+            if clock_name and (clock_name, index + 1) not in tally.clock_steps
+        ]
+        picked = super()._clock_pick(context, cursor)
+        if not missing:
+            self._sim_last_clock_pick = {
+                "clockwheel": clock_name,
+                "number": picked.step_index + 1 if picked.step_index is not None else None,
+            }
+            return picked
+        entries = tuple(entry for entry in self.playable_entries() if not entry.is_silent)
+        categories = self._category_members() or {}
+        cache = getattr(self, "_clock_condition_cache", None)
+        from autodj.clockwheel import _normalized, _slot_entries
+
+        for index in missing:
+            slot = slots[index]
+            snapshot = self._clock_step_snapshot(index, steps)
+            kind = getattr(slot, "kind", "")
+            if kind == "category":
+                found = categories.get(slot.category)
+                paths = frozenset(found[1]) if found else frozenset()
+            elif kind == "track":
+                paths = frozenset(
+                    entry.path
+                    for entry in entries
+                    if _normalized(entry.path) == _normalized(slot.path)
+                )
+            elif kind == "liner":
+                paths = None
+            elif kind == "music":
+                if slot.conditions and cache is not None:
+                    paths = cache.paths(index)
+                else:
+                    paths = frozenset(
+                        entry.path for entry in _slot_entries(slot, entries, categories=categories)
+                    )
+            else:
+                paths = None
+            tally_step = {
+                "clockwheel": clock_name,
+                "number": index + 1,
+                "snapshot": snapshot or {"number": index + 1, "step": steps[index]},
+                "kind": kind,
+                "paths": paths,
+            }
+            if clock_name:
+                tally.register_clock_step(tally_step)
+
+        self._sim_last_clock_pick = {
+            "clockwheel": clock_name,
+            "number": picked.step_index + 1 if picked.step_index is not None else None,
+        }
+        return picked
 
 
 def _copy_player(
@@ -767,7 +835,6 @@ _EVENT_STATE = (
     "_pending_clock_name",
     "_seed_clock_name",
     "_pending_clock_boundary",
-    "_pure_shuffle",
     "_preset",
     "_discovery_every",
 )
@@ -837,6 +904,10 @@ class _Tally:
     broken: Counter[str] = field(default_factory=Counter)
     ignored: Counter[str] = field(default_factory=Counter)
     steps: Counter[str] = field(default_factory=Counter)
+    clock_steps: dict[tuple[str, int], dict[str, Any]] = field(default_factory=dict)
+    clock_step_skips: Counter[tuple[str, int]] = field(default_factory=Counter)
+    active_clock: str | None = None
+    pending_skip_clock: str | None = None
     dmca_replaced: int = 0
     dmca_broken: int = 0
     dmca_limits: Counter[str] = field(default_factory=Counter)
@@ -853,8 +924,28 @@ class _Tally:
     def observe(self, event: str, detail: Any) -> None:
         if event == "clock_skipped":
             self.pending_skips = list(detail)
+            self.pending_skip_clock = self.active_clock
         elif event == "dmca_replaced":
             self.dmca_replaced += 1
+
+    def register_clock_step(self, step: Mapping[str, Any]) -> None:
+        key = (str(step["clockwheel"]), int(step["number"]))
+        self.clock_steps.setdefault(
+            key,
+            {
+                **step,
+                "plays_by_path": Counter(),
+            },
+        )
+
+    def record_clock_pick(self, pick: Mapping[str, Any], entry: Any) -> None:
+        clockwheel, number = pick.get("clockwheel"), pick.get("number")
+        if not clockwheel or number is None:
+            return
+        key = (str(clockwheel), int(number))
+        step = self.clock_steps.get(key)
+        if step is not None:
+            step["plays_by_path"][entry.path] += 1
 
 
 # ---------------------------------------------------------------------------
@@ -892,6 +983,25 @@ def song_seconds(player: Player, entry: Any, average: float) -> float:
         crossfade = float(getattr(playback, "crossfade_seconds", 0.0) or 0.0)
         seconds = (entry.length or 0.0) - crossfade
     return seconds if seconds > 1.0 else average
+
+
+def _record_clock_step_pick(tally: _Tally, player: _SimPlayer, mode: str, entry: Any) -> None:
+    """Attribute a final simulated song to the clock step that selected it."""
+    if mode != "clock":
+        return
+    pick = getattr(player, "_sim_last_clock_pick", None)
+    if pick is None:
+        # A saved liner/song pair is selected during the preceding start pick.
+        # The next handoff consumes that saved selection without scanning again.
+        snapshot = getattr(player, "_chosen_clock_step", None)
+        clockwheel = getattr(player, "_seed_clock_name", None) or player._clock_name()
+        if snapshot is None or not clockwheel:
+            return
+        pick = {
+            "clockwheel": clockwheel,
+            "number": snapshot.get("number"),
+        }
+    tally.record_clock_pick(pick, entry)
 
 
 def music_rate(player: Any, entry: Any) -> float:
@@ -951,6 +1061,7 @@ def _simulate(
     tally = _Tally()
     snapshot = source.snapshot or snapshot_player(source.player)
     player = _copy_player(source, snapshot, start, rng, tally.observe)
+    player._sim_tally = tally
     library = source.library
     entries = tuple(entry for entry in player.playable_entries() if not entry.is_silent)
     if not entries:
@@ -966,7 +1077,7 @@ def _simulate(
 
     bridge = PlayerBridge(player=player, sim=player._sim, library=library, ledger=player._ledger)
     schedule = _Schedule(source.events, source.timezone, start)
-    initial_mode = "random" if player._pure_shuffle else player._cfg.playback.pick_mode
+    initial_mode = player._cfg.playback.pick_mode
     initial_clock = (player._clock or {}).get("name") if initial_mode == "clock" else None
     initial_clock_status = (
         player._clock_fallback_status() if initial_mode == "clock" and not initial_clock else None
@@ -1003,6 +1114,7 @@ def _simulate(
     def start_fresh(now: float) -> Any | None:
         """A first song, as the station picks one when a set starts."""
         player._sim_now = now
+        player._sim_last_clock_pick = None
         player._seed_clock_cursor = None
         player._seed_clock_name = None
         try:
@@ -1018,6 +1130,7 @@ def _simulate(
         if entry is not None and entry.path not in liner_paths:
             enforced = _step_enforces_rules(player, player._cfg.playback.pick_mode)
             _tally_rules(tally, context, entry, enforced, when(now))
+            _record_clock_step_pick(tally, player, player._cfg.playback.pick_mode, entry)
         return entry
 
     def record(entry: Any, now: float) -> None:
@@ -1068,6 +1181,8 @@ def _simulate(
         player._sim_now = now
         apply_schedule(now)
         tally.pending_skips = []
+        tally.pending_skip_clock = None
+        player._sim_last_clock_pick = None
         # As the station does, dayparting reads the hours at the song's start.
         context = player._pick_context(at=handoff)
         liners: tuple[tuple[Any, bool], ...] = ()
@@ -1104,8 +1219,12 @@ def _simulate(
             continue
         for step in tally.pending_skips:
             tally.steps[_step_key(step)] += 1
+            match = re.match(r"^Step (\d+):", step)
+            if match and tally.pending_skip_clock:
+                tally.clock_step_skips[(tally.pending_skip_clock, int(match.group(1)))] += 1
         enforced = _step_enforces_rules(player, mode)
         _tally_rules(tally, context, entry, enforced, when(handoff))
+        _record_clock_step_pick(tally, player, mode, entry)
         now = handoff
         for liner, _queued in liners:
             player._ledger.remember_play(liner.path, now)
@@ -1261,7 +1380,7 @@ def _report(
     most = sorted(
         ((first, count) for first, count in songs.values() if count),
         key=lambda pair: (-pair[1], pair[0].path),
-    )[:5]
+    )[:20]
 
     artists: dict[str, tuple[str, int]] = {}
     for entry in entries:
@@ -1269,7 +1388,10 @@ def _report(
         name, count = artists.get(key, (entry.artist or "(no artist)", 0))
         artists[key] = (name, count + plays.get(entry.path, 0))
     artist_counts = [count for _name, count in artists.values()]
-    top_artists = sorted(artists.values(), key=lambda pair: (-pair[1], pair[0]))[:5]
+    top_artists = sorted(
+        (item for item in artists.values() if item[1]),
+        key=lambda pair: (-pair[1], pair[0]),
+    )[:20]
 
     category_rows = []
     for category_id, (name, members) in categories.items():
@@ -1294,6 +1416,94 @@ def _report(
             }
         )
 
+    position_summary: dict[str, list[dict[str, int]]] = {}
+    grouped_steps: dict[tuple[str, str], dict[str, Any]] = {}
+    for step_key, step in tally.clock_steps.items():
+        if step["kind"] == "liner":
+            continue
+        canonical = json.dumps(step["snapshot"]["step"], sort_keys=True, separators=(",", ":"))
+        group_key = (step["clockwheel"], canonical)
+        grouped = grouped_steps.setdefault(
+            group_key,
+            {
+                "clockwheel": step["clockwheel"],
+                "numbers": [],
+                "snapshot": step["snapshot"],
+                "kind": step["kind"],
+                "paths": step["paths"],
+                "plays_by_path": Counter(),
+                "skipped": 0,
+            },
+        )
+        grouped["numbers"].append(step["number"])
+        grouped["skipped"] += tally.clock_step_skips[step_key]
+        grouped["plays_by_path"].update(step["plays_by_path"])
+        if step["kind"] in {"music", "category", "track"}:
+            position_summary.setdefault(step["clockwheel"], []).append(
+                {
+                    "number": step["number"],
+                    "selections": sum(step["plays_by_path"].values()),
+                }
+            )
+
+    clockwheel_summary: list[dict[str, Any]] = [
+        {
+            "clockwheel": clock_name,
+            "steps": sorted(positions, key=lambda item: item["number"]),
+        }
+        for clock_name, positions in position_summary.items()
+    ]
+
+    clock_step_rows = []
+    for step in grouped_steps.values():
+        matched = (
+            [entry for entry in entries if entry.path in step["paths"]]
+            if step["paths"] is not None
+            else []
+        )
+        supported = step["paths"] is not None
+        versions = player._song_versions()
+        step_songs: dict[str, tuple[Any, int]] = {}
+        for entry in matched:
+            song = versions.song(entry.path) if versions is not None else entry.path
+            first, count = step_songs.get(song, (entry, 0))
+            step_songs[song] = (
+                first,
+                count + step["plays_by_path"].get(entry.path, 0),
+            )
+        counts = [count for _entry, count in step_songs.values()]
+        unplayed = [entry for entry, count in step_songs.values() if not count]
+        snapshot = step["snapshot"]
+        clock_step_rows.append(
+            {
+                "clockwheel": step["clockwheel"],
+                "numbers": sorted(step["numbers"]),
+                "snapshot": snapshot,
+                "kind": step["kind"],
+                "songs": len(step_songs) if supported else None,
+                "plays": sum(step["plays_by_path"].values()) if supported else None,
+                **(
+                    {
+                        **_spread(counts),
+                        "never_played": len(unplayed),
+                        "never_played_sample": sorted(entry.display_name for entry in unplayed)[
+                            :SAMPLE
+                        ],
+                    }
+                    if supported
+                    else {
+                        "min": None,
+                        "max": None,
+                        "average": None,
+                        "never_played": None,
+                        "never_played_sample": [],
+                    }
+                ),
+                "skipped": step["skipped"],
+                "match_basis": "static configured matches" if supported else None,
+            }
+        )
+
     def iso(stamp: float) -> str:
         return datetime.fromtimestamp(stamp, zone).isoformat(timespec="minutes")
 
@@ -1312,7 +1522,7 @@ def _report(
             "mode": initial_mode,
             "clockwheel": initial_clock,
             "clock_status": initial_clock_status,
-            "final_mode": "random" if player._pure_shuffle else player._cfg.playback.pick_mode,
+            "final_mode": player._cfg.playback.pick_mode,
             "final_clockwheel": clock.get("name"),
             "dmca": bool(player._state.dmca_enabled),
             "versions_as_one_song": bool(player._state.rules.versions_as_one_song),
@@ -1338,6 +1548,8 @@ def _report(
             ],
         },
         "categories": category_rows,
+        "clockwheel_summary": clockwheel_summary,
+        "clock_steps": clock_step_rows,
         "relaxed": {rule: tally.broken[rule] for rule in RULES if tally.broken[rule]},
         "ignored_by_steps": {rule: tally.ignored[rule] for rule in RULES if tally.ignored[rule]},
         "fallbacks": tally.modes.get("fallback", 0),
@@ -1400,6 +1612,40 @@ def _wall(text: str) -> str:
     """An ISO time from the report as "Monday 12 October 2026, 14:00"."""
     moment = datetime.fromisoformat(text)
     return f"{moment:%A} {moment.day} {moment:%B %Y, %H:%M}"
+
+
+def _clock_step_label(row: Mapping[str, Any]) -> str:
+    """A short name for a frozen native clock step."""
+    step = row["snapshot"]["step"]
+    kind = str(step.get("type", row.get("kind", "step")))
+    if kind == "category":
+        category_id = step.get("category", "")
+        category = next(
+            (
+                item["name"]
+                for item in row["snapshot"].get("categories", ())
+                if item.get("id") == category_id
+            ),
+            category_id,
+        )
+        return f"category {category}"
+    if kind == "track":
+        return f"track {Path(str(step.get('path', ''))).name}"
+    if step.get("conditions"):
+        return "matching conditions"
+    sources = row["snapshot"].get("sources", ())
+    if sources:
+        return f"{kind} {sources[0]['path']}"
+    folder = step.get("folder")
+    if folder:
+        return f"{kind} {Path(str(folder)).name or folder}"
+    return kind.replace("_", " ")
+
+
+def _clock_step_numbers(numbers: Sequence[int]) -> str:
+    if len(numbers) == 1:
+        return f"step {numbers[0]}"
+    return f"steps {', '.join(str(number) for number in numbers[:-1])} and {numbers[-1]}"
 
 
 _STOPPED_WORDS = {
@@ -1466,17 +1712,15 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             "never played.",
             f"Plays per song: fewest {_figure(songs['min'])}, most "
             f"{_figure(songs['max'])}, average {_average(songs['average'])}.",
-            *(
-                f"Most played: {item['song']}, {_times(item['plays'])}."
-                for item in songs["most_played"]
-            ),
-            {
-                "text": f"Never played, first {_figure(len(songs['never_played_sample']))}:",
-                "items": songs["never_played_sample"],
-            }
-            if songs["never_played_sample"]
-            else "",
         ],
+    )
+    section(
+        "Top 20 songs",
+        (f"{item['song']}, {_times(item['plays'])}." for item in songs["most_played"]),
+    )
+    section(
+        f"Songs never played, first {_figure(len(songs['never_played_sample']))}",
+        songs["never_played_sample"],
     )
     artists = report["artists"]
     section(
@@ -1487,11 +1731,11 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             f"{_figure(artists['never_played'])} never played.",
             f"Plays per artist: fewest {_figure(artists['min'])}, most "
             f"{_figure(artists['max'])}, average {_average(artists['average'])}.",
-            *(
-                f"Most played: {item['artist']}, {_times(item['plays'])}."
-                for item in artists["most_played"]
-            ),
         ],
+    )
+    section(
+        "Top 20 artists",
+        (f"{item['artist']}, {_times(item['plays'])}." for item in artists["most_played"]),
     )
     category_lines: list[Any] = []
     for row in report["categories"]:
@@ -1511,6 +1755,45 @@ def report_sections(report: Mapping[str, Any]) -> list[dict[str, Any]]:
             }
         )
     section("Categories", category_lines)
+    clockwheel_summary_lines: list[Any] = []
+    for wheel in report.get("clockwheel_summary", ()):
+        clockwheel_summary_lines.append(
+            {
+                "text": f"{wheel['clockwheel']}: music step selections.",
+                "items": [
+                    f"Step {step['number']}: {counted(step['selections'], 'music selection')}."
+                    for step in wheel["steps"]
+                ],
+            }
+        )
+    section("Clockwheel summary", clockwheel_summary_lines)
+    clock_step_lines: list[Any] = []
+    for row in report.get("clock_steps", ()):
+        numbers = _clock_step_numbers(row["numbers"])
+        label = f"{row['clockwheel']}, {numbers} ({_clock_step_label(row)})"
+        items = []
+        if row["songs"] is None:
+            items.append("Song statistics do not apply.")
+        else:
+            items.extend(
+                [
+                    f"Configured matching songs (static matches): {counted(row['songs'], 'song')}; "
+                    f"{counted(row['plays'], 'music selection')}.",
+                    f"Plays per song: fewest {_figure(row['min'])}, most "
+                    f"{_figure(row['max'])}, average {_average(row['average'])}.",
+                    f"Never played: {counted(row['never_played'], 'song')}"
+                    + (
+                        f". First {_figure(len(row['never_played_sample']))}: "
+                        f"{' ; '.join(row['never_played_sample'])}."
+                        if row["never_played_sample"]
+                        else "."
+                    ),
+                ]
+            )
+        if row["skipped"]:
+            items.append(f"Skipped {_times(row['skipped'])}.")
+        clock_step_lines.append({"text": label + ".", "items": items})
+    section("Clockwheel steps", clock_step_lines)
     relaxed = report["relaxed"]
     section(
         "Rules relaxed",

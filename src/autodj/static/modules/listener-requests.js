@@ -30,6 +30,7 @@ import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 import { stationEpoch } from "./stations.js";
 import { clockText } from "./time-format.js";
+import { sendWithVoiceTrackConflict } from "./voice-track-conflict.js";
 
 const POLL_MS = 15000;
 // Long enough for a screen reader to start on the focused button first.
@@ -421,10 +422,28 @@ export function installListenerRequests({
       reject: `Turning down ${song}…`,
     }[action] || "Sending…");
     try {
-      const reply = await request(`/api/requests/${encodeURIComponent(id)}/${action}`, {
-        method: "POST",
-        headers: { Accept: "application/json" },
-      });
+      const url = `/api/requests/${encodeURIComponent(id)}/${action}`;
+      let reply;
+      if (action === "approve" || action === "play-next") {
+        const sent = await sendWithVoiceTrackConflict(doc, (voice) => request(url, {
+          method: "POST",
+          headers: Object.keys(voice).length
+            ? { Accept: "application/json", "Content-Type": "application/json" }
+            : { Accept: "application/json" },
+          ...(Object.keys(voice).length ? { body: JSON.stringify(voice) } : {}),
+        }));
+        if (!sent) {
+          const canceled = action === "approve" ? "Approval" : "Play next";
+          if (isEnabled() && mine === settingsGeneration) say(`${canceled} canceled for ${song}.`);
+          return;
+        }
+        reply = sent.value;
+      } else {
+        reply = await request(url, {
+          method: "POST",
+          headers: { Accept: "application/json" },
+        });
+      }
       if (!isEnabled() || mine !== settingsGeneration) return;
       const state = { ...reply, pending: reply.pending || [], recent: reply.recent || [] };
       // Move focus first, then let the decided row go, then say the result.

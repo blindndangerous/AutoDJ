@@ -105,7 +105,6 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     player._next_pick = None
     player._dry_run = False
     player._server_audio_too = False
-    player._pure_shuffle = False
     player._anchor_to_seed = False
     player._seed_path = None
     player._previous_track = None
@@ -179,6 +178,22 @@ def _make_player_mock(entry: IndexEntry | None = None) -> MagicMock:
     cfg.replaygain.enabled = False
     cfg.presets = {}
     player._cfg = cfg
+    from autodj.station_settings import StationSettings
+
+    settings = StationSettings(cfg)
+    player._settings = settings
+    for name in (
+        "_preset",
+        "_bpm_range",
+        "_anchor_to_seed",
+        "_eq_low",
+        "_eq_mid",
+        "_eq_high",
+        "_discovery_every",
+    ):
+        value = getattr(player, name)
+        setattr(type(player), name, getattr(Player, name))
+        setattr(player, name, value)
     return player
 
 

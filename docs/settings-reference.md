@@ -19,7 +19,7 @@ Each entry gives possible values, the default, and what the setting does. A page
 
 ## Programme review
 
-**Now Playing**, **Programme review** settings apply to the next explicit
+**Library tools**, **Programme review** settings apply to the next explicit
 generation. They are review request values, not new `config.toml` or station
 playback settings. Existing snapshots retain the settings used to make them.
 
@@ -159,7 +159,7 @@ Station section: `playback` in `station.json`.
 - `liners_pick_mode`. Values: `random` (Random) or `sequential` (Sequential). Default: `random` (Random). Selects which eligible liner plays next. **Rotation mode**.
 - `liners_duck_db`. Values: -30 to 0 decibels. Default: -3.0. Lowers music under voice liners. **Music duck (dB)**.
 - `matched_intro_only_without_liner`. Values: true or false. Default: false. Plays matched intros only when no liner is due. **Only when no liner is scheduled**.
-- `liners_talk_up`. Values: true or false. Default: false. Times a liner to end before the next song's vocal when possible. **Talk up to the vocal**.
+- `liners_talk_up`. Legacy server live overlays and time checks only; values true or false, default false. Retained for existing configurations and live time checks. Saved-point automatic liners always use the shared cue-based handoff; the checkbox applies only to live server overlays. Browser playback ignores this key.
 
 Songs of any length import and play. In **Library tools**, **Advanced analysis length**, set **Longest song, in minutes** to limit the expensive analysis; the default is 15. Set 0 to analyse every length. Longer songs still receive basic analysis.
 
@@ -279,7 +279,7 @@ Station section: `dmca` in `station.json`. Set this switch in **Settings**, **So
 
 Station section: `breaks` in `station.json`.
 
-- `enabled`. Values: true or false. Default: false. Accepts DJ breaks on this station. **Take breaks on this station**.
+- `enabled`. Values: true or false. Default: false. Accepts external announcer uploads on this station. Manual voice tracks are independent. **Accept announcer uploads**.
 - `dj_placement`. Values: `auto` (Automatic), `talk_up` (Talk up the next song), or `standalone` (Between the songs). Default: `auto`. Places DJ breaks over an intro or between songs. **Where a DJ break goes**.
 - `min_intro_seconds`. Values: 0 to 60 seconds. Default: 2.0. Sets the shortest intro for automatic talk up. **Shortest intro to talk up (seconds)**.
 - `duck_db`. Values: -30 to 0 decibels or blank. Default: blank. Lowers music under a break; blank uses the voice liner setting. **Music under a break (decibels)**.
@@ -355,6 +355,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Add subfolders** for a registered music folder: on or off; default on. Includes nested folders in import. **Perform advanced analysis**: on or off; default on. Runs sound matching analysis for music in that folder.
 - **Find beats and song structure** in **Library tools**: on or off; default on. Finds beat grids and song sections during basic analysis.
 - **Longest song, in minutes** under **Advanced analysis length** in **Library tools**: 0 or a positive number; default 15. Longer songs get basic analysis only; 0 runs advanced analysis on every length.
+- **Music fade drop (dB)** under **Music fades** in **Library tools**: 1–30 dB; default 10. Sets the relative drop for new music Segue suggestions. Saved cues stay unchanged. See [cue rescans and fade detection](guides/operations/library.md#rescan-cue-points-in-track-info).
 - **Display name** in **Settings**, **Live DJ**: printable name up to 80 characters; default blank. Shows the DJ name to listeners and in History while live.
 - **Time format for all stations** in **Settings**, **Stations**: 24 hour or 12 hour; default 24 hour. Changes time display for every station.
 - **Theme** in **Settings**, **Display and keys**: System, Light, or Dark; default System. Changes this browser's colors.

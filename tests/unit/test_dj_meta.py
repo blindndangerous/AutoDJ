@@ -675,6 +675,30 @@ class TestDetectIntroOutroEdges:
         intro, _outro = detect_intro_outro(np.zeros(0, dtype=np.float32), 44100)
         assert intro == 0.0
 
+    def test_late_quiet_vocal_survives_an_internal_pause(self) -> None:
+        from autodj.dj_meta import detect_intro_outro
+
+        sr = 1000
+        audio = np.full(sr * 50, 0.2, dtype=np.float32)
+        audio[sr * 30 : sr * 35] = 0.0
+        audio[sr * 40 :] = 0.001
+        for start in range(sr * 40, sr * 50, sr // 4):
+            audio[start : start + sr // 20] = 0.08
+
+        _intro, outro = detect_intro_outro(audio, sr)
+        assert outro == 50.0
+
+    def test_terminal_fade_keeps_the_existing_rms_threshold(self) -> None:
+        from autodj.dj_meta import detect_intro_outro
+
+        sr = 1000
+        audio = np.full(sr * 60, 0.2, dtype=np.float32)
+        audio[sr * 40 : sr * 50] = np.linspace(0.2, 0.0, sr * 10, dtype=np.float32)
+        audio[sr * 50 :] = 0.0
+
+        _intro, outro = detect_intro_outro(audio, sr)
+        assert 46.0 <= outro <= 48.0
+
 
 class TestNearestPhraseBoundaryExtra:
     def test_empty_beats(self) -> None:

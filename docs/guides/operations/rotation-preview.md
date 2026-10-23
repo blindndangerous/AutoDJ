@@ -60,9 +60,18 @@ after six failed tries says it has stopped checking.
 
 The report, in words or JSON, gives:
 
-- plays per song, per category and per artist: the fewest, the most and the average, and the most
-  played;
+- plays per song, per category and per artist: the fewest, the most and the average;
+- the top 20 songs and artists by simulated plays, under separate headings (fewer when the run
+  plays fewer than 20);
 - songs never played, with a count and the first ten, overall and per category;
+- when a clockwheel is used, a summary of selections at each music step, including steps with
+  no selections. This shows which positions supplied music; a zero count does not identify why
+  a step was not selected or prove that a reset prevented it;
+- combined statistics for identical steps within each clockwheel: their configured matching
+  songs, total selections, play spread and songs never played. Steps with different settings
+  remain separate, and each group lists its step numbers. Matching counts are static for the
+  configured step; repeat rules and hours can change what is eligible on each pick. Liner steps
+  are omitted. Settings and ad steps say when song statistics do not apply;
 - how often each rule had to be relaxed, and which: same artist, related artist, same album, same
   title, related track, same daypart, same quarter hour, the track repeat window, dayparting and
   back-to-back repeats, plus fallbacks to a random
@@ -106,8 +115,8 @@ Each row says in its Status column whether it is fixed or predicted:
   into it.
 - **Fixed: ready to play**: what the server has already rendered, with its liners, breaks and
   matched intros (server audio and stream mode only).
-- **Fixed: picked**: the song chosen to follow, and with `[breaks] enabled = true` the song after
-  it (the open song change) and its liners.
+- **Fixed: picked**: the song chosen to follow, and when external breaks, a due ad break or a
+  manual voice tracker needs an open song change, the song after it and its liners.
 - **Fixed: booked break**: an announcer break, a voice track or an ad spot booked on the open
   song change. An ad spot reads as "Ad break" with its advertiser and title.
 - **Fixed: in the queue**: the request queue, which plays before any pick.

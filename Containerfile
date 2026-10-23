@@ -24,7 +24,7 @@ COPY container/torch-cpu.txt ./container/
 RUN set -eu; \
     python -c 'import re, tomllib; lock = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"]}; pins = dict(re.findall(r"^(torch|torchaudio|torchvision)==(\S+)\+cpu ", open("container/torch-cpu.txt").read(), re.M)); want = {n: lock[n] for n in ("torch", "torchaudio", "torchvision")}; assert pins == want, f"container/torch-cpu.txt {pins} != uv.lock {want}"'; \
     skipped="$(python -c 'import re, tomllib; names = sorted(p["name"] for p in tomllib.load(open("uv.lock", "rb"))["package"]); print(" ".join(f"--no-install-package {n}" for n in names if re.fullmatch(r"(nvidia|cuda)-.+|triton|torch|torchaudio|torchvision", n)))')"; \
-    uv sync --frozen --no-dev --no-install-project $skipped; \
+    uv sync --frozen --no-dev --extra index --no-install-project $skipped; \
     uv pip install --python /opt/venv/bin/python --no-deps --require-hashes \
         --index-url https://download.pytorch.org/whl/cpu -r container/torch-cpu.txt
 

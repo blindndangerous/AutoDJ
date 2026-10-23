@@ -55,6 +55,16 @@ from autodj.stereo import SAMPLE_RATE, DecodeReport
 
 logger = logging.getLogger(__name__)
 
+MUSIC_FADE_DROP_DB_KEY = "music_fade_drop_db"
+DEFAULT_MUSIC_FADE_DROP_DB = 10
+
+
+def music_fade_drop_db(catalog: LibraryCatalog) -> int:
+    """Return the saved music fade threshold, falling back safely on invalid data."""
+    value = catalog.get_setting(MUSIC_FADE_DROP_DB_KEY, DEFAULT_MUSIC_FADE_DROP_DB)
+    return value if type(value) is int and 1 <= value <= 30 else DEFAULT_MUSIC_FADE_DROP_DB
+
+
 if TYPE_CHECKING:
     from autodj.config import AutoDJConfig
     from autodj.model import MuqWrapper
@@ -548,6 +558,14 @@ class LibraryManager:
 
     def set_dj_analysis_enabled(self, enabled: bool) -> None:
         self.catalog.set_setting("dj_analysis", enabled)
+
+    def music_fade_drop_db(self) -> int:
+        return music_fade_drop_db(self.catalog)
+
+    def set_music_fade_drop_db(self, drop_db: int) -> None:
+        if type(drop_db) is not int or not 1 <= drop_db <= 30:
+            raise ValueError("music fade drop must be an integer from 1 to 30 dB")
+        self.catalog.set_setting(MUSIC_FADE_DROP_DB_KEY, drop_db)
 
     def advanced_max_minutes(self) -> int:
         """Longest song the advanced analysis takes, in minutes; ``0`` takes every length."""
@@ -1158,7 +1176,12 @@ class LibraryManager:
                 # long track's decode keeps only its start and end.
                 dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
                 audio = load_for_analysis(path) if dj else None
-                fresh, points = analyze_basic(path, kind=kind, audio=audio)
+                if kind == "music":
+                    fresh, points = analyze_basic(
+                        path, kind=kind, audio=audio, music_fade_drop_db=self.music_fade_drop_db()
+                    )
+                else:
+                    fresh, points = analyze_basic(path, kind=kind, audio=audio)
                 fresh = self._basic_entry(fresh, old, path)
                 suggestions = self._legacy_point_suggestions(path)
                 for name, value in suggestions.items():
@@ -1387,6 +1410,10 @@ class LibraryManager:
         if self.analysis_queue.worker_active():
             with self._lock:
                 self._yielded_to_worker = True
+            return False
+        from autodj.model_identity import model_analysis_available
+
+        if not model_analysis_available():
             return False
         with self._lock:
             if self._yielded_to_worker:

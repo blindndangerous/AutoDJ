@@ -191,11 +191,16 @@ Manual and gap rows remain obligations, separate from ADR acceptance.
 | `ADR-0014-05` | Station changes discard delayed UI replies and remove private audio access from the previous context. | automated | `tests/jsmodules/programme-review.test.js::clears audio and drops delayed replies when station context changes` |
 | `ADR-0014-06` | Operator access applies to all review routes and derived reviews stay outside station backups. | automated | `tests/integration/test_review_api.py::test_review_access_needs_paired_browser_and_origin`; `tests/integration/test_review_api.py::test_machine_credentials_cannot_generate_or_download_reviews`; `tests/unit/test_review_backup.py::test_backup_keeps_saved_shows_but_excludes_derived_reviews` |
 | `ADR-0014-07` | Independent Windows/Chrome/NVDA operation and audible joins are demonstrated on the candidate. | manual | Follow the programme review rehearsal in accessibility-testing.md; record commit, versions, devices, steps, speech/focus observations and listening findings. Pending; missing evidence blocks feature closure. |
-| `ADR-0014-08` | Freed buffers release scratch capacity without GC deadlock; a synthetic 60-minute song programme fits the default budget. | automated | `tests/unit/test_review_render.py::test_sixty_minute_programme_renders_with_default_scratch_budget`; `tests/unit/test_review_workspace.py::test_mapping_finalizer_can_release_budget_during_locked_gc` |
+| `ADR-0014-08` | Freed buffers release scratch capacity without GC deadlock; a synthetic 60-minute song programme fits the default budget. | automated | `tests/unit/test_review_render.py::test_programme_renders_with_reusable_scratch_budget`; `tests/unit/test_review_workspace.py::test_mapping_finalizer_can_release_budget_during_locked_gc` |
 | `ADR-0014-09` | Unrelated entry analysis and first-play cache fills preserve saved and running reviews; selected entry metadata, cues and cached gains actually used remain relevant. | automated | `tests/unit/test_review_source.py::test_unrelated_analysis_during_render_keeps_saved_review_fresh`; `tests/unit/test_review_source.py::test_selected_track_analysis_marks_saved_review_stale`; `tests/unit/test_review_source.py::test_loudness_cache_write_during_render_keeps_saved_review_fresh`; `tests/unit/test_review_source.py::test_only_loudness_used_by_selected_audio_invalidates_review` |
 | `ADR-0014-10` | Shows and queues above the 60-minute source limit fail before decode, including requests for short retained ranges. | automated | `tests/unit/test_review_source.py::test_long_programme_is_rejected_before_decode_even_with_a_short_range` |
 
 ## Verification and remaining evidence
+
+The scratch-reuse render check includes a short programme under a 48 MiB budget
+and the full 60-minute programme under the default 2 GiB budget. Each case skips
+when that budget plus the 64 MiB free-space reserve is unavailable. Passing the
+small case does not establish full-duration capacity.
 
 - [ ] Run mapped behavioral tests separately from architecture-document validation.
 - [ ] Exercise all input/review scopes, threshold edges, actual decoded MP3/WAV,

@@ -20,6 +20,7 @@ from autodj.rotation_sim import (
     SimulationRequest,
     counted,
     number_words,
+    report_sections,
     report_text,
     simulate,
 )
@@ -212,6 +213,269 @@ def test_plays_per_song_category_and_artist_add_up(tmp_path: Path) -> None:
     # Six Power songs share a third of the picks: each plays far more than any Gold song.
     assert rows["Power"]["min"] > rows["Gold"]["max"]
     assert report["artists"]["library"] == 246
+    sections = {section["title"]: section["lines"] for section in report_sections(report)}
+    for key, title in (("songs", "Top 20 songs"), ("artists", "Top 20 artists")):
+        ranked = report[key]["most_played"]
+        assert len(ranked) == 20
+        counts = [row["plays"] for row in ranked]
+        assert counts == sorted(counts, reverse=True)
+        assert all(count > 0 for count in counts)
+        assert len(sections[title]) == 20
+
+
+def test_short_run_top_twenty_lists_only_played_songs_and_artists(tmp_path: Path) -> None:
+    music = _songs(0, 2)
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[{"name": "Main", "steps": [category_step("all")]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=2, start=NOON, seed=5))
+
+    assert 0 < len(report["songs"]["most_played"]) <= report["songs"]["played"]
+    assert 0 < len(report["artists"]["most_played"]) <= report["artists"]["played"]
+    assert all(row["plays"] > 0 for row in report["songs"]["most_played"])
+    assert all(row["plays"] > 0 for row in report["artists"]["most_played"])
+
+
+def test_clock_step_rows_group_identical_category_steps_and_summarize_positions(
+    tmp_path: Path,
+) -> None:
+    music = _songs(0, 8)
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[
+            {
+                "name": "Main",
+                "steps": [category_step("all"), category_step("all")],
+            }
+        ],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=8, start=NOON, seed=5))
+    rows = [row for row in report["clock_steps"] if row["clockwheel"] == "Main"]
+    summary = report["clockwheel_summary"][0]
+
+    assert len(rows) == 1
+    assert rows[0]["numbers"] == [1, 2]
+    assert rows[0]["songs"] == 8
+    assert rows[0]["plays"] == report["picks"] == 8
+    assert (rows[0]["min"], rows[0]["max"], rows[0]["average"]) == (1, 1, 1.0)
+    assert rows[0]["never_played"] == 0
+    assert rows[0]["match_basis"] == "static configured matches"
+    assert summary["clockwheel"] == "Main"
+    assert summary["steps"] == [
+        {"number": 1, "selections": 4},
+        {"number": 2, "selections": 4},
+    ]
+    text = report_text(report)
+    assert "Main: music step selections." in text
+    assert "Step 1: four music selections." in text
+    assert "Main, steps 1 and 2 (category All songs)." in text
+    assert "Clockwheel summary" in text
+    assert "Clockwheel steps" in text
+
+
+def test_clock_step_grouping_keeps_different_selection_rules_separate(tmp_path: Path) -> None:
+    music = _songs(0, 6)
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[
+            {
+                "name": "Main",
+                "steps": [category_step("all"), category_step("all", enforce_rules=False)],
+            }
+        ],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=4, start=NOON, seed=5))
+
+    assert [row["numbers"] for row in report["clock_steps"]] == [[1], [2]]
+    assert all(row["plays"] > 0 for row in report["clock_steps"])
+
+
+def test_no_clockwheel_use_omits_the_clock_section(tmp_path: Path) -> None:
+    report = simulate(
+        _rotation(tmp_path, playback={"pick_mode": "random"}),
+        SimulationRequest(picks=3, start=NOON, seed=5),
+    )
+
+    assert report["clockwheel_summary"] == []
+    assert report["clock_steps"] == []
+    assert not {
+        "Clockwheel summary",
+        "Clockwheel steps",
+    } & {section["title"] for section in report_sections(report)}
+
+
+def test_non_clock_handoffs_do_not_reuse_the_seed_step(tmp_path: Path) -> None:
+    music = _songs(0, 8)
+    source = make_station(
+        tmp_path,
+        music,
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[{"name": "Main", "steps": [category_step("all")]}],
+        active_clock="Main",
+        playback={"pick_mode": "clock", "transition_mode": "full_intro_outro"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=8, start=NOON, seed=5))
+
+    # This existing handoff path uses similarity after the clock-selected seed.
+    # Those songs must not inherit the seed's clock step attribution.
+    assert report["picks"] == 8
+    assert report["clock_steps"][0]["plays"] == 1
+
+
+def test_unused_clock_step_reports_zero_plays_and_all_songs_never_played(
+    tmp_path: Path,
+) -> None:
+    first, later = _songs(0, 3), _songs(10, 2)
+    source = make_station(
+        tmp_path,
+        [*first, *later],
+        categories=[
+            {"id": "first", "name": "First", "members": first},
+            {"id": "later", "name": "Later", "members": later},
+        ],
+        clockwheels=[
+            {
+                "name": "Main",
+                "steps": [category_step("first"), category_step("later")],
+            }
+        ],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=1, start=NOON, seed=5))
+    later_step = next(row for row in report["clock_steps"] if row["numbers"] == [2])
+
+    assert later_step["songs"] == 2
+    assert later_step["plays"] == 0
+    assert later_step["min"] == later_step["max"] == 0
+    assert later_step["average"] == 0.0
+    assert later_step["never_played"] == 2
+    assert len(later_step["never_played_sample"]) == 2
+    assert report["clockwheel_summary"][0]["steps"][1] == {"number": 2, "selections": 0}
+
+
+def test_clock_step_candidate_pools_cover_conditions_folder_and_track(tmp_path: Path) -> None:
+    main = _songs(0, 4)
+    other = _songs(10, 2, folder="elsewhere")
+    target = main[0]
+    source = make_station(
+        tmp_path,
+        [*main, *other],
+        clockwheels=[
+            {
+                "name": "Pools",
+                "steps": [
+                    {
+                        "type": "music",
+                        "conditions": [{"field": "genre", "operator": "is", "value": "Pop"}],
+                    },
+                    {"type": "music", "source": "music", "folder": "main", "recursive": False},
+                    {
+                        "type": "track",
+                        "source": "music",
+                        "path": target.path.removeprefix("/music/"),
+                    },
+                ],
+            }
+        ],
+        active_clock="Pools",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=9, start=NOON, seed=3))
+    rows = {row["numbers"][0]: row for row in report["clock_steps"]}
+
+    assert rows[1]["songs"] == 6
+    assert rows[2]["songs"] == 4
+    assert rows[3]["songs"] == 1
+
+
+def test_clock_step_stats_omit_liners_and_mark_settings_and_ads_not_applicable(
+    tmp_path: Path,
+) -> None:
+    music = _songs(0, 4)
+    source = make_station(
+        tmp_path,
+        music,
+        liners=[liner(0)],
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[
+            {
+                "name": "Mixed",
+                "steps": [
+                    liner_step(),
+                    {"type": "settings", "preset": "wakeup"},
+                    {"type": "ad_break"},
+                    category_step("all"),
+                ],
+            }
+        ],
+        active_clock="Mixed",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=3, start=NOON, seed=1))
+    rows = {row["kind"]: row for row in report["clock_steps"]}
+    sections = {section["title"]: section["lines"] for section in report_sections(report)}
+
+    assert set(rows) == {"settings", "ad_break", "category"}
+    assert rows["settings"]["songs"] is None and rows["settings"]["plays"] is None
+    assert rows["ad_break"]["songs"] is None and rows["ad_break"]["plays"] is None
+    assert all(step["kind"] != "liner" for step in report["clock_steps"])
+    assert all(step["number"] != 1 for step in report["clockwheel_summary"][0]["steps"])
+    assert all(
+        "liner" not in line.get("text", "").lower()
+        for title in ("Clockwheel summary", "Clockwheel steps")
+        for line in sections[title]
+    )
+
+
+@pytest.mark.parametrize("require_following", [False, True])
+def test_clock_step_attribution_includes_a_liner_seed_and_its_following_song(
+    tmp_path: Path,
+    require_following: bool,
+) -> None:
+    music = _songs(0, 6)
+    source = make_station(
+        tmp_path,
+        music,
+        liners=[liner(0), liner(1)],
+        categories=[{"id": "all", "name": "All songs", "members": music}],
+        clockwheels=[
+            {
+                "name": "Main",
+                "steps": [
+                    {**liner_step(), "require_following": require_following},
+                    category_step("all"),
+                ],
+            }
+        ],
+        active_clock="Main",
+        playback={"pick_mode": "clock"},
+    )
+
+    report = simulate(source, SimulationRequest(picks=6, start=NOON, seed=4))
+    song_step = next(row for row in report["clock_steps"] if row["numbers"] == [2])
+
+    assert song_step["plays"] == report["picks"] == 6
 
 
 def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
@@ -228,6 +492,10 @@ def test_long_repeat_rules_starve_a_small_category(tmp_path: Path) -> None:
     # The clock moved on to Current and Gold instead, so no rule had to be relaxed.
     assert power["plays"] == 6
     assert report["relaxed"] == {}
+    step = next(
+        row for row in report["clock_steps"] if row["clockwheel"] == "Main" and 2 in row["numbers"]
+    )
+    assert step["skipped"] == power["skipped"]
     text = report_text(report)
     assert "category Power: all matching entries blocked by rules:" in text
 
@@ -475,6 +743,12 @@ def test_a_date_ranged_schedule_switches_clockwheels_only_in_its_range(tmp_path:
     assert 0.12 < share < 0.22
     assert report["song_picking"]["final_clockwheel"] == "Morning"
     assert "Back to mornings, song picking: clockwheel Morning." in report_text(report)
+    step_rows = {(row["clockwheel"], row["numbers"][0]): row for row in report["clock_steps"]}
+    assert step_rows[("Morning", 1)]["plays"] > 0
+    assert step_rows[("Evening", 1)]["plays"] > 0
+    assert (
+        step_rows[("Morning", 1)]["plays"] + step_rows[("Evening", 1)]["plays"] == report["picks"]
+    )
 
 
 def test_a_profile_switch_is_named_as_not_simulated(tmp_path: Path) -> None:
@@ -645,7 +919,16 @@ def test_the_text_report_is_headings_and_short_lines(tmp_path: Path) -> None:
     text = report_text(report)
     lines = text.splitlines()
     assert lines[0] == "Rotation test for station default"
-    for heading in ("Summary", "Songs", "Artists", "Categories", "Rules relaxed", "Dead air"):
+    for heading in (
+        "Summary",
+        "Songs",
+        "Top 20 songs",
+        "Artists",
+        "Top 20 artists",
+        "Categories",
+        "Rules relaxed",
+        "Dead air",
+    ):
         index = lines.index(heading)
         assert lines[index - 1] == ""
     assert "|" not in text

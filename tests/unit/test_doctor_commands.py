@@ -28,6 +28,29 @@ def config_for(tmp_path: Path):
     return cfg
 
 
+@pytest.mark.parametrize("installed", [False, True])
+def test_ffmpeg_recovery_uses_shared_installer_and_rechecks(tmp_path, installed):
+    initial = report_for("install-ffmpeg")
+    healthy = DoctorReport(())
+    with (
+        patch("autodj.host_tools.ensure_ffmpeg", return_value=installed) as install,
+        patch("autodj.doctor.run_doctor", return_value=healthy) as recheck,
+    ):
+        final, failed = run_recovery_commands(config_for(tmp_path), initial, auto_fix=False)
+    install.assert_called_once_with(auto_install=False)
+    assert recheck.call_count == int(installed)
+    assert final is (healthy if installed else initial)
+    assert not failed
+
+
+def test_failed_ffmpeg_recovery_is_reported(tmp_path):
+    with patch("autodj.host_tools.ensure_ffmpeg", side_effect=RuntimeError("install failed")):
+        _, failed = run_recovery_commands(
+            config_for(tmp_path), report_for("install-ffmpeg"), auto_fix=True
+        )
+    assert failed
+
+
 def test_rebuild_supersedes_index_and_rechecks_before_analyse(tmp_path: Path) -> None:
     cfg = config_for(tmp_path)
     initial = report_for("index", "rebuild-index", "analyse")
@@ -142,12 +165,16 @@ def test_unresolved_successful_action_runs_only_once(tmp_path: Path) -> None:
 def test_readonly_modes_never_run_recovery(tmp_path: Path, flags) -> None:
     with (
         patch("autodj.cli._load_cfg_or_exit", return_value=config_for(tmp_path)),
-        patch("autodj.doctor.run_doctor", return_value=report_for("rebuild-index")),
+        patch(
+            "autodj.doctor.run_doctor", return_value=report_for("rebuild-index", "install-ffmpeg")
+        ),
+        patch("autodj.host_tools.ensure_ffmpeg") as install,
         patch("autodj.doctor_commands.subprocess.run") as run,
     ):
         result = CliRunner().invoke(cli, ["doctor", *flags])
     assert result.exit_code == 1
     run.assert_not_called()
+    install.assert_not_called()
 
 
 def test_interactive_doctor_offers_index_rebuild(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from autodj.config import ServerConfig, WebhookConfig
-from autodj.server import create_app
+from tests._server import create_app
 
 from ._helpers import _make_entry
 

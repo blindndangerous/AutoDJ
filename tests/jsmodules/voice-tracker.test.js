@@ -1,7 +1,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { installIndexMarkup } from "./helpers.js";
+import { installIndexMarkup, memoryStorage } from "./helpers.js";
 
 const api = vi.hoisted(() => ({ requestJson: vi.fn() }));
 vi.mock("../../src/autodj/static/modules/api-client.js", async (importOriginal) => ({
@@ -18,6 +18,7 @@ import {
   installVoiceTracker,
   microphoneProblem,
   recordingToWav,
+  speechLength,
 } from "../../src/autodj/static/modules/voice-tracker.js";
 
 const { Blob, EventTarget, MutationObserver } = globalThis;
@@ -52,19 +53,48 @@ function fakeServer() {
     accepting: true,
     reason: null,
     slot: slot(),
-    limits: { max_bytes: 40 * 1024 * 1024, max_seconds: 300, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
+    limits: { max_bytes: 64 * 1024 * 1024, max_seconds: 600, sample_rate: 44100, dj_placement: "auto", min_intro_s: 2, max_per_slot: 2 },
     tracks: [],
     calls: [],
     refuse: null,
+    slowPost: false,
+    rejectPost: null,
   };
   api.requestJson.mockReset().mockImplementation(async (url, options = {}) => {
     const method = options.method || "GET";
-    server.calls.push({ method, url, body: options.body });
-    if (url === "/api/voice-tracks" && method === "GET") {
+    server.calls.push({ method, url, body: options.body, signal: options.signal });
+    if (url.startsWith("/api/voice-tracks") && method === "GET") {
       const { calls: _calls, refuse: _refuse, ...view } = server;
-      return JSON.parse(JSON.stringify(view));
+      const response = JSON.parse(JSON.stringify(view));
+      response.tracks = response.tracks.map((track) => ({
+        ...track, cancellable: track.cancellable ?? track.state === "queued",
+      }));
+      const query = Object.fromEntries((url.split("?")[1] || "").split("&")
+        .filter(Boolean).map((part) => part.split("=").map(decodeURIComponent)));
+      if (query.speech_s && response.slot) {
+        const speech = Number(query.speech_s);
+        const tail = Number(query.tail_s);
+        response.slot.voice_forecast = {
+          recording_start_s: 1,
+          music_entry_s: 2,
+          chain_speech_s: (response.slot.planned_liner_speech_s || 0)
+            + (response.slot.queued_chain_speech_s || 0) + speech,
+          chain_clip_s: (response.slot.planned_liner_clip_s || 0)
+            + (response.slot.queued_chain_clip_s || 0) + speech + tail,
+          speech_without_music_s: speech,
+        };
+      }
+      return response;
     }
     if (url === "/api/voice-tracks" && method === "POST") {
+      if (server.slowPost) {
+        return new Promise((_resolve, reject) => {
+          server.rejectPost = reject;
+          options.signal?.addEventListener("abort", () => reject(
+            Object.assign(new Error("Aborted"), { name: "AbortError" }),
+          ), { once: true });
+        });
+      }
       if (server.refuse) {
         const refusal = server.refuse;
         server.refuse = null;
@@ -82,7 +112,7 @@ function fakeServer() {
     const match = url.match(/^\/api\/voice-tracks\/([0-9a-f]+)$/);
     if (match && method === "DELETE") {
       server.tracks = server.tracks.map((track) => (track.break_id === match[1]
-        ? { ...track, state: "dropped", reason: "cancelled in the voice tracker" } : track));
+        ? { ...track, state: "dropped", cancellable: false, reason: "cancelled in the voice tracker" } : track));
       return server.tracks.find((track) => track.break_id === match[1]);
     }
     throw new Error(`unexpected ${method} ${url}`);
@@ -114,20 +144,36 @@ class FakeRecorder extends EventTarget {
 }
 
 function microphone() {
-  const track = { stop: vi.fn() };
-  const stream = { getTracks: () => [track] };
-  return { track, stream, getUserMedia: vi.fn(async () => stream) };
+  const tracks = [];
+  const streams = [];
+  const makeStream = () => {
+    const track = { stop: vi.fn(), getSettings: () => ({ deviceId: "mic-1" }) };
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+    tracks.push(track);
+    streams.push(stream);
+    return stream;
+  };
+  const stream = makeStream();
+  const devices = [];
+  return {
+    track: tracks[0], tracks, stream, streams, devices,
+    getUserMedia: vi.fn(async () => streams.shift() || makeStream()),
+    enumerateDevices: vi.fn(async () => devices),
+    addEventListener: vi.fn(),
+  };
 }
 
 function tracker(over = {}) {
   installIndex();
+  const { beforeInstall, ...options } = over;
+  beforeInstall?.();
   const server = fakeServer();
   const mic = microphone();
+  const storage = memoryStorage();
   const time = { now: 0 };
   let tick = () => {};
-  const toWav = vi.fn(async () => new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+  const toWav = over.toWav || vi.fn(async () => new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
   const controls = installVoiceTracker(undefined, {
-    media: () => ({ getUserMedia: mic.getUserMedia }),
     Recorder: () => FakeRecorder,
     toWav,
     now: () => time.now,
@@ -135,7 +181,9 @@ function tracker(over = {}) {
     interval: (fn) => { tick = fn; },
     objectUrl: () => "blob:take",
     revokeUrl: vi.fn(),
-    ...over,
+    storage,
+    ...options,
+    media: options.media ? () => options.media(mic) : () => mic,
   });
   const advance = async (seconds) => {
     for (let i = 0; i < seconds; i += 1) {
@@ -144,7 +192,12 @@ function tracker(over = {}) {
     }
     await flush();
   };
-  return { controls, server, mic, time, advance, toWav };
+  const tickNow = async (seconds) => {
+    time.now = seconds * 1000;
+    tick();
+    await flush();
+  };
+  return { controls, server, mic, time, advance, tickNow, toWav, storage };
 }
 
 async function flush() {
@@ -217,8 +270,10 @@ describe("voice tracker helpers", () => {
     expect(pause).toHaveBeenCalledTimes(2);
     expect(wav.size).toBe(44 + frames * 2);
     const view = new DataView(await wav.arrayBuffer());
+    expect(view.getUint32(4, true)).toBe(wav.size - 8);
+    expect(view.getUint32(40, true)).toBe(wav.size - 44);
     expect(view.getInt16(44 + (frames - 1) * 2, true)).toBe(16383);
-    expect(BROWSER_MAX_SECONDS).toBe(180);
+    expect(BROWSER_MAX_SECONDS).toBe(600);
   });
 
   it("says why the microphone did not start in plain words", () => {
@@ -243,7 +298,8 @@ describe("voice tracker", () => {
     expect(byId("vt-upcoming").textContent).toBe("Artist, Fourth Song");
     expect(byId("vt-intro").textContent).toBe("8 seconds");
     expect(byId("vt-closes").textContent).toBe("2:05");
-    expect(byId("vt-placement-desc").textContent).toBe("Here, a talk-up: the next song's intro is 8 seconds.");
+    expect(byId("vt-fit").hidden).toBe(true);
+    expect(byId("vt-timer").textContent).toBe("10:00 max");
     await advance(3);
     expect(byId("vt-closes").textContent).toBe("2:02");
     expect(byId("vt-airs").textContent).toBe("5:27");
@@ -251,18 +307,181 @@ describe("voice tracker", () => {
     expect(byId("vt-none").hidden).toBe(false);
   });
 
+  it("shows an ordered editable plan and submits its revision and choices", async () => {
+    const { controls, server } = tracker();
+    server.slot = slot(undefined, {
+      transition_revision: "c".repeat(64),
+      transition_items: [
+        { id: "queued-id", label: "Station ID", kind: "liner", source: "queued", committed: true, editable: true, default_action: "after" },
+        { id: "auto-id", label: "Auto liner", kind: "liner", source: "automatic", committed: false, editable: true, default_action: "after" },
+        { id: "break:news", label: "News break", kind: "booked_break", source: "announcer", committed: true, editable: false, default_action: "" },
+      ],
+      transition_order: ["auto-id", "break:news", "queued-id"],
+      transition_summary: ["Auto liner", "News break", "Station ID"],
+    });
+    await controls.refresh();
+    const controlsList = byId("vt-transition-items").querySelectorAll("select");
+    expect(byId("vt-transition").hidden).toBe(false);
+    expect([...controlsList].filter((control) => !control.hidden)
+      .map((control) => document.querySelector(`label[for="${control.id}"]`).textContent)).toEqual([
+      "Position for Auto liner:", "Position for Station ID:",
+    ]);
+    expect([...controlsList].filter((control) => !control.hidden).map((control) => control.value))
+      .toEqual(["after", "after"]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["Auto liner (predicted)", "News break (committed)", "Station ID (committed)"]);
+    controlsList[0].focus();
+    controlsList[0].value = "replace";
+    controlsList[0].dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.activeElement).toBe(controlsList[0]);
+    expect([...byId("vt-transition-items").children].map((row) => row.querySelector("span").textContent))
+      .toEqual(["News break (committed)", "Station ID (committed)", "Auto liner (skipped in this transition)"]);
+    const autoSelect = [...byId("vt-transition-items").children]
+      .find((row) => row.dataset.transitionId === "auto-id").querySelector("select");
+    autoSelect.value = "after";
+    autoSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byId("vt-transition-summary").textContent).toContain("Your new voice track");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-book");
+    const post = server.calls.find((call) => call.method === "POST");
+    expect(post.body.get("transition_revision")).toBe("c".repeat(64));
+    expect(JSON.parse(post.body.get("transition_choices"))).toEqual([
+      { id: "queued-id", action: "after" }, { id: "auto-id", action: "after" },
+    ]);
+  });
+
   it("says why no song change is open", async () => {
     const { controls, server } = tracker();
     server.slot = null;
     server.accepting = false;
-    server.reason = "Breaks are off for this station: turn them on in Settings, Breaks";
+    server.reason = "Voice tracks need server playback (server audio or stream) with saved-point playback";
     await controls.refresh();
     expect(byId("vt-slot").hidden).toBe(true);
     expect(byId("vt-unavailable").textContent).toBe(
-      "No song change can take a voice track now. Breaks are off for this station: turn them on in Settings, Breaks.");
+      "No song change can take a voice track now. Voice tracks need server playback (server audio or stream) with saved-point playback.");
     await press("vt-record");
     expect(byId("vt-error").hidden).toBe(false);
     expect(byId("vt-record").getAttribute("aria-describedby").split(" ")).toContain("vt-error");
+  });
+
+  it("keeps a pending cue estimate distinct from a zero-speech cue", async () => {
+    const pending = tracker();
+    await pending.controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    await flush();
+    expect(byId("vt-fit").textContent).toContain("speech estimate pending");
+
+    document.body.replaceChildren();
+    const prepared = tracker({
+      toWav: async (_blob, _rate, _context, _pause, onDecoded) => {
+        onDecoded({ speech: 0, clip: 0, tail: 0 });
+        return new Blob([new Uint8Array(44)], { type: "audio/wav" });
+      },
+    });
+    prepared.server.slot = {
+      ...slot(), queued_chain_speech_s: 4, queued_chain_clip_s: 4.4,
+      planned_liner_speech_s: 1, planned_liner_clip_s: 1.4,
+    };
+    await prepared.controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    await flush();
+    expect(byId("vt-fit").textContent).toContain("Detected speech: 0 seconds");
+    // The forecast API requires at least 0.5 s of speech. A decoded silence
+    // is known to be zero; it must stay distinct from a pending estimate.
+    expect(byId("vt-fit").textContent).toContain("The playout timing estimate is pending.");
+    expect(prepared.server.calls.filter((call) => call.method === "GET").at(-1).url)
+      .toBe("/api/voice-tracks");
+  });
+
+  it("includes current native transition choices in the cue forecast and refreshes on change", async () => {
+    let select;
+    const prepared = tracker({
+      beforeInstall: () => {
+        const list = byId("vt-transition-items") || document.createElement("ul");
+        list.id = "vt-transition-items";
+        const row = document.createElement("li");
+        row.dataset.transitionId = "liner-1";
+        select = document.createElement("select");
+        select.innerHTML = '<option value="before">Before</option><option value="after">After</option>';
+        select.value = "after";
+        row.append(document.createElement("span"), document.createElement("label"), select);
+        list.append(row);
+        if (!list.isConnected) byId("voice-tracker").append(list);
+      },
+      toWav: async (_blob, _rate, _context, _pause, onDecoded) => {
+        onDecoded({ speech: 1, clip: 1.4, tail: 0.4 });
+        return new Blob([new Uint8Array(44)], { type: "audio/wav" });
+      },
+    });
+    prepared.server.slot = {
+      ...slot(), transition_revision: "revision-1",
+      transition_items: [{
+        id: "liner-1", editable: true, current_action: "after", default_action: "after",
+      }],
+    };
+
+    await prepared.controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    await flush();
+    select = byId("vt-transition-items").querySelector("select");
+    const forecastRequest = () => prepared.server.calls.filter((call) => call.method === "GET").at(-1).url;
+    expect(forecastRequest()).toContain("transition_revision=revision-1");
+    expect(decodeURIComponent(forecastRequest())).toContain(
+      'transition_choices=[{"id":"liner-1","action":"after"}]',
+    );
+
+    select.value = "before";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(decodeURIComponent(forecastRequest())).toContain(
+      'transition_choices=[{"id":"liner-1","action":"before"}]',
+    );
+
+    const originalRequest = api.requestJson.getMockImplementation();
+    let refuseChoice = true;
+    api.requestJson.mockImplementation(async (url, options = {}) => {
+      if (refuseChoice && url.includes("transition_choices=")) {
+        refuseChoice = false;
+        prepared.server.calls.push({ method: options.method || "GET", url, body: options.body });
+        throw Object.assign(new Error("The planned transition changed"), { status: 409 });
+      }
+      return originalRequest(url, options);
+    });
+    select.value = "after";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(prepared.server.calls.filter((call) => call.method === "GET").at(-1).url)
+      .toBe("/api/voice-tracks");
+    expect(byId("vt-fit").textContent).toContain("The playout timing estimate is pending.");
+  });
+
+  it("forecasts the cue tail after all queued clips", async () => {
+    const prepared = tracker({
+      toWav: async (_blob, _rate, _context, _pause, onDecoded) => {
+        onDecoded({ speech: 1, clip: 1.4, tail: 0.4 });
+        return new Blob([new Uint8Array(44)], { type: "audio/wav" });
+      },
+    });
+    prepared.server.slot = {
+      ...slot(), queued_chain_speech_s: 4, queued_chain_clip_s: 4.4,
+      planned_liner_speech_s: 1, planned_liner_clip_s: 1.4,
+    };
+    await prepared.controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    await flush();
+    expect(byId("vt-fit").textContent).toContain("plus 0.4 seconds tail");
+    expect(byId("vt-fit").textContent).toContain("Full chain speech: 6 seconds");
+    expect(prepared.server.calls.some((call) => call.method === "GET"
+      && call.url.includes("speech_s=1") && call.url.includes("tail_s=0.4"))).toBe(true);
+    byId("vt-placement").value = "standalone";
+    byId("vt-placement").dispatchEvent(new Event("change"));
+    await flush();
+    expect(prepared.server.calls.at(-1).url).toContain("placement=standalone");
   });
 
   it("asks for the microphone only on Record, keeps focus, and lets it go when stopped", async () => {
@@ -278,7 +497,7 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("Recording. Press Record or Alt+R to stop."));
     expect(byId("vt-status").getAttribute("aria-live")).toBe("polite");
     await advance(2);
-    expect(byId("vt-timer").textContent).toBe("Recording 0:02 of 3:00.");
+    expect(byId("vt-timer").textContent).toBe("Recording 0:02 of 10:00.");
     expect(byId("vt-timer").closest("[aria-live]")).toBeNull();
     record.click();
     await flush();
@@ -288,6 +507,169 @@ describe("voice tracker", () => {
     expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
     expect(byId("vt-timer").textContent).toBe("Recorded 0:02, not booked yet.");
     await vi.waitFor(() => expect(status()).toMatch(/^Recording stopped at 0:02\. Listen back/));
+  });
+
+  it("remembers an exact microphone across recordings and clears it for System default", async () => {
+    const { controls, mic, storage } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" },
+      { kind: "audioinput", deviceId: "mic-2", label: "USB mic" });
+    await controls.refresh();
+    const select = byId("vt-microphone");
+    select.value = "mic-1";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.get("autodj.voiceMicrophoneId")).toBe("mic-1");
+    await press("vt-record");
+    expect(byId("vt-microphone-status").textContent).toBe("Recording from Studio mic.");
+    await press("vt-record");
+    expect(byId("vt-microphone-status").textContent).toBe("Last recording used Studio mic.");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-record");
+    await press("vt-record");
+    expect(mic.getUserMedia.mock.calls).toEqual([
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+      [{ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false, deviceId: { exact: "mic-1" } } }],
+    ]);
+    expect(byId("vt-microphone-status").textContent).toBe("Last recording used Studio mic.");
+    select.value = "mic-2";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.get("autodj.voiceMicrophoneId")).toBe("mic-2");
+    select.value = "";
+    select.dispatchEvent(new Event("change"));
+    expect(storage.data.has("autodj.voiceMicrophoneId")).toBe(false);
+    await press("vt-record");
+    expect(mic.getUserMedia.mock.calls.at(-1)[0].audio.deviceId).toBeUndefined();
+  });
+
+  it("never retries an unavailable selected microphone as System default", async () => {
+    const { controls, mic } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    mic.getUserMedia.mockRejectedValueOnce({ name: "OverconstrainedError" });
+    await press("vt-record");
+    expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(mic.getUserMedia).toHaveBeenCalledWith({ audio: expect.objectContaining({ deviceId: { exact: "mic-1" } }) });
+    expect(byId("vt-microphone-status").textContent).toMatch(/Could not use Studio mic/);
+  });
+
+  it("restores the saved microphone selection after a page reload", async () => {
+    const first = tracker();
+    first.mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await first.controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    first.controls.clear();
+    const reloaded = tracker({ storage: first.storage });
+    reloaded.mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await reloaded.controls.refresh();
+    expect(byId("vt-microphone").value).toBe("mic-1");
+  });
+
+  it("refreshes on device changes and warns when the saved input disappears", async () => {
+    const { controls, mic } = tracker();
+    mic.devices.push({ kind: "audioinput", deviceId: "mic-1", label: "Studio mic" });
+    await controls.refresh();
+    byId("vt-microphone").value = "mic-1";
+    byId("vt-microphone").dispatchEvent(new Event("change"));
+    mic.devices.splice(0);
+    mic.addEventListener.mock.calls.find(([type]) => type === "devicechange")[1]();
+    await flush();
+    expect(byId("vt-microphone-status").textContent).toMatch(/not connected/);
+    expect([...byId("vt-microphone").options].at(-1).textContent).toBe("Studio mic (not connected)");
+  });
+
+  it("monitors privately through the preview audio, blocks recording, and releases on stop or hide", async () => {
+    const { controls, mic } = tracker();
+    const player = byId("vt-microphone-playback");
+    let monitoredStream = null;
+    Object.defineProperty(player, "srcObject", {
+      configurable: true,
+      get: () => monitoredStream,
+      set: (value) => { monitoredStream = value; },
+    });
+    player.play = vi.fn(async () => {});
+    await controls.refresh();
+    const test = await press("vt-microphone-test");
+    expect(player.hasAttribute("data-preview-output")).toBe(true);
+    expect(player.srcObject).toBe(mic.stream);
+    expect(test.getAttribute("aria-pressed")).toBe("true");
+    await press("vt-record");
+    expect(mic.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(byId("vt-error").textContent).toMatch(/Stop the microphone test/);
+    await press("vt-microphone-test");
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    await press("vt-microphone-test");
+    byId("panel-voice").hidden = true;
+    await flush();
+    expect(player.srcObject).toBeNull();
+      expect(mic.tracks[1].stop).toHaveBeenCalledTimes(1);
+    expect(byId("vt-microphone-test").getAttribute("aria-pressed")).toBe("false");
+    byId("panel-voice").hidden = false;
+    await press("vt-microphone-test");
+    controls.clear();
+    expect(player.srcObject).toBeNull();
+    expect(mic.tracks.at(-1).stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops a pending microphone monitor if the tab hides while playback starts", async () => {
+    const { controls, mic } = tracker();
+    const player = byId("vt-microphone-playback");
+    let monitoredStream = null;
+    Object.defineProperty(player, "srcObject", {
+      configurable: true,
+      get: () => monitoredStream,
+      set: (value) => { monitoredStream = value; },
+    });
+    let resolvePlay;
+    player.play = vi.fn(() => new Promise((resolve) => { resolvePlay = resolve; }));
+    await controls.refresh();
+    byId("vt-microphone-test").click();
+    await vi.waitFor(() => expect(player.srcObject).toBe(mic.stream));
+    byId("panel-voice").hidden = true;
+    await flush();
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    resolvePlay();
+    await flush();
+    expect(player.srcObject).toBeNull();
+    expect(mic.track.stop).toHaveBeenCalledTimes(1);
+    expect(byId("vt-microphone-test").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("does not upload a take when its conversion finishes after station clear", async () => {
+    let resolveWav;
+    const { controls, server, toWav } = tracker({
+      toWav: vi.fn(() => new Promise((resolve) => { resolveWav = resolve; })),
+    });
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(toWav).toHaveBeenCalledTimes(1));
+    controls.clear();
+    resolveWav(new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+    await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-playback").getAttribute("src")).toBeNull();
+  });
+
+  it("releases a microphone permission result that arrives after sign-out", async () => {
+    let resolveMic;
+    const { controls, mic } = tracker({
+      media: (device) => ({ ...device, getUserMedia: () => new Promise((resolve) => { resolveMic = resolve; }) }),
+    });
+    await controls.refresh();
+    byId("vt-microphone-playback").play = vi.fn(async () => {});
+    byId("vt-microphone-test").click();
+    controls.clear();
+    resolveMic(mic.stream);
+    await flush();
+    expect(mic.track.stop).toHaveBeenCalled();
+    expect(byId("vt-microphone-playback").srcObject).toBeNull();
   });
 
   it("speaks once a minute and stops itself at the length limit", async () => {
@@ -311,6 +693,19 @@ describe("voice tracker", () => {
     expect(byId("vt-record").getAttribute("aria-pressed")).toBe("false");
   });
 
+  it("stops at the installed ten-minute manual recording limit", async () => {
+    const { controls, server, tickNow } = tracker();
+    await controls.refresh();
+    expect(server.limits.max_seconds).toBe(BROWSER_MAX_SECONDS);
+    await press("vt-record");
+    await tickNow(599);
+    expect(byId("vt-timer").textContent).toBe("Recording 9:59 of 10:00.");
+    await tickNow(600);
+    await vi.waitFor(() => expect(status()).toMatch(/^Stopped at the 10:00 limit\./));
+    expect(byId("vt-record").getAttribute("aria-pressed")).toBe("false");
+    expect(byId("vt-playback").getAttribute("src")).toBe("blob:take");
+  });
+
   it("warns when the song change is about to close during a recording", async () => {
     const { controls, server, advance } = tracker();
     server.slot = slot(undefined, { closes_in_s: 40 });
@@ -330,7 +725,7 @@ describe("voice tracker", () => {
     const record = await press("vt-record");
     expect(byId("vt-error").textContent).toMatch(words);
     expect(byId("vt-error").hidden).toBe(false);
-    expect(record.getAttribute("aria-describedby")).toBe("vt-error vt-record-desc");
+    expect(record.getAttribute("aria-describedby")).toBe("vt-error");
     expect(record.getAttribute("aria-pressed")).toBe("false");
     expect(document.activeElement).toBe(record);
     await vi.waitFor(() => expect(status()).toMatch(words));
@@ -354,15 +749,14 @@ describe("voice tracker", () => {
     await press("vt-record");
     await press("vt-record");
     byId("vt-placement").value = "standalone";
-    byId("vt-allow-outro").checked = true;
     const book = await press("vt-book");
     await vi.waitFor(() => expect(status()).toBe("Booked Third Song into Fourth Song. It airs in about 6:00."));
-    expect(toWav).toHaveBeenCalledWith(expect.any(Blob), 44100);
+    expect(toWav).toHaveBeenCalledWith(expect.any(Blob), 44100, undefined, undefined, expect.any(Function));
     const post = server.calls.find((call) => call.method === "POST");
     expect(post.url).toBe("/api/voice-tracks");
     expect(Object.fromEntries([...post.body.entries()].filter(([key]) => key !== "file"))).toEqual({
       slot_id: "a".repeat(32), ending_id: "song-c", upcoming_id: "song-d",
-      placement: "standalone", allow_outro: "true",
+      placement: "standalone", allow_outro: "false",
     });
     expect(post.body.get("file").name).toBe("voice-track.wav");
     expect(document.activeElement).toBe(book);
@@ -372,6 +766,39 @@ describe("voice tracker", () => {
     expect(rows[0].textContent).toMatch(/^Third Song into Fourth Song: booked, waiting for its song change, airs in about 6:00 Cancel$/);
     expect(rows[0].querySelector("button").getAttribute("aria-label")).toBe("Cancel voice track Third Song into Fourth Song");
     expect(byId("vt-none").hidden).toBe(true);
+  });
+
+  it("aborts a slow upload on station clear without restoring the old take", async () => {
+    const { controls, server } = tracker();
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    server.slowPost = true;
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(server.rejectPost).toBeTypeOf("function"));
+    controls.clear();
+    await flush();
+    expect(server.calls.find((call) => call.method === "POST").signal.aborted).toBe(true);
+    expect(byId("vt-playback").hasAttribute("src")).toBe(false);
+    expect(byId("vt-error").textContent).toBe("");
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("does not start an upload when station clear wins during WAV conversion", async () => {
+    let resolveWav;
+    const { controls, server } = tracker({
+      toWav: vi.fn(() => new Promise((resolve) => { resolveWav = resolve; })),
+    });
+    await controls.refresh();
+    await press("vt-record");
+    await press("vt-record");
+    byId("vt-book").click();
+    await vi.waitFor(() => expect(resolveWav).toBeTypeOf("function"));
+    controls.clear();
+    resolveWav(new Blob([new Uint8Array(1000)], { type: "audio/wav" }));
+    await flush();
+    expect(server.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+    expect(byId("vt-playback").hasAttribute("src")).toBe(false);
   });
 
   it("will not book a take on other songs until it is heard again and Book is pressed again", async () => {
@@ -458,7 +885,7 @@ describe("voice tracker", () => {
     try {
       document.dispatchEvent(new Event("visibilitychange"));
       await flush();
-      expect(mic.track.stop).toHaveBeenCalledTimes(2);
+    expect(mic.tracks[1].stop).toHaveBeenCalledTimes(1);
       await vi.waitFor(() => expect(status()).toMatch(/^The page was hidden, so recording stopped\./));
     } finally {
       delete document.visibilityState;
@@ -494,10 +921,10 @@ describe("voice tracker", () => {
     await vi.waitFor(() => expect(status()).toBe("There is no recording to discard."));
   });
 
-  it("cancels a booked track and moves focus to the list heading when its button goes", async () => {
+  it.each(["queued", "rendered"])("cancels a cancellable %s track and preserves focus", async (state) => {
     const { controls, server } = tracker();
     server.tracks = [{
-      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state: "queued",
+      break_id: "b".repeat(32), label: "Third Song into Fourth Song", state, cancellable: true,
       slot_id: "a".repeat(32), mixed_as: null, reason: null, eta: null,
     }];
     await controls.refresh();
@@ -602,4 +1029,26 @@ describe("voice tracker", () => {
     expect(byId("vt-playback").hasAttribute("src")).toBe(false);
     expect(byId("vt-slot").hidden).toBe(true);
   });
+});
+
+
+it("releases recording tracks when the tracker is removed", async () => {
+  const { controls, mic, advance } = tracker();
+  await controls.refresh();
+  await press("vt-record");
+  byId("voice-tracker").remove();
+  await advance(1);
+  expect(mic.track.stop).toHaveBeenCalled();
+  controls.clear();
+});
+
+it("estimates detected speech including pauses and preserves the early lead", () => {
+  const audio = new Float32Array(500);
+  audio.fill(0.5, 100, 200);
+  audio.fill(0.5, 300, 400);
+  const measured = speechLength([audio], 100);
+  expect(measured.speech).toBeCloseTo(3.05);
+  expect(measured.clip).toBeCloseTo(3.45);
+  expect(measured.tail).toBeCloseTo(0.4);
+  expect(speechLength([new Float32Array(100)], 100)).toEqual({ speech: 0 });
 });

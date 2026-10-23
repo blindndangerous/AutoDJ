@@ -30,7 +30,6 @@ from autodj.playlog import (
     soundexchange_filename,
     soundexchange_report,
     summary,
-    unmatchable_count,
 )
 
 T0 = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
@@ -386,7 +385,6 @@ class TestMissingFields:
         ]
         assert [p.matchable for p in plays] == [False, False, True]
         assert [item[5] for item in missing_fields(plays)] == ["yes", "no", "no"]
-        assert unmatchable_count(plays) == 2
         assert summary(plays).endswith(
             " Warning: 2 songs have neither an ISRC nor both an album and a label,"
             " so SoundExchange may not be able to match them."

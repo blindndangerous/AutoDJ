@@ -1715,7 +1715,7 @@ describe("static accessibility contracts", () => {
       ["pb-crossfade", "number", "pb-crossfade-desc"],
       ["pb-show-lyrics", "checkbox", "pb-show-lyrics-desc"],
       ["theme-system", "radio", "theme-choice-desc"],
-      ["pb-music-speed-slider", "range", "pb-music-speed-desc"],
+      ["pb-music-speed-number", "number", "pb-music-speed-desc"],
       ["categories-not-before", "date", "categories-daypart-help"],
       ["stereo-preset-file", "file", null],
       ["stream-relay-password", "password", "stream-relay-password-help"],
@@ -2774,8 +2774,8 @@ describe("static accessibility contracts", () => {
     const help = document.getElementById("hour-preview-desc");
     expect(span.hasAttribute("aria-describedby")).toBe(false);
     expect(help.hidden).toBe(false);
-    expect(help.textContent).toContain("Fixed items");
-    expect(help.textContent).toContain("predicted items can change");
+    expect(help.textContent).toContain("Estimated start times");
+    expect(help.textContent).toContain("Upcoming audio can change");
     const button = document.getElementById("hour-preview-refresh");
     expect(button.getAttribute("type")).toBe("button");
     expect(button.textContent.trim()).toBe("Refresh preview");
@@ -3157,7 +3157,7 @@ describe("static accessibility contracts", () => {
     // Programme review, the cue point player, Listen on a matched intro and
     // the voice tracker's Listen back are previews; decks and Listen here are not.
     expect([...document.querySelectorAll("audio[data-preview-output]")].map((audio) => audio.id))
-      .toEqual(["review-audio", "points-preview", "intro-playback", "vt-playback", "edition-audio"]);
+      .toEqual(["points-preview", "intro-playback", "vt-microphone-playback", "vt-playback", "edition-audio", "review-audio"]);
     // The module never moves focus, and the note lines up under the select.
     const moduleSource = readFileSync(staticPath("modules", "preview-output.js"), "utf8");
     expect(moduleSource).not.toMatch(/\.focus\(/);
@@ -3214,9 +3214,9 @@ describe("static accessibility contracts", () => {
     }
     // Record is a toggle with a fixed name: the pressed state says recording.
     const record = document.getElementById("vt-record");
-    expect(record.textContent).toBe("Record");
+    expect(record.textContent).toBe("Record (Alt+R)");
     expect(record.getAttribute("aria-pressed")).toBe("false");
-    expect(document.getElementById(record.getAttribute("aria-describedby")).textContent).toMatch(/Alt\+R/);
+    expect(record.hasAttribute("aria-describedby")).toBe(false);
     // One polite region says the recording state; the timer, the time left
     // and the open song change are on the page and never live.
     const live = [...tracker.querySelectorAll("[aria-live], [role='status'], [role='alert'], [role='log']")];
@@ -3232,13 +3232,12 @@ describe("static accessibility contracts", () => {
     expect(error.hidden).toBe(true);
     const placement = document.getElementById("vt-placement");
     expect(document.querySelector('label[for="vt-placement"]').textContent).toBe("Placement");
-    expect(placement.getAttribute("aria-describedby")).toBe("vt-placement-desc");
-    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "talk_up", "standalone"]);
-    const outro = document.getElementById("vt-allow-outro");
-    expect(outro.getAttribute("type")).toBe("checkbox");
-    expect(outro.parentElement.classList.contains("settings-check")).toBe(true);
-    expect(document.querySelector('label[for="vt-allow-outro"]').textContent).toBe("Start over the ending song's outro");
-    expect(outro.getAttribute("aria-describedby")).toBe("vt-allow-outro-desc");
+    expect(placement.hasAttribute("aria-describedby")).toBe(false);
+    expect([...placement.options].map((option) => option.value)).toEqual(["auto", "standalone"]);
+    expect([...placement.options].map((option) => option.textContent)).toEqual([
+      "Fit over outro and intro", "Between songs",
+    ]);
+    expect(document.getElementById("vt-allow-outro")).toBeNull();
     // Listen back is a named toggle; the player itself is never shown.
     const player = document.getElementById("vt-playback");
     expect(player.tagName).toBe("AUDIO");

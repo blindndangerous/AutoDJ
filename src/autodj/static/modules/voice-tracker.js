@@ -28,6 +28,7 @@
 import { requestJson, withDisabled } from "./api-client.js";
 import { fmtTime, nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { defaultStorage, readStorage, removeStorage, writeStorage } from "./safe-storage.js";
 
 const POLL_TICKS = 5;
 const WARN_SECONDS = 30;
@@ -35,9 +36,13 @@ const MAX_LISTED = 50;
 // Room for the form around the file, under the station's upload cap.
 const FORM_BYTES = 4096;
 const WAV_HEADER_BYTES = 44;
+const FOCUS_SETTLE_MS = 150;
+const FOCUS_WAIT_MS = 3000;
 
 export const NO_RECORDER_TEXT = "This browser cannot record audio. Try a current version of Firefox, Chrome, Edge or Safari.";
 export const INSECURE_TEXT = "Recording needs a secure connection: open AutoDJ over HTTPS, or on this computer at localhost.";
+const MICROPHONE_KEY = "autodj.voiceMicrophoneId";
+const MICROPHONE_LABEL_KEY = "autodj.voiceMicrophoneLabel";
 
 // 65.4 seconds is "1:05".
 export function clock(seconds) {
@@ -74,12 +79,8 @@ export function microphoneProblem(error) {
   }
 }
 
-// The longest take the browser records.  Booking decodes the whole take
-// in the page (decodeAudioData has no streaming form), so the length is
-// what bounds the page's memory: three minutes of stereo at 44.1 kHz is
-// about 64 MB decoded, plus 16 MB of WAV.  The station's own limit
-// applies too, when it is shorter.
-export const BROWSER_MAX_SECONDS = 180;
+// Booking decodes the take in the page (decodeAudioData has no streaming form).
+export const BROWSER_MAX_SECONDS = 600;
 // Frames converted between pauses that let the page handle input.
 const WAV_BLOCK_FRAMES = 44100 * 10;
 
@@ -104,13 +105,13 @@ function wavHeader(view, frames, rate) {
 
 // Frames *from* to *to* of *channels*, averaged to one, as 16-bit samples
 // straight into the WAV: no mono copy of the take is made.
-function writeFrames(view, channels, from, to) {
+function writeFrames(view, channels, from, to, offset = WAV_HEADER_BYTES) {
   for (let i = from; i < to; i += 1) {
     let sum = 0;
     for (const channel of channels) sum += channel[i];
     const value = sum / channels.length;
     const sample = Math.max(-1, Math.min(1, Number.isFinite(value) ? value : 0));
-    view.setInt16(WAV_HEADER_BYTES + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+    view.setInt16(offset + (i - from) * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
   }
 }
 
@@ -131,18 +132,50 @@ export function encodeWav(channels, rate) {
 // with a pause between blocks so the page stays responsive.
 export async function recordingToWav(
   blob, rate, Context = globalThis.OfflineAudioContext, pause = () => new Promise((resolve) => setTimeout(resolve, 0)),
+  onDecoded = () => {},
 ) {
   const audio = await new Context(1, 1, rate).decodeAudioData(await blob.arrayBuffer());
   const channels = Array.from({ length: audio.numberOfChannels }, (_, i) => audio.getChannelData(i));
   const frames = audio.length;
-  const buffer = new ArrayBuffer(WAV_HEADER_BYTES + frames * 2);
-  const view = new DataView(buffer);
-  wavHeader(view, frames, audio.sampleRate);
+  onDecoded(speechLength(channels, audio.sampleRate));
+  const parts = [];
+  const header = new ArrayBuffer(WAV_HEADER_BYTES);
+  wavHeader(new DataView(header), frames, audio.sampleRate);
+  parts.push(header);
   for (let from = 0; from < frames; from += WAV_BLOCK_FRAMES) {
-    writeFrames(view, channels, from, Math.min(frames, from + WAV_BLOCK_FRAMES));
+    const to = Math.min(frames, from + WAV_BLOCK_FRAMES);
+    const buffer = new ArrayBuffer((to - from) * 2);
+    const view = new DataView(buffer);
+    writeFrames(view, channels, from, to, 0);
+    parts.push(new Blob([buffer]));
     if (from + WAV_BLOCK_FRAMES < frames) await pause();
   }
-  return new Blob([buffer], { type: "audio/wav" });
+  return new Blob(parts, { type: "audio/wav" });
+}
+
+// Match the server's 20 ms, relative -45 dB speech-edge estimate; pauses stay.
+export function speechLength(channels, rate) {
+  const frame = Math.max(1, Math.round(rate * 0.02));
+  const levels = [];
+  let peak = 0;
+  for (let from = 0; from < (channels[0]?.length || 0); from += frame) {
+    let level = 0;
+    for (const channel of channels) {
+      let sum = 0;
+      for (let i = from; i < Math.min(channel.length, from + frame); i += 1) sum += channel[i] ** 2;
+      level = Math.max(level, Math.sqrt(sum / frame));
+    }
+    levels.push(level);
+    peak = Math.max(peak, level);
+  }
+  if (peak < 1e-4) return { speech: 0 };
+  const threshold = peak * 10 ** (-45 / 20);
+  const first = levels.findIndex((level) => level >= threshold);
+  const last = levels.findLastIndex((level) => level >= threshold);
+  const start = Math.max(0, first * frame / rate - 0.05);
+  const segue = Math.min(channels[0].length, (last + 1) * frame) / rate;
+  const end = Math.min(channels[0].length / rate, segue + 0.4);
+  return { speech: segue - start, clip: end - start, tail: end - segue };
 }
 
 // *text* as a sentence: the server's reasons have no full stop.
@@ -199,6 +232,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   interval = setInterval,
   objectUrl = (blob) => URL.createObjectURL(blob),
   revokeUrl = (url) => URL.revokeObjectURL(url),
+  storage = defaultStorage(),
 } = {}) {
   if (!root) return null;
   const doc = root.ownerDocument;
@@ -209,14 +243,19 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const ending = el("vt-ending");
   const upcoming = el("vt-upcoming");
   const intro = el("vt-intro");
+  const outro = el("vt-outro");
+  const windowText = el("vt-window");
   const closes = el("vt-closes");
   const airs = el("vt-airs");
   const recordButton = el("vt-record");
+  const microphoneSelect = el("vt-microphone");
+  const microphoneRefresh = el("vt-microphone-refresh");
+  const microphoneStatus = el("vt-microphone-status");
+  const testButton = el("vt-microphone-test");
+  const testPlayback = el("vt-microphone-playback");
   const timer = el("vt-timer");
   const playback = el("vt-playback");
   const placement = el("vt-placement");
-  const placementDesc = el("vt-placement-desc");
-  const allowOutro = el("vt-allow-outro");
   const listenButton = el("vt-listen");
   const bookButton = el("vt-book");
   const discardButton = el("vt-discard");
@@ -225,6 +264,9 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   const list = el("vt-list");
   const none = el("vt-none");
   const listHeading = el("vt-booked-heading");
+  const transition = el("vt-transition");
+  const transitionSummary = el("vt-transition-summary");
+  const transitionItems = el("vt-transition-items");
 
   let data = null;
   let fetchedAt = 0;
@@ -233,10 +275,26 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   let take = null;
   let session = null;
   let starting = false;
+  let testing = null;
+  let testStarting = false;
+  let pendingTestStream = null;
+  let testGeneration = 0;
+  let microphoneChoices = [];
+  let microphoneListKnown = false;
+  let microphoneEpoch = 0;
+  let booking = false;
+  let bookingAbort = null;
+  let selectedMicrophone = {
+    id: readStorage(storage, MICROPHONE_KEY) || "",
+    label: readStorage(storage, MICROPHONE_LABEL_KEY) || "",
+  };
+  const stoppedTracks = new WeakSet();
   let generation = 0;
   let linked = null;
   let wasShown = false;
   const rows = new Map();
+  const transitionChoices = new Map();
+  let transitionSlotId = null;
 
   const shown = () => !panel.hidden;
   // The tracker's own region while its tab shows; the page-wide one when
@@ -246,6 +304,21 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     message,
     { force: true, tone, mirror, dwellMs: 5000 },
   );
+
+  function afterFocus() {
+    const view = doc.defaultView;
+    const pause = () => new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS));
+    if (!view || typeof doc.hasFocus !== "function" || doc.hasFocus()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        view.removeEventListener("focus", done);
+        resolve(pause());
+      };
+      const timer = setTimeout(done, FOCUS_WAIT_MS);
+      view.addEventListener("focus", done, { once: true });
+    });
+  }
 
   // ---- Errors: words on the page, linked to the control, said once ----
 
@@ -264,13 +337,111 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     error.hidden = true;
   }
 
-  function fail(control, message) {
+  function microphoneLabel(id, label = "") {
+    if (!id) return "System default";
+    return microphoneChoices.find((item) => item.deviceId === id)?.label
+      || label || "the selected microphone";
+  }
+
+  function renderMicrophones(missing = null) {
+    if (!microphoneSelect) return;
+    const choices = [{ id: "", label: "System default" }, ...microphoneChoices.map((item) => ({
+      id: item.deviceId,
+      label: item.label || `Microphone ${microphoneChoices.indexOf(item) + 1}`,
+    }))];
+    if (selectedMicrophone.id && !choices.some((item) => item.id === selectedMicrophone.id)) {
+      choices.push({
+        id: selectedMicrophone.id,
+        label: `${selectedMicrophone.label || "Saved microphone"}${missing === null ? "" : ` (${missing ? "not connected" : "unavailable"})`}`,
+      });
+    }
+    microphoneSelect.replaceChildren(...choices.map((choice) => {
+      const option = doc.createElement("option");
+      option.value = choice.id;
+      option.textContent = choice.label;
+      return option;
+    }));
+    microphoneSelect.value = selectedMicrophone.id;
+  }
+
+  function microphoneNote(message) {
+    setText(microphoneStatus, message);
+    if (microphoneStatus) microphoneStatus.hidden = !message;
+    if (microphoneSelect) {
+      if (message) microphoneSelect.setAttribute("aria-describedby", "vt-microphone-status");
+      else microphoneSelect.removeAttribute("aria-describedby");
+    }
+  }
+
+  async function refreshMicrophones() {
+    const epoch = ++microphoneEpoch;
+    let devices;
+    try {
+      devices = await media()?.enumerateDevices?.();
+    } catch {
+      devices = null;
+    }
+    if (epoch !== microphoneEpoch) return;
+    if (Array.isArray(devices)) {
+      microphoneChoices = devices.filter((item) => item.kind === "audioinput" && item.deviceId && item.deviceId !== "default");
+      microphoneListKnown ||= devices.some((item) => item.kind === "audioinput" && item.label);
+    }
+    const present = !selectedMicrophone.id || microphoneChoices.some((item) => item.deviceId === selectedMicrophone.id);
+    renderMicrophones(microphoneListKnown ? !present : null);
+    if (selectedMicrophone.id && microphoneListKnown && !present) {
+      microphoneNote("The selected microphone is not connected. Choose another microphone or System default.");
+    } else if (!testing && !session) microphoneNote("");
+    const activeId = testing?.stream?.getAudioTracks?.()[0]?.getSettings?.()?.deviceId;
+    if (testing && activeId && microphoneListKnown && !microphoneChoices.some((item) => item.deviceId === activeId)) {
+      stopMicrophoneTest("The microphone disconnected, so the microphone test stopped. Choose another input.");
+      microphoneNote("The microphone disconnected during the test. Choose another input or System default.");
+    }
+  }
+
+  function saveMicrophone(id) {
+    const device = microphoneChoices.find((item) => item.deviceId === id);
+    selectedMicrophone = { id, label: id ? (device?.label || (selectedMicrophone.id === id ? selectedMicrophone.label : "")) : "" };
+    if (id) writeStorage(storage, MICROPHONE_KEY, id);
+    else removeStorage(storage, MICROPHONE_KEY);
+    if (id && selectedMicrophone.label) writeStorage(storage, MICROPHONE_LABEL_KEY, selectedMicrophone.label);
+    else removeStorage(storage, MICROPHONE_LABEL_KEY);
+    renderMicrophones();
+    microphoneNote("");
+  }
+
+  function requestedMicrophone() {
+    const audio = {
+      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    };
+    if (selectedMicrophone.id) audio.deviceId = { exact: selectedMicrophone.id };
+    return { audio };
+  }
+
+  function microphoneWords(stream, prefix) {
+    const settings = stream?.getAudioTracks?.()[0]?.getSettings?.();
+    const actual = settings?.deviceId;
+    const confirmed = actual && actual !== "default";
+    const label = confirmed && (microphoneChoices.find((item) => item.deviceId === actual)?.label
+      || (actual === selectedMicrophone.id ? selectedMicrophone.label : ""));
+    return confirmed
+      ? label ? `${prefix} ${label}.` : `${prefix} microphone; the browser confirmed its device ID but cannot provide its name.`
+      : prefix === "Recording from"
+        ? "The browser cannot confirm which microphone was used."
+        : `${prefix} The browser cannot confirm which microphone is active.`;
+  }
+
+  function reportMicrophone(stream, prefix) {
+    microphoneNote(microphoneWords(stream, prefix));
+  }
+
+  function fail(control, message, gate = null) {
     clearError();
     error.textContent = message;
     error.hidden = false;
     link(control, true);
     linked = control;
-    say(message, { tone: "error" });
+    if (gate) void Promise.resolve(gate).then(() => say(message, { tone: "error" }));
+    else say(message, { tone: "error" });
   }
 
   // ---- What the server says ----
@@ -298,6 +469,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function renderSlot() {
     const slot = data?.slot;
+    renderTransition(slot);
     if (!slot) {
       slotList.hidden = true;
       unavailable.hidden = false;
@@ -314,6 +486,124 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     renderPlacement();
   }
 
+  function renderTransition(slot) {
+    if (!transition || !transitionItems || !transitionSummary) return;
+    if (transitionSlotId !== slot?.slot_id) {
+      transitionChoices.clear();
+      transitionSlotId = slot?.slot_id || null;
+    }
+    const active = doc.activeElement;
+    const hadFocus = transitionItems.contains(active);
+    const items = slot?.transition_items || [];
+    transition.hidden = !items.length;
+    const wanted = new Set(items.map((item) => item.id));
+    for (const row of [...transitionItems.children]) {
+      if (!wanted.has(row.dataset.transitionId)) {
+        transitionChoices.delete(row.dataset.transitionId);
+        row.remove();
+      }
+    }
+    for (const item of items) {
+      let row = [...transitionItems.children].find((child) => child.dataset.transitionId === item.id);
+      if (!row) {
+        row = doc.createElement("li");
+        row.dataset.transitionId = item.id;
+        const text = doc.createElement("span");
+        const label = doc.createElement("label");
+        const select = doc.createElement("select");
+        select.id = `vt-transition-choice-${item.id}`;
+        label.htmlFor = select.id;
+        for (const [value, title] of [["replace", "Replace"], ["before", "Before"], ["after", "After"]]) {
+          const option = doc.createElement("option");
+          option.value = value;
+          option.textContent = title;
+          select.append(option);
+        }
+        select.addEventListener("change", () => {
+          transitionChoices.set(item.id, select.value);
+          renderTransition(data?.slot);
+        });
+        row.append(text, doc.createTextNode(" "), label, doc.createTextNode(" "), select);
+        transitionItems.append(row);
+      }
+      const text = row.querySelector("span");
+      const label = row.querySelector("label");
+      const select = row.querySelector("select");
+      setText(label, `Position for ${item.label || "transition audio"}:`);
+      const action = transitionChoices.get(item.id) || item.current_action || item.default_action || "replace";
+      const deferred = item.editable && action === "replace";
+      const retained = item.source === "queued" || item.source === "clockwheel";
+      const state = deferred
+        ? retained ? " (deferred; remains queued)" : " (skipped in this transition)"
+        : item.committed ? " (committed)" : " (predicted)";
+      setText(text, `${item.label || "Transition audio"}${state}`);
+      select.hidden = !item.editable;
+      label.hidden = !item.editable;
+      if (item.editable) {
+        if (!transitionChoices.has(item.id)) transitionChoices.set(item.id, action);
+        select.value = transitionChoices.get(item.id);
+      }
+    }
+    const planned = effectiveTransitionOrder(slot);
+    if (planned) {
+      const rows = new Map([...transitionItems.children].map((row) => [row.dataset.transitionId, row]));
+      let next = null;
+      const order = [...planned.order, ...items.filter((item) =>
+        item.editable && actionFor(item) === "replace").map((item) => item.id)];
+      for (const id of order.toReversed()) {
+        const row = rows.get(id);
+        if (!row) continue;
+        // Moving the focused native select resets WebKit's keyboard state.
+        if (!row.contains(active) && row.nextElementSibling !== next) {
+          transitionItems.insertBefore(row, next);
+        }
+        next = row;
+      }
+    }
+    if (hadFocus && doc.activeElement !== active && active.isConnected) active.focus();
+    updateTransitionSummary(slot);
+  }
+
+  function actionFor(item) {
+    return transitionChoices.get(item.id) || item.current_action || item.default_action || "replace";
+  }
+
+  function effectiveTransitionOrder(slot) {
+    if (!slot) return null;
+    const items = slot.transition_items || [];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const kept = items.filter((item) => !item.editable || actionFor(item) !== "replace");
+    const order = (slot.transition_order || items.map((item) => item.id))
+      .filter((id) => byId.has(id) && kept.includes(byId.get(id)));
+    for (const item of kept) {
+      if (!order.includes(item.id)) order.push(item.id);
+    }
+    let lower = 0;
+    let upper = order.length;
+    for (const item of items.filter((candidate) => candidate.editable && actionFor(candidate) !== "replace")) {
+      const index = order.indexOf(item.id);
+      const action = actionFor(item);
+      if (action === "after") lower = Math.max(lower, index + 1);
+      if (action === "before") upper = Math.min(upper, index);
+    }
+    if (lower > upper) return null;
+    order.splice(lower, 0, "new-voice-track");
+    return { order };
+  }
+
+  function updateTransitionSummary(slot) {
+    if (!slot || !transitionSummary) return;
+    const planned = effectiveTransitionOrder(slot);
+    if (!planned) {
+      setText(transitionSummary, "These choices conflict. Choose a consistent order before booking.");
+      return;
+    }
+    const byId = new Map((slot.transition_items || []).map((item) => [item.id, item]));
+    const labels = planned.order.map((id) => id === "new-voice-track"
+      ? "Your new voice track" : byId.get(id)?.label || "Booked break");
+    setText(transitionSummary, `Planned order: ${labels.join(", ")}.`);
+  }
+
   function renderTimes() {
     const slot = data?.slot;
     if (!slot) return;
@@ -325,21 +615,19 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function renderPlacement() {
     const slot = data?.slot;
-    let text;
-    if (placement.value === "standalone") {
-      text = "The ending song fades, your voice plays, then the next song starts.";
-    } else if (placement.value === "talk_up") {
-      text = slot && slot.upcoming_intro_s == null
-        ? "The next song has no intro point, so your voice plays standalone."
-        : "Your voice plays over the next song's intro and ends as its vocal starts.";
-    } else if (!slot) {
-      text = "Talks up the next song's intro when it is long enough, otherwise plays between the songs.";
-    } else if (slot.auto_placement === "talk_up") {
-      text = `Here, a talk-up: the next song's intro is ${introWords(slot.upcoming_intro_s)}.`;
-    } else {
-      text = `Here, standalone between the songs${slot.auto_note ? `: ${slot.auto_note}` : ""}.`;
-    }
-    setText(placementDesc, text);
+    const available = (slot?.ending_outro_s || 0) + (slot?.upcoming_intro_s || 0);
+    setText(outro, introWords(slot?.ending_outro_s || 0));
+    setText(windowText, introWords(available));
+    const fit = el("vt-fit");
+    if (fit) fit.hidden = !take;
+    if (take) {
+      const speech = take.cues?.speech ?? take.seconds;
+      const forecast = slot?.voice_forecast;
+      const estimate = forecast
+        ? `The voice starts ${introWords(forecast.recording_start_s)} into the ending song; the next song starts ${introWords(forecast.music_entry_s)} after its segue. Full chain speech: ${introWords(forecast.chain_speech_s)}; ${introWords(forecast.speech_without_music_s)} is between songs without music.`
+        : "The playout timing estimate is pending.";
+      setText(el("vt-fit"), `${take.cues ? "Detected speech" : "Recording (speech estimate pending)"}: ${introWords(speech)}${take.cues?.tail ? ` plus ${introWords(take.cues.tail)} tail` : ""}. ${estimate} Original recording: ${introWords(take.seconds)}.`);
+    } else setText(fit, "");
   }
 
   function renderTimer() {
@@ -349,7 +637,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     } else if (take) {
       setText(timer, `Recorded ${clock(take.seconds)}, not booked yet.`);
     } else {
-      setText(timer, `Not recording. A voice track may be up to ${clock(limitSeconds())} long.`);
+      setText(timer, `${clock(limitSeconds())} max`);
     }
   }
 
@@ -382,7 +670,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       }
       row.track = track;
       setText(row.text, trackText(track));
-      const cancellable = track.state === "queued";
+      const cancellable = track.cancellable === true;
       if (cancellable && !row.button) {
         const current = row;
         row.button = rowButton(doc, "Cancel", `Cancel voice track ${track.label || ""}`.trim(),
@@ -422,10 +710,49 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function refresh() {
     const epoch = ++requestEpoch;
+    let url = "/api/voice-tracks";
+    let transitionForecast = false;
+    if (take?.cues?.speech > 0) {
+      const query = new URLSearchParams({
+        speech_s: String(take.cues.speech),
+        tail_s: String(take.cues.tail || 0),
+        placement: placement.value,
+      });
+      const slot = data?.slot;
+      if (slot?.transition_revision && Array.isArray(slot.transition_items) && transitionItems) {
+        const choices = slot.transition_items.filter((item) => item.editable).map((item) => {
+          const row = [...transitionItems.children]
+            .find((candidate) => candidate.dataset.transitionId === item.id);
+          const select = row?.querySelector("select");
+          return {
+            id: item.id,
+            action: select?.value || item.current_action || item.default_action || "replace",
+          };
+        });
+        query.set("transition_revision", slot.transition_revision);
+        query.set("transition_choices", JSON.stringify(choices));
+        transitionForecast = true;
+        slot.voice_forecast = null;
+        renderPlacement();
+      }
+      url += `?${query}`;
+    }
     try {
-      const response = await requestJson("/api/voice-tracks");
+      const response = await requestJson(url);
       if (epoch === requestEpoch) apply(response);
     } catch (problem) {
+      if (epoch === requestEpoch && transitionForecast && problem.status === 409) {
+        const latestEpoch = ++requestEpoch;
+        try {
+          const latest = await requestJson("/api/voice-tracks");
+          if (latestEpoch === requestEpoch) apply(latest);
+        } catch (_) {
+          if (latestEpoch === requestEpoch) {
+            setText(el("vt-fit"), "The transition changed. Refresh the voice tracker to get a new estimate.");
+          }
+        }
+        return;
+      }
       // Shown, not said: the page asks again every few seconds.
       if (epoch === requestEpoch && !data) {
         unavailable.hidden = false;
@@ -439,6 +766,8 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   function stopTracks(stream) {
     for (const track of stream?.getTracks?.() || []) {
+      if (stoppedTracks.has(track)) continue;
+      stoppedTracks.add(track);
       try { track.stop(); } catch (_) { /* already stopped */ }
     }
   }
@@ -452,6 +781,17 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       retarget: null, heard: false, url: objectUrl(blob),
     };
     playback.src = take.url;
+    const recorded = take;
+    recorded.preparing = toWav(blob, rate(), undefined, undefined, (cues) => { recorded.cues = cues; })
+      .then((wav) => {
+        if (take === recorded) {
+          recorded.wav = wav;
+          renderPlacement();
+          void refresh();
+        }
+      }).catch(() => {
+        if (take === recorded) fail(bookButton, "This browser could not prepare the recording. Record it again.");
+      });
   }
 
   const samePair = (open) => open.ending?.id === take.endingId && open.upcoming?.id === take.upcomingId;
@@ -502,6 +842,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // Listen back: a toggle, pressed while the take plays.
   async function listen() {
     clearError();
+    if (booking) {
+      fail(listenButton, "Wait for booking to finish first.");
+      return;
+    }
+    if (testing || testStarting || starting) {
+      fail(listenButton, testing || testStarting ? "Stop the microphone test first." : "Wait for microphone access to finish first.");
+      return;
+    }
     if (session) {
       fail(listenButton, "Stop recording first: press Record or Alt+R.");
       return;
@@ -528,6 +876,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function start() {
     clearError();
+    if (booking) {
+      fail(recordButton, "Wait for booking to finish first.");
+      return;
+    }
+    if (testing || testStarting) {
+      fail(recordButton, "Stop the microphone test before recording.");
+      return;
+    }
     const slot = data?.slot;
     if (!slot) {
       fail(recordButton, data?.reason
@@ -548,30 +904,31 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     starting = true;
     const asked = generation;
     let stream;
+    let focusGate = null;
     try {
       // Unprocessed: what the microphone hears, as a studio would want it.
-      stream = await devices.getUserMedia({
-        audio: {
-          channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-        },
-      });
+      stream = await devices.getUserMedia(requestedMicrophone());
+      focusGate = afterFocus();
     } catch (problem) {
+      if (asked !== generation) return;
       starting = false;
-      fail(recordButton, microphoneProblem(problem));
+      if (selectedMicrophone.id) microphoneNote(`Could not use ${microphoneLabel(selectedMicrophone.id, selectedMicrophone.label)}. Choose another microphone or System default. ${microphoneProblem(problem)}`);
+      fail(recordButton, microphoneProblem(problem), afterFocus());
       return;
     }
     if (asked !== generation) {
       // Signed out while the browser asked for the microphone.
-      starting = false;
       stopTracks(stream);
       return;
     }
-    if (!shown() || doc.visibilityState === "hidden") {
+    if (!root.isConnected || !shown() || doc.visibilityState === "hidden") {
       starting = false;
       stopTracks(stream);
       say("Recording did not start: the Voice tracks tab is not showing.");
       return;
     }
+    const labelRefresh = refreshMicrophones();
+    reportMicrophone(stream, "Recording from");
     let recorder;
     try {
       recorder = new Rec(stream);
@@ -586,6 +943,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     stopListening();
     const current = {
       recorder, stream, chunks: [], started: now(), slot, minutes: 0,
+      microphone: microphoneWords(stream, "Recording from"),
       warned: false, closing: false, stopping: false, done: false, cancelled: false, note: "",
     };
     recorder.addEventListener("dataavailable", (event) => {
@@ -605,10 +963,18 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     session = current;
+    void labelRefresh.then(() => {
+      if (session === current) {
+        current.microphone = microphoneWords(stream, "Recording from");
+        reportMicrophone(stream, "Recording from");
+      }
+    });
     starting = false;
     recordButton.setAttribute("aria-pressed", "true");
     renderTimer();
-    say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+    void Promise.resolve(focusGate).then(() => {
+      if (session === current) say(`Recording${replaced ? ", the earlier take discarded" : ""}. Press Record or Alt+R to stop.`);
+    });
   }
 
   function stop(note = "") {
@@ -616,6 +982,7 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     if (!current || current.stopping) return;
     current.stopping = true;
     current.note = note;
+    stopTracks(current.stream);
     try {
       current.recorder.stop();
     } catch (_) {
@@ -640,13 +1007,16 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       return;
     }
     const blob = new Blob(current.chunks, { type: current.recorder.mimeType || "audio/webm" });
+    current.chunks = [];
     if (!blob.size) {
       renderTimer();
       fail(recordButton, "Nothing was recorded. Check the microphone, then press Record again.");
       return;
     }
     showTake(blob, seconds, current.slot);
+    microphoneNote(current.microphone.replace(/^Recording from/, "Last recording used"));
     renderTimer();
+    renderPlacement();
     say(`${current.note}Recording stopped at ${clock(seconds)}. Listen back, then Book voice track, or Record again to replace it.`);
   }
 
@@ -661,9 +1031,16 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   // Recording only goes on while the tab shows and the page is in view:
   // leaving either stops it, keeps the take and lets the microphone go.
   function guard() {
-    if (!session || session.stopping) return;
-    if (!shown()) stop("You left the Voice tracks tab, so recording stopped. ");
-    else if (doc.visibilityState === "hidden") stop("The page was hidden, so recording stopped. ");
+    const reason = !root.isConnected ? "The voice tracker closed" : !shown() ? "You left the Voice tracks tab" : doc.visibilityState === "hidden" ? "The page was hidden" : "";
+    if (!reason) return;
+    if (session && !session.stopping) stop(`${reason}, so recording stopped. `);
+    if (testing) stopMicrophoneTest(`${reason}, so the microphone test stopped.`);
+    if (testStarting) stopMicrophoneTest("");
+    if (starting) {
+      generation += 1;
+      starting = false;
+      testGeneration += 1;
+    }
   }
 
   function tick() {
@@ -709,6 +1086,11 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
 
   async function book(button) {
     clearError();
+    if (testing || testStarting || starting) {
+      fail(bookButton, "Stop microphone access before booking a voice track.");
+      return;
+    }
+    if (booking) return;
     if (session) {
       fail(bookButton, "Stop recording first: press Record or Alt+R.");
       return;
@@ -724,14 +1106,25 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     }
     const slot = target(open);
     if (!slot) return;
-    await withDisabled(button, async () => {
+    booking = true;
+    const recorded = take;
+    const asked = generation;
+    const abort = new AbortController();
+    bookingAbort = abort;
+    stopListening();
+    try { await withDisabled(button, async () => {
       let wav;
       try {
-        wav = await toWav(take.blob, rate());
+        await recorded.preparing;
+        if (asked !== generation || take !== recorded) return;
+        wav = recorded.wav;
+        if (!wav) throw new Error("Recording preparation failed");
       } catch (_) {
+        if (asked !== generation) return;
         fail(bookButton, "This browser could not read the recording back. Record it again.");
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       if (wav.size + FORM_BYTES > data.limits.max_bytes) {
         fail(bookButton, "The recording is too large for this station. Record a shorter one.");
         return;
@@ -741,12 +1134,23 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
       form.append("ending_id", slot.ending.id);
       form.append("upcoming_id", slot.upcoming.id);
       form.append("placement", placement.value);
-      form.append("allow_outro", allowOutro.checked ? "true" : "false");
+      form.append("allow_outro", placement.value === "auto" ? "true" : "false");
+      if (slot.transition_revision) {
+        form.append("transition_revision", slot.transition_revision);
+        form.append("transition_choices", JSON.stringify((slot.transition_items || [])
+          .filter((item) => item.editable)
+          .map((item) => ({
+            id: item.id,
+            action: transitionChoices.get(item.id) || item.current_action || item.default_action || "replace",
+          }))));
+      }
       form.append("file", new File([wav], "voice-track.wav", { type: "audio/wav" }));
       let booked;
       try {
-        booked = await requestJson("/api/voice-tracks", { method: "POST", body: form });
+        booked = await requestJson("/api/voice-tracks", { method: "POST", body: form, signal: abort.signal });
+        if (asked !== generation || take !== recorded) return;
       } catch (problem) {
+        if (asked !== generation || abort.signal.aborted) return;
         if (problem.status === 409) await refresh();
         const latest = data?.slot;
         if (problem.status === 409 && take && latest && latest.slot_id !== slot.slot_id) {
@@ -756,12 +1160,15 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
         }
         return;
       }
+      if (asked !== generation || take !== recorded) return;
       dropTake();
       await refresh();
       renderTimer();
       const when = booked.airs_in_s != null ? ` It airs in about ${roughly(booked.airs_in_s)}.` : "";
       say(`Booked ${booked.label || "the voice track"}.${when}`);
-    });
+    }); } finally {
+      if (bookingAbort === abort) { booking = false; bookingAbort = null; }
+    }
   }
 
   function discard() {
@@ -781,6 +1188,85 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     say("Recording discarded.");
   }
 
+  function stopMicrophoneTest(message = "Microphone test stopped.") {
+    testGeneration += 1;
+    const current = testing;
+    testing = null;
+    testStarting = false;
+    try { testPlayback.pause(); } catch (_) { /* not playing */ }
+    testPlayback.srcObject = null;
+    stopTracks(current?.stream || pendingTestStream);
+    pendingTestStream = null;
+    testButton.setAttribute("aria-pressed", "false");
+    testButton.textContent = "Test microphone";
+    if (message && current) say(message);
+    if (!session) microphoneNote("");
+  }
+
+  async function toggleMicrophoneTest() {
+    clearError();
+    if (testing || testStarting) {
+      stopMicrophoneTest();
+      return;
+    }
+    if (session || starting || booking || listenButton.getAttribute("aria-pressed") === "true") {
+      fail(testButton, "Stop recording or listen-back before testing the microphone.");
+      return;
+    }
+    const devices = media();
+    if (typeof devices?.getUserMedia !== "function") {
+      fail(testButton, secure() ? NO_RECORDER_TEXT : INSECURE_TEXT);
+      return;
+    }
+    testStarting = true;
+    const asked = ++testGeneration;
+    let stream;
+    try {
+      stream = await devices.getUserMedia(requestedMicrophone());
+      if (asked !== testGeneration) {
+        stopTracks(stream);
+        return;
+      }
+      if (!root.isConnected || !shown() || doc.visibilityState === "hidden") {
+        stopTracks(stream);
+        testStarting = false;
+        return;
+      }
+      pendingTestStream = stream;
+      const focusGate = afterFocus();
+      const labelRefresh = refreshMicrophones();
+      testPlayback.srcObject = stream;
+      await testPlayback.play();
+      if (asked !== testGeneration) {
+        stopTracks(stream);
+        if (pendingTestStream === stream) pendingTestStream = null;
+        if (testPlayback.srcObject === stream) testPlayback.srcObject = null;
+        return;
+      }
+      pendingTestStream = null;
+      testing = { stream };
+      testStarting = false;
+      stream.getAudioTracks?.()[0]?.addEventListener?.("ended", () => {
+        if (testing?.stream === stream) stopMicrophoneTest("The microphone stopped, so the microphone test ended.");
+      }, { once: true });
+      testButton.setAttribute("aria-pressed", "true");
+      testButton.textContent = "Stop microphone test";
+      reportMicrophone(stream, "Testing");
+      void labelRefresh.then(() => { if (testing?.stream === stream) reportMicrophone(stream, "Testing"); });
+      void Promise.resolve(focusGate).then(() => {
+        if (testing?.stream === stream) say("Microphone test started. Use headphones to avoid feedback. Press Stop microphone test when finished.");
+      });
+    } catch (problem) {
+      stopTracks(stream);
+      if (asked !== testGeneration) return;
+      pendingTestStream = null;
+      testPlayback.srcObject = null;
+      testStarting = false;
+      if (selectedMicrophone.id) microphoneNote(`Could not use ${microphoneLabel(selectedMicrophone.id, selectedMicrophone.label)}. Choose another microphone or System default. ${microphoneProblem(problem)}`);
+      fail(testButton, microphoneProblem(problem), afterFocus());
+    }
+  }
+
   async function cancel(track, button) {
     await withDisabled(button, async () => {
       try {
@@ -795,11 +1281,20 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
   }
 
   recordButton.addEventListener("click", () => void toggle());
+  microphoneSelect?.addEventListener("change", () => saveMicrophone(microphoneSelect.value));
+  microphoneRefresh?.addEventListener("click", () => void refreshMicrophones());
+  testButton?.addEventListener("click", () => void toggleMicrophoneTest());
   listenButton.addEventListener("click", () => void listen());
   playback.addEventListener("ended", () => listenButton.setAttribute("aria-pressed", "false"));
   bookButton.addEventListener("click", (event) => void book(event.currentTarget));
   discardButton.addEventListener("click", () => discard());
-  placement.addEventListener("change", renderPlacement);
+  placement.addEventListener("change", () => {
+    renderPlacement();
+    if (take?.cues) void refresh();
+  });
+  transitionItems?.addEventListener("change", (event) => {
+    if (event.target instanceof doc.defaultView.HTMLSelectElement && take?.cues) void refresh();
+  });
   // Alt+R: start or stop from anywhere in the Voice tracks tab, focus staying put.
   doc.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.repeat || event.code !== "KeyR") return;
@@ -809,12 +1304,14 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     void toggle();
   });
   doc.addEventListener("visibilitychange", guard);
+  media()?.addEventListener?.("devicechange", () => { void refreshMicrophones(); });
   if (typeof globalThis.MutationObserver === "function") {
     new globalThis.MutationObserver(guard).observe(panel, { attributes: true, attributeFilter: ["hidden"] });
   }
   interval(tick, 1000);
   renderSlot();
   renderTimer();
+  void refreshMicrophones();
 
   return {
     refresh,
@@ -825,6 +1322,13 @@ export function installVoiceTracker(root = document.getElementById("voice-tracke
     clear() {
       requestEpoch += 1;
       generation += 1;
+      starting = false;
+      bookingAbort?.abort();
+      bookingAbort = null;
+      booking = false;
+      testGeneration += 1;
+      if (testing) stopMicrophoneTest("");
+      else if (testStarting) stopMicrophoneTest("");
       if (session) {
         session.cancelled = true;
         stop();

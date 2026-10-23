@@ -728,7 +728,8 @@ def test_worker_reports_capture_interruption_reason_and_cleans_up(tmp_path, reas
     job = jobs.submit(root, "inputs", render)
     assert entered.wait(1)
     if reason == "cancelled":
-        jobs.cancel(root, job["id"])
+        # The worker waits for *proceed*, so do not wait for it to stop.
+        jobs.cancel(root, job["id"], wait=0)
     elif reason == "timed out":
         time.sleep(0.03)
     proceed.set()

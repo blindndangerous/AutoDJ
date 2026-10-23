@@ -6,10 +6,11 @@ from fastapi.testclient import TestClient
 
 from autodj.ads import Spot, new_id, spot_file_name
 from autodj.catalog import LibraryCatalog
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.station_ledger import StationLedger
 from autodj.station_store import StationStore
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 

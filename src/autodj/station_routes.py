@@ -27,7 +27,15 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 from pydantic import Field as PydanticField
 from starlette.requests import HTTPConnection
 
@@ -49,6 +57,7 @@ from autodj.clockwheel_store import (
     validate_name,
 )
 from autodj.config import MAX_RELAYS, MAX_STATS_DAYS, RecordingConfig, RelayConfig, _relay_target
+from autodj.live_queue import VoiceQueueConflict
 from autodj.playlog import (
     missing_fields,
     parse_bound,
@@ -314,6 +323,8 @@ class PlayNextBody(BaseModel):
     now: bool = False  # if True, also skip the current track
     # DMCA mode: queue it even though it breaks a limit (the operator said so).
     confirm: StrictBool = False
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: StrictStr | None = None
 
 
 class QueueReorderBody(BaseModel):
@@ -331,6 +342,8 @@ class QueueReorderBody(BaseModel):
     # request of the same file keep who they are, #106).
     from_paths: list[str] | None = None
     order: list[int] | None = None
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: StrictStr | None = None
 
 
 class QueueRemoveBody(BaseModel):
@@ -344,6 +357,8 @@ class QueueRemoveBody(BaseModel):
 
     path: str
     position: int | None = None
+    voice_action: Literal["keep", "discard"] | None = None
+    voice_revision: StrictStr | None = None
 
 
 class LinerTestBody(BaseModel):
@@ -2118,7 +2133,16 @@ def install_station_routes(router: StationRouter) -> None:
         # Off the event loop: the check reads the renders and the library (#217).
         if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=False):
             return refusal
-        if not station.bridge.play_next(body.path, now=body.now):
+        try:
+            queued = station.bridge.play_next(
+                body.path,
+                now=body.now,
+                voice_action=body.voice_action,
+                voice_revision=body.voice_revision,
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        if not queued:
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
         station.nowplaying.refresh()
         return {"ok": True}
@@ -2131,7 +2155,15 @@ def install_station_routes(router: StationRouter) -> None:
         # Off the event loop: the check reads the renders and the library (#217).
         if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=True):
             return refusal
-        if not station.bridge.queue_add(body.path):
+        try:
+            queued = station.bridge.queue_add(
+                body.path,
+                voice_action=body.voice_action,
+                voice_revision=body.voice_revision,
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        if not queued:
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
         station.nowplaying.refresh()
         return {"ok": True}
@@ -2139,7 +2171,15 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/remove")
     async def api_queue_remove(station: StationDep, body: QueueRemoveBody) -> dict[str, bool]:
         """Remove a track from the user-ordered queue."""
-        removed = station.bridge.queue_remove(body.path, body.position)
+        try:
+            removed = station.bridge.queue_remove(
+                body.path,
+                body.position,
+                voice_action=body.voice_action,
+                voice_revision=body.voice_revision,
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
         if removed:
             station.nowplaying.refresh()
         return {"ok": removed}
@@ -2147,9 +2187,16 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/queue/reorder")
     async def api_queue_reorder(station: StationDep, body: QueueReorderBody) -> dict[str, bool]:
         """Reorder the user-ordered queue."""
-        changed = station.bridge.queue_reorder(
-            body.paths, from_paths=body.from_paths, order=body.order
-        )
+        try:
+            changed = station.bridge.queue_reorder(
+                body.paths,
+                from_paths=body.from_paths,
+                order=body.order,
+                voice_action=body.voice_action,
+                voice_revision=body.voice_revision,
+            )
+        except VoiceQueueConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
         if changed:
             station.nowplaying.refresh()
         return {"ok": changed}

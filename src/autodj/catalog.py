@@ -8,7 +8,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from collections.abc import Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -1166,27 +1166,31 @@ class LibraryCatalog:
             )
             if row is None:
                 return None
-            try:
-                loudness = json.loads(row["loudness"])
-            except (TypeError, json.JSONDecodeError):
-                loudness = {}
-            if not isinstance(loudness, dict):
-                loudness = {}
-            result = {
-                "id": row["id"],
-                "path": normalized,
-                "kind": row["kind"],
-                "mtime_ns": row["mtime_ns"],
-                "allow_outro": bool(row["allow_outro"]),
-                "points": json.loads(row["points"]),
-                "point_sources": json.loads(row["point_sources"]),
-                "intro_lift_db": row["intro_lift_db"],
-                "loudness": loudness,
-                "last_played": row["last_played"],
-                "user_tags": _user_tags(row["user_tags"], row["fingerprint"]),
-            }
-            result.update({n: row[n] for n in _ENTRY_FIELDS})
-            return result
+            return self._record(row)
+
+    @staticmethod
+    def _record(row: sqlite3.Row) -> dict:
+        try:
+            loudness = json.loads(row["loudness"])
+        except (TypeError, json.JSONDecodeError):
+            loudness = {}
+        if not isinstance(loudness, dict):
+            loudness = {}
+        result = {
+            "id": row["id"],
+            "path": row["path"],
+            "kind": row["kind"],
+            "mtime_ns": row["mtime_ns"],
+            "allow_outro": bool(row["allow_outro"]),
+            "points": json.loads(row["points"]),
+            "point_sources": json.loads(row["point_sources"]),
+            "intro_lift_db": row["intro_lift_db"],
+            "loudness": loudness,
+            "last_played": row["last_played"],
+            "user_tags": _user_tags(row["user_tags"], row["fingerprint"]),
+        }
+        result.update({n: row[n] for n in _ENTRY_FIELDS})
+        return result
 
     def record_for_id(self, record_id: str) -> dict | None:
         with self._lock:
@@ -1394,13 +1398,12 @@ class LibraryCatalog:
     def all_entries(self, kind: str | None = None) -> tuple[dict, ...]:
         """Return every stored record, including currently uncovered/missing files."""
         with self._lock:
-            sql = "SELECT path FROM catalog_entries"
+            sql = "SELECT * FROM catalog_entries"
             args: tuple[str, ...] = ()
             if kind is not None:
                 sql, args = sql + " WHERE kind=?", (kind,)
-            paths = [row[0] for row in self._db().execute(sql + " ORDER BY path", args)]
             return tuple(
-                record for path in paths if (record := self.record_for_path(path)) is not None
+                self._record(row) for row in self._db().execute(sql + " ORDER BY path", args)
             )
 
     def points(self, path: str | Path) -> dict:
@@ -1519,6 +1522,68 @@ class LibraryCatalog:
                 return self.points(normalized)
             except BaseException:
                 self._db().rollback()
+                raise
+
+    def apply_rescanned_points(
+        self,
+        path: str | Path,
+        expected: dict,
+        values: dict,
+        sources: dict,
+        identity_matches: Callable[[], bool],
+    ) -> dict:
+        """Apply selected scan suggestions only while the saved cue snapshot is unchanged."""
+        with self._lock:
+            normalized = _path(path)
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT points,point_sources,length,kind FROM catalog_entries WHERE path=?",
+                    (normalized,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(normalized)
+                points, original_sources = (
+                    json.loads(row["points"]),
+                    json.loads(row["point_sources"]),
+                )
+                actual = {
+                    "points": points,
+                    "point_sources": original_sources,
+                    "length": row["length"],
+                    "kind": row["kind"],
+                }
+                if actual != expected:
+                    raise RuntimeError("Saved cues changed; scan again before applying")
+                if not identity_matches():
+                    raise RuntimeError("Recording changed; scan the cues again")
+                self._merge_points(normalized, values, "user")
+                updated = db.execute(
+                    "SELECT points,point_sources FROM catalog_entries WHERE path=?", (normalized,)
+                ).fetchone()
+                new_points, new_sources = (
+                    json.loads(updated["points"]),
+                    json.loads(updated["point_sources"]),
+                )
+                selected = set(values)
+                for name in _POINTS:
+                    if name not in selected and (
+                        new_points.get(name) != points.get(name)
+                        or new_sources.get(name) != original_sources.get(name)
+                    ):
+                        raise ValueError(f"Applying selected cues would alter {name}")
+                new_sources.update({name: sources[name] for name in values})
+                db.execute(
+                    "UPDATE catalog_entries SET point_sources=? WHERE path=?",
+                    (json.dumps(new_sources), normalized),
+                )
+                if not identity_matches():
+                    raise RuntimeError("Recording changed; scan the cues again")
+                db.commit()
+                return self.points(normalized)
+            except BaseException:
+                db.rollback()
                 raise
 
     @contextmanager

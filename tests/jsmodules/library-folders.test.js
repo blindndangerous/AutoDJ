@@ -31,7 +31,7 @@ function mount() {
       <input id="points-path"><button id="points-load"></button>
       ${["start", "intro", "outro", "segue", "end", "overlap_start"].map((name) => `<label><input data-point="${name}"><span data-point-source="${name}"></span></label><button data-preview="${name}"></button><button data-set-current="${name}"></button>`).join("")}
       <audio id="points-preview"></audio>
-      <button id="points-save"></button><p id="points-status"></p>
+      <button id="points-save"></button><button id="points-rescan"></button><p id="points-rescan-status" role="status" aria-live="polite"></p><section id="points-rescan-results" hidden><h4 id="points-rescan-heading" tabindex="-1"></h4><div id="points-rescan-comparison"></div><button id="points-rescan-apply"></button><button id="points-rescan-discard"></button></section><p id="points-status"></p>
     </section>
     <dialog id="track-info-dialog" aria-labelledby="track-info-dialog-title">
       <h2 id="track-info-dialog-title"></h2><p id="track-info-error" role="status"></p>
@@ -493,6 +493,119 @@ describe("clock folder and points controls", () => {
     document.getElementById("points-save").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points")[1].body).station).toBe("nightowl");
+  });
+
+  it("rescans, compares provenance, defaults only unprotected changes, and applies selected cues", async () => {
+    const request = vi.fn(async (url) => {
+      if (url.startsWith("/api/library/points?")) return { path: "M:/song.flac", title: "Song", kind: "music", points: { start: 1, intro: 5, end: 180 }, point_sources: { start: "user", intro: "analysis", end: "imported" } };
+      if (url === "/api/library/points/rescan") return {
+        token: "scan-token", points: { start: 2, intro: 7, end: 175, segue: 170 }, point_sources: { start: "analysis", intro: "analysis", end: "analysis", segue: "analysis" },
+        current_points: { start: 1, intro: 5, end: 180 }, current_sources: { start: "user", intro: "analysis", end: "imported" },
+      };
+      if (url === "/api/library/points/rescan/apply") return { path: "M:/song.flac", title: "Song", kind: "music", length: 200, points: { start: 1, intro: 7, end: 180, segue: 170 }, point_sources: { start: "user", intro: "analysis", end: "imported", segue: "analysis" } };
+      return {};
+    });
+    installLibraryFolders({ document, request, getStation: () => "nightowl" });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
+    await vi.waitFor(() => expect(document.querySelector('[data-point="intro"]').value).toBe("0:05"));
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(document.getElementById("points-rescan-results").hidden).toBe(false));
+    const body = JSON.parse(request.mock.calls.find(([url]) => url === "/api/library/points/rescan")[1].body);
+    expect(body).toEqual({ path: "M:/song.flac", station: "nightowl" });
+    expect(document.querySelector('[data-rescan-field="start"]').checked).toBe(false);
+    expect(document.querySelector('[data-rescan-field="intro"]').checked).toBe(true);
+    expect(document.querySelector('[data-rescan-field="end"]').checked).toBe(false);
+    expect(document.getElementById("points-rescan-comparison").textContent).toContain("user");
+    document.querySelector('[data-rescan-field="start"]').checked = true;
+    document.getElementById("points-rescan-apply").click();
+    await vi.waitFor(() => expect(document.querySelector('[data-point="intro"]').value).toBe("0:07"));
+    const apply = request.mock.calls.find(([url]) => url === "/api/library/points/rescan/apply");
+    expect(JSON.parse(apply[1].body)).toEqual({ path: "M:/song.flac", station: "nightowl", token: "scan-token", fields: ["start", "intro", "segue"] });
+  });
+
+  it("requires cue edits to be saved before rescanning and ignores a scan after cue edits", async () => {
+    let finishScan;
+    const request = vi.fn((url) => {
+      if (url.startsWith("/api/library/points?")) return Promise.resolve({ path: "M:/song.flac", kind: "music", points: { start: 1 } });
+      if (url === "/api/library/points/rescan") return new Promise((resolve) => { finishScan = resolve; });
+      return Promise.resolve({});
+    });
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
+    await vi.waitFor(() => expect(document.querySelector('[data-point="start"]').value).toBe("0:01"));
+    document.querySelector('[data-point="start"]').value = "2";
+    document.getElementById("points-rescan").click();
+    expect(document.getElementById("points-rescan-status").textContent).toContain("Save your cue edits");
+    document.querySelector('[data-point="start"]').value = "0:01";
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(finishScan).toBeTypeOf("function"));
+    document.querySelector('[data-point="start"]').value = "3";
+    document.querySelector('[data-point="start"]').dispatchEvent(new Event("input", { bubbles: true }));
+    finishScan({ token: "late", points: { start: 4 }, point_sources: {}, current_points: { start: 1 }, current_sources: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("points-rescan-results").hidden).toBe(true);
+  });
+
+  it("keeps suggestions when none are selected or apply fails, then focuses the right control", async () => {
+    const request = vi.fn(async (url) => {
+      if (url.startsWith("/api/library/points?")) return { path: "M:/song.flac", kind: "music", points: { intro: 5 } };
+      if (url === "/api/library/points/rescan") return { token: "t", points: { intro: 7 }, point_sources: { intro: "analysis" }, current_points: { intro: 5 }, current_sources: { intro: "analysis" } };
+      throw new Error("Offline");
+    });
+    installLibraryFolders({ document, request });
+    document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/song.flac" } }));
+    await vi.waitFor(() => expect(document.querySelector('[data-point="intro"]').value).toBe("0:05"));
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(document.getElementById("points-rescan-results").hidden).toBe(false));
+    const field = document.querySelector('[data-rescan-field="intro"]');
+    field.checked = false;
+    document.getElementById("points-rescan-apply").click();
+    expect(document.getElementById("points-rescan-results").hidden).toBe(false);
+    expect(document.activeElement).toBe(field);
+    field.checked = true;
+    document.getElementById("points-rescan-apply").click();
+    await vi.waitFor(() => expect(document.getElementById("points-rescan-status").textContent).toContain("Offline"));
+    expect(document.getElementById("points-rescan-results").hidden).toBe(false);
+    expect(document.activeElement).toBe(document.getElementById("points-rescan-apply"));
+    document.getElementById("points-rescan-discard").click();
+    expect(document.getElementById("points-rescan-results").hidden).toBe(true);
+    expect(document.activeElement).toBe(document.getElementById("points-rescan"));
+  });
+
+  it("limits liner proposals to supported cues and ignores late scans after track navigation or auth change", async () => {
+    let finishScan;
+    const request = vi.fn((url) => {
+      if (url.startsWith("/api/library/points?")) {
+        const path = decodeURIComponent(url.split("path=")[1].split("&")[0]);
+        return Promise.resolve({ path, kind: path.includes("voice") ? "liner" : "music", points: { start: 0, segue: 2, end: 4 } });
+      }
+      if (url === "/api/library/points/rescan") return new Promise((resolve) => { finishScan = resolve; });
+      return Promise.resolve({});
+    });
+    installLibraryFolders({ document, request });
+    await document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "N:/voice.wav", kind: "liner" } }));
+    await vi.waitFor(() => expect(document.querySelector('[data-point="start"]').value).toBe("0:00"));
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(finishScan).toBeTypeOf("function"));
+    finishScan({ token: "old", points: { start: 0.2, segue: 2.6, end: 3.8 }, point_sources: {}, current_points: {}, current_sources: {} });
+    await vi.waitFor(() => expect(document.getElementById("points-rescan-results").hidden).toBe(false));
+    expect(document.querySelectorAll("[data-rescan-field]")).toHaveLength(3);
+    expect(document.querySelector("[data-rescan-field=intro]")).toBeNull();
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(finishScan).toBeTypeOf("function"));
+    const finishLate = finishScan;
+    await document.dispatchEvent(new CustomEvent("autodj:edit-points", { detail: { path: "M:/next.wav" } }));
+    await vi.waitFor(() => expect(document.querySelector('[data-point="start"]').value).toBe("0:00"));
+    finishLate({ token: "late", points: { start: 9 }, point_sources: {}, current_points: {}, current_sources: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("points-rescan-results").hidden).toBe(true);
+    document.getElementById("points-rescan").click();
+    await vi.waitFor(() => expect(finishScan).toBeTypeOf("function"));
+    const finishSignedOut = finishScan;
+    invalidateAuthenticatedRequestEpoch();
+    finishSignedOut({ token: "private", points: { start: 10 }, point_sources: {}, current_points: {}, current_sources: {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.getElementById("points-rescan-results").hidden).toBe(true);
   });
 
   it("refreshes only play time on station switch and ignores a late prior-station reply", async () => {

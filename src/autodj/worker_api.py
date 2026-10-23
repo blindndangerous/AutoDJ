@@ -228,7 +228,9 @@ def install_worker_api(
                 status_code=409,
                 detail=(
                     "This server has no downloaded copy of the analysis model, so it cannot "
-                    "check results.  Run `autodj index` on the server once to download it."
+                    "check results. Restore an existing compatible model cache on the server, "
+                    "or use a model-capable runtime to run `autodj index` with songs pending "
+                    "advanced analysis. No-model indexing does not download weights."
                 ),
             )
         return found

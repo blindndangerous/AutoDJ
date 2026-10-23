@@ -33,7 +33,7 @@ listening.
 
 ## Capture the practice show
 
-1. Open **Now Playing**, then expand **Programme review**.
+1. Open **Library tools**, then expand **Programme review**.
 2. Press **Refresh reviews**. Set **Source** to **Saved show**, then choose
    `Practice review` in **Show**.
 3. Leave **Intended start** blank for now.

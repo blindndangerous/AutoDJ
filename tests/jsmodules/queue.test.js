@@ -489,6 +489,9 @@ describe("queue Top and Clear queue", () => {
   const ok = () => Promise.resolve(new globalThis.Response('{"ok":true}', {
     headers: { "Content-Type": "application/json" },
   }));
+  const voiceConflict = (revision) => Promise.resolve(new globalThis.Response(JSON.stringify({
+    detail: { code: "voice_track_conflict", revision },
+  }), { status: 409, headers: { "Content-Type": "application/json" } }));
 
   function setup() {
     document.body.innerHTML = `
@@ -518,6 +521,7 @@ describe("queue Top and Clear queue", () => {
       queueAnnounce: document.querySelector("#announce"),
       queueClear: document.querySelector("#clear"),
     };
+    resetQueueState(els);
     applyQueueState([
       { path: "a.mp3", display_name: "Alpha" },
       { path: "b.mp3", display_name: "Bravo" },
@@ -569,6 +573,71 @@ describe("queue Top and Clear queue", () => {
     vi.unstubAllGlobals();
   });
 
+  it("reasks after a new voice revision and retries the same queue removal", async () => {
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => voiceConflict("rev-1"))
+      .mockImplementationOnce(() => voiceConflict("rev-2"))
+      .mockImplementationOnce(ok);
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els, dialog } = setup();
+
+    els.queueList.querySelector('[data-path="b.mp3"][data-action="remove"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    expect(document.getElementById("confirm-title").textContent).toBe("Upcoming voice track");
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    [...document.querySelectorAll("#confirm-dialog button")]
+      .find((button) => button.textContent === "Discard voice track").click();
+
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Removed Bravo from queue."));
+    expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
+      { path: "b.mp3", position: 1 },
+      { path: "b.mp3", position: 1, voice_action: "keep", voice_revision: "rev-1" },
+      { path: "b.mp3", position: 1, voice_action: "discard", voice_revision: "rev-2" },
+    ]);
+    vi.unstubAllGlobals();
+  });
+
+  it("retries a reorder with its original order plus the voice decision", async () => {
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(() => voiceConflict("rev-top"))
+      .mockImplementationOnce(ok);
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els, dialog } = setup();
+
+    els.queueList.querySelector('[data-path="c.mp3"][data-action="top"]').click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Moved Charlie to position 1 of 3."));
+    expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([
+      { paths: ["c.mp3", "a.mp3", "b.mp3"], from_paths: ["a.mp3", "b.mp3", "c.mp3"], order: [2, 0, 1] },
+      {
+        paths: ["c.mp3", "a.mp3", "b.mp3"], from_paths: ["a.mp3", "b.mp3", "c.mp3"],
+        order: [2, 0, 1], voice_action: "keep", voice_revision: "rev-top",
+      },
+    ]);
+    vi.unstubAllGlobals();
+  });
+
+  it("asks about the voice track before retrying Clear queue and lets Cancel keep the queue", async () => {
+    const fetchImpl = vi.fn().mockImplementationOnce(() => voiceConflict("rev-1"));
+    vi.stubGlobal("fetch", fetchImpl);
+    const { els, dialog } = setup();
+
+    els.queueClear.click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    document.getElementById("confirm-accept").click();
+    await vi.waitFor(() => expect(document.getElementById("confirm-title").textContent)
+      .toBe("Upcoming voice track"));
+    document.getElementById("confirm-cancel").click();
+
+    await vi.waitFor(() => expect(els.queueAnnounce.textContent).toBe("Queue clear canceled."));
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ paths: [] });
+    expect(els.queueList.querySelectorAll("li[data-path]")).toHaveLength(3);
+    vi.unstubAllGlobals();
+  });
+
   it("clears only after confirmation and keeps focus on the button", async () => {
     const fetchImpl = vi.fn(ok);
     vi.stubGlobal("fetch", fetchImpl);
@@ -611,6 +680,7 @@ describe("queue focus while a change is saved", () => {
       queueCount: document.createElement("span"),
       queueAnnounce: document.querySelector("#announce"),
     };
+    resetQueueState(els);
     const queue = [
       { path: "a.mp3", display_name: "Alpha" },
       { path: "b.mp3", display_name: "Bravo" },
