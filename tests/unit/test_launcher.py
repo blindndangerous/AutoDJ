@@ -449,21 +449,31 @@ from pathlib import Path
 folder = Path(sys.argv[1])
 (folder / f"started-{os.getpid()}").touch()
 def stop(signum, frame):
-    (folder / "stopped-by").write_text(signal.Signals(signum).name)
+    with open(folder / "stopped-by", "a") as record:
+        print(signal.Signals(signum).name, file=record)
     raise SystemExit(75)  # as if a web restart was pending too
-signal.signal(signal.SIGINT, stop)
-signal.signal(signal.SIGTERM, stop)
+for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+    signal.signal(getattr(signal, name), stop)
 (folder / "ready").touch()
 time.sleep(60)
 """
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
-@pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT"])
+@pytest.mark.parametrize(
+    ("signame", "target"),
+    [
+        ("SIGTERM", "launcher"),
+        ("SIGINT", "launcher"),
+        ("SIGHUP", "launcher"),
+        # As systemd stops a service: SIGTERM to every process at once.
+        ("SIGTERM", "group"),
+    ],
+)
 def test_a_signal_to_the_launcher_reaches_the_server_and_ends_the_launcher_with_it(
-    tmp_path: Path, signame: str
+    tmp_path: Path, signame: str, target: str
 ) -> None:
-    """ADR-0016-10: the launcher passes the signal on, never restarts, and dies of it."""
+    """ADR-0016-10: the server gets the signal, nothing restarts, and the launcher dies of it."""
     import signal
     import subprocess
     import time
@@ -482,17 +492,43 @@ def test_a_signal_to_the_launcher_reaches_the_server_and_ends_the_launcher_with_
             str(folder),
         ],
         env=env,
+        # Its own group, so a signal to the whole group reaches only the two.
+        start_new_session=True,
     )
     try:
         deadline = time.monotonic() + 30
         while not (folder / "ready").exists():
             assert time.monotonic() < deadline, "the server did not start"
             time.sleep(0.05)
-        process.send_signal(getattr(signal, signame))
+        if target == "group":
+            os.killpg(process.pid, getattr(signal, signame))
+        else:
+            process.send_signal(getattr(signal, signame))
         status = process.wait(timeout=30)
     finally:
         if process.poll() is None:
             process.kill()
     assert status == -getattr(signal, signame)
-    assert (folder / "stopped-by").read_text() == signame
+    assert (folder / "stopped-by").read_text().split()[0] == signame
     assert len(list(folder.glob("started-*"))) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_a_stop_that_comes_while_the_server_starts_still_stops_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-0016-10: the handlers are in place before the server starts."""
+    import signal
+
+    started = Mock()
+    started.wait.return_value = 0
+
+    def popen(*_args: object, **_kwargs: object) -> Mock:
+        os.kill(os.getpid(), signal.SIGTERM)  # lands between the check and the start
+        return started
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", popen)
+    with pytest.raises(launcher.StopRequested) as stop:
+        launcher._run_child(["serve"], {})
+    assert stop.value.signum == signal.SIGTERM
+    started.send_signal.assert_called_with(signal.SIGTERM)

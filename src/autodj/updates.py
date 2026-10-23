@@ -233,8 +233,12 @@ _GIT_LOCATION = frozenset(
 )
 
 
-def _git_environment() -> dict[str, str]:
-    """The environment for git: never ask for a password, never page output."""
+def _git_environment(ssh_command: str | None = None) -> dict[str, str]:
+    """The environment for git: never ask for a password, never page output.
+
+    *ssh_command* becomes ``GIT_SSH_COMMAND`` unless the operator set
+    ``GIT_SSH_COMMAND`` or ``GIT_SSH`` themselves.
+    """
     # A git hook's GIT_DIR and friends would point git at another repository.
     environment = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION}
     environment.update(
@@ -247,29 +251,43 @@ def _git_environment() -> dict[str, str]:
             "LANG": "C",
         }
     )
-    if "GIT_SSH_COMMAND" not in environment and "GIT_SSH" not in environment:
-        # ssh would otherwise ask for a passphrase or a host key on the terminal.
-        environment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
+    if ssh_command and not _ssh_set_by_operator(environment):
+        environment["GIT_SSH_COMMAND"] = ssh_command
     return environment
 
 
-def _kill_tree(process: subprocess.Popen[str]) -> None:
+def _ssh_set_by_operator(environment: Mapping[str, str]) -> bool:
+    return "GIT_SSH_COMMAND" in environment or "GIT_SSH" in environment
+
+
+def _batch_ssh_command(root: Path, *, runner: Runner) -> str | None:
+    """The ssh git would use for *root*, told never to ask (``-o BatchMode=yes``).
+
+    The checkout's ``core.sshCommand`` (an agent, ``-i key``) is kept:
+    ``GIT_SSH_COMMAND`` would otherwise override it.  ``None`` when the
+    operator's own ``GIT_SSH_COMMAND`` or ``GIT_SSH`` already decides.
+    """
+    if _ssh_set_by_operator(os.environ):
+        return None
+    configured = _git_value(root, "config", "--get", "core.sshCommand", runner=runner)
+    return f"{configured or 'ssh'} -o BatchMode=yes"
+
+
+def _kill_tree(process: subprocess.Popen[str], job: int | None) -> None:
     """Kill *process* and everything it started.
 
     git runs its transport as a grandchild (``git-remote-https``, ``ssh``),
     which keeps the output pipes open after git itself is killed, so killing
-    only git leaves the reader waiting for the transport's own timeout.
+    only git leaves the reader waiting for the transport's own timeout.  On
+    Windows the process tree is the job from :func:`run_bounded`; closing it
+    kills exactly the processes in it, never one that merely reuses an old
+    parent's process ID.
     """
     if sys.platform == "win32":
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(  # nosec B603 B607 -- fixed argv, pid from Popen
-                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-                check=False,
-            )
+        if job is not None:
+            from autodj.child_jobs import end_job
+
+            end_job(job)
     else:
         import signal
 
@@ -288,10 +306,14 @@ def run_bounded(
 ) -> subprocess.CompletedProcess[str]:
     """Run *argv* (no shell) and kill its whole process tree after *timeout* seconds.
 
-    The child runs in its own process group (POSIX session, Windows process
-    group), so a timeout kills the programs it started too.  After a
-    timeout the output pipes are closed rather than read to their end: a
-    survivor holding them cannot keep the caller waiting.
+    On POSIX the child runs in its own session, and a timeout kills that
+    process group; on Windows it runs in its own job object (see
+    :mod:`autodj.child_jobs`), and a timeout closes the job, killing every
+    process in it.  Either way the programs it started die too.  After a
+    timeout nothing waits for the output pipes: POSIX closes them, and
+    Windows leaves the reader threads (daemon threads) to end when the
+    last holder lets go, since closing a pipe there waits for its reader.
+    So a process that still holds a pipe cannot keep the caller waiting.
 
     Raises:
         OSError: the program could not start.
@@ -299,7 +321,8 @@ def run_bounded(
     """
     options: dict[str, Any] = {}
     if sys.platform == "win32":
-        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # No console window either, when the server runs without one.
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         options["start_new_session"] = True
     process = subprocess.Popen(  # nosec B603 -- argv list from the callers here, no shell
@@ -314,20 +337,30 @@ def run_bounded(
         errors="replace",
         **options,
     )
+    from autodj.child_jobs import end_job, job_for_tree
+
+    job = job_for_tree(process)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_tree(process)
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                with contextlib.suppress(OSError):
-                    stream.close()
+        _kill_tree(process, job)
+        job = None
+        if sys.platform != "win32":
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    with contextlib.suppress(OSError):
+                        stream.close()
         with contextlib.suppress(subprocess.TimeoutExpired):
             process.wait(timeout=5)
         raise subprocess.TimeoutExpired(argv, timeout) from None
     except BaseException:
-        _kill_tree(process)
+        _kill_tree(process, job)
+        job = None
         raise
+    finally:
+        if job is not None:
+            # Done: anything git left running in the job (an ssh) ends now.
+            end_job(job)
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
@@ -336,6 +369,7 @@ def git(
     *args: str,
     runner: Runner = run_bounded,
     timeout: float = GIT_TIMEOUT_SECONDS,
+    ssh_command: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git <args>`` in *root* with a timeout; never through a shell.
 
@@ -344,7 +378,7 @@ def git(
         subprocess.TimeoutExpired: git ran past *timeout*.
     """
     return runner(  # nosec B603 B607 -- fixed argv list, no shell
-        ["git", *args], cwd=root, timeout=timeout, env=_git_environment()
+        ["git", *args], cwd=root, timeout=timeout, env=_git_environment(ssh_command)
     )
 
 
@@ -627,8 +661,9 @@ def _remote(root: Path, *args: str, runner: Runner) -> str:
     git's own messages are not passed on: they can hold the remote's
     address, and an address can hold a password.
     """
+    ssh_command = _batch_ssh_command(root, runner=runner)
     try:
-        done = git(root, *args, runner=runner, timeout=GIT_TIMEOUT_SECONDS)
+        done = git(root, *args, runner=runner, timeout=GIT_TIMEOUT_SECONDS, ssh_command=ssh_command)
     except subprocess.TimeoutExpired as exc:
         raise CheckFailed(f"git did not answer within {GIT_TIMEOUT_SECONDS:.0f} seconds") from exc
     except (OSError, subprocess.SubprocessError) as exc:
@@ -916,9 +951,10 @@ def systemd_restart_policy(
     """The ``Restart=`` setting of the systemd service whose main process is AutoDJ.
 
     ``None`` when AutoDJ is not in a service, or when the service's main
-    process is neither AutoDJ nor its parent (``uv run``, say): systemd
-    restarts a service only when its main process exits, so another
-    process in the unit exiting would leave AutoDJ off the air.
+    process is not AutoDJ: systemd restarts a service only when its main
+    process exits, and a wrapper (``uv run``, a shell script) may not pass
+    on exit status 75.  The parent counts only when it is AutoDJ's own
+    launcher, which marks its child with ``AUTODJ_SUPERVISOR=1``.
     """
     if not environ.get("INVOCATION_ID") or shutil.which("systemctl") is None:
         return None
@@ -941,7 +977,12 @@ def systemd_restart_policy(
         return None
     values = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
     main = values.get("MainPID", "").strip()
-    allowed = pids if pids is not None else (os.getpid(), os.getppid())
+    if pids is not None:
+        allowed = pids
+    elif environ.get(SUPERVISOR_ENV) == "1":
+        allowed = (os.getpid(), os.getppid())
+    else:
+        allowed = (os.getpid(),)
     if not main.isdigit() or int(main) not in allowed:
         return None
     return values.get("Restart", "").strip() or None

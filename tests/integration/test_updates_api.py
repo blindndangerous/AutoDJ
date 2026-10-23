@@ -282,3 +282,24 @@ def test_shutting_down_stops_a_running_library_job(tmp_path: Path, monkeypatch) 
     with client:
         manager.shutdown.assert_not_called()
     manager.shutdown.assert_called_once()
+
+
+@pytest.mark.usefixtures("supported")
+@pytest.mark.parametrize("content", ["not json", '{"times": []}', '["soon"]'])
+def test_an_unreadable_restart_count_refuses_and_names_the_file(
+    tmp_path: Path, content: str
+) -> None:
+    """ADR-0016-06: a damaged count fails closed instead of resetting the limit."""
+    count = tmp_path / "logs" / "restart-requests.json"
+    count.parent.mkdir(parents=True, exist_ok=True)
+    count.write_text(content, encoding="utf-8")
+    client = _client(tmp_path)
+    server_exit = Mock()
+    client.app.state.server_exit = server_exit
+    response = client.post("/api/server/restart", json={})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert str(count) in detail
+    assert "Delete that file" in detail
+    server_exit.assert_not_called()
+    assert count.read_text(encoding="utf-8") == content

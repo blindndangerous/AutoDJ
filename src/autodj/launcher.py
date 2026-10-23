@@ -118,7 +118,7 @@ def _supervised(arguments: list[str], environ: Mapping[str, str]) -> bool:
 
 
 class StopRequested(Exception):
-    """The launcher got Ctrl+C or SIGTERM while the server ran: stop, never restart."""
+    """The launcher got a stop signal while the server ran: stop, never restart."""
 
     def __init__(self, signum: int, status: int) -> None:
         """*signum* is the stop signal; *status* the server's exit status."""
@@ -127,36 +127,70 @@ class StopRequested(Exception):
         self.status = status
 
 
+def _signal_came_from_the_terminal() -> bool:
+    """Whether a terminal signal also reached the server: the launcher is in its foreground group.
+
+    The server shares the launcher's process group, so Ctrl+C, a closed
+    terminal or Ctrl+\\ reach both.  Without a controlling terminal, or in
+    the background, the signal was sent to the launcher alone.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def _run_child(command: list[str], environment: Mapping[str, str]) -> int:
     """Run the server once and wait for it.
 
-    On POSIX the server runs in its own process group, so a terminal's
-    Ctrl+C reaches only the launcher, which passes SIGINT and SIGTERM on to
-    the server once each.  On Windows Ctrl+C reaches both; the launcher
-    keeps waiting while the server shuts down.
+    The server stays in the launcher's process group and the terminal's
+    foreground, so Ctrl+C, a closed terminal and Ctrl+\\ reach it directly
+    and it can still ask a question on the terminal.  The launcher only
+    notes that a stop was asked for, so it never restarts after one.  It
+    passes SIGINT, SIGHUP or SIGQUIT on only when they came to it alone
+    (no terminal, or not in the foreground): a second SIGINT would make
+    uvicorn skip its graceful shutdown.  SIGTERM is always passed on, since
+    uvicorn treats a second SIGTERM like the first (only a repeated SIGINT
+    forces an exit); systemd sends it to both, which is the same.  On
+    Windows, Ctrl+C reaches both and the launcher keeps waiting.
+
+    The handlers are in place before the server starts, so no signal can
+    fall between the two and leave a server nobody waits for.
 
     Raises:
         StopRequested: A stop signal arrived; the server has exited.
     """
-    options: dict[str, Any] = {}
-    if os.name != "nt":
-        options["process_group"] = 0
-    process = subprocess.Popen(command, env=dict(environment), **options)  # nosec B603
-    # Windows: a job object ends the server with the launcher, however the
-    # launcher ends (the shared helper the mastering processes use).
-    bind_to_autodj(process)
     stopped: list[int] = []
+    started: list[subprocess.Popen[bytes]] = []
     previous: dict[int, Any] = {}
-    if os.name != "nt":
+    if sys.platform != "win32":
+        alone_only = {signal.SIGINT, signal.SIGHUP, signal.SIGQUIT}
 
-        def forward(signum: int, _frame: object) -> None:
+        def note(signum: int, _frame: object) -> None:
             stopped.append(signum)
+            if not started:
+                return
+            if signum in alone_only and _signal_came_from_the_terminal():
+                return
             with contextlib.suppress(OSError):
-                process.send_signal(signum)
+                started[0].send_signal(signum)
 
-        for stop in (signal.SIGINT, signal.SIGTERM):
-            previous[stop] = signal.signal(stop, forward)
+        for stop in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            previous[stop] = signal.signal(stop, note)
     try:
+        if stopped:
+            raise StopRequested(stopped[0], 0)
+        process = subprocess.Popen(command, env=dict(environment))  # nosec B603
+        started.append(process)
+        # Windows: a job object ends the server with the launcher, however the
+        # launcher ends (the shared helper the mastering processes use).
+        bind_to_autodj(process)
+        if stopped:
+            # A stop that came between the check above and the start.
+            with contextlib.suppress(OSError):
+                process.send_signal(signal.SIGTERM)
         while True:
             try:
                 status = process.wait()
@@ -176,9 +210,9 @@ def _end_with_signal(signum: int) -> int:
 
     systemd counts a service killed by SIGTERM as stopped cleanly, but an
     exit status of 143 as failed, so on POSIX the launcher dies of the
-    same signal.
+    same signal.  SIGQUIT is the exception: dying of it would dump core.
     """
-    if os.name != "nt":
+    if os.name != "nt" and signum != getattr(signal, "SIGQUIT", None):
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
     return 128 + signum

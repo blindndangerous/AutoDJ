@@ -40,7 +40,7 @@ AutoDJ does not update itself. When an update is available, the page and `autodj
 **Restart AutoDJ** stops AutoDJ and starts it again. Every station's stream goes off the air until it is back, usually a few seconds plus the time AutoDJ takes to load the library. The button appears only when something will start AutoDJ again:
 
 - the `./autodj` or `.\autodj.cmd` launcher of a source checkout, which starts `serve` again;
-- a systemd service with `Restart=on-failure` or `Restart=always` whose main process is AutoDJ, or `uv run` starting it;
+- a systemd service with `Restart=on-failure` or `Restart=always` whose main process is AutoDJ itself (not a wrapper such as `uv run`);
 - a Docker or Podman container whose restart policy is declared in `AUTODJ_RESTART_POLICY`, as `compose.yaml` does (see [Update the container](operations/containers-and-windows.md#update-the-container)).
 
 Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits with status 75 to ask for a restart; a service with `Restart=on-failure` treats that as a failure and starts it again. Restarts are limited to one a minute and six an hour. A running Library tools job is stopped, as its **Stop** button does, and Ctrl+C or a stop from the service manager during the restart stops AutoDJ instead.

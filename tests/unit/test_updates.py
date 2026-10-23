@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,8 @@ def _ls_remote(tags: list[str] = (), master: str = MASTER_SHA, ancestor: bool = 
             return _done("commit\n" if ancestor else "", 0 if ancestor else 128)
         if args[:2] == ["merge-base", "--is-ancestor"]:
             return _done(returncode=0 if ancestor else 1)
+        if args[:2] == ["config", "--get"]:
+            return _done(returncode=1)
         raise AssertionError(f"unexpected git {args}")
 
     return Mock(side_effect=run)
@@ -446,6 +449,23 @@ def test_systemd_restart_needs_autodj_to_be_the_units_main_process(
     assert "--user" not in runner.call_args.args[0]
 
 
+def test_systemd_counts_the_parent_only_when_it_is_autodjs_launcher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ADR-0016-04: a wrapper that does not pass on status 75 gets no button."""
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/system.slice/autodj.service\n", encoding="utf-8")
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/" + name)
+    parent = updates.os.getppid()
+    runner = Mock(return_value=_done(f"Restart=on-failure\nMainPID={parent}\n"))
+    wrapped = {"INVOCATION_ID": "x"}
+    launched = {"INVOCATION_ID": "x", updates.SUPERVISOR_ENV: "1"}
+    assert updates.systemd_restart_policy(wrapped, runner=runner, cgroup_file=cgroup) is None
+    assert (
+        updates.systemd_restart_policy(launched, runner=runner, cgroup_file=cgroup) == "on-failure"
+    )
+
+
 # ---------------------------------------------------------------------------
 # The notice: release notes and commands
 # ---------------------------------------------------------------------------
@@ -531,12 +551,53 @@ def test_git_never_asks_for_a_password(monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR-0016-03."""
     monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     monkeypatch.delenv("GIT_SSH", raising=False)
-    environment = updates._git_environment()
+    environment = updates._git_environment("ssh -o BatchMode=yes")
     assert environment["GIT_TERMINAL_PROMPT"] == "0"
     assert environment["GCM_INTERACTIVE"] == "never"
     assert environment["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
     monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i my-key")
-    assert updates._git_environment()["GIT_SSH_COMMAND"] == "ssh -i my-key"
+    assert updates._git_environment("ssh -o BatchMode=yes")["GIT_SSH_COMMAND"] == "ssh -i my-key"
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("ssh -i ~/.ssh/station", "ssh -i ~/.ssh/station -o BatchMode=yes"), (None, None)],
+)
+def test_the_checkouts_own_ssh_command_is_kept_and_told_not_to_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str | None, expected: str | None
+) -> None:
+    """ADR-0016-03: core.sshCommand still applies; only BatchMode is added."""
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    seen: dict[str, str] = {}
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        args = command[1:]
+        if args == ["config", "--get", "core.sshCommand"]:
+            return _done(configured + "\n" if configured else "", 0 if configured else 1)
+        if args[:3] == ["ls-remote", "--tags", "--refs"]:
+            seen.update(kwargs["env"])  # type: ignore[arg-type]
+            return _done(f"{'c' * 40}\trefs/tags/v0.21.0\n")
+        raise AssertionError(args)
+
+    updates.check_for_update(
+        _git_checkout(tmp_path, branch=None, tag="v0.21.0"),
+        UpdateSettings(),
+        runner=Mock(side_effect=run),
+    )
+    assert seen["GIT_SSH_COMMAND"] == (expected or "ssh -o BatchMode=yes")
+
+
+def test_the_operators_git_ssh_command_wins(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-03."""
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -F my-config")
+    runner = Mock(return_value=_done(f"{'c' * 40}\trefs/tags/v0.21.0\n"))
+    updates.check_for_update(
+        _git_checkout(tmp_path, branch=None, tag="v0.21.0"), UpdateSettings(), runner=runner
+    )
+    (call,) = runner.call_args_list
+    assert call.args[0][1] == "ls-remote"
+    assert call.kwargs["env"]["GIT_SSH_COMMAND"] == "ssh -F my-config"
 
 
 def test_callers_during_a_slow_check_wait_for_it_instead_of_starting_more(
@@ -577,3 +638,40 @@ def test_callers_during_a_slow_check_wait_for_it_instead_of_starting_more(
         thread.join(5)
     assert len(calls) == 1
     assert len(results) == 4
+
+
+def test_a_timeout_does_not_wait_for_a_pipe_holder_that_left_the_tree() -> None:
+    """ADR-0016-03: a holder whose parent has exited still cannot hold the check."""
+    import sys
+    import time
+
+    holder = "import time; time.sleep(25)"
+    middle = f"import subprocess, sys; subprocess.Popen([sys.executable, '-c', {holder!r}])"
+    child = (
+        "import subprocess, sys, time; "
+        f"subprocess.run([sys.executable, '-c', {middle!r}]); time.sleep(60)"
+    )
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        updates.run_bounded([sys.executable, "-c", child], timeout=2.0)
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows job objects")
+def test_closing_a_checks_job_ends_exactly_the_processes_in_it() -> None:
+    """ADR-0016-03: a per-check job object, not taskkill /T by parent process IDs."""
+    from autodj.child_jobs import end_job, job_for_tree
+
+    inside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    outside = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        job = job_for_tree(inside)
+        assert job is not None
+        end_job(job)
+        inside.wait(timeout=5)  # ended at once, not after its 30 s
+        assert outside.poll() is None
+    finally:
+        for process in (inside, outside):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)

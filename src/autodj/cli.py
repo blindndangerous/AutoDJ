@@ -1681,9 +1681,12 @@ class _ServeCommand(click.Command):
         except click.Abort:
             raise
         except (Exception, SystemExit) as exc:
-            clean_exit = (isinstance(exc, click.exceptions.Exit) and exc.exit_code == 0) or (
-                isinstance(exc, SystemExit) and exc.code in (None, 0)
-            )
+            from autodj.updates import RESTART_EXIT_CODE
+
+            # A restart asked for from the web page is not a failure either.
+            clean_exit = (
+                isinstance(exc, click.exceptions.Exit) and exc.exit_code in (0, RESTART_EXIT_CODE)
+            ) or (isinstance(exc, SystemExit) and exc.code in (None, 0))
             if not clean_exit:
                 hint = "Run `autodj doctor` to troubleshoot."
                 if ctx.obj and ctx.obj.get("config_path"):

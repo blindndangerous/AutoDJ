@@ -89,27 +89,41 @@ class RestartLimiter:
         self._lock = threading.Lock()
 
     def _recent(self, now: float) -> list[float]:
+        """The restart times within the last hour; a missing file has none.
+
+        Raises:
+            LimitUnavailable: The file is there but cannot be read, or is not a
+                list of times.  Counting it as empty would reset the limit.
+        """
+        path = self._path()
+        unreadable = (
+            f"AutoDJ cannot read {path}, so it did not restart. Delete that file to reset "
+            "the restart limit."
+        )
         try:
-            raw = json.loads(self._path().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return []
-        if not isinstance(raw, list):
-            return []
+        except (OSError, ValueError) as exc:
+            raise LimitUnavailable(unreadable) from exc
+        if not isinstance(raw, list) or not all(
+            isinstance(value, (int, float)) and not isinstance(value, bool) for value in raw
+        ):
+            raise LimitUnavailable(unreadable)
         # A time ahead of the clock (the clock was set back) counts as now, so
         # setting the clock back cannot clear the limit.
         return sorted(
             min(float(value), now)
             for value in raw[-RESTART_MAX_PER_HOUR:]
-            if isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and now - 3600.0 < min(float(value), now)
+            if now - 3600.0 < min(float(value), now)
         )
 
     def take(self) -> int | None:
         """Count one restart now; or, when over the limit, the seconds to wait instead.
 
         Raises:
-            LimitUnavailable: The count could not be saved.
+            LimitUnavailable: The count could not be read or saved; its
+                message says which file and what to do.
         """
         from autodj.fsutil import atomic_write
 
@@ -128,7 +142,10 @@ class RestartLimiter:
                 atomic_write(self._path(), json.dumps(recent[-RESTART_MAX_PER_HOUR:]))
             except OSError as exc:
                 logger.warning("Could not record the restart time: %s", exc)
-                raise LimitUnavailable(str(exc)) from exc
+                raise LimitUnavailable(
+                    f"AutoDJ could not write {self._path()}, so it did not restart. Check "
+                    "that the index folder is writable."
+                ) from exc
             return None
 
 
@@ -275,13 +292,9 @@ def install_updates(
             raise HTTPException(status_code=409, detail=found.message)
         try:
             wait = await asyncio.to_thread(limiter.take)
-        except LimitUnavailable:
+        except LimitUnavailable as exc:
             audit(request, "server-restart", "failed", route, 503)
-            raise HTTPException(
-                status_code=503,
-                detail="AutoDJ could not record the restart in its logs folder, so it did not "
-                "restart. Check that the index folder is writable.",
-            ) from None
+            raise HTTPException(status_code=503, detail=str(exc)) from None
         if wait is not None:
             audit(request, "server-restart", "rejected", route, 429)
             return JSONResponse(
