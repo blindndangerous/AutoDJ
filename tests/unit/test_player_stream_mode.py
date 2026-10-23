@@ -32,7 +32,7 @@ def test_stream_mode_builds_the_bus_up_front() -> None:
 
 
 def test_local_soundcard_uses_live_playout_without_stream_lifecycle() -> None:
-    """ADR-0004-12: local server audio shares live playout without stream lifecycle."""
+    """ADR-0004-14: local server audio shares live playout without stream lifecycle."""
     player = _player()
     assert player.live_mixing is True
     assert player._stream_mode is False

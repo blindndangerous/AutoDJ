@@ -9,9 +9,10 @@ from click.testing import CliRunner
 from autodj.catalog import LibraryCatalog, _path, catalog_counts
 from autodj.cli import _load_index_for_serve, cli
 from autodj.doctor import CheckStatus, _index_check
-from autodj.indexer import FEATURE_DIM, build_faiss_index
+from autodj.indexer import FEATURE_DIM
 from autodj.library import LibraryManager
 from autodj.similarity import SimilarityIndex
+from tests.unit._catalog_vectors import build_faiss_index
 from tests.unit.test_library import make_config, make_entry
 
 

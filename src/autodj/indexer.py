@@ -644,30 +644,6 @@ def _combine_features(
 
 
 # ---------------------------------------------------------------------------
-# FAISS index construction
-# ---------------------------------------------------------------------------
-
-
-def build_faiss_index(vectors: np.ndarray) -> faiss.IndexFlatIP:
-    """Build a FAISS inner-product index from a matrix of L2-normalized vectors.
-
-    Using ``IndexFlatIP`` on L2-normalized vectors is equivalent to cosine
-    similarity search — no approximation, exact results.
-
-    Args:
-        vectors: float32 array of shape ``(n_tracks, FEATURE_DIM)`` where
-            each row is an L2-normalized feature vector.
-
-    Returns:
-        A populated :class:`faiss.IndexFlatIP` containing all *vectors*.
-    """
-    dim = vectors.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(vectors)
-    return index
-
-
-# ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
 

@@ -13,7 +13,8 @@ import numpy as np
 
 from autodj.fsutil import relative_storage_path
 from autodj.index_manifest import IndexManifest, publish_generation
-from autodj.indexer import FEATURE_DIM, IndexEntry, _write_tracks_file, build_faiss_index
+from autodj.indexer import FEATURE_DIM, IndexEntry, _write_tracks_file
+from tests.unit._catalog_vectors import build_faiss_index
 
 
 def entry_to_row(entry: IndexEntry, music_dir: Path | None, vec_row: int) -> dict[str, object]:

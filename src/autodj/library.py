@@ -372,18 +372,8 @@ class LibraryManager:
         index = faiss.IndexFlatIP(FEATURE_DIM)
         for chunk in chunks:
             index.add(chunk)
-        replace_index = getattr(self.sim, "replace_catalog_faiss", None)
-        if replace_index is not None:
-            replace_index(entries, index)
-            return
-        replace = getattr(self.sim, "replace_catalog_index", None)
-        if replace is not None:
-            vectors = (
-                index.reconstruct_n(0, index.ntotal)
-                if index.ntotal
-                else np.empty((0, FEATURE_DIM), dtype=np.float32)
-            )
-            replace(entries, vectors)
+        if replace := getattr(self.sim, "replace_catalog_faiss", None):
+            replace(entries, index)
 
     def _replace_vector_entries(self, entries: list[IndexEntry]) -> None:
         """Give ``sim`` re-read metadata for the same vectors, without rebuilding FAISS."""
