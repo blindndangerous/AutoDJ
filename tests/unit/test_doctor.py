@@ -828,6 +828,19 @@ def test_stream_check_passes_when_disabled(tmp_path: Path) -> None:
     assert doctor._stream_check(cfg).status is doctor.CheckStatus.PASS
 
 
+def test_server_audio_check_fails_without_ffmpeg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.station.output = "server"
+    monkeypatch.setattr(doctor.shutil, "which", lambda _n: None)
+
+    result = doctor._stream_check(cfg)
+
+    assert result.status is doctor.CheckStatus.FAIL
+    assert "server-audio mode cannot start" in result.summary
+
+
 def test_stream_check_fails_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _config(tmp_path)
     cfg.station.output = "stream"

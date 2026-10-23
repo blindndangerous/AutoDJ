@@ -112,9 +112,10 @@ when upgrading that wheel.
 ## Finding uv and FFmpeg
 
 AutoDJ finds these programs on PATH, the operating system's list of executable directories.
-FFmpeg handles common music formats and streaming. The Windows launcher includes registered
-user and machine PATH entries in its own process, so tools installed by WinGet can be used
-without opening a new terminal. This does not rewrite your PATH settings.
+FFmpeg handles progressive server audio decoding, common music formats and
+streaming. The Windows launcher includes registered user and machine PATH
+entries in its own process, so tools installed by WinGet can be used without
+opening a new terminal. This does not rewrite your PATH settings.
 
 The launcher bootstraps uv with WinGet package ID `astral-sh.uv`. Setup and Doctor share
 the FFmpeg installer, using `Gyan.FFmpeg` for the current user. Ordinary serving does not install tools.

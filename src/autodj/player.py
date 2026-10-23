@@ -1,12 +1,11 @@
 """Auto-DJ player: next-track picking and server-side audio playback.
 
 ``autodj serve`` drives the player; the web page is its control surface.
-Offline/local server audio prepares stereo PCM tracks with the next song
-crossfaded into the tail. Stream mode progressively decodes live sources and
-mixes them on the :class:`~autodj.mixbus.MixBus` sample clock; the playout
-worker handles selection and bounded transition work. Outputs receive bus
-blocks, including the sound card (:class:`~autodj.sound_output.SoundDeviceOutput`)
-or stream encoder.
+Server audio progressively decodes live sources and mixes them on the
+:class:`~autodj.mixbus.MixBus` sample clock; offline review keeps its separate
+whole-program renderer. The playout worker handles selection and bounded
+transition work. Outputs receive bus blocks, including the sound card
+(:class:`~autodj.sound_output.SoundDeviceOutput`) or stream encoder.
 """
 
 from __future__ import annotations
@@ -992,7 +991,7 @@ class Player:
         self._sim = sim_index
         self._dry_run = dry_run
         self._stream_mode = stream_mode
-        self.live_mixing = stream_mode
+        self.live_mixing = stream_mode or not dry_run
         self._live_files: dict[tuple, BufferedFile] = {}
         self._live_voice_slot: tuple[RenderedTrack, SlotPlan] | None = None
         self._pending_live_source: BufferedFile | None = None
@@ -2977,8 +2976,8 @@ class Player:
     def _run_server_audio(self, current: IndexEntry) -> None:  # pragma: no cover -- sound card
         """Play the set from *current* through the sound card on the mix bus.
 
-        A render-ahead worker keeps the next rendered track ready; the bus
-        pulls it when the playing one ends.  Blocks until the player stops.
+        A live playout worker prepares the next handoff; the bus pulls it when
+        the playing one ends. Blocks until the player stops.
         Not exercised in CI because it needs a real sound device; its parts (the worker, the bus, the output, the callbacks)
         are tested on their own.
         """

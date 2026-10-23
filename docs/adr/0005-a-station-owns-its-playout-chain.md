@@ -143,6 +143,14 @@ record remain estimates requiring load evidence, not admission guarantees.
 The new storage/access records are Proposed, not silently accepted replacements.
 Record actual checks and their limits in the relevant PR.
 
+## Amendment, 2026-10-23: shared live playout for server outputs
+
+[Issue #538](https://github.com/blindndangerous/AutoDJ/issues/538) gives local
+sound-card and streaming stations the same live mixing engine. Station ownership
+and start/stop remain unchanged: choosing only the sound card does not create
+stream encoders, public listener endpoints or listener-driven sets. The output
+and dependency change is recorded in [ADR 4](0004-server-mix-bus-and-stream-mode.md).
+
 ## Current contracts
 
 IDs are stable and are never recycled. Automated means an existing regression
