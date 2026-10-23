@@ -3635,6 +3635,32 @@ describe("stream mode", () => {
       }
     });
 
+    it("says what Opus quality and show-next now do after Save, with focus kept on Save", async () => {
+      const initial = { stream: { bitrate: 320, continuous: false, aac_bitrate: 0, opus_bitrate: 0, show_next: false } };
+      const settings = settingsServer(initial);
+      await setupApp({
+        initialState: streamState,
+        onRequest: (url, options) => settings(url, options) || stationServer()(url, options),
+      });
+      await applyAppSettings(initial);
+      const opus = document.getElementById("stream-opus-bitrate");
+      const showNext = document.getElementById("np-show-next");
+      opus.value = "64";
+      opus.dispatchEvent(new Event("change", { bubbles: true }));
+      showNext.checked = true;
+      showNext.dispatchEvent(new Event("change", { bubbles: true }));
+      const save = document.querySelector("#spanel-stream [data-settings-save]");
+      const status = document.querySelector("#spanel-stream .settings-save-status");
+      save.focus();
+      save.click();
+      await vi.waitFor(() => expect(status.textContent).toContain("Settings saved for"));
+      expect(status.textContent).toContain("Opus stream on at 64 kbps.");
+      expect(status.textContent).toContain("The public now-playing feed now shows the next song.");
+      expect(document.activeElement).toBe(save);
+      expect(save.disabled).toBe(false);
+      expect(save.getAttribute("aria-disabled")).toBe("true");
+    });
+
     it("retains a quality draft when the encoder cannot restart", async () => {
       const initial = { stream: { bitrate: 320, continuous: false } };
       const settings = settingsServer(initial);

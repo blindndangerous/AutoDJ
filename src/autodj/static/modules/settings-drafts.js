@@ -1,7 +1,7 @@
 // One draft per Settings tab; server configuration and browser preferences keep their owners.
 import { requestJson, captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent } from "./api-client.js";
 import { currentStation, stationName } from "./stations.js";
-import { announceStatus } from "./live-region.js";
+import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { chooseAction } from "./confirm-dialog.js";
 import { clearFieldError, showFieldError } from "./dom-helpers.js";
 
@@ -29,10 +29,24 @@ function dirtyPanel(panel) {
   return panel.parts.some(dirty);
 }
 
+// aria-disabled, not disabled: Save or Discard is usually the focused
+// control when its press empties the draft, and disabling it dropped focus
+// to the page body, so NVDA lost the result.  While a save is out the
+// buttons keep their state, or NVDA calls the pressed button unavailable
+// (#331); aria-busy and .is-pending say it is busy.  The click handlers
+// honour the attribute.
+function unavailable(button) {
+  return button.getAttribute("aria-disabled") === "true";
+}
+
 function refresh(panel) {
   const changed = dirtyPanel(panel);
-  panel.save.disabled = panel.saving || !changed;
-  panel.discard.disabled = panel.saving || !changed;
+  for (const button of [panel.save, panel.discard]) {
+    if (!panel.saving) button.setAttribute("aria-disabled", String(!changed));
+    button.classList.toggle("is-pending", panel.saving);
+  }
+  if (panel.saving) panel.save.setAttribute("aria-busy", "true");
+  else panel.save.removeAttribute("aria-busy");
   panel.note.textContent = panel.saving ? "Saving changes…" : changed ? "Unsaved changes" : "No unsaved changes";
   const scopes = [];
   if (panel.parts.some((part) => part.group)) scopes.push(`Station: ${stationName()}`);
@@ -128,8 +142,8 @@ export function registerSettingsGroup(spec) {
     element.append(bar);
     panel = { element, parts: [], save, discard, status, error, note, scope, saving: false };
     editor.panels.set(element, panel);
-    save.addEventListener("click", () => void saveSettingsPanel(element));
-    discard.addEventListener("click", () => discardSettingsPanel(element));
+    save.addEventListener("click", () => { if (!unavailable(save)) void saveSettingsPanel(element); });
+    discard.addEventListener("click", () => { if (!unavailable(discard)) discardSettingsPanel(element); });
     for (const type of ["input", "change"]) element.addEventListener(type, (event) => {
       if ((event.target.getAttribute?.("aria-describedby") || "").split(/\s+/).includes(panel.error.id)) clearFieldError(event.target, panel.error);
       for (const part of panel.parts) {
@@ -190,6 +204,8 @@ export async function saveSettingsPanel(element) {
   if (!parts.length) return true;
   const changes = {};
   const submitted = new Map();
+  // What each part's save did, in words, for parts that say so.
+  const described = new Map();
   try {
     for (const part of parts) {
       if (part.persisted && !equal(part.persisted(), part.baseline)) {
@@ -203,6 +219,8 @@ export async function saveSettingsPanel(element) {
       }
       const value = clone(part.read());
       submitted.set(part, value);
+      const words = part.describe?.(value, part.baseline);
+      if (words) described.set(part, words);
       if (!part.group) continue;
       const patch = changes[part.group] ||= {};
       for (const [key, item] of Object.entries(value)) {
@@ -219,6 +237,7 @@ export async function saveSettingsPanel(element) {
   const current = () => generation === editor.generation && station === currentStation() && isAuthenticatedRequestCurrent(epoch);
   panel.saving = true;
   refresh(panel);
+  const stopPending = sayIfStillPending((text) => say(panel, text), "Saving changes…");
   try {
     let result = { applied: [], failed: {} };
     if (Object.keys(changes).length) {
@@ -255,7 +274,9 @@ export async function saveSettingsPanel(element) {
       refresh(other);
     }
     const scope = parts.some((part) => part.group) ? `for ${stationName()}` : "in this browser";
-    say(panel, `Settings saved ${scope}. ${result.message || ""}`.trim());
+    const done = [...described].filter(([part]) => !part.group || result.applied.includes(part.group))
+      .map(([, words]) => words);
+    say(panel, [`Settings saved ${scope}.`, ...done, result.message || ""].join(" ").trim());
     return true;
   } catch (error) {
     if (current()) {
@@ -269,6 +290,7 @@ export async function saveSettingsPanel(element) {
     }
     return false;
   } finally {
+    stopPending();
     if (generation === editor.generation) { panel.saving = false; refresh(panel); }
   }
 }

@@ -114,6 +114,9 @@ export function installNowPlayingSettings({
     write: (body) => {
       if (body.show_next != null) showNext.checked = Boolean(body.show_next);
     },
+    describe: (body) => (body.show_next
+      ? "The public now-playing feed now shows the next song."
+      : "The public now-playing feed now hides the next song."),
   });
   const listNavigation = installActionListNavigation(list);
 

@@ -2304,4 +2304,7 @@ dialog h1 { font-size: 1.5em; }
   padding-top: 1rem;
 }
 .settings-dirty:not(:focus) { outline: 2px dashed currentColor; outline-offset: 2px; }
-.settings-save-status:empty { display: none; }
+/* An empty save status stays rendered, without its margin.  Hidden until its
+   words arrive, it was a new region each time, and NVDA in Firefox said
+   nothing. */
+.settings-save-status:empty { margin: 0; }

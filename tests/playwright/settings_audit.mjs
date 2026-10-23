@@ -39,17 +39,44 @@ async function audit(name, launcher) {
     const wanted = before === 1 ? 2 : 1;
     await speed.fill(String(wanted));
     assert.equal((await saved()).values.playback.music_speed_percent, before);
+    // The result is said through a status region rendered before its words
+    // arrive, and the pressed button keeps focus (WCAG 4.1.3, 2.4.3).
+    const status = panel.locator(".settings-save-status");
+    assert.equal(await status.getAttribute("role"), "status");
+    assert.notEqual(await status.evaluate((node) => window.getComputedStyle(node).display), "none");
     const saving = page.waitForResponse((response) => response.url() === `${endpoint}/settings`
       && response.request().method() === "PATCH");
-    await panel.locator("[data-settings-save]").click();
+    await panel.locator("[data-settings-save]").focus();
+    await page.keyboard.press("Enter");
     assert.equal((await saving).status(), 200);
     assert.equal((await saved()).values.playback.music_speed_percent, wanted);
+    await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
+      .textContent.startsWith("Settings saved for"));
+    const focusAfter = (selector) => page.evaluate((target) => {
+      const button = document.querySelector(target);
+      return { kept: document.activeElement === button, disabled: button.disabled,
+        unavailable: button.getAttribute("aria-disabled") };
+    }, selector);
+    assert.deepEqual(await focusAfter("#spanel-sound [data-settings-save]"),
+      { kept: true, disabled: false, unavailable: "true" });
     await speed.fill("3");
     await page.locator("#stab-stream").click();
+    // The dialog's close event returns focus to its opener a task later, so
+    // wait for it before focusing Discard.
+    const closed = page.evaluate(() => new Promise((resolve) => {
+      document.getElementById("confirm-dialog")
+        .addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    }));
     await page.getByRole("button", { name: "Stay", exact: true }).click();
+    await closed;
     assert.equal(await panel.isVisible(), true);
-    await panel.locator("[data-settings-discard]").click();
+    await panel.locator("[data-settings-discard]").focus();
+    await page.keyboard.press("Enter");
     assert.equal(await speed.inputValue(), String(wanted));
+    await page.waitForFunction(() => document.querySelector("#spanel-sound .settings-save-status")
+      .textContent.startsWith("Changes discarded."));
+    assert.deepEqual(await focusAfter("#spanel-sound [data-settings-discard]"),
+      { kept: true, disabled: false, unavailable: "true" });
 
     await speed.fill("4");
     const current = await saved();
@@ -111,7 +138,7 @@ async function audit(name, launcher) {
       assert.equal(await migrationPage.evaluate(() => localStorage.getItem("autodj.announceTrackChangesEverywhere")), null);
       await migration.close();
     }
-    return { stoppedStation: slug, draftSaveDiscard: true, conflict: true, spacedRelay: true, migration: true, errors };
+    return { stoppedStation: slug, draftSaveDiscard: true, saveFocusAndStatus: true, conflict: true, spacedRelay: true, migration: true, errors };
   } finally {
     await browser.close();
   }
