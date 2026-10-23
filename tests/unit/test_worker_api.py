@@ -65,7 +65,9 @@ class Server:
                 self.manager.catalog.put_entry(make_entry(song))
                 self.songs.append(song)
             self.manager.refresh()
-        bridge = SimpleNamespace(player=SimpleNamespace(_cfg=self.cfg), library=self.manager)
+        bridge = SimpleNamespace(
+            player=SimpleNamespace(_cfg=self.cfg, bus=None), library=self.manager
+        )
         self.app = create_app(bridge)
         self.client = TestClient(self.app, base_url=HTTPS)
 
