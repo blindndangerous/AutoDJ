@@ -1910,8 +1910,8 @@ describe("static accessibility contracts", () => {
     expect(listen.querySelector('[aria-hidden="true"]')).not.toBeNull();
     // Browser mode renders no Listen here button until stream mode shows it.
     expect(listen.hidden).toBe(true);
-    // Sits in the transport group straight after Play / Pause.
-    expect(listen.previousElementSibling.id).toBe("btn-pause");
+    // Listening comes before station transport in reading and keyboard order.
+    expect(listen.nextElementSibling.id).toBe("btn-pause");
     expect(listen.closest('[role="group"]').getAttribute("aria-label"))
       .toBe("Playback controls");
 
