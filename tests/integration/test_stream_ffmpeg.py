@@ -137,3 +137,18 @@ def test_an_encoder_keeps_what_ffmpeg_said_when_it_fails() -> None:
         assert any("autodj_no_such_encoder" in line for line in encoder.errors)
     finally:
         encoder.close()
+
+
+def test_closing_an_idle_encoder_ends_ffmpeg_at_once() -> None:
+    """An idle ffmpeg blocks reading its input, where SIGTERM would leave it running."""
+    encoder = FfmpegEncoder(128)
+    try:
+        # Long enough for ffmpeg to start and wait for its first input.
+        time.sleep(0.5)
+        started = time.monotonic()
+        encoder.close()
+        # Terminating it first used to wait 5 seconds before the kill.
+        assert time.monotonic() - started < 4
+        assert not encoder.alive
+    finally:
+        encoder.close()
