@@ -1197,7 +1197,16 @@ class LibraryManager:
             with self._lock:
                 self._import_errors.append({"path": str(path), "error": str(exc)})
             return False
+        pending_identity = queue.scan_identity(key)
+        if pending_identity is not None and pending_identity != (size, fingerprint):
+            self._reset_dj_cache(path)
         if not queue.refresh_scan(key, size, fingerprint, retry_access_errors=not recover_scan):
+            record = self.catalog.record_for_path(path)
+            if record is not None and (record["size"], record["fingerprint"]) != (
+                size,
+                fingerprint,
+            ):
+                self._reset_dj_cache(path)
             try:
                 return self._read_track_local(
                     kind, path, override_tags, scan_identity=(size, fingerprint)
@@ -1259,6 +1268,17 @@ class LibraryManager:
             self._scan_worker_checked = now
         return self._scan_worker_active
 
+    def _reset_dj_cache(self, path: Path) -> None:
+        # Invalidate at discovery; pending scans may receive new user cues before completion.
+        if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
+            return
+        from autodj.dj_meta import DjMeta
+
+        cache = self._dj_cache()
+        if cache is not None:
+            cache.set(str(path), DjMeta())
+            cache.flush(force=True)
+
     def _read_track_local(
         self,
         kind: str,
@@ -1274,7 +1294,10 @@ class LibraryManager:
         old = None
         try:
             old = self.catalog.record_for_path(path)
-            unchanged = old is not None and old["kind"] == kind and self._same_identity(old, path)
+            same_identity = old is not None and self._same_identity(old, path)
+            unchanged = same_identity and old is not None and old["kind"] == kind
+            if old is not None and not same_identity and scan_identity is None:
+                self._reset_dj_cache(path)
             mtime_changed = bool(
                 unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
             )
@@ -1372,7 +1395,9 @@ class LibraryManager:
                                 "Scan retries exhausted for %s; a later local scan can retry", path
                             )
                     raise OSError("File changed during scan decoding")
-                suggestions = self._legacy_point_suggestions(path)
+                suggestions = (
+                    self._legacy_point_suggestions(path) if old is None or same_identity else {}
+                )
                 for name, value in suggestions.items():
                     if points.get(name) is None:
                         points[name] = value

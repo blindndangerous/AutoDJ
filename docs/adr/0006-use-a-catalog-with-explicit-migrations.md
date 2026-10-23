@@ -80,6 +80,19 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0006-02` | Legacy-only startup refuses explicit-migration inputs without mutating them. | automated | `tests/unit/test_catalog_startup.py::test_legacy_only_startup_requires_explicit_migration_without_mutation` |
 | `ADR-0006-03` | Migration preview writes nothing; applied migration preserves vectors and metadata. | automated | `tests/unit/test_index_migration.py::test_dry_run_writes_nothing`; `tests/unit/test_index_migration.py::test_apply_preserves_vectors_metadata_and_reports_missing_file` |
 | `ADR-0006-04` | Worker results reject incompatible model/weight/version identities, invalid vectors, and files changed since claim. | automated | `tests/unit/test_worker_api.py::test_results_from_other_weights_or_versions_are_refused`; `tests/unit/test_worker_api.py::test_invalid_vectors_are_refused`; `tests/unit/test_worker_api.py::test_a_result_for_a_changed_file_is_refused_as_stale` |
+| `ADR-0006-05` | Changed file identity invalidates cached timing analysis; fresh cues cannot inherit old Intro/Outro, and disabled DJ analysis leaves work pending. | automated | `tests/unit/test_library.py::test_changed_file_recalculates_cues_without_inheriting_dj_cache`; `tests/unit/test_library.py::test_deferred_replacement_clears_old_dj_cache_before_publishing_identity`; `tests/unit/test_library.py::test_rescan_reads_external_tag_edit_with_unchanged_size` |
+
+## Clarification, 2026-10-22: analysis follows file identity
+
+[Issue #545](https://github.com/blindndangerous/AutoDJ/issues/545) repairs rescan
+invalidation: changed size/fingerprint invalidates the path-keyed DJ analysis,
+including cached Intro/Outro, beats and cue markers. Basic analysis uses the
+current audio without importing those old suggestions. With DJ analysis disabled,
+the cleared cache remains unanalysed so later enabled analysis processes the file.
+Invalidation happens when discovery observes replacement bytes, before deferred
+scans publish the new identity. Edits made while that new scan is pending survive
+completion. Unchanged file identities retain existing manual cues and legacy suggestions.
+This clarifies cache coherence; the record retains its Proposed status.
 
 ## Verification
 
