@@ -1392,10 +1392,12 @@ folder ownership, and the health check, generates a CycloneDX SBOM, and blocks o
 CRITICAL findings with fixes available.
 
 The published image on GitHub Container Registry is built by `.github/workflows/image.yml`
-only from a push to `master` or, through the release workflow, a verified release tag. That job
-runs the same smoke test and Trivy scan, then pushes the same build and attests its build
-provenance with Sigstore. Only that job holds `packages: write`; pull requests build and check
-without registry credentials. Operators can check an image with `gh attestation verify`.
+only from a push to `master` or, through the release workflow, a verified `vX.Y.Z` tag whose
+commit is on `master`. A read-only job runs the same smoke test, SBOM and Trivy scan and saves the
+image it checked. A separate job, the only one holding `packages: write`, `id-token: write` and
+`attestations: write`, runs none of the downloaded scanners: it loads that saved image, pushes it
+and attests its digest with Sigstore. The GitHub release waits for the image. Pull requests build
+and check without registry credentials. Operators can check an image with `gh attestation verify`.
 
 `uv.lock` and `package-lock.json` are committed. CI uses frozen installs, runs `pip-audit` and
 `npm audit`, scans source tree with Trivy and OSV-Scanner, checks secrets with Gitleaks, and produces

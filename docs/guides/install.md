@@ -96,12 +96,18 @@ AutoDJ ships a `compose.yaml` file for Docker Compose. It runs the ready-built i
 publishes on GitHub Container Registry, so nothing is built on the server. In Docker, AutoDJ runs
 in LAN mode: other devices on your network can open it, and each browser pairs once with a code.
 
-1. On the server, clone AutoDJ to get `compose.yaml`:
+1. On the server, clone AutoDJ to get `compose.yaml`, then switch to the release you will run.
+   The default image is the newest release, so use the newest tag on the
+   [releases page](https://github.com/blindndangerous/AutoDJ/releases) in place of `vX.Y.Z`:
 
    ```bash
    git clone https://github.com/blindndangerous/AutoDJ
    cd AutoDJ
+   git switch --detach vX.Y.Z
    ```
+
+   This keeps `compose.yaml` and the example settings matched to the image. Stay on `master`
+   only if you choose the development image.
 
 2. Create a file named `.env` beside `compose.yaml`, with your own paths:
 

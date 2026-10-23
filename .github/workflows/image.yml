@@ -1,10 +1,14 @@
 name: Container image
 
 # Publishes ghcr.io/<owner>/autodj. A push to master publishes :development
-# and :sha-<short commit>; release.yml calls this for a vX.Y.Z tag, after its
-# checks, to publish :X.Y.Z, :stable and :latest. Each run builds the image,
-# smoke-tests and scans it as CI does, then pushes that same build and attests
-# its provenance. Pull requests never get here: CI builds and checks only.
+# and :sha-<short commit>; release.yml calls this for a vX.Y.Z tag on master,
+# after its checks, to publish :X.Y.Z, :stable and :latest.
+#
+# Two jobs. "build" has read-only permissions: it builds the image, smoke-tests
+# it, writes the SBOM, scans it with Trivy and saves that exact image as an
+# artifact. "push" holds the registry and attestation permissions, runs no
+# third-party binary, loads the saved image, pushes it and attests the pushed
+# digest. Pull requests never get here: CI builds and checks only.
 on:
   push:
     branches: [master]
@@ -25,19 +29,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build, check and publish the image
+  build:
+    name: Build and check the image
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+          # A release needs master's history to check where its tag points.
+          fetch-depth: ${{ inputs.release && '0' || '1' }}
+      # :stable and :latest move only for a vX.Y.Z tag on master, and
+      # :development only for master itself, whoever pushed the ref.
+      - name: Check the ref
+        env:
+          RELEASE: ${{ inputs.release == true }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE" == true ]]; then
+            if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::A release image needs a vX.Y.Z tag, not $GITHUB_REF"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+              echo "::error::$GITHUB_REF is not on master"
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF" != refs/heads/master ]]; then
+            echo "::error::A development image is published only from master, not $GITHUB_REF"
+            exit 1
+          fi
       - name: Name the image
         id: name
         env:
@@ -61,33 +87,68 @@ jobs:
           channel: ${{ inputs.release && 'stable' || 'development' }}
           labels: ${{ steps.meta.outputs.labels }}
           sbom-artifact: image-sbom
+      # The image is several GB; zstd keeps the artifact and its transfer small.
+      - name: Save the checked image
+        run: |
+          set -euo pipefail
+          docker save autodj:ci | zstd -T0 -3 -q -o "$RUNNER_TEMP/autodj-image.tar.zst"
+          ls -l "$RUNNER_TEMP/autodj-image.tar.zst"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: autodj-image
+          path: ${{ runner.temp }}/autodj-image.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  push:
+    name: Publish the image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: autodj-image
+          path: ${{ runner.temp }}/image
+      - name: Load the checked image
+        run: zstd -dc "$RUNNER_TEMP/image/autodj-image.tar.zst" | docker load
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # The same inputs as the checked build, so every layer comes from the
-      # builder's cache and the pushed image is the one that was tested.
-      - name: Push image
+      # Every tag is the same image, so every push reports the same digest.
+      - name: Push the checked image
         id: push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Containerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            AUTODJ_COMMIT=${{ github.sha }}
-            AUTODJ_IMAGE_CHANNEL=${{ inputs.release && 'stable' || 'development' }}
-          provenance: false
-          sbom: false
-          cache-from: type=gha,scope=autodj-image
+        env:
+          TAGS: ${{ needs.build.outputs.tags }}
+        run: |
+          set -euo pipefail
+          digest=""
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker tag autodj:ci "$tag"
+            output="$(docker push "$tag")"
+            printf '%s\n' "$output"
+            pushed="$(sed -n 's/.*digest: \(sha256:[0-9a-f]\{64\}\).*/\1/p' <<<"$output")"
+            if [[ -z "$pushed" || ( -n "$digest" && "$pushed" != "$digest" ) ]]; then
+              echo "::error::Pushing $tag gave digest '$pushed', expected '${digest:-one digest}'"
+              exit 1
+            fi
+            digest="$pushed"
+          done <<<"$TAGS"
+          test -n "$digest"
+          printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ${{ steps.name.outputs.image }}
+          subject-name: ${{ needs.build.outputs.image }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
           # Storage records exist only for organization-owned repositories.

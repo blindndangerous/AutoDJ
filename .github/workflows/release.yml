@@ -124,8 +124,10 @@ jobs:
       id-token: write
       attestations: write
 
+  # The GitHub release, which the update check reads as the latest release,
+  # appears only once the image it points to is published.
   publish:
-    needs: build-and-verify
+    needs: [build-and-verify, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write

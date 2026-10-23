@@ -55,6 +55,13 @@ jobs:
     # release.yml from a release tag, after the same checks.
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # The smoke test runs the image through compose.yaml alone; check that the
+      # local-build override still resolves with it.
+      - name: Check the local-build Compose files
+        run: |
+          set -euo pipefail
+          docker compose -f compose.yaml -f compose.build.yaml config -q
+          test "$(docker compose -f compose.yaml -f compose.build.yaml config --images)" = autodj:local
       - uses: ./.github/actions/build-image
 
   frontend:

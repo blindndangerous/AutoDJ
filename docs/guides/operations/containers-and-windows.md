@@ -149,8 +149,10 @@ A version or `sha-` tag never changes, so pulling it changes nothing: set `AUTOD
 to the new tag first. To switch channels, set `AUTODJ_IMAGE` to the `stable` or `development` tag
 the same way.
 
-Updating the checkout is not needed to update AutoDJ. Do it when you want the newest
-`compose.yaml`, with `git pull` on `master` or by switching to a release tag.
+Pulling updates AutoDJ itself. Keep the checkout matched to the image too, so `compose.yaml` and
+the example settings fit it: for a release, run `git fetch --tags origin` and
+`git switch --detach vX.Y.Z` with the new version; for the development image, `git pull` on
+`master`.
 
 If you [build the image yourself](#build-the-image-yourself), update the checkout and rebuild
 instead. For a release:

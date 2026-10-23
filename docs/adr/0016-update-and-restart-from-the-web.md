@@ -143,13 +143,17 @@ rebuilt with Compose, this amendment applies to published images.
 
 - The [image workflow](../../.github/workflows/image.yml) publishes
   `ghcr.io/<owner>/autodj`, with the owner taken from the repository. A push to `master` publishes
-  `:development` and `:sha-<short commit>`. A `vX.Y.Z` tag, after the release workflow has checked
-  the tag, version and changelog, publishes `:X.Y.Z`, `:stable` and `:latest`. `:latest` is the
-  same image as `:stable`, so a pull without a tag never gets a development build.
-- Each run builds `linux/amd64` with a buildx layer cache, runs the container smoke test, writes
-  an SBOM and fails on a fixable HIGH or CRITICAL Trivy finding. Only then does it push the same
-  build and attest its build provenance with Sigstore, as the release workflow signs its other
-  artifacts. Pull requests build and check the image without registry credentials.
+  `:development` and `:sha-<short commit>`. A `vX.Y.Z` tag on `master`, after the release workflow
+  has checked the tag, version and changelog, publishes `:X.Y.Z`, `:stable` and `:latest`; any
+  other ref is refused, because no tag ruleset limits who may push a tag. `:latest` is the same
+  image as `:stable`, so a pull without a tag never gets a development build. The GitHub release,
+  which the update check reads, is published only after its image.
+- A read-only job builds `linux/amd64` with a buildx layer cache, runs the container smoke test,
+  writes an SBOM, fails on a fixable HIGH or CRITICAL Trivy finding and saves that image as an
+  artifact. A second job, the only one with registry and attestation permissions and running no
+  downloaded scanner, loads that exact image, pushes it and attests its digest with Sigstore, as
+  the release workflow signs its other artifacts. Pull requests build and check the image
+  without registry credentials.
 - `compose.yaml` runs `${AUTODJ_IMAGE:-ghcr.io/<owner>/autodj:stable}` and passes that name to
   AutoDJ as `AUTODJ_IMAGE`. Building on the operator's computer is an opt-in override,
   `compose.build.yaml`, which names the image `autodj:local` with `pull_policy: never`. Neither
