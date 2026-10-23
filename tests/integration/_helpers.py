@@ -39,7 +39,8 @@ from tests._layout import point_index
 # Anything deriving a real filesystem path from a mocked config must point here.
 # Left as a MagicMock, ``index_dir`` stringifies into a literal "MagicMock/..."
 # tree of real directories and SQLite files inside the checkout.
-NO_INDEX_DIR = Path(tempfile.gettempdir()).resolve() / "_autodj_no_index"
+_NO_INDEX_ROOT = tempfile.TemporaryDirectory(prefix="autodj-no-index-")
+NO_INDEX_DIR = Path(_NO_INDEX_ROOT.name)
 
 
 def wav_bytes(seconds: float = 0.1) -> bytes:

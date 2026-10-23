@@ -343,7 +343,7 @@ def test_run_recovers_from_render_block_exception() -> None:
 
 
 @pytest.mark.parametrize("stall_seconds", [0.07, 0.13, 0.45, 0.95, 2.01])
-def test_run_makes_up_a_stall_in_a_bounded_burst(stall_seconds: float) -> None:
+def test_run_makes_up_a_stall_in_a_bounded_burst(stall_seconds: float, caplog) -> None:
     """A late block is made up, but never with more than CATCH_UP_BLOCKS at once.
 
     Dropping the backlog outright (as the bus once did after a single late
@@ -380,6 +380,94 @@ def test_run_makes_up_a_stall_in_a_bounded_burst(stall_seconds: float) -> None:
     # The stalled block, then the backlog back to back, then one per period.
     assert burst[0] == 1 + made_up
     assert burst[1:] == [burst[0] + 1, burst[0] + 2]
+    if stall_seconds < CATCH_UP_BLOCKS * 0.02:
+        assert "fell behind" not in caplog.text
+
+
+def test_run_warns_about_skipped_periods_with_rate_limited_totals(caplog) -> None:
+    bus, _, _ = _bus([])
+    clock: FakeClock = bus._clock  # type: ignore[assignment]
+    stop = threading.Event()
+    warnings_at: list[float] = []
+    stalls = iter((0.45, 0.95, 0.45, 10.01, 0.45))
+    slept = 0
+    stall_next = True
+
+    class StallingOutput:
+        def write(self, _block: np.ndarray) -> None:
+            nonlocal stall_next
+            if stall_next:
+                clock.t += next(stalls)
+                stall_next = False
+
+    bus.add_output(StallingOutput())
+    original_sleep = clock.sleep
+
+    def sleep_and_maybe_stop(seconds: float) -> None:
+        nonlocal slept, stall_next
+        original_sleep(seconds)
+        records = [r for r in caplog.records if "fell behind" in r.message]
+        if len(records) > len(warnings_at):
+            warnings_at.append(clock.t)
+        slept += 1
+        stall_next = True
+        if slept == 5:
+            stop.set()
+
+    clock.sleep = sleep_and_maybe_stop  # type: ignore[method-assign]
+    bus.run(stop)
+    records = [r for r in caplog.records if "fell behind" in r.message]
+    assert len(records) == 3
+    assert all(r.levelname == "WARNING" for r in records)
+    assert warnings_at[1] - warnings_at[0] >= 10.0
+    # Each stall spends its first 20 ms on the current block, then catches up
+    # eight periods. The second warning totals the three intervening stalls.
+    assert "0.430 s" in records[0].message
+    assert "14 periods of 20 ms" in records[0].message
+    assert "9.990 s" in records[1].message
+    assert "545 periods of 20 ms" in records[1].message  # 39 + 14 + 492
+    assert "14 periods of 20 ms" in records[2].message  # Pending totals flushed at exit.
+
+
+@pytest.mark.parametrize("exit_early", [False, True])
+def test_run_flushes_pending_lag_after_recovery_or_exit(exit_early, caplog) -> None:
+    bus, _, _ = _bus([])
+    clock: FakeClock = bus._clock  # type: ignore[assignment]
+    stop = threading.Event()
+    slept = 0
+    pending_stall = True
+    flushed_while_running = False
+
+    class StallingOutput:
+        def write(self, _block):
+            nonlocal pending_stall
+            if pending_stall:
+                clock.t += 0.45 if slept == 0 else 0.95
+                pending_stall = False
+
+    bus.add_output(StallingOutput())
+    original_sleep = clock.sleep
+
+    def sleep_and_stop(seconds):
+        nonlocal slept, pending_stall, flushed_while_running
+        original_sleep(seconds)
+        slept += 1
+        pending_stall = slept == 1
+        records = [r for r in caplog.records if "fell behind" in r.message]
+        if len(records) == 2:
+            assert clock.t >= 10.45
+            flushed_while_running = True
+            stop.set()
+        if (exit_early and slept == 2) or clock.t > 11:
+            stop.set()
+
+    clock.sleep = sleep_and_stop
+    bus.run(stop)
+    records = [r for r in caplog.records if "fell behind" in r.message]
+    assert len(records) == 2
+    assert "39 periods of 20 ms" in records[1].message
+    assert "0.930 s" in records[1].message
+    assert flushed_while_running is not exit_early
 
 
 def test_run_skips_sleep_when_slightly_behind_schedule() -> None:

@@ -5,6 +5,8 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
   workflow_call:
 
 permissions:
@@ -15,7 +17,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Drafts run these checks; ready PRs and non-PR events run every job.
+  # Full CI on the final revision is required before merge.
+  fast:
+    name: Static checks and no-model tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - run: uv sync --frozen
+      - run: uv lock --check
+      - run: uv run --frozen --no-sync python scripts/check_architecture_docs.py
+      - run: uv run --frozen --no-sync ruff check src/ tests/ scripts/
+      - run: uv run --frozen --no-sync ruff format --check src/ tests/ scripts/
+      - run: uv run --frozen --no-sync python scripts/check_coverage_policy.py
+      - name: Pytest — no-model environment
+        run: uv run --frozen --no-sync python scripts/ci_pytest.py --profile no-model
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "26.12.0"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+
   container:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Container build, smoke, and scan
     runs-on: ubuntu-latest
     permissions:
@@ -45,6 +76,7 @@ jobs:
           path: container-sbom.cdx.json
 
   frontend:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Frontend lint, test, audit
     runs-on: ubuntu-latest
     permissions:
@@ -56,7 +88,6 @@ jobs:
           node-version: "26.12.0"
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run lint
       - run: npm test
         env:
           NODE_OPTIONS: --max-old-space-size=5120
@@ -64,6 +95,7 @@ jobs:
       - run: npm audit --audit-level=high
 
   quality:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Quality & security
     runs-on: ubuntu-latest
 
@@ -80,44 +112,33 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Verify dependency lock
-        run: uv lock --check
-
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Ruff — lint
-        run: uv run ruff check src/ tests/ scripts/
-
-      - name: Coverage exclusion policy
-        run: uv run python scripts/check_coverage_policy.py
-
-      - name: Ruff — format check
-        run: uv run ruff format --check src/ tests/ scripts/
-
       - name: Mypy — type check
-        run: uv run mypy src/autodj/
+        run: uv run --frozen --no-sync mypy src/autodj/
 
       - name: Vulture — dead code
-        run: uv run vulture
+        run: uv run --frozen --no-sync vulture
 
       - name: Deptry — unused / missing deps
-        run: uv run deptry src/
+        run: uv run --frozen --no-sync deptry src/
 
       - name: Bandit — security scan
-        run: uv run bandit -r src/ -c pyproject.toml
+        run: uv run --frozen --no-sync bandit -r src/ -c pyproject.toml
 
       - name: pip-audit — dependency CVE scan
-        run: uv run pip-audit
+        run: uv run --frozen --no-sync pip-audit
 
       - name: Semgrep — multi-rule SAST
         continue-on-error: true     # advisory; bandit is the hard gate
         run: uvx semgrep --error --config p/python --config p/owasp-top-ten src/
 
       - name: pip-licenses — license inventory
-        run: uv run pip-licenses --format=markdown --order=license
+        run: uv run --frozen --no-sync pip-licenses --format=markdown --order=license
 
   test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     permissions:
@@ -152,14 +173,14 @@ jobs:
         run: choco install ffmpeg --yes --no-progress
 
       - name: Pytest — test suite
-        run: uv run python scripts/ci_pytest.py --durations=30
+        run: uv run --frozen --no-sync python scripts/ci_pytest.py --profile full --require-executed tests/unit/test_review_render.py --durations=30
         env:
           AUTODJ_PYTEST_WORKERS: "2"
 
   browser:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Browser assertions (Chromium, Firefox)
-    # Waits only for the quick lint and JS tests, not the Python suites,
-    # so it starts about 10 minutes sooner.
+    # Start after the frontend suite without waiting for the Python suites.
     needs: [frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -200,7 +221,7 @@ jobs:
             >"$RUNNER_TEMP/config.toml"
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/models" \
-          uv run autodj --config "$RUNNER_TEMP/config.toml" serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
+          uv run --frozen --no-sync autodj --config "$RUNNER_TEMP/config.toml" serve >"$RUNNER_TEMP/autodj.log" 2>&1 &
           server_pid=$!
           printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj.pid"
           for _attempt in $(seq 1 30); do
@@ -246,6 +267,7 @@ jobs:
             ${{ runner.temp }}/documentation-render/report.json
 
   browser-stream:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Browser assertions (stream, Chromium)
     needs: [frontend]
     runs-on: ubuntu-latest
@@ -277,7 +299,7 @@ jobs:
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/stream/music" \
           AUTODJ_INDEX_DIR="$RUNNER_TEMP/stream/index" \
           AUTODJ_MODEL_DIR="$RUNNER_TEMP/stream/models" \
-          uv run autodj --config "$RUNNER_TEMP/stream/config.toml" serve --stream \
+          uv run --frozen --no-sync autodj --config "$RUNNER_TEMP/stream/config.toml" serve --stream \
             >"$RUNNER_TEMP/autodj-stream.log" 2>&1 &
           server_pid=$!
           printf '%s\n' "$server_pid" >"$RUNNER_TEMP/autodj-stream.pid"
