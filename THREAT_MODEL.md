@@ -442,8 +442,9 @@ What a worker can do with a valid token:
   Saved bounds clamp to measured duration; impossible bounds revert to analysis provenance.
   Mix points clamp inside those bounds, never becoming user clears solely because the new
   recording is shorter. Automatic trim expands to include valid saved mix points. DJ storage
-  aligns markers with catalog points, discards saved markers without retained user/imported
-  provenance, merges duplicates by source priority and drops cues beyond measured
+  aligns user/imported markers with catalog points; with external cue import on, it drops
+  cached markers without retained user/imported provenance before re-merging the external
+  libraries, merges duplicates by source priority and drops cues beyond measured
   length with debug logging. Editing an unmeasured listing does not establish measured duration.
   A confirmed unique pending move transfers pending identity, edit snapshot, provenance and
   retry state in the catalog rekey transaction. Present catalog and pending identities both

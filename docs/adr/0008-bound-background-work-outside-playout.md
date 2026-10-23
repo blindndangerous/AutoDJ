@@ -392,9 +392,12 @@ never become permanent user clears because the replacement is shorter. Overlap i
 to that range.
 
 DJ result storage merges current saved cues, drops cues past the new measured length with a
-debug log, and aligns mix markers with the catalog's validated points. Saved marker cues whose
-catalog point is no longer user/imported are discarded; automatic marker cues and metadata
-fields use the catalog value. Non-marker saved cues within the new length remain. A second cue
+debug log, and aligns mix markers with the catalog's validated points. When external cue
+import is on, cached marker cues whose catalog point is no longer user/imported are dropped
+before the external libraries are merged again, so current Mixxx, Rekordbox, Traktor and Serato
+markers apply and stale ones from old bytes do not; with import off, cached cues stay as before.
+Markers backed by user/imported catalog points take the catalog value. Non-marker saved cues
+within the new length remain. A second cue
 merge removes duplicates created by alignment, preferring user over imported over analysis.
 Catalog and DJ writes remain separate transactions, with existing recovery on cache failure.
 Editing a tag-only listing does not establish measured duration or let recovery skip decoding.

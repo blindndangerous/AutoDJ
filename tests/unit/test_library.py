@@ -244,6 +244,111 @@ def test_remote_scan_preserves_saved_dj_cues(manager_factory, import_external):
     assert cache.get(str(song)).beats == [2.0]
 
 
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("flow", ["local", "worker"])
+def test_scan_dj_keeps_current_imported_markers(manager_factory, monkeypatch, flow):
+    from autodj.dj_cues_import import _normalise_keys
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    manager.cfg.playback.import_external_cues = True
+    song = manager.cfg.library.music_dir / "My Song.flac"
+    song.write_bytes(b"audio")
+    entry, points = fake_basic(song)
+    manager.catalog.put_entry(entry, points=points, point_source="analysis")
+    before = manager.catalog.record_for_path(song)
+    # Use the catalog's runtime path and the importers' normalized keys on both OSes.
+    path = Path(before["path"])
+    imported = [
+        Cue(30.0, "intro_end", source="mixxx"),
+        Cue(42.0, "hot", "Drop", "mixxx"),
+        Cue(150.0, "outro_start", source="mixxx"),
+    ]
+    monkeypatch.setattr(
+        "autodj.dj_cues_import.auto_import_cues",
+        lambda **kwargs: _normalise_keys({song.as_posix(): imported}),
+    )
+    meta = DjMeta(
+        analysed=True,
+        intro_end_s=10.0,
+        outro_start_s=165.0,
+        beats=[2.0],
+        cues=[Cue(10.0, "intro_end"), Cue(165.0, "outro_start")],
+    )
+    cache = manager._dj_cache()
+    assert cache is not None
+    assert manager.dj_analysis_enabled()
+    if flow == "local":
+        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+            manager._dj_analyse(path, np.zeros(22050 * 180, np.float32))
+    else:
+        manager._refresh_scan_cues()
+        manager.store_scan_dj(path, meta, force=True)
+
+    stored = cache.get(str(path))
+    assert stored.analysed
+    assert stored.beats == [2.0]
+    assert imported[1] in stored.cues
+    assert stored.intro_end_s == 30.0
+    assert stored.outro_start_s == 150.0
+    assert [cue for cue in stored.cues if cue.source != "auto"] == imported
+    after = manager.catalog.record_for_path(path)
+    assert after["points"] == before["points"]
+    assert after["point_sources"] == before["point_sources"]
+    assert after["point_sources"]["intro"] == "analysis"
+    assert after["point_sources"]["outro"] == "analysis"
+
+
+@pytest.mark.dj_analysis
+@pytest.mark.parametrize("flow", ["local", "worker"])
+@pytest.mark.parametrize("source", ["user", "mixxx"])
+@pytest.mark.parametrize("import_external", [True, False])
+def test_scan_dj_cached_markers_follow_import_setting(
+    manager_factory, monkeypatch, flow, source, import_external
+):
+    from autodj.dj_meta import Cue, DjMeta
+
+    manager = manager_factory()
+    manager.cfg.playback.import_external_cues = import_external
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"old recording")
+    cache = manager._dj_cache()
+    assert cache is not None
+    saved = [
+        Cue(5.0, "intro_start", source=source),
+        Cue(30.0, "intro_end", source=source),
+        Cue(42.0, "hot", "Saved", source),
+        Cue(150.0, "outro_start", source=source),
+    ]
+    cache.set(str(song), DjMeta(analysed=True, cues=saved))
+    song.write_bytes(b"replacement recording")
+    entry, points = fake_basic(song)
+    manager.catalog.put_entry(entry, points=points, point_source="analysis")
+    monkeypatch.setattr("autodj.dj_cues_import.auto_import_cues", lambda **kwargs: {})
+    meta = DjMeta(
+        analysed=True,
+        intro_start_s=0.0,
+        intro_end_s=10.0,
+        outro_start_s=165.0,
+        cues=[Cue(0.0, "intro_start"), Cue(10.0, "intro_end"), Cue(165.0, "outro_start")],
+    )
+    if flow == "local":
+        with patch("autodj.dj_meta.analyse_audio", return_value=meta):
+            manager._dj_analyse(song, np.zeros(22050 * 180, np.float32), force=True)
+    else:
+        manager._refresh_scan_cues()
+        manager.store_scan_dj(song, meta, force=True)
+
+    stored = cache.get(str(song))
+    assert stored.analysed
+    assert [cue for cue in stored.cues if cue.source != "auto"] == (
+        [saved[2]] if import_external else saved
+    )
+    assert (stored.intro_start_s, stored.intro_end_s, stored.outro_start_s) == (
+        (0.0, 10.0, 165.0) if import_external else (5.0, 30.0, 150.0)
+    )
+
+
 def test_remote_scan_before_snapshot_merges_imported_cues(manager_factory, monkeypatch):
     """ADR-0008-22. Results before snapshot loading receive imported cues afterward."""
     from autodj.dj_meta import Cue, DjMeta

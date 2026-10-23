@@ -90,8 +90,9 @@ choices with the deferral snapshot and preserves only later edits; a missing sna
 none. Explicit point clears remain clears. Saved Start/End clamp to
 the decoded length; an impossible bound yields to analysis. Intro/Outro/Segue clamp to the
 resulting Start/End range. Automatic trim expands to include valid saved mix points.
-DJ metadata follows the catalog's validated markers, discards saved marker cues whose edits
-were rejected, and deduplicates aligned markers. Other saved cues remain within the new length;
+DJ metadata follows the catalog's user and imported markers. With external cue import on,
+cached markers from the old file are replaced by the DJ libraries' current ones; with it off,
+cached cues are kept. Aligned markers are deduplicated. Other saved cues remain within the new length;
 cues beyond it are dropped with debug logging. Editing a new listing does not make it measured
 or skip pending decoding.
 

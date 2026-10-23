@@ -1572,7 +1572,21 @@ class LibraryManager:
             return
         with self._lock:
             automatic_markers = (meta.intro_start_s, meta.intro_end_s, meta.outro_start_s)
+            record = self.catalog.record_for_path(path)
             saved = [cue for cue in cache.get(str(path)).cues if cue.source != "auto"]
+            if record is not None and self.cfg.playback.import_external_cues:
+                # A cached marker the catalog no longer backs came from the old bytes;
+                # the external libraries are merged again below, so their markers stay.
+                unbacked = {
+                    marker
+                    for point, marker in (
+                        ("start", "intro_start"),
+                        ("intro", "intro_end"),
+                        ("outro", "outro_start"),
+                    )
+                    if record["point_sources"].get(point) not in {"user", "imported"}
+                }
+                saved = [cue for cue in saved if cue.type not in unbacked]
             meta.cues = merge_cues(meta.cues, saved)
             if self.cfg.playback.import_external_cues:
                 from autodj.dj_cues_import import merge_imported_cues
@@ -1581,7 +1595,6 @@ class LibraryManager:
                 if force:
                     self._dj_cues_requested = True
                     self._dj_cues_pending.add(str(path))
-            record = self.catalog.record_for_path(path)
             if record is not None:
                 for cue in meta.cues:
                     if cue.time_s > record["length"]:
@@ -1603,10 +1616,7 @@ class LibraryManager:
                     ("outro", "outro_start", "outro_start_s", record["length"]),
                 ):
                     if record["point_sources"].get(point) not in {"user", "imported"}:
-                        # Discard saved markers whose old-byte provenance the catalog rejected.
-                        meta.cues = [
-                            cue for cue in meta.cues if cue.type != marker or cue.source == "auto"
-                        ]
+                        continue
                     value = record["points"].get(point)
                     setattr(meta, field, default if value is None else value)
                     meta.cues = [
