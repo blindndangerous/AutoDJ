@@ -508,6 +508,11 @@ def emit_audit(
     )
 
 
+def audit_as_routine(connection: HTTPConnection) -> None:
+    """Audit this request's success at DEBUG: routine polling, such as a worker's heartbeat."""
+    connection.scope.setdefault("state", {})["audit_routine"] = True
+
+
 def _safe_public_prefix(path: str, prefix: str) -> bool:
     """Return whether path contains a plain public filename under prefix."""
     if not path.startswith(prefix):
@@ -967,6 +972,12 @@ class SecurityMiddleware:
             await response(scope, receive, send)
             return
         if method in _UNSAFE_METHODS and response_status is not None:
+            if response_status >= 400:
+                level = logging.WARNING
+            elif state.get("audit_routine"):
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
             emit_audit(
                 request_id,
                 route,
@@ -974,7 +985,7 @@ class SecurityMiddleware:
                 method=method,
                 route=route,
                 status=response_status,
-                level=logging.INFO if response_status < 400 else logging.WARNING,
+                level=level,
             )
 
     @staticmethod
