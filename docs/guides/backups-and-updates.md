@@ -29,6 +29,22 @@ explicitly delete it.
 
 Only add `--force` when deliberately replacing known destination data after preserving its backup and configuration. It replaces files held in the archive. A station absent from the archive stays in place. Recordings stay outside the backup. If you use Docker, stop the Compose service before restoring and bring it back afterward. Run backup and restore against the same data mount.
 
+## Check for updates and restart
+
+**Settings**, **Updates** shows the version AutoDJ runs, its update channel and the latest version on that channel. **Stable** follows releases (tags such as `v0.21.0`); **Development** follows the newest code on `master`. **Automatic** follows what the installation runs: a release tag is Stable, a checkout of `master` is Development. Choose **Check now** to ask again; AutoDJ otherwise reuses an answer for six hours.
+
+A source checkout asks its `origin` remote with `git ls-remote`, which changes nothing in the checkout. Other installations ask GitHub. If the computer is offline, the page says it could not check; AutoDJ keeps working. Turn off **Check for updates** for an offline or private installation: AutoDJ then never asks. `autodj check-update` gives the same answer in a terminal, and `autodj doctor` reports it as its `updates` check; `autodj doctor --offline` skips it.
+
+AutoDJ does not update itself. When an update is available, the page and `autodj check-update` link its release notes (the release's GitHub page, or the changelog on `master` for Development) and list the commands that update this installation. Read the Removed and Changed sections first, make a backup, then run the commands yourself, following [Update a source checkout](#update-a-source-checkout) or, for Docker and Podman, [Update the container](operations/containers-and-windows.md#update-the-container).
+
+**Restart AutoDJ** stops AutoDJ and starts it again. Every station's stream goes off the air until it is back, usually a few seconds plus the time AutoDJ takes to load the library. The button appears only when something will start AutoDJ again:
+
+- the `./autodj` or `.\autodj.cmd` launcher of a source checkout, which starts `serve` again;
+- a systemd service with `Restart=on-failure` or `Restart=always` whose main process is AutoDJ itself (not a wrapper such as `uv run`);
+- a Docker or Podman container whose restart policy is declared in `AUTODJ_RESTART_POLICY`, as `compose.yaml` does (see [Update the container](operations/containers-and-windows.md#update-the-container)).
+
+Otherwise the page says to restart AutoDJ the way you started it. AutoDJ exits with status 75 to ask for a restart; a service with `Restart=on-failure` treats that as a failure and starts it again. Restarts are limited to one a minute and six an hour. A running Library tools job is stopped, as its **Stop** button does, and Ctrl+C or a stop from the service manager during the restart stops AutoDJ instead.
+
 ## Update a source checkout
 
 1. Make a backup and stop AutoDJ.

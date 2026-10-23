@@ -366,7 +366,8 @@ def _run_serve(
         patch("autodj.player.Player.run"),
         patch("autodj.library.LibraryManager") as library,
         patch("autodj.mastering.ContinuousMaster"),
-        patch("uvicorn.run"),
+        patch("uvicorn.Config"),
+        patch("uvicorn.Server"),
         patch("autodj.server.running_in_container", return_value=in_container),
         caplog.at_level(logging.INFO, logger="autodj.server"),
     ):

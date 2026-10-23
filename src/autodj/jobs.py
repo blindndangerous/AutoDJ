@@ -258,6 +258,27 @@ class JobManager:
                 self._proc.terminate()
         return True
 
+    def shutdown(self, timeout: float) -> bool:
+        """Stop a running job as Stop does, and wait up to *timeout* seconds for it.
+
+        The server calls this as it shuts down, so a restart from the web
+        page does not leave an index or analysis job running beside the
+        next server.  A job still running after *timeout* is killed.
+        Returns whether a job was running.
+        """
+        with self._lock:
+            proc = self._proc
+        if not self.stop() or proc is None:
+            return False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5)
+        return True
+
     # ------------------------------------------------------------------
     # State
     # ------------------------------------------------------------------

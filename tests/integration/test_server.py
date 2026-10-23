@@ -2039,6 +2039,38 @@ class TestServeFunction:
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
+    @pytest.mark.parametrize(
+        ("stop", "expected"),
+        [("restart", True), ("ctrl-c", False), ("signal", False)],
+    )
+    def test_a_stop_signal_wins_over_a_pending_restart(self, tmp_path, stop, expected) -> None:
+        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ."""
+        import signal as signals
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        server = MagicMock()
+        server.started = True
+        server._captured_signals = [signals.SIGTERM] if stop == "signal" else []
+
+        def run() -> None:
+            app = config.call_args.args[0]
+            app.state.restart_requested = True
+            if stop == "ctrl-c":
+                raise KeyboardInterrupt
+
+        server.run.side_effect = run
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as config,
+            patch("uvicorn.Server", return_value=server),
+        ):
+            assert serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None) is expected
+
     def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
         """The server app's lifespan builds and starts its default station."""
         import logging
@@ -2056,7 +2088,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run", player_run),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
@@ -2125,7 +2158,8 @@ class TestServeFunction:
             patch.object(Player, "__init__", spy_init),
             patch("autodj.player.Player.run", run),
             patch("autodj.server.create_app", wraps=create_app) as app_spy,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
             captured["create_app_kwargs"] = app_spy.call_args.kwargs
@@ -2250,7 +2284,8 @@ class TestServeFunction:
         cfg.default_station.cfg.station.output = "server"
         with (
             patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
-            patch("uvicorn.run") as uvicorn_run,
+            patch("uvicorn.Config") as uvicorn_run,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
             app = uvicorn_run.call_args.args[0]
@@ -2285,7 +2320,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
 
@@ -2307,7 +2343,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="wildcard binding requires"),
         ):
             serve(
@@ -2341,7 +2378,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError) as raised,
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2364,7 +2402,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
@@ -2408,7 +2447,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2455,7 +2495,8 @@ class TestServeFunction:
             caplog.clear()
             with (
                 patch("autodj.player.Player.run"),
-                patch("uvicorn.run") as mock_uvicorn,
+                patch("uvicorn.Config") as mock_uvicorn,
+                patch("uvicorn.Server"),
                 caplog.at_level(logging.INFO, logger="autodj.server"),
             ):
                 serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2506,7 +2547,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="allowed origin"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)

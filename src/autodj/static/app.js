@@ -1399,11 +1399,14 @@ installAccess(_accessEls, {
 // Settings > Analysis workers -- ./modules/analysis-workers.js loads when
 // its subtab is shown.
 import { installAnalysisWorkers } from "./modules/analysis-workers.js";
+import { installUpdates } from "./modules/updates.js";
 import { installStationCreator } from "./modules/station-create.js";
 import { installTimeSettings } from "./modules/time-settings.js";
 import { setTimeFormat } from "./modules/time-format.js";
 
 installAnalysisWorkers();
+// Settings > Updates -- ./modules/updates.js loads when its subtab is shown.
+installUpdates();
 const timeSettings = installTimeSettings();
 
 // ----------------------------------------------------------------

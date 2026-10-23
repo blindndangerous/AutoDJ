@@ -612,6 +612,63 @@ async function standInForSchedule(page) {
     : route.continue()));
 }
 
+// Settings > Updates (#552): an update available, with its release notes,
+// the commands and Restart, which the audit server (no launcher loop) would
+// not offer.  Long command lines test reflow at 320 px.
+const UPDATES = {
+  installation: { kind: "git", version: "0.21.0", commit: "0db0a92", branch: null, tag: "v0.21.0" },
+  settings: { check: true, channel: null },
+  channel: { name: "stable", source: "installation", inferred: "stable" },
+  check: {
+    status: "available", channel: "stable", channel_source: "installation",
+    message: "Release v0.22.0 is available.", latest: "v0.22.0", target: "v0.22.0",
+    checked_at: 1792740000,
+    notes_url: "https://github.com/blindndangerous/AutoDJ/releases/tag/v0.22.0",
+  },
+  commands: [
+    "git fetch --tags origin", "git switch --detach v0.22.0", "./autodj setup",
+    "./autodj doctor --no-fix",
+    'uv pip install "autodj[all] @ https://github.com/blindndangerous/AutoDJ/releases/download/v0.22.0/autodj-0.22.0-py3-none-any.whl"',
+  ],
+  restart: { available: true, mode: "launcher", message: "The AutoDJ launcher starts AutoDJ again." },
+};
+const updatesPages = new WeakSet();
+
+async function standInForUpdates(page) {
+  if (updatesPages.has(page)) return;
+  updatesPages.add(page);
+  await page.route("**/api/updates", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(UPDATES) })
+    : route.continue()));
+  // Restart is only ever cancelled here; a press that got through is refused.
+  await page.route("**/api/server/restart", (route) => route.fulfill({
+    status: 409, contentType: "application/json", body: JSON.stringify({ detail: "Audit" }),
+  }));
+}
+
+// Restart opens the shared confirmation on Cancel; Escape closes it and puts
+// focus back on Restart, with nothing sent.
+async function openRestartConfirm(page, visit) {
+  const restart = page.locator("#updates-restart");
+  await restart.waitFor({ state: "visible" });
+  await page.locator("#updates-how").waitFor({ state: "visible" });
+  await restart.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.locator("#confirm-dialog");
+  await dialog.waitFor({ state: "visible" });
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  if (focused !== "confirm-cancel") {
+    throw new Error(`Restart's confirmation opened with focus on ${focused}, not Cancel`);
+  }
+  const message = await page.locator("#confirm-message").textContent();
+  if (!/off the air/.test(message || "")) throw new Error(`Restart's confirmation says: ${message}`);
+  await visit("settings/updates/restart");
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "hidden" });
+  const back = await page.evaluate(() => document.activeElement?.id);
+  if (back !== "updates-restart") throw new Error(`Escape left focus on ${back}, not Restart`);
+}
+
 const hourFitPages = new WeakSet();
 
 // Keep the unsaved checkbox enabled in status pushes while measuring its fields.
@@ -1505,6 +1562,7 @@ async function eachTarget(page, measure) {
   await standInForLiveDj(page);
   await standInForRequests(page);
   await standInForSchedule(page);
+  await standInForUpdates(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -1559,6 +1617,7 @@ async function eachTarget(page, measure) {
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
       if (id === "stab-stations") await openStationCreateError(page, visit);
       if (id === "stab-live") await openLiveDjError(page, visit);
+      if (id === "stab-updates") await openRestartConfirm(page, visit);
     }
   }
 }
