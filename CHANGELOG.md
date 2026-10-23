@@ -930,9 +930,6 @@ is now licensed under the AGPL-3.0-or-later instead of MIT. The screen-reader sa
 
 ### Fixed
 
-- History downloads use the selected station's current play log, including while the station
-  is stopped. Generating a report allows new plays to be recorded at the same time.
-
 - Tables no longer say "row header" when focus lands on a track's name (#302).
 - In tables, a cell with a button such as Track info takes focus itself, so it is read once.
   Enter or Space on the cell presses the button (#294).
