@@ -26,6 +26,7 @@ from autodj.stereo import (
     AudioSpool,
     TrackTooLongError,
     all_finite_and_audible,
+    decode_error,
     load_stereo,
 )
 
@@ -579,7 +580,7 @@ def read_windows(
     returncode, stderr = _pipe_ffmpeg(command, sink, _ffmpeg_timeout(source))
     detail = stderr.decode(errors="replace").strip()
     if returncode:
-        raise RuntimeError(f"FFmpeg could not decode {source}: {detail[-1000:] or 'unknown error'}")
+        raise decode_error(source, detail[-1000:])
     if detail:
         logger.warning(
             "Decoded %s with warnings:\n%s", source, detail, extra={"track": str(source)}

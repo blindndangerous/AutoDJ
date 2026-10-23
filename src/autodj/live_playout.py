@@ -1,4 +1,4 @@
-"""Prepare one future handoff for live server playout without stale fallbacks."""
+"""Control live handoffs on demand without stale fallbacks."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _RETRY_SECONDS = 1.0
 
 
 class LivePlayout[T]:
-    """Own the background preparation of the next live handoff.
+    """Own background preparation and cursor promotion for live playout.
 
     Selection and preparation run on one worker. The bus-facing ``pop`` and
     ``ready`` calls only take this object's short condition lock. Cursor moves,
@@ -87,12 +87,9 @@ class LivePlayout[T]:
             return self._ready
 
     def pop(self) -> T | None:
-        """Take the prepared handoff without waiting."""
+        """Take the handoff; the caller explicitly schedules cursor promotion."""
         with self._cond:
             track, self._ready = self._ready, None
-            if track is not None:
-                self._need_prepare = True
-                self._cond.notify_all()
             return track
 
     def replace_ready(self, expected: T, replacement: T) -> bool:

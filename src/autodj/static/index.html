@@ -229,6 +229,10 @@
          reach with Tab than with a roving tabindex. -->
     <div role="group" aria-label="Playback controls">
       <div class="controls-row">
+        <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
+             it plays the station in this browser, while Play / Pause
+             pauses the station for every listener. -->
+        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
         <!-- Fix 2: emoji wrapped in aria-hidden so screen readers don't double-announce -->
         <!-- Play / Pause keeps one name, "Play or Pause"; only the hidden
              glyph shows the state.  A label that changed with the state was
@@ -239,10 +243,6 @@
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
         <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
-        <!-- Stream mode only.  Fixed name plus aria-pressed, like Mute:
-             it plays the station in this browser, while Play / Pause
-             pauses the station for every listener. -->
-        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station" hidden><span aria-hidden="true">🔊</span> Listen here</button>
         <button id="btn-skip">
           <span aria-hidden="true">⏭</span> Skip
         </button>

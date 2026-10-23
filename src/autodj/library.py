@@ -30,6 +30,7 @@ from autodj.clock_condition_data import BeetsConditions
 from autodj.indexer import (
     FEATURE_DIM,
     LIBRARY_DECODE_LOG,
+    SILENT_ENERGY,
     IndexEntry,
     _detect_moves,
     _embed_new_tracks,
@@ -140,6 +141,17 @@ class LibraryManager:
         self._pending_override_tags = False
         # Cues read from DJ software, once per scan that analyses a song.
         self._dj_library_cues: dict[str, list[Any]] | None = None
+        self._scan_cues_loaded = False
+        self._dj_cues_requested = False
+        self._dj_cues_pending: set[str] = set()
+        self._scan_pending: set[str] | None = None
+        self._scan_worker_checked = float("-inf")
+        self._scan_worker_active = False
+        self._scan_fallback_running = False
+        self._scan_fallback_checked = float("-inf")
+        self._scan_recovery_checked = float("-inf")
+        self._scan_fallback_warned = float("-inf")
+        self._dj_cues_checked = float("-inf")
         self._closed = False
         self._scan_generation = 0
         self._analysis_started_generation: int | None = None
@@ -372,18 +384,8 @@ class LibraryManager:
         index = faiss.IndexFlatIP(FEATURE_DIM)
         for chunk in chunks:
             index.add(chunk)
-        replace_index = getattr(self.sim, "replace_catalog_faiss", None)
-        if replace_index is not None:
-            replace_index(entries, index)
-            return
-        replace = getattr(self.sim, "replace_catalog_index", None)
-        if replace is not None:
-            vectors = (
-                index.reconstruct_n(0, index.ntotal)
-                if index.ntotal
-                else np.empty((0, FEATURE_DIM), dtype=np.float32)
-            )
-            replace(entries, vectors)
+        if replace := getattr(self.sim, "replace_catalog_faiss", None):
+            replace(entries, index)
 
     def _replace_vector_entries(self, entries: list[IndexEntry]) -> None:
         """Give ``sim`` re-read metadata for the same vectors, without rebuilding FAISS."""
@@ -592,7 +594,6 @@ class LibraryManager:
             scanning = self._scan_lock.locked() and self._state["phase"] != "measuring loudness"
         if not scanning and self._changed():
             self.refresh()
-        self.schedule_analysis()
         if (
             self._auto_rescan_minutes > 0
             and not self._scan_lock.locked()
@@ -600,6 +601,11 @@ class LibraryManager:
             and self.start_scan(override_tags=False)
         ):
             logger.info("Automatic library rescan started")
+        try:
+            self._take_abandoned_scan()
+        except Exception as exc:
+            self._warn_scan_fallback(exc)
+        self.schedule_analysis()
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -839,22 +845,9 @@ class LibraryManager:
     @staticmethod
     def _valid_basic_points(points: dict[str, Any], entry: IndexEntry) -> dict[str, Any]:
         """Keep imperfect automatic cue suggestions from rejecting a playable file."""
-        length = max(float(entry.length), 0.001)
-        start = points.get("start")
-        end = points.get("end")
-        start = 0.0 if start is None else float(start)
-        end = length if end is None else float(end)
-        if not 0 <= start < end <= length:
-            start, end = 0.0, length
-        result: dict[str, Any] = {"start": start, "end": end}
-        for field in ("intro", "outro", "segue"):
-            value = points.get(field)
-            if value is None:
-                result[field] = None
-                continue
-            value = float(value)
-            result[field] = value if start <= value <= end else None
-        return result
+        from autodj.scan_analysis import normalize_basic_points
+
+        return normalize_basic_points(points, entry.length)
 
     def _discover(self, source_ids: set[str] | None = None) -> list[tuple[str, Path]]:
         formats = {f".{ext.lower().lstrip('.')}" for ext in self.cfg.library.supported_formats}
@@ -960,15 +953,43 @@ class LibraryManager:
         for kind, path in found:
             if _path(path) not in old_paths:
                 candidates_by_kind[kind].append(Track(path, path.stem, "", "", "", 0.0, 0, 0.0))
+        pending_identities = (
+            self.analysis_queue.scan_identities()
+            if missing and any(candidates_by_kind.values())
+            else {}
+        )
         moved = False
         for kind in ("music", "liner"):
-            kind_entries = [entry for entry_kind, entry in old if entry_kind == kind]
+            kind_entries = [
+                replace(
+                    entry,
+                    size=pending_identities[entry.path][0],
+                    fingerprint=pending_identities[entry.path][1],
+                )
+                if entry.path in pending_identities
+                else entry
+                for entry_kind, entry in old
+                if entry_kind == kind
+            ]
+            # Present records hold both identities until replacement; neither can
+            # identify a unique move of some other missing recording.
+            kind_entries.extend(
+                entry
+                for entry_kind, entry in old
+                if entry_kind == kind
+                and entry.path not in missing
+                and entry.path in pending_identities
+                and (entry.size, entry.fingerprint) != pending_identities[entry.path]
+            )
             moves = _detect_moves(kind_entries, missing, candidates_by_kind[kind])
             if not moves:
                 continue
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                if self._scan_pending is not None and source in self._scan_pending:
+                    self._scan_pending.discard(source)
+                    self._scan_pending.add(_path(track.path))
                 with self._lock:
                     ledgers = {ledger.station: ledger for ledger in self._ledgers}
                     station_ids = set(self._station_ids)
@@ -1041,6 +1062,10 @@ class LibraryManager:
     def _scan_basic(
         self, source_ids: set[str] | None, override_tags: bool = False
     ) -> list[tuple[str, Path]]:
+        self._scan_pending = self.analysis_queue.pending_scans()
+        self._scan_worker_checked = float("-inf")
+        self._scan_worker_available()
+        self._scan_cues_loaded = False
         self._set_state(phase="discovering", current="")
         found = self._discover(source_ids)
         self._set_state(phase="reading tracks", total=len(found), done=0)
@@ -1052,16 +1077,24 @@ class LibraryManager:
             if self._stop.is_set():
                 break
             self._set_state(current=str(path))
-            if (
-                kind == "music"
-                and self.catalog.record_for_path(path) is None
-                and self._add_from_tags(path)
-            ):
+            new_music = kind == "music" and self.catalog.record_for_path(path) is None
+            if new_music and self._scan_worker_available():
+                self._refresh_scan_cues()
+                # Publish pending work before the tag record, so a worker cannot
+                # claim the new song as an advanced-analysis-only task.
+                key = _path(path)
+                size, fingerprint = file_fingerprint(path)
+                self.analysis_queue.defer_scan(key, size, fingerprint, new_listing=True)
+                self._scan_pending.add(key)
+                self._add_from_tags(path, allow_unknown_length=True)
+                self._read_track(kind, path, override_tags)
+            elif new_music and self._add_from_tags(path):
                 deferred.append(path)
             else:
                 self._read_track(kind, path, override_tags)
             with self._lock:
                 self._state["done"] += 1
+            self._recover_scan_between_files()
         if deferred:
             self._set_state(phase="analysing new songs", total=len(deferred), done=0)
         for path in deferred:
@@ -1073,23 +1106,47 @@ class LibraryManager:
                 self.catalog.remove_entries([str(path)])
             with self._lock:
                 self._state["done"] += 1
+            self._recover_scan_between_files()
         self.refresh()
         return found
 
-    def _add_from_tags(self, path: Path) -> bool:
+    def _add_from_tags(
+        self,
+        path: Path,
+        *,
+        allow_unknown_length: bool = False,
+        old: dict[str, Any] | None = None,
+    ) -> bool:
         """List a new song from its tags and length, without decoding it.
 
         It counts as silent until :meth:`_read_track` measures it, so
         automatic picks wait for it.  Returns ``False`` when the tags give no
         usable length; the song is then read the usual way.
+        A playable old record stays until measurement unless the new tags
+        establish a duration change beyond the scan result tolerance.
         """
-        from autodj.audio_meta import read_file_tags
+        from autodj.audio_meta import FileTags, read_file_tags
 
         try:
-            tags = read_file_tags(path)
+            try:
+                tags = read_file_tags(path)
+            except Exception:
+                if not allow_unknown_length:
+                    raise
+                tags = FileTags()
             length = float(tags.length)
-            if not length > 0:
-                return False
+            if not np.isfinite(length) or length <= 0:
+                if allow_unknown_length:
+                    length = 0.0
+                else:
+                    return False
+            if (
+                old is not None
+                and old["energy"] >= SILENT_ENERGY
+                and (length == 0 or abs(length - old["length"]) <= max(2.0, old["length"] * 0.02))
+            ):
+                # Unknown or similar durations keep the playable record until measurement.
+                return True
             entry = IndexEntry(
                 str(path),
                 tags.title or path.stem,
@@ -1106,31 +1163,141 @@ class LibraryManager:
                 embedded_at=path.stat().st_mtime,
             )
             entry = self._basic_entry(entry, None, path)
-            self.catalog.put_entry(entry, "music")
+            self.catalog.put_entry(
+                entry, "music", preserve_edits=allow_unknown_length and old is not None
+            )
         except Exception as exc:
             logger.debug("Could not list %s from its tags: %s", path, exc)
             return False
         self._publish_entry(entry, "music")
         return True
 
-    def _read_track(self, kind: str, path: Path, override_tags: bool) -> bool:
-        """Read *path*'s tags, cue points and analysis as needed; ``False`` on failure."""
+    def _read_track(
+        self, kind: str, path: Path, override_tags: bool, *, recover_scan: bool = False
+    ) -> bool:
+        """Leave deferred music to its worker, or reserve a local scan attempt."""
+        queue = self.analysis_queue
+        key = _path(path)
+        pending = self._scan_pending
+        if pending is None:
+            pending = queue.pending_scans()
+        if kind != "music" and key in pending:
+            queue.cancel_scan(key)
+            pending.discard(key)
+        if key not in pending:
+            return self._read_track_local(kind, path, override_tags, allow_defer=True)
+        try:
+            path.stat()
+            size, fingerprint = file_fingerprint(path)
+            if not size or not fingerprint:
+                raise OSError("file identity unavailable")
+        except OSError as exc:
+            queue.fail_scan(key)
+            logger.warning("Deferred scan file unavailable for %s: %s", path, exc)
+            with self._lock:
+                self._import_errors.append({"path": str(path), "error": str(exc)})
+            return False
+        pending_identity = queue.scan_identity(key)
+        if pending_identity is not None and pending_identity != (size, fingerprint):
+            self._reset_dj_cache(path)
+        if not queue.refresh_scan(key, size, fingerprint, retry_access_errors=not recover_scan):
+            record = self.catalog.record_for_path(path)
+            if record is not None and (record["size"], record["fingerprint"]) != (
+                size,
+                fingerprint,
+            ):
+                self._reset_dj_cache(path)
+            try:
+                return self._read_track_local(
+                    kind, path, override_tags, scan_identity=(size, fingerprint)
+                )
+            finally:
+                pending.discard(key)
+        record = self.catalog.record_for_path(path)
+        if (
+            record is None or (record["size"], record["fingerprint"]) != (size, fingerprint)
+        ) and not self._add_from_tags(path, allow_unknown_length=True, old=record):
+            queue.handoff_scan(key)
+        retry_failed = not recover_scan and not self._scan_worker_available()
+        if not recover_scan and not retry_failed and queue.defer_scan_now(key, worker_active=True):
+            self._refresh_scan_cues()
+            return True
+        if not queue.claim_scan(key, size, fingerprint, retry_failed=retry_failed):
+            return True
+        success = False
+        non_access_failure = False
+        try:
+            success = self._read_track_local(
+                kind, path, override_tags, raise_errors=True, scan_identity=(size, fingerprint)
+            )
+            if success and self.cfg.playback.loudness_processing in {"smooth", "stereotool"}:
+                try:
+                    self.catalog.set_loudness(path, analyze_loudness(path, kind))
+                except Exception as exc:
+                    logger.warning("Loudness analysis failed for %s: %s", path, exc)
+            if success and self.dj_analysis_enabled():
+                self._dj_analyse(path)
+            if success:
+                queue.finish_scan(key, size, fingerprint)
+                pending.discard(key)
+            return success
+        except Exception as exc:
+            from autodj.stereo import AudioAccessError
+
+            success = False
+            non_access_failure = not isinstance(exc, AudioAccessError | OSError) or isinstance(
+                exc, TimeoutError
+            )
+            logger.warning("Deferred scan analysis failed for %s: %s", path, exc)
+            with self._lock:
+                self._import_errors.append({"path": str(path), "error": str(exc)})
+            return False
+        finally:
+            if not success and queue.fail_scan(
+                key, size, fingerprint, non_access_failure=non_access_failure
+            ):
+                logger.warning("Scan retries exhausted for %s; a later local scan can retry", path)
+                if queue.scan_failed_without_access_error(key, size, fingerprint):
+                    self._remove_unplayable_scan_listing(path, record)
+
+    def _scan_worker_available(self) -> bool:
+        """Refresh capability at most every five seconds during a scan pass."""
+        now = self._clock()
+        if now - self._scan_worker_checked >= 5:
+            self._scan_worker_active = self.analysis_queue.worker_active(scan_decode=True)
+            self._scan_worker_checked = now
+        return self._scan_worker_active
+
+    def _reset_dj_cache(self, path: Path) -> None:
+        # Invalidate at discovery; pending scans may receive new user cues before completion.
+        if not (self.cfg.index.library_dir / "dj_meta.db").is_file():
+            return
+        from autodj.dj_meta import DjMeta
+
+        cache = self._dj_cache()
+        if cache is not None:
+            cache.set(str(path), DjMeta())
+            cache.flush(force=True)
+
+    def _read_track_local(
+        self,
+        kind: str,
+        path: Path,
+        override_tags: bool,
+        *,
+        allow_defer: bool = False,
+        raise_errors: bool = False,
+        scan_identity: tuple[int, str] | None = None,
+    ) -> bool:
+        """Read tags, cues and analysis; return ``False`` or propagate errors for deferred work."""
+        decoding = False
+        old = None
         try:
             old = self.catalog.record_for_path(path)
             same_identity = old is not None and self._same_identity(old, path)
             unchanged = same_identity and old is not None and old["kind"] == kind
-            if (
-                old is not None
-                and not same_identity
-                and (self.cfg.index.library_dir / "dj_meta.db").is_file()
-            ):
-                # Path-keyed DJ analysis belongs to the old bytes, even when analysis is disabled.
-                from autodj.dj_meta import DjMeta
-
-                cache = self._dj_cache()
-                if cache is not None:
-                    cache.set(str(path), DjMeta())
-                    cache.flush(force=True)
+            if old is not None and not same_identity and scan_identity is None:
+                self._reset_dj_cache(path)
             mtime_changed = bool(
                 unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
             )
@@ -1164,6 +1331,7 @@ class LibraryManager:
             old_end = old_points.get("end")
             valid_existing_points = bool(
                 unchanged
+                and scan_identity is None
                 and old is not None
                 and isinstance(old_start, int | float)
                 and not isinstance(old_start, bool)
@@ -1173,6 +1341,23 @@ class LibraryManager:
                 and np.isfinite(old_end)
                 and 0 <= old_start < old_end <= old["length"]
             )
+            if (
+                allow_defer
+                and kind == "music"
+                and not mtime_changed
+                and not valid_existing_points
+                and self._scan_worker_available()
+            ):
+                self._refresh_scan_cues()
+                key = _path(path)
+                size, fingerprint = file_fingerprint(path)
+                self.analysis_queue.defer_scan(key, size, fingerprint)
+                if self._scan_pending is not None:
+                    self._scan_pending.add(key)
+                if not unchanged:
+                    self._add_from_tags(path, allow_unknown_length=True, old=old)
+                self.analysis_queue.clear_holds(key, size, fingerprint)
+                return True
             if (
                 valid_existing_points
                 and needs_liner_segue
@@ -1184,10 +1369,13 @@ class LibraryManager:
                 if segue is not None:
                     segue = min(max(segue, cast(float, old_start)), cast(float, old_end))
                 self.catalog.set_points(path, {"segue": segue}, source="analysis")
-            elif not valid_existing_points and not mtime_changed:
+            elif not valid_existing_points and (
+                not mtime_changed or _path(path) in (self._scan_pending or set())
+            ):
                 # One decode serves the cue points and the beats and cues.  A
                 # long track's decode keeps only its start and end.
                 dj = kind == "music" and self.dj_analysis_enabled() and self._dj_cache() is not None
+                decoding = True
                 audio = load_for_analysis(path) if dj else None
                 if kind == "music":
                     fresh, points = analyze_basic(
@@ -1195,7 +1383,18 @@ class LibraryManager:
                     )
                 else:
                     fresh, points = analyze_basic(path, kind=kind, audio=audio)
+                decoding = False
                 fresh = self._basic_entry(fresh, old, path)
+                if scan_identity is not None and (fresh.size, fresh.fingerprint) != scan_identity:
+                    if fresh.size and fresh.fingerprint:
+                        key = _path(path)
+                        if self.analysis_queue.reschedule_changed_scan(
+                            key, scan_identity, (fresh.size, fresh.fingerprint)
+                        ):
+                            logger.warning(
+                                "Scan retries exhausted for %s; a later local scan can retry", path
+                            )
+                    raise OSError("File changed during scan decoding")
                 suggestions = (
                     self._legacy_point_suggestions(path) if old is None or same_identity else {}
                 )
@@ -1203,8 +1402,14 @@ class LibraryManager:
                     if points.get(name) is None:
                         points[name] = value
                 points = self._valid_basic_points(points, fresh)
-                self.catalog.put_entry(fresh, kind, points=points, point_source="analysis")
-                self._publish_entry(fresh, kind)
+                self.catalog.put_entry(
+                    fresh,
+                    kind,
+                    points=points,
+                    point_source="analysis",
+                    preserve_edits=scan_identity is not None,
+                )
+                self._publish_entry(self.catalog.entry_for_path(path) or fresh, kind)
                 # New bytes are a new chance for a song held back after a
                 # failed or stale analysis.
                 self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
@@ -1223,11 +1428,40 @@ class LibraryManager:
                         lift = 0.0
                     self.catalog.set_intro_lift(path, lift)
         except Exception as exc:
+            from autodj.stereo import UnplayableAudioError
+
+            if decoding and isinstance(exc, UnplayableAudioError):
+                self._remove_unplayable_scan_listing(path, old)
+            if raise_errors:
+                raise
             logger.warning("Basic library scan failed for %s: %s", path, exc)
             with self._lock:
                 self._import_errors.append({"path": str(path), "error": str(exc)})
             return False
         return True
+
+    def _remove_unplayable_scan_listing(self, path: Path, old: dict[str, Any] | None) -> None:
+        """Discard only the unchanged tag-only record created by this pending scan."""
+        key = _path(path)
+        if old is None or old["energy"] != 0 or old["points"]:
+            return
+        queue = self.analysis_queue
+        if not queue.scan_created_listing(key, old["size"], old["fingerprint"]):
+            return
+        try:
+            versions = self.catalog.change_versions()
+            current = self.catalog.record_for_path(path)
+            if current is None or current != old:
+                return
+            path.stat()
+            if not self._same_identity(current, path):
+                return
+            self.catalog.remove_entries([str(path)], expected_versions=versions)
+        except (OSError, RuntimeError):
+            return
+        queue.finish_scan(key, current["size"], current["fingerprint"])
+        if self._scan_pending is not None:
+            self._scan_pending.discard(key)
 
     def _scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         queued = self._scan_lock.locked()
@@ -1277,6 +1511,8 @@ class LibraryManager:
                     break
                 key = next(iter(loudness))
                 kind, path = loudness.pop(key)
+                if kind == "music" and key in (self._scan_pending or set()):
+                    continue
                 self._set_state(current=str(path))
                 try:
                     record = self.catalog.record_for_path(path)
@@ -1293,10 +1529,12 @@ class LibraryManager:
                     with self._lock:
                         self._state["done"] = done
                         self._state["total"] = done + len(loudness)
+                self._recover_scan_between_files()
             self._dj_backlog()
             self._set_state(phase="complete")
             completed = True
         finally:
+            self._scan_pending = None
             self.refresh()
             self._set_state(running=False, current="")
             done_hook = self.on_scan_done
@@ -1323,6 +1561,118 @@ class LibraryManager:
             logger.warning("DJ analysis unavailable: %s", exc)
             return None
 
+    def scan_options(self, path: Path) -> dict[str, Any]:
+        """Scan inputs that need server files/settings but no audio decode."""
+        from autodj.audio_meta import load_lrc_for
+        from autodj.vocals import first_vocal_s, sung_spans
+
+        spans = sung_spans(load_lrc_for(path))
+        return {
+            "music_fade_drop_db": self.music_fade_drop_db(),
+            "dj": self.dj_analysis_enabled(),
+            "loudness": self.cfg.playback.loudness_processing in {"smooth", "stereotool"},
+            "lyrics": {"intro": first_vocal_s(spans), "outro": spans[-1][1]} if spans else {},
+            "suggestions": self._legacy_point_suggestions(path),
+            "saved_points": self.catalog.pending_scan_points(path),
+        }
+
+    def store_scan_dj(self, path: Path, meta: Any, *, force: bool = False) -> None:
+        """Keep external cue imports on the server for both local and remote scans."""
+        from autodj.dj_meta import apply_imported_markers, merge_cues
+
+        cache = self._dj_cache()
+        if cache is None:
+            if force:
+                raise RuntimeError("DJ analysis cache is unavailable")
+            return
+        with self._lock:
+            automatic_markers = (meta.intro_start_s, meta.intro_end_s, meta.outro_start_s)
+            record = self.catalog.record_for_path(path)
+            saved = [cue for cue in cache.get(str(path)).cues if cue.source != "auto"]
+            if record is not None and self.cfg.playback.import_external_cues:
+                # A cached marker the catalog no longer backs came from the old bytes;
+                # the external libraries are merged again below, so their markers stay.
+                unbacked = {
+                    marker
+                    for point, marker in (
+                        ("start", "intro_start"),
+                        ("intro", "intro_end"),
+                        ("outro", "outro_start"),
+                    )
+                    if record["point_sources"].get(point) not in {"user", "imported"}
+                }
+                saved = [cue for cue in saved if cue.type not in unbacked]
+            meta.cues = merge_cues(meta.cues, saved)
+            if self.cfg.playback.import_external_cues:
+                from autodj.dj_cues_import import merge_imported_cues
+
+                merge_imported_cues(meta, str(path), self._dj_library_cues or {})
+                if force:
+                    self._dj_cues_requested = True
+                    self._dj_cues_pending.add(str(path))
+            if record is not None:
+                for cue in meta.cues:
+                    if cue.time_s > record["length"]:
+                        logger.debug(
+                            "Dropping cue at %s s past measured length %s s for %s",
+                            cue.time_s,
+                            record["length"],
+                            path,
+                        )
+                meta.cues = [cue for cue in meta.cues if cue.time_s <= record["length"]]
+            meta.intro_start_s, meta.intro_end_s, meta.outro_start_s = automatic_markers
+            apply_imported_markers(meta)
+            if record is not None:
+                # Catalog edits may be newer than the worker's scan options or cached markers.
+                # Use the just-validated saved points, including explicit clears, in both stores.
+                for point, marker, field, default in (
+                    ("start", "intro_start", "intro_start_s", None),
+                    ("intro", "intro_end", "intro_end_s", 0.0),
+                    ("outro", "outro_start", "outro_start_s", record["length"]),
+                ):
+                    if record["point_sources"].get(point) not in {"user", "imported"}:
+                        continue
+                    value = record["points"].get(point)
+                    setattr(meta, field, default if value is None else value)
+                    meta.cues = [
+                        replace(cue, time_s=value) if cue.type == marker else cue
+                        for cue in meta.cues
+                        if cue.type != marker or value is not None
+                    ]
+                meta.cues = merge_cues(meta.cues)
+            cache.set(str(path), meta)
+            cache.flush(force=force)
+
+    def _refresh_scan_cues(self) -> None:
+        """Load external libraries lazily, once per scan pass or recovery run."""
+        if (
+            self._scan_cues_loaded
+            or not self.cfg.playback.import_external_cues
+            or not self.dj_analysis_enabled()
+        ):
+            return
+        self._scan_cues_loaded = True
+        self._dj_cues_checked = self._clock()
+        from autodj.dj_cues_import import auto_import_cues, remerge_library_cues
+
+        try:
+            cues = auto_import_cues(library_root=self.cfg.library.music_dir)
+            with self._lock:
+                self._dj_library_cues = cues
+                cache = self._dj_cache() if self._dj_cues_pending else None
+                if cache is not None:
+                    for path in self._dj_cues_pending:
+                        updated = remerge_library_cues(
+                            cache.get(path), cues.get(path, cues.get(os.path.normcase(path), []))
+                        )
+                        if updated is not None:
+                            cache.set(path, updated)
+                    cache.flush(force=True)
+                    self._dj_cues_pending.clear()
+                self._dj_cues_requested = bool(self._dj_cues_pending)
+        except Exception as exc:
+            logger.warning("External cue import unavailable: %s", exc)
+
     def _dj_analyse(
         self, path: Path, audio: np.ndarray | TrackWindows | None = None, force: bool = False
     ) -> None:
@@ -1343,6 +1693,7 @@ class LibraryManager:
         try:
             if not force and cache.get(str(path)).analysed:
                 return
+            self._refresh_scan_cues()
             if audio is None:
                 audio = load_for_analysis(path)
             from autodj.dj_meta import analyse_decoded
@@ -1355,16 +1706,7 @@ class LibraryManager:
                 intro_end_s=points.get("intro") or 0.0,
                 outro_start_s=points.get("outro") or length,
             )
-            if self.cfg.playback.import_external_cues:
-                from autodj.dj_cues_import import auto_import_cues, merge_imported_cues
-
-                if self._dj_library_cues is None:
-                    self._dj_library_cues = auto_import_cues(
-                        library_root=self.cfg.library.music_dir
-                    )
-                merge_imported_cues(meta, str(path), self._dj_library_cues)
-            cache.set(str(path), meta)
-            cache.flush()
+            self.store_scan_dj(path, meta)
         except Exception as exc:
             logger.warning("DJ analysis failed for %s: %s", path, exc)
 
@@ -1390,11 +1732,13 @@ class LibraryManager:
                 waiting = self._pending_sources is None or bool(self._pending_sources)
             if self._stop.is_set() or waiting:
                 break
+            if _path(path) in (self._scan_pending or set()):
+                continue
             self._set_state(current=str(path))
             self._dj_analyse(path)
             self._set_state(done=done)
+            self._recover_scan_between_files()
         cache.flush(force=True)
-        self._dj_library_cues = None
 
     def analysis_pending(self, force: bool = False) -> list[dict[str, Any]]:
         if not force:
@@ -1414,6 +1758,163 @@ class LibraryManager:
             ) and not self.catalog.sources_for_path(record["path"], "liner"):
                 pending.append(record)
         return pending
+
+    def _take_abandoned_scan(self) -> None:
+        """Schedule a serial recovery run on the library's existing background slot."""
+        with self._lock:
+            if (
+                self._closed
+                or self._stop.is_set()
+                or self._cleanup_active
+                or self._scan_lock.locked()
+                or self._clock() - self._scan_recovery_checked < 30
+            ):
+                return
+            self._scan_recovery_checked = self._clock()
+        if not self.analysis_queue.abandoned_scans(limit=1) and not self._remote_cues_due():
+            self._finish_scan_fallback()
+            return
+        with self._lock:
+            if self._closed or self._stop.is_set() or self._cleanup_active:
+                return
+            if not self._scan_lock.acquire(blocking=False):
+                return
+            self._thread = threading.Thread(
+                target=self._recover_scan_background, name="autodj-library-scan", daemon=True
+            )
+            try:
+                self._thread.start()
+            except BaseException:
+                self._thread = None
+                self._scan_lock.release()
+                raise
+
+    def _warn_scan_fallback(self, exc: Exception) -> None:
+        now = self._clock()
+        if now - self._scan_fallback_warned >= 60:
+            self._scan_fallback_warned = now
+            logger.warning("Scan recovery unavailable: %s", exc)
+
+    def _recover_scan_between_files(self) -> None:
+        """Share the scan's lock and cached capability, checking at most every five seconds."""
+        now = self._clock()
+        if not self._scan_pending or now - self._scan_fallback_checked < 5:
+            return
+        self._scan_fallback_checked = now
+        try:
+            self._recover_scan_one(self._scan_worker_available())
+        except Exception as exc:
+            self._warn_scan_fallback(exc)
+
+    def _recover_scan_background(self) -> None:
+        self._scan_cues_loaded = False
+        refreshed = self._clock()
+        recovering = False
+        try:
+            if self._remote_cues_due():
+                self._refresh_scan_cues()
+            recovering = bool(self.analysis_queue.abandoned_scans(limit=1))
+            if recovering:
+                self._set_state(
+                    running=True, phase="recovering analysis", done=0, total=0, current=""
+                )
+            while recovering and not self._stop.is_set():
+                with self._lock:
+                    if (
+                        self._closed
+                        or self._pending_sources is None
+                        or self._pending_sources
+                        or self._pending_override_tags
+                    ):
+                        break
+                if not self._recover_scan_one(self.analysis_queue.worker_active(scan_decode=True)):
+                    break
+                with self._lock:
+                    self._state["done"] += 1
+                    self._state["total"] = max(self._state["total"], self._state["done"])
+                if self._clock() - refreshed >= 30:
+                    self.refresh()
+                    refreshed = self._clock()
+                if self.analysis_queue.scan_worker_claiming():
+                    break
+        except Exception as exc:
+            self._warn_scan_fallback(exc)
+        finally:
+            self._scan_fallback_running = False
+            try:
+                self.refresh()
+            except Exception as exc:
+                self._warn_scan_fallback(exc)
+            if recovering:
+                self._set_state(running=False, phase="complete", current="")
+            with self._lock:
+                waiting = (
+                    (
+                        self._pending_sources is None
+                        or bool(self._pending_sources)
+                        or self._pending_override_tags
+                    )
+                    and not self._closed
+                    and not self._stop.is_set()
+                )
+                if not waiting:
+                    self._scan_lock.release()
+            # Retain ownership and service scans queued during this decode on this thread.
+            if waiting:
+                self._scan_queued()
+
+    def _remote_cues_due(self) -> bool:
+        """Remote results request a bounded snapshot refresh between scans."""
+        return (
+            self._dj_cues_requested
+            and self.cfg.playback.import_external_cues
+            and self.dj_analysis_enabled()
+            and self._clock() - self._dj_cues_checked >= 60
+        )
+
+    def _recover_scan_one(self, active: bool) -> bool:
+        queue = self.analysis_queue
+        candidates = queue.abandoned_scans(worker_active=active, limit=1)
+        if not candidates:
+            self._finish_scan_fallback()
+            return False
+        if not self._scan_fallback_running:
+            count = queue.abandoned_scan_count(worker_active=active)
+            logger.info(
+                "Server starting abandoned scan work: %d songs",
+                count,
+            )
+            if self._state["phase"] == "recovering analysis":
+                self._set_state(total=count)
+            self._scan_fallback_running = True
+        key = candidates[0]
+        record = self.catalog.record_for_path(key)
+        if (
+            record is None
+            or record["kind"] != "music"
+            or not self.catalog.sources_for_path(key, "music")
+            or self.catalog.sources_for_path(key, "liner")
+        ):
+            queue.cancel_scan(key)
+            if self._scan_pending is not None:
+                self._scan_pending.discard(key)
+            return True
+        pending = self._scan_pending
+        if pending is None:
+            self._scan_pending = {key}
+        try:
+            if self._state["phase"] == "recovering analysis":
+                self._set_state(current=str(Path(key)))
+            self._read_track("music", Path(key), False, recover_scan=True)
+        finally:
+            if pending is None:
+                self._scan_pending = None
+        return True
+
+    def _finish_scan_fallback(self) -> None:
+        if self._scan_fallback_running:
+            logger.info("Server finished abandoned scan work")
+            self._scan_fallback_running = False
 
     def schedule_analysis(self) -> bool:
         with self._lock:

@@ -5,6 +5,9 @@ import logging
 import os
 import secrets
 import sys
+import wave
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,17 +16,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.analysis_queue import WORKER_ACTIVE_SECONDS, WORKER_LEASE_SECONDS
+from autodj.catalog import _path
 from autodj.config import ServerConfig
 from autodj.indexer import ANALYSIS_VERSION, FEATURE_DIM, analysis_identity
 from autodj.library import LibraryManager
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
-from autodj.worker_api import RateLimiter, decode_vector
+from autodj.worker_api import RESULT_BODY_MAX_BYTES, RateLimiter, decode_vector
 from tests._server import create_app
 from tests.unit._catalog_vectors import vectors_snapshot
 from tests.unit.test_library import Similarity, make_config, make_entry
 
 HTTPS = "https://127.0.0.1:8080"
 COMMIT = "c" * 40
+SCAN_CAPABILITY = {"scan_decode_v1": True, "scan_analysis_version": "1"}
 
 
 def fake_model_cache(cfg, commit=COMMIT):
@@ -113,6 +118,1302 @@ def claim(server, secret, batch=1):
     reply = server.call("POST", "/api/worker/claim", secret, json={"batch": batch})
     assert reply.status_code == 200, reply.text
     return reply.json()
+
+
+def test_heartbeat_renews_only_reported_leases_and_connect_releases_orphans(server):
+    """ADR-0008-14. A restart cannot keep leases the process never received alive."""
+    token, secret = server.token()
+    other, other_secret = server.token("Other")
+    songs = claim(server, secret, batch=2)["songs"]
+    other_song = claim(server, other_secret)["songs"][0]
+    queue = server.manager.analysis_queue
+    expires = queue.lease(songs[1]["lease"], token.token_id).expires_at
+    server.clock.now += 30
+    beat = server.call(
+        "POST",
+        "/api/worker/heartbeat",
+        secret,
+        json={
+            "leases": [songs[0]["lease"], other_song["lease"]],
+        },
+    )
+    assert beat.status_code == 200, beat.text
+    assert beat.json()["renewed"] == 1
+    assert queue.lease(songs[0]["lease"], token.token_id).expires_at > expires
+    assert queue.lease(songs[1]["lease"], token.token_id).expires_at == expires
+    assert (
+        server.call("POST", "/api/worker/heartbeat", secret, json={"leases": []}).json()["renewed"]
+        == 0
+    )
+    # Failed holds and another token's claim survive the process restart.
+    queue.finish(queue.lease(songs[0]["lease"], token.token_id), "failed")
+    restarted = server.call(
+        "POST",
+        "/api/worker/heartbeat",
+        secret,
+        json={
+            "leases": [],
+            "connect": True,
+        },
+    )
+    assert restarted.status_code == 200, restarted.text
+    assert queue.lease(songs[1]["lease"], token.token_id) is None
+    assert queue.lease(other_song["lease"], other.token_id) is not None
+    assert queue._read(
+        "SELECT state FROM analysis_leases WHERE lease_id=?", (songs[0]["lease"],)
+    ) == [("failed",)]
+    assert claim(server, secret)["songs"][0]["title"] == songs[1]["title"]
+
+
+def test_scan_mismatch_logs_once_per_token_across_version_strings(server, caplog):
+    """ADR-0008-15. Arbitrary versions cannot grow a token's warning history."""
+    _token, secret = server.token()
+    for version in range(20):
+        response = server.call(
+            "POST",
+            "/api/worker/heartbeat",
+            secret,
+            json={
+                "scan_decode_v1": True,
+                "scan_analysis_version": f"unsupported-{version}",
+            },
+        )
+        assert response.status_code == 200
+    assert caplog.text.count("incompatible scan analysis version") == 1
+
+
+def test_scan_mismatch_warning_history_has_a_token_bound(server, monkeypatch, caplog):
+    """ADR-0008-15. Warning history evicts the oldest token at its fixed capacity."""
+    monkeypatch.setattr("autodj.worker_api._MAX_SCAN_MISMATCHES", 2)
+    secrets = [server.token(f"Worker {i}")[1] for i in range(3)]
+    for secret in [*secrets, secrets[2], secrets[0]]:
+        response = server.call(
+            "POST",
+            "/api/worker/heartbeat",
+            secret,
+            json={
+                "scan_decode_v1": True,
+                "scan_analysis_version": "unsupported",
+            },
+        )
+        assert response.status_code == 200
+    assert caplog.text.count("incompatible scan analysis version") == 4
+
+
+def scan_result():
+    return {
+        "length": 180.0,
+        "energy": 0.25,
+        "points": {"start": 0.1, "end": 179.0, "intro": 10.0, "outro": 165.0, "segue": 170.0},
+        "intro_lift_db": 2.0,
+        "loudness": None,
+        "dj": {
+            "intro_start_s": 0.1,
+            "intro_end_s": 10.0,
+            "outro_start_s": 165.0,
+            "beats": [0.5, 1.0, 1.5],
+            "analysed": True,
+            "cues": [
+                {
+                    "time_s": 1.0,
+                    "type": "first_downbeat",
+                    "label": "",
+                    "source": "auto",
+                    "color": "",
+                }
+            ],
+        },
+    }
+
+
+def test_claim_hands_identity_mismatch_to_local_scan(server):
+    """ADR-0008-16. A skipped stale catalog identity cannot wait behind a busy worker."""
+    _token, secret = server.token()
+    queue = server.manager.analysis_queue
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    server.songs[0].write_bytes(b"changed bytes")
+    reply = server.call("POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 2})
+    assert reply.status_code == 200, reply.text
+    assert len(reply.json()["songs"]) == 2
+    assert queue.abandoned_scans(worker_active=True) == [record["path"]]
+    assert queue._read("SELECT deadline FROM scan_pending WHERE path=?", (record["path"],)) == [
+        (0,)
+    ]
+
+
+def test_claim_hands_off_expired_pending_without_catalog_record(server):
+    """ADR-0008-21. Only the scan owner can cancel an expired orphaned row."""
+    _token, secret = server.token()
+    manager = server.manager
+    queue = manager.analysis_queue
+    orphan = manager.cfg.library.music_dir / "aaa-orphan.flac"
+    orphan.write_bytes(b"orphan")
+    queue.defer_scan(_path(orphan), 6, "orphan")
+    server.clock.now += 600
+    response = server.call(
+        "POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 1}
+    )
+    assert response.status_code == 200, response.text
+    assert queue.scan_pending(_path(orphan))
+    assert queue.abandoned_scans(worker_active=True) == [_path(orphan)]
+    assert len(response.json()["songs"]) == 1
+    with manager._scan_lock:
+        assert manager._recover_scan_one(True)
+    assert not queue.scan_pending(_path(orphan))
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_claim_during_new_scan_tag_read_preserves_work(server, monkeypatch, expired):
+    """ADR-0008-21. A claim between deferral and tag publication cannot strand a song."""
+    from autodj.audio_meta import FileTags
+    from tests.unit.test_library import fake_basic
+
+    token, secret = server.token()
+    manager = server.manager
+    queue = manager.analysis_queue
+    queue.seen(token.token_id, token.name, scan_decode=True)
+    song = manager.cfg.library.music_dir / "aaa-new.flac"
+    song.write_bytes(b"new song")
+    monkeypatch.setattr(manager, "_discover", lambda sources: [("music", song)])
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+
+    def read_tags(path):
+        assert path == song
+        assert manager.catalog.record_for_path(path) is None
+        if expired:
+            server.clock.now += 600
+        response = server.call(
+            "POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 1}
+        )
+        assert response.status_code == 200, response.text
+        return FileTags(length=180.0)
+
+    monkeypatch.setattr("autodj.audio_meta.read_file_tags", read_tags)
+    manager.scan()
+    record = manager.catalog.record_for_path(song)
+    if expired:
+        assert record["energy"] > 0
+        assert not queue.scan_pending(_path(song))
+    else:
+        assert queue.scan_created_listing(_path(song), record["size"], record["fingerprint"])
+        assert record["energy"] == 0
+        response = server.call(
+            "POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 1}
+        )
+        assert response.status_code == 200, response.text
+        lease = queue.lease(response.json()["songs"][0]["lease"], token.token_id)
+        assert lease.path == _path(song)
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_claim_backs_off_dead_scans_and_reaches_live_song(server, monkeypatch, unreadable):
+    """ADR-0008-21. Missing or unreadable rows cannot occupy every remote batch forever."""
+    _token, secret = server.token()
+    manager = server.manager
+    queue = manager.analysis_queue
+    dead = set()
+    for n in range(20):
+        path = manager.cfg.library.music_dir / f"dead-{n:02}.flac"
+        path.write_bytes(b"unavailable audio")
+        manager.catalog.put_entry(make_entry(path))
+        record = manager.catalog.record_for_path(path)
+        queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+        dead.add(record["path"])
+        if not unreadable:
+            path.unlink()
+    if unreadable:
+        original = Path.open
+
+        def locked(path, *args, **kwargs):
+            if _path(path) in dead:
+                raise OSError("file locked")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", locked)
+    for song in server.songs:
+        record = manager.catalog.record_for_path(song)
+        queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    monkeypatch.setattr(
+        queue, "pending_scans", Mock(side_effect=AssertionError("unbounded pending read"))
+    )
+    received = []
+    for _ in range(3):
+        response = server.call(
+            "POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 16}
+        )
+        assert response.status_code == 200, response.text
+        received.extend(response.json()["songs"])
+        if received:
+            break
+    assert {song["title"] for song in received} == {song.stem for song in server.songs}
+    for path in dead:
+        assert manager.catalog.record_for_path(path) is not None
+        assert (
+            queue._read("SELECT retry_at FROM scan_pending WHERE path=?", (path,))[0][0]
+            > server.clock.now
+        )
+
+
+@pytest.mark.parametrize("state", ["local", "backoff", "exhausted", "decoding", "leased"])
+def test_claim_filters_ineligible_scans_before_file_work(server, monkeypatch, state):
+    """ADR-0008-17. Ineligible scan rows cause no per-file reads or refresh writes."""
+    from autodj.analysis_queue import SCAN_MAX_ATTEMPTS
+
+    _token, secret = server.token()
+    manager = server.manager
+    queue = manager.analysis_queue
+    for song in server.songs:
+        record = manager.catalog.record_for_path(song)
+        queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    for song in server.songs[:2]:
+        record = manager.catalog.record_for_path(song)
+        if state == "leased":
+            queue.claim("other", [(record["path"], record["size"], record["fingerprint"])], 600)
+        elif state == "decoding":
+            assert queue.claim_scan(record["path"], record["size"], record["fingerprint"])
+        else:
+            column, value = {
+                "local": ("deadline", 0),
+                "backoff": ("retry_at", server.clock.now + 3600),
+                "exhausted": ("attempts", SCAN_MAX_ATTEMPTS),
+            }[state]
+            with queue._write() as db:
+                db.execute(
+                    f"UPDATE scan_pending SET {column}=? WHERE path=?", (value, record["path"])
+                )
+    from autodj.indexer import file_fingerprint
+
+    identity = Mock(wraps=file_fingerprint)
+    refresh = Mock(wraps=queue.refresh_scan)
+    monkeypatch.setattr("autodj.worker_api.file_fingerprint", identity)
+    monkeypatch.setattr(queue, "refresh_scan", refresh)
+    response = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
+    assert response.status_code == 200, response.text
+    assert [song["title"] for song in response.json()["songs"]] == [server.songs[2].stem]
+    assert identity.call_count == 1
+    refresh.assert_not_called()
+
+
+def claim_scan(server, secret):
+    song = server.songs[0]
+    record = server.manager.catalog.record_for_path(song)
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
+    assert reply.status_code == 200, reply.text
+    return reply.json()["songs"][0]
+
+
+def test_worker_combined_result_stores_scan_fields(server):
+    """ADR-0008-06. A combined result completes scan work and makes music playable."""
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    assert song["scan"]["music_fade_drop_db"] == 10
+    body, _vector = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    assert record["energy"] > 0
+    assert record["points"] == scan_result()["points"]
+    assert record["intro_lift_db"] == 2.0
+    assert server.manager._dj_cache().get(str(server.songs[0])).beats == [0.5, 1.0, 1.5]
+    assert not server.manager.analysis_queue.pending_scans()
+
+
+@pytest.mark.parametrize("retag_pending", [False, True])
+@pytest.mark.parametrize("with_vector", [False, True])
+def test_changed_playable_song_accepts_only_pending_bytes(server, with_vector, retag_pending):
+    """ADR-0008-16. Claims and results use pending identity until atomic replacement."""
+    import soundfile as sf
+    from mutagen.flac import FLAC
+
+    from autodj.indexer import file_fingerprint
+    from tests.unit._catalog_vectors import set_vector
+
+    manager = server.manager
+    path = server.songs[0]
+    entry = make_entry(path)
+    entry.length = manager.advanced_max_minutes() * 60 + 1
+    manager.catalog.put_entry(entry)
+    manager.catalog.retag(path, {"bpm": 133.0, "key": 7, "mode": 1})
+    manager.catalog.set_points(path, {"start": 0.0, "end": 178.0})
+    set_vector(manager.catalog, path, np.ones(FEATURE_DIM, dtype=np.float32))
+    before = manager.catalog.record_for_path(path)
+    queue = manager.analysis_queue
+    _token, secret = server.token()
+    sf.write(path, np.ones((22050, 2)) * 0.1, 22050)
+    tags = FLAC(path)
+    for name, value in {
+        "title": "Replacement",
+        "artist": "New artist",
+        "album": "New album",
+        "genre": "Rock",
+        "date": "2026",
+        "bpm": "131",
+    }.items():
+        tags[name] = value
+    tags.save()
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    if retag_pending:
+        tags["title"] = "Edited replacement"
+        tags.save()
+        assert manager.catalog.retag(path, {"title": "Edited replacement"})
+        before["title"] = "Edited replacement"
+        assert queue.scan_identity(_path(path)) == file_fingerprint(path)
+    reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
+    assert reply.status_code == 200, reply.text
+    song = reply.json()["songs"][0]
+    assert "scan" in song
+    assert (song["size"], song["fingerprint"]) == file_fingerprint(path)
+    assert song["embed"] is True
+    assert manager.catalog.record_for_path(path) == before
+    measurements = scan_result()
+    measurements.update(length=3.0, dj=None)
+    measurements["points"] = {"start": 0.0, "end": 3.0, "intro": 0.5, "outro": 2.0, "segue": 2.5}
+    body, vector = server.result(song, song["lease"], scan=measurements)
+    if not with_vector:
+        body["vector"] = None
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    after = manager.catalog.record_for_path(path)
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(path)
+    assert after["energy"] == (body["energy"] if with_vector else measurements["energy"])
+    assert after["length"] == 3.0
+    assert after["title"] == ("Edited replacement" if retag_pending else "Replacement")
+    assert after["artist"] == "New artist"
+    assert after["album"] == "New album"
+    assert after["genre"] == "Rock"
+    assert after["year"] == 2026
+    assert after["bpm"] == 131.0
+    assert (after["key"], after["mode"]) == ((4, 0) if with_vector else (-1, -1))
+    assert after["tempo_confidence"] == (0.8 if with_vector else 0.0)
+    assert after["user_tags"] == []
+    assert after["points"] == measurements["points"]
+    if with_vector:
+        np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1][0], vector)
+    else:
+        assert not vectors_snapshot(manager.catalog)[0]
+    assert not queue.scan_pending(_path(path))
+
+
+@pytest.mark.parametrize("stale", ["body", "disk", "pending", "second_scan", "during_store"])
+def test_changed_pending_scan_rejects_stale_result_and_recovers(server, monkeypatch, stale):
+    from autodj.indexer import file_fingerprint
+    from tests.unit.test_library import fake_basic
+
+    manager = server.manager
+    path = server.songs[0]
+    before = manager.catalog.record_for_path(path)
+    queue = manager.analysis_queue
+    _token, secret = server.token()
+    path.write_bytes(b"first rewrite")
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    if stale == "body":
+        body.update(size=before["size"], fingerprint=before["fingerprint"])
+    elif stale in {"disk", "second_scan"}:
+        path.write_bytes(b"second rewrite during the lease")
+        if stale == "second_scan":
+            queue.refresh_scan(_path(path), *file_fingerprint(path))
+    elif stale == "pending":
+        queue.refresh_scan(_path(path), song["size"] + 1, "a" * 64)
+    else:
+        from autodj.audio_meta import FileTags
+
+        def read_tags(path):
+            Path(path).write_bytes(b"rewrite during result storage")
+            return FileTags(title="Changed while storing")
+
+        monkeypatch.setattr("autodj.audio_meta.read_file_tags", read_tags)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 409, reply.text
+    assert manager.catalog.record_for_path(path) == before
+    assert queue.scan_pending(_path(path))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    after = manager.catalog.record_for_path(path)
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(path)
+    assert after["energy"] > 0
+    assert not queue.scan_pending(_path(path))
+
+
+def test_worker_scan_only_preserves_advanced_metadata_and_vector(server):
+    """ADR-0008-18. Scan-only work changes measured fields, preserving advanced analysis."""
+    _token, secret = server.token()
+    song = claim(server, secret)["songs"][0]
+    body, vector = server.result(song, song["lease"])
+    assert server.call("POST", "/api/worker/result", secret, json=body).status_code == 200
+    before = server.manager.catalog.record_for_path(server.songs[0])
+    song = claim_scan(server, secret)
+    assert song["embed"] is False
+    body, _unused = server.result(
+        song,
+        song["lease"],
+        vector=None,
+        scan=scan_result(),
+        key=-1,
+        mode=-1,
+        bpm=0.0,
+        tempo_confidence=0.0,
+    )
+    response = server.call("POST", "/api/worker/result", secret, json=body)
+    assert response.status_code == 200, response.text
+    after = server.manager.catalog.record_for_path(server.songs[0])
+    for field in ("key", "mode", "bpm", "tempo_confidence", "embedded_at"):
+        assert after[field] == before[field]
+    assert after["energy"] == scan_result()["energy"]
+    assert after["points"] == scan_result()["points"]
+    _entries, vectors = vectors_snapshot(server.manager.catalog)
+    np.testing.assert_array_equal(vectors[0], vector)
+
+
+@pytest.mark.parametrize("capability", [{}, SCAN_CAPABILITY])
+def test_advanced_lease_before_scan_deferral_stores_vector_and_retains_scan(server, capability):
+    """ADR-0008-13. A scan deferral cannot invalidate an existing vector-only lease."""
+    server.manager.catalog.put_entry(make_entry(server.songs[0], energy=0.0))
+    token, secret = server.token()
+    reply = server.call("POST", "/api/worker/claim", secret, json=capability)
+    assert reply.status_code == 200, reply.text
+    song = reply.json()["songs"][0]
+    assert "scan" not in song
+    queue = server.manager.analysis_queue
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    body, vector = server.result(song, song["lease"])
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    assert queue.lease(song["lease"], token.token_id) is None
+    assert queue.scan_pending(record["path"])
+    assert record["path"] not in server.manager.catalog.unembedded_paths()
+    entries, stored_vectors = vectors_snapshot(server.manager.catalog)
+    paths = [entry.path for entry in entries]
+    np.testing.assert_allclose(stored_vectors[paths.index(record["path"])], vector)
+
+
+@pytest.mark.parametrize("version", ["", "future"])
+def test_scan_version_mismatch_only_claims_advanced_and_logs_once(server, caplog, version):
+    """ADR-0008-13. Algorithm mismatch disables scan work and logs once per worker/version."""
+    _token, secret = server.token()
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    queue = server.manager.analysis_queue
+    queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    capability = {"scan_decode_v1": True, "scan_analysis_version": version}
+    with caplog.at_level(logging.WARNING, logger="autodj.worker_api"):
+        for _ in range(2):
+            heartbeat = server.call("POST", "/api/worker/heartbeat", secret, json=capability)
+            assert heartbeat.status_code == 200, heartbeat.text
+            assert heartbeat.json()["scan_analysis_version"] == "1"
+        reply = server.call("POST", "/api/worker/claim", secret, json={**capability, "batch": 16})
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["scan_analysis_version"] == "1"
+    assert len(reply.json()["songs"]) == 2
+    assert not queue.worker_active(scan_decode=True)
+    assert sum("scan analysis version" in record.message for record in caplog.records) == 1
+
+
+@pytest.mark.parametrize("length", [86400.1, 1e100, 190.0])
+def test_worker_rejects_implausible_scan_duration_without_catalog_changes(server, length):
+    """ADR-0008-13. Scan duration is bounded independently and against measured length."""
+    if length > 86400:
+        server.manager.catalog.put_entry(replace(make_entry(server.songs[0]), length=0.0))
+    token, secret = server.token()
+    song = claim_scan(server, secret)
+    before = server.manager.catalog.record_for_path(server.songs[0])
+    scan = {**scan_result(), "length": length}
+    body, _ = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 422, reply.text
+    assert server.manager.catalog.record_for_path(server.songs[0]) == before
+    queue = server.manager.analysis_queue
+    assert queue.lease(song["lease"], token.token_id) is None
+    assert queue.claimable_scans(limit=16) == []
+
+
+@pytest.mark.parametrize("new_listing", [False, True])
+def test_worker_accepts_tag_only_scan_with_inaccurate_duration(server, new_listing):
+    """ADR-0008-13. Tag estimates allow a loose tolerance for decoded measurements."""
+    path = server.songs[0]
+    catalog = server.manager.catalog
+    catalog.put_entry(replace(make_entry(path), energy=0.0, length=90.0))
+    record = catalog.record_for_path(path)
+    queue = server.manager.analysis_queue
+    queue.defer_scan(record["path"], record["size"], record["fingerprint"], new_listing=new_listing)
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    after = catalog.record_for_path(path)
+    assert after["length"] == 180.0 and after["energy"] > 0
+    assert after["points"] == scan_result()["points"]
+    assert not queue.scan_pending(record["path"])
+
+
+@pytest.mark.parametrize("listing", ["new", "tag_replacement", "playable_replacement"])
+@pytest.mark.parametrize(
+    "tag_length, length, accepted",
+    [
+        (90.0, 42.0, True),
+        (90.0, 183.0, True),
+        (90.0, 41.9, False),
+        (90.0, 183.1, False),
+        (2.0, 6.0, True),
+        (2.0, 7.1, False),
+        (0.0, 3600.0, True),
+        (0.0, 86400.1, False),
+    ],
+)
+def test_worker_scan_tag_duration_bounds(
+    server, monkeypatch, listing, tag_length, length, accepted
+):
+    """ADR-0008-13. Known tag estimates bound results; unknown estimates use the absolute limit."""
+    from autodj.audio_meta import FileTags
+    from autodj.indexer import file_fingerprint
+
+    catalog = server.manager.catalog
+    queue = server.manager.analysis_queue
+    path = server.songs[0]
+    if listing == "playable_replacement":
+        path.write_bytes(b"replacement bytes")
+        monkeypatch.setattr(
+            "autodj.audio_meta.read_file_tags", lambda _: FileTags(length=tag_length)
+        )
+    else:
+        catalog.put_entry(replace(make_entry(path), energy=0.0, length=tag_length))
+    before = catalog.record_for_path(path)
+    queue.defer_scan(_path(path), *file_fingerprint(path), new_listing=listing == "new")
+    token, secret = server.token()
+    reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
+    song = reply.json()["songs"][0]
+    scan = {**scan_result(), "length": length, "dj": None}
+    body, _ = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == (200 if accepted else 422), reply.text
+    assert queue.lease(song["lease"], token.token_id) is None
+    if accepted:
+        assert catalog.record_for_path(path)["length"] == length
+        assert not queue.scan_pending(_path(path))
+    else:
+        assert catalog.record_for_path(path) == before
+        assert queue.claimable_scans(limit=16) == []
+        assert queue.abandoned_scans(worker_active=True) == [_path(path)]
+
+
+def test_vector_only_identity_rejection_has_no_failed_hold(server):
+    """ADR-0008-13. Identity rejection leaves vector work available after worker release."""
+    token, secret = server.token()
+    song = claim(server, secret)["songs"][0]
+    body, _ = server.result(song, song["lease"], model_commit="wrong")
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 409, reply.text
+    released = server.call("POST", "/api/worker/release", secret, json={"leases": [song["lease"]]})
+    assert released.status_code == 200, released.text
+    queue = server.manager.analysis_queue
+    assert queue.lease(song["lease"], token.token_id) is None
+    path = _path(server.songs[0])
+    assert path not in queue.held_paths()
+    assert queue.claim("other-worker", [(path, song["size"], song["fingerprint"])], 600)
+
+
+@pytest.mark.parametrize("rejection", ["model", "vector", "missing_dj", "malformed"])
+def test_worker_rejected_result_fails_only_owned_lease(server, monkeypatch, rejection):
+    """ADR-0008-13. Rejection hands scans to recovery without releasing another holder."""
+    token, secret = server.token()
+    other, other_secret = server.token("Other")
+    song = claim_scan(server, secret)
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    if rejection == "model":
+        body["model_commit"] = "wrong"
+    elif rejection == "vector":
+        body["vector"] = "invalid"
+    elif rejection == "missing_dj":
+        monkeypatch.setattr(server.manager, "dj_analysis_enabled", lambda: True)
+        body["scan"]["dj"] = None
+    else:
+        body["scan"]["energy"] = True
+    queue = server.manager.analysis_queue
+    before = server.manager.catalog.record_for_path(server.songs[0])
+    foreign = server.call("POST", "/api/worker/result", other_secret, json=body)
+    assert foreign.status_code in {404, 409, 422}
+    assert queue.lease(song["lease"], token.token_id) is not None
+    assert queue.lease(song["lease"], other.token_id) is None
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == (409 if rejection == "model" else 422), reply.text
+    assert server.manager.catalog.record_for_path(server.songs[0]) == before
+    assert queue.lease(song["lease"], token.token_id) is None
+    assert queue.claimable_scans(limit=16) == []
+    assert queue.abandoned_scans(worker_active=True) == [before["path"]]
+
+
+@pytest.mark.parametrize("intro_start, intro_end", [(0.1, 170.0), (11.0, 10.0)])
+def test_worker_accepts_intro_after_outro_as_local_scan_does(server, intro_start, intro_end):
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    scan = scan_result()
+    scan["points"].update(intro=170.0, outro=160.0)
+    scan["dj"].update(intro_start_s=intro_start, intro_end_s=intro_end, outro_start_s=160.0)
+    body, _ = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    assert server.manager.catalog.points(server.songs[0])["intro"] == 170.0
+
+
+@pytest.mark.parametrize(
+    "points, expected_end",
+    [
+        ({"start": 0.0, "end": 181.0}, 180.0),
+        ({"start": 10.0, "end": 9.0}, 180.0),
+        ({"start": 0.0, "end": 179.0, "intro": -1.0}, 179.0),
+        ({"start": 0.0, "end": 179.0, "intro": 180.0}, 179.0),
+        ({"start": None, "end": None}, 180.0),
+        ({}, 180.0),
+    ],
+)
+def test_worker_normalizes_basic_points_like_local_scan(server, points, expected_end):
+    """ADR-0008-13. Local and remote scans safely normalize imperfect automatic cues."""
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    scan = {**scan_result(), "points": points}
+    expected = {"start": 0.0, "end": expected_end, "intro": None, "outro": None, "segue": None}
+    assert LibraryManager._valid_basic_points(points, make_entry(server.songs[0])) == expected
+    body, _ = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    assert server.manager.catalog.record_for_path(server.songs[0])["points"] == expected
+
+
+@pytest.mark.parametrize("amplitude", [0.2, 0.0001, 0.0], ids=["audible", "quiet", "silent"])
+@pytest.mark.dj_analysis
+def test_real_scan_analysis_round_trips_dj_and_optional_loudness(server, amplitude):
+    """ADR-0008-13. Real audio, including silence, completes enabled DJ/loudness scan work."""
+    from autodj.scan_analysis import analyse_scan
+
+    path = server.cfg.library.music_dir / "generated.wav"
+    sample_rate = 48000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = (amplitude * np.sin(2 * np.pi * 440 * time) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(audio.tobytes())
+    server.manager.catalog.put_entry(replace(make_entry(path), length=3.0))
+    server.songs.insert(0, path)
+    server.cfg.playback.loudness_processing = "smooth"
+    server.manager.catalog.set_setting("dj_analysis", True)
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    assert song["scan"]["dj"] and song["scan"]["loudness"]
+    measured = analyse_scan(path, song["scan"])
+    assert measured["dj"]["analysed"] is True
+    assert (measured["loudness"] is not None) == (amplitude == 0.2)
+    body, _ = server.result(song, song["lease"], scan=measured)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    stored = server.manager.catalog.record_for_path(path)
+    assert stored["length"] == pytest.approx(3.0)
+    assert stored["points"] == measured["points"]
+    assert bool(stored["loudness"]) == (amplitude == 0.2)
+    assert server.manager._dj_cache().get(str(path)).analysed
+    assert not server.manager.analysis_queue.pending_scans()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("length", "180"),
+        ("energy", True),
+        ("intro_lift_db", 7.0),
+        ("points", {"start": "0", "end": 179.0}),
+        ("points", {"start": False, "end": 179.0}),
+        ("points", {"start": 0.0, "end": 179.0, "intro": True}),
+        ("loudness", {"lufs": -20.0}),
+        ("dj", {"beats": [1.0] * 20001}),
+    ],
+)
+def test_worker_rejects_malformed_scan_result(server, field, value):
+    """ADR-0008-07. Untrusted scan values cannot partially update the catalog."""
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    before = server.manager.catalog.record_for_path(server.songs[0])
+    scan = scan_result()
+    scan[field] = value
+    body, _vector = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 422, reply.text
+    assert server.manager.catalog.record_for_path(server.songs[0]) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("beats", [2.0, 1.0]),
+        ("beats", [181.0]),
+        ("beats", [True]),
+        ("intro_start_s", 181.0),
+        ("analysed", 1),
+        ("cues", [{"time_s": 181.0, "type": "drop"}]),
+        ("cues", [{"time_s": 1.0, "type": "drop", "source": "user"}]),
+    ],
+)
+def test_worker_rejects_invalid_dj_scan_values(server, field, value):
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    scan = scan_result()
+    scan["dj"][field] = value
+    body, _vector = server.result(song, song["lease"], scan=scan)
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 422, reply.text
+
+
+def test_worker_dj_storage_failure_retains_scan_without_vector_hold(server, monkeypatch):
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    monkeypatch.setattr(
+        server.manager, "store_scan_dj", Mock(side_effect=OSError("cache unavailable"))
+    )
+    body, _vector = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 422, reply.text
+    queue = server.manager.analysis_queue
+    assert queue.leased_count() == 0
+    assert not queue.held_paths()
+    assert queue.pending_scans()
+    assert queue.workers()[0]["songs_failed"] == 1
+    assert server.manager.catalog.has_vector(server.songs[0])
+    assert (
+        server.manager.catalog.record_for_path(server.songs[0])["points"] == scan_result()["points"]
+    )
+
+
+def test_worker_combined_result_rejects_changed_file(server):
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    before = server.manager.catalog.record_for_path(server.songs[0])
+    server.songs[0].write_bytes(b"changed audio")
+    body, _vector = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 409, reply.text
+    assert server.manager.catalog.record_for_path(server.songs[0]) == before
+
+
+def test_old_worker_cannot_claim_deferred_scan_work(server):
+    _token, secret = server.token()
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    songs = claim(server, secret, batch=16)["songs"]
+    assert len(songs) == 2
+    assert all(song["fingerprint"] != record["fingerprint"] for song in songs)
+
+
+def test_worker_scan_finishes_after_pending_song_is_retagged(server):
+    from autodj.indexer import file_fingerprint
+
+    _token, secret = server.token()
+    catalog = server.manager.catalog
+    record = catalog.record_for_path(server.songs[0])
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    server.songs[0].write_bytes(b"new tags and audio")
+    catalog.retag(server.songs[0], {"title": "Edited title"})
+    reply = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY)
+    assert reply.status_code == 200
+    song = reply.json()["songs"][0]
+    assert "scan" in song
+    assert server.manager.analysis_queue.abandoned_scans(worker_active=True) == []
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    stored = server.call("POST", "/api/worker/result", secret, json=body)
+    assert stored.status_code == 200, stored.text
+    assert not server.manager.analysis_queue.pending_scans()
+    assert catalog.record_for_path(server.songs[0])["title"] == "Edited title"
+    after = catalog.record_for_path(server.songs[0])
+    assert (after["size"], after["fingerprint"]) == file_fingerprint(server.songs[0])
+
+
+def test_worker_cancels_pending_scan_when_music_becomes_liner(server):
+    _token, secret = server.token()
+    catalog = server.manager.catalog
+    record = catalog.record_for_path(server.songs[0])
+    server.manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    catalog.put_entry(make_entry(server.songs[0]), "liner")
+    reply = server.call("POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 16})
+    assert reply.status_code == 200, reply.text
+    assert len(reply.json()["songs"]) == 2
+    assert not server.manager.analysis_queue.pending_scans()
+
+
+def test_worker_claims_pending_bytes_before_playable_record_replacement(server):
+    from autodj.indexer import file_fingerprint
+
+    _token, secret = server.token()
+    record = server.manager.catalog.record_for_path(server.songs[0])
+    server.songs[0].write_bytes(b"changed audio")
+    size, fingerprint = file_fingerprint(server.songs[0])
+    queue = server.manager.analysis_queue
+    queue.defer_scan(record["path"], size, fingerprint)
+    reply = server.call("POST", "/api/worker/claim", secret, json={**SCAN_CAPABILITY, "batch": 16})
+    assert reply.status_code == 200, reply.text
+    assert len(reply.json()["songs"]) == 3
+    song = reply.json()["songs"][0]
+    assert "scan" in song
+    assert (song["size"], song["fingerprint"]) == (size, fingerprint)
+    assert server.manager.catalog.record_for_path(server.songs[0]) == record
+    assert queue.scan_pending(record["path"])
+    queue.finish_scan(record["path"], size, fingerprint)
+    assert not queue.pending_scans()
+
+
+def test_worker_scan_preserves_user_cues_and_manual_tags(server):
+    _token, secret = server.token()
+    song = claim_scan(server, secret)
+    catalog = server.manager.catalog
+    catalog.set_points(server.songs[0], {"intro": 15.0}, source="user")
+    catalog.retag(server.songs[0], {"bpm": 133.0, "key": 7, "mode": 1})
+    body, _vector = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(server.songs[0])
+    assert record["points"]["intro"] == 15.0
+    assert record["point_sources"]["intro"] == "user"
+    assert (record["bpm"], record["key"], record["mode"]) == (133.0, 7, 1)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize(
+    "edit",
+    [
+        "points",
+        "outside_suggestion",
+        "trim_start",
+        "trim_end",
+        "manual_tags",
+        "dj",
+        "shorter",
+        "shorter_intro_only",
+        "invalid_start",
+        "analysis",
+    ],
+)
+@pytest.mark.parametrize("new_listing", [False, True])
+def test_pending_replacement_keeps_current_edits(server, monkeypatch, fallback, edit, new_listing):
+    """ADR-0008-23. Deferred measurements retain current edits on either completion path."""
+    from autodj.dj_meta import Cue, DjMeta
+    from autodj.indexer import file_fingerprint
+
+    manager = server.manager
+    catalog = manager.catalog
+    path = server.songs[0]
+    catalog.set_points(path, {"start": 0.0, "end": 180.0, "intro": 5.0}, source="analysis")
+    path.write_bytes(b"replacement recording")
+    if new_listing:
+        catalog.put_entry(replace(make_entry(path), energy=0))
+    queue = manager.analysis_queue
+    queue.defer_scan(_path(path), *file_fingerprint(path), new_listing=new_listing)
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    measurements = scan_result()
+    if edit == "points":
+        catalog.set_points(path, {"start": 0.0, "end": 180.0, "intro": 179.5}, source="user")
+        catalog.set_points(path, {"outro": None}, source="imported")
+    elif edit == "outside_suggestion":
+        catalog.set_points(path, {"intro": 179.5})
+    elif edit == "trim_start":
+        catalog.set_points(path, {"start": 179.5, "intro": None})
+    elif edit == "trim_end":
+        catalog.set_points(path, {"end": 0.05, "intro": None})
+    elif edit == "manual_tags":
+        catalog.retag(path, {"bpm": 133.0, "key": 7, "mode": 1})
+    elif edit == "dj":
+        catalog.set_points(path, {"intro": 25.0}, source="user")
+        manager._dj_cache().set(
+            str(path),
+            DjMeta(
+                intro_end_s=25.0,
+                analysed=True,
+                cues=[Cue(25.0, "intro_end", source="user"), Cue(40.0, "hot", "Current", "user")],
+            ),
+        )
+    elif edit in {"shorter", "shorter_intro_only", "invalid_start"}:
+        catalog.set_points(
+            path,
+            {"intro": 170.0}
+            if edit == "shorter_intro_only"
+            else {"start": 0.0, "end": 180.0, "intro": 170.0},
+        )
+        measurements.update(length=120.0, dj=None)
+        measurements["points"] = {
+            "start": 1.0,
+            "end": 119.0,
+            "intro": 10.0,
+            "outro": 110.0,
+            "segue": 115.0,
+        }
+        if edit == "invalid_start":
+            catalog.set_points(path, {"start": 170.0, "end": 180.0})
+        monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+
+    if fallback:
+        queue.release(_token.token_id, [song["lease"]])
+        queue.forget_worker(_token.token_id)
+        entry = make_entry(path)
+        entry.length = measurements["length"]
+        monkeypatch.setattr(
+            "autodj.library.analyze_basic", lambda *a, **k: (entry, measurements["points"])
+        )
+        monkeypatch.setattr("autodj.library.load_for_analysis", lambda *a: np.ones(22050))
+        monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+        monkeypatch.setattr(
+            "autodj.dj_meta.analyse_decoded",
+            lambda *a, **k: DjMeta(
+                intro_end_s=10.0,
+                outro_start_s=165.0,
+                analysed=True,
+            ),
+        )
+        with manager._scan_lock:
+            assert manager._recover_scan_one(False)
+    else:
+        body, _ = server.result(song, song["lease"], scan=measurements)
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+        assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(path)
+    assert not queue.scan_pending(_path(path))
+    if edit == "points":
+        assert record["points"]["intro"] == 179.5
+        assert record["points"]["end"] == 180.0
+        assert record["points"]["outro"] is None
+        assert record["point_sources"]["intro"] == "user"
+        assert record["point_sources"]["outro"] == "imported"
+        meta = manager._dj_cache().get(str(path))
+        assert meta.intro_end_s == 179.5
+        assert meta.outro_start_s == 180.0
+    elif edit == "outside_suggestion":
+        assert record["points"]["intro"] == 179.5
+        assert record["points"]["end"] == 180.0
+    elif edit == "trim_start":
+        assert record["points"]["start"] == 179.5
+        assert record["points"]["end"] == 180.0
+    elif edit == "trim_end":
+        assert record["points"]["start"] == 0.0
+        assert record["points"]["end"] == 0.05
+    elif edit == "manual_tags":
+        assert (record["bpm"], record["key"], record["mode"]) == (133.0, 7, 1)
+        assert set(record["user_tags"]) == {"key", "bpm"}
+    elif edit == "dj":
+        assert record["points"]["intro"] == 25.0
+        meta = manager._dj_cache().get(str(path))
+        assert meta.intro_end_s == 25.0
+        assert Cue(40.0, "hot", "Current", "user") in meta.cues
+    elif edit == "shorter":
+        assert record["points"]["start"] == 0.0
+        assert record["points"]["end"] == 120.0
+        assert record["points"]["intro"] == 120.0
+        assert record["point_sources"]["intro"] == "user"
+    elif edit == "shorter_intro_only":
+        assert record["points"]["intro"] == 119.0
+        assert record["point_sources"]["intro"] == "user"
+    elif edit == "invalid_start":
+        assert record["points"]["start"] == 1.0
+        assert record["point_sources"]["start"] == "analysis"
+        catalog.set_points(path, {"start": 2.0}, source="analysis")
+        assert catalog.points(path)["start"] == 2.0
+    else:
+        assert record["points"]["intro"] == 10.0
+        assert record["point_sources"]["intro"] == "analysis"
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("timing", ["before", "after", "legacy"])
+@pytest.mark.parametrize("source", ["user", "imported"])
+def test_pending_completion_preserves_only_edits_after_defer(
+    server, monkeypatch, fallback, timing, source
+):
+    """ADR-0008-23. Replacement edits need evidence that they changed after deferral."""
+    from autodj.audio_meta import FileTags
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    catalog, queue = manager.catalog, manager.analysis_queue
+    catalog.set_points(path, {"intro": 50.0}, source=source)
+    catalog.retag(path, {"bpm": 99.0, "key": 7, "mode": 0})
+    path.write_bytes(b"replacement recording")
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    if timing != "before":
+        catalog.set_points(path, {"intro": 55.0}, source=source)
+        catalog.retag(path, {"bpm": 101.0, "mode": 1})
+    if timing == "legacy":
+        with queue._write() as db:
+            db.execute("UPDATE scan_pending SET edit_snapshot=NULL WHERE path=?", (_path(path),))
+    # Repeated discovery must not overwrite the original edit baseline.
+    queue.defer_scan(_path(path), *file_fingerprint(path))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(
+        "autodj.audio_meta.read_file_tags", lambda p: FileTags(length=120.0, bpm=131.0)
+    )
+    assert manager.scan_options(path)["saved_points"] == (
+        {"intro": 55.0} if timing == "after" else {}
+    )
+    measurements = scan_result()
+    measurements["dj"] = None
+    if fallback:
+        entry = replace(make_entry(path), bpm=131.0, key=-1, mode=-1)
+        monkeypatch.setattr(
+            "autodj.library.analyze_basic", lambda *a, **k: (entry, measurements["points"])
+        )
+        monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+        with manager._scan_lock:
+            assert manager._recover_scan_one(False)
+    else:
+        _token, secret = server.token()
+        song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()[
+            "songs"
+        ][0]
+        body, _ = server.result(song, song["lease"], vector=None, scan=measurements)
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+        assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(path)
+    assert record["points"]["intro"] == (55.0 if timing == "after" else 10.0)
+    assert record["point_sources"]["intro"] == (source if timing == "after" else "analysis")
+    assert record["bpm"] == (101.0 if timing == "after" else 131.0)
+    assert (record["key"], record["mode"]) == ((7, 1) if timing == "after" else (-1, -1))
+    assert set(record["user_tags"]) == ({"bpm", "key"} if timing == "after" else set())
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("source", ["user", "imported"])
+def test_same_bytes_pending_completion_keeps_existing_edits(
+    server, monkeypatch, fallback, legacy, source
+):
+    """ADR-0008-23. Same-byte rereads retain edits, including rows predating snapshots."""
+    from autodj.analysis_queue import AnalysisQueue
+
+    manager, path = server.manager, server.songs[0]
+    catalog, queue = manager.catalog, manager.analysis_queue
+    catalog.set_points(path, {"intro": 50.0, "outro": None}, source=source)
+    catalog.retag(path, {"bpm": 99.0, "key": 7, "mode": 1})
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(manager, "_scan_worker_available", lambda: True)
+    manager._scan_pending = queue.pending_scans()
+    assert manager._read_track_local("music", path, False, allow_defer=True)
+    assert queue.scan_pending(_path(path))
+    if legacy:
+        with queue._write() as db:
+            db.execute("ALTER TABLE scan_pending DROP COLUMN edit_snapshot")
+        upgraded = AnalysisQueue(queue.path)
+        try:
+            assert upgraded._read("SELECT edit_snapshot FROM scan_pending") == [(None,)]
+        finally:
+            upgraded.close()
+    measurements = scan_result()
+    measurements["dj"] = None
+    if fallback:
+        monkeypatch.setattr(
+            "autodj.library.analyze_basic",
+            lambda *a, **k: (make_entry(path), measurements["points"]),
+        )
+        monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+        with manager._scan_lock:
+            assert manager._recover_scan_one(False)
+    else:
+        _token, secret = server.token()
+        song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()[
+            "songs"
+        ][0]
+        assert song["scan"]["saved_points"] == {"intro": 50.0, "outro": None}
+        body, _ = server.result(song, song["lease"], scan=measurements)
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+        assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(path)
+    assert record["points"]["intro"] == 50.0
+    assert record["points"]["outro"] is None
+    assert record["point_sources"]["intro"] == source
+    assert record["point_sources"]["outro"] == source
+    assert record["bpm"] == 99.0
+    assert (record["key"], record["mode"]) == (7, 1)
+    assert set(record["user_tags"]) == {"bpm", "key"}
+
+
+@pytest.mark.parametrize("source", ["user", "mixxx"])
+def test_scan_replaces_old_byte_markers_with_catalog_points(server, monkeypatch, source):
+    """ADR-0008-23. Discarded marker edits cannot override analysis in the DJ cache."""
+    from autodj.dj_meta import Cue, DjMeta
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    manager.catalog.set_points(
+        path,
+        {"start": 5.0, "intro": 25.0, "outro": 140.0},
+        source="user" if source == "user" else "imported",
+    )
+    hot = Cue(60.0, "hot", "Saved", source)
+    manager._dj_cache().set(
+        str(path),
+        DjMeta(
+            intro_start_s=5.0,
+            intro_end_s=25.0,
+            outro_start_s=140.0,
+            analysed=True,
+            cues=[
+                Cue(5.0, "intro_start", source=source),
+                Cue(25.0, "intro_end", source=source),
+                Cue(140.0, "outro_start", source=source),
+                hot,
+            ],
+        ),
+    )
+    path.write_bytes(b"replacement recording")
+    manager.analysis_queue.defer_scan(_path(path), *file_fingerprint(path))
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    record = manager.catalog.record_for_path(path)
+    meta = manager._dj_cache().get(str(path))
+    for point, marker, field in (
+        ("start", "intro_start", "intro_start_s"),
+        ("intro", "intro_end", "intro_end_s"),
+        ("outro", "outro_start", "outro_start_s"),
+    ):
+        assert record["point_sources"][point] == "analysis"
+        assert getattr(meta, field) == record["points"][point]
+        assert all(
+            cue.time_s == record["points"][point] and cue.source == "auto"
+            for cue in meta.cues
+            if cue.type == marker
+        )
+    assert hot in meta.cues
+
+
+@pytest.mark.parametrize("cue_case", ["duplicate", "past_end"])
+def test_scan_saved_cues_are_unique_and_within_duration(server, monkeypatch, caplog, cue_case):
+    """ADR-0008-23. Saved markers merge after alignment; old cues cannot exceed new duration."""
+    from autodj.dj_meta import Cue, DjMeta
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    path.write_bytes(b"replacement recording")
+    manager.analysis_queue.defer_scan(_path(path), *file_fingerprint(path))
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    manager.catalog.set_points(path, {"intro": 25.0})
+    manager._dj_cache().set(
+        str(path),
+        DjMeta(
+            analysed=True,
+            cues=[
+                Cue(25.0, "intro_end", source="user"),
+                Cue(30.0, "intro_end", source="mixxx"),
+                Cue(180.0, "hot", "Boundary", "user"),
+                Cue(200.0, "hot", "Old", "user"),
+            ],
+        ),
+    )
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    with caplog.at_level(logging.DEBUG, logger="autodj.library"):
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    cues = manager._dj_cache().get(str(path)).cues
+    if cue_case == "duplicate":
+        assert [cue for cue in cues if cue.type == "intro_end"] == [
+            Cue(25.0, "intro_end", source="user")
+        ]
+    else:
+        assert all(cue.time_s <= 180.0 for cue in cues)
+        assert Cue(180.0, "hot", "Boundary", "user") in cues
+        assert any(
+            record.levelno == logging.DEBUG and "200" in record.message for record in caplog.records
+        )
+
+
+@pytest.mark.parametrize("state", ["failed", "stale"])
+def test_pending_move_preserves_lease_hold(server, state):
+    """ADR-0008-24. Moving a held song cannot bypass its original lease expiry."""
+    from autodj.indexer import file_fingerprint
+
+    manager, old = server.manager, server.songs[0]
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    lease = queue.claim("worker", [(_path(old), *identity)], 600)[0]
+    queue.finish(lease, state)
+    queue.defer_scan(_path(old), *identity)
+    expiry = queue._read("SELECT expires_at FROM analysis_leases WHERE path=?", (_path(old),))[0][0]
+    new = old.with_name("moved.flac")
+    old.rename(new)
+    assert manager.catalog.rekey(old, new)
+    assert queue._read(
+        "SELECT state,expires_at FROM analysis_leases WHERE path=?", (_path(new),)
+    ) == [(state, expiry)]
+    assert queue.claim("worker", [(_path(new), *identity)], 600) == []
+    server.clock.now = expiry + 1
+    assert queue.claim("worker", [(_path(new), *identity)], 600)
+
+
+@pytest.mark.parametrize("new_listing", [False, True])
+def test_pending_move_rejects_old_worker_result(server, new_listing):
+    """ADR-0008-24. Moves cancel old claims and preserve pending work and history."""
+    from autodj.indexer import file_fingerprint
+
+    manager = server.manager
+    old = server.songs[0]
+    if new_listing:
+        manager.catalog.put_entry(replace(make_entry(old), energy=0))
+    else:
+        old.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    queue.defer_scan(_path(old), *file_fingerprint(old), new_listing=new_listing)
+    manager.catalog.retag(old, {"bpm": 133.0})
+    ledgers = [manager.ledger, manager.add_ledger("second")]
+    for ledger in ledgers:
+        ledger.remember_play(old, 42.0)
+        ledger.remember_history(
+            {
+                "event_id": "played",
+                "path": _path(old),
+                "title": "Song",
+                "artist": "Artist",
+                "duration": 180.0,
+                "played_at": "2026-10-22T12:00:00Z",
+                "performances": 2,
+            }
+        )
+        ledger.flush()
+    before = manager.catalog.record_for_path(old)
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    new = old.with_name("renamed.flac")
+    old.rename(new)
+    manager._reconcile_moves([("music", new), *[("music", p) for p in server.songs[1:]]])
+    moved = manager.catalog.record_for_path(new)
+    assert moved is not None and moved["id"] == before["id"]
+    assert moved["user_tags"] == before["user_tags"]
+    for ledger in ledgers:
+        assert ledger.last_played()[_path(new)] == 42.0
+        history = ledger.store.play_log()
+        assert len(history) == 1 and history[0]["path"] == _path(new)
+        assert history[0]["performances"] == 2
+    assert queue.scan_identity(_path(new)) == file_fingerprint(new)
+    assert queue.scan_created_listing(_path(new), *file_fingerprint(new)) == new_listing
+    assert not queue.scan_pending(_path(old))
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 404, reply.text
+    assert manager.catalog.record_for_path(new) == moved
+    assert manager.catalog.record_for_path(old) is None
+    reclaimed = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()[
+        "songs"
+    ][0]
+    assert reclaimed["lease"] != song["lease"]
+    assert reclaimed["fingerprint"] == song["fingerprint"]
 
 
 # ---------------------------------------------------------------------------
@@ -208,13 +1509,13 @@ def test_claim_retries_after_other_worker_takes_selected_songs(server, monkeypat
     monkeypatch.setattr(catalog, "unembedded_paths", counted_paths)
     raced = False
 
-    def claim_with_race(holder, songs, seconds):
+    def claim_with_race(holder, songs, seconds, **kwargs):
         nonlocal raced
         if not raced:
             raced = True
-            real_claim("Other worker", songs, seconds)
+            real_claim("Other worker", songs, seconds, **kwargs)
             return []
-        return real_claim(holder, songs, seconds)
+        return real_claim(holder, songs, seconds, **kwargs)
 
     monkeypatch.setattr(queue, "claim", claim_with_race)
     assert len(claim(server, secret, batch=2)["songs"]) == 1
@@ -345,11 +1646,16 @@ def _vector_text(values):
 )
 def test_invalid_vectors_are_refused(server, vector):
     """ADR-0006-04."""
-    _token, secret = server.token()
+    token, secret = server.token()
     song = claim(server, secret)["songs"][0]
     body, _ = server.result(song, song["lease"], vector=vector)
     assert server.call("POST", "/api/worker/result", secret, json=body).status_code == 422
     assert not server.manager.catalog.has_vector(server.songs[0])
+    assert server.manager.analysis_queue.lease(song["lease"], token.token_id) is None
+    assert all(
+        candidate["fingerprint"] != song["fingerprint"]
+        for candidate in claim(server, secret, batch=16)["songs"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -431,7 +1737,7 @@ def test_rate_and_size_limits(server, monkeypatch):
         "POST",
         "/api/worker/result",
         secret,
-        content=b"{" + b" " * (70 * 1024) + b"}",
+        content=b"{" + b" " * RESULT_BODY_MAX_BYTES + b"}",
         headers={"Content-Type": "application/json"},
     )
     assert huge.status_code == 413

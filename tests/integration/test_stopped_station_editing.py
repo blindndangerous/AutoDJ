@@ -326,3 +326,36 @@ def test_saved_edits_refused_during_station_start(rig) -> None:  # noqa: F811
             assert "nightowl" not in registry._content
 
     asyncio.run(during_start())
+
+
+@pytest.mark.parametrize("rig", [{"autostart": "false"}], indirect=True)
+def test_history_export_uses_selected_station_store_even_when_stopped(rig):  # noqa: F811
+    """ADR-0005-02: exports use station histories even while stopped."""
+    from datetime import datetime
+
+    client, library, _cfg, song, _closes = rig
+    moment = datetime(2026, 9, 1, 12).astimezone().isoformat()
+    for slug, title in [("default", "Main current"), ("nightowl", "Owl current")]:
+        row = {
+            "event_id": slug,
+            "path": song.path,
+            "title": title,
+            "artist": "Artist",
+            "duration": 180.0,
+            "played_at": moment,
+        }
+        library.station_ledger(slug).store.write_history([row], [])
+        library.catalog.write_history(
+            [{**row, "event_id": "legacy-" + slug, "title": "Stale legacy"}], station=slug
+        )
+    for prefix, title, other in [
+        ("/api", "Main current", "Owl current"),
+        (OWL, "Owl current", "Main current"),
+    ]:
+        response = client.get(prefix + "/history/export?from=2026-09-01&to=2026-09-01")
+        assert response.status_code == 200, response.text
+        assert title in response.text
+        assert other not in response.text
+        assert "Stale legacy" not in response.text
+        assert response.headers["x-play-count"] == "1"
+    assert client.app.state.stations.editable("nightowl").stopped

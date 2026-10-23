@@ -2157,6 +2157,23 @@ class TestServeFunction:
         assert captured["player"]._stream_mode is True
         assert captured["player"]._server_audio_too is True
 
+    def test_serve_server_audio_uses_live_mixing_without_stream_mode(self, tmp_path) -> None:
+        from autodj.live_playout import LivePlayout
+
+        captured = self._serve_capturing_player(tmp_path, no_playback=False)
+        assert captured["runtime"].server_audio is True
+        assert captured["runtime"].stream_mode is False
+        assert captured["player"]._stream_mode is False
+        assert captured["player"].live_mixing is True
+        assert isinstance(captured["player"]._playout, LivePlayout)
+
+    def test_server_audio_requires_ffmpeg_for_progressive_decoding(self, tmp_path) -> None:
+        with (
+            patch("shutil.which", return_value=None),
+            pytest.raises(RuntimeError, match="Server-mixed audio requires ffmpeg on PATH"),
+        ):
+            self._serve_capturing_player(tmp_path, no_playback=False)
+
     def test_serve_hands_the_other_stations_to_the_app(self, tmp_path) -> None:
         """[stations.<slug>] stations are built when the app starts; they always stream."""
         spec = SimpleNamespace(

@@ -35,6 +35,9 @@ _.anchor_to_seed
 _.replaygain_max_clip_safe_gain
 # Read through self.__dict__.setdefault("_fx_plans", ...) in player.py.
 _._fx_plans
+# A worker scan result field (autodj.scan_analysis.ScanResult), read from
+# model_dump() when LibraryCatalog.store_analysis stores it.
+_.intro_lift_db
 
 # Pytest discovers these registered plugin hooks by name (-p scripts.ci_pytest).
 _.pytest_addoption

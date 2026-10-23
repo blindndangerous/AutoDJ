@@ -279,7 +279,7 @@ def test_refresh_replaces_a_stale_ready_track(worker_factory) -> None:
 
 
 def test_stale_ready_track_stays_available_until_replaced(worker_factory) -> None:
-    """ADR-0004-02."""
+    """The offline worker retains its original soft-refresh behavior."""
     worker, cursor = worker_factory()
     worker.start()
     ready = _wait_for_ready(worker)  # "t0"

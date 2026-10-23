@@ -119,6 +119,207 @@ def stored_vectors(manager: LibraryManager) -> dict[str, np.ndarray]:
     return {Path(e.path).name: v for e, v in zip(entries, vectors, strict=True)}
 
 
+@pytest.mark.parametrize("embed", [True, False])
+@pytest.mark.dj_analysis
+def test_worker_downloads_once_for_scan_and_vector(server, monkeypatch, embed):
+    """A real scan result uses server settings, local functions, and one download."""
+    from autodj.intro_lift import measure_source_intro
+    from autodj.processing import analyze_basic, analyze_loudness, loudness_matches
+    from autodj.stereo import SAMPLE_RATE
+
+    manager = server.manager
+    manager.cfg.playback.loudness_processing = "smooth"
+    manager.catalog.remove_entries([str(song) for song in server.songs])
+    if not embed:
+        manager.catalog.add_source(manager.cfg.library.music_dir, advanced=False)
+    worker, transport, model = make_worker(server, once=True)
+    worker.connect()
+    # The first reply negotiates support; subsequent heartbeats advertise it.
+    worker.api.heartbeat()
+    with (
+        patch("autodj.library.load_for_analysis", side_effect=AssertionError("server decoded")),
+        patch("autodj.library.analyze_basic", side_effect=AssertionError("server decoded")),
+        patch("autodj.library.analyze_loudness", side_effect=AssertionError("server decoded")),
+        patch(
+            "autodj.intro_lift.measure_source_intro", side_effect=AssertionError("server decoded")
+        ),
+    ):
+        manager.scan()
+    assert all(entry.is_silent for entry in manager.entries_snapshot())
+    stats = worker.run()
+    assert (stats.done, stats.failed, stats.stale) == (3, 0, 0)
+    assert model.calls == (3 if embed else 0)
+    assert sum(path.startswith("/api/worker/audio?") for path in transport.paths) == 3
+    manager.refresh()
+    assert not any(entry.is_silent for entry in manager.entries_snapshot())
+    for song in server.songs:
+        basic, points = analyze_basic(song, music_fade_drop_db=manager.music_fade_drop_db())
+        record = manager.catalog.record_for_path(song)
+        assert record["length"] == basic.length
+        assert record["points"] == manager._valid_basic_points(points, basic)
+        assert record["intro_lift_db"] == measure_source_intro(song, SAMPLE_RATE, basic.energy)
+        assert record["loudness"] == analyze_loudness(song)
+        assert loudness_matches(record["loudness"], song)
+        assert manager._dj_cache().get(str(song)).analysed
+    assert not manager.analysis_queue.pending_scans()
+
+
+def test_new_worker_keeps_legacy_server_request_shapes(server):
+    worker, transport, _model = make_worker(server, once=True)
+    request = transport.request
+
+    def legacy(method, path, body=None, sink=None):
+        assert "scan_decode_v1" not in (body or {})
+        assert "scan" not in (body or {})
+        status, headers, raw = request(method, path, body, sink)
+        if sink is None:
+            reply = json.loads(raw)
+            reply.pop("scan_decode_v1", None)
+            raw = json.dumps(reply).encode()
+        return status, headers, raw
+
+    transport.request = legacy
+    assert worker.run().done == 3
+    assert not server.manager.analysis_queue.worker_active(scan_decode=True)
+
+
+@pytest.mark.parametrize("version", [None, "unsupported"])
+def test_worker_does_not_advertise_scan_with_incompatible_version(version):
+    requests = 0
+
+    class Transport:
+        def request(self, method, path, body=None, sink=None):
+            nonlocal requests
+            requests += 1
+            if requests > 1 and version is not None:
+                assert body["scan_decode_v1"] is False
+                assert body["scan_analysis_version"] == "1"
+            else:
+                assert "scan_decode_v1" not in body
+                assert "scan_analysis_version" not in body
+            return (
+                200,
+                {},
+                json.dumps({"scan_decode_v1": True, "scan_analysis_version": version}).encode(),
+            )
+
+    api = ServerApi(Transport())
+    api.heartbeat()
+    api.claim(1)
+    api.heartbeat()
+
+
+def test_worker_version_skew_keeps_legacy_work_and_logs_once(server, monkeypatch, caplog):
+    monkeypatch.setattr("autodj.worker.SCAN_ANALYSIS_VERSION", "unsupported")
+    worker, _transport, _model = make_worker(server, once=True, batch=1)
+    assert worker.run().done == 3
+    assert not server.manager.analysis_queue.worker_active(scan_decode=True)
+    assert caplog.text.count("incompatible scan analysis version") == 1
+
+
+@pytest.mark.parametrize("endpoint", ["heartbeat", "claim"])
+def test_worker_retries_legacy_fields_after_scan_downgrade(endpoint):
+    requests = []
+
+    class Transport:
+        def request(self, method, path, body=None, sink=None):
+            requests.append((path, body.copy()))
+            if len(requests) == 1:
+                return (
+                    200,
+                    {},
+                    json.dumps({"scan_decode_v1": True, "scan_analysis_version": "1"}).encode(),
+                )
+            if "scan_decode_v1" in body:
+                assert body["scan_analysis_version"] == "1"
+                return 422, {}, b'{"detail":"extra fields"}'
+            return 200, {}, b'{"songs":[]}'
+
+    api = ServerApi(Transport())
+    api.heartbeat()
+    if endpoint == "claim":
+        assert api.claim(2) == {"songs": []}
+    else:
+        assert api.heartbeat() == {"songs": []}
+    api.claim(2)
+    assert len(requests) == 4
+    assert "scan_decode_v1" not in requests[-1][1]
+    assert "scan_analysis_version" not in requests[-1][1]
+
+
+@pytest.mark.parametrize("failure", [None, NetworkError("restarting"), ApiError(503, "busy")])
+def test_worker_renegotiates_scan_support_after_reconnect(failure):
+    """ADR-0008-15. Transport failures retain support until an actual server response changes it."""
+    requests = []
+
+    class Transport:
+        def request(self, method, path, body=None, sink=None):
+            requests.append(body.copy())
+            if len(requests) == 1:
+                return (
+                    200,
+                    {},
+                    json.dumps({"scan_decode_v1": True, "scan_analysis_version": "1"}).encode(),
+                )
+            if len(requests) == 2 and failure is not None:
+                if isinstance(failure, NetworkError):
+                    raise failure
+                return failure.status, {}, b'{"detail":"busy"}'
+            return 200, {}, b'{"songs":[]}'
+
+    api = ServerApi(Transport())
+    api.heartbeat()
+    if failure is None:
+        api.heartbeat()
+    else:
+        with pytest.raises(type(failure)):
+            api.heartbeat()
+    api.claim(2)
+    if failure is None:
+        assert "scan_decode_v1" not in requests[-1]
+        assert "scan_analysis_version" not in requests[-1]
+    else:
+        assert requests[-1]["scan_decode_v1"] is True
+        assert requests[-1]["scan_analysis_version"] == "1"
+
+
+def test_worker_restart_releases_orphans_and_heartbeat_tracks_received_leases(server):
+    """ADR-0008-14. Only leases received by this process are renewed."""
+    worker, transport, _model = make_worker(server, once=True)
+    worker.connect()
+    songs = worker.api.claim(2)["songs"]
+    assert worker.api.heartbeat()["renewed"] == 2
+    # An orphan represents a response lost before the worker received it.
+    orphan = server.call("POST", "/api/worker/claim", transport.secret, json={}).json()["songs"][0]
+    server.clock.now += 30
+    assert worker.api.heartbeat()["renewed"] == 2
+    worker.api.release([songs[0]["lease"]])
+    assert worker.api.heartbeat()["renewed"] == 1
+    restarted = Worker(ServerApi(transport), worker.analyse, server.identity(), once=True)
+    restarted.connect()
+    assert server.manager.analysis_queue.leased_count() == 0
+    assert orphan["lease"] not in [s["lease"] for s in restarted.api.claim(3)["songs"]]
+
+
+def test_worker_checks_measured_length_before_embedding_unknown_length_song(server, monkeypatch):
+    from tests.unit.test_worker_api import scan_result
+
+    manager = server.manager
+    manager.set_advanced_max_minutes(1)
+    for path in server.songs:
+        entry = make_entry(path)
+        entry.length = 0.0
+        manager.catalog.put_entry(entry)
+        record = manager.catalog.record_for_path(path)
+        manager.analysis_queue.defer_scan(record["path"], record["size"], record["fingerprint"])
+    monkeypatch.setattr("autodj.scan_analysis.analyse_scan", lambda *args: scan_result())
+    worker, _transport, model = make_worker(server, once=True)
+    assert worker.run().done == 3
+    assert model.calls == 0
+    assert not manager.analysis_queue.pending_scans()
+    assert all(manager.catalog.record_for_path(path)["length"] == 180.0 for path in server.songs)
+
+
 def test_worker_results_match_local_analysis_exactly(server, tmp_path):
     worker, transport, model = make_worker(server, once=True, batch=2)
     stats = worker.run()
@@ -185,6 +386,93 @@ def test_a_song_that_fails_is_reported_and_held_back(server):
     assert server.manager.analysis_queue.workers()[0]["songs_failed"] == 3
 
 
+@pytest.mark.parametrize("status", [200, 204, 404, 409, 422])
+def test_worker_releases_results_the_server_did_not_store(server, status):
+    worker, transport, _model = make_worker(server, batch=1)
+    request = transport.request
+
+    def reject_result(method, path, body=None, sink=None):
+        if path == "/api/worker/result":
+            worker.stop.set()
+            if status == 204:
+                return 204, {}, b""
+            return status, {}, b'{"stored":false,"detail":"not stored"}'
+        return request(method, path, body, sink)
+
+    transport.request = reject_result
+    stats = worker.run()
+    assert (stats.done, stats.failed, stats.stale) == (0, 0, 1)
+    assert worker.api.heartbeat()["renewed"] == 0
+    assert not server.manager.analysis_queue.held_paths()
+    assert not stored_vectors(server.manager)
+
+
+@pytest.mark.parametrize("status", [200, 422])
+@pytest.mark.parametrize("failure", [NetworkError("disconnected"), ApiError(503, "busy")])
+def test_worker_retries_release_after_result_was_not_stored(server, status, failure):
+    worker, transport, _model = make_worker(server, batch=1)
+    request = transport.request
+    releases = 0
+    waits = []
+    worker._wait = waits.append
+
+    def reject_then_release(method, path, body=None, sink=None):
+        nonlocal releases
+        if path == "/api/worker/result":
+            return status, {}, b'{"stored":false,"detail":"not stored"}'
+        if path == "/api/worker/release":
+            releases += 1
+            if releases == 1:
+                raise failure
+            worker.stop.set()
+        if path == "/api/worker/claim" and releases == 1:
+            worker.stop.set()
+            return 200, {}, json.dumps({"identity": server.identity(), "songs": []}).encode()
+        return request(method, path, body, sink)
+
+    transport.request = reject_then_release
+    stats = worker.run()
+    assert (stats.done, stats.stale) == (0, 1)
+    assert releases == 2
+    assert waits == [2.0]
+    assert worker.api.heartbeat()["renewed"] == 0
+    assert not server.manager.analysis_queue.held_paths()
+
+
+def test_worker_stops_when_server_refuses_releasing_rejected_result(server):
+    worker, transport, _model = make_worker(server, batch=1)
+    request = transport.request
+    release_refused = False
+
+    def reject_result_and_release(method, path, body=None, sink=None):
+        nonlocal release_refused
+        if path == "/api/worker/result":
+            return 422, {}, b'{"detail":"not stored"}'
+        if path == "/api/worker/release":
+            release_refused = True
+            return 404, {}, b'{"detail":"missing endpoint"}'
+        if path == "/api/worker/claim" and release_refused:
+            worker.stop.set()
+            return 200, {}, json.dumps({"identity": server.identity(), "songs": []}).encode()
+        return request(method, path, body, sink)
+
+    transport.request = reject_result_and_release
+    with pytest.raises(WorkerError, match="release"):
+        worker.run()
+    server.clock.now += WORKER_LEASE_SECONDS + 1
+    assert not server.manager.analysis_queue.held_paths()
+
+
+def test_worker_releases_current_lease_when_processing_is_interrupted(server):
+    def interrupted(path):
+        raise KeyboardInterrupt
+
+    worker, _transport, _model = make_worker(server, analyse=interrupted, batch=3)
+    with pytest.raises(KeyboardInterrupt):
+        worker.run()
+    assert not server.manager.analysis_queue.held_paths()
+
+
 def test_a_song_that_changed_on_the_server_is_skipped(server):
     model = FakeModel()
 
@@ -204,7 +492,7 @@ def test_a_model_mismatch_stops_the_worker_before_any_download(server):
     with pytest.raises(WorkerError, match=r"Update the model on the worker") as refused:
         worker.run()
     assert 'revision = "' in str(refused.value)
-    assert transport.paths == ["/api/worker/heartbeat"]
+    assert transport.paths == ["/api/worker/heartbeat", "/api/worker/heartbeat"]
 
 
 def test_a_refused_token_stops_the_worker(server):
@@ -226,7 +514,7 @@ class FlakyApi:
         if self.failures:
             raise self.failures.pop(0)
 
-    def heartbeat(self, device=""):
+    def heartbeat(self, device="", *, connect=False):
         self._maybe_fail()
         return {"identity": self.identity, "heartbeat_seconds": 30}
 
@@ -281,7 +569,7 @@ class QueueApi:
         self.claimed = 0
         self.on_claim = on_claim
 
-    def heartbeat(self, device=""):
+    def heartbeat(self, device="", *, connect=False):
         return {"identity": self.identity, "heartbeat_seconds": 30}
 
     def claim(self, batch, device=""):
@@ -684,9 +972,10 @@ def test_heartbeats_keep_claims_alive_while_preparing_the_model(server):
     worker, _, model = make_worker(server, once=True, idle_release=60, prepare=prepare)
     heartbeat = worker.api.heartbeat
 
-    def beat(device=""):
-        reply = heartbeat(device)
-        if loading.is_set() and reply["renewed"] == 3:
+    def beat(device="", **kwargs):
+        during_loading = loading.is_set()
+        reply = heartbeat(device, **kwargs)
+        if during_loading and reply["renewed"] == 3:
             renewed.set()
         return reply
 

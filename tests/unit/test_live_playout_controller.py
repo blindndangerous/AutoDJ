@@ -15,7 +15,7 @@ def _wait_for(predicate, timeout: float = 2.0) -> bool:
     return predicate()
 
 
-def test_live_playout_prepares_one_handoff_and_pop_schedules_the_next() -> None:
+def test_live_playout_pop_waits_for_explicit_cursor_promotion() -> None:
     """ADR-0004-12: streaming preparation stays in its independent worker."""
     calls = 0
 
@@ -32,6 +32,9 @@ def test_live_playout_prepares_one_handoff_and_pop_schedules_the_next() -> None:
         assert first == "handoff-1"
         assert worker.ready() is first
         assert worker.pop() is first
+        assert not worker.wait_ready(0.05)
+        assert calls == 1
+        worker.reset(lambda: None)
         assert worker.wait_ready(1.0)
         assert worker.ready() == "handoff-2"
     finally:

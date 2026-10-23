@@ -7,6 +7,10 @@ and posts the vector and measured fields back.  The server checks the
 result was made with its own model and analysis version and that the song
 has not changed, then stores it in its live catalog.
 
+When both ends support ``scan_decode_v1``, the same download also supplies
+pending scan measurements. Songs excluded from embedding receive only those
+measurements. The server supplies scan settings and owns tags and cue imports.
+
 Network trouble is retried with a growing pause, so a worker left running
 rides out a server restart.  Ctrl+C finishes the song in hand, gives the
 rest of the batch back and exits; a second Ctrl+C quits at once.  A heartbeat
@@ -54,6 +58,7 @@ from urllib.parse import urlencode, urlsplit
 import numpy as np
 
 from autodj.indexer import TrackAnalysis, file_fingerprint
+from autodj.scan_analysis import SCAN_ANALYSIS_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +207,11 @@ class ServerApi:
 
     def __init__(self, transport: Transport) -> None:
         self._transport = transport
+        self._scan_envelope = False
+        self._scan_decode = False
+        self._lease_tracking = False
+        self._leases: set[str] = set()
+        self._leases_lock = threading.Lock()
 
     def _call(
         self, method: str, path: str, body: dict[str, Any] | None = None, sink: Any = None
@@ -215,11 +225,52 @@ class ServerApi:
         retry = {k.lower(): v for k, v in headers.items()}.get("retry-after")
         raise ApiError(status, detail, float(retry) if retry and retry.isdigit() else None)
 
-    def heartbeat(self, device: str = "") -> dict[str, Any]:
-        return self._call("POST", "/api/worker/heartbeat", {"device": device})
+    def _work_request(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Negotiate support while preserving it through transient request failures."""
+        if self._scan_envelope:
+            body = {
+                **body,
+                "scan_decode_v1": self._scan_decode,
+                "scan_analysis_version": SCAN_ANALYSIS_VERSION,
+            }
+        try:
+            reply = self._call("POST", path, body)
+        except ApiError as exc:
+            optional = {"scan_decode_v1", "scan_analysis_version", "leases", "connect"}
+            if exc.status != 422 or not optional.intersection(body):
+                raise
+            if "scan_decode_v1" in body:
+                self._scan_envelope = False
+                self._scan_decode = False
+            if "leases" in body or "connect" in body:
+                self._lease_tracking = False
+            body = {key: value for key, value in body.items() if key not in optional}
+            reply = self._call("POST", path, body)
+        version = reply.get("scan_analysis_version")
+        self._scan_envelope = (
+            reply.get("scan_decode_v1") is True and isinstance(version, str) and bool(version)
+        )
+        self._scan_decode = self._scan_envelope and version == SCAN_ANALYSIS_VERSION
+        return reply
+
+    def heartbeat(self, device: str = "", *, connect: bool = False) -> dict[str, Any]:
+        body: dict[str, Any] = {"device": device}
+        if self._lease_tracking:
+            with self._leases_lock:
+                body["leases"] = sorted(self._leases)
+            body["connect"] = connect
+        reply = self._work_request("/api/worker/heartbeat", body)
+        self._lease_tracking = reply.get("lease_tracking") is True
+        if connect and self._lease_tracking and "connect" not in body:
+            # The first legacy-shaped request discovers support before resetting claims.
+            return self.heartbeat(device, connect=True)
+        return reply
 
     def claim(self, batch: int, device: str = "") -> dict[str, Any]:
-        return self._call("POST", "/api/worker/claim", {"batch": batch, "device": device})
+        reply = self._work_request("/api/worker/claim", {"batch": batch, "device": device})
+        with self._leases_lock:
+            self._leases.update(str(song["lease"]) for song in reply.get("songs", []))
+        return reply
 
     def download(self, lease: str, dest: Path, size: int) -> None:
         with dest.open("wb") as handle:
@@ -229,14 +280,23 @@ class ServerApi:
                 sink=_CappedFile(handle, size),
             )
 
-    def submit(self, result: dict[str, Any]) -> None:
-        self._call("POST", "/api/worker/result", result)
+    def submit(self, result: dict[str, Any]) -> bool:
+        stored = self._call("POST", "/api/worker/result", result).get("stored") is True
+        with self._leases_lock:
+            self._leases.discard(str(result["lease"]))
+        return stored
 
     def fail(self, lease: str, reason: str) -> None:
         self._call("POST", "/api/worker/failed", {"lease": lease, "reason": reason[:300]})
+        with self._leases_lock:
+            self._leases.discard(lease)
 
     def release(self, leases: list[str]) -> None:
-        self._call("POST", "/api/worker/release", {"leases": leases})
+        try:
+            self._call("POST", "/api/worker/release", {"leases": leases})
+        finally:
+            with self._leases_lock:
+                self._leases.difference_update(leases)
 
 
 def identity_mismatch(server: dict[str, object], worker: dict[str, object]) -> str:
@@ -462,7 +522,7 @@ class Worker:
         this worker has its copy of the model (:meth:`check_identity`).
         """
         try:
-            reply = self._call(lambda: self.api.heartbeat(self.device))
+            reply = self._call(lambda: self.api.heartbeat(self.device, connect=True))
         except (ApiError, NetworkError) as exc:
             raise WorkerError(f"Could not start work with the server: {exc}") from exc
         self.server_identity = dict(reply.get("identity", {}))
@@ -497,6 +557,7 @@ class Worker:
             except ApiError as exc:
                 logger.warning("%s %s skipped: %s", number, name, exc.detail)
                 self.stats.stale += 1
+                self._release([lease], retry=True)
                 return
             except ValueError as exc:
                 self._report_failure(lease, name, number, str(exc))
@@ -505,7 +566,22 @@ class Worker:
                 self._report_failure(lease, name, number, "the download did not match the song")
                 return
             try:
-                analysis = self.analyse(path)
+                scan = None
+                if song.get("scan") is not None:
+                    from autodj.scan_analysis import analyse_scan
+
+                    scan = analyse_scan(path, song["scan"])
+                embed = song.get("embed", True)
+                maximum = song.get("advanced_max_seconds", 0)
+                if scan is not None and maximum and scan["length"] > maximum:
+                    embed = False
+                analysis = self.analyse(path) if embed else None
+                if analysis is not None:
+                    energy = analysis.energy
+                elif scan is not None:
+                    energy = scan["energy"]
+                else:
+                    raise ValueError("claim has no analysis task")
             except Exception as exc:
                 self._report_failure(lease, name, number, str(exc) or type(exc).__name__)
                 return
@@ -519,18 +595,29 @@ class Worker:
             "dimension": self.identity["dimension"],
             "size": size,
             "fingerprint": fingerprint,
-            "vector": encode_vector(analysis.vector),
-            "energy": analysis.energy,
-            "key": analysis.key,
-            "mode": analysis.mode,
-            "bpm": analysis.bpm,
-            "tempo_confidence": analysis.tempo_confidence,
+            "vector": encode_vector(analysis.vector) if analysis is not None else None,
+            "energy": energy,
+            "key": analysis.key if analysis is not None else -1,
+            "mode": analysis.mode if analysis is not None else -1,
+            "bpm": analysis.bpm if analysis is not None else 0.0,
+            "tempo_confidence": analysis.tempo_confidence if analysis is not None else 0.0,
         }
+        if scan is not None:
+            result["scan"] = scan
         try:
-            self._call(lambda: self.api.submit(result), give_up_on_stop=False)
+            stored = self._call(lambda: self.api.submit(result), give_up_on_stop=False)
         except ApiError as exc:
             logger.warning("%s %s not stored: %s", number, name, exc.detail)
+            if scan is not None and exc.status in {409, 413, 422}:
+                self._report_failure(lease, name, number, "server rejected scan measurements")
+                return
             self.stats.stale += 1
+            self._release([lease], retry=True)
+            return
+        if stored is False:
+            logger.warning("%s %s not stored by the server.", number, name)
+            self.stats.stale += 1
+            self._release([lease], retry=True)
             return
         self.stats.done += 1
         logger.info("%s %s analysed in %.1f s.", number, name, time.monotonic() - started)
@@ -540,14 +627,20 @@ class Worker:
         self.stats.failed += 1
         with contextlib.suppress(ApiError, NetworkError):
             self._call(lambda: self.api.fail(lease, reason), give_up_on_stop=False)
+        self._release([lease], retry=True)
 
-    def _release(self, leases: list[str]) -> None:
+    def _release(self, leases: list[str], *, retry: bool = False) -> None:
         if not leases:
             return
         try:
-            self.api.release(leases)
+            if retry:
+                self._call(lambda: self.api.release(leases))
+            else:
+                self.api.release(leases)
             logger.info("Gave %d unanalysed songs back to the server.", len(leases))
         except (ApiError, NetworkError) as exc:
+            if retry and not self.stop.is_set():
+                raise WorkerError(f"Could not release rejected songs: {exc}") from exc
             logger.warning(
                 "Could not give %d songs back (%s); the server takes them back by itself "
                 "in a few minutes.",
@@ -611,10 +704,10 @@ class Worker:
                     for position, song in enumerate(songs, 1):
                         if self.stop.is_set():
                             break
-                        held.remove(str(song["lease"]))
                         self._process(
                             song, Path(folder), f"[{position}/{len(songs)}, {waiting} waiting]"
                         )
+                        held.remove(str(song["lease"]))
                     self._release(held)
                     held = []
         finally:

@@ -25,7 +25,11 @@ Stations**. Every station supports these choices. Startup flags
 | Broadcast recording and outbound relays | Unavailable | Unavailable | Available when configured |
 
 The mixing paths need separate checks. Server preparation does not guarantee
-continuity under arbitrary load. Seeking is restricted in server-mixed playback.
+continuity under arbitrary load. Seeking is unavailable during radio-stream
+playback.
+Server sound-card and radio-stream output require FFmpeg on PATH for progressive
+audio decoding. Only radio-stream output starts stream encoders and listener
+lifecycle.
 Stream start/stop depends on listeners, continuous-play settings and components
 keeping the station active. Closing the control page is not a stream stop command.
 

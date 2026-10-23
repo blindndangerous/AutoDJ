@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 from autodj.catalog import LibraryCatalog, _path
@@ -41,3 +42,10 @@ def vectors_snapshot(catalog: LibraryCatalog) -> tuple[list[IndexEntry], np.ndar
         chunks = list(reader.vectors(set(paths)))
     vectors = np.concatenate(chunks) if chunks else np.empty((0, FEATURE_DIM), np.float32)
     return [by_path[path] for path in paths], vectors
+
+
+def build_faiss_index(vectors: np.ndarray) -> faiss.IndexFlatIP:
+    """Build an exact similarity index for a test's vector matrix."""
+    index = faiss.IndexFlatIP(vectors.shape[1])
+    index.add(vectors)
+    return index

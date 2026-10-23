@@ -193,12 +193,6 @@ class SimilarityIndex:
         with self._reload_lock:
             return self._public_entries
 
-    def replace_catalog_index(self, entries: list[IndexEntry], vectors: np.ndarray) -> None:
-        """Refresh the matching view from catalog vectors."""
-        from autodj.indexer import build_faiss_index
-
-        self.replace_catalog_faiss(entries, build_faiss_index(vectors))
-
     def replace_catalog_faiss(self, entries: list[IndexEntry], index: faiss.IndexFlatIP) -> None:
         """Serve *index*, whose rows are *entries* in order, from now on."""
         candidate = SimilarityIndex(index, entries)

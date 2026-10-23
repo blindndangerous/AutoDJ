@@ -4,6 +4,13 @@ Look up the effect of playback controls, speed, processing, volume and idle tran
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
+Local server sound-card playback and streaming use the same progressive live
+mixing engine. FFmpeg is required for both. Choosing only the sound card does
+not enable a public stream or listener-driven start/stop. Device volume and
+mute remain local to the output; show review/export uses its separate offline
+renderer. Local seeking refills the decoder off the audio thread and may briefly
+hold playback while the requested audio becomes available.
+
 ## Controls while streaming
 
 - **Skip** takes effect immediately on the server with a short fade. A speaker hears it a few

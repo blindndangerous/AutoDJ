@@ -140,6 +140,31 @@ describe("clock folder and points controls", () => {
     controls.destroy();
   });
 
+  // ADR-0008-22
+  it("shows recovery progress without completion announcements", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let running = true;
+    const request = vi.fn(async () => ({
+      folders: [], import: { running, phase: "recovering analysis", done: 2, total: 10 },
+      tracks_ready: 2, tracks_indexed: 1,
+    }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const progress = document.getElementById("source-folders-progress");
+    const status = document.getElementById("source-folders-status");
+    expect(progress.textContent).toBe("Recovering analysis: 2 of 10");
+    expect(progress.hasAttribute("aria-live")).toBe(false);
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    for (let run = 0; run < 2; run += 1) {
+      running = false;
+      await controls.refresh();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(status.textContent).toBe("");
+      running = true;
+      await controls.refresh();
+    }
+  });
+
   it("announces import completion once after running", async () => {
     document.getElementById("panel-library").hidden = false;
     let running = true;
@@ -158,6 +183,20 @@ describe("clock folder and points controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     observer.disconnect();
     expect(changes).toHaveLength(0);
+  });
+
+  it("announces a finished scan when recovery starts before the next poll", async () => {
+    document.getElementById("panel-library").hidden = false;
+    let job = { running: true, phase: "reading tracks", done: 1, total: 4 };
+    const request = vi.fn(async () => ({ folders: [], import: job, tracks_ready: 2, tracks_indexed: 1 }));
+    const controls = installLibraryFolders({ document, request });
+    await controls.refresh();
+    const status = document.getElementById("source-folders-status");
+    expect(status.textContent).toBe("");
+    job = { running: true, phase: "recovering analysis", done: 0, total: 3 };
+    await controls.refresh();
+    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 indexed."));
+    expect(document.getElementById("source-folders-progress").textContent).toBe("Recovering analysis: 0 of 3");
   });
 
   it("reads a point in an hour-long mix typed as hours:minutes:seconds (#391)", () => {

@@ -30,7 +30,6 @@ class QueueEdit:
     voice_action: str | None
     breaks: tuple[Any, ...]
     intro: Any
-    following: tuple[QueueEdit, ...] = ()
     outgoing: Any = None
     candidate_mode: str | None = None
 
@@ -94,24 +93,6 @@ def _candidate(
     return None
 
 
-def _after_occurrence(player: Any, outgoing: Any, queue: list[Any] | tuple[Any, ...]) -> Any:
-    """Find the projected successor of an exact queued occurrence, if present."""
-    values = list(queue)
-    for index, entry in enumerate(values):
-        if _same_occurrence(entry, outgoing):
-            probe = type("QueueProbe", (), {})()
-            probe.entry = outgoing
-            probe.from_queue = True
-            probe.reserved_liners = ()
-            probe.next_reserved_liners = ()
-            return _candidate(player, probe, None, values[index + 1 :])
-    return None
-
-
-def _contains_occurrence(outgoing: Any, values: list[Any] | tuple[Any, ...]) -> bool:
-    return any(_same_occurrence(item, outgoing) for item in values if item is not None)
-
-
 def _breaks_for(player: Any, track: Any) -> tuple[Any, ...]:
     if hasattr(track, "voice_breaks"):
         return tuple(track.voice_breaks or ())
@@ -125,10 +106,6 @@ def _breaks_for(player: Any, track: Any) -> tuple[Any, ...]:
         if item is not None:
             found.append(item)
     return tuple(found)
-
-
-def _outgoing(track: Any) -> Any:
-    return getattr(track, "entry", None) or getattr(track, "ending", None)
 
 
 def _song_specific(item: Any) -> bool:
@@ -229,6 +206,10 @@ def plan_queue_edit(
             track = ahead.ready() if ahead is not None else None
     if track is None:
         return None
+    # A pending cursor has no selected successor; its handoff is planned when
+    # the bus needs it, against the then-current queue.
+    if getattr(track, "handoff_pending", False):
+        return None
 
     candidate = _candidate(player, track, queued_next, queue)
     state = getattr(player, "_state", None)
@@ -239,127 +220,15 @@ def plan_queue_edit(
         _same_occurrence(candidate, requested)
         or _same_occurrence(candidate, getattr(track, "next_entry", None))
     )
-    ahead = getattr(player, "_playout", None)
-    ready = ahead.ready() if ahead is not None else None
-    following: list[QueueEdit] = []
-    changed_contexts: list[tuple[Any, Any, tuple[Any, ...], Any]] = []
-    outgoing_overrides: dict[int, Any] = {}
-    if changed:
-        changed_contexts.append(
-            (track, candidate, _breaks_for(player, track), getattr(track, "incoming_intro", None))
-        )
-    proposed_values = ([queued_next] if queued_next is not None else []) + list(queue)
-    previous_values = (
-        (([state.queued_next] if state.queued_next is not None else []) + list(state.queue))
-        if state is not None
-        else []
-    )
-    if ready is not None and ready is not track:
-        if _contains_occurrence(ready.entry, proposed_values):
-            following_outgoing = ready.entry
-            following_candidate = _after_occurrence(player, ready.entry, proposed_values)
-            ready_changed = not (
-                _same_occurrence(following_candidate, getattr(ready, "next_entry", None))
-                or _same_occurrence(
-                    following_candidate, _after_occurrence(player, ready.entry, previous_values)
-                )
-            )
-            if not ready_changed:
-                following_candidate = ready.next_entry
-        elif changed:
-            # B is displaced by the replacement X. Its voice belongs on the
-            # new X->successor edge, never on the preceding A->X edge.
-            following_outgoing = candidate
-            following_candidate = (
-                _after_occurrence(player, candidate, proposed_values)
-                if candidate is not None
-                else None
-            )
-            ready_changed = True
-        else:
-            # Automatic B->C has no queue occurrence to anchor a projection.
-            # An unchanged empty requested queue leaves C selected.
-            following_outgoing = ready.entry
-            following_candidate = getattr(ready, "next_entry", None)
-            ready_changed = False
-        rb, ri = _breaks_for(player, ready), getattr(ready, "incoming_intro", None)
-        if ready_changed:
-            changed_contexts.append((ready, following_candidate, rb, ri))
-            if not _same_occurrence(following_outgoing, ready.entry):
-                outgoing_overrides[id(ready)] = following_outgoing
-        elif changed and (rb or ri is not None):
-            following.append(
-                QueueEdit(ready, following_candidate, None, rb, ri, outgoing=following_outgoing)
-            )
-    if not changed and not changed_contexts:
+    if not changed:
         return None
 
-    affected_any = any(
-        any(_song_specific(item) for item in bs) or intro is not None
-        for _, _, bs, intro in changed_contexts
-    )
-    if not affected_any:
-        primary_context = (
-            changed_contexts[0]
-            if changed_contexts
-            else (
-                track,
-                candidate,
-                _breaks_for(player, track),
-                getattr(track, "incoming_intro", None),
-            )
-        )
-        tail = [
-            QueueEdit(
-                ct,
-                cc,
-                None,
-                cb,
-                ci,
-                outgoing=(
-                    outgoing_overrides[id(ct)]
-                    if id(ct) in outgoing_overrides
-                    else _outgoing(ct)
-                    if ct is not track
-                    else None
-                ),
-            )
-            for ct, cc, cb, ci in changed_contexts[1:]
-        ]
-        return QueueEdit(
-            *primary_context[:2],
-            None,
-            primary_context[2],
-            primary_context[3],
-            (*tail, *following),
-            (
-                outgoing_overrides[id(changed_contexts[0][0])]
-                if changed_contexts and id(changed_contexts[0][0]) in outgoing_overrides
-                else _outgoing(changed_contexts[0][0])
-                if changed_contexts and changed_contexts[0][0] is not track
-                else None
-            ),
-        )
+    breaks = _breaks_for(player, track)
+    intro = getattr(track, "incoming_intro", None)
+    if not any(_song_specific(item) for item in breaks) and intro is None:
+        return QueueEdit(track, candidate, None, breaks, intro)
 
-    # A single revision covers every affected song context so keep/discard is
-    # one atomic decision across a replanned chain.
-    revisions = [
-        [
-            id(t),
-            _entry_identity(
-                outgoing_overrides[id(t)] if id(t) in outgoing_overrides else _outgoing(t)
-            ),
-            _entry_identity(c),
-            [_identity(item) for item in bs if _song_specific(item)],
-            _identity(intro),
-        ]
-        for t, c, bs, intro in changed_contexts
-    ]
-    revision = hashlib.sha256(
-        json.dumps(
-            [revisions, _revision(player, track, candidate, (), None)], sort_keys=True, default=str
-        ).encode()
-    ).hexdigest()
+    revision = _revision(player, track, candidate, breaks, intro)
     if voice_action not in {"keep", "discard"} or voice_revision != revision:
         raise VoiceQueueConflict(
             {
@@ -369,43 +238,15 @@ def plan_queue_edit(
             }
         )
 
-    edits: list[QueueEdit] = []
-    for context_track, context_candidate, context_breaks, context_intro in changed_contexts:
-        affected = {id(item) for item in context_breaks if _song_specific(item)}
-        if voice_action == "keep":
-            context_breaks = tuple(
-                _copy_kept(item)
-                if id(item) in affected and getattr(item, "source", None) == "prepared_edition"
-                else item
-                for item in context_breaks
-            )
-        else:
-            context_breaks = tuple(item for item in context_breaks if id(item) not in affected)
-            if context_intro is not None:
-                context_intro = None
-        edits.append(
-            QueueEdit(
-                context_track,
-                context_candidate,
-                voice_action,
-                context_breaks,
-                context_intro,
-                outgoing=(
-                    outgoing_overrides[id(context_track)]
-                    if id(context_track) in outgoing_overrides
-                    else _outgoing(context_track)
-                    if context_track is not track
-                    else None
-                ),
-            )
+    affected = {id(item) for item in breaks if _song_specific(item)}
+    if voice_action == "keep":
+        breaks = tuple(
+            _copy_kept(item)
+            if id(item) in affected and getattr(item, "source", None) == "prepared_edition"
+            else item
+            for item in breaks
         )
-    primary = edits[0]
-    return QueueEdit(
-        primary.track,
-        primary.candidate,
-        primary.voice_action,
-        primary.breaks,
-        primary.intro,
-        (*edits[1:], *following),
-        primary.outgoing,
-    )
+    else:
+        breaks = tuple(item for item in breaks if id(item) not in affected)
+        intro = None
+    return QueueEdit(track, candidate, voice_action, breaks, intro)

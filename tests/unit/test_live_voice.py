@@ -205,7 +205,7 @@ def test_live_voice_render_race_drops_item_and_keeps_old_audio(tmp_path, monkeyp
     np.testing.assert_array_equal(current.audio.read(0, position), before)
 
 
-def test_live_voice_reset_preserves_queued_voice_for_future_ready_track(tmp_path) -> None:
+def test_live_voice_reset_leaves_future_voice_queued_until_track_is_current(tmp_path) -> None:
     player, entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
     plan, _closes, _airs = player.voice_slot_status()
     assert plan is not None
@@ -216,10 +216,10 @@ def test_live_voice_reset_preserves_queued_voice_for_future_ready_track(tmp_path
     ready = RenderedTrack(
         entries[2],
         current.audio,
-        entries[3],
+        None,
         0,
         "",
-        voice_breaks=(future,),
+        handoff_pending=True,
     )
     player._playout = _FakePlayout(ready)
 
@@ -229,14 +229,13 @@ def test_live_voice_reset_preserves_queued_voice_for_future_ready_track(tmp_path
         transition_choices=(),
     )
 
-    edit = player._live_queue_edits[id(entries[2])]
-    assert edit.breaks == (future,)
+    assert id(entries[2]) not in player._live_queue_edits
     assert desk.get(future.break_id).state == "queued"
     assert desk.get(item.break_id).state == "rendered"
 
 
 @pytest.mark.parametrize("rebuild_plan", (False, True))
-def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
+def test_live_voice_cancel_removes_unheard_audio_without_preparing_ready_voice(
     tmp_path, rebuild_plan
 ) -> None:
     """ADR-0004-11: unheard installed speech can be removed without changing heard audio."""
@@ -254,9 +253,7 @@ def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
     current = player._playing_render
     assert current is not None
     player.bus._pos = position = round(9.0 * SAMPLE_RATE)
-    ready_voice = _voice(desk, "ready-slot")
-    desk.add(ready_voice)
-    ready = RenderedTrack(entries[2], current.audio, entries[3], 0, "", voice_breaks=(ready_voice,))
+    ready = RenderedTrack(entries[2], current.audio, None, 0, "", handoff_pending=True)
     player._playout = _FakePlayout(ready)
     before = current.audio.read(0, position)
     current_plan = player._live_voice_slot[1]
@@ -291,8 +288,7 @@ def test_live_voice_cancel_removes_unheard_audio_and_keeps_ready_voice(
         without_voice.audio.read(position, SAMPLE_RATE),
     )
     assert player._playout.ready() is ready
-    assert player._live_queue_edits[id(entries[2])].breaks == (ready_voice,)
-    assert desk.get(ready_voice.break_id).state == "queued"
+    assert id(entries[2]) not in player._live_queue_edits
     assert not player.can_cancel_voice_track(item.break_id)
 
 
@@ -403,10 +399,8 @@ def test_live_voice_cancel_replaces_exact_ready_occurrence_and_keeps_other_speec
     assert tuple(item.break_id for item in edit.breaks) == (sibling.break_id,)
 
 
-def test_live_voice_cancel_rejects_ready_promotion_race_without_dropping_source(
-    tmp_path, monkeypatch
-):
-    """ADR-0004-11: cancellation revalidates a ready occurrence promotion race."""
+def test_live_voice_cancel_ignores_unprepared_ready_continuation(tmp_path):
+    """A body-only ready track has no cancellable future speech slot."""
     player, entries, _points, desk, current, _future_plan = _current_handoff(tmp_path)
     item = _voice(desk, "ready-slot")
     desk.add(item)
@@ -414,30 +408,23 @@ def test_live_voice_cancel_rejects_ready_promotion_race_without_dropping_source(
     ready = RenderedTrack(
         entries[2],
         current.audio,
-        entries[3],
+        None,
         0,
         "",
         live_source=player._live_file(entries[2]),
         next_live_source=player._live_file(entries[3]),
         break_events=((round(10 * SAMPLE_RATE), item.break_id, round(12 * SAMPLE_RATE)),),
         voice_breaks=(item,),
+        handoff_pending=True,
     )
     playout = _FakePlayout(ready)
     player._playout = playout
     before = ready.audio.read(0, SAMPLE_RATE)
-    assert player.can_cancel_voice_track(item.break_id)
-    render = player._render_track
-
-    def render_then_promote(*args, **kwargs):
-        result = render(*args, **kwargs)
-        playout._ready = None
-        return result
-
-    monkeypatch.setattr(player, "_render_track", render_then_promote)
-    with pytest.raises(BreakError, match="started"):
+    assert not player.can_cancel_voice_track(item.break_id)
+    with pytest.raises(BreakError, match="can no longer be changed"):
         player.cancel_voice_track(item.break_id)
 
-    assert playout.ready() is None
+    assert playout.ready() is ready
     assert desk.get(item.break_id).state == "rendered"
     np.testing.assert_array_equal(ready.audio.read(0, SAMPLE_RATE), before)
 
