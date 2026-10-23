@@ -166,6 +166,7 @@ from autodj.stations import (
     public_feed_path,
     quiesce_cache_writers,
     tick_stream_workers,
+    timed_shutdown_step,
 )
 from autodj.status_page import STATUS_PAGE_CSP, render_off_air_page, render_status_page
 from autodj.stereo import SAFE_FFMPEG_INPUT
@@ -1050,65 +1051,80 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
-            # A Library tools job is a child process: stop it as its Stop
-            # button does, so a restart does not leave it beside the next server.
+            # The scan winds down while the rest stops; the library waits for
+            # it before the DJ-meta cache closes.
+            library.stop_scan(_SHUTDOWN_TIMEOUT_S)
             from autodj.jobs import get_manager
 
-            if await asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S):
+            async def stopped(name: str, worker: Any) -> bool:
+                """Shut *worker* down in a thread; whether it stopped in time (or is absent)."""
+                if worker is None:
+                    return True
+                return bool(
+                    await timed_shutdown_step(
+                        name, asyncio.to_thread(worker.shutdown, _SHUTDOWN_TIMEOUT_S)
+                    )
+                )
+
+            # These are independent, so they stop together: one after another,
+            # their timeouts would add up.
+            (
+                job_was_running,
+                speech_stopped,
+                rotation_stopped,
+                shows_stopped,
+                previews_stopped,
+                rescan_stopped,
+                reviews_stopped,
+            ) = await asyncio.gather(
+                # A Library tools job is a child process: stop it as its Stop
+                # button does, so a restart does not leave it beside the next server.
+                timed_shutdown_step(
+                    "stopping the library job",
+                    asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S),
+                ),
+                stopped("stopping speech", getattr(app.state, "speech", None)),
+                # A rotation test reads the library: stop it before the library closes.
+                stopped("stopping rotation tests", getattr(app.state, "rotation_tests", None)),
+                # So does a show's generation (#106): it is cancelled and ends at
+                # its next pick.
+                stopped("stopping show generations", getattr(app.state, "show_generations", None)),
+                # So does an hour preview (#126): it ends within its own time limit,
+                # and a worker that has not stopped keeps the library open.
+                stopped("stopping hour previews", getattr(app.state, "hour_previews", None)),
+                stopped("stopping the cue rescan", getattr(app.state, "cue_rescan", None)),
+                stopped("stopping review jobs", getattr(app.state, "review_jobs", None)),
+            )
+            if job_was_running:
                 logger.info("Stopped the running library job")
-            speech = getattr(app.state, "speech", None)
-            if speech is not None and not await asyncio.to_thread(
-                speech.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            if not speech_stopped:
                 logger.warning(
                     "Speech worker is still stopping; pending requests will not be retried"
                 )
-            # A rotation test reads the library: stop it before the library closes.
-            rotation_tests = getattr(app.state, "rotation_tests", None)
-            if rotation_tests is not None and not await asyncio.to_thread(
-                rotation_tests.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            if not rotation_stopped:
                 logger.warning(
                     "A rotation test was still running %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            # So does a show's generation (#106): it is cancelled and ends at
-            # its next pick.
-            show_generations = getattr(app.state, "show_generations", None)
-            if show_generations is not None and not await asyncio.to_thread(
-                show_generations.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
+            if not shows_stopped:
                 logger.warning(
                     "A show's list was still being generated %.2f seconds after it was cancelled",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            # So does an hour preview (#126): it ends within its own time limit,
-            # and a worker that has not stopped keeps the library open.
-            hour_previews = getattr(app.state, "hour_previews", None)
-            readers_stopped = True
-            if hour_previews is not None and not await asyncio.to_thread(
-                hour_previews.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not previews_stopped:
                 logger.error(
                     "An hour preview was still reading the library %.2f seconds after "
                     "shutdown began; the library is left open rather than closed under it",
                     _SHUTDOWN_TIMEOUT_S,
                 )
-            cue_rescan = getattr(app.state, "cue_rescan", None)
-            if cue_rescan is not None and not await asyncio.to_thread(
-                cue_rescan.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not rescan_stopped:
                 logger.error("A cue rescan is still reading; the library remains open")
-            review_jobs = getattr(app.state, "review_jobs", None)
-            if review_jobs is not None and not await asyncio.to_thread(
-                review_jobs.shutdown, _SHUTDOWN_TIMEOUT_S
-            ):
-                readers_stopped = False
+            if not reviews_stopped:
                 logger.error("A review renderer is still reading; the library remains open")
-            writers_quiesced, cache_closed = await stations.shutdown(
-                library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped
+            readers_stopped = previews_stopped and rescan_stopped and reviews_stopped
+            writers_quiesced, cache_closed = await timed_shutdown_step(
+                "stopping the stations and the library",
+                stations.shutdown(library, _SHUTDOWN_TIMEOUT_S, readers_stopped=readers_stopped),
             )
             from autodj.mastering import kill_leftover_processes
 
@@ -1116,7 +1132,10 @@ def create_app(
             # Stereo Tool may outlive the server.  In a worker thread: it
             # waits up to 2 seconds for each process it kills.
             loop = asyncio.get_running_loop()
-            if killed := await loop.run_in_executor(None, kill_leftover_processes):
+            if killed := await timed_shutdown_step(
+                "stopping leftover mastering processes",
+                loop.run_in_executor(None, kill_leftover_processes),
+            ):
                 logger.warning("Stopped %d mastering process(es) left running", killed)
             if writers_quiesced and cache_closed:
                 logger.info("Server stopped cleanly.")
@@ -1130,7 +1149,8 @@ def create_app(
                     "Server shutdown completed in degraded mode: active cache writers "
                     "remain; DJ-meta cache left open."
                 )
-            else:  # pragma: no cover -- close failure is defensive-only
+            else:
+                # A scan that would not stop, or a close that failed.
                 logger.warning(
                     "Server shutdown completed in degraded mode: DJ-meta cache could not be closed."
                 )

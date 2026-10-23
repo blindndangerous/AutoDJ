@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -194,8 +195,17 @@ def _rig(
             log.append("push stopped")
 
     runtime.broadcast = broadcast
+
+    def stop_scan(_timeout: float) -> bool:
+        log.append("library scan stopped")
+        return True
+
     library: Any = SimpleNamespace(
-        start_scan=lambda: None, tick=lambda: None, close=lambda: log.append("library closed")
+        start_scan=lambda: None,
+        tick=lambda: None,
+        stop_scan=stop_scan,
+        flush_ledgers=lambda: log.append("plays saved"),
+        close=lambda: log.append("library closed"),
     )
     registry = StationRegistry(
         ExtraStation(
@@ -253,6 +263,7 @@ async def test_shutdown_keeps_the_order_of_the_single_station_server(
         "player told to stop",
         "player thread joined",
         "background analysis waited for",
+        "library scan stopped",
         "DJ-meta cache closed",
         "library closed",
         "master closed",
@@ -290,4 +301,58 @@ async def test_a_reader_still_running_keeps_the_library_open(
     assert await registry.shutdown(shared, 1.0, readers_stopped=False) == (True, True)
 
     assert "library closed" not in log
-    assert log[-2:] == ["master closed", "push stopped"]
+    assert log[-3:] == ["plays saved", "master closed", "push stopped"]
+
+
+async def test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ADR-0008-25. Closing the DJ-meta cache under the scan would lose its writes.
+
+    The plays since the last tick are saved all the same.
+    """
+    log: list[str] = []
+    _runtime, registry, shared, _bridge = _rig(tmp_path, monkeypatch, log)
+    waits: list[float] = []
+
+    def stop_scan(timeout: float) -> bool:
+        waits.append(timeout)
+        return False
+
+    shared.library.stop_scan = stop_scan
+    await registry.start_all()
+    await shared.start()
+    shared.stop_scan(0.5)
+
+    assert await registry.shutdown(shared, 1.0) == (True, False)
+
+    # Asked once, when shutdown began: the wait is not added to the stations' stop.
+    assert waits == [0.5]
+    assert "DJ-meta cache closed" not in log
+    assert "library closed" not in log
+    assert "plays saved" in log
+    assert "The library scan was still running 0.50 seconds" in caplog.text
+
+
+async def test_each_shutdown_step_logs_how_long_it_took(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ADR-0008-25. Quick steps are logged at DEBUG; one slower than the threshold at INFO."""
+    caplog.set_level(logging.DEBUG, logger="autodj.stations")
+
+    async def step() -> str:
+        return "done"
+
+    assert await stations.timed_shutdown_step("stopping something quick", step()) == "done"
+    monkeypatch.setattr(stations, "SLOW_SHUTDOWN_STEP_S", -1.0)
+    assert await stations.timed_shutdown_step("stopping something slow", step()) == "done"
+
+    levels = {
+        record.getMessage().split(" took ")[0]: record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("Shutdown step ")
+    }
+    assert levels == {
+        "Shutdown step stopping something quick": logging.DEBUG,
+        "Shutdown step stopping something slow": logging.INFO,
+    }

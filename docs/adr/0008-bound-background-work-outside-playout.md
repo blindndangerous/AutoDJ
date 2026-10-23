@@ -102,6 +102,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0008-22` | Decoding recovery reports busy state without completion speech; cue-only refreshes remain idle. Pending cue merges survive snapshot loading. Recovery reloads the catalog at most every 30 seconds plus once on exit. External cue imports run lazily once per pass or drain; remote results request bounded snapshot refreshes off the request path. | automated | `tests/unit/test_library.py::test_recovery_drains_backlog_in_one_run`; `tests/unit/test_library.py::test_recovery_refreshes_catalog_at_bounded_intervals`; `tests/unit/test_library.py::test_external_cues_load_once_per_long_scan_or_drain`; `tests/unit/test_library.py::test_remote_cue_refresh_is_bounded_and_runs_off_request_thread`; `tests/unit/test_library.py::test_remote_scan_before_snapshot_merges_imported_cues`; `tests/unit/test_library.py::test_cue_only_refresh_leaves_import_state_idle`; `tests/unit/test_library.py::test_recovery_resets_count_after_worker_handoff`; `tests/jsmodules/library-folders.test.js::shows recovery progress without completion announcements` |
 | `ADR-0008-23` | Pending scan completion preserves all user/imported points, explicit clears and manual key/BPM for matching catalog/pending identities, including NULL snapshots; changed bytes preserve only post-deferral edits. DJ markers follow catalog provenance. Both completion paths clamp saved points to measured bounds, fall back to analysis for impossible bounds, deduplicate aligned cues and discard cues past the new length. | automated | `tests/unit/test_worker_api.py::test_pending_replacement_keeps_current_edits`; `tests/unit/test_library.py::test_pending_tag_refresh_keeps_edits_before_local_decode`; `tests/unit/test_worker_api.py::test_pending_completion_preserves_only_edits_after_defer`; `tests/unit/test_worker_api.py::test_scan_saved_cues_are_unique_and_within_duration`; `tests/unit/test_analysis_queue.py::test_scan_pending_upgrade_retains_rows_without_edit_evidence`; `tests/unit/test_worker_api.py::test_same_bytes_pending_completion_keeps_existing_edits`; `tests/unit/test_worker_api.py::test_scan_replaces_old_byte_markers_with_catalog_points` |
 | `ADR-0008-24` | Unique pending identities participate in moves; catalog rekey moves pending provenance, retry state and failed/stale holds transactionally, retaining the later expiry on collision and rolling back the whole move on failure, cancelling only claimed path-bound leases. Ambiguous or present identities never transfer history. | automated | `tests/unit/test_worker_api.py::test_pending_move_rejects_old_worker_result`; `tests/unit/test_library.py::test_pending_move_requires_unique_identity`; `tests/unit/test_library.py::test_pending_move_preserves_retry_state`; `tests/unit/test_worker_api.py::test_pending_move_preserves_lease_hold`; `tests/unit/test_catalog.py::test_rekey_keeps_later_hold`; `tests/unit/test_catalog.py::test_rekey_hold_failure_rolls_back_move` |
+| `ADR-0008-25` | Shutdown tells the library scan to stop when it begins; listing folders and the DJ backlog stop at the request; a stopping scan does not reload the catalog, and a closing library starts no scan or analysis job. The cache closes only after the scan ends within the shutdown timeout; a scan still running keeps the cache and the library open, logs it and still saves buffered plays. Independent workers stop concurrently within their own timeouts, and each shutdown step logs its duration. | automated | `tests/unit/test_library.py::test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes`; `tests/unit/test_library.py::test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped`; `tests/unit/test_library.py::test_discovery_stops_between_folders_once_the_library_closes`; `tests/unit/test_library.py::test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes`; `tests/unit/test_library.py::test_a_closing_library_starts_no_analysis_job`; `tests/integration/test_stations.py::test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open`; `tests/integration/test_stations.py::test_each_shutdown_step_logs_how_long_it_took`; `tests/integration/test_server.py::TestLifespan::test_independent_shutdown_steps_stop_together_and_are_timed` |
 
 ## Verification
 
@@ -415,3 +416,26 @@ shares the catalog/pending move transaction, so a failure restores both holds an
 record and pending paths. Old lease submissions are rejected; the new path can receive a fresh
 claim subject to the retained hold and retry state. Contracts ADR-0008-23 and ADR-0008-24
 cover these refinements. This ADR remains Proposed.
+
+### Amendment clarification 2026-10-23: Bounded server shutdown
+
+The lifecycle rule above applies to the library scan: it writes the DJ-meta cache, so the cache
+must not close while the scan still runs. Shutdown used to close the cache first and only then
+stop the scan, which reopened the cache to list its backlog and reloaded the catalog before it
+noticed the stop. On a large library that took far longer than a container's default stop
+timeout.
+
+Shutdown now tells the scan to stop as soon as it begins, so the scan winds down while the other
+workers and the stations stop. Folder listing checks the stop between folders; a partial listing
+marks nothing gone or moved. The DJ backlog checks it while listing songs. A stopping library
+does not reload the catalog and starts no scan or analysis job, since the job runner has already
+stopped. The cache closes only after the scan thread ends, so the scan cannot open it again. The
+wait for the scan uses the existing shutdown timeout, counted from the stop request. A scan still
+running then keeps the cache and the library open, which is logged and reported as a degraded
+shutdown; buffered station plays are written anyway. The next scan repeats work cut short.
+
+The maintenance job, speech, rotation tests, show generations, hour previews, cue rescans and
+review renderers stop concurrently, each within its own existing timeout, before the stations
+stop. Each shutdown step logs its duration at debug level, or at info level above two seconds.
+These are bounds and diagnostics, not a promised shutdown time. Contract ADR-0008-25 records them;
+this ADR remains Proposed.

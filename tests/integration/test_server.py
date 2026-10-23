@@ -2020,6 +2020,66 @@ class TestLifespan:
 
         assert not player_thread.is_alive()
 
+    def test_independent_shutdown_steps_stop_together_and_are_timed(
+        self, caplog, monkeypatch
+    ) -> None:
+        """ADR-0008-25. Stopped one after another, each worker's timeout would add up."""
+        import logging
+        import threading
+
+        from fastapi.testclient import TestClient
+
+        import autodj.jobs
+
+        # Every worker waits for the others: run one at a time, the first
+        # would wait alone until the barrier broke.
+        together = threading.Barrier(7, timeout=5)
+
+        class Worker:
+            def __init__(self) -> None:
+                self.timeouts: list[float] = []
+
+            def shutdown(self, timeout: float) -> bool:
+                self.timeouts.append(timeout)
+                together.wait()
+                return True
+
+        jobs = Worker()
+        monkeypatch.setattr(autodj.jobs, "get_manager", lambda: jobs)
+        bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
+        app = create_app(bridge)
+        names = (
+            "speech",
+            "rotation_tests",
+            "show_generations",
+            "hour_previews",
+            "cue_rescan",
+            "review_jobs",
+        )
+        workers = {name: Worker() for name in names}
+        client = TestClient(app)
+        client.__enter__()
+        for name, worker in workers.items():
+            setattr(app.state, name, worker)
+        caplog.set_level(logging.DEBUG, logger="autodj.stations")
+        client.__exit__(None, None, None)
+
+        assert not together.broken
+        assert [worker.timeouts for worker in (jobs, *workers.values())] == [[30.0]] * 7
+        steps = [
+            record.getMessage().split(" took ")[0].removeprefix("Shutdown step ")
+            for record in caplog.records
+            if record.getMessage().startswith("Shutdown step ")
+        ]
+        for step in (
+            "stopping the library job",
+            "stopping hour previews",
+            "stopping the stations and the library",
+            "closing the library",
+        ):
+            assert step in steps
+        assert "A rotation test was still running" not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # serve() — wires Player thread + uvicorn

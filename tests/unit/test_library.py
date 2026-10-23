@@ -3974,3 +3974,140 @@ def test_no_model_keeps_basic_tracks_and_remote_analysis_queue(
     with patch.object(manager.analysis_queue, "worker_active", return_value=True):
         assert not manager.schedule_analysis()
     assert manager._yielded_to_worker
+
+
+@pytest.mark.dj_analysis
+def test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes(manager_factory, monkeypatch):
+    """ADR-0008-25. A scan running at shutdown ends before the DJ-meta cache closes.
+
+    It neither opens the cache again nor reloads the catalog.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from autodj import dj_meta
+    from autodj.stations import SharedLibrary
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"music")
+    manager.catalog.put_entry(make_entry(song), "music")
+    # The player opened the cache at startup; a big library has many rows.
+    cache = dj_meta.get_cache(manager.cfg.index.library_dir, manager.cfg.library.music_dir)
+    assert cache is not None
+    cache.set(str(song), dj_meta.DjMeta(analysed=True, beats=[0.5]))
+    cache.flush(force=True)
+    opened = []
+
+    class Spy(dj_meta.DjMetaCache):
+        def __init__(self, *args, **kwargs):
+            opened.append(args)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(dj_meta, "DjMetaCache", Spy)
+    discovering = threading.Event()
+
+    def discover(source_ids=None):
+        # A big library's folders take a while to list.
+        discovering.set()
+        assert manager._stop.wait(5)
+        return [("music", song)]
+
+    monkeypatch.setattr(manager, "_discover", discover)
+    reconciled, refreshed = [], []
+    monkeypatch.setattr(manager, "_reconcile_moves", lambda *args: reconciled.append(args))
+    monkeypatch.setattr(manager, "refresh", lambda **kwargs: refreshed.append(kwargs))
+    monkeypatch.setattr(manager, "tick", lambda: None)
+
+    async def shut_down() -> bool:
+        shared = SharedLibrary(manager, SimpleNamespace(all=lambda: []))
+        await shared.start()
+        assert await asyncio.to_thread(discovering.wait, 5)
+        return await shared.close(True, timeout_s=5)
+
+    assert asyncio.run(shut_down())
+    assert opened == []
+    assert dj_meta._CACHE is None
+    assert reconciled == [] and refreshed == []
+    assert manager._thread is not None and not manager._thread.is_alive()
+
+
+def test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped(manager_factory, monkeypatch):
+    """ADR-0008-25. Waiting for the scan to stop has a time limit, and no scan starts after."""
+    manager = manager_factory()
+    scanning, release = threading.Event(), threading.Event()
+
+    def scan(*_args):
+        scanning.set()
+        release.wait(5)
+
+    monkeypatch.setattr(manager, "_scan", scan)
+    assert manager.start_scan()
+    assert scanning.wait(5)
+    try:
+        assert not manager.stop_scan(0.05)
+        assert not manager.start_scan()
+    finally:
+        release.set()
+    assert manager.stop_scan(5)
+
+
+def test_discovery_stops_between_folders_once_the_library_closes(manager_factory, monkeypatch):
+    """ADR-0008-25. Listing a big library's folders stops at the next folder."""
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    for name in ("a", "b", "c"):
+        (music / name).mkdir()
+        (music / name / "song.flac").write_bytes(b"music")
+    walk = os.walk
+
+    def stopping_walk(top, **kwargs):
+        for folder in walk(top, **kwargs):
+            yield folder
+            manager._stop.set()
+
+    monkeypatch.setattr("autodj.library.os.walk", stopping_walk)
+    # The top folder holds no song; the walk ends before the first that does.
+    assert manager._discover() == []
+
+
+@pytest.mark.dj_analysis
+def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
+    manager_factory, monkeypatch
+):
+    """ADR-0008-25. Listing unanalysed songs reads every row: shutdown cuts that short."""
+    from autodj.dj_meta import DjMeta
+
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    records = tuple({"path": str(music / f"{n}.flac")} for n in range(1000))
+    monkeypatch.setattr(manager.catalog, "all_entries", lambda kind=None: records)
+    read = []
+
+    class Cache:
+        def get(self, path):
+            read.append(path)
+            if len(read) == 3:
+                manager._stop.set()
+            return DjMeta()
+
+        def flush(self, force=False):
+            pass
+
+    monkeypatch.setattr(manager, "_dj_cache", lambda: Cache())
+    analysed = []
+    monkeypatch.setattr(manager, "_dj_analyse", lambda path, *args, **kwargs: analysed.append(path))
+    manager._dj_backlog()
+    assert len(read) == 3
+    assert analysed == []
+
+
+def test_a_closing_library_starts_no_analysis_job(manager_factory, monkeypatch):
+    """ADR-0008-25. Shutdown has stopped the job runner: the tick must not start a job."""
+    manager = manager_factory()
+    monkeypatch.setattr(manager, "analysis_pending", lambda force=False: [{"path": "song"}])
+    monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
+    manager.stop_scan()
+    with patch("autodj.jobs.get_manager") as jobs:
+        assert not manager.schedule_analysis()
+        jobs.assert_not_called()

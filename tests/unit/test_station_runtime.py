@@ -565,7 +565,9 @@ class _Library:
     def __init__(self, log: list[str]) -> None:
         self._log = log
 
-    async def close(self, _quiesced: bool, *, readers_stopped: bool = True) -> bool:
+    async def close(
+        self, _quiesced: bool, *, timeout_s: float, readers_stopped: bool = True
+    ) -> bool:
         self._log.append("library closed")
         return True
 
