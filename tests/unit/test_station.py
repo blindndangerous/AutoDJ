@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -429,16 +430,22 @@ def test_play_now_during_a_set_plays_it_under_the_station_lock() -> None:
     assert rig.station._start_entry is None
 
 
-def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set() -> None:
+def test_real_player_ignores_a_track_start_left_over_from_a_stopped_set(monkeypatch) -> None:
     player, bridge, stream, station, now, _sim = _real_rig()
     player._playout.start()
     try:
         stream.listener_count = 1
         station.tick()
         _play_until_a_track_starts(player)
-        assert player._playout.wait_ready(WAIT)
-        leftover = player._take_render()  # the bus took it just before stopping
-        assert leftover is not None
+        pending_starts = []
+        monkeypatch.setattr(player.bus._events, "on_track_start", pending_starts.append)
+        deadline = time.monotonic() + WAIT
+        while not pending_starts and time.monotonic() < deadline:
+            player.bus.render_block()
+            time.sleep(0.005)
+        assert len(pending_starts) == 1
+        leftover = pending_starts[0]  # Taken after promotion; its callback is delayed.
+        assert not leftover.handoff_pending
         numbered = player._state.track_number
         stream.listener_count = 0
         station.tick()

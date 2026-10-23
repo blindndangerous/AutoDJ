@@ -3034,7 +3034,40 @@ class Player:
 
     def _next_rendered(self) -> RenderedTrack | None:
         with self._clock_selection_lock:
+            if self.live_mixing and self.bus is not None and self.bus.current_render() is not None:
+                if self._pending_entry is None:
+                    return None
+                if self._pending_previous is not None:
+                    return self._live_continuation()
             return self._next_rendered_serial()
+
+    def _live_continuation(self) -> RenderedTrack | None:
+        """Carry the incoming cursor without rendering or selecting its successor."""
+        current = self._pending_entry
+        assert current is not None
+        return RenderedTrack(
+            current,
+            LiveAudio(0, ()),
+            None,
+            0,
+            "",
+            start_offset=self._pending_offset,
+            handoff_pending=True,
+            live_source=self._pending_live_source,
+            pick_mode=self._pending_pick_mode,
+            from_queue=self._pending_from_queue,
+            set_generation=self._set_generation,
+            previous_entry=self._pending_previous,
+            mixed_in_fx=self._pending_mixed_in[0],
+            mixed_in_ratio=self._pending_mixed_in[1],
+            glide_in=self._pending_glide,
+            reserved_liners=self._pending_reserved_liners,
+            clock_cursor=self._pending_clock_cursor,
+            clock_boundary=self._pending_clock_boundary,
+            clock_name=self._pending_clock_name,
+            clock_step=self._pending_clock_step,
+            clock_revision=self._pending_clock_cursor_revision,
+        )
 
     def _next_rendered_serial(self) -> RenderedTrack | None:
         """Pick and render the next track for the mix bus.
@@ -3249,16 +3282,6 @@ class Player:
                     *(item for item in breaks if item.break_id not in replaced_ids),
                 )
                 intro = edit.intro
-                if next_entry is not None:
-                    with self._state.queue_lock:
-                        for following in edit.following:
-                            if following.outgoing is None and isinstance(
-                                following.track, RenderedTrack
-                            ):
-                                self._live_queue_edits.pop(id(following.track.entry), None)
-                                self._live_queue_edits[id(next_entry)] = replace(
-                                    following, outgoing=next_entry
-                                )
             render_live_source = getattr(self, "_pending_live_source", None)
             render_next_live_source = None
             try:
@@ -3354,7 +3377,9 @@ class Player:
                 from_queue=next_mode == "queue",
                 # A track that failed to render never starts.
                 previous=current if rendered is not None else previous,
-                live_source=rendered.next_live_source if rendered is not None else None,
+                live_source=rendered.next_live_source
+                if rendered is not None
+                else render_next_live_source,
                 mixed_in=_mixed_in_by(rendered),
                 glide=rendered.next_glide if rendered else None,
                 reserved_liners=rendered.next_reserved_liners if rendered else (),
@@ -3646,8 +3671,18 @@ class Player:
         with self._clock_selection_lock:
             if ready is not None:
                 self._prune_live_files(ready)
+            track = self._playing_render
+            if (
+                ready is not None
+                and ready.handoff_pending
+                and self.bus is not None
+                and self.bus.current_render() is None
+            ):
+                self._playout.reset(lambda: self._rewind_render_cursor(ready))
             if self._live_queue_dirty:
                 self._refresh_live_queue()
+            elif ready is None and track is not None:
+                self._playout.reset(lambda: self._skip_past_render(track))
 
     def _plan_slot(self, ready: RenderedTrack) -> None:
         if self.live_mixing:
@@ -4425,10 +4460,9 @@ class Player:
                 or self._live_queue_target is not self._playing_render
             ):
                 self._live_queue_target = decision.track
-            for item in (decision, *getattr(decision, "following", ())):
-                outgoing = getattr(item, "outgoing", None) or getattr(item.track, "entry", None)
-                if outgoing is not None:
-                    self._live_queue_edits[id(outgoing)] = item
+            outgoing = getattr(decision, "outgoing", None) or getattr(decision.track, "entry", None)
+            if outgoing is not None:
+                self._live_queue_edits[id(outgoing)] = decision
             if self.bus is not None and isinstance(decision.track, RenderedTrack):
                 self.bus.hold_handoff(decision.track)
 
@@ -4632,7 +4666,12 @@ class Player:
         with self._state.queue_lock:
             if getattr(self, "live_mixing", False):
                 ready = self._playout.ready()
-                if ready is not None:
+                if ready is None:
+                    self._playout.request_plan()
+                else:
+                    if ready.handoff_pending:
+                        self._playout.request_plan()
+                        return None
                     if self._live_queue_dirty:
                         return None
                     audio = (
@@ -4811,6 +4850,8 @@ class Player:
                 with self._state.queue_lock:
                     self._state.queue.insert(0, entry)
             return
+        if self.live_mixing:
+            self._playout.request_plan()
         self._current_lyrics = []
         self._current_lyrics_plain = ""
         self.load_lyrics_in_background(entry.path)

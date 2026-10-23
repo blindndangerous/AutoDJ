@@ -112,6 +112,8 @@ class RenderedTrack:
             voice starts and its speech ends in *audio*, and its label.
         intro_assets: ``(intro_id, path)`` for exact selected audio files;
             paths stay internal unless the catalog identifies one as a liner.
+        handoff_pending: A live cursor awaiting promotion, with no audio or
+            successor prepared. The player must resolve it before bus admission.
     """
 
     entry: IndexEntry
@@ -152,6 +154,7 @@ class RenderedTrack:
     clock_revision: int | None = None
     next_clock_revision: int | None = None
     next_clock_name: str | None = None
+    handoff_pending: bool = False
     handoff_id: str = ""
     ad_steps: tuple[dict, ...] = ()
     liner_plan_key: str = ""
