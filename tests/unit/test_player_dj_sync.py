@@ -203,6 +203,7 @@ class TestFxPlan:
 
 def _bare_player() -> Player:
     player = Player.__new__(Player)
+    player.live_mixing = False
     player._state = PlayerState()
     player._set_generation = 0
     player._clock_lock = threading.RLock()

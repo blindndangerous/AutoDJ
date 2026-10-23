@@ -82,7 +82,8 @@ def _sine_audio(seconds: float = 1.0, sr: int = 44100) -> np.ndarray:
 
 
 def _init_bare_player_settings(player: Player) -> None:
-    """Give __new__-built players the settings backing used by delegated properties."""
+    """Initialize local playback mode and delegated settings on bare players."""
+    player.live_mixing = False
     player._settings = SimpleNamespace(
         _preset=None,
         _bpm_range=None,
