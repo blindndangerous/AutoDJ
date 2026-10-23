@@ -2,6 +2,11 @@
 # Build the image and smoke-test the Compose service: LAN mode on the host
 # network, pairing, the health check, folder ownership, the CPU-only torch
 # build, and stream mode switched on through the saved station definition.
+#
+# By default it builds the image from this checkout with compose.build.yaml.
+# With AUTODJ_SMOKE_IMAGE set to an image already in Docker, as CI does after
+# building with buildx, it runs that image through compose.yaml alone and never
+# pulls or builds.
 set -euo pipefail
 
 temp_parent="${RUNNER_TEMP:-/tmp}"
@@ -90,11 +95,25 @@ mkdir -p "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DIR"
 chmod 0755 "$AUTODJ_MUSIC_DIR" "$AUTODJ_INDEX_DIR" "$AUTODJ_MODEL_DIR"
 unset AUTODJ_ACCESS_TOKEN
 
-docker compose config >/dev/null
-docker compose build --pull
+if [[ -n "${AUTODJ_SMOKE_IMAGE:-}" ]]; then
+  export COMPOSE_FILE=compose.yaml
+  export AUTODJ_IMAGE="$AUTODJ_SMOKE_IMAGE"
+  expected_image="$AUTODJ_SMOKE_IMAGE"
+  docker image inspect "$AUTODJ_IMAGE" >/dev/null
+  docker compose config >/dev/null
+else
+  export COMPOSE_FILE=compose.yaml:compose.build.yaml
+  export COMPOSE_PATH_SEPARATOR=:
+  expected_image=autodj:local
+  docker compose config >/dev/null
+  docker compose build --pull
+fi
 compose_touched=true
-docker compose up -d
+docker compose up -d --pull never
 wait_until_healthy
+
+# Compose hands the image name to AutoDJ, which names it in its update commands.
+test "$(docker compose exec -T autodj printenv AUTODJ_IMAGE)" = "$expected_image"
 
 test "$(docker inspect autodj --format '{{.HostConfig.NetworkMode}}')" = "host"
 test "$(docker compose exec -T autodj id -u)" = "$AUTODJ_UID"
@@ -163,7 +182,7 @@ document = json.loads(path.read_text(encoding="utf-8"))
 document["station"].setdefault("station", {})["output"] = "stream"
 path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 PY
-docker compose up -d --force-recreate
+docker compose up -d --force-recreate --pull never
 wait_until_healthy
 
 # The smoke library has no tracks, so the stream only carries the encoded silence the bus sends

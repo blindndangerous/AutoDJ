@@ -6,7 +6,9 @@ Retain a backup, move a clean source checkout to the desired release, validate m
 
 ## Upgrade checklist
 
-These steps apply to a native installation from a source checkout.
+These steps apply to a native installation from a source checkout. For Docker or Podman, see
+[Update the container](containers-and-windows.md#update-the-container); its backup, release-note
+and Doctor advice is the same.
 
 1. Stop AutoDJ, then create and retain a backup before changing the checkout or its dependencies.
 2. Run `git status --short`. If it prints any paths, stop. Commit the changes on a branch or copy

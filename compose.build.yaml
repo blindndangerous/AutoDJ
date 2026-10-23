@@ -1,0 +1,26 @@
+# Build the AutoDJ image on this computer instead of pulling the published one.
+# Name both files on every Compose command, or set them once in .env:
+#
+#   COMPOSE_FILE=compose.yaml:compose.build.yaml
+#
+# Then build and start it, passing the commit for the web page's footer:
+#
+#   AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+#
+# The image is tagged autodj:local and is never pulled; Compose builds it when
+# it is missing or when you pass --build. See
+# docs/guides/operations/containers-and-windows.md#build-the-image-yourself.
+
+services:
+  autodj:
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        # The commit shown in the web page's footer; see
+        # docs/guides/operations/containers-and-windows.md#build-stamp.
+        AUTODJ_COMMIT: ${AUTODJ_COMMIT:-}
+    image: autodj:local
+    pull_policy: never
+    environment:
+      AUTODJ_IMAGE: autodj:local

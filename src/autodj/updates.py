@@ -10,7 +10,8 @@ Two channels:
 - **development** follows the ``master`` branch.
 
 An installation infers its channel from what it runs: a checkout of a
-release tag is stable, a checkout of ``master`` is development.  The saved
+release tag is stable, a checkout of ``master`` is development, and a
+published container image follows the channel it was published for.  The saved
 setting (``<index_dir>/shared/updates.json``, written from the web page)
 can name a channel instead, or turn the check off.  With the check off,
 nothing here contacts the network.
@@ -71,6 +72,15 @@ CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
 #: container is only trusted to come back when this names one that restarts it.
 RESTART_POLICY_ENV = "AUTODJ_RESTART_POLICY"
 _CONTAINER_POLICIES = frozenset({"always", "unless-stopped", "on-failure"})
+#: The published container image, without a tag: ``:stable`` follows the
+#: releases, ``:development`` follows ``master``, ``:X.Y.Z`` is one release.
+IMAGE_REPOSITORY = "ghcr.io/blindndangerous/autodj"
+#: Set by compose.yaml: the image the container runs, for its update commands.
+IMAGE_ENV = "AUTODJ_IMAGE"
+#: Set in a published image by the workflow that publishes it: ``stable`` or
+#: ``development``.  An image built on the operator's computer leaves it empty.
+IMAGE_CHANNEL_ENV = "AUTODJ_IMAGE_CHANNEL"
+_IMAGE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\Z")
 
 GIT_TIMEOUT_SECONDS = 15.0
 HTTP_TIMEOUT_SECONDS = 10.0
@@ -164,7 +174,10 @@ class Installation:
     ``kind`` is ``git`` (a source checkout with a working git), ``container``
     (a Docker or Podman image) or ``package`` (a wheel or tool install).
     ``commit`` is the full commit of a checkout, or the build stamp of an
-    image; ``branch`` and ``tag`` describe a checkout's HEAD.
+    image; ``branch`` and ``tag`` describe a checkout's HEAD.  A container
+    has ``image``, the image Compose says it runs, and ``image_channel``, the
+    channel a published image was published for; ``None`` for an image built
+    on this computer.
     """
 
     kind: str
@@ -173,10 +186,14 @@ class Installation:
     branch: str | None = None
     tag: str | None = None
     root: Path | None = None
+    image: str | None = None
+    image_channel: str | None = None
 
     @property
     def inferred_channel(self) -> str:
         """The channel this installation follows when no setting names one."""
+        if self.image_channel in CHANNELS:
+            return self.image_channel
         return "development" if self.branch == DEVELOPMENT_BRANCH else "stable"
 
     @property
@@ -444,10 +461,21 @@ def detect_installation(
     stamp = (environment.get("AUTODJ_COMMIT") or "").strip().lower()
     commit = stamp if _SHORT_SHA_PATTERN.fullmatch(stamp) else None
     if any(marker.exists() for marker in markers):
-        # The Compose file mounts the checkout it was built from as the
-        # working directory, so its HEAD says which channel it follows.
+        named = (environment.get(IMAGE_ENV) or "").strip()
+        image = named if _IMAGE_PATTERN.fullmatch(named) else None
+        channel = (environment.get(IMAGE_CHANNEL_ENV) or "").strip()
+        if channel in CHANNELS:
+            # A published image follows the channel it was published for,
+            # whatever checkout, if any, holds compose.yaml.
+            return Installation(
+                kind="container", version=version, commit=commit, image=image, image_channel=channel
+            )
+        # An image built here: the Compose file mounts the checkout it was
+        # built from as the working directory, so its HEAD says the channel.
         branch, head = read_head_file((working_dir or Path.cwd()) / ".git")
-        return Installation(kind="container", version=version, commit=commit or head, branch=branch)
+        return Installation(
+            kind="container", version=version, commit=commit or head, branch=branch, image=image
+        )
     return Installation(kind="package", version=version, commit=commit)
 
 
@@ -540,17 +568,62 @@ def update_commands(installation: Installation, result: UpdateCheck) -> list[str
     if installation.kind == "git":
         return [*checkout, "./autodj setup", "./autodj doctor --no-fix"]
     if installation.kind == "container":
-        build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
+        if installation.image_channel is None:
+            # Built on this computer from the checkout, with compose.build.yaml.
+            build = "AUTODJ_COMMIT=$(git rev-parse --short HEAD)"
+            files = "-f compose.yaml -f compose.build.yaml"
+            return [
+                *checkout,
+                f"{build} docker compose {files} up -d --build",
+                f"{build} podman compose {files} up -d --build",
+            ]
         return [
-            *checkout,
-            f"{build} docker compose up -d --build",
-            f"{build} podman compose up -d --build",
+            *_image_switch(installation, result),
+            "docker compose pull && docker compose up -d",
+            "podman compose pull && podman compose up -d",
         ]
     if TAG_PATTERN.fullmatch(target):
         version = target.removeprefix("v")
         wheel = f"{REPOSITORY_URL}/releases/download/{target}/autodj-{version}-py3-none-any.whl"
         return [f'uv pip install "autodj[all] @ {wheel}"']
     return []
+
+
+def _split_image(image: str) -> tuple[str, str | None]:
+    """``(repository, tag)`` of an image name; the tag is ``None`` for a digest."""
+    if "@" in image:
+        return image.split("@", 1)[0], None
+    slash, colon = image.rfind("/"), image.rfind(":")
+    if colon > slash:
+        return image[:colon], image[colon + 1 :]
+    return image, "latest"
+
+
+def _image_switch(installation: Installation, result: UpdateCheck) -> list[str]:
+    """A line saying which image to name in ``.env``, when pulling is not enough.
+
+    Pulling updates a tag that moves (``:stable``, ``:latest``,
+    ``:development``) on the channel the image follows.  A container on the
+    other channel, or pinned to one release or commit, names a new image.
+    """
+    if installation.image is not None:
+        repository, tag = _split_image(installation.image)
+    else:
+        repository, tag = IMAGE_REPOSITORY, installation.image_channel
+    if result.channel == "development":
+        if tag is not None and tag.startswith("sha-") and result.latest:
+            wanted = f"sha-{result.latest}"
+        else:
+            wanted = "development"
+    elif tag in ("stable", "latest"):
+        wanted = tag
+    elif (tag is None or TAG_PATTERN.fullmatch(f"v{tag}")) and result.target:
+        wanted = result.target.removeprefix("v")
+    else:
+        wanted = "stable"
+    if tag == wanted:
+        return []
+    return [f"# In .env beside compose.yaml, set {IMAGE_ENV}={repository}:{wanted}"]
 
 
 def channel_for(installation: Installation, settings: UpdateSettings) -> tuple[str, str]:
