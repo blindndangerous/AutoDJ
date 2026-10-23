@@ -2039,6 +2039,38 @@ class TestServeFunction:
             manager.return_value.entries_snapshot.return_value = ()
             yield
 
+    @pytest.mark.parametrize(
+        ("stop", "expected"),
+        [("restart", True), ("ctrl-c", False), ("signal", False)],
+    )
+    def test_a_stop_signal_wins_over_a_pending_restart(self, tmp_path, stop, expected) -> None:
+        """ADR-0016-10: Ctrl+C or SIGTERM during a restart's shutdown stops AutoDJ."""
+        import signal as signals
+        from unittest.mock import MagicMock, patch
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        server = MagicMock()
+        server.started = True
+        server._captured_signals = [signals.SIGTERM] if stop == "signal" else []
+
+        def run() -> None:
+            app = config.call_args.args[0]
+            app.state.restart_requested = True
+            if stop == "ctrl-c":
+                raise KeyboardInterrupt
+
+        server.run.side_effect = run
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as config,
+            patch("uvicorn.Server", return_value=server),
+        ):
+            assert serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None) is expected
+
     def test_serve_starts_uvicorn(self, caplog, tmp_path) -> None:
         """The server app's lifespan builds and starts its default station."""
         import logging
@@ -2056,7 +2088,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run", player_run),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
@@ -2081,6 +2114,62 @@ class TestServeFunction:
             assert runtime.server_audio is False
             assert runtime.bridge.player.on_track_started is not None
             player_run.assert_called_once_with(seed_entry=None)
+
+    def test_uvicorn_errors_reach_the_root_handlers_once(self, tmp_path) -> None:
+        """uvicorn's errors reach the log file on the root logger; its access log does not."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        import uvicorn
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+        kwargs = mock_uvicorn.call_args.kwargs
+
+        class Collect(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.records: list[logging.LogRecord] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.records.append(record)
+
+        root = logging.getLogger()
+        names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+        saved = [(root, root.handlers[:], root.level, root.propagate)]
+        for name in names:
+            named = logging.getLogger(name)
+            saved.append((named, named.handlers[:], named.level, named.propagate))
+            # As a new process has them, before uvicorn configures anything.
+            named.handlers, named.propagate = [], True
+            named.setLevel(logging.NOTSET)
+        collect = Collect()
+        root.handlers = [collect]
+        root.setLevel(logging.INFO)
+        try:
+            uvicorn.Config(mock_uvicorn.call_args.args[0], **kwargs)
+            logging.getLogger("uvicorn.error").error("timeout graceful shutdown exceeded")
+            logging.getLogger("uvicorn.error").info("Started server process")
+            logging.getLogger("uvicorn.access").info('"GET /api/status HTTP/1.1" 200')
+            handlers = [logging.getLogger(name).handlers for name in names]
+        finally:
+            for logger_, handlers_, level, propagate in saved:
+                logger_.handlers = handlers_
+                logger_.setLevel(level)
+                logger_.propagate = propagate
+        assert [(record.name, record.getMessage()) for record in collect.records] == [
+            ("uvicorn.error", "timeout graceful shutdown exceeded")
+        ]
+        assert handlers == [[], [], []]
 
     def test_serve_starts_player_thread(self, tmp_path) -> None:
         """The supplied factory launches a daemon Player thread when it is built."""
@@ -2125,7 +2214,8 @@ class TestServeFunction:
             patch.object(Player, "__init__", spy_init),
             patch("autodj.player.Player.run", run),
             patch("autodj.server.create_app", wraps=create_app) as app_spy,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
             captured["create_app_kwargs"] = app_spy.call_args.kwargs
@@ -2250,7 +2340,8 @@ class TestServeFunction:
         cfg.default_station.cfg.station.output = "server"
         with (
             patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
-            patch("uvicorn.run") as uvicorn_run,
+            patch("uvicorn.Config") as uvicorn_run,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
             app = uvicorn_run.call_args.args[0]
@@ -2285,7 +2376,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
 
@@ -2307,7 +2399,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="wildcard binding requires"),
         ):
             serve(
@@ -2341,7 +2434,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError) as raised,
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2364,7 +2458,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
@@ -2408,7 +2503,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2455,7 +2551,8 @@ class TestServeFunction:
             caplog.clear()
             with (
                 patch("autodj.player.Player.run"),
-                patch("uvicorn.run") as mock_uvicorn,
+                patch("uvicorn.Config") as mock_uvicorn,
+                patch("uvicorn.Server"),
                 caplog.at_level(logging.INFO, logger="autodj.server"),
             ):
                 serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2506,7 +2603,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="allowed origin"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)

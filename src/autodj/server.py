@@ -49,6 +49,7 @@ import re
 import shutil
 import ssl
 import stat
+import sys
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
@@ -1050,6 +1051,12 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
+            # A Library tools job is a child process: stop it as its Stop
+            # button does, so a restart does not leave it beside the next server.
+            from autodj.jobs import get_manager
+
+            if await asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S):
+                logger.info("Stopped the running library job")
             speech = getattr(app.state, "speech", None)
             if speech is not None and not await asyncio.to_thread(
                 speech.shutdown, _SHUTDOWN_TIMEOUT_S
@@ -1230,6 +1237,7 @@ def create_app(
     app.state.request_pairing_code = request_pairing_code
     # Request bodies the middleware caps before any route parses them.
     from autodj.prepared_editions import MAX_UPLOAD_BYTES as EDITION_UPLOAD_BYTES
+    from autodj.updates_api import ROUTES as UPDATE_ROUTES
 
     body_limits: dict[str, Callable[[], int]] = {
         **{path: (lambda: SPEECH_BODY_LIMIT) for path in WRITE_ROUTES},
@@ -1246,6 +1254,7 @@ def create_app(
         "/api/stereo-tool-presets/upload": lambda: MAX_PRESET_BYTES + _MULTIPART_OVERHEAD_BYTES,
         "/api/stereo-tool/license": lambda: SMALL_BODY_MAX_BYTES,
         "/api/stereo-tool/download": lambda: SMALL_BODY_MAX_BYTES,
+        **{path: (lambda: SMALL_BODY_MAX_BYTES) for path in UPDATE_ROUTES},
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
         "/api/machine-tokens/pairing-code": lambda: SMALL_BODY_MAX_BYTES,
@@ -2184,6 +2193,11 @@ def create_app(
 
     # Settings, Sound, Download Stereo Tool: shared, into the index folder.
     install_stereo_tool_download(app, lambda: cfg.index.index_dir)
+
+    from autodj.updates_api import install_updates
+
+    # Settings, Updates: the update check and Restart, shared by every station.
+    install_updates(app, lambda: cfg.index.index_dir)
 
     @app.delete("/api/stereo-tool-presets/{name}")
     async def api_stereo_tool_preset_delete(name: str) -> dict:
@@ -3172,10 +3186,11 @@ def serve(
     stream: bool | None = None,
     lan_configured_hosts: list[str] | None = None,
     library: LibraryManager | None = None,
-) -> None:
+) -> bool:
     """Start the Player thread and the FastAPI/uvicorn web server.
 
-    This function blocks until uvicorn is stopped (Ctrl+C).
+    This function blocks until uvicorn is stopped (Ctrl+C), and returns
+    whether it stopped because Settings, Updates asked for a restart.
 
     Args:
         cfg: Full :class:`~autodj.config.AutoDJConfig` instance.
@@ -3338,6 +3353,11 @@ def serve(
         "host": host,
         "port": port,
         "log_level": "warning",
+        # No handlers of uvicorn's own: its warnings and errors go through the
+        # root logger, so they reach the log file once, in AutoDJ's format.
+        # Access lines are not logged at all.
+        "log_config": None,
+        "access_log": False,
     }
     # Uvicorn rewrites request.client and scheme only for configured proxy
     # peers, in every mode: the listener limits, the pairing lockout and the
@@ -3382,9 +3402,29 @@ def serve(
     # mid-asyncio-teardown on Windows) can re-raise.  Suppress so the
     # CLI sees a clean return; the lifespan already logged
     # "Server stopped cleanly."
+    #
+    # uvicorn.Server rather than uvicorn.run: Settings, Updates' Restart
+    # (autodj.updates_api) stops this server through app.state.server_exit.
+    server = uvicorn.Server(uvicorn.Config(app, **uvicorn_kwargs))
+
+    def _server_exit() -> None:
+        server.should_exit = True
+
+    app.state.server_exit = _server_exit
+    interrupted = False
     try:
-        with contextlib.suppress(KeyboardInterrupt):
-            uvicorn.run(app, **uvicorn_kwargs)
+        server.run()
+    except KeyboardInterrupt:
+        interrupted = True
     finally:
         for reloader in reloaders:
             reloader.stop()
+    # uvicorn records each stop signal it handled; Ctrl+C or SIGTERM during a
+    # restart's shutdown means stop, not restart.
+    captured = getattr(server, "_captured_signals", None)
+    if isinstance(captured, list) and captured:
+        interrupted = True
+    if not server.started:
+        # What uvicorn.run does when the server could not start (port in use).
+        sys.exit(3)
+    return bool(getattr(app.state, "restart_requested", False)) and not interrupted

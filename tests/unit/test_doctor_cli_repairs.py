@@ -233,7 +233,9 @@ def test_saved_settings_repair_consent(tmp_path, flags, interactive, answer, rep
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
         patch(
             "autodj.doctor.run_doctor",
-            side_effect=lambda cfg, station=None: DoctorReport((_saved_settings_check(cfg),)),
+            side_effect=lambda cfg, station=None, check_updates=True: DoctorReport(
+                (_saved_settings_check(cfg),)
+            ),
         ),
         patch("click.testing._NamedTextIOWrapper.isatty", return_value=interactive),
     ):
@@ -280,7 +282,9 @@ def test_saved_settings_unsafe_or_failed_repair_keeps_file(tmp_path, failure_kin
         patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
         patch(
             "autodj.doctor.run_doctor",
-            side_effect=lambda cfg, station=None: DoctorReport((_saved_settings_check(cfg),)),
+            side_effect=lambda cfg, station=None, check_updates=True: DoctorReport(
+                (_saved_settings_check(cfg),)
+            ),
         ),
         patch(
             "autodj.doctor_repair.ConfigRepair._create_backup", side_effect=OSError("disk full")

@@ -111,7 +111,7 @@ beforeEach(installIndex);
 afterEach(() => vi.restoreAllMocks());
 
 describe("Analysis workers markup", () => {
-  it("is the last Settings subtab, with no aria-controls, and a labelled panel", () => {
+  it("follows Profiles and access, with no aria-controls, and a labelled panel", () => {
     const tab = byId("stab-workers");
     expect(tab.getAttribute("role")).toBe("tab");
     expect(tab.hasAttribute("aria-controls")).toBe(false);

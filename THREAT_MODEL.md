@@ -1039,9 +1039,12 @@ status. They do not include tokens, request bodies, query strings, client-suppli
 music paths.
 
 Rejected requests are audited. Successful or rejected unsafe HTTP actions are audited after
-response status is known. The WebSocket only pushes state; frames a browser sends on it are
-ignored. WebSocket connection, error, and disconnect events are audited. These records support
-single-user incident review but do not provide per-user attribution.
+response status is known. A worker's routine polls are audited at DEBUG, so they stay out of the
+default log: a successful heartbeat that is not a connect, and a successful claim that hands out
+no songs. Refusals and failures stay at WARNING or ERROR. The WebSocket only pushes state; frames
+a browser sends on it are ignored. WebSocket connection, error, and disconnect events are
+audited. These records support single-user incident review but do not provide per-user
+attribution.
 
 ### Live DJ source mounts and talkover (#48)
 
@@ -1326,6 +1329,55 @@ file in the index folder it serves, and restore refuses while it is held; an `au
 `autodj analyse` run holds no such lock, so the operator stops those first. Filesystem locations remain
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
+
+## Updates and restart from the web
+
+Settings, Updates checks for a newer AutoDJ and restarts it
+([ADR 16](docs/adr/0016-update-and-restart-from-the-web.md)). Its routes are
+`GET /api/updates`, `POST /api/updates/check`, `PUT /api/updates/settings` and
+`POST /api/server/restart`. They follow the same session, Host and Origin policy as every other
+settings route: when pairing is on, only a paired browser reaches them, and a page on another site
+cannot press Restart. There are no user roles, so every paired browser may restart AutoDJ; pairing
+already grants control of playback. Machine tokens and live DJ credentials never reach these
+routes. Each takes at most 8 KiB of JSON and no free text: the settings are a boolean and one of
+three channel names.
+
+**The check.** It contacts only the checkout's own `origin` remote (`git ls-remote`, which writes
+nothing) or GitHub's REST API at an address fixed in the code; no request or setting can point it
+anywhere else. git runs from an argument list with `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`
+and, unless the operator set `GIT_SSH_COMMAND` or `GIT_SSH`, a `GIT_SSH_COMMAND` that is the
+checkout's own `core.sshCommand` (or `ssh`) with `-o BatchMode=yes` added, so it never waits for a
+password or a host key. It has a 15-second timeout that ends git's whole process tree: its own
+session on POSIX, and on Windows its own job object, so only the processes git started are
+killed, never one that reuses an old parent's process ID. git runs without a console window.
+git's transport (`git-remote-https`, `ssh`) would otherwise keep the output pipes open and hold
+the check well past the timeout, so after a timeout nothing waits for those pipes. Only
+one check runs at a time; page loads during a slow one wait for it rather than starting more. The
+API call has a 10-second timeout and reads at most 1 MiB. A tag is offered only when it is `vX.Y.Z`. A failure is reported by kind (timed out, exit
+status) without git's own messages or the remote's address, which may hold credentials. Answers
+are cached, so opening the page does not ask the network every time, and Check now is limited to
+one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothing is asked. A
+remote that lies can only make the page say an update exists; the check changes nothing.
+AutoDJ does not update itself: the notice links the release notes on GitHub (a URL built from
+the fixed repository address and a validated tag) and lists commands for the operator to run.
+Updating from the web page is a later decision in
+[#552](https://github.com/blindndangerous/AutoDJ/issues/552); nothing gets the Docker socket.
+
+**Restart.** The server stops through uvicorn's own shutdown and exits with status 75. It is
+offered only when the checkout's launcher, a systemd service with `Restart=always` or
+`on-failure` whose main process is AutoDJ (or AutoDJ's own launcher, which marks its child), or a
+container that declares its restart
+policy in `AUTODJ_RESTART_POLICY` will start it again. A container file alone does not count.
+Reading the systemd policy runs `systemctl show` with a 3-second timeout and the unit name taken
+from `/proc/self/cgroup`, checked against a strict pattern. Restart is limited to one a minute and
+six an hour, counted in `<index_dir>/logs/restart-requests.json` so a restart does not reset the
+count; a time in that file ahead of the clock counts as now, and when the file is damaged,
+unreadable or cannot be written the restart is refused (503, naming the file). The launcher stops after five restarts in a minute. A stop signal (Ctrl+C, a closed terminal,
+SIGTERM) during a restart's shutdown stops AutoDJ instead of restarting it; the launcher keeps the
+server in its own process group so terminal signals reach both, and shutting down stops a
+running Library tools job, so no job is left running beside the next server. Restart takes every station off the air for a moment, which
+is the remaining risk of a stolen browser session. Check, restart and their refusals are audited
+as `update-check` and `server-restart` with the usual closed-schema fields.
 
 ## Container and dependency controls
 

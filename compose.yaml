@@ -34,6 +34,9 @@ services:
     environment:
       # Tells LAN mode the addresses it detects are the machine's own.
       AUTODJ_HOST_NETWORK: "1"
+      # Tells AutoDJ the restart policy above, so Settings, Updates may offer
+      # Restart AutoDJ.  Keep the two the same; remove this line to hide it.
+      AUTODJ_RESTART_POLICY: unless-stopped
       # Writable for any AUTODJ_UID; the image's home belongs to uid 10001.
       HOME: /tmp
       XDG_CACHE_HOME: /tmp/.cache

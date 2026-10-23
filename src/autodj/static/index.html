@@ -729,6 +729,7 @@
     <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
+    <button type="button" role="tab" id="stab-updates" data-subview="updates" data-panel="spanel-updates" aria-selected="false" tabindex="-1">Updates</button>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-transitions" aria-labelledby="stab-transitions" hidden>
@@ -2774,6 +2775,50 @@
     <h5 id="token-list-heading">Tokens</h5>
     <p id="token-list-empty">No tokens yet.</p>
     <ul id="token-list" aria-labelledby="token-list-heading"></ul>
+  </div>
+
+  <div class="card" role="tabpanel" id="spanel-updates" aria-labelledby="stab-updates" hidden>
+    <h3>Updates</h3>
+    <!-- updates.js loads this panel when it is seen.  The version and
+         result lines are plain text; only Check now, Save update settings
+         and Restart speak, once each, through #updates-status. -->
+    <div id="updates-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
+    <h4>This installation</h4>
+    <p id="updates-current" aria-live="off">Loading…</p>
+    <h4>Latest version</h4>
+    <p id="updates-latest" aria-live="off"></p>
+    <p id="updates-notes" hidden><a id="updates-notes-link" href="#">Release notes</a></p>
+    <button type="button" id="updates-check">Check now</button>
+    <!-- Shown while an update is available: AutoDJ does not update itself;
+         whoever installed it runs these, after a backup (#552). -->
+    <div id="updates-how" hidden>
+      <h4 id="updates-how-heading">How to update</h4>
+      <p id="updates-how-note" class="setting-desc"></p>
+      <ol id="updates-commands" aria-labelledby="updates-how-heading"></ol>
+    </div>
+
+    <fieldset>
+      <legend>Update settings</legend>
+      <div class="settings-check">
+        <input type="checkbox" id="updates-enabled" checked>
+        <label for="updates-enabled">Check for updates</label>
+      </div>
+      <span class="setting-desc">When off, AutoDJ never asks GitHub or the git remote about updates.</span>
+      <div class="settings-row">
+        <label for="updates-channel">Update channel</label>
+        <select id="updates-channel">
+          <option value="auto" id="updates-channel-auto">Automatic</option>
+          <option value="stable">Stable</option>
+          <option value="development">Development</option>
+        </select>
+      </div>
+      <span class="setting-desc">Stable follows releases; Development follows the newest code on master. Automatic follows what this installation runs.</span>
+      <button type="button" id="updates-save">Save update settings</button>
+    </fieldset>
+
+    <h4>Restart</h4>
+    <p id="updates-restart-note" class="setting-desc"></p>
+    <button type="button" id="updates-restart" hidden>Restart AutoDJ</button>
   </div>
 
   </section>

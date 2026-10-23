@@ -27,10 +27,11 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 | [9: Picking and scheduling](0009-share-picking-rules-with-isolated-previews.md) | Proposed; retrospective | Selection, simulation, preview truth, scheduling, requests and inserted audio |
 | [10: State recovery](0010-preserve-state-through-atomic-writes-and-recovery.md) | Proposed; retrospective | Saved-state validation, secrets, backup/restore and recovery |
 | [11: Accessible browser UI](0011-verify-accessibility-with-browser-and-speech-evidence.md) | Proposed; retrospective | Native controls, announcements, keyboard access, release evidence |
-| [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release |
+| [12: Setup and model compatibility](0012-separate-runtime-setup-from-model-execution.md) | Proposed; retrospective | Hardware setup, model loading, dependency boundaries, packaging and release; launcher restart loop amendment 2026-10-23 |
 | [13: Speech production](0013-produce-speech-outside-playout.md) | Accepted; verification limits apply | Provider comparisons, shared credentials, station speech assets, bounded synthesis and generated time checks |
 | [14: Programme review](0014-isolate-programme-review-and-export.md) | Accepted | Frozen private audio reviews, shortened timelines, exports, storage and worker lifecycle |
 | [15: Prepared editions](0015-prepare-speech-for-specific-show-editions.md) | Accepted | Occurrence-bound recordings, full-target review receipts, explicit approval, local playout and interrupted-edition recovery |
+| [16: Updates and restart](0016-update-and-restart-from-the-web.md) | Proposed | Update channels, the update check and notice, restart from the web page, the launcher restart loop |
 
 [ADR 13](0013-produce-speech-outside-playout.md) describes selected
 Showcraft-inspired speech capabilities inside AutoDJ. Its contract table records

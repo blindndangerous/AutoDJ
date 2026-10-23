@@ -98,3 +98,21 @@ def test_no_offer_after_startup_completed():
     assert not subprocess_run.called
     assert "Run AutoDJ Doctor now?" not in result.output
     assert "autodj doctor" in result.output
+
+
+def test_a_requested_restart_exits_quietly_without_offering_doctor():
+    """ADR-0016-10: exit status 75 after Restart is not a failed start."""
+    from autodj.updates import RESTART_EXIT_CODE
+
+    @click.command(cls=_ServeCommand)
+    def command():
+        raise click.exceptions.Exit(RESTART_EXIT_CODE)
+
+    with (
+        patch("click.testing._NamedTextIOWrapper.isatty", return_value=True),
+        patch("subprocess.run") as subprocess_run,
+    ):
+        result = CliRunner().invoke(command, [], obj={}, input="y\n")
+    assert result.exit_code == RESTART_EXIT_CODE
+    assert "troubleshoot" not in result.output
+    subprocess_run.assert_not_called()

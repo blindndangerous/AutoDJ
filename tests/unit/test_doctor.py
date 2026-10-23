@@ -539,6 +539,7 @@ def test_run_doctor_check_order(tmp_path: Path) -> None:
         "dependencies",
         "model-cache",
         "network-safety",
+        "updates",
         "stream",
         "related-artists",
         "related-tracks",
@@ -1226,3 +1227,92 @@ def test_unavailable_model_analysis_warns_without_cache_inspection(tmp_path, mon
     assert check.status is doctor.CheckStatus.WARN
     assert "autodj setup --backend cpu" in check.detail
     assert check.repair is None
+
+
+def test_doctor_offline_skips_the_update_check_network(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-02: --offline asks nothing; a reachable answer is reported otherwise."""
+    from autodj import updates
+
+    monkeypatch.delenv(updates.CHECK_ENV, raising=False)
+    cfg = _config(tmp_path)
+    installation = updates.Installation(kind="package", version="0.21.0")
+    fetch = []
+    monkeypatch.setattr(updates, "detect_installation", lambda: installation)
+    monkeypatch.setattr(
+        updates,
+        "_fetch_text",
+        lambda url, headers, timeout: fetch.append(url) or '{"tag_name": "v0.22.0"}',
+    )
+    with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
+        offline = CliRunner().invoke(cli, ["doctor", "--json", "--offline"])
+    checks = {c["name"]: c for c in json.loads(offline.output)["checks"]}
+    assert checks["updates"]["status"] == "pass"
+    assert fetch == []
+
+    check = doctor._update_check(cfg)
+    assert check.status is doctor.CheckStatus.WARN
+    assert "v0.22.0" in check.summary
+    assert "autodj check-update" in check.summary
+    assert len(fetch) == 1
+
+
+def test_doctor_passes_an_unreachable_update_check_with_its_message(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ADR-0016-03."""
+    from autodj import updates
+
+    monkeypatch.delenv(updates.CHECK_ENV, raising=False)
+    monkeypatch.setattr(
+        updates, "detect_installation", lambda: updates.Installation("package", "0.21.0")
+    )
+
+    def offline(url, headers, timeout):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(updates, "_fetch_text", offline)
+    check = doctor._update_check(_config(tmp_path))
+    # Offline is not a problem with this installation: it passes, with the message.
+    assert check.status is doctor.CheckStatus.PASS
+    assert check.summary.startswith("Could not check for updates")
+
+
+def test_check_update_cli_prints_the_result(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-03."""
+    from autodj import updates
+
+    monkeypatch.delenv(updates.CHECK_ENV, raising=False)
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        updates, "detect_installation", lambda: updates.Installation("package", "0.21.0")
+    )
+    monkeypatch.setattr(updates, "_fetch_text", lambda url, headers, timeout: "f" * 40)
+    with patch("autodj.cli._load_cfg_or_exit", return_value=cfg):
+        text = CliRunner().invoke(cli, ["check-update", "--channel", "development"])
+        as_json = CliRunner().invoke(cli, ["check-update", "--json"])
+    assert text.exit_code == 0
+    assert "Channel: Development (set in Settings)." in text.output
+    assert "does not record its commit" in text.output
+    assert json.loads(as_json.output)["check"]["status"] == "unavailable"
+
+
+def test_restore_runs_doctor_offline(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-02: restore's Doctor asks no network about updates."""
+    from autodj import updates
+
+    monkeypatch.delenv(updates.CHECK_ENV, raising=False)
+    cfg = _config(tmp_path)
+    archive = tmp_path / "backup.zip"
+    archive.write_bytes(b"")
+    seen = []
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.backup.restore_backup", return_value=0),
+        patch(
+            "autodj.doctor.run_doctor",
+            side_effect=lambda cfg, **kwargs: seen.append(kwargs) or doctor.DoctorReport(()),
+        ),
+    ):
+        result = CliRunner().invoke(cli, ["restore", str(archive)])
+    assert result.exit_code == 0, result.output
+    assert seen == [{"check_updates": False}]

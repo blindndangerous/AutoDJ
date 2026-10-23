@@ -677,3 +677,22 @@ def test_runtime_environment_uses_selected_model_mode(
     monkeypatch.setenv("AUTODJ_NO_MODEL", "1")
     env = setup_modules.support.runtime_environment(tmp_path, backend)
     assert env.get("AUTODJ_NO_MODEL") == ("1" if backend == "no-model" else None)
+
+
+def test_setup_runs_doctor_offline_with_a_time_limit(
+    setup_modules, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys
+) -> None:
+    """ADR-0016-02: setup's Doctor asks no network, and a hung Doctor cannot hold setup."""
+    root, _ = _project(tmp_path)
+    environment = _environment(setup_modules.support, root)
+    mocks = _patch_execution(setup_modules, monkeypatch)
+    mocks.doctor.side_effect = setup_modules.setup.subprocess.TimeoutExpired("doctor", 600)
+    args = setup_modules.setup.parser().parse_args(
+        ["--yes", "--backend", "cpu", "--environment", str(environment)]
+    )
+    assert setup_modules.setup.execute(args, root) == 0
+    kwargs = mocks.doctor.call_args.kwargs
+    assert kwargs["env"]["AUTODJ_UPDATE_CHECK"] == "0"
+    assert kwargs["timeout"] == setup_modules.setup.DOCTOR_TIMEOUT_SECONDS
+    assert "Doctor did not finish" in capsys.readouterr().out
+    assert setup_modules.support.read_json(root / setup_modules.support.STATE)["backend"] == "cpu"

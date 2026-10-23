@@ -1,6 +1,7 @@
 """The remote analysis worker API: token rules, leases, result checks, Settings routes."""
 
 import base64
+import json
 import logging
 import os
 import secrets
@@ -163,6 +164,42 @@ def test_heartbeat_renews_only_reported_leases_and_connect_releases_orphans(serv
         "SELECT state FROM analysis_leases WHERE lease_id=?", (songs[0]["lease"],)
     ) == [("failed",)]
     assert claim(server, secret)["songs"][0]["title"] == songs[1]["title"]
+
+
+def test_routine_worker_polls_are_audited_at_debug_and_real_work_at_info(server, caplog):
+    """A heartbeat or an empty claim every 30 seconds must not fill the log at INFO."""
+    _, secret = server.token()
+
+    def audit_levels():
+        levels = [
+            (json.loads(record.message)["route"], record.levelno)
+            for record in caplog.records
+            if record.name == "autodj.audit"
+        ]
+        caplog.clear()
+        return levels
+
+    with caplog.at_level(logging.DEBUG, logger="autodj.audit"):
+        connect = {"leases": [], "connect": True}
+        assert server.call("POST", "/api/worker/heartbeat", secret, json=connect).status_code == 200
+        assert audit_levels() == [("/api/worker/heartbeat", logging.INFO)]
+        songs = claim(server, secret, batch=3)["songs"]
+        assert len(songs) == 3
+        assert audit_levels() == [("/api/worker/claim", logging.INFO)]
+        assert claim(server, secret)["songs"] == []
+        assert audit_levels() == [("/api/worker/claim", logging.DEBUG)]
+        beat = {"leases": [song["lease"] for song in songs]}
+        assert server.call("POST", "/api/worker/heartbeat", secret, json=beat).status_code == 200
+        assert audit_levels() == [("/api/worker/heartbeat", logging.DEBUG)]
+        release = {"leases": [songs[0]["lease"]]}
+        assert server.call("POST", "/api/worker/release", secret, json=release).status_code == 200
+        assert audit_levels() == [("/api/worker/release", logging.INFO)]
+        refused = server.call("POST", "/api/worker/heartbeat", "wrong", json=beat)
+        assert refused.status_code == 401
+        assert audit_levels() == [("/api/worker/heartbeat", logging.WARNING)]
+        invalid = server.call("POST", "/api/worker/heartbeat", secret, json={"leases": "x"})
+        assert invalid.status_code == 422
+        assert audit_levels() == [("/api/worker/heartbeat", logging.WARNING)]
 
 
 def test_scan_mismatch_logs_once_per_token_across_version_strings(server, caplog):

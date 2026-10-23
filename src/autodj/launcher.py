@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import signal
 import subprocess  # nosec B404 -- explicit Python interpreter and argv, never a shell
 import sys
+import time
+from collections import deque
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
+
+from autodj.child_jobs import bind_to_autodj
+from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE = Path(".uv/setup.json")
 BACKENDS = {"amd", "nvidia", "cpu", "no-model"}
+#: More restarts than this within RESTART_WINDOW_SECONDS stop the loop.
+MAX_RESTARTS = 5
+RESTART_WINDOW_SECONDS = 60.0
 
 
 def _python_path(environment: Path) -> Path:
@@ -79,6 +90,170 @@ def run_setup(arguments: list[str]) -> int:
         return 1
 
 
+def runs_serve(arguments: list[str]) -> bool:
+    """Whether *arguments* start the server: ``serve`` after the global options."""
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word == "--config":
+            index += 2
+        elif word.startswith("--config=") or word in {"-v", "--verbose"}:
+            index += 1
+        else:
+            return word == "serve"
+    return False
+
+
+def _supervised(arguments: list[str], environ: Mapping[str, str]) -> bool:
+    """Whether this launch restarts ``serve`` when it asks to (the checkout's launcher).
+
+    Only the source checkout's ``autodj`` and ``autodj.cmd`` set
+    AUTODJ_BOOTSTRAP; a server they already supervise does not loop again.
+    """
+    return (
+        environ.get("AUTODJ_BOOTSTRAP") == "1"
+        and environ.get(SUPERVISOR_ENV) != "1"
+        and runs_serve(arguments)
+    )
+
+
+class StopRequested(Exception):
+    """The launcher got a stop signal while the server ran: stop, never restart."""
+
+    def __init__(self, signum: int, status: int) -> None:
+        """*signum* is the stop signal; *status* the server's exit status."""
+        super().__init__(signum, status)
+        self.signum = signum
+        self.status = status
+
+
+def _signal_came_from_the_terminal() -> bool:
+    """Whether a terminal signal also reached the server: the launcher is in its foreground group.
+
+    The server shares the launcher's process group, so Ctrl+C, a closed
+    terminal or Ctrl+\\ reach both.  Without a controlling terminal, or in
+    the background, the signal was sent to the launcher alone.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        return os.tcgetpgrp(sys.stdin.fileno()) == os.getpgrp()
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _run_child(command: list[str], environment: Mapping[str, str]) -> int:
+    """Run the server once and wait for it.
+
+    The server stays in the launcher's process group and the terminal's
+    foreground, so Ctrl+C, a closed terminal and Ctrl+\\ reach it directly
+    and it can still ask a question on the terminal.  The launcher only
+    notes that a stop was asked for, so it never restarts after one.  It
+    passes SIGINT, SIGHUP or SIGQUIT on only when they came to it alone
+    (no terminal, or not in the foreground): a second SIGINT would make
+    uvicorn skip its graceful shutdown.  SIGTERM is always passed on, since
+    uvicorn treats a second SIGTERM like the first (only a repeated SIGINT
+    forces an exit); systemd sends it to both, which is the same.  On
+    Windows, Ctrl+C reaches both and the launcher keeps waiting.
+
+    The handlers are in place before the server starts, so no signal can
+    fall between the two and leave a server nobody waits for.
+
+    Raises:
+        StopRequested: A stop signal arrived; the server has exited.
+    """
+    stopped: list[int] = []
+    started: list[subprocess.Popen[bytes]] = []
+    previous: dict[int, Any] = {}
+    if sys.platform != "win32":
+        alone_only = {signal.SIGINT, signal.SIGHUP, signal.SIGQUIT}
+
+        def note(signum: int, _frame: object) -> None:
+            stopped.append(signum)
+            if not started:
+                return
+            if signum in alone_only and _signal_came_from_the_terminal():
+                return
+            with contextlib.suppress(OSError):
+                started[0].send_signal(signum)
+
+        for stop in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            previous[stop] = signal.signal(stop, note)
+    try:
+        if stopped:
+            raise StopRequested(stopped[0], 0)
+        process = subprocess.Popen(command, env=dict(environment))  # nosec B603
+        started.append(process)
+        # Windows: a job object ends the server with the launcher, however the
+        # launcher ends (the shared helper the mastering processes use).
+        bind_to_autodj(process)
+        if stopped:
+            # A stop that came between the check above and the start.
+            with contextlib.suppress(OSError):
+                process.send_signal(signal.SIGTERM)
+        while True:
+            try:
+                status = process.wait()
+                break
+            except KeyboardInterrupt:
+                stopped.append(signal.SIGINT)
+    finally:
+        for handled, handler in previous.items():
+            signal.signal(handled, handler)
+    if stopped:
+        raise StopRequested(stopped[0], status)
+    return status
+
+
+def _end_with_signal(signum: int) -> int:
+    """End the launcher the way the signal it got would have; returns ``128 + signum`` otherwise.
+
+    systemd counts a service killed by SIGTERM as stopped cleanly, but an
+    exit status of 143 as failed, so on POSIX the launcher dies of the
+    same signal.  SIGQUIT is the exception: dying of it would dump core.
+    """
+    if os.name != "nt" and signum != getattr(signal, "SIGQUIT", None):
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    return 128 + signum
+
+
+def run_supervised(
+    command: list[str],
+    environment: Mapping[str, str],
+    *,
+    run_child: Callable[[list[str], Mapping[str, str]], int] = _run_child,
+    clock: Callable[[], float] = time.monotonic,
+    end_with_signal: Callable[[int], int] = _end_with_signal,
+) -> int:
+    """Run ``serve`` and start it again each time it exits with RESTART_EXIT_CODE.
+
+    Settings, Updates' Restart makes the server exit with that code.  When
+    MAX_RESTARTS restarts fall within RESTART_WINDOW_SECONDS the loop ends
+    with that code, so a server that asks again and again does not spin.
+    A Ctrl+C or SIGTERM always wins over a pending restart.
+    """
+    child_environment = {**environment, SUPERVISOR_ENV: "1"}
+    restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
+    while True:
+        try:
+            status = run_child(command, child_environment)
+        except StopRequested as stop:
+            return end_with_signal(stop.signum)
+        if status != RESTART_EXIT_CODE:
+            return status
+        now = clock()
+        restarts.append(now)
+        if len(restarts) == MAX_RESTARTS and now - restarts[0] < RESTART_WINDOW_SECONDS:
+            print(
+                f"AutoDJ: restarted {MAX_RESTARTS} times within "
+                f"{RESTART_WINDOW_SECONDS:.0f} seconds; not restarting again.",
+                file=sys.stderr,
+            )
+            return status
+        print("AutoDJ: restarting.", file=sys.stderr)
+
+
 def main() -> int:
     """Run AutoDJ with the selected local runtime when one has been saved."""
     arguments = sys.argv[1:]
@@ -130,7 +305,14 @@ def main() -> int:
                     cache.mkdir(parents=True, exist_ok=True)
                     child_environment[variable] = str(cache)
             # Compare prefixes, since venv executables can be symlinks.
-            if environment != Path(sys.prefix).resolve():
+            other_runtime = environment != Path(sys.prefix).resolve()
+            if _supervised(arguments, os.environ):
+                # The server runs as a child, so Restart can start it again.
+                python = str(_python_path(environment)) if other_runtime else sys.executable
+                if not other_runtime:
+                    child_environment["AUTODJ_RUNTIME"] = "current"
+                return run_supervised([python, "-m", "autodj", *arguments], child_environment)
+            if other_runtime:
                 completed = subprocess.run(  # nosec B603 -- user-selected runtime, argv only
                     [str(_python_path(environment)), "-m", "autodj", *sys.argv[1:]],
                     env=child_environment,

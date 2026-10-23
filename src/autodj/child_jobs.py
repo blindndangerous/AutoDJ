@@ -17,6 +17,7 @@ import logging
 import subprocess  # nosec B404 -- only handles of processes started elsewhere
 import sys
 import threading
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,12 @@ if sys.platform == "win32":
         ]
         kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         return kernel32
+
+    def _close(job: int) -> None:
+        _kernel32().CloseHandle(job)
 
     def _create_job() -> int:
         kernel32 = _kernel32()
@@ -114,6 +120,38 @@ else:  # pragma: no cover -- other systems never call these
 
     def _assign(job: int, proc: subprocess.Popen[bytes]) -> None:
         raise OSError("job objects are Windows only")
+
+    def _close(job: int) -> None:
+        raise OSError("job objects are Windows only")
+
+
+def job_for_tree(proc: subprocess.Popen[Any]) -> int | None:
+    """Windows: a new job holding *proc* and every process it starts; ``None`` elsewhere.
+
+    Pass the job to :func:`end_job` when done with the process: closing
+    the job's only handle kills whatever is still in it, and only that.
+    ``None`` also when Windows refuses, so the caller kills another way.
+    """
+    if sys.platform != "win32" or getattr(proc, "_handle", None) is None:
+        return None
+    try:
+        job = _create_job()
+    except OSError:
+        return None
+    try:
+        _assign(job, proc)
+    except OSError:
+        end_job(job)
+        return None
+    return job
+
+
+def end_job(job: int) -> None:
+    """Close a job from :func:`job_for_tree`, killing every process still in it."""
+    try:
+        _close(job)
+    except OSError:
+        logger.debug("Could not close job object %s", job, exc_info=True)
 
 
 def bind_to_autodj(proc: subprocess.Popen[bytes]) -> bool:

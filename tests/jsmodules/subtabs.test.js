@@ -42,6 +42,7 @@ describe("Settings subtabs markup", () => {
       "Voice liners", "Time checks", "Breaks", "Schedule", "Stream", "Live DJ", "Stations",
       "Profiles and access",
       "Analysis workers",
+      "Updates",
     ]);
     for (const tab of tabs) {
       expect(tab.hasAttribute("aria-controls")).toBe(false);
@@ -98,6 +99,8 @@ describe("initSubtabs", () => {
 
     // Public player settings keep Stream available outside stream mode.
     press(document.activeElement, "End");
+    expect(document.activeElement).toBe(byId("stab-updates"));
+    press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-workers"));
     press(document.activeElement, "ArrowLeft");
     expect(document.activeElement).toBe(byId("stab-access"));

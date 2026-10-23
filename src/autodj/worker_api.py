@@ -70,6 +70,7 @@ from autodj.security import (
     PAIRING_CODE_WINDOW_SECONDS,
     PAIRING_MAX_FAILURES_PER_CLIENT,
     PAIRING_MAX_FAILURES_PER_WINDOW,
+    audit_as_routine,
     peer_address,
 )
 from autodj.worker import WORKER_PAIR_PATH, identity_mismatch
@@ -619,7 +620,10 @@ def install_worker_api(
                 **reply,
             }
 
-        return JSONResponse(await asyncio.to_thread(claim), headers=_NO_STORE)
+        reply = await asyncio.to_thread(claim)
+        if not reply["songs"]:
+            audit_as_routine(request)
+        return JSONResponse(reply, headers=_NO_STORE)
 
     @app.api_route(WORKER_PREFIX + "audio", methods=["GET", "HEAD"])
     async def worker_audio(lease: _LeaseQuery, request: Request) -> FileResponse:
@@ -824,6 +828,8 @@ def install_worker_api(
             )
 
         renewed, reply = await asyncio.to_thread(beat)
+        if not body.connect:
+            audit_as_routine(request)
         return {
             "renewed": renewed,
             "lease_tracking": True,
