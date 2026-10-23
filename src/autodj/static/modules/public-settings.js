@@ -44,20 +44,37 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     say(message, "error");
   }
 
-  function fill(settings) {
+  function fillDmca(settings) {
     if ("dmca_enabled" in settings) dmca.checked = settings.dmca_enabled === true;
+  }
+
+  function fillPages(settings) {
     if ("player_page_enabled" in settings) page.checked = settings.player_page_enabled === true;
     if ("embed_enabled" in settings) embed.checked = settings.embed_enabled === true;
     if ("embed_origins" in settings) origins.value = (settings.embed_origins || []).join("\n");
   }
 
+  function fill(settings) {
+    fillDmca(settings);
+    fillPages(settings);
+  }
+
+  // DMCA mode lives on Song picking and the player pages on Stream, so each
+  // tab's Save bar owns its own controls.
+  const dmcaDraft = registerSettingsGroup({
+    panel: doc.getElementById("spanel-picking"), group: "public",
+    controls: [dmca],
+    read: () => ({ dmca_enabled: dmca.checked }),
+    write: fillDmca,
+  });
+
   const draft = registerSettingsGroup({
     panel: doc.getElementById("spanel-stream"), group: "public",
-    controls: [dmca, page, embed, origins],
-    read: () => ({ dmca_enabled: dmca.checked, player_page_enabled: page.checked,
+    controls: [page, embed, origins],
+    read: () => ({ player_page_enabled: page.checked,
       embed_enabled: embed.checked,
       embed_origins: origins.value.split(/\r?\n/).map((site) => site.trim()).filter(Boolean) }),
-    write: fill,
+    write: fillPages,
     validate() {
       clearError();
       const sites = origins.value.split(/\r?\n/).map((site) => site.trim()).filter(Boolean);
@@ -81,7 +98,10 @@ export function installPublicSettings({ doc = document, request = requestJson } 
     const station = generation;
     try {
       const settings = await request("/api/public-settings");
-      if (mine === loadSequence && station === generation) draft.accept(settings);
+      if (mine === loadSequence && station === generation) {
+        dmcaDraft.accept(settings);
+        draft.accept(settings);
+      }
     } catch (error) {
       if (mine === loadSequence && station === generation && !isStaleStationReply(error)) {
         say(`Could not load public settings: ${error?.message || "no answer"}`, "error");

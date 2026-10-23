@@ -29,7 +29,7 @@ describe("public station settings", () => {
     expect(document.getElementById("np-show-next-dmca").textContent).not.toMatch(/config\.toml/);
   });
 
-  it("loads server settings into a public draft and reads the combined body", async () => {
+  it("loads server settings and gives DMCA mode and the player pages their own tab's draft", async () => {
     const saved = { ...state, embed_origins: ["https://example.org"] };
     const request = vi.fn(async () => saved);
     const controls = installPublicSettings({ doc: document, request });
@@ -40,8 +40,12 @@ describe("public station settings", () => {
     get("page").checked = true;
     get("embed").checked = true;
     get("origins").value = "https://one.example\nhttps://two.example";
-    const draft = groups.find((group) => group.group === "public");
-    expect(draft.read()).toEqual({ dmca_enabled: true, player_page_enabled: true, embed_enabled: true,
+    const onTab = (id) => groups.find((group) => group.panel?.id === id);
+    expect(onTab("spanel-picking").group).toBe("public");
+    expect(onTab("spanel-picking").controls).toEqual([get("dmca")]);
+    expect(onTab("spanel-picking").read()).toEqual({ dmca_enabled: true });
+    expect(onTab("spanel-stream").group).toBe("public");
+    expect(onTab("spanel-stream").read()).toEqual({ player_page_enabled: true, embed_enabled: true,
       embed_origins: ["https://one.example", "https://two.example"] });
     expect(request).toHaveBeenCalledTimes(1);
     controls.clear();
@@ -54,7 +58,7 @@ describe("public station settings", () => {
     const controls = installPublicSettings({ doc: document, request });
     await controls.refresh();
     get("origins").value = "ftp://bad.example";
-    const draft = groups.find((group) => group.group === "public");
+    const draft = groups.find((group) => group.panel?.id === "spanel-stream");
     expect(draft.validate()).toBe(false);
     expect(get("origins").getAttribute("aria-invalid")).toBe("true");
     expect(get("origins").getAttribute("aria-describedby")).toContain("public-origins-error");
