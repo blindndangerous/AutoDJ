@@ -25,7 +25,7 @@ def _player(effect: str = "none", n: int = 12) -> Player:
     cfg.playback.beat_sync_fx = True
     cfg.playback.key_sync_fx = True
     cfg.playback.transition_mode = "fixed"
-    return Player(cfg, make_sim_index(n))
+    return Player(cfg, make_sim_index(n), dry_run=True)
 
 
 class _Cache:
