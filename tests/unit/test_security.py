@@ -17,6 +17,7 @@ from autodj.security import (
     audit_record,
     new_request_id,
     peer_address,
+    seconds_text,
 )
 
 _TOKEN = "test-access-token-that-is-32-bytes-long"
@@ -384,3 +385,9 @@ def test_machine_tokens_need_tls_or_an_unproxied_loopback(scheme, client, header
 
     scope = {"type": "http", "scheme": scheme, "client": (client, 5), "headers": headers}
     assert machine_transport_allowed(scope) is allowed
+
+
+def test_waits_say_one_second_without_a_plural():
+    assert seconds_text(1) == "1 second"
+    assert seconds_text(0) == "0 seconds"
+    assert seconds_text(40) == "40 seconds"
