@@ -2143,6 +2143,7 @@ def test_a_dismissed_refusal_stays_hidden_until_another_reason(server):
     store._refused.clear()  # past the once-a-minute write limit
     server.call("POST", "/api/worker/claim", secret, json={})
     assert workers_view(server)["refusals"] == []
+    store._refused.clear()
     store.record_refusal(token.token_id, "invalid")
     assert [notice["kind"] for notice in workers_view(server)["refusals"]] == ["invalid"]
     missing = server.client.delete(f"/api/analysis/workers/{'0' * 32}/refusal", headers=ORIGIN)
@@ -2274,3 +2275,39 @@ def test_a_worker_token_cannot_manage_workers_or_make_pairing_codes(tmp_path):
     finally:
         made.close()
         open_server.close()
+
+
+def test_alternating_refusals_write_once_a_minute_per_token(tmp_path):
+    """ADR-0008-29. Switching between kinds cannot write every request or undo a dismissal."""
+    from autodj.machine_tokens import MachineTokenStore
+
+    clock = [1000.0]
+    store = MachineTokenStore(tmp_path / "tokens.sqlite3", now=lambda: clock[0])
+    token, secret = store.create("Old PC", [SCOPE_ANALYSIS_WORKER])
+    store.revoke(token.token_id)
+    wrong = secret[:-1] + ("A" if secret[-1] != "A" else "B")
+    writes = []
+
+    def kinds():
+        with store._connect() as db:
+            return db.execute("SELECT kind, refused_at, dismissed FROM worker_refusals").fetchall()
+
+    for n in range(6):
+        store.authenticate(secret if n % 2 == 0 else wrong, SCOPE_ANALYSIS_WORKER)
+        writes.append(kinds())
+    assert all(rows == [("revoked", 1000, 0)] for rows in writes)
+    assert store.dismiss_refusal(token.token_id)
+    clock[0] += 30
+    for n in range(4):
+        store.authenticate(secret if n % 2 == 0 else wrong, SCOPE_ANALYSIS_WORKER)
+    assert kinds() == [("revoked", 1000, 1)]
+    # A minute on, the same refusal keeps the dismissal; a changed one shows again.
+    clock[0] += 31
+    store.authenticate(secret, SCOPE_ANALYSIS_WORKER)
+    assert kinds() == [("revoked", 1061, 1)]
+    clock[0] += 60
+    store.authenticate(wrong, SCOPE_ANALYSIS_WORKER)
+    assert kinds() == [("invalid", 1121, 0)]
+    # A refusal that stops the worker outright is never held back by a lesser note.
+    store.record_refusal(token.token_id, "identity", "weights differ")
+    assert kinds()[0][0] == "identity"

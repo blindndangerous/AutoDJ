@@ -1607,8 +1607,9 @@ def cmd_worker(
         worker.report_identity()
         worker.check_identity(server_identity)
         try:
-            # Without an idle release, here or from the server, the model loads once now.
-            if worker.idle_release is None:
+            # Without an idle release, here or from the server, the model loads
+            # once now; a worker the server has paused waits for songs instead.
+            if worker.idle_release is None and not worker.paused:
                 prepare()
                 worker.prepared = True
             worker.run()

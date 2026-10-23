@@ -2708,9 +2708,10 @@
     <h4 id="pair-worker-heading">Worker pairing</h4>
     <div class="settings-row">
       <label for="pair-worker-name">Worker name</label>
-      <input type="text" id="pair-worker-name" maxlength="64" autocomplete="off">
+      <input type="text" id="pair-worker-name" maxlength="64" autocomplete="off"
+             aria-describedby="pair-worker-name-desc">
     </div>
-    <span class="setting-desc">Optional.  Empty uses the worker computer's own name.</span>
+    <span class="setting-desc" id="pair-worker-name-desc">Optional.  Empty uses the worker computer's own name.</span>
     <button type="button" id="pair-worker-create">Pair a worker</button>
     <!-- The code works once, for ten minutes.  Getting it moves focus to the
          selected command and #workers-status says the code digit by digit. -->

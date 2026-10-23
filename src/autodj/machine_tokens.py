@@ -68,6 +68,10 @@ MAX_WORKER_BATCH = 16
 MAX_IDLE_RELEASE_MINUTES = 7 * 24 * 60
 #: Why the server refused a worker; the words for each are in worker_api.
 REFUSAL_KINDS = frozenset({"identity", "scan_version", "revoked", "invalid", "scope"})
+# Within a token's once-a-minute write limit, only a refusal that stops the
+# worker outright may replace a lesser one: a worker refused for its model
+# right after a scan-version note still shows why it stopped.
+_REFUSAL_RANK = {"scan_version": 0, "revoked": 1, "invalid": 1, "scope": 1, "identity": 2}
 _MAX_REFUSAL_DETAIL = 600
 
 
@@ -438,9 +442,12 @@ class MachineTokenStore:
     def record_refusal(self, token_id: str, kind: str, detail: str = "") -> None:
         """Note that the server refused the worker using *token_id*, and why.
 
-        One row per token: the latest refusal replaces the one before.  The
-        same refusal again keeps a dismissed notice dismissed, and is written
-        at most once a minute.  *detail* is server-made text, cut short.
+        One row per token: the latest refusal replaces the one before.  Each
+        token is written at most once a minute whatever the kind, so
+        alternating refusals cannot write on every request; only a weightier
+        kind (``_REFUSAL_RANK``) may replace a lesser one sooner.  The same
+        kind and detail again keeps a dismissed notice dismissed.  *detail*
+        is server-made text, cut short.
         """
         if kind not in REFUSAL_KINDS or _TOKEN_ID.fullmatch(token_id) is None:
             return
@@ -448,7 +455,11 @@ class MachineTokenStore:
         now = int(self._now())
         with self._touch_lock:
             seen = self._refused.get(token_id)
-            if seen is not None and seen[:2] == (kind, detail) and now - seen[2] < 60:
+            if (
+                seen is not None
+                and now - seen[2] < 60
+                and _REFUSAL_RANK[kind] <= _REFUSAL_RANK[seen[0]]
+            ):
                 return
             if len(self._refused) >= 1024:
                 self._refused.clear()

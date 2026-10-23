@@ -34,8 +34,9 @@ A server that says ``worker_manage_v1`` sends settings from its Settings,
 Analysis workers page in each heartbeat and claim reply (#554): paused,
 batch size and idle release, with a revision, so each change is applied
 once.  A paused worker claims nothing, gives back the rest of its batch
-after the song in hand, keeps its heartbeats, and frees the model as if
-idle.  ``--batch`` and ``--idle-release`` given on the command line win over
+after the song in hand, keeps its heartbeats, and frees the model at once,
+running the after-command; paused counts as an empty queue for ``--once``
+and ``--idle-exit``.  ``--batch`` and ``--idle-release`` given on the command line win over
 the server's values.  The server never sends a command to run: the hooks
 come only from this machine's command line.  The worker also tells such a
 server what it analyses with, so the server can show why it refused it.
@@ -645,7 +646,8 @@ class Worker:
         if not isinstance(revision, int) or isinstance(revision, bool):
             return
         with self._settings_lock:
-            if revision == self.settings_revision:
+            # An older reply, such as a slow claim's, never undoes a newer one.
+            if self.settings_revision is not None and revision <= self.settings_revision:
                 return
             minutes = _whole(settings.get("idle_release_minutes"), _MAX_IDLE_RELEASE_MINUTES)
             wanted = {
@@ -929,8 +931,10 @@ class Worker:
         """Work until stopped, or until the queue has been empty for *idle_exit*.
 
         While the server has this worker paused, it claims nothing and waits
-        for a heartbeat to resume it; that time counts toward *idle_release*
-        but never toward *idle_exit*.
+        for a heartbeat to resume it.  Pausing frees the prepared resources
+        at once, idle release or not, so the after-command runs; resuming
+        prepares again only when songs arrive.  Paused counts as an empty
+        queue for *idle_exit*, so ``--once`` never waits on a pause.
 
         Raises:
             WorkerError: The token was refused or the model does not match.
@@ -950,12 +954,18 @@ class Worker:
                 while not self.stop.is_set():
                     if self.paused:
                         now = self._now()
-                        paused_since = now if paused_since is None else paused_since
-                        # Already idle before the pause: the release counts from then.
-                        since = paused_since if empty_since is None else empty_since
-                        prepared, paused_wait = self._release_when_idle(
-                            prepared, since, now, self.idle_seconds, "Paused"
-                        )
+                        if paused_since is None:
+                            paused_since = now
+                            if prepared:
+                                if self.release is not None:
+                                    self.release()
+                                prepared = False
+                                logger.info("Paused; released analysis resources.")
+                        # Paused is an empty queue for --once and --idle-exit.
+                        empty_since = now if empty_since is None else empty_since
+                        paused_wait = self._idle_pause(empty_since, now)
+                        if paused_wait is None:
+                            break
                         self._wait(paused_wait)
                         continue
                     if paused_since is not None:

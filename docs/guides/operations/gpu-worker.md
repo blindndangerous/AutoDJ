@@ -305,7 +305,8 @@ can read it. Later runs with the same `--server` address use the saved token, so
 `--token` and `AUTODJ_WORKER_TOKEN`; `--pair` refuses to run when either is given.
 
 To remove the token, delete that file, or its entry for the server, and revoke the token in
-Settings, Analysis workers. Wrong codes have the same limits as browser pairing: after ten wrong
+Settings, Analysis workers. Pair with one server at a time: two `--pair` runs at once can lose one
+of the saved tokens. Wrong codes have the same limits as browser pairing: after ten wrong
 codes from one computer, that computer must wait until the code expires; after fifty wrong codes in
 all, the code stops working and you need a new one.
 
@@ -316,9 +317,12 @@ Each worker row in Settings, Analysis workers has its own settings and a Save bu
 - **Paused**: the server hands the worker no songs. A worker of this release stops claiming,
   finishes the song in hand and gives the rest of its batch back. It keeps sending heartbeats, so
   it still counts as connected and the server's own analysis stays paused too: you paused analysis
-  on purpose. A paused worker frees the model after its idle release time, as if the queue were
-  empty. Paused time does not count toward `--idle-exit` or `--once`, so a paused worker waits to
-  be resumed or stopped.
+  on purpose. Once the claims are back, the worker frees the model and runs `--after-command`
+  straight away, with or without an idle release, so a program sharing the GPU gets it back. A
+  worker that starts while paused does not run `--before-command` or load the model. When resumed,
+  it runs `--before-command` and loads the model again only when songs arrive. Paused counts as an
+  empty queue: `--once` stops at once, and `--idle-exit` stops after its wait. Without either, a
+  paused worker waits to be resumed or stopped.
 - **Songs per claim**: 1 to 16, like `--batch`.
 - **Idle release minutes**: 1 or more, like `--idle-release`. With it set, the worker loads the
   model only while songs are waiting and runs `--before-command` and `--after-command` around each

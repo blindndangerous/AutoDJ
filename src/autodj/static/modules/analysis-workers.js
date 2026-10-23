@@ -110,6 +110,30 @@ export function pairTransportOk(loc = globalThis.location) {
   return ["localhost", "127.0.0.1", "[::1]"].includes(loc.hostname);
 }
 
+// Worker rows in a fixed order, by name then token id, so a refresh never
+// shuffles them as their last-seen times change.
+function byName(a, b) {
+  return String(a.name).localeCompare(String(b.name)) || String(a.token_id)
+    .localeCompare(String(b.token_id));
+}
+
+// A notice is the same one again when its worker, kind and words match; a
+// later time alone is not news.
+function refusalKey(refusal) {
+  return `${refusal.token_id}\n${refusal.kind}\n${refusal.detail}`;
+}
+
+// Put *items* in *list* in order, moving only an item out of place, and
+// never the one holding focus: moving it would drop focus to the page.
+function placeInOrder(list, items, doc) {
+  let previous = null;
+  for (const item of items) {
+    const wanted = previous ? previous.nextElementSibling : list.firstElementChild;
+    if (item !== wanted && !item.contains(doc.activeElement)) list.insertBefore(item, wanted);
+    previous = item;
+  }
+}
+
 // The number in *text* from 1 to *max*, null for empty, or NaN when it is not one.
 function wholeOrEmpty(text, max) {
   const trimmed = String(text).trim();
@@ -237,7 +261,9 @@ export function installAnalysisWorkers({
     idle.step = "1";
     const help = doc.createElement("span");
     help.className = "setting-desc";
+    help.id = `worker-${row.id}-help`;
     help.textContent = "Empty uses the worker's own setting; its command line wins.";
+    for (const input of [batch, idle]) input.setAttribute("aria-describedby", help.id);
     row.error = doc.createElement("p");
     row.error.className = "field-error";
     row.error.id = `worker-${row.id}-error`;
@@ -264,12 +290,21 @@ export function installAnalysisWorkers({
       ? "" : String(settings.idle_release_minutes);
   }
 
+  // The ids in a field's aria-describedby, without *drop*, and with *add* last.
+  function describedBy(input, { add = null, drop = null } = {}) {
+    const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/)
+      .filter((id) => id && id !== drop && id !== add);
+    if (add) ids.push(add);
+    if (ids.length) input.setAttribute("aria-describedby", ids.join(" "));
+    else input.removeAttribute("aria-describedby");
+  }
+
   function clearRowError(row) {
     row.error.hidden = true;
     row.error.textContent = "";
     for (const input of [row.batch, row.idle]) {
       input.removeAttribute("aria-invalid");
-      input.removeAttribute("aria-describedby");
+      describedBy(input, { drop: row.error.id });
     }
   }
 
@@ -278,7 +313,7 @@ export function installAnalysisWorkers({
     row.error.hidden = false;
     if (input) {
       input.setAttribute("aria-invalid", "true");
-      input.setAttribute("aria-describedby", row.error.id);
+      describedBy(input, { add: row.error.id });
       input.focus();
     }
     say(message, "error");
@@ -337,16 +372,16 @@ export function installAnalysisWorkers({
         workerRows.delete(id);
       }
     }
-    for (const worker of workers) {
+    const rows = [...workers].sort(byName).map((worker) => {
       let row = workerRows.get(worker.token_id);
       if (!row) {
         row = newWorkerRow(worker);
         workerRows.set(worker.token_id, row);
       }
-      // Appending a row that is already last moves nothing, so focus stays.
-      if (workerList.lastElementChild !== row.li) workerList.append(row.li);
       fillWorkerRow(row, worker);
-    }
+      return row.li;
+    });
+    placeInOrder(workerList, rows, doc);
     if (workers.length === 0) {
       const none = doc.createElement("li");
       none.textContent = "No worker has connected yet.";
@@ -366,9 +401,9 @@ export function installAnalysisWorkers({
       }
     }
     const fresh = [];
-    for (const refusal of refusals) {
-      const key = `${refusal.token_id}:${refusal.refused_at}:${refusal.kind}`;
-      if (seenRefusals !== null && !seenRefusals.has(key)) fresh.push(refusal);
+    const items = [];
+    for (const refusal of [...refusals].sort(byName)) {
+      if (seenRefusals !== null && !seenRefusals.has(refusalKey(refusal))) fresh.push(refusal);
       let row = refusalRows.get(refusal.token_id);
       if (!row) {
         const li = doc.createElement("li");
@@ -380,12 +415,13 @@ export function installAnalysisWorkers({
         refusalRows.set(refusal.token_id, row);
       }
       row.refusal = refusal;
-      if (refusalList.lastElementChild !== row.li) refusalList.append(row.li);
+      items.push(row.li);
+      // The time ("4 minutes ago") updates silently.
       row.text.textContent = refusalWords(refusal);
       row.dismiss.setAttribute("aria-label", `Dismiss the notice for ${refusal.name}`);
     }
-    seenRefusals = new Set(refusals.map((refusal) =>
-      `${refusal.token_id}:${refusal.refused_at}:${refusal.kind}`));
+    placeInOrder(refusalList, items, doc);
+    seenRefusals = new Set(refusals.map(refusalKey));
     refusalHeading.hidden = refusals.length === 0;
     refusalList.hidden = refusals.length === 0;
     return fresh;

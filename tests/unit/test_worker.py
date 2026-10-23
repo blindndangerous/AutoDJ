@@ -775,7 +775,7 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(
     tmp_path, simulated_model_runtime
 ):
     order = []
-    fake_worker = MagicMock(idle_release=None)
+    fake_worker = MagicMock(idle_release=None, paused=False)
     fake_worker.connect.side_effect = lambda: order.append("connect")
     fake_worker.run.side_effect = lambda: order.append("run")
     with (
@@ -809,7 +809,7 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(
 
 def test_worker_command_runs_the_after_command_on_errors(tmp_path, simulated_model_runtime):
     order = []
-    fake_worker = MagicMock(idle_release=None)
+    fake_worker = MagicMock(idle_release=None, paused=False)
     fake_worker.run.side_effect = WorkerError("token revoked")
     with (
         patch("autodj.worker.Worker", return_value=fake_worker),
@@ -827,12 +827,16 @@ def test_worker_command_runs_the_after_command_on_errors(tmp_path, simulated_mod
     assert order == ["Before-command", "release", "After-command"]
 
 
-def _run_idle_command(tmp_path, api, order, *args, record_model=False, load_error=None):
+def _run_idle_command(
+    tmp_path, api, order, *args, record_model=False, load_error=None, on_wait=None
+):
     """Run ``autodj worker`` with a real Worker against *api*, noting hooks in *order*."""
     clock = [0.0]
 
     def wait(self, seconds):
         clock[0] += seconds
+        if on_wait is not None:
+            on_wait(self)
 
     def load(*args, **kwargs):
         if record_model:
@@ -1317,7 +1321,10 @@ def test_server_settings_never_carry_a_command_to_run():
 def test_pause_gives_back_the_rest_of_the_batch_then_resume_carries_on(server, caplog):
     """ADR-0008-26. The song in hand finishes, the rest go back, nothing is claimed meanwhile."""
     caplog.set_level("INFO", logger="autodj.worker")
-    worker, transport, token = managed_worker(server, batch=3, once=True)
+    # --once would stop at the pause, which counts as an empty queue.
+    worker, transport, token = managed_worker(server, batch=3, idle_exit=600)
+    clock = [0.0]
+    worker._now = lambda: clock[0]
     worker.connect()
     analyse = worker.analyse
     calls = []
@@ -1333,6 +1340,7 @@ def test_pause_gives_back_the_rest_of_the_batch_then_resume_carries_on(server, c
     claims_while_paused = []
 
     def wait(seconds):
+        clock[0] += 30
         claims_while_paused.append(transport.paths.count("/api/worker/claim"))
         if len(claims_while_paused) == 3:
             assert server.manager.analysis_queue.held_paths() == set()
@@ -1343,41 +1351,133 @@ def test_pause_gives_back_the_rest_of_the_batch_then_resume_carries_on(server, c
     stats = worker.run()
     assert stats.done == 3
     # One claim before the pause, none during it, then the rest.
-    assert claims_while_paused == [1, 1, 1]
+    assert claims_while_paused[:3] == [1, 1, 1]
     assert "Gave 2 unanalysed songs back to the server." in caplog.text
     assert "Paused by the server" in caplog.text
     assert "Resumed by the server." in caplog.text
 
 
-def test_a_paused_worker_frees_the_model_as_if_idle_and_never_exits_for_it(server, caplog):
-    """ADR-0008-26. Paused time counts toward --idle-release but not toward --idle-exit."""
+def test_a_paused_worker_releases_at_once_and_counts_as_an_empty_queue(server, caplog):
+    """ADR-0008-26. Pausing frees the model without an idle release; --idle-exit still ends it."""
     caplog.set_level("INFO", logger="autodj.worker")
     identity = server.identity()
     api = QueueApi(identity)
     clock = [0.0]
     released = []
     worker = idle_worker(
-        api,
-        identity,
-        clock,
-        idle_exit=60,
-        idle_release=90,
-        release=lambda: released.append(clock[0]),
+        api, identity, clock, idle_exit=60, release=lambda: released.append(clock[0])
     )
     worker.prepared = True
     worker.apply_settings({"revision": 1, "paused": True})
-
-    def wait(seconds):
-        clock[0] += seconds
-        if clock[0] >= 600:
-            worker.stop.set()
-
-    worker._wait = wait
     worker.run()
-    assert released == [90.0]
+    assert released == [0.0]
     assert api.claimed == 0
-    assert "Paused for 1.5 minutes; released analysis resources." in caplog.text
-    assert "stopping" not in caplog.text
+    assert clock[0] == 60.0
+    assert "Paused; released analysis resources." in caplog.text
+    assert "Queue empty for 1 minute; stopping." in caplog.text
+
+
+class ManagedQueueApi(QueueApi):
+    """A managing server: scripted claims, and the settings in every reply."""
+
+    manages = True
+
+    def __init__(self, identity, claims=(), on_claim=None, settings=None):
+        super().__init__(identity, claims, on_claim)
+        self.settings = settings or {"revision": 0, "paused": False}
+        self.given_back = []
+
+    def heartbeat(self, device="", *, connect=False):
+        return {**super().heartbeat(device, connect=connect), "settings": dict(self.settings)}
+
+    def claim(self, batch, device=""):
+        return {**super().claim(batch, device), "settings": dict(self.settings)}
+
+    def release(self, leases):
+        self.given_back.append(list(leases))
+
+
+PAUSED = {"revision": 1, "paused": True}
+
+
+@pytest.mark.parametrize("exit_args", [("--once",), ("--idle-exit", "1")])
+def test_a_worker_started_paused_runs_no_hook_and_exits(
+    server, tmp_path, exit_args, simulated_model_runtime
+):
+    """ADR-0008-26. Paused from the start: no before-command, no model, and --once ends it."""
+    order = []
+    api = ManagedQueueApi(
+        server.identity(), settings=PAUSED, on_claim=lambda n: order.append("claim")
+    )
+    result = _run_idle_command(tmp_path, api, order, *exit_args, record_model=True)
+    assert result.exit_code == 0, result.output
+    assert order == []
+
+
+@pytest.mark.parametrize("idle_args", [(), ("--idle-release", "5")])
+def test_pausing_mid_batch_restores_the_other_program_and_resuming_reloads(
+    server, tmp_path, idle_args, simulated_model_runtime
+):
+    """ADR-0008-26. Song in hand, claims back, model freed and after-command, idle release or not.
+
+    Resuming runs the before-command again only once songs arrive.
+    """
+    order = []
+    first, second, third = ({"lease": letter * 32} for letter in "abc")
+    api = ManagedQueueApi(
+        server.identity(), [[first, second], [], [third]], on_claim=lambda n: order.append("claim")
+    )
+
+    def process(self, song, folder, number):
+        order.append(("analyse", song["lease"][0]))
+        if song is first:
+            self.apply_settings(PAUSED)
+
+    def resume(worker):
+        if worker.paused:
+            order.append("resumed")
+            worker.apply_settings({"revision": 2, "paused": False})
+
+    with patch.object(Worker, "_process", process):
+        result = _run_idle_command(
+            tmp_path,
+            api,
+            order,
+            *idle_args,
+            "--idle-exit",
+            "1",
+            record_model=True,
+            on_wait=resume,
+        )
+    assert result.exit_code == 0, result.output
+    eager = [] if idle_args else ["Before-command", "load"]
+    hooks = [step for step in order if step != "claim"]
+    assert hooks == [
+        *eager,
+        *([] if eager else ["Before-command", "load"]),
+        ("analyse", "a"),
+        "release",
+        "After-command",
+        "resumed",
+        "Before-command",
+        "load",
+        ("analyse", "c"),
+        "release",
+        "After-command",
+    ]
+    assert api.given_back == [["b" * 32]]
+    # Nothing was claimed between the pause and the resume.
+    paused_at = order.index("After-command")
+    assert "claim" not in order[paused_at : order.index("resumed")]
+
+
+def test_an_older_settings_revision_never_undoes_a_newer_one():
+    """ADR-0008-25. A slow claim reply with an older revision is ignored."""
+    identity = {"model": "m", "analysis_version": "v", "dimension": 3, "model_commit": "c"}
+    worker = Worker(QueueApi(identity), Mock(), identity, batch=4)
+    worker.apply_settings({"revision": 5, "paused": True, "batch": 2})
+    worker.apply_settings({"revision": 4, "paused": False, "batch": 8})
+    assert (worker.paused, worker.batch, worker.settings_revision) == (True, 2, 5)
 
 
 def test_new_worker_with_an_older_server_sends_no_manage_fields(server):
@@ -1517,7 +1617,7 @@ def test_saved_worker_tokens_are_private_and_kept_per_server(token_home):
 
 def _invoke_worker(args, server_api_tokens):
     """Run ``autodj worker`` with the model and the loop stubbed; note each token used."""
-    fake_worker = MagicMock(idle_release=None)
+    fake_worker = MagicMock(idle_release=None, paused=False)
 
     def transport(address, token, ca_cert=None, timeout=60.0):
         server_api_tokens.append(token)
@@ -1580,7 +1680,7 @@ def test_command_line_values_are_fixed_and_server_idle_release_reaches_the_worke
 
     def capture(*args, **kwargs):
         made.update(kwargs)
-        return MagicMock(idle_release=None)
+        return MagicMock(idle_release=None, paused=False)
 
     with (
         patch("autodj.worker.Worker", side_effect=capture),

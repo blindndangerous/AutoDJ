@@ -376,7 +376,9 @@ describe("managing workers from Settings (#554)", () => {
       const input = byId(`worker-${id}-${kind}`);
       expect(input.type).toBe(type);
       expect(document.querySelector(`label[for="${input.id}"]`).textContent).toBe(label);
-      expect(input.hasAttribute("aria-describedby")).toBe(false);
+      if (kind === "paused") expect(input.hasAttribute("aria-describedby")).toBe(false);
+      else expect(byId(input.getAttribute("aria-describedby")).textContent)
+        .toBe("Empty uses the worker's own setting; its command line wins.");
     }
     expect(byId(`worker-${id}-paused`).checked).toBe(true);
     expect(byId(`worker-${id}-batch`).value).toBe("2");
@@ -426,11 +428,19 @@ describe("managing workers from Settings (#554)", () => {
     batch.closest("fieldset").querySelector("button").click();
     expect(await said()).toMatch(/enter songs per claim from 1 to 16/);
     expect(batch.getAttribute("aria-invalid")).toBe("true");
-    const error = byId(batch.getAttribute("aria-describedby"));
+    const [help, errorId] = batch.getAttribute("aria-describedby").split(" ");
+    expect(help).toBe(`worker-${id}-help`);
+    const error = byId(errorId);
     expect(error.hidden).toBe(false);
     expect(error.textContent).toMatch(/from 1 to 16/);
     expect(document.activeElement).toBe(batch);
     expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
+    // A corrected value clears the error but keeps the help linked.
+    batch.value = "3";
+    batch.closest("fieldset").querySelector("button").click();
+    await vi.waitFor(() => expect(error.hidden).toBe(true));
+    expect(batch.getAttribute("aria-describedby")).toBe(`worker-${id}-help`);
+    expect(batch.hasAttribute("aria-invalid")).toBe(false);
   });
 
   // ADR-0008-30
@@ -467,6 +477,8 @@ describe("managing workers from Settings (#554)", () => {
     expect(document.querySelector('label[for="pair-worker-name"]').textContent)
       .toBe("Worker name");
     expect(byId("pair-worker-command").readOnly).toBe(true);
+    expect(byId(byId("pair-worker-name").getAttribute("aria-describedby")).textContent)
+      .toMatch(/^Optional\. {2}Empty uses the worker computer's own name\.$/);
     byId("pair-worker-name").value = " Studio PC ";
     byId("pair-worker-create").click();
     await vi.waitFor(() => expect(byId("pair-worker-new").hidden).toBe(false));
@@ -506,5 +518,62 @@ describe("managing workers from Settings (#554)", () => {
     expect(pairTransportOk({ protocol: "http:", hostname: "192.168.1.5" })).toBe(false);
     expect(pairTransportOk({ protocol: "http:", hostname: "localhost" })).toBe(true);
     expect(pairTransportOk({ protocol: "https:", hostname: "nas.local" })).toBe(true);
+  });
+});
+
+describe("worker rows across refreshes (#554 review)", () => {
+  const second = { ...WORKER, token_id: "b".repeat(32), name: "GPU box", last_seen: NOW - 60,
+    settings: { paused: false, batch: null, idle_release_minutes: null, revision: 0 } };
+
+  // ADR-0008-30
+  it("keeps focus on a field in any row while polls reorder last-seen times", async () => {
+    const { request, state, timers } = install({ workers: [WORKER, second] });
+    const loads = () => request.mock.calls.filter(([url]) => url === "/api/analysis/workers").length;
+    open();
+    const poll = timers.set.mock.calls[0][0];
+    await vi.waitFor(() => expect(byId("workers-list").children).toHaveLength(2));
+    // A fixed order by name, whatever the server's order.
+    expect([...byId("workers-list").children].map((li) => li.querySelector("legend").textContent))
+      .toEqual(["Settings for GPU box", "Settings for Studio PC"]);
+    for (const id of ["a".repeat(32), "b".repeat(32)]) {
+      const input = byId(`worker-${id}-idle`);
+      input.focus();
+      input.value = "7";
+      input.dispatchEvent(new Event("input"));
+      for (const order of [[second, WORKER], [WORKER, second], [second, WORKER]]) {
+        state.workers = order.map((worker) => ({ ...worker, last_seen: NOW }));
+        const before = loads();
+        poll();
+        await vi.waitFor(() => expect(loads()).toBeGreaterThan(before));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(document.activeElement).toBe(input);
+      }
+      expect(input.value).toBe("7");
+    }
+  });
+
+  // ADR-0008-30
+  it("says an ongoing refusal once, though its time keeps moving", async () => {
+    const { state, timers } = install({ refusals: [] });
+    open();
+    const poll = timers.set.mock.calls[0][0];
+    await vi.waitFor(() => expect(byId("workers-list").children).toHaveLength(1));
+    state.refusals = [{ ...REFUSAL, refused_at: NOW - 120 }];
+    poll();
+    expect(await said()).toMatch(/^Refused: Old PC/);
+    for (const refusedAt of [NOW - 60, NOW]) {
+      byId("workers-status").textContent = "";
+      state.refusals = [{ ...REFUSAL, refused_at: refusedAt }];
+      poll();
+      await vi.waitFor(() => expect(byId("workers-refusals").textContent)
+        .toMatch(/just now|1 minute ago/));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(byId("workers-status").textContent).toBe("");
+    }
+    // The same worker refused for another reason is news again.
+    state.refusals = [{ ...REFUSAL, kind: "invalid",
+      message: "It sent a token whose secret is wrong." }];
+    poll();
+    expect(await said()).toMatch(/secret is wrong/);
   });
 });
