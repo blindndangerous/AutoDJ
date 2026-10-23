@@ -61,7 +61,14 @@ async function audit(name, launcher) {
       { kept: true, disabled: false, unavailable: "true" });
     await speed.fill("3");
     await page.locator("#stab-stream").click();
+    // The dialog's close event returns focus to its opener a task later, so
+    // wait for it before focusing Discard.
+    const closed = page.evaluate(() => new Promise((resolve) => {
+      document.getElementById("confirm-dialog")
+        .addEventListener("close", () => setTimeout(resolve, 0), { once: true });
+    }));
     await page.getByRole("button", { name: "Stay", exact: true }).click();
+    await closed;
     assert.equal(await panel.isVisible(), true);
     await panel.locator("[data-settings-discard]").focus();
     await page.keyboard.press("Enter");
