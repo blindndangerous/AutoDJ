@@ -4181,3 +4181,46 @@ def test_scan_summary_counts_work_left_to_a_worker_and_the_take_back(abandoned_s
         "Server starting abandoned scan work: 3 songs",
         "Server finished abandoned scan work",
     ]
+
+
+def test_the_tick_does_not_reload_a_library_that_is_closing(manager_factory, monkeypatch, caplog):
+    """ADR-0008-25. A scan stopped by shutdown wrote records; the tick still does not reload.
+
+    Its summary says the scan stopped rather than finished.
+    """
+    caplog.set_level(logging.INFO, logger="autodj.library")
+    manager = manager_factory()
+    music = manager.cfg.library.music_dir
+    songs = []
+    for n in range(3):
+        song = music / f"s{n}.flac"
+        song.write_bytes(b"music")
+        songs.append(song)
+    manager.refresh()
+
+    def read_track(kind, path, override_tags=False, **kwargs):
+        # The scan writes a changed record, then shutdown begins.
+        manager.catalog.put_entry(make_entry(path), "music")
+        manager._tally("changed")
+        if path == songs[0]:
+            manager.stop_scan()
+        return True
+
+    monkeypatch.setattr(manager, "_read_track", read_track)
+    monkeypatch.setattr(manager, "_add_from_tags", lambda *args, **kwargs: False)
+    refreshed = []
+    real_refresh = manager.refresh
+    monkeypatch.setattr(
+        manager, "refresh", lambda **kwargs: refreshed.append(kwargs) or real_refresh(**kwargs)
+    )
+    manager.scan()
+    assert manager._changed()
+    manager.tick()
+    assert refreshed == []
+    summaries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Library scan ")
+    ]
+    assert len(summaries) == 1
+    assert summaries[0].startswith("Library scan stopped in ")

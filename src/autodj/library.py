@@ -635,7 +635,8 @@ class LibraryManager:
             # A scan publishes its own tracks and reloads when it has read
             # them; while it measures loudness, analysis may add vectors.
             scanning = self._scan_lock.locked() and self._state["phase"] != "measuring loudness"
-        if not scanning and self._changed():
+        # A closing library is not reloaded: nothing plays from it any more.
+        if not scanning and not self._stop.is_set() and self._changed():
             self.refresh()
         if (
             self._auto_rescan_minutes > 0
@@ -1600,7 +1601,8 @@ class LibraryManager:
                 self._recover_scan_between_files()
             self._dj_backlog()
             self._set_state(phase="complete")
-            completed = True
+            # A scan cut short by shutdown stopped; the next one finishes it.
+            completed = not self._stop.is_set()
         finally:
             self._scan_pending = None
             self._refresh_unless_closing()
