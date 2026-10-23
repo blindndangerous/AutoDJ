@@ -629,6 +629,15 @@ class AnalysisQueue:
         rows = self._read("SELECT size, fingerprint FROM scan_pending WHERE path=?", (path,))
         return (rows[0][0], rows[0][1]) if rows else None
 
+    def scan_identities(self) -> dict[str, tuple[int, str]]:
+        """Pending byte identities for a scan's move reconciliation snapshot."""
+        return {
+            path: (size, fingerprint)
+            for path, size, fingerprint in self._read(
+                "SELECT path,size,fingerprint FROM scan_pending"
+            )
+        }
+
     def defer_scan_now(self, path: str, *, worker_active: bool | None = None) -> bool:
         """Wait for remote work or a scan retry, independently of CPU vector holds."""
         if worker_active is None:

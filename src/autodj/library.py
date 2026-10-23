@@ -963,15 +963,43 @@ class LibraryManager:
         for kind, path in found:
             if _path(path) not in old_paths:
                 candidates_by_kind[kind].append(Track(path, path.stem, "", "", "", 0.0, 0, 0.0))
+        pending_identities = (
+            self.analysis_queue.scan_identities()
+            if missing and any(candidates_by_kind.values())
+            else {}
+        )
         moved = False
         for kind in ("music", "liner"):
-            kind_entries = [entry for entry_kind, entry in old if entry_kind == kind]
+            kind_entries = [
+                replace(
+                    entry,
+                    size=pending_identities[entry.path][0],
+                    fingerprint=pending_identities[entry.path][1],
+                )
+                if entry.path in pending_identities
+                else entry
+                for entry_kind, entry in old
+                if entry_kind == kind
+            ]
+            # Present records hold both identities until replacement; neither can
+            # identify a unique move of some other missing recording.
+            kind_entries.extend(
+                entry
+                for entry_kind, entry in old
+                if entry_kind == kind
+                and entry.path not in missing
+                and entry.path in pending_identities
+                and (entry.size, entry.fingerprint) != pending_identities[entry.path]
+            )
             moves = _detect_moves(kind_entries, missing, candidates_by_kind[kind])
             if not moves:
                 continue
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                if self._scan_pending is not None and source in self._scan_pending:
+                    self._scan_pending.discard(source)
+                    self._scan_pending.add(_path(track.path))
                 with self._lock:
                     ledgers = {ledger.station: ledger for ledger in self._ledgers}
                     station_ids = set(self._station_ids)
@@ -1145,7 +1173,9 @@ class LibraryManager:
                 embedded_at=path.stat().st_mtime,
             )
             entry = self._basic_entry(entry, None, path)
-            self.catalog.put_entry(entry, "music")
+            self.catalog.put_entry(
+                entry, "music", preserve_edits=allow_unknown_length and old is not None
+            )
         except Exception as exc:
             logger.debug("Could not list %s from its tags: %s", path, exc)
             return False
@@ -1288,6 +1318,7 @@ class LibraryManager:
             old_end = old_points.get("end")
             valid_existing_points = bool(
                 unchanged
+                and scan_identity is None
                 and old is not None
                 and isinstance(old_start, int | float)
                 and not isinstance(old_start, bool)
@@ -1356,8 +1387,14 @@ class LibraryManager:
                     if points.get(name) is None:
                         points[name] = value
                 points = self._valid_basic_points(points, fresh)
-                self.catalog.put_entry(fresh, kind, points=points, point_source="analysis")
-                self._publish_entry(fresh, kind)
+                self.catalog.put_entry(
+                    fresh,
+                    kind,
+                    points=points,
+                    point_source="analysis",
+                    preserve_edits=scan_identity is not None,
+                )
+                self._publish_entry(self.catalog.entry_for_path(path) or fresh, kind)
                 # New bytes are a new chance for a song held back after a
                 # failed or stale analysis.
                 self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
@@ -1551,6 +1588,25 @@ class LibraryManager:
                 if force:
                     self._dj_cues_requested = True
                     self._dj_cues_pending.add(str(path))
+            record = self.catalog.record_for_path(path)
+            if record is not None:
+                # Catalog edits may be newer than the worker's scan options or cached markers.
+                # Use the just-validated saved points, including explicit clears, in both stores.
+                for point, marker, field, default in (
+                    ("start", "intro_start", "intro_start_s", None),
+                    ("intro", "intro_end", "intro_end_s", 0.0),
+                    ("outro", "outro_start", "outro_start_s", record["length"]),
+                ):
+                    if record["point_sources"].get(point) not in {"user", "imported"}:
+                        continue
+                    value = record["points"].get(point)
+                    setattr(meta, field, default if value is None else value)
+                    meta.cues = [
+                        replace(cue, time_s=value) if cue.type == marker else cue
+                        for cue in meta.cues
+                        if cue.type != marker or value is not None
+                    ]
+                meta.cues.sort(key=lambda cue: cue.time_s)
             cache.set(str(path), meta)
             cache.flush(force=force)
 

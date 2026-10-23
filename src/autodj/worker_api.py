@@ -488,7 +488,11 @@ def install_worker_api(
 
                         length = read_file_tags(held.path).length
                     if math.isfinite(length) and length > 0:
-                        if same_bytes and (record["energy"] != 0 or record["points"]):
+                        measured = record["energy"] != 0 or any(
+                            source not in {"user", "imported"}
+                            for source in record["point_sources"].values()
+                        )
+                        if same_bytes and measured:
                             tolerance = max(2.0, length * 0.02)
                             lower, upper = length - tolerance, length + tolerance
                         else:

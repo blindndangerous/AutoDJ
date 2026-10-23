@@ -920,6 +920,8 @@ class LibraryCatalog:
         kind: str,
         points: dict | None,
         point_source: str,
+        *,
+        preserve_edits: bool = False,
     ) -> str:
         if kind not in {"music", "liner"}:
             raise ValueError("kind must be 'music' or 'liner'")
@@ -955,7 +957,9 @@ class LibraryCatalog:
                     "WHERE id=?",
                     (record_id,),
                 )
-            else:
+            if preserve_edits or not (
+                all(old_identity) and all(new_identity) and old_identity != new_identity
+            ):
                 # Same file: a key or BPM set by hand in Track info outlives
                 # an analysis that measured its own.
                 for name in _user_tags(row["user_tags"], row["fingerprint"]):
@@ -975,7 +979,72 @@ class LibraryCatalog:
                 f"INSERT INTO catalog_entries (id,path,kind,mtime_ns,{cols}) VALUES (?,?,?,?,{placeholders})",  # nosec B608 -- constant field names; values are bound
                 (record_id, path, kind, mtime_ns, *values),
             )
-        self._merge_points(path, points or {}, point_source)
+        if preserve_edits and row:
+            from autodj.scan_analysis import normalize_basic_points
+
+            sources = json.loads(row["point_sources"])
+            saved = {
+                name: value
+                for name, value in json.loads(row["points"]).items()
+                if sources.get(name) in {"user", "imported"}
+            }
+            choices = {**(points or {}), **saved}
+            start, end = saved.get("start"), saved.get("end")
+            if (
+                start is not None
+                and 0 <= start < entry.length
+                and "end" not in saved
+                and start >= (choices.get("end") or entry.length)
+            ):
+                choices["end"] = entry.length
+            if (
+                end is not None
+                and 0 < end <= entry.length
+                and "start" not in saved
+                and end <= (choices.get("start") or 0.0)
+            ):
+                choices["start"] = 0.0
+            # Automatic trim suggestions cannot exclude a valid manual mix point.
+            for name in ("intro", "outro", "segue"):
+                value = saved.get(name)
+                if value is None or not 0 <= value <= entry.length:
+                    continue
+                if "start" not in saved and value < (choices.get("start") or 0.0):
+                    choices["start"] = 0.0
+                if "end" not in saved and value > (choices.get("end") or entry.length):
+                    choices["end"] = entry.length
+            # A tag-only refresh has an estimated length. Validate saved choices only
+            # when decoded measurements arrive, not against that estimate.
+            merged = (
+                normalize_basic_points(choices, entry.length)
+                if points is not None
+                else saved.copy()
+            )
+            # The current saved choices win before validation against the new duration.
+            # Preserve explicit clears and provenance even when normalization clears a point.
+            merged.update({name: value for name, value in saved.items() if name not in merged})
+            if points is not None and merged.get("overlap_start") is not None:
+                merged["overlap_start"] = min(
+                    merged["overlap_start"], merged["end"] - merged["start"]
+                )
+            self._db().execute(
+                "UPDATE catalog_entries SET points=?,point_sources=?,user_tags=? WHERE path=?",
+                (
+                    json.dumps(merged),
+                    json.dumps(
+                        {name: sources[name] if name in saved else point_source for name in merged}
+                    ),
+                    json.dumps(
+                        dict.fromkeys(
+                            _user_tags(row["user_tags"], row["fingerprint"]),
+                            values[_ENTRY_FIELDS.index("fingerprint")],
+                        )
+                    ),
+                    path,
+                ),
+            )
+        else:
+            self._merge_points(path, points or {}, point_source)
         return record_id
 
     def put_entry(
@@ -984,10 +1053,14 @@ class LibraryCatalog:
         kind: str = "music",
         points: dict | None = None,
         point_source: str = "auto",
+        *,
+        preserve_edits: bool = False,
     ) -> str:
         with self._lock:
             try:
-                record_id = self._put(entry, kind, points, point_source)
+                record_id = self._put(
+                    entry, kind, points, point_source, preserve_edits=preserve_edits
+                )
                 self._db().commit()
                 return record_id
             except BaseException:
@@ -1410,7 +1483,12 @@ class LibraryCatalog:
                             fingerprint=fingerprint,
                             embedded_at=mtime,
                         )
-                        self._put(entry, "music", None, "analysis")
+                    entry.length = scan["length"]
+                    self._put(entry, "music", scan["points"], "analysis", preserve_edits=True)
+                    row = db.execute(
+                        "SELECT * FROM catalog_entries WHERE path=?", (normalized,)
+                    ).fetchone()
+                    entry = self._entry(row)
                     loudness = scan["loudness"]
                     if loudness is not None:
                         loudness = {
@@ -1431,7 +1509,6 @@ class LibraryCatalog:
                             row["id"],
                         ),
                     )
-                    self._merge_points(normalized, scan["points"], "analysis")
                 if value is not None:
                     _apply_analysis_metadata(
                         entry, analysis, keep=_user_tags(row["user_tags"], fingerprint)
@@ -1866,29 +1943,57 @@ class LibraryCatalog:
         """Move a confirmed record key, retaining user work and playback history."""
         with self._lock:
             old_path, new_path = _path(old), _path(new)
-            old_row = (
-                self._db()
-                .execute("SELECT * FROM catalog_entries WHERE path=?", (old_path,))
-                .fetchone()
-            )
-            if (
-                old_row is None
-                or self._db()
-                .execute("SELECT 1 FROM catalog_entries WHERE path=?", (new_path,))
-                .fetchone()
-            ):
-                return False
-            if not Path(new_path).is_file():
-                return False
-            self._db().execute(
-                "UPDATE catalog_entries SET path=? WHERE id=?", (new_path, old_row["id"])
-            )
-            # Other stations' last plays follow the file too.
-            self._db().execute(
-                "UPDATE OR REPLACE station_plays SET path=? WHERE path=?", (new_path, old_path)
-            )
-            self._db().commit()
-            return True
+            db = self._db()
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                old_row = db.execute(
+                    "SELECT * FROM catalog_entries WHERE path=?", (old_path,)
+                ).fetchone()
+                if (
+                    old_row is None
+                    or db.execute(
+                        "SELECT 1 FROM catalog_entries WHERE path=?", (new_path,)
+                    ).fetchone()
+                    or not Path(new_path).is_file()
+                ):
+                    db.rollback()
+                    return False
+                has_pending = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scan_pending'"
+                ).fetchone()
+                if has_pending:
+                    pending = db.execute(
+                        "SELECT size,fingerprint FROM scan_pending WHERE path=?", (old_path,)
+                    ).fetchone()
+                    if db.execute(
+                        "SELECT 1 FROM scan_pending WHERE path=?", (new_path,)
+                    ).fetchone() or (
+                        pending is not None
+                        and file_fingerprint(new_path) != (pending["size"], pending["fingerprint"])
+                    ):
+                        db.rollback()
+                        return False
+                    db.execute("UPDATE scan_pending SET path=? WHERE path=?", (new_path, old_path))
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_leases'"
+                ).fetchone():
+                    # Claims name a path. Cancel them so in-flight downloads/results cannot
+                    # gain authority over a renamed file; the new path can be claimed afresh.
+                    db.execute(
+                        "DELETE FROM analysis_leases WHERE path IN (?,?)", (old_path, new_path)
+                    )
+                db.execute(
+                    "UPDATE catalog_entries SET path=? WHERE id=?", (new_path, old_row["id"])
+                )
+                # Other stations' last plays follow the file too.
+                db.execute(
+                    "UPDATE OR REPLACE station_plays SET path=? WHERE path=?", (new_path, old_path)
+                )
+                db.commit()
+                return True
+            except BaseException:
+                db.rollback()
+                raise
 
 
 class ReadOnlyCatalog(LibraryCatalog):

@@ -82,6 +82,20 @@ Local deferred decoding also compares file identity before and after decoding. I
 bytes change, it discards the measurements, retains the attempt already counted, and waits
 60 seconds for the new bytes to settle. Other eligible songs can proceed during that wait.
 Repeated changes during decoding exhaust the same three-attempt automatic recovery budget.
+
+Edits made while a song waits survive worker completion and local recovery. User/imported
+cue points, explicit clears and manual key/BPM override automatic measurements. Saved points
+are validated against the decoded length: invalid Start/End reset to the whole song, and
+Intro/Outro/Segue outside that range clear. Automatic trim suggestions expand to include valid
+manual mix points. DJ metadata retains current saved cues and uses the catalog's protected
+mix markers. Editing a new listing does not make it measured or skip its pending decoding.
+
+A rename or move preserves pending work and play history when exactly one missing song and
+one new file share the pending byte identity, with no present song holding that identity.
+Ambiguous matches remain separate removals and additions. Pending retry state follows the
+new path. Existing worker claims are cancelled, so an old-path result is rejected and a new
+claim can take the song at its new path without resetting its retry budget.
+
 Remote claims select at most one requested batch of
 eligible pending paths in SQL before reading files; local reservations and retry holds are excluded.
 Pending membership for advanced candidates uses individual indexed lookups. Missing or unreadable

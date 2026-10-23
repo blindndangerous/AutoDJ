@@ -388,6 +388,29 @@ def test_retag_changed_pending_song_still_decodes_locally(manager_factory, monke
     assert not queue.scan_pending(_path(song))
 
 
+def test_pending_tag_refresh_keeps_edits_before_local_decode(manager_factory, monkeypatch):
+    """ADR-0008-23. A tag estimate must not discard edits before the fallback measures length."""
+    from autodj.audio_meta import FileTags
+
+    manager = manager_factory()
+    song = manager.cfg.library.music_dir / "song.flac"
+    song.write_bytes(b"original recording")
+    manager.catalog.put_entry(make_entry(song), points={"start": 0.0, "end": 180.0})
+    song.write_bytes(b"replacement recording")
+    queue = manager.analysis_queue
+    queue.defer_scan(_path(song), *file_fingerprint(song))
+    manager.catalog.set_points(song, {"intro": 150.0})
+    manager.catalog.retag(song, {"bpm": 133.0, "key": 7, "mode": 1})
+    monkeypatch.setattr("autodj.audio_meta.read_file_tags", lambda p: FileTags(length=120.0))
+    monkeypatch.setattr("autodj.library.analyze_basic", fake_basic)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+    with manager._scan_lock:
+        assert manager._recover_scan_one(False)
+    after = manager.catalog.record_for_path(song)
+    assert after["points"]["intro"] == 150.0
+    assert (after["bpm"], after["key"], after["mode"]) == (133.0, 7, 1)
+
+
 @pytest.mark.parametrize("already_pending", [False, True])
 @pytest.mark.parametrize(
     ("old_length", "tag_length", "silent"),
@@ -2189,6 +2212,81 @@ def test_confirmed_move_preserves_points_loudness_vector_and_play_history(
     assert analyze.call_count == 0
     measure.assert_not_called()
     np.testing.assert_array_equal(vectors_snapshot(manager.catalog)[1][0], vector)
+
+
+@pytest.mark.parametrize("ambiguity", ["missing", "candidate", "present", "present_pending"])
+def test_pending_move_requires_unique_identity(manager_factory, ambiguity):
+    """ADR-0008-24. Duplicate pending identities must not transfer another song's history."""
+    manager = manager_factory()
+    root = manager.cfg.library.music_dir
+    old, new, other = root / "old.flac", root / "new.flac", root / "other.flac"
+    old.write_bytes(b"old recording")
+    manager.catalog.put_entry(make_entry(old))
+    old.write_bytes(b"pending recording")
+    manager.analysis_queue.defer_scan(_path(old), *file_fingerprint(old))
+    old.rename(new)
+    other.write_bytes(new.read_bytes())
+    found = [("music", new), ("music", other)]
+    if ambiguity != "candidate":
+        manager.catalog.put_entry(make_entry(other))
+        if ambiguity == "present_pending":
+            other.write_bytes(b"another replacement")
+            manager.analysis_queue.defer_scan(_path(other), *file_fingerprint(other))
+        if ambiguity == "missing":
+            other.unlink()
+            found.pop()
+    manager._reconcile_moves(found)
+    assert manager.catalog.record_for_path(new) is None
+    assert manager.catalog.record_for_path(old) is not None
+    assert manager.analysis_queue.scan_pending(_path(old))
+    assert not manager.analysis_queue.scan_pending(_path(new))
+
+
+def test_pending_move_preserves_retry_state(manager_factory):
+    """ADR-0008-24. Renaming cannot reset a deferred scan's retry budget."""
+    manager = manager_factory()
+    old = manager.cfg.library.music_dir / "old.flac"
+    new = old.with_name("new.flac")
+    old.write_bytes(b"old recording")
+    manager.catalog.put_entry(make_entry(old))
+    old.write_bytes(b"pending recording")
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    queue.defer_scan(_path(old), *identity)
+    assert queue.claim_scan(_path(old), *identity)
+    queue.fail_scan(_path(old), *identity, non_access_failure=True)
+    before = queue._read("SELECT * FROM scan_pending WHERE path=?", (_path(old),))[0]
+    old.rename(new)
+    manager._reconcile_moves([("music", new)])
+    after = queue._read("SELECT * FROM scan_pending WHERE path=?", (_path(new),))
+    assert after and after[0][1:] == before[1:]
+
+
+def test_pending_rekey_rolls_back_queue_and_lease_on_catalog_failure(manager_factory):
+    import sqlite3
+
+    manager = manager_factory()
+    old = manager.cfg.library.music_dir / "old.flac"
+    new = old.with_name("new.flac")
+    old.write_bytes(b"pending recording")
+    manager.catalog.put_entry(make_entry(old))
+    queue = manager.analysis_queue
+    identity = file_fingerprint(old)
+    queue.defer_scan(_path(old), *identity, new_listing=True)
+    lease = queue.claim("worker", [(_path(old), *identity)], 600)[0]
+    old.rename(new)
+    manager.catalog._db().execute(
+        "CREATE TEMP TRIGGER reject_move BEFORE UPDATE OF path ON catalog_entries "
+        "BEGIN SELECT RAISE(ABORT, 'move failed'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="move failed"):
+        manager.catalog.rekey(old, new)
+    assert manager.catalog.record_for_path(old) is not None
+    assert manager.catalog.record_for_path(new) is None
+    assert queue.scan_identity(_path(old)) == identity
+    assert queue.scan_created_listing(_path(old), *identity)
+    assert not queue.scan_pending(_path(new))
+    assert queue.lease(lease.lease_id, "worker") == lease
 
 
 def test_unchanged_liner_with_unset_analysis_segue_is_backfilled(manager_factory, tmp_path):
