@@ -22,7 +22,7 @@ pair. Streaming queue edits that affect associated speech offer keep, discard, o
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
 off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
-**Accept announcer uploads** and choose **Save break settings**. They work from then on, with
+**Accept announcer uploads** and press **Save changes** in the Breaks tab. They work from then on, with
 no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
 up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
 liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
@@ -46,10 +46,10 @@ selected station:
 }
 ```
 
-Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
+Until you press **Save changes** in Settings, Breaks for the station, `enabled`, `dj_placement`,
 `min_intro_seconds` and `duck_db` in its station definition are in charge; a change there takes
-effect at the next start. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
-under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
+effect at the next start. Once you press **Save changes** in Settings, Breaks (`PATCH /api/settings`),
+the station's `web_state.json` keeps all four,
 and they take the place of definition values at every start from then on. When the saved
 switch differs from the station definition, the log says so once at start. With external uploads
 off and no ad schedule or manual voice tracker requesting a slot, AutoDJ does no advance slot

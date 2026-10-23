@@ -1,5 +1,12 @@
 # Accessibility testing
 
+`npm run audit:settings` exercises Save/Discard, navigation, revision conflicts,
+browser-preference migration and relay creation on stopped stations. Run it only
+against a disposable server: it creates stations and a disabled relay with dummy
+credentials. Select the server with `AUTODJ_URL` and browser engines with
+`AUTODJ_BROWSERS`; the report is `settings_audit.json`. It also runs in `audit:ci`.
+This is automated functional evidence, not a screen-reader or audible-output sample.
+
 Speech studio checks must include keyboard-only connection setup, adding and
 comparing voices, one failed provider beside a playable sample, explicit retry,
 saving versus assigning a liner, station switching during generation and preview,

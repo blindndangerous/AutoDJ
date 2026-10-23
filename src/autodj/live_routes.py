@@ -11,9 +11,9 @@
   live_plain_http_lan`` allows plain HTTP there.  A close-delimited body
   (what BUTT and Mixxx send) reaches this route through
   :mod:`autodj.live_protocol`.
-* ``GET /api/live``, ``PUT /api/live/settings``, ``POST /api/live/djs``,
-  ``DELETE /api/live/djs/<username>``: the operator's DJ accounts and
-  talkover settings, with the usual session and Origin checks.
+* ``GET /api/live``, ``POST /api/live/djs``,
+  ``DELETE /api/live/djs/<username>``: the operator's DJ accounts, with the
+  usual session and Origin checks. Talkover settings use ``PATCH /api/settings``.
 * ``WS /api/live/mic``: a paired browser's push-to-talk microphone.
 """
 
@@ -43,7 +43,6 @@ from autodj.live import (
     SOURCE_SILENCE_SECONDS,
     SOURCE_STANDBY_SECONDS,
     MicResampler,
-    TalkoverSettings,
 )
 from autodj.security import (
     COOKIE_NAME,
@@ -320,19 +319,6 @@ def install_live_api(router: StationRouter) -> None:
     async def live_view(station: SavedStationDep) -> dict[str, Any]:
         """The live DJ on the air, the DJ accounts and the talkover settings."""
         return await asyncio.to_thread(view, station)
-
-    @router.put("/live/settings")
-    async def live_settings(station: SavedStationDep, body: Any = Body(...)) -> dict[str, float]:
-        """Save the talkover return time and duck amount; they apply at once."""
-        try:
-            settings = TalkoverSettings.parse(body)
-            await asyncio.to_thread(station.live.credentials.save_settings, settings)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from None
-        except OSError as exc:
-            raise HTTPException(status_code=503, detail="The settings could not be saved") from exc
-        station.live.settings = settings
-        return settings.as_dict()
 
     @router.post("/live/djs")
     async def live_dj_save(station: SavedStationDep, body: Any = Body(...)) -> dict[str, Any]:

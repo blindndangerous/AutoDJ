@@ -17,7 +17,9 @@
 // step: the station is created stopped, to be reviewed and then started.
 // Switching moves focus to the Station button, which names the station.
 
-import { requestJson, withDisabled } from "./api-client.js";
+import {
+  captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson, withDisabled,
+} from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
 import { isOnAir, knownStations } from "./stations.js";
@@ -124,19 +126,63 @@ export function installStationCreator({
   const say = (text, error = false) =>
     announceStatus(status, text, { force: true, dwellMs: 6000, tone: error ? "error" : "info" });
 
-  async function saveAutostart(station, box) {
+  function syncAutostart(row) {
+    const box = row.children[3].querySelector("input");
+    const save = row.autostartActions.querySelector("button");
+    const discard = row.autostartActions.querySelector("button:last-child");
+    const changed = row.autostartDraft !== null
+      && row.autostartDraft !== row.autostartBaseline;
+    row.autostartActions.hidden = !changed;
+    save.disabled = row.autostartSaving || !changed;
+    discard.disabled = row.autostartSaving || !changed;
+    box.disabled = row.station.autostart_locked || row.autostartSaving;
+  }
+
+  function editAutostart(row) {
+    const box = row.children[3].querySelector("input");
+    row.autostartDraft = box.checked === row.autostartBaseline ? null : box.checked;
+    syncAutostart(row);
+  }
+
+  function discardAutostart(row) {
+    if (row.autostartSaving) return;
+    row.autostartDraft = null;
+    row.children[3].querySelector("input").checked = row.autostartBaseline;
+    syncAutostart(row);
+    say(`Discarded the Start with the server change for ${row.station.name}.`);
+  }
+
+  async function saveAutostart(row) {
+    if (row.autostartSaving || row.autostartDraft === null) return;
+    const station = row.station;
+    const enabled = row.autostartDraft;
+    const epoch = captureAuthenticatedRequestEpoch();
+    const pending = {};
+    row.autostartSaving = pending;
+    syncAutostart(row);
     try {
       await request(`/api/stations/${encodeURIComponent(station.slug)}/autostart`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: box.checked }),
+        body: JSON.stringify({ enabled }),
       });
     } catch (errorValue) {
-      box.checked = !box.checked;
-      say(`Could not save. ${errorValue?.message || ""}`.trim(), true);
+      if (isAuthenticatedRequestCurrent(epoch) && row.isConnected && row.station.slug === station.slug) {
+        say(`Could not save the Start with the server change for ${station.name}. ${errorValue?.message || ""}`.trim(), true);
+      }
       return;
+    } finally {
+      if (row.autostartSaving === pending) {
+        row.autostartSaving = null;
+        syncAutostart(row);
+      }
     }
-    say(box.checked ? `${station.name} starts with the server.`
+    if (!isAuthenticatedRequestCurrent(epoch) || !row.isConnected || row.station.slug !== station.slug) return;
+    row.autostartBaseline = enabled;
+    row.autostartDraft = null;
+    row.station.autostart = enabled;
+    syncAutostart(row);
+    say(enabled ? `${station.name} starts with the server.`
       : `${station.name} no longer starts with the server.`);
     await onChanged();
   }
@@ -164,13 +210,29 @@ export function installStationCreator({
   function stationRow(station) {
     const box = doc.createElement("input");
     box.type = "checkbox";
-    box.addEventListener("change", () => void saveAutostart(row.station, box));
+    box.addEventListener("change", () => editAutostart(row));
+    const actions = doc.createElement("div");
+    actions.setAttribute("role", "group");
+    actions.className = "dialog-actions";
+    const save = doc.createElement("button");
+    save.type = "button";
+    save.textContent = "Save";
+    save.addEventListener("click", () => void saveAutostart(row));
+    const discard = doc.createElement("button");
+    discard.type = "button";
+    discard.textContent = "Discard";
+    discard.addEventListener("click", () => discardAutostart(row));
+    actions.append(save, discard);
     const button = doc.createElement("button");
     button.type = "button";
     button.addEventListener("click", () => void withDisabled(button, () => startOrStop(row.station)));
-    const row = tableRow(doc, ["", "", "", box, button]);
+    const row = tableRow(doc, ["", "", "", [box, actions], button]);
     row.dataset.station = station.slug;
     row.station = station;
+    row.autostartBaseline = Boolean(station.autostart);
+    row.autostartDraft = null;
+    row.autostartSaving = null;
+    row.autostartActions = actions;
     return row;
   }
 
@@ -183,9 +245,20 @@ export function installStationCreator({
       if (cell.textContent !== text) cell.textContent = text;
     }
     const box = cells[3].querySelector("input");
-    box.checked = Boolean(station.autostart);
-    box.disabled = Boolean(station.autostart_locked);
+    const serverValue = Boolean(station.autostart);
+    if (row.autostartDraft === null || row.autostartDraft === serverValue) {
+      row.autostartDraft = null;
+      box.checked = serverValue;
+    } else {
+      box.checked = row.autostartDraft;
+    }
+    row.autostartBaseline = serverValue;
     box.setAttribute("aria-label", `Start ${station.name} with the server`);
+    row.autostartActions.setAttribute("aria-label", `Start ${station.name} with the server`);
+    const [save, discard] = row.autostartActions.querySelectorAll("button");
+    save.setAttribute("aria-label", `Save Start with the server for ${station.name}`);
+    discard.setAttribute("aria-label", `Discard Start with the server change for ${station.name}`);
+    syncAutostart(row);
     const button = cells[4].querySelector("button");
     button.hidden = false;
     const action = isOnAir(station) ? "Stop" : "Start";

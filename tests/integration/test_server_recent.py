@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 from autodj.indexer import IndexEntry
 from tests._server import create_app
 
-from ._helpers import _make_entry
+from ._helpers import _make_entry, patch_station_settings
 
 
 class TestVersion:
@@ -242,10 +242,7 @@ class TestKeyNotation:
     def test_post_settings_switches_to_musical(self, client) -> None:
         # Flip to musical notation, then re-fetch status; key_label
         # follows.  camelot_cell stays put -- it drives the wheel SVG.
-        resp = client.post(
-            "/api/playback-settings",
-            json={"key_notation": "musical"},
-        )
+        resp = patch_station_settings(client, {"playback": {"key_notation": "musical"}})
         assert resp.status_code == 200
         data = client.get("/api/status").json()
         assert data["current_track"]["key_label"] == "C"

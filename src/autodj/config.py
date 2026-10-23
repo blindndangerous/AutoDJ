@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -1228,7 +1229,17 @@ def parse_env_bool(value: str) -> bool:
 #: Shoutcast 1 and Shoutcast 2 (both through the Shoutcast 1 source login).
 RELAY_TYPES: tuple[str, ...] = ("icecast", "shoutcast1", "shoutcast2")
 MAX_RELAYS = 8
-_RELAY_NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
+_RELAY_NAME = re.compile(r"[A-Za-z0-9_-](?:[A-Za-z0-9 _-]{0,30}[A-Za-z0-9_-])?\Z")
+
+
+def _relay_environment_suffix(name: str) -> str:
+    """Keep legacy variable names; encode display names containing spaces distinctly."""
+    if " " in name:
+        token = hashlib.sha256(name.encode("utf-8")).hexdigest().upper()
+        return f"NAME_SHA256_{token}"
+    return name.upper().replace("-", "_")
+
+
 _RELAY_HOST = re.compile(r"[A-Za-z0-9._:-]{1,253}\Z")
 _RELAY_MOUNT = re.compile(r"/[A-Za-z0-9._~/-]{1,200}\Z")
 _RELAY_REQUIRED = ("type", "host", "password")
@@ -1290,7 +1301,7 @@ class RelayConfig:
         """
         if not isinstance(name, str) or not _RELAY_NAME.match(name):
             raise ValueError(
-                "stream.relays names may use only letters, digits, '-' and '_' "
+                "stream.relays names may use only letters, digits, internal spaces, '-' and '_' "
                 f"(1 to 32 characters), got {name!r}"
             )
         where = f"stream.relays.{name}"
@@ -2104,12 +2115,13 @@ def station_relay_password_variable(slug: str, name: str) -> str:
         name: The relay's table name.
 
     Returns:
-        ``AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD``, upper-cased, with
-        ``-`` turned into ``_``.
+        ``AUTODJ_STATION_<SLUG>_RELAY_<NAME>_PASSWORD``. Names without spaces
+        keep their old upper-cased form with ``-`` turned into ``_``; names
+        with spaces use an uppercase SHA-256 ``NAME_SHA256_`` segment.
     """
     return (
         f"AUTODJ_STATION_{slug.upper().replace('-', '_')}"
-        f"_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
+        f"_RELAY_{_relay_environment_suffix(name)}_PASSWORD"
     )
 
 
@@ -2342,7 +2354,7 @@ def _legacy_relay_environment(environ: Mapping[str, str], cfg: AutoDJConfig) -> 
     owners: dict[str, str] = {}
     found: dict[str, str] = {}
     for name in sorted(names):
-        variable = f"AUTODJ_STREAM_RELAY_{name.upper().replace('-', '_')}_PASSWORD"
+        variable = f"AUTODJ_STREAM_RELAY_{_relay_environment_suffix(name)}_PASSWORD"
         previous = owners.get(variable)
         if previous is not None and previous != name and variable in environ:
             raise ValueError(

@@ -45,7 +45,7 @@ Use Tab and Enter or Space for controls, and arrow keys in tab strips. The
 2. Open **Settings**, **Stations**. Under **Output for the selected station**,
    choose **Radio stream** in **Playback output**.
 3. Leave **Also play the radio stream on the server sound card** unchecked.
-4. Press **Save station options**.
+4. Press **Save changes** in the Stations tab.
 5. In **Stations on this server**, use **Stop** for the default station, confirm
    **Stop station**, and wait for **Off air**. Then use its **Start** button.
 
@@ -111,7 +111,7 @@ does not establish that VLC or the station failed.
 ## Try it: remove the last listener
 
 In **Settings**, **Stream**, inspect **Keep playing without listeners**. For
-this experiment, uncheck it if necessary; it saves on change. Confirm there
+this experiment, uncheck it if necessary, then press **Save changes** in the Stream tab. Confirm there
 are no enabled relays or broadcast recording keeping Practice active.
 
 Predict: with **Listen here** off, will stopping VLC stop the station's set
@@ -136,7 +136,7 @@ This leaves the server running and its stream address reachable; idle is not
 an access-control setting.
 
 Return to the first lesson's playback state: select **Browser** under
-**Settings**, **Stations**, press **Save station options**, then stop and start
+**Settings**, **Stations**, press **Save changes**, then stop and start
 that station using its row and **Stop station** confirmation. Pause browser
 playback and confirm its elapsed time stops.
 Restore your original startup command if LAN access was only for this lesson.

@@ -19,7 +19,7 @@ from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from tests._layout import point_index
 from tests._server import create_app
 
-from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
+from ._helpers import _make_entry, _make_player_mock, _make_sim_mock, patch_station_settings
 
 
 def _stream_mock() -> MagicMock:
@@ -113,7 +113,12 @@ def test_stream_needs_no_session_when_authentication_is_on(bridge, tmp_path: Pat
     """Public stream URLs work without pairing; stream controls still need login."""
     client = _authenticated_stream_client(bridge, tmp_path)
     assert client.get("/api/stream").status_code == 401
-    assert client.post("/api/stream/settings", json={"bitrate": 192}).status_code == 401
+    assert (
+        client.patch(
+            "/api/settings", json={"revision": "unused", "changes": {"stream": {"bitrate": 192}}}
+        ).status_code
+        == 401
+    )
     for path in ("/api/stream/listeners", "/api/stream/bans"):
         assert client.get(path).status_code == 401
     assert client.post("/api/stream/bans", json={"address": "192.0.2.4"}).status_code == 401
@@ -416,12 +421,12 @@ def test_ban_api_blocks_stream_and_survives_new_app(bridge, tmp_path: Path) -> N
 def test_per_address_limit_setting_updates_admission(stream_app) -> None:
     client, _stream = stream_app
     assert (
-        client.post("/api/stream/settings", json={"max_listeners_per_address": 0}).status_code
+        patch_station_settings(client, {"stream": {"max_listeners_per_address": 0}}).status_code
         == 200
     )
     assert client.get("/api/stream/listeners").json()["max_per_address"] == 0
     assert (
-        client.post("/api/stream/settings", json={"max_listeners_per_address": -1}).status_code
+        patch_station_settings(client, {"stream": {"max_listeners_per_address": -1}}).status_code
         == 422
     )
     assert client.get("/api/stream/listeners").json()["max_per_address"] == 0
@@ -459,7 +464,7 @@ def test_stream_transport_routes_are_404_and_settings_are_saved_in_browser_mode(
     assert info.status_code == 200, info.text
     assert info.json()["state"] == "stopped"
     assert client.post("/api/stream/rotate").status_code in (404, 405)
-    settings = client.post("/api/stream/settings", json={"bitrate": 192})
+    settings = patch_station_settings(client, {"stream": {"bitrate": 192}})
     assert settings.status_code == 200, settings.text
 
 
@@ -516,10 +521,15 @@ def test_stream_info(stream_app) -> None:
 def test_bitrate_setting_validated_and_applied(stream_app, bridge) -> None:
     client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
-    assert client.post("/api/stream/settings", json={"bitrate": 64}).status_code == 422
-    assert client.post("/api/stream/settings", json={"bitrate": 192, "x": 1}).status_code == 422
+    assert patch_station_settings(client, {"stream": {"bitrate": 64}}).status_code == 422
+    assert patch_station_settings(client, {"stream": {"bitrate": 192, "x": 1}}).status_code == 422
     stream.set_bitrate.assert_not_called()
-    assert client.post("/api/stream/settings", json={"bitrate": 192}).json()["bitrate"] == 192
+    assert (
+        patch_station_settings(client, {"stream": {"bitrate": 192}}).json()["settings"]["values"][
+            "stream"
+        ]["bitrate"]
+        == 192
+    )
     stream.set_bitrate.assert_called_once_with(192)
     assert bridge.player._cfg.stream.bitrate == 192
     bridge.save_persistent_state.assert_called_once()
@@ -528,10 +538,10 @@ def test_bitrate_setting_validated_and_applied(stream_app, bridge) -> None:
 def test_continuous_setting_is_strict_and_persisted(stream_app, bridge) -> None:
     client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
-    assert client.post("/api/stream/settings", json={"continuous": "true"}).status_code == 422
-    response = client.post("/api/stream/settings", json={"continuous": True})
+    assert patch_station_settings(client, {"stream": {"continuous": "true"}}).status_code == 422
+    response = patch_station_settings(client, {"stream": {"continuous": True}})
     assert response.status_code == 200
-    assert response.json()["continuous"] is True
+    assert response.json()["settings"]["values"]["stream"]["continuous"] is True
     assert bridge.player._cfg.stream.continuous is True
     stream.set_bitrate.assert_not_called()
     bridge.save_persistent_state.assert_called_once()
@@ -542,9 +552,12 @@ def test_show_next_is_strict_persisted_and_reaches_the_public_feed(stream_app, b
     bridge.save_persistent_state = MagicMock()
     # The upcoming song stays private until the operator turns it on.
     assert client.get("/api/nowplaying").json()["next_track"] is None
-    assert client.post("/api/stream/settings", json={"show_next": "true"}).status_code == 422
-    response = client.post("/api/stream/settings", json={"show_next": True})
-    assert response.status_code == 200 and response.json()["show_next"] is True
+    assert patch_station_settings(client, {"stream": {"show_next": "true"}}).status_code == 422
+    response = patch_station_settings(client, {"stream": {"show_next": True}})
+    assert (
+        response.status_code == 200
+        and response.json()["settings"]["values"]["stream"]["show_next"] is True
+    )
     assert bridge.player._cfg.nowplaying.show_next is True
     assert client.get("/api/nowplaying").json()["next_track"]["title"] == "Song 1"
     bridge.save_persistent_state.assert_called_once()
@@ -553,11 +566,11 @@ def test_show_next_is_strict_persisted_and_reaches_the_public_feed(stream_app, b
 def test_station_name_is_validated_applied_and_persisted(stream_app, bridge) -> None:
     client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
-    assert client.post("/api/stream/settings", json={"station_name": "  "}).status_code == 422
+    assert patch_station_settings(client, {"stream": {"station_name": "  "}}).status_code == 422
     bridge.save_persistent_state.assert_not_called()
-    response = client.post("/api/stream/settings", json={"station_name": " Kitchen Radio "})
+    response = patch_station_settings(client, {"stream": {"station_name": " Kitchen Radio "}})
     assert response.status_code == 200
-    assert response.json()["station_name"] == "Kitchen Radio"
+    assert response.json()["settings"]["values"]["stream"]["station_name"] == "Kitchen Radio"
     assert bridge.player._cfg.stream.station_name == "Kitchen Radio"
     stream.set_bitrate.assert_not_called()
     bridge.save_persistent_state.assert_called_once()
@@ -567,9 +580,9 @@ def test_bitrate_encoder_failure_is_503_and_not_persisted(stream_app, bridge) ->
     client, stream = stream_app
     bridge.save_persistent_state = MagicMock()
     stream.set_bitrate.side_effect = EncoderUnavailableError("stream encoder failed")
-    response = client.post("/api/stream/settings", json={"bitrate": 128})
-    assert response.status_code == 503
-    assert response.json()["detail"] == "stream encoder failed"
+    response = patch_station_settings(client, {"stream": {"bitrate": 128}})
+    assert response.status_code == 207
+    assert response.json()["failed"]["stream"] == "stream encoder failed"
     assert bridge.player._cfg.stream.bitrate == 320
     bridge.save_persistent_state.assert_not_called()
 
@@ -1341,7 +1354,7 @@ def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: 
         TestClient(create_app(bridge, stream_mode=True)) as client,
     ):
         assert client.get("/api/recording").json()["running"] is False
-        renamed = client.post("/api/stream/settings", json={"station_name": "Night Owl FM"})
+        renamed = patch_station_settings(client, {"stream": {"station_name": "Night Owl FM"}})
         assert renamed.status_code == 200, renamed.text
         assert client.post("/api/recording/start").json()["running"] is True
         assert bridge.station._continuous() is True
@@ -1356,17 +1369,17 @@ def test_recording_routes_capture_stream_and_expose_scheduler_actions(tmp_path: 
         assert "recordings" not in json.dumps(status)  # never the folder path
         actions = {action["name"] for action in client.get("/api/schedule").json()["actions"]}
         assert {"recording_start", "recording_stop", "recording_split"} <= actions
-        settings = client.post(
-            "/api/recording/settings",
-            json={"split": "show", "retention_days": 3, "free_space_mb": 10},
+        settings = patch_station_settings(
+            client,
+            {"recording": {"split": "show", "retention_days": 3, "free_space_mb": 10}},
         )
         assert settings.status_code == 200, settings.text
-        assert settings.json()["split"] == "show"
+        assert settings.json()["settings"]["values"]["recording"]["split"] == "show"
         for bad in (
             {"split": "hour", "retention_days": True, "free_space_mb": 10},
             {"split": "hour", "retention_days": 1, "free_space_mb": 10, "folder": "C:/"},
         ):
-            assert client.post("/api/recording/settings", json=bad).status_code == 422
+            assert patch_station_settings(client, {"recording": bad}).status_code == 422
         assert client.post("/api/recording/split").status_code == 200
         with patch.object(sink, "_save", side_effect=OSError("index volume full")):
             failed = client.post("/api/recording/stop")

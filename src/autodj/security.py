@@ -925,7 +925,7 @@ class SecurityMiddleware:
         # Capped like the default station's route even for a name that is no
         # station: that request answers 404, but only after reading its body.
         limited = station_relative(path, None) or path
-        body_limit = self._body_limit(limited) if method in ("POST", "PUT") else None
+        body_limit = self._body_limit(limited) if method in ("POST", "PUT", "PATCH") else None
         downstream_receive = receive
         if body_limit is not None:
             cap = body_limit()

@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => {
+    spec.baseline = JSON.stringify(spec.read());
+    groups.push(spec);
+    return { accept: (value) => spec.write(value), dirty: () => JSON.stringify(spec.read()) !== spec.baseline };
+  },
+  settingsDraftHolds: (control) => groups.some((spec) => spec.controls.includes(control)
+    && JSON.stringify(spec.read()) !== spec.baseline),
+}));
+
 import {
   CHOOSE_DESC_TEXT,
   DENIED_TEXT,
@@ -111,7 +122,14 @@ function choose(select, value) {
   select.dispatchEvent(new Event("change"));
 }
 
+async function saveChoice(select) {
+  const draft = groups.find((group) => group.controls.includes(select));
+  await draft.commit(draft.read());
+  await settle();
+}
+
 afterEach(() => {
+  groups.length = 0;
   document.body.innerHTML = "";
   vi.restoreAllMocks();
 });
@@ -166,13 +184,18 @@ describe("installPreviewOutput", () => {
     choose(select, "phones");
     await settle();
 
+    expect(preview.setSinkId).not.toHaveBeenCalled();
+    expect(storage.store.has(PREVIEW_SINK_KEY)).toBe(false);
+    const draft = groups.find((group) => group.controls.includes(select));
+    await draft.commit(draft.read());
+    await settle();
+
     expect(preview.setSinkId).toHaveBeenLastCalledWith("phones");
     expect(deck.setSinkId).not.toHaveBeenCalled();
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
     expect(storage.store.get(PREVIEW_LABEL_KEY)).toBe("Headphones");
     expect(onRoute).toHaveBeenCalled();
-    expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.",
-      expect.objectContaining({ force: true }));
+    expect(announce).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(select);
   });
 
@@ -184,7 +207,7 @@ describe("installPreviewOutput", () => {
     expect(announce).not.toHaveBeenCalled();
   });
 
-  it("still routes the preview for this page when storage throws", async () => {
+  it("keeps the preview on its saved device when a browser storage write fails", async () => {
     const throwing = {
       getItem: () => { throw new Error("blocked"); },
       setItem: () => { throw new Error("blocked"); },
@@ -193,8 +216,9 @@ describe("installPreviewOutput", () => {
     const { select, preview } = setup({ storage: throwing });
     await settle();
     choose(select, "phones");
-    await settle();
-    expect(preview.sinkId).toBe("phones");
+    await expect(saveChoice(select)).rejects.toThrow("blocked");
+    expect(preview.sinkId).toBe("");
+    expect(select.value).toBe("phones");
   });
 
   it("explains in words and keeps the default output where setSinkId is missing", async () => {
@@ -259,13 +283,12 @@ describe("installPreviewOutput", () => {
     expect(announce).not.toHaveBeenCalled();
 
     choose(select, "");
-    await settle();
+    await saveChoice(select);
     expect(storage.store.has(PREVIEW_SINK_KEY)).toBe(false);
     expect(storage.store.has(PREVIEW_LABEL_KEY)).toBe(false);
     expect(optionTexts(select)).toEqual(["System default", "Speakers"]);
     expect(note.hidden).toBe(true);
-    expect(announce).toHaveBeenLastCalledWith("Previews play on the system default output.",
-      expect.objectContaining({ force: true }));
+    expect(announce).not.toHaveBeenCalled();
   });
 
   it("announces a missing device once when refreshes overlap", async () => {
@@ -301,22 +324,25 @@ describe("installPreviewOutput", () => {
     expect(second.announce).not.toHaveBeenCalled();
   });
 
-  it("returns to the default and says why when setSinkId refuses a choice", async () => {
-    const { select, preview, announce, storage } = setup();
+  it("returns to the default and reports a refused choice through the settings save status", async () => {
+    const { select, preview, announce, storage, note } = setup();
     await settle();
     preview.setSinkId.mockImplementation(async function (id) {
       if (id) throw Object.assign(new Error("raw browser text"), { name: "NotAllowedError" });
       this.sinkId = id;
     });
     choose(select, "phones");
+    const draft = groups.find((group) => group.controls.includes(select));
+    await expect(draft.commit(draft.read())).rejects.toThrow(
+      "Could not use Headphones for previews: the browser did not allow it.",
+    );
     await settle();
     expect(preview.sinkId).toBe("");
-    expect(select.value).toBe("");
+    expect(select.value).toBe("phones");
     expect(storage.store.has(PREVIEW_SINK_KEY)).toBe(false);
-    const [message, options] = announce.mock.lastCall;
-    expect(message).toContain("Could not use Headphones for previews: the browser did not allow it.");
-    expect(message).not.toContain("raw browser text");
-    expect(options).toMatchObject({ tone: "error", force: true });
+    expect(note.textContent).toContain("Could not use Headphones for previews: the browser did not allow it.");
+    expect(note.textContent).not.toContain("raw browser text");
+    expect(announce).not.toHaveBeenCalled();
   });
 
   it("falls back once when setSinkId refuses the saved device on a devicechange", async () => {
@@ -354,6 +380,7 @@ describe("installPreviewOutput", () => {
     await settle();
     release();
     await settle();
+    await saveChoice(select);
     expect(preview.sinkId).toBe("speakers");
     expect(preview.setSinkId).toHaveBeenLastCalledWith("speakers");
     expect(select.value).toBe("speakers");
@@ -390,6 +417,7 @@ describe("installPreviewOutput", () => {
 
       choose(select, "b");
       await settle();
+      await saveChoice(select);
       expect(preview.sinkId).toBe("b");
     }
   });
@@ -432,9 +460,18 @@ describe("installPreviewOutput", () => {
     expect(md.selectAudioOutput).toHaveBeenCalled();
     expect(md.getUserMedia).not.toHaveBeenCalled();
     expect(select.value).toBe("phones");
+    expect(preview.sinkId).toBe("");
+    expect(storage.store.has(PREVIEW_SINK_KEY)).toBe(false);
+    expect(announce).toHaveBeenLastCalledWith("Preview device selected. Save sound settings to apply it.", expect.anything());
+    const draft = groups.find((group) => group.controls.includes(select));
+    await draft.commit(draft.read());
+    await settle();
     expect(preview.sinkId).toBe("phones");
     expect(storage.store.get(PREVIEW_SINK_KEY)).toBe("phones");
-    expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.", expect.anything());
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenLastCalledWith(
+      "Preview device selected. Save sound settings to apply it.", expect.anything(),
+    );
   });
 
   it("keeps a picked device the list leaves out, without calling it missing", async () => {
@@ -450,6 +487,10 @@ describe("installPreviewOutput", () => {
     await settle();
     expect(optionTexts(select)).toEqual(["System default", "Speakers", "Headphones"]);
     expect(select.value).toBe("phones");
+    expect(preview.sinkId).toBe("");
+    const draft = groups.find((group) => group.controls.includes(select));
+    await draft.commit(draft.read());
+    await settle();
     expect(preview.sinkId).toBe("phones");
     expect(note.hidden).toBe(true);
   });
@@ -514,7 +555,7 @@ describe("installPreviewOutput", () => {
     expect(announce.mock.lastCall[0]).toMatch(/^No device was chosen\./);
   });
 
-  it("routes at once but waits for focus before saying a picked device is used", async () => {
+  it("stages a picked device and waits for focus before saying it is selected", async () => {
     const md = fakeMediaDevices(DEVICES, {
       selectAudioOutput: vi.fn(async () => ({ kind: "audiooutput", deviceId: "phones", label: "Headphones" })),
     });
@@ -523,13 +564,24 @@ describe("installPreviewOutput", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
     button.click();
     await settle();
-    expect(preview.sinkId).toBe("phones");
+    expect(preview.sinkId).toBe("");
     expect(announce).not.toHaveBeenCalled();
 
     window.dispatchEvent(new Event("focus"));
     await new Promise((resolve) => setTimeout(resolve, FOCUS_SETTLE_MS + 50));
     await settle();
-    expect(announce).toHaveBeenLastCalledWith("Previews play on Headphones.", expect.anything());
+    expect(announce).toHaveBeenLastCalledWith(
+      "Preview device selected. Save sound settings to apply it.", expect.anything(),
+    );
+    const select = document.getElementById("preview-device");
+    const draft = groups.find((group) => group.controls.includes(select));
+    await draft.commit(draft.read());
+    await settle();
+    expect(preview.sinkId).toBe("phones");
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenLastCalledWith(
+      "Preview device selected. Save sound settings to apply it.", expect.anything(),
+    );
   });
 
   it("says it anyway if focus never comes back", async () => {

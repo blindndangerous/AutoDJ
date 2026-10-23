@@ -14,7 +14,7 @@ and macOS, install it yourself (see [Install AutoDJ](install.md)).
 ## Turn on the stream
 
 For the selected station, open **Settings**, **Stations**. Under **Output for the selected station**,
-set **Playback output** to **Radio stream**, then press **Save station options**. The change takes
+set **Playback output** to **Radio stream**, then press **Save changes** in **Stations**. The change takes
 effect when that station next starts. In **Stations on this server**, use that station's
 **Stop**, confirm **Stop station**, then **Start**. This disconnects its listeners.
 You can edit any station while it is stopped, including the default station.
@@ -54,7 +54,7 @@ In Settings, Stream:
 - **Station name** is what players show, up to 100 characters. Players pick up a new name the
   next time they connect.
 - **Genre** and **Website URL** are sent to players and relays. **Description** is sent only to Icecast. Press
-  **Save station metadata** after changing any of them. Saving reconnects any relays that are
+  **Save changes** in **Stream** after changing any of them. Saving reconnects any relays that are
   turned on.
 - **Quality** sets the MP3 bitrate: 128, 192, 256 or 320 kbps. The default is 320. Changing it
   makes every listener reconnect for a moment.
@@ -162,7 +162,7 @@ Broadcast recording, in Settings, Stream, saves what listeners hear as dated MP3
   keeps them forever.
 - **Minimum free space in MB**: recording pauses when the drive has less free space than this.
   The default is 100. The stream keeps playing.
-- Press **Save recording settings** after changing them.
+- Press **Save changes** in **Stream** after changing the settings.
 
 Recordings go in `recordings` by default and are not backed up.
 

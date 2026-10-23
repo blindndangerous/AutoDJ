@@ -38,12 +38,15 @@ function server({ active = "included", names = ["included", "Night.sts"] } = {})
         name, label: name === "included" ? "Included" : name, included: name === "included",
       })) };
     }
-    if (url === "/api/playback-settings") {
-      const chosen = JSON.parse(options.body).stereotool_preset;
+    if (url === "/api/settings" && !options.method) {
+      return { revision: "current", values: { playback: { stereotool_preset: state.active } } };
+    }
+    if (url === "/api/settings" && options.method === "PATCH") {
+      const chosen = JSON.parse(options.body).changes.playback.stereotool_preset;
       state.posts.push(chosen);
       if (state.failSelect) throw new Error(state.failSelect);
       state.active = chosen;
-      return {};
+      return { revision: "next", applied: ["playback"], settings: { values: { playback: { stereotool_preset: chosen } } } };
     }
     if (url === "/api/stereo-tool-presets/upload") {
       const uploaded = options.body.get("file");
@@ -113,14 +116,10 @@ describe("Stereo Tool preset markup", () => {
       .toBe("pb-replaygain=replaygain");
   });
 
-  it("puts Save sound settings after the Sound controls and describes Stereo Tool restart", () => {
-    const save = page.getElementById("mastering-save");
-    expect(save.textContent.trim()).toBe("Save sound settings");
-    expect(save.hasAttribute("aria-describedby")).toBe(false);
+  it("leaves Stereo Tool restart guidance without a duplicate Save button", () => {
+    expect(page.getElementById("mastering-save")).toBeNull();
     expect(page.getElementById("mastering-save-note").textContent)
       .toMatch(/preset or AGC drive restarts Stereo Tool.*brief bypass/i);
-    expect(save.compareDocumentPosition(page.getElementById("pb-silence-trigger"))
-      & document.defaultView.Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
   it("keeps Sound controls named without focus help", () => {
@@ -134,7 +133,8 @@ describe("Stereo Tool preset markup", () => {
   it("wires AGC drive to the shared settings module", () => {
     expect(page.getElementById("pb-stereo-agc-drive")).not.toBeNull();
     expect(app).toMatch(/pbStereoAgcDrive:\s*document\.getElementById\("pb-stereo-agc-drive"\)/);
-    expect(app).toMatch(/masteringSave:\s*document\.getElementById\("mastering-save"\)/);
+    expect(app).toMatch(/stereoPreset:\s*document\.getElementById\("stereo-preset"\)/);
+    expect(app).not.toMatch(/masteringSave/);
   });
 
   it("labels every control and lists Included first", () => {

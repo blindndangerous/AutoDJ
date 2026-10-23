@@ -44,7 +44,7 @@ is different from muting your listening device. Use the
 
 1. Confirm Practice is the selected station. Open **Settings**, **Stations**.
 2. Under **Output for the selected station**, set **Playback output** to
-   **Server sound card** and press **Save station options**.
+   **Server sound card** and press **Save changes** in the Stations tab.
 3. In **Stations on this server**, find the Practice row, using its actual
    displayed name. Press **Stop**, then confirm with **Stop station**. If its
    row already offers **Start**, it is stopped; skip the stop action.
@@ -64,7 +64,7 @@ The **open song change** is the transition still accepting breaks. It is after
 the next song because the nearer transition is already prepared.
 
 1. In **Settings**, **Transitions**, set **Transition mode** to **Use saved segue
-   points**. This control saves on change; move focus away and recheck the value.
+   points**, then press **Save changes** in the Transitions tab.
 2. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
    book** and **Airs in about** under **Open song change**.
 3. Leave **Fit over outro and intro** selected to fit your voice against the
@@ -170,9 +170,9 @@ and saved-point transition mode. A local unbooked take is not a
 saved liner. To reuse the earlier Browser lessons:
 
 1. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
-   outro**; it saves on change. Move focus away and recheck the value.
+   outro**, then press **Save changes** in the Transitions tab.
 2. In **Settings**, **Stations**, set **Playback output** to **Browser** and
-   press **Save station options**.
+   press **Save changes** in the Stations tab.
 3. In the Practice row, press **Start**. Check for a successful start, then use
    **Play or Pause** in **Now Playing** if needed to leave browser playback paused.
 

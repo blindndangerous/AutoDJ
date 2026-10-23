@@ -56,9 +56,13 @@ export function installStereoToolPresets({ document: doc = document, request = r
   });
   if (panel.open) void refresh().catch(loadFailed);
 
-  const choose = (name) => request("/api/playback-settings", { method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ stereotool_preset: name }) });
+  const choose = async (name) => {
+    const current = await request("/api/settings");
+    const result = await request("/api/settings", { method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision: current.revision, changes: { playback: { stereotool_preset: name } } }) });
+    if (!result.applied.includes("playback")) throw new Error(result.failed.playback);
+  };
   select.addEventListener("change", () => { selectionDirty = true; syncDelete(); });
 
   // Upload is not disabled while it runs: a disabled button loses focus,

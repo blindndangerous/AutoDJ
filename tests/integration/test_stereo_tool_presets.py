@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from tests._layout import point_index
 from tests._server import create_app
+from tests.integration._helpers import patch_station_settings
 
 
 def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:
@@ -23,12 +24,12 @@ def test_preset_routes_upload_select_and_delete(bridge, tmp_path: Path) -> None:
     )
     assert upload.status_code == 200
     assert (active / "stereo-tool-presets" / "Night.sts").is_file()
-    selected = client.post("/api/playback-settings", json={"stereotool_preset": "Night.sts"})
+    selected = patch_station_settings(client, {"playback": {"stereotool_preset": "Night.sts"}})
     assert selected.status_code == 200
-    assert selected.json()["playback"]["stereotool_preset"] == "Night.sts"
+    assert selected.json()["settings"]["values"]["playback"]["stereotool_preset"] == "Night.sts"
     assert client.delete("/api/stereo-tool-presets/Night.sts").status_code == 409
     assert (
-        client.post("/api/playback-settings", json={"stereotool_preset": "included"}).status_code
+        patch_station_settings(client, {"playback": {"stereotool_preset": "included"}}).status_code
         == 200
     )
     assert client.delete("/api/stereo-tool-presets/Night.sts").status_code == 200
@@ -89,11 +90,13 @@ def test_preset_routes_refuse_unsafe_uploads_and_missing_selection(bridge, tmp_p
         == 400
     )
     assert (
-        client.post("/api/playback-settings", json={"stereotool_preset": "missing.sts"}).status_code
+        patch_station_settings(
+            client, {"playback": {"stereotool_preset": "missing.sts"}}
+        ).status_code
         == 400
     )
-    assert client.post("/api/playback-settings", json={"intro_lift_max_db": 7}).status_code == 422
+    assert patch_station_settings(client, {"playback": {"intro_lift_max_db": 7}}).status_code == 422
     assert (
-        client.post("/api/playback-settings", json={"stereotool_input_trim_db": -13}).status_code
+        patch_station_settings(client, {"playback": {"stereotool_input_trim_db": -13}}).status_code
         == 422
     )

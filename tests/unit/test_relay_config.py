@@ -82,7 +82,7 @@ def test_invalid_relays_are_rejected(data: object) -> None:
         StreamConfig.from_dict({"relays": {"main": data}})
 
 
-@pytest.mark.parametrize("name", ["", "has space", "x" * 33, "dot.name"])
+@pytest.mark.parametrize("name", ["", " has space", "x" * 33, "dot.name"])
 def test_bad_relay_names_are_rejected(name: str) -> None:
     with pytest.raises(ValueError, match="names may use only"):
         StreamConfig.from_dict({"relays": {name: ICECAST}})
@@ -174,6 +174,17 @@ password = "placeholder-two"
 
 def test_password_variable_name() -> None:
     assert relay_password_variable("backup-sc") == "AUTODJ_STATION_DEFAULT_RELAY_BACKUP_SC_PASSWORD"
+    assert relay_password_variable("Stream madness") == (
+        "AUTODJ_STATION_DEFAULT_RELAY_NAME_SHA256_"
+        "16DDB67590CA8DD1B551666647C75FEDC901ECD7A718195DCF3D6D96984604D1_PASSWORD"
+    )
+
+
+def test_relay_name_accepts_internal_spaces_but_not_path_or_edge_spaces() -> None:
+    assert RelayConfig.from_table("Stream madness", ICECAST).name == "Stream madness"
+    for name in (" Stream", "Stream ", "stream/relay", "   "):
+        with pytest.raises(ValueError, match="names may use"):
+            RelayConfig.from_table(name, ICECAST)
 
 
 def test_a_host_with_a_port_points_at_the_port_key() -> None:

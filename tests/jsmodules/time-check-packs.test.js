@@ -1,9 +1,11 @@
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import { installTimeChecks } from "../../src/autodj/static/modules/time-checks.js";
+import { applySettingsDrafts, resetSettingsDrafts, saveSettingsPanel } from
+  "../../src/autodj/static/modules/settings-drafts.js";
 
 // Voice packs added from a zip and removed, and clips chosen and uploaded,
 // in the real Settings markup (#388).
@@ -22,11 +24,15 @@ function pack(name, extra = {}) {
 }
 
 function state(overrides = {}) {
-  return { enabled: true, hour_format: "12", rule: "off", timezone: "UTC", duck_db: -12,
+  const value = { enabled: true, hour_format: "12", rule: "off", timezone: "UTC", duck_db: -12,
     missing_minutes: 1440, tts_available: false, enabled_packs: [], pack_order: "rotate",
     recorded_folder: "", intro: null, outro: null, folders: [], clip_files: [],
     intro_config: null, outro_config: null, pack_upload_max_mb: 256, clip_upload_max_mb: 50,
     packs: [], ...overrides };
+  if (!Object.hasOwn(overrides, "enabled_packs")) {
+    value.enabled_packs = value.packs.filter((item) => item.enabled).map((item) => item.name);
+  }
+  return value;
 }
 
 function apiError(message, status, field = null) {
@@ -43,6 +49,14 @@ function choose(input, name, type = "application/zip") {
 }
 
 beforeEach(installIndex);
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetSettingsDrafts(document);
+});
+
+function seedTimeCheckDraft(value) {
+  applySettingsDrafts({ revision: "one", values: { time_checks: value } });
+}
 
 describe("Time checks panel text and controls", () => {
   it("no longer sends people to config.toml for packs and clips", () => {
@@ -361,6 +375,7 @@ describe("recorded clips, intro and outro", () => {
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
     byId("tc-enabled").click();
+    expect(await saveSettingsPanel(byId("spanel-time-checks"))).toBe(false);
     expect(await liveText()).toBe("Time check settings are still loading; try again in a moment.");
     expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
   });
@@ -393,26 +408,35 @@ describe("recorded clips, intro and outro", () => {
   });
 
   it("saves the choices by name, keeping the config.toml clip as null", async () => {
-    const request = vi.fn(async (url, options = {}) => (options.method === "PUT"
-      ? state({ ...JSON.parse(options.body), folders: ["Clips"], clip_files: ["hello.wav"],
-        intro_config: "intro.wav" })
-      : state({ folders: ["Clips"], clip_files: ["hello.wav"], intro_config: "intro.wav" })));
+    const initial = state({ folders: ["Clips"], clip_files: ["hello.wav"], intro_config: "intro.wav" });
+    const request = vi.fn(async () => initial);
     const controls = installTimeChecks({ request, interval: () => {} });
     await controls.refresh();
+    seedTimeCheckDraft(initial);
+    let saved = initial;
+    const fetchImpl = vi.fn(async (_url, options = {}) => {
+      const payload = JSON.parse(options.body);
+      saved = { ...saved, ...payload.changes.time_checks };
+      return new globalThis.Response(JSON.stringify({ revision: "two", applied: ["time_checks"], failed: {},
+        settings: { revision: "two", values: { time_checks: saved } } }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
     byId("tc-recorded-folder").value = "Clips";
     byId("tc-recorded-folder").dispatchEvent(new Event("change"));
-    expect(await liveText()).toBe("Time check settings saved.");
-    let body = JSON.parse(request.mock.calls.find(([, options]) => options?.method === "PUT")[1].body);
-    expect(body).toEqual(expect.objectContaining({ recorded_folder: "Clips", intro: null, outro: null }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await saveSettingsPanel(byId("spanel-time-checks"));
+    let body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
+    expect(body).toEqual({ recorded_folder: "Clips" });
     byId("tc-outro").value = "hello.wav";
     byId("tc-outro").dispatchEvent(new Event("change"));
     byId("tc-intro").value = "";
     byId("tc-intro").dispatchEvent(new Event("change"));
-    await vi.waitFor(() => {
-      const puts = request.mock.calls.filter(([, options]) => options?.method === "PUT");
-      body = JSON.parse(puts.at(-1)[1].body);
-      expect(body.intro).toBe("");
-    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await saveSettingsPanel(byId("spanel-time-checks"));
+    body = JSON.parse(fetchImpl.mock.calls.at(-1)[1].body).changes.time_checks;
+    expect(body.intro).toBe("");
     // None while config.toml has an intro turns it off; the outro is a file name.
     expect(body).toEqual(expect.objectContaining({ intro: "", outro: "hello.wav" }));
   });

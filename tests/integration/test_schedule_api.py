@@ -18,7 +18,7 @@ from autodj.server import PlayerBridge
 from tests._layout import point_index
 from tests._server import create_app
 
-from ._helpers import _make_player_mock, _make_sim_mock
+from ._helpers import _make_player_mock, _make_sim_mock, patch_station_settings
 
 DAILY = {"name": "Morning", "action": "preset", "params": {"name": "winddown"}, "repeat": "daily"}
 
@@ -44,8 +44,8 @@ def event(**changes: Any) -> dict[str, Any]:
 
 def test_hour_fit_playback_settings_round_trip(rig: tuple[TestClient, PlayerBridge, Path]) -> None:
     client, bridge, active = rig
-    response = client.post(
-        "/api/playback-settings", json={"hour_fit": True, "hour_fit_window_minutes": 12}
+    response = patch_station_settings(
+        client, {"playback": {"hour_fit": True, "hour_fit_window_minutes": 12}}
     )
     assert response.status_code == 200, response.text
     assert bridge.player._cfg.playback.hour_fit is True

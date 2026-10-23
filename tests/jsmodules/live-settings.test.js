@@ -4,22 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup } from "./helpers.js";
 
 import { installLiveSettings, sourceFacts, transportNote } from "../../src/autodj/static/modules/live-settings.js";
-import { requestJson } from "../../src/autodj/static/modules/api-client.js";
-import { selectStation, setKnownStations } from "../../src/autodj/static/modules/stations.js";
-
-// A real reply to an action that came back after a station switch.
-async function answeredAfterSwitch(body, status = 200) {
-  setKnownStations([{ slug: "default", name: "Main" }, { slug: "night", name: "Night" }]);
-  let answer;
-  vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => { answer = resolve; })));
-  const sent = requestJson("/api/live/settings", { method: "PUT" });
-  selectStation("night");
-  answer(new globalThis.Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
-  const error = await sent.catch((failure) => failure);
-  selectStation("default");
-  vi.unstubAllGlobals();
-  return error;
-}
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => {
+    groups.push(spec);
+    return { accept: (body) => spec.write(body), dirty: () => false };
+  },
+}));
 
 const byId = (id) => document.getElementById(id);
 
@@ -63,7 +54,7 @@ function install(answers = {}) {
   return { ui, request, calls, announce, onInfo };
 }
 
-afterEach(() => document.body.replaceChildren());
+afterEach(() => { groups.length = 0; document.body.replaceChildren(); });
 
 describe("source address", () => {
   it("gives a DJ program its host, port, mount and TLS from the page's own address", () => {
@@ -78,6 +69,7 @@ describe("source address", () => {
 });
 
 describe("Live DJ settings", () => {
+  beforeEach(() => { groups.length = 0; });
   it("shows the address, the facts, the DJs and the talk settings, never a password", async () => {
     const { ui, onInfo } = install();
     await ui.refresh();
@@ -103,7 +95,10 @@ describe("Live DJ settings", () => {
   it("says why the station cannot go live", async () => {
     const { ui } = install({ "GET /api/live": { available: false, reason: "Live DJ needs stream mode." } });
     await ui.refresh();
-    expect(byId("live-settings").hidden).toBe(true);
+    expect(byId("live-settings").hidden).toBe(false);
+    expect(byId("live-return-seconds").disabled).toBe(false);
+    expect(byId("live-duck-db").disabled).toBe(false);
+    expect(byId("live-dj-add").disabled).toBe(false);
     expect(byId("live-unavailable").hidden).toBe(false);
     expect(byId("live-unavailable").textContent).toBe("Live DJ needs stream mode.");
   });
@@ -179,79 +174,46 @@ describe("Live DJ settings", () => {
     await vi.waitFor(() => expect(document.activeElement).toBe(byId("live-dj-add")));
   });
 
-  it("checks and saves the return time and duck amount", async () => {
-    const { ui, calls, announce } = install({
-      "PUT /api/live/settings": (options) => JSON.parse(options.body),
-    });
+  it("validates talk settings and reads valid values into the station draft", async () => {
+    const { ui, calls } = install();
     await ui.refresh();
-    const save = byId("live-talkover-save");
     byId("live-return-seconds").value = "20";
-    save.click();
+    expect(groups.find((group) => group.group === "live").validate()).toBe(false);
     expect(byId("live-return-seconds").getAttribute("aria-invalid")).toBe("true");
     expect(byId("live-talkover-error").textContent).toMatch(/^Return time/);
     expect(document.activeElement).toBe(byId("live-return-seconds"));
     byId("live-return-seconds").value = "1.5";
     byId("live-duck-db").value = "18";
-    save.click();
-    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
-    const put = calls.find(([url]) => url === "/api/live/settings");
-    expect(JSON.parse(put[1].body)).toEqual({ mic_return_seconds: 1.5, mic_duck_db: 18 });
+    expect(groups.find((group) => group.group === "live").validate()).toBe(true);
+    expect(groups.find((group) => group.group === "live").read())
+      .toEqual({ mic_return_seconds: 1.5, mic_duck_db: 18 });
     expect(byId("live-talkover-error").hidden).toBe(true);
     expect(byId("live-return-seconds").hasAttribute("aria-invalid")).toBe(false);
+    expect(calls.map(([url]) => url)).toEqual(["/api/live"]);
   });
 
-  it("never says unavailable on Save while it saves, and takes no second press (#331)", async () => {
-    let release;
-    const { ui, calls, announce } = install({
-      "PUT /api/live/settings": (options) => new Promise((resolve) => {
-        release = () => resolve(JSON.parse(options.body));
-      }),
-    });
+  it("does not persist talk settings from the feature module", async () => {
+    const { ui, calls } = install();
     await ui.refresh();
-    const save = byId("live-talkover-save");
-    save.focus();
-    save.click();
-    expect(save.hasAttribute("aria-disabled")).toBe(false);
-    expect(save.classList.contains("is-pending")).toBe(true);
-    expect(save.getAttribute("aria-busy")).toBe("true");
-    save.click();
-    expect(calls.filter(([url]) => url === "/api/live/settings")).toHaveLength(1);
-    release();
-    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
-    expect(save.classList.contains("is-pending")).toBe(false);
-    expect(save.hasAttribute("aria-busy")).toBe(false);
-    expect(document.activeElement).toBe(save);
+    byId("live-duck-db").value = "18";
+    expect(groups.find((group) => group.group === "live").read().mic_duck_db).toBe(18);
+    expect(byId("live-talkover-save")).toBeNull();
+    expect(calls.map(([url]) => url)).toEqual(["/api/live"]);
   });
 
-  it("says a short line while a slow save or removal runs, and nothing extra when it is quick (#384)", async () => {
-    let release;
+  it("announces a slow removal in the confirmation dialog (#384)", async () => {
     let removed;
     const { ui, announce } = install({
-      "PUT /api/live/settings": (options) => new Promise((resolve) => {
-        release = () => resolve(JSON.parse(options.body));
-      }),
       "DELETE /api/live/djs/alice": () => new Promise((resolve) => { removed = () => resolve({ ok: true }); }),
     });
     await ui.refresh();
     vi.useFakeTimers();
     try {
-      byId("live-talkover-save").click();
-      await vi.advanceTimersByTimeAsync(250);
-      expect(announce).not.toHaveBeenCalled();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(announce.mock.calls).toEqual([["Saving the talk settings…"]]);
-      release();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(announce.mock.calls.at(-1)).toEqual(["Talk settings saved."]);
-
-      // Remove DJ runs inside the confirmation, where the page is inert:
-      // the dialog's own status line says it.
       byId("live-dj-rows").querySelectorAll("button")[1].click();
       byId("confirm-accept").click();
       expect(byId("confirm-accept").getAttribute("aria-busy")).toBe("true");
       await vi.advanceTimersByTimeAsync(350);
-      expect(byId("confirm-status").textContent).toBe("Removing DJ alice…");
-      expect(byId("confirm-dialog").contains(byId("confirm-status"))).toBe(true);
+      expect(byId("confirm-status").textContent).toMatch(/Removing DJ alice/);
       removed();
       await vi.advanceTimersByTimeAsync(0);
       expect(announce.mock.calls.at(-1)).toEqual(["DJ alice removed."]);
@@ -260,26 +222,6 @@ describe("Live DJ settings", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("says only the result of a quick save (#384)", async () => {
-    const { ui, announce } = install({ "PUT /api/live/settings": (options) => JSON.parse(options.body) });
-    await ui.refresh();
-    byId("live-talkover-save").click();
-    await vi.waitFor(() => expect(announce).toHaveBeenCalledWith("Talk settings saved."));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(announce.mock.calls).toEqual([["Talk settings saved."]]);
-  });
-
-  it("says what a save answered after a switch did, with no error on the form (#70)", async () => {
-    const stale = await answeredAfterSwitch({ mic_return_seconds: 1, mic_duck_db: 12 });
-    const { ui, announce } = install({ "PUT /api/live/settings": stale });
-    await ui.refresh();
-    byId("live-talkover-save").click();
-    await vi.waitFor(() => expect(announce)
-      .toHaveBeenCalledWith("Done on Main, the station this page has just left.", false));
-    expect(byId("live-talkover-error").hidden).toBe(true);
-    expect(byId("live-return-seconds").hasAttribute("aria-invalid")).toBe(false);
   });
 
   it("ignores an answer that arrives after a station switch", async () => {

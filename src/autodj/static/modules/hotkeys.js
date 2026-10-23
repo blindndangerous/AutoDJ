@@ -1,3 +1,4 @@
+import { registerSettingsGroup } from "./settings-drafts.js";
 // Hotkeys module — global keydown listener wiring.
 //
 // Single window-level capture-phase listener.  Earlier code attached a
@@ -78,7 +79,7 @@ import {
   dialogReturnPlace, fmtTime, focusAfterDialog, focusSteadyPlace, isTypingTarget,
   releaseDialogFocus, srSpeak,
 } from "./dom-helpers.js";
-import { defaultStorage, readStorage, writeStorage } from "./safe-storage.js";
+import { defaultStorage, readStorage } from "./safe-storage.js";
 
 const NATIVE_KEYBOARD_SELECTOR = [
   "button",
@@ -196,15 +197,25 @@ export function shortcutsEnabled() {
   return _shortcutsOn;
 }
 
+function writePreference(key, value) {
+  const storage = defaultStorage();
+  if (!storage) throw new Error("Browser storage is unavailable.");
+  storage.setItem(key, value);
+}
+
 function setShortcutsEnabled(on) {
+  writePreference(SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
   _shortcutsOn = Boolean(on);
-  writeStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY, on ? "on" : "off");
 }
 
 function installShortcutToggle(checkbox) {
   if (!checkbox) return;
   checkbox.checked = shortcutsEnabled();
-  checkbox.addEventListener("change", () => setShortcutsEnabled(checkbox.checked));
+  registerSettingsGroup({ panel: checkbox.closest('[id^="spanel-"]'), controls: [checkbox],
+    read: () => ({ enabled: checkbox.checked }), write: (value) => { checkbox.checked = value.enabled; },
+    persisted: () => ({ enabled: readStorage(defaultStorage(), SHORTCUTS_STORAGE_KEY) !== "off" }),
+    commit: (value) => setShortcutsEnabled(value.enabled),
+  });
 }
 
 // "Bracket keys seek the song on air" (#60): off unless chosen, since a
@@ -222,9 +233,13 @@ export function bracketSeekEnabled() {
 function installBracketSeekToggle(checkbox) {
   if (!checkbox) return;
   checkbox.checked = bracketSeekEnabled();
-  checkbox.addEventListener("change", () => {
-    _bracketSeekOn = checkbox.checked;
-    writeStorage(defaultStorage(), BRACKET_SEEK_STORAGE_KEY, checkbox.checked ? "on" : "off");
+  registerSettingsGroup({ panel: checkbox.closest('[id^="spanel-"]'), controls: [checkbox],
+    read: () => ({ enabled: checkbox.checked }), write: (value) => { checkbox.checked = value.enabled; },
+    persisted: () => ({ enabled: readStorage(defaultStorage(), BRACKET_SEEK_STORAGE_KEY) === "on" }),
+    commit(value) {
+      writePreference(BRACKET_SEEK_STORAGE_KEY, value.enabled ? "on" : "off");
+      _bracketSeekOn = value.enabled;
+    },
   });
 }
 

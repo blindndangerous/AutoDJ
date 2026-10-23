@@ -1,8 +1,6 @@
 import { announceStatus } from "./live-region.js";
 import { focusRevealed } from "./dom-helpers.js";
-import {
-  captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent,
-} from "./api-client.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const RULES = ["artist", "related_artist", "album", "track", "title", "related_track"];
 // Each rule's boxes are els[`${PREFIX[rule]}Tracks`] and els[`${PREFIX[rule]}Minutes`].
@@ -30,11 +28,6 @@ const MAX_DAYPART_DAYS = 7;
 const MAX_HOURPART_PLAYS = 3;
 const HOURS_MESSAGE = "Daypart start hours must be whole numbers from 0 to 23, "
   + "separated by commas, with no hour given twice.";
-// As in settings-panel.js: after a save, a push that left the server
-// before it still holds the old rules, and writing them back would undo
-// the save on screen.  Pushes wait for one that agrees with the save;
-// ECHO_WAIT_MS only backstops an echo that never comes.
-const ECHO_WAIT_MS = 5000;
 
 function controls(els) {
   return [
@@ -85,21 +78,6 @@ function values(els) {
   };
   result.hourpart = { plays: Number(els.hourpartPlays.value) };
   return result;
-}
-
-const sameHours = (a, b) => Array.isArray(a) && Array.isArray(b)
-  && a.length === b.length && a.every((hour, index) => Number(hour) === Number(b[index]));
-
-function sameRules(a, b) {
-  if (!a || !b) return false;
-  return RULES.every((rule) => Number(a[rule]?.tracks) === Number(b[rule]?.tracks)
-      && Number(a[rule]?.minutes) === Number(b[rule]?.minutes))
-    && Boolean(a.use_related_artists) === Boolean(b.use_related_artists)
-    && Boolean(a.use_related_tracks) === Boolean(b.use_related_tracks)
-    && Boolean(a.versions_as_one_song) === Boolean(b.versions_as_one_song)
-    && Number(a.daypart?.days) === Number(b.daypart?.days)
-    && sameHours(a.daypart?.start_hours, b.daypart?.start_hours)
-    && Number(a.hourpart?.plays) === Number(b.hourpart?.plays);
 }
 
 // [control, message] for the first box holding a value the server would
@@ -212,19 +190,7 @@ export function applyRepeatSettings(st, els) {
   if (playback && "related_tracks_problem" in playback) {
     showStatus(els.tracksFileStatus, playback.related_tracks_problem);
   }
-  const incoming = playback?.repeat_rules;
-  if (!incoming) return;
-  const echo = els.echo;
-  if (echo) {
-    if (echo.answeredAt === 0) return;
-    if (!sameRules(incoming, echo.value) && Date.now() - echo.answeredAt <= ECHO_WAIT_MS) return;
-    els.echo = null;
-  }
-  // Edits belong to the user until they are saved or match the server.
-  if (els.dirty && !sameRules(values(els), els.confirmed)) return;
-  els.dirty = false;
-  write(els, incoming);
-  els.confirmed = values(els);
+  if (playback?.repeat_rules) els.draft?.accept({ repeat_rules: playback.repeat_rules });
 }
 
 export function resetRepeatSettings(els) {
@@ -243,75 +209,22 @@ export function resetRepeatSettings(els) {
   showStatus(els.tracksFileStatus, "");
 }
 
-export function installRepeatSettings(els, { postSettings, settingsStatus }) {
-  els.confirmed = values(els);
-  els.echo = null;
+export function installRepeatSettings(els, { settingsStatus }) {
   els.defaultFileText = els.defaultFile?.textContent ?? "";
   els.tracksDefaultFileText = els.tracksDefaultFile?.textContent ?? "";
-  for (const control of controls(els)) {
-    for (const event of ["input", "change"]) {
-      control.addEventListener(event, () => {
-        els.dirty = true;
-        if (!invalidField(els, control)) {
-          control.removeAttribute("aria-invalid");
-          clearFieldError(els, control);
-        }
-      });
-    }
-  }
-  els.save.addEventListener("click", async () => {
-    const invalid = invalidField(els);
-    if (invalid) {
+  els.draft = registerSettingsGroup({
+    panel: controls(els).find(Boolean)?.closest('[id^="spanel-"]'), group: "playback", controls: controls(els),
+    read: () => ({ repeat_rules: values(els) }),
+    write(value) { if (value.repeat_rules) write(els, value.repeat_rules); },
+    validate() {
+      const invalid = invalidField(els);
+      if (!invalid) { clearFieldError(els); return true; }
       showFieldError(els, invalid[0], invalid[1]);
       reportInvalid(invalid[0], invalid[1], settingsStatus);
-      return;
-    }
-    const epoch = captureAuthenticatedRequestEpoch();
-    const body = values(els);
-    const echo = { value: body, answeredAt: 0 };
-    els.echo = echo;
-    let failure = null;
-    const saved = await postSettings("/api/playback-settings", { repeat_rules: body }, els.save,
-      { onError: (err) => { failure = err; } });
-    if (!isAuthenticatedRequestCurrent(epoch)) {
-      if (els.echo === echo) els.echo = null;
-      return;
-    }
-    if (saved) {
-      echo.answeredAt = Date.now();
-      els.confirmed = body;
-      els.dirty = !sameRules(values(els), body);
-      for (const control of controls(els)) control.removeAttribute("aria-invalid");
-      clearFieldError(els);
-      showStatus(els.fileStatus, "");
-      showStatus(els.tracksFileStatus, "");
-      announceStatus(settingsStatus, "Repeat settings saved.", { dwellMs: 4000, force: true });
-      return;
-    }
-    // The edits stay in the form, to fix and save again.
-    if (els.echo === echo) els.echo = null;
-    els.dirty = true;
-    const detail = failure?.message || "";
-    // The boxes were checked above, so a 400 means the server refused a file;
-    // its message names which one.
-    if (failure?.status === 400 && body.use_related_tracks
-        && detail.startsWith("The related tracks file")) {
-      showStatus(els.tracksFileStatus, detail);
-      reportInvalid(els.useRelatedTracks,
-        `Use related tracks: ${detail} Fix the file or turn this off, then save again.`,
-        settingsStatus);
-      return;
-    }
-    if (failure?.status === 400 && body.use_related_artists) {
-      showStatus(els.fileStatus, detail);
-      reportInvalid(els.useRelatedArtists,
-        `Use related artists: ${detail} Fix the file or turn this off, then save again.`,
-        settingsStatus);
-      return;
-    }
-    announceStatus(settingsStatus,
-      `Repeat settings were not saved. ${detail} Your changes are still in the form.`
-        .replace(/\s+/g, " "),
-      { dwellMs: 6000, force: true, tone: "error" });
+      return false;
+    },
+  });
+  for (const control of controls(els)) control.addEventListener("input", () => {
+    if (!invalidField(els, control)) { control.removeAttribute("aria-invalid"); clearFieldError(els, control); }
   });
 }

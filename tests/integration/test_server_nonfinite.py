@@ -20,6 +20,16 @@ _JSON = {"Content-Type": "application/json"}
 _NON_FINITE = ("Infinity", "-Infinity", "NaN")
 
 
+def _patch_raw_settings(client, group: str, body: str):
+    """PATCH one raw settings group so non-finite JSON literals survive encoding."""
+    revision = client.get("/api/settings").json()["revision"]
+    return client.patch(
+        "/api/settings",
+        content=f'{{"revision":"{revision}","changes":{{"{group}":{body}}}}}',
+        headers=_JSON,
+    )
+
+
 def _post_raw(client, path: str, body: str):
     """POST a raw JSON body so the non-finite literals survive encoding."""
     return client.post(path, content=body, headers=_JSON)
@@ -56,17 +66,17 @@ class TestNonFiniteRejected:
         _assert_status_healthy(client)
 
     def test_crossfade_seconds(self, client, token: str) -> None:
-        resp = _post_raw(client, "/api/playback-settings", f'{{"crossfade_seconds": {token}}}')
+        resp = _patch_raw_settings(client, "playback", f'{{"crossfade_seconds": {token}}}')
         assert resp.status_code == 422
         _assert_status_healthy(client)
 
     def test_liners_duck_db(self, client, token: str) -> None:
-        resp = _post_raw(client, "/api/playback-settings", f'{{"liners_duck_db": {token}}}')
+        resp = _patch_raw_settings(client, "playback", f'{{"liners_duck_db": {token}}}')
         assert resp.status_code == 422
         _assert_status_healthy(client)
 
     def test_bpm_range(self, client, token: str) -> None:
-        resp = _post_raw(client, "/api/bpm-range", f'{{"lo": {token}, "hi": 200}}')
+        resp = _patch_raw_settings(client, "bpm_range", f'{{"lo": {token}, "hi": 200}}')
         assert resp.status_code == 422
         _assert_status_healthy(client)
 

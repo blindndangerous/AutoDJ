@@ -1,10 +1,11 @@
+import { registerSettingsGroup } from "./settings-drafts.js";
 // Settings > Stream listener admission and ban controls.
 import { requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
 
 const FORMAT_NAMES = { aac: "AAC", opus: "Opus" };
 
-export function createListenerControls(doc, status, saveLimit) {
+export function createListenerControls(doc, status) {
   const list = doc.getElementById("listener-control-list");
   const bans = doc.getElementById("listener-ban-list");
   const heading = doc.getElementById("listener-control-title");
@@ -14,6 +15,10 @@ export function createListenerControls(doc, status, saveLimit) {
   const duration = doc.getElementById("listener-ban-duration");
   const note = doc.getElementById("listener-ban-note");
   const limit = doc.getElementById("stream-per-address");
+  const limitDraft = registerSettingsGroup({ panel: limit?.closest('[id^="spanel-"]'), group: "stream", controls: [limit],
+    read: () => ({ max_listeners_per_address: Number(limit.value) }),
+    write: (value) => { if (value.max_listeners_per_address != null) limit.value = value.max_listeners_per_address; },
+  });
   const listenersEmpty = doc.getElementById("listener-control-empty");
   const bansEmpty = doc.getElementById("listener-ban-empty");
   let revision = null;
@@ -163,7 +168,7 @@ export function createListenerControls(doc, status, saveLimit) {
       doc.getElementById("stream-url-desc").textContent = people.password_set
         ? "This stream requires HTTP Basic credentials. Add user:password to the URL in a player that supports it."
         : "Add this address to Sonos or any player as a radio station. Anyone who can reach AutoDJ can listen.";
-      if (doc.activeElement !== limit) limit.value = String(people.max_per_address);
+      limitDraft.accept({ max_listeners_per_address: people.max_per_address });
     } catch (error) {
       if (!active || sequence !== requestSequence) return;
       if (!failedSpoken && error.name !== "AuthenticationRequiredError") {
@@ -216,14 +221,6 @@ export function createListenerControls(doc, status, saveLimit) {
       await refresh();
     } catch (error) { say(`Could not ban address: ${error.message}`, "error"); }
   });
-  limit.addEventListener("change", async () => {
-    const value = Number(limit.value);
-    if (!Number.isInteger(value) || value < 0 || value > 100) {
-      say("Connections per address must be between 0 and 100.", "error");
-      limit.focus();
-      return;
-    }
-    if (await saveLimit(value, limit)) say(`Connections per address set to ${value}.`);
-  });
+
   return { apply, reset, refresh };
 }
