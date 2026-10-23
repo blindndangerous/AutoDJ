@@ -867,3 +867,26 @@ async def test_sinks_hear_about_a_new_encoder(output: StreamOutput) -> None:
     output.set_bitrate(192)
     assert output.bitrate == 192
     assert sink.changes == 1
+
+
+def test_closing_an_encoder_kills_ffmpeg_without_asking_first() -> None:
+    """ffmpeg ignores SIGTERM while it waits for input: asking only added a 5-second wait."""
+    calls: list[object] = []
+
+    class Process:
+        stdin = stdout = stderr = None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+        def wait(self, timeout: float | None = None) -> int:
+            calls.append(("wait", timeout))
+            return -9
+
+    encoder = object.__new__(stream.FfmpegEncoder)
+    encoder._proc = Process()
+    encoder.close()
+    assert calls == ["kill", ("wait", 5)]
