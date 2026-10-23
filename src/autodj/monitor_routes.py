@@ -86,14 +86,13 @@ def install_monitor_routes(app: FastAPI, policy: SecurityPolicy) -> None:
                     break
                 audio_task = asyncio.create_task(client.receive())
         finally:
-            # Detach synchronously before awaiting task cancellation. TestClient
-            # and server shutdown can cancel this scope as it exits; cleanup
-            # must not leave a dead listener attached to the shared bus.
+            # Detach before cancellation can interrupt WebSocket shutdown.
             station.unsubscribe_monitor(client)
             for task in (receive_task, audio_task):
                 if task is not None and not task.done():
                     task.cancel()
-            await asyncio.gather(
+            # Consume child results without another cancellation point during shutdown.
+            asyncio.gather(
                 *(task for task in (receive_task, audio_task) if task is not None),
                 return_exceptions=True,
             )
