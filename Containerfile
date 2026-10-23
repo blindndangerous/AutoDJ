@@ -53,10 +53,14 @@ ENV HOME=/home/autodj \
 # The commit this image was built from, for the web page's build stamp; the
 # build context leaves out .git and the image has no git.  Pass it with
 # AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose build.  The
-# server shows and links it only when it is 7 to 40 hex digits.  Declared
-# last so a new commit rebuilds only this layer.
+# server shows and links it only when it is 7 to 40 hex digits.  The update
+# channel of a published image, stable or development, is set by the workflow
+# that publishes it; a locally built image leaves it empty and follows the
+# checkout it is built from.  Declared last so a new commit rebuilds only
+# these layers.
 ARG AUTODJ_COMMIT=""
-ENV AUTODJ_COMMIT=${AUTODJ_COMMIT}
+ARG AUTODJ_IMAGE_CHANNEL=""
+ENV AUTODJ_COMMIT=${AUTODJ_COMMIT}     AUTODJ_IMAGE_CHANNEL=${AUTODJ_IMAGE_CHANNEL}
 
 USER 10001:10001
 EXPOSE 8080

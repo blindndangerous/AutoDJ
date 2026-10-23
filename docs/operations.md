@@ -51,6 +51,11 @@ See [Connect devices on a private network — Paired devices](guides/operations/
 
 See [Run AutoDJ in Docker or Windows PowerShell — Docker](guides/operations/containers-and-windows.md#docker).
 
+### Choose an image
+
+See [Run AutoDJ in Docker or Windows PowerShell — Choose an image](guides/operations/containers-and-windows.md#choose-an-image)
+and [Build the image yourself](guides/operations/containers-and-windows.md#build-the-image-yourself).
+
 ### Build stamp
 
 See [Run AutoDJ in Docker or Windows PowerShell — Build stamp](guides/operations/containers-and-windows.md#build-stamp).

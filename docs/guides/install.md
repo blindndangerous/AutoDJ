@@ -92,10 +92,11 @@ song analysis, not playback.
 
 ## Docker and NAS
 
-AutoDJ ships a `compose.yaml` file for Docker Compose. In Docker, AutoDJ runs in LAN mode:
-other devices on your network can open it, and each browser pairs once with a code.
+AutoDJ ships a `compose.yaml` file for Docker Compose. It runs the ready-built image AutoDJ
+publishes on GitHub Container Registry, so nothing is built on the server. In Docker, AutoDJ runs
+in LAN mode: other devices on your network can open it, and each browser pairs once with a code.
 
-1. On the server, clone AutoDJ:
+1. On the server, clone AutoDJ to get `compose.yaml`:
 
    ```bash
    git clone https://github.com/blindndangerous/AutoDJ
@@ -119,11 +120,12 @@ other devices on your network can open it, and each browser pairs once with a co
      `id -u` and `id -g`. Without them, the container runs as user 10001, which may not be
      allowed to write your folders.
 
-3. Create the folders and start AutoDJ:
+3. Create the folders, download the image and start AutoDJ:
 
    ```bash
    mkdir -p index models
-   docker compose up -d --build
+   docker compose pull
+   docker compose up -d
    ```
 
 4. Find the address and the pairing code:
@@ -140,6 +142,9 @@ The container restarts after a crash or reboot. Its addresses are the server's a
 
 Some things to know:
 
+- The default image is the newest release. To follow development, stay on one release, or build
+  the image yourself (for example on an ARM computer), see
+  [Choose an image](operations/containers-and-windows.md#choose-an-image).
 - Shared server settings, such as HTTPS certificates, go in `config.toml` or
   `config.local.toml` beside `compose.yaml`. Give paths inside that folder as relative paths,
   such as `ssl_certfile = "certs/fullchain.pem"`. Restart with `docker compose restart autodj` after a change.
@@ -248,8 +253,9 @@ and recordings you need. A model cache may also remain in `~/.cache/huggingface`
 For a wheel, run `uv pip uninstall autodj` in the environment that holds it.
 
 For Docker, `docker compose down --volumes` removes containers and Compose named volumes;
-bind-mounted music, index, and model folders remain on the host. Remove the local image with
-`docker image rm autodj:local` if you no longer need it. See [Back up and update AutoDJ](backups-and-updates.md)
+bind-mounted music, index, and model folders remain on the host. Remove the image with
+`docker image rm ghcr.io/blindndangerous/autodj:stable`, or the tag you chose, or
+`docker image rm autodj:local` if you built it yourself. See [Back up and update AutoDJ](backups-and-updates.md)
 for what a backup keeps.
 
 ## Related pages

@@ -111,6 +111,19 @@ jobs:
           name: release-artifacts
           path: dist/
 
+  # Publishes ghcr.io/<owner>/autodj:X.Y.Z, :stable and :latest once the tag,
+  # version and changelog are verified.
+  image:
+    needs: build-and-verify
+    uses: ./.github/workflows/image.yml
+    with:
+      release: true
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
   publish:
     needs: build-and-verify
     runs-on: ubuntu-latest
