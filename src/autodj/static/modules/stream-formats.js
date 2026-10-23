@@ -23,7 +23,7 @@ export function formatLine(item, origin) {
 }
 
 // What a save did, in words.
-export function formatSavedText(label, bitrate) {
+function formatSavedText(label, bitrate) {
   return bitrate ? `${label} stream on at ${bitrate} kbps.` : `${label} stream off.`;
 }
 
