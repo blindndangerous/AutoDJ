@@ -106,8 +106,8 @@ Windows 11 with NVDA 2026.2 and Mozilla Firefox 158.0.1 (all the flows listed be
 not sampled. No person listened: an automated agent sent every key through NVDA and read its
 speech through the screen-reader-testing bridge. The record starts with a summary of what 0.22.0
 ships with, lists the flows with a pass or fail, fifteen defects (D1, moderate, in the Save
-changes and Discard changes feedback; D2 to D15 open, none a blocker) and the limits of the
-method. It covers only that pairing and those flows.
+changes and Discard changes feedback, fixed before release and rechecked; D2 to D15 open, none a
+blocker) and the limits of the method. It covers only that pairing and those flows.
 
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).
 It was taken on 2026-10-14 on the release branch at b895fdef with the fix for its one blocker
