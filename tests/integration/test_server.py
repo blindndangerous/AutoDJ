@@ -916,7 +916,7 @@ class TestRepeatSettings:
 
         assert response.status_code == 200
         # Without their own limits, related artists keep the artist rule's.
-        assert response.json()["playback"]["repeat_rules"] == {
+        assert response.json()["settings"]["values"]["playback"]["repeat_rules"] == {
             **payload["repeat_rules"],
             "related_artist": payload["repeat_rules"]["artist"],
             "related_track": {"tracks": 20, "minutes": 0.0},
@@ -926,13 +926,17 @@ class TestRepeatSettings:
             "hourpart": {"plays": 0},
         }
         assert bridge.player._state.rules.related.related_to("alpha") == {"beta"}
+        state_file = bridge.settings.state_dir / "web_state.json"
+        persisted = json.loads(state_file.read_text(encoding="utf-8"))
+        assert persisted["playback"]["repeat_rules"]["track"] == {"tracks": 7, "minutes": 10.0}
 
         path.write_text('[related]\n"Alpha" = ["Gamma"]\n', encoding="utf-8")
         response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
         assert bridge.player._state.rules.related.related_to("alpha") == {"gamma"}
-        assert bridge.save_persistent_state.call_count == 2
+        persisted = json.loads(state_file.read_text(encoding="utf-8"))
+        assert persisted["playback"]["repeat_rules"]["track"] == {"tracks": 7, "minutes": 10.0}
 
     @pytest.mark.parametrize(
         "rule",
@@ -969,7 +973,7 @@ class TestRepeatSettings:
         response = patch_station_settings(client, {"playback": payload})
 
         assert response.status_code == 200
-        saved = response.json()["playback"]["repeat_rules"]
+        saved = response.json()["settings"]["values"]["playback"]["repeat_rules"]
         assert saved["daypart"] == {"days": 3, "start_hours": [0, 6, 19]}
         assert saved["hourpart"] == {"plays": 2}
         rules = bridge.player._state.rules
@@ -978,7 +982,14 @@ class TestRepeatSettings:
             (0, 6, 19),
             2,
         )
-        bridge.save_persistent_state.assert_called_once()
+        persisted = json.loads(
+            (bridge.settings.state_dir / "web_state.json").read_text(encoding="utf-8")
+        )
+        assert persisted["playback"]["repeat_rules"]["daypart"] == {
+            "days": 3,
+            "start_hours": [0, 6, 19],
+        }
+        assert persisted["playback"]["repeat_rules"]["hourpart"] == {"plays": 2}
 
     def test_invalid_related_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -1017,10 +1028,19 @@ class TestRepeatSettings:
         rules = bridge.player._state.rules
         assert rules.related_tracks.related_to(("beta", "two")) == {("alpha", "one")}
         assert (rules.related_track_window, rules.related_track_minutes) == (7, 15.0)
-        playback = response.json()["playback"]
+        playback = response.json()["settings"]["values"]["playback"]
         assert playback["repeat_rules"]["use_related_tracks"] is True
-        assert playback["related_tracks_problem"] is None
-        assert playback["related_tracks_default_file"] == str(path.resolve())
+        assert bridge.get_settings()["playback"]["related_tracks_problem"] is None
+        assert bridge.get_settings()["playback"]["related_tracks_default_file"] == str(
+            path.resolve()
+        )
+        persisted = json.loads(
+            (bridge.settings.state_dir / "web_state.json").read_text(encoding="utf-8")
+        )
+        assert persisted["playback"]["repeat_rules"]["related_track"] == {
+            "tracks": 7,
+            "minutes": 15.0,
+        }
 
     def test_invalid_related_tracks_file_keeps_live_repeat_settings(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -1064,7 +1084,10 @@ class TestRepeatSettings:
         payload["repeat_rules"]["use_related_artists"] = False
         response = patch_station_settings(client, {"playback": payload})
         assert response.status_code == 200
-        assert response.json()["playback"]["repeat_rules"]["use_related_artists"] is False
+        assert (
+            response.json()["settings"]["values"]["playback"]["repeat_rules"]["use_related_artists"]
+            is False
+        )
 
     def test_invalid_file_error_does_not_echo_file_keys(self, bridge, tmp_path) -> None:
         client = self._client(bridge, tmp_path)
@@ -3051,12 +3074,18 @@ class TestLibraryEndpoints:
     def test_post_preset_clears_on_null(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
 
+        from autodj.presets import Preset, constant_curve
+
         point_index(bridge.player._cfg.index, tmp_path)
-        # mock a preset
-        bridge.player._preset = MagicMock(name="energetic")
+        bridge.player._cfg.presets = {
+            "energetic": Preset(name="energetic", bpm_weight=0.5, _curve=constant_curve(120.0))
+        }
+        bridge.settings.set_preset("energetic", refresh=False)
         tc = TestClient(create_app(bridge))
         patch_station_settings(tc, {"preset": {"name": None}})
-        assert bridge.player._preset is None
+        assert bridge.settings._preset is None
+        saved = json.loads((bridge.settings.state_dir / "web_state.json").read_text())
+        assert saved["preset"] is None
 
     def test_post_preset_unknown_name_silent(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
