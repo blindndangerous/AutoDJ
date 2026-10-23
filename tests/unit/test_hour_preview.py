@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 from autodj import hour_preview
-from autodj.breaks import SlotPlan
+from autodj.breaks import SlotPlan, TransitionItem
 from autodj.hour_preview import (
     KEEP_SECONDS,
     HourPreviews,
@@ -511,6 +511,32 @@ def test_browser_playback_lists_fixed_then_predicted(tmp_path: Path) -> None:
     assert later["counts_text"].endswith("through 13:10:31.")
 
 
+def test_live_mixing_keeps_future_queue_and_show_as_estimates(tmp_path: Path) -> None:
+    """ADR-0004-10, ADR-0004-12: live estimates stay separate from stream preparation."""
+    source, power, gold = _station(tmp_path)
+    player = source.player
+    player.live_mixing = True
+    _playing(source, gold[0], NOW - 50)
+    player._state.queue.extend([power[3], power[4]])
+    decided = read_station(player, now=NOW, show=("Scheduled show", [gold[5]]))
+    view = build_preview(source, 60, now=NOW, decided=decided)
+    items = view["items"]
+
+    assert items[0]["status"] == "on_air" and items[0]["fixed"]
+    planned = [
+        item
+        for item in items
+        if item["path"] in {str(power[3].path), str(power[4].path), str(gold[5].path)}
+    ]
+    assert [item["path"] for item in planned] == [
+        str(power[3].path),
+        str(power[4].path),
+        str(gold[5].path),
+    ]
+    assert all(item["status"] == "predicted" and not item["fixed"] for item in planned)
+    assert view["counts"]["fixed"] == 1
+
+
 def test_the_summary_skips_a_plain_top_of_the_hour(tmp_path: Path) -> None:
     source, _power, gold = _station(
         tmp_path,
@@ -702,7 +728,9 @@ def _render(entry: Any, seconds: float, following: Any, overlap: float, **fields
     )
 
 
-def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Path) -> None:
+def test_server_audio_reads_renders_the_open_change_and_its_breaks(
+    tmp_path: Path, monkeypatch
+) -> None:
     source, power, gold = _station(tmp_path)
     player = source.player
     ident = source.library.entries_snapshot("liner")[0]
@@ -725,7 +753,7 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     player.bus = object()
     player._playing_render = playing
     player._playback_pos[0] = round(50 * SR)
-    player._render_ahead._ready = ready
+    player._playout._ready = ready
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
@@ -782,7 +810,7 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     assert decided.handoff == pytest.approx(NOW + 953)
     assert (decided.clock_cursor, decided.clock_name) == (2, "Main")
     # The render worker's place and the open change are only read.
-    assert player._render_ahead._ready is ready
+    assert player._playout._ready is ready
     assert player._slot_plan.pinned and player._cursor_serial == 7
     assert list(player._state.queue) == [gold[2], power[4]]
     view = build_preview(source, 30, desk=desk, now=NOW, decided=decided)
@@ -801,6 +829,73 @@ def test_server_audio_reads_renders_the_open_change_and_its_breaks(tmp_path: Pat
     # Step 3 of the clockwheel (Gold) follows the open change's place.
     assert view["items"][9]["title"].startswith("Gold ")
 
+    player.live_mixing = True
+    live_view = build_preview(source, 30, desk=desk, now=NOW, decided=decided)
+    live_rows = live_view["items"][: len(decided.items)]
+    assert live_rows[0]["status"] == "on_air" and live_rows[0]["fixed"]
+    assert [row["path"] for row in live_rows] == [
+        str(item.entry.path) if item.entry is not None else None for item in decided.items
+    ]
+    assert [row["status"] for row in live_rows] == [
+        "on_air",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+        "predicted",
+    ]
+    assert live_view["counts"]["fixed"] == 1
+    overlapping = replace(
+        decided,
+        items=tuple(
+            replace(item, starts=NOW - 1)
+            if item.kind == "song" and item.status == "ready"
+            else item
+            for item in decided.items
+        ),
+    )
+    overlap_view = build_preview(source, 30, desk=desk, now=NOW, decided=overlapping)
+    overlap_row = next(row for row in overlap_view["items"] if row["path"] == str(gold[1].path))
+    assert overlap_row["status"] == "predicted" and not overlap_row["fixed"]
+
+    # A wall-clock estimate can pass while the bus is still held on an
+    # underrun; only the mix bus's heard-next signal fixes the overlap.
+    player._heard_next_entry = True
+    heard = read_station(player, desk, now=NOW)
+    heard_view = build_preview(source, 30, desk=desk, now=NOW, decided=heard)
+    heard_row = next(row for row in heard_view["items"] if row["path"] == str(gold[1].path))
+    assert heard_row["status"] == "on_air" and heard_row["fixed"]
+    player._heard_next_entry = False
+    player.live_mixing = False
+
+    # A customized frozen slot order must be the same in the fixed rows and
+    # in the audio-review handoff, without asking the live chooser again.
+    plan = player._slot_plan
+    plan.transition_items = (
+        TransitionItem("liner-1", "liner", "automatic", "Station ID", entry=ident),
+        TransitionItem(
+            "break:b1", "booked_voice", "voice_track", "Voice track", committed=True, editable=False
+        ),
+    )
+    plan.transition_order = ("break:b1", "liner-1")
+    rng_before = copy.deepcopy(player._rng.bit_generator.state)
+    monkeypatch.setattr(hour_preview, "_captured_render", lambda *_args: {})
+    customized = read_station(player, desk, now=NOW, capture_audio=True)
+    open_rows = [item for item in customized.items if item.in_handoff and item.starts >= NOW + 535]
+    assert [(item.kind, item.starts) for item in open_rows[:2]] == [
+        ("break", pytest.approx(NOW + 535)),
+        ("liner", pytest.approx(NOW + 547)),
+    ]
+    incoming = next(item for item in customized.items if item.entry is power[3]).incoming_handoff
+    assert incoming is not None
+    assert incoming.transition_order == ("break:b1", "liner-1")
+    assert [entry.path for entry, _queued in incoming.liners] == [ident.path]
+    assert [item.break_id for item in incoming.breaks] == ["b1"]
+    assert player._rng.bit_generator.state == rng_before
+
 
 def test_fixed_open_clockwheel_step_is_predicted_until_booked(tmp_path: Path) -> None:
     from autodj.ads import Forecast
@@ -811,7 +906,7 @@ def test_fixed_open_clockwheel_step_is_predicted_until_booked(tmp_path: Path) ->
     player.bus = object()
     player._playing_render = _render(gold[0], 200, gold[1], 5)
     player._playback_pos[0] = round(50 * SR)
-    player._render_ahead._ready = _render(gold[1], 190, gold[2], 5)
+    player._playout._ready = _render(gold[1], 190, gold[2], 5)
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
@@ -939,7 +1034,7 @@ def test_fixed_render_keeps_its_actual_rate_after_the_setting_changes(tmp_path: 
     player.bus = object()
     player._playing_render = playing
     player._playback_pos[0] = round(50 * 0.9 * SR)
-    player._render_ahead._ready = ready
+    player._playout._ready = ready
     player._pending_entry = gold[2]
     player._pending_offset = round(5 * SR)
     player._cursor_serial = 7
@@ -1840,6 +1935,30 @@ def test_fixed_matched_intro_keeps_its_safe_asset_identity():
     assert absent[0].details_entry is None
 
 
+def test_frozen_transition_preview_skips_cancelled_and_replaced_items():
+    kept = SimpleNamespace(path="kept.wav", length=6.0)
+    replaced = SimpleNamespace(path="replaced.wav", length=4.0)
+    plan = SimpleNamespace(
+        transition_order=("break:gone", "old", "kept"),
+        transition_replaced=("old",),
+        transition_items=(
+            TransitionItem(
+                "break:gone", "booked_voice", "voice_track", "Cancelled", committed=True
+            ),
+            TransitionItem("old", "liner", "queued", "Replaced", entry=replaced),
+            TransitionItem("kept", "liner", "clockwheel", "Kept", entry=kept),
+        ),
+    )
+    frozen = hour_preview._frozen_transition_contents(plan, ())
+    assert frozen is not None
+    ordered, liners, intro = frozen
+    assert ordered == [("liner", kept)]
+    assert liners == ((kept, True),)
+    assert intro is None
+    plan.transition_order = ()  # reset/stale plan follows legacy selection
+    assert hour_preview._frozen_transition_contents(plan, ()) is None
+
+
 @pytest.mark.parametrize("talk_up", [False, True])
 def test_automatic_liners_are_predicted_with_isolated_trigger_counts(tmp_path, talk_up):
     from autodj.liner_scheduler import LinerScheduler
@@ -1988,6 +2107,7 @@ def test_hard_stream_stop_trims_a_predicted_liner_overlay(tmp_path):
         liners=[],
         playback={
             "pick_mode": "random",
+            "transition_mode": "fixed",
             "liners_enabled": True,
             "liners_every_n_songs": 1,
             "liners_talk_up": False,

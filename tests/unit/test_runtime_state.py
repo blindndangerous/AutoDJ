@@ -12,7 +12,7 @@ import pytest
 
 from autodj._bridge import PlayerBridge
 from autodj.config import DmcaConfig, NowPlayingConfig
-from autodj.player import PlayerState
+from autodj.player import Player, PlayerState
 from autodj.repeat_settings import RepeatRule, RepeatSettings
 from autodj.runtime_state import (
     STATE_VERSION,
@@ -21,7 +21,25 @@ from autodj.runtime_state import (
     save_from_player,
     state_file_for,
 )
+from autodj.station_settings import StationSettings
 from tests._layout import layout_index, point_index
+
+
+class SettingsPlayer(SimpleNamespace):
+    """Use the real settings aliases instead of maintaining a second fixture state."""
+
+    _preset = Player._preset
+    _bpm_range = Player._bpm_range
+    _anchor_to_seed = Player._anchor_to_seed
+    _eq_low = Player._eq_low
+    _eq_mid = Player._eq_mid
+    _eq_high = Player._eq_high
+    _discovery_every = Player._discovery_every
+
+    def __init__(self, **values):
+        self._cfg = values["_cfg"]
+        self._settings = StationSettings(self._cfg)
+        super().__init__(**values)
 
 
 def _make_player() -> SimpleNamespace:
@@ -94,9 +112,8 @@ def _make_player() -> SimpleNamespace:
         dmca=DmcaConfig(),
         presets={},
     )
-    return SimpleNamespace(
+    return SettingsPlayer(
         _cfg=cfg,
-        _pure_shuffle=False,
         _anchor_to_seed=False,
         _bpm_range=None,
         _preset=None,
@@ -428,9 +445,9 @@ class TestLoadInto:
     def test_restore_does_not_refresh_render_ahead(self, tmp_path) -> None:
         _write_state(tmp_path, {"playback": {"crossfade_seconds": 5.0}, "discovery_every": 7})
         p = _make_player()
-        p.refresh_render_ahead = MagicMock()
+        p.refresh_playout = MagicMock()
         _load(p, tmp_path)
-        p.refresh_render_ahead.assert_not_called()
+        p.refresh_playout.assert_not_called()
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_discovery_button_state_survives_a_restart(self, tmp_path, enabled) -> None:
@@ -539,7 +556,7 @@ class TestLoadInto:
 
         settings = PlayerBridge(player, player._sim).get_settings()["playback"]
         assert STATE_VERSION == 2
-        assert player._pure_shuffle is False
+        assert player._cfg.playback.pick_mode != "random"
         assert settings["pick_mode"] == "least_recent"
         assert settings["loudness_processing"] == "smooth"
         assert player._cfg.replaygain.enabled is False
@@ -551,7 +568,7 @@ class TestLoadInto:
         _load(player, tmp_path)
 
         settings = PlayerBridge(player, player._sim).get_settings()["playback"]
-        assert player._pure_shuffle is True
+        assert player._cfg.playback.pick_mode == "random"
         assert player._cfg.replaygain.enabled is True
         assert settings["pick_mode"] == "random"
         assert settings["loudness_processing"] == "replaygain"
@@ -622,7 +639,7 @@ class TestRoundTrip:
         p1._cfg.playback.crossfade_seconds = 6.0
         p1._cfg.playback.fade_in_seconds = 1.5
         p1._cfg.playback.crossfade_eq_duck = True
-        p1._pure_shuffle = True
+        p1._cfg.playback.pick_mode = "random"
         p1._anchor_to_seed = True
         p1._cfg.replaygain.enabled = True
         p1._cfg.playback.transition_mode = "fixed"

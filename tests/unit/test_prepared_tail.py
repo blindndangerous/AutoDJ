@@ -154,8 +154,8 @@ def test_queue_held_refresh_defers_validation_to_coalesced_control_task(tmp_path
             await task
         called.clear()
         with source.player._state.queue_lock:
-            source.player.refresh_render_ahead()
-            source.player.refresh_render_ahead()
+            source.player.refresh_playout()
+            source.player.refresh_playout()
             assert called == []
         await asyncio.sleep(0)
         for task in list(runner._tasks):
@@ -263,7 +263,7 @@ def test_boundary_crossed_after_edit_preflight_freezes_current_run_approval(tmp_
     assert "current committed audio continues" in status["committed_audio_notice"]
     assert not runner.prepared_editable(editions.plan.edition_id)
     # Following uncommitted PCM has no stale fallback to the old approval.
-    assert source.player._render_ahead.pop() is None
+    assert source.player._playout.pop() is None
     np.testing.assert_array_equal(bus.render_block(), old.audio[boundary : boundary + MixBus.BLOCK])
 
 

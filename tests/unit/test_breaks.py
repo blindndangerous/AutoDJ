@@ -285,10 +285,10 @@ def test_turning_breaks_off_drops_only_the_waiting_uploads(desk):
     emptied: list[str] = []
     desk.on_slot_empty = emptied.append
 
-    assert desk.drop_waiting_breaks("breaks were turned off in Settings") == 2
+    assert desk.drop_waiting_breaks("breaks were turned off in Settings") == 1
     assert desk.get(waiting.break_id).state == DROPPED
-    assert desk.get(voice.break_id).reason == "breaks were turned off in Settings"
-    # The ad schedule's spot and the break already mixed in stay; the
+    assert desk.get(voice.break_id).state == QUEUED
+    # Manual voice tracks, the ad schedule's spot and the break already mixed in stay; the
     # slot still holds the ad, so it stays pinned.
     assert desk.get(ad.break_id).state == QUEUED
     assert desk.get(mixed.break_id).state == RENDERED

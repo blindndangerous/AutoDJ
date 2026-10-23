@@ -21,6 +21,11 @@ CC-BY-NC-4.0 license; consult [model details](../contributor/model-selection.md)
 and the [setup guide](../setup.md) before running analysis. This lesson does not
 switch models or establish commercial-use permission.
 
+The preparation steps below run local model analysis. If you chose no-model
+setup, first [enable a model-capable runtime](../setup.md#no-model-installation),
+then return to this lesson. Existing compatible analysis remains usable in
+no-model mode, but it does not make that mode able to analyse new songs locally.
+
 **Advanced analysis** saves information about how each song sounds so the picker
 can compare it with other songs. The first run may download model files and
 requires network access; later cached runs can still be slow. Hardware, library

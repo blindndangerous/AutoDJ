@@ -1225,8 +1225,8 @@ class AdDesk:
             self._ask_for_plan()
 
     def _ask_for_plan(self) -> None:
-        """Have the render-ahead worker plan the open song change now, not after the next song."""
-        ahead = getattr(self.player, "_render_ahead", None)
+        """Wake the playout controller when an ad slot may need preparation."""
+        ahead = getattr(self.player, "_playout", None)
         request_plan = getattr(ahead, "request_plan", None)
         if request_plan is not None:
             request_plan()
@@ -1712,7 +1712,23 @@ class AdDesk:
                 return [self._run_missed(run, "its ad break was deleted", now)]
             if not item.enabled and run.source == "schedule":
                 return [self._run_missed(run, "its ad break is turned off", now)]
-            return self._book_item(run, item, plan.slot_id, now, airs_in, expires, state)
+            return self._book_item(
+                run,
+                item,
+                plan.slot_id,
+                now,
+                airs_in,
+                expires,
+                state,
+                transition_revision=self._slot_revision(plan),
+            )
+
+    def _slot_revision(self, plan: Any) -> str | None:
+        """Return the current commit revision for *plan*, including new bookings."""
+        revision = getattr(self.player, "_transition_revision", None)
+        if callable(revision):
+            return revision(plan)
+        return getattr(plan, "transition_revision", "") or None
 
     def _book_item(
         self,
@@ -1726,6 +1742,7 @@ class AdDesk:
         *,
         advertiser: str = "",
         category: str = "",
+        transition_revision: str | None = None,
     ) -> list[PlayRecord] | None:
         """Select and book one run; caller holds ``_book_lock``."""
         from autodj.breaks import AD, AD_SCHEDULE, Break, BreakCues, BreakError
@@ -1771,7 +1788,7 @@ class AdDesk:
             for _key, spot in choice.spots
         ]
         try:
-            self.player.book_breaks(breaks, slot_id)
+            self.player.book_breaks(breaks, slot_id, transition_revision=transition_revision)
         except BreakError:
             return None  # the change closed as it was booked: the next one
         records = [
@@ -1838,8 +1855,17 @@ class AdDesk:
         records: list[PlayRecord] = []
         with self._book_lock:
             state = self.store.cached()
-            completed = self.handled_count(plan.slot_id)
-            for number, step in enumerate(plan.ad_steps[completed:], completed + 1):
+            slot_id = plan.slot_id
+            steps = plan.ad_steps
+            completed = self.handled_count(slot_id)
+            for number, step in enumerate(steps[completed:], completed + 1):
+                if number > completed + 1:
+                    # A prior step changed the committed-break portion of the
+                    # transition revision. Refresh the same open slot before
+                    # admitting the next batch; never reuse the old revision.
+                    plan, _closes_in, airs_in = self.player.slot_status()
+                    if plan is None or plan.slot_id != slot_id:
+                        return records
                 run = self._step_run(step, now + airs_in)
                 if refusal is not None:
                     records.append(self._run_missed(run, refusal, now))
@@ -1852,19 +1878,20 @@ class AdDesk:
                     result = self._book_item(
                         run,
                         item,
-                        plan.slot_id,
+                        slot_id,
                         now,
                         airs_in,
                         now + airs_in + state.settings.miss_after_minutes * 60,
                         state,
                         advertiser=step["step"].get("advertiser", ""),
                         category=step["step"].get("category", ""),
+                        transition_revision=self._slot_revision(plan),
                     )
                     if result is None:
                         return records
                     records.extend(result)
                 with self._lock:
-                    self._handled_steps[plan.slot_id] = number
+                    self._handled_steps[slot_id] = number
                     if len(self._handled_steps) > 64:
                         self._handled_steps.popitem(last=False)
         return records

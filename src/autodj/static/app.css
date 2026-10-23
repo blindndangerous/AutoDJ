@@ -1255,7 +1255,6 @@
     .settings-row label {
       min-width: 10rem;
     }
-    .music-speed-slider-row label { min-width: 0; }
     .settings-row input[type="number"] {
       width: 6rem;
     }
@@ -1842,7 +1841,6 @@
       .settings-row > *:not(input[type="checkbox"]) {
         width: 100%;
       }
-      #main-content .music-speed-slider-row > label { width: 1px; }
       .settings-row select,
       .settings-row input[type="number"],
       .settings-row input[type="text"] {
@@ -2280,4 +2278,21 @@ dialog h1 { font-size: 1.5em; }
 .editor-dialog .dialog-actions {
   margin-top: var(--control-gap);
 }
+/* Browse… dialog (modules/path-picker.js): the folder list scrolls inside
+   the dialog, so Cancel and Select stay on screen; each entry is a full-width
+   button so long names wrap rather than run off a narrow screen. */
+.path-picker-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--control-gap) 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.path-picker-list button {
+  width: 100%;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.path-picker #path-picker-location { overflow-wrap: anywhere; }
+.browse-button { margin-inline-start: var(--control-gap); }
 #track-info-error { margin: 0.5rem 0 1rem; color: var(--error-text); }

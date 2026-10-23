@@ -21,6 +21,9 @@ A new installation starts with an empty library. Importing does not move your fi
 1. Open the **Library tools** tab.
 2. Under **Music folders and Voice liner folders**, type the folder's full path in **Folder
    path**, such as `D:\Music` or `/srv/music`.
+   Or press **Browse…** beside it to choose a folder on the AutoDJ machine. In the dialog,
+   press Enter on a folder to open it, use **Up one folder** to go back, and press **Select
+   this folder**. **Cancel** or Escape leaves the field unchanged.
 3. Leave **Folder type** set to **Music**.
 4. Leave **Add subfolders** ticked to include every folder inside it.
 5. Leave **Perform advanced analysis** ticked unless you have a reason not to (see below).
@@ -44,6 +47,14 @@ AutoDJ works through new songs in three steps. You can play music while it works
 
 Then, for folders with **Perform advanced analysis** ticked, AutoDJ runs **advanced analysis** in
 the background, one song at a time.
+
+With [no-model setup](../setup.md#no-model-installation), basic import and audio
+preparation still run, but local model analysis stays pending. `autodj index`
+finishes successfully and reports that pending work without downloading weights.
+Use categories, clockwheels or queues for songs without advanced analysis. To
+analyse them locally later, follow the setup guide's runtime upgrade steps.
+Remote analysis requires an existing compatible model cache on the server;
+see [worker requirements](operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
 
 ### Why advanced analysis matters
 

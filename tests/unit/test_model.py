@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+pytest.importorskip("torch")
+
 from autodj.config import IndexConfig, ModelConfig
 from autodj.model import (
     EMBEDDING_DIM,

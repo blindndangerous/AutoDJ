@@ -178,3 +178,82 @@ describe("Play now over a DMCA limit", () => {
     expect(announced()).toBe("");
   });
 });
+
+describe("upcoming voice track choices", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("retries Play next with the chosen action and exact conflict revision", async () => {
+    const dialog = mount();
+    const posts = stubServer(
+      [{ detail: { code: "voice_track_conflict", revision: "rev-1", message: "A voice track is due." } }, 409],
+      [{ ok: true }, 200],
+    );
+    (await resultButton("Play next")).click();
+
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    expect(byId("confirm-title").textContent).toBe("Upcoming voice track");
+    expect(byId("confirm-message").textContent)
+      .toBe("A voice track is due. Keep the voice track with this change?");
+    expect([...dialog.querySelectorAll("button")].map((button) => button.textContent))
+      .toEqual(["Keep voice track", "Discard voice track", "Cancel change"]);
+    byId("confirm-accept").click();
+
+    await vi.waitFor(() => expect(announced()).toBe("Come Together plays next."));
+    expect(posts()).toEqual([
+      ["/api/play-next", { path: "a.flac", now: false }],
+      ["/api/play-next", {
+        path: "a.flac", now: false, voice_action: "keep", voice_revision: "rev-1",
+      }],
+    ]);
+    expect([...dialog.querySelectorAll("button")].map((button) => button.id))
+      .toEqual(["confirm-cancel", "confirm-accept"]);
+  });
+
+  it("asks again for a newer conflict and preserves DMCA confirmation", async () => {
+    const dialog = mount();
+    const posts = stubServer(
+      [{ detail: { code: "voice_track_conflict", revision: "rev-1" } }, 409],
+      [{ detail: WARNING, field: "confirm" }, 409],
+      [{ detail: { code: "voice_track_conflict", revision: "rev-2" } }, 409],
+      [{ ok: true }, 200],
+    );
+    (await resultButton("Play next")).click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    byId("confirm-accept").click();
+
+    await vi.waitFor(() => expect(byId("confirm-title").textContent).toBe("Over the DMCA limit"));
+    byId("confirm-accept").click();
+    await vi.waitFor(() => expect(byId("confirm-title").textContent).toBe("Upcoming voice track"));
+    expect(byId("confirm-message").textContent).toBe("Keep the voice track with this change?");
+    [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Discard voice track").click();
+
+    await vi.waitFor(() => expect(announced()).toBe("Come Together plays next, over the DMCA limit."));
+    expect(posts()).toEqual([
+      ["/api/play-next", { path: "a.flac", now: false }],
+      ["/api/play-next", {
+        path: "a.flac", now: false, voice_action: "keep", voice_revision: "rev-1",
+      }],
+      ["/api/play-next", {
+        path: "a.flac", now: false, confirm: true, voice_action: "keep", voice_revision: "rev-1",
+      }],
+      ["/api/play-next", {
+        path: "a.flac", now: false, confirm: true, voice_action: "discard", voice_revision: "rev-2",
+      }],
+    ]);
+  });
+
+  it("cancels without retrying the mutation", async () => {
+    const dialog = mount();
+    const posts = stubServer(
+      [{ detail: { code: "voice_track_conflict", revision: "rev-1" } }, 409],
+    );
+    (await resultButton("Play next")).click();
+    await vi.waitFor(() => expect(dialog.open).toBe(true));
+    byId("confirm-cancel").click();
+
+    await vi.waitFor(() => expect(announced()).toBe("Come Together was not queued."));
+    expect(posts()).toEqual([["/api/play-next", { path: "a.flac", now: false }]]);
+  });
+});

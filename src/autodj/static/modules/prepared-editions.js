@@ -7,8 +7,10 @@ import { fmtTime } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { stationApi, stationEpoch } from "./stations.js";
 import {
-  BROWSER_MAX_SECONDS, INSECURE_TEXT, NO_RECORDER_TEXT, microphoneProblem, recordingToWav,
+  INSECURE_TEXT, NO_RECORDER_TEXT, microphoneProblem, recordingToWav,
 } from "./voice-tracker.js";
+
+const RECORDING_SECONDS = 180;
 
 export function installPreparedEditions({
   doc = document, request = requestJson, announce = null, onChange = () => {},
@@ -339,11 +341,11 @@ export function installPreparedEditions({
       recorder.addEventListener("error", () => { session.failed = true; finish(session); });
       stopAudio(); recording = session; recorder.start(1000); starting = false;
       get("record").textContent = "Stop recording"; get("record").setAttribute("aria-pressed", "true");
-      timer = setTimer(() => stopRecording(), BROWSER_MAX_SECONDS * 1000);
+      timer = setTimer(() => stopRecording(), RECORDING_SECONDS * 1000);
       const began = Date.now();
       get("elapsed").textContent = "0:00 / 3:00";
       clock = setInterval(() => {
-        get("elapsed").textContent = `${fmtTime(Math.min(BROWSER_MAX_SECONDS, (Date.now() - began) / 1000))} / 3:00`;
+        get("elapsed").textContent = `${fmtTime(Math.min(RECORDING_SECONDS, (Date.now() - began) / 1000))} / 3:00`;
       }, 1000);
       say("Recording. Stop recording when finished; the microphone stops at 3:00.");
     } catch (error) {

@@ -60,11 +60,11 @@ def build(root: Path, port: int):
 
     from autodj import review_source
     from autodj._bridge import PlayerBridge
-    from autodj.server import create_app
     from autodj.shows import Show, ShowStore
     from autodj.station_settings import StationSettings
     from autodj.stations import StationPaths
     from tests._layout import point_index
+    from tests._server import create_app
     from tests.integration._helpers import _make_player_mock, _make_sim_mock
     from tests.unit._rotation_station import make_station, song
 
@@ -127,7 +127,10 @@ def build(root: Path, port: int):
     )
     static = Path(__file__).resolve().parents[2] / "src/autodj/static"
     html = re.sub(
-        r"<script\b[^>]*>.*?</script>", "", (static / "index.html").read_text(), flags=re.S
+        r"<script\b[^>]*>.*?</script>",
+        "",
+        (static / "index.html").read_text(encoding="utf-8"),
+        flags=re.S,
     )
     html = html.replace("</body>", '<script type="module" src="/review-audit.js"></script></body>')
 
@@ -138,6 +141,8 @@ def build(root: Path, port: int):
     @app.get("/review-audit.js")
     async def audit_script():
         return Response(
+            'import { initViewRouter } from "/modules/tabs.js";\n'
+            "initViewRouter();\n"
             'import { installProgrammeReview } from "/modules/programme-review.js";\n'
             "window.reviewAudit = installProgrammeReview();\n",
             media_type="text/javascript",

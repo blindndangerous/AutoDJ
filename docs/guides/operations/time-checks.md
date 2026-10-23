@@ -19,8 +19,8 @@ the first source that has the minute: a ticked voice pack, then a recorded minut
 text to speech. A missing or unreadable file only moves on to the next source; it never stops
 the music. It plays like a
 voice liner, with the liner duck depth. After the hour, in server audio or stream mode, it takes
-the place of the automatic liner due at that song change and uses **Talk up to the vocal** when
-the clip fits before the singing. When a talk-up liner is already playing over the crossfade
+the place of the automatic liner due at that song change. This live time-check path retains the
+legacy `[playback] liners_talk_up` timing when configured and the clip fits before the singing. When a talk-up liner is already playing over the crossfade
 into that song, the check waits for the following song rather than cutting the liner off. In
 browser playback the page plays it when the next song starts; there it does not replace a voice
 liner due at the same song change, so the two can overlap. The **Play a time check now** button plays one straight away: on the server in server

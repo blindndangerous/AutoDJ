@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 
 from autodj import rotation_api
 from autodj.rotation_sim import SimulationRequest
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 from tests.unit._rotation_station import category_step, make_station, song
 
 NOON = datetime(2026, 10, 12, 12, 0, tzinfo=UTC).timestamp()

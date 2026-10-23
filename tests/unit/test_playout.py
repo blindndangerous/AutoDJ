@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from autodj.playout import liner_chain_placement, liner_chain_timing, render_handoff
+from autodj.playout import (
+    liner_chain_placement,
+    liner_chain_timing,
+    plan_handoff,
+    render_handoff,
+)
 from autodj.stereo import SAMPLE_RATE
 
 
@@ -48,6 +53,62 @@ def test_fade_starts_a_third_length_before_segue_and_keeps_one_second_tail():
     assert handoff.audio[-1, 0] == pytest.approx(1 - np.expm1(1.0) / np.expm1(3.0), abs=1e-5)
     assert handoff.next_overlay[0, 0] < 1.0
     assert handoff.next_overlay[-1, 0] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_pure_handoff_plan_matches_render_geometry_and_duck_tail():
+    outgoing_points = {"start": 0, "outro": 5, "segue": 8, "end": 12}
+    incoming_points = {"start": 0, "intro": 4}
+    plan = plan_handoff(
+        12 * SAMPLE_RATE,
+        outgoing_points,
+        incoming_points,
+        fade_seconds=1.5,
+        liner_frames=6 * SAMPLE_RATE,
+        overlap_start=0,
+        outro_lead_limit=None,
+        duck_spans=((0.0, 6.0),),
+        duck_db=-6.0,
+    )
+    rendered = render_handoff(
+        audio(12),
+        outgoing_points,
+        incoming_points,
+        fade_seconds=1.5,
+        liner=audio(6),
+        overlap_start=0,
+        outro_lead_limit=None,
+        duck_spans=((0.0, 6.0),),
+        duck_db=-6.0,
+    )
+
+    assert (
+        plan.chunk_start,
+        plan.start_frame,
+        plan.end_frame,
+        plan.segue_frame,
+        plan.incoming_frame,
+        plan.next_start_offset,
+        plan.liner_start,
+        plan.fade_start,
+        plan.fade_end,
+        plan.overlay_end,
+    ) == (
+        0,
+        0,
+        12 * SAMPLE_RATE,
+        8 * SAMPLE_RATE,
+        8 * SAMPLE_RATE,
+        0,
+        6 * SAMPLE_RATE,
+        round(7.5 * SAMPLE_RATE),
+        round(9 * SAMPLE_RATE),
+        round(12.25 * SAMPLE_RATE),
+    )
+    assert rendered.start_offset == plan.chunk_start
+    assert rendered.next_start_offset == plan.next_start_offset
+    assert rendered.segue_s * SAMPLE_RATE == plan.segue_frame
+    assert rendered.incoming_s * SAMPLE_RATE == plan.incoming_frame
+    assert len(rendered.full_audio) == plan.overlay_end - plan.chunk_start
 
 
 def test_start_and_end_clamp_retained_region_and_short_tail_shortens_fade():

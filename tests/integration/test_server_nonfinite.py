@@ -80,7 +80,7 @@ def test_hand_edited_profile_with_non_finite_value_is_refused(bridge, tmp_path) 
     """A profile file is plain JSON, which Python reads NaN and Infinity from."""
     from fastapi.testclient import TestClient
 
-    from autodj.server import create_app
+    from tests._server import create_app
 
     point_index(bridge.player._cfg.index, str(tmp_path / "idx"))
     profiles = tmp_path / "idx" / "stations" / "default" / "profiles"

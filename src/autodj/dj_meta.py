@@ -158,11 +158,22 @@ def detect_intro_outro(
             intro_end = i * rms_window_s
             break
 
-    # Backward walk for outro start
+    # Short vocal bursts can disappear in a half-second average.
     outro_start = duration
     for i in range(len(rms_norm) - 1, -1, -1):
         if rms_norm[i] >= quiet_threshold:
             outro_start = (i + 1) * rms_window_s
+            break
+        block = blocks[i]
+        short_win = max(1, round(0.05 * sr))
+        short_rms = max(
+            np.sqrt(np.mean(block[start : start + short_win] ** 2) + 1e-12)
+            for start in range(0, len(block), short_win)
+        )
+        # shortcut: burst energy is not vocal recognition; preview unusual quiet endings.
+        if short_rms >= ref * 0.05 and short_rms >= rms[i] * 1.6:
+            audible = np.flatnonzero(np.abs(audio) >= 1e-3)
+            outro_start = (int(audible[-1]) + 1) / sr if len(audible) else duration
             break
 
     # Sanity: if outro_start <= intro_end the track is too short / weird.

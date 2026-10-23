@@ -11,7 +11,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 

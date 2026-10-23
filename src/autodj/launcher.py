@@ -11,7 +11,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE = Path(".uv/setup.json")
-BACKENDS = {"amd", "nvidia", "cpu"}
+BACKENDS = {"amd", "nvidia", "cpu", "no-model"}
 
 
 def _python_path(environment: Path) -> Path:
@@ -115,8 +115,12 @@ def main() -> int:
         if selected is not None:
             environment, backend = selected
             child_environment = os.environ.copy()
-            if backend == "cpu":
+            if backend != "no-model":
+                child_environment.pop("AUTODJ_NO_MODEL", None)
+            if backend in {"cpu", "no-model"}:
                 child_environment["AUTODJ_GPU"] = "0"
+                if backend == "no-model":
+                    child_environment["AUTODJ_NO_MODEL"] = "1"
             elif backend == "amd":
                 for relative, variable in (
                     ("miopen/db", "MIOPEN_USER_DB_PATH"),
@@ -134,7 +138,14 @@ def main() -> int:
                 )
                 return completed.returncode
             # Apply device/cache policy even when already in the selected runtime.
-            for variable in ("AUTODJ_GPU", "MIOPEN_USER_DB_PATH", "MIOPEN_CUSTOM_CACHE_DIR"):
+            if backend != "no-model":
+                os.environ.pop("AUTODJ_NO_MODEL", None)
+            for variable in (
+                "AUTODJ_GPU",
+                "AUTODJ_NO_MODEL",
+                "MIOPEN_USER_DB_PATH",
+                "MIOPEN_CUSTOM_CACHE_DIR",
+            ):
                 if variable in child_environment:
                     os.environ[variable] = child_environment[variable]
     except KeyboardInterrupt:

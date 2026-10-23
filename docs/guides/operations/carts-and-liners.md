@@ -46,6 +46,8 @@ A cart can also have play dates; see [Liner and cart play dates](#liner-and-cart
 ## Liner cue points
 
 Track info shows a liner's cue points as Start, Segue, End and Overlap start.
+In server saved-point playback, automatic interval liners use these same cues and handoff
+rules as queued liners; no separate talk-up setting is required.
 
 - **Segue** marks the end of the liner's main content. **End** keeps the rest of its tail.
 - **Allow start over outro**: unchecked, the liner starts at the outgoing song's Segue. Checked, it

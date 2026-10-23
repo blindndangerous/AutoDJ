@@ -19,7 +19,7 @@ from autodj.breaks_api import NEEDS_SAVED_POINTS
 from autodj.config import BreaksConfig
 from autodj.machine_tokens import SCOPE_ANNOUNCER
 from autodj.runtime_state import load_into_bridge
-from autodj.server import create_app
+from tests._server import create_app
 from tests.unit._break_station import make_station, start_station
 from tests.unit.test_breaks_api import LOCAL, Station
 from tests.unit.test_library import make_config

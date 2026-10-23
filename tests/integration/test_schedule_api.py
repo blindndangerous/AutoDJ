@@ -14,8 +14,9 @@ from fastapi.testclient import TestClient
 from autodj.clockwheel_store import ClockwheelStore
 from autodj.liner_scheduler import LinerDecodeError
 from autodj.profiles import ProfileSnapshot, ProfileStore
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 

@@ -237,7 +237,7 @@ class TestApplyLiners:
         from unittest.mock import MagicMock
 
         refresh = MagicMock()
-        monkeypatch.setattr(bridge.player, "refresh_render_ahead", refresh)
+        monkeypatch.setattr(bridge.player, "refresh_playout", refresh)
         bridge.set_playback_settings(PlaybackSettingsBody(liners_enabled=True))
         refresh.assert_called_once_with()
 

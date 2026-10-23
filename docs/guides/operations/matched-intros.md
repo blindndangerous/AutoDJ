@@ -134,7 +134,8 @@ place in the same way, and gives way in the same way to a DJ break and to **Only
 scheduled**. A song change that is rendered again, or that ended before its intro aired, gives the
 rule back for the next one.
 
-Rules are chosen on the render-ahead thread, one song ahead, never on the audio thread. Measured on
+Rules are chosen by the background playout preparation worker, never on the audio thread. The
+streaming path uses its live playout worker; local playback keeps render-ahead preparation. Measured on
 Windows with Python 3.14 and synthetic data (no audio decoded), 100 rules of two conditions each
 took 3.3 ms median and 6.9 ms at the 95th percentile per song change against 1,000 songs, and 4.2
 ms and 9.0 ms against 50,000; the music library's size does not enter the checks. A liner folder's

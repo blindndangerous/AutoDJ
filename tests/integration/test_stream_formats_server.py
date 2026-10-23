@@ -10,11 +10,11 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import StreamFormat
 from autodj.stream_mounts import StreamMounts
 from tests._layout import point_index
+from tests._server import create_app
 
 
 def _output(first: bytes, bitrate: int = 320) -> MagicMock:

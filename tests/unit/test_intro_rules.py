@@ -42,6 +42,47 @@ def rule(**changes):
     )
 
 
+def test_frozen_rule_replays_draws_only_when_the_chosen_clip_is_heard(tmp_path: Path) -> None:
+    def day_at(_at):
+        return date(2026, 10, 13)
+
+    live_rng = random.Random(3)
+    matched = MatchedIntros(
+        tmp_path / "matched_intros.json",
+        tmp_path / "intros",
+        day_at=day_at,
+        rng=live_rng,
+    )
+    rules = IntroRules(tmp_path / "intro_rules.json", day_at, live_rng)
+    key = "a" * 32
+    rules.save(key, rule(chance=100, cooldown_minutes=0), create=True)
+    matched.rules = rules
+    initial = live_rng.getstate()
+    snapshot = matched.snapshot(record_rng=True)
+    mark = snapshot._rng.mark()
+    chosen = snapshot.rules.choose(
+        SimpleNamespace(path=str(tmp_path / "song.flac"), genre="Rock", year=1995),
+        NOW,
+        library(tmp_path),
+    )
+    assert chosen is not None and chosen.intro_id == f"rule:{key}"
+    draws = snapshot._rng.since(mark)
+    assert draws
+    assert live_rng.getstate() == initial
+
+    expected = random.Random()
+    expected.setstate(initial)
+    for draw in draws:
+        expected.random() if draw is None else expected.getrandbits(draw)
+    matched.heard(chosen.intro_id, draws)
+    assert live_rng.getstate() == initial
+    matched.upkeep()
+    committed = live_rng.getstate()
+    assert committed == expected.getstate()
+    matched.upkeep()
+    assert live_rng.getstate() == committed
+
+
 def test_rule_matches_genre_year_and_beets_with_cooldown(tmp_path: Path) -> None:
     store = IntroRules(
         tmp_path / "intro_rules.json", lambda at: date(2026, 10, 13), random.Random(1)

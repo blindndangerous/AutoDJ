@@ -487,7 +487,6 @@ def generate(
         override = None
     cfg = copy.deepcopy(snapshot.cfg)
     cfg.playback.pick_mode = "clock"
-    settings = {**snapshot.settings, "_pure_shuffle": False}
     run = replace(
         source,
         events=(),
@@ -495,7 +494,6 @@ def generate(
         snapshot=replace(
             snapshot,
             cfg=cfg,
-            settings=settings,
             discovery_enabled=False,
             clock={"name": clock_name, "cursor": 0},
             clock_status=None,

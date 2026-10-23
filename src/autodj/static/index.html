@@ -350,48 +350,6 @@
     <p id="library-problem" hidden></p>
   </details>
 
-  <details class="card" id="review-card">
-    <summary><h2>Programme review</h2></summary>
-    <p class="setting-desc">Privately review planned audio before broadcast mastering; future broadcast choices can differ.</p>
-    <form id="review-form" novalidate>
-      <div class="settings-row"><label for="review-source">Source</label>
-        <select id="review-source"><option value="show">Saved show</option><option value="queue">Current queue</option><option value="forecast">Forecast</option></select>
-      </div>
-      <div class="settings-row" id="review-show-row"><label for="review-show">Show</label><select id="review-show"></select></div>
-      <div class="settings-row"><label for="review-start">Intended start</label><input id="review-start" type="datetime-local" aria-describedby="review-start-hint"></div>
-      <p class="setting-desc" id="review-start-hint">Optional browser-local time; automatic content uses station time. Blank starts now.</p>
-      <div class="settings-row"><label for="review-minutes">Programme minutes</label><input id="review-minutes" type="number" min="1" max="60" step="1" value="60" required></div>
-      <div class="settings-row"><label for="review-selection-start">Range start (seconds)</label><input id="review-selection-start" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
-      <div class="settings-row"><label for="review-selection-end">Range end (seconds)</label><input id="review-selection-end" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
-      <p class="setting-desc" id="review-range-hint">Leave both blank for the full programme; boundaries expand to preserve complete clips and joins.</p>
-      <details><summary>Review timing</summary>
-        <div class="settings-row"><label for="review-head">Opening (seconds)</label><input id="review-head" type="number" min="0.001" max="3600" step="any" value="10" required></div>
-        <div class="settings-row"><label for="review-tail">Ending (seconds)</label><input id="review-tail" type="number" min="0.001" max="3600" step="any" value="10" required></div>
-        <div class="settings-row"><label for="review-threshold">Long clip (seconds)</label><input id="review-threshold" type="number" min="0.001" max="86400" step="any" value="300" required></div>
-        <div class="settings-row"><label for="review-tone">Skip tone (seconds)</label><input id="review-tone" type="number" min="0.001" max="10" step="any" value="0.25" required></div>
-      </details>
-      <button type="submit" id="review-generate">Generate review</button>
-      <button type="button" id="review-cancel" hidden>Cancel generation</button>
-    </form>
-    <p id="review-status" role="status" aria-live="polite" aria-atomic="true"></p>
-    <div class="settings-row"><label for="review-snapshots">Saved review</label><select id="review-snapshots"></select></div>
-    <button type="button" id="review-refresh">Refresh reviews</button>
-    <button type="button" id="review-load">Load review</button>
-    <button type="button" id="review-delete">Delete review</button>
-    <section id="review-result" hidden>
-      <h3 id="review-heading" tabindex="-1">Review result</h3>
-      <p id="review-summary"></p>
-      <ul id="review-omissions" role="list"></ul>
-      <audio id="review-audio" controls preload="none" aria-label="Private programme review" data-preview-output></audio>
-      <div role="group" aria-label="Review navigation">
-        <button type="button" id="review-previous">Previous item</button><button type="button" id="review-next">Next item</button>
-      </div>
-      <ol id="review-items" role="list"></ol>
-      <a id="review-mp3" download>Download MP3</a>
-      <a id="review-wav" download>Download WAV</a>
-    </section>
-  </details>
-
   <!-- Hour preview (#126, hour-preview.js): what plays next, when it is
        expected to start, and how the hour lands against the top of the
        hour, clockwheel restarts and scheduled events.  Closed until opened,
@@ -404,7 +362,7 @@
        only a colour or a style. -->
   <details class="card" id="hour-preview-card">
     <summary><h2>Hour preview</h2></summary>
-    <p class="setting-desc" id="hour-preview-desc">Estimated start times. Fixed items are already decided; predicted items can change.</p>
+    <p class="setting-desc" id="hour-preview-desc">Estimated start times. Upcoming audio can change.</p>
     <div class="settings-row">
       <label for="hour-preview-span">Show</label>
       <select id="hour-preview-span">
@@ -568,8 +526,17 @@
         <small id="negative-overlap-help" hidden>A negative value delays this liner by up to 15 seconds, limited by the next song’s intro. Preview and Use preview position are unavailable for negative values.</small>
       </div>
       <button type="button" id="points-save" aria-describedby="shared-context">Save points</button>
+      <button type="button" id="points-rescan">Rescan cue points</button>
+      <section id="points-rescan-results" hidden>
+        <h4 id="points-rescan-heading" tabindex="-1">Proposed cue points</h4>
+        <p>User and imported cues start unchecked.</p>
+        <div id="points-rescan-comparison"></div>
+        <button type="button" id="points-rescan-apply">Apply selected</button>
+        <button type="button" id="points-rescan-discard">Discard</button>
+      </section>
       <audio id="points-preview" controls preload="none" aria-label="Song point preview" data-preview-output></audio>
     </details>
+    <p id="points-rescan-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <p id="points-status" role="status" aria-live="polite" aria-atomic="true"></p>
     <!-- Matched intros (modules/matched-intros.js, #127): voice clips that
          play as this song starts.  The lists change in place; a refused
@@ -1511,12 +1478,6 @@
         <input type="number" id="pb-music-speed-number" min="-10" max="10" step="0.01" value="0"
                inputmode="decimal">
       </div>
-      <div class="settings-row music-speed-slider-row">
-        <label for="pb-music-speed-slider" class="visually-hidden">Music speed</label>
-        <input type="range" id="pb-music-speed-slider" min="-10" max="10" step="0.01" value="0"
-              >
-        <output id="pb-music-speed-value" for="pb-music-speed-slider" aria-live="off">0%</output>
-      </div>
       <span class="setting-desc" id="pb-music-speed-desc">
         Adjust music speed from 10% slower to 10% faster.
       </span>
@@ -1761,11 +1722,11 @@
         How far the music drops under liners, from 0 to 30 dB. The default is 3 dB; 0 leaves music unchanged. Applies to overlays and scheduled IDs, with smooth fades down and back up.
       </span>
       <div class="settings-check">
-        <input type="checkbox" id="ln-talk-up">
-        <label for="ln-talk-up">Talk up to the vocal</label>
+        <input type="checkbox" id="ln-talk-up" aria-describedby="ln-talk-up-desc">
+        <label for="ln-talk-up">Talk up to the vocal (live server overlays)</label>
       </div>
       <span class="setting-desc" id="ln-talk-up-desc">
-        Time automatic liners to finish before the next song’s detected intro.
+        For non-saved-point liners and live time checks; saved-point automatic liners always use cues.
       </span>
       <button type="button" id="ln-test">Test now</button>
     </fieldset>
@@ -1977,10 +1938,10 @@
       <h4 id="brk-form-heading">Break settings</h4>
       <div class="settings-check">
         <input type="checkbox" id="brk-enabled" aria-describedby="brk-enabled-help">
-        <label for="brk-enabled">Take breaks on this station</label>
+        <label for="brk-enabled">Accept announcer uploads</label>
       </div>
       <span class="setting-desc" id="brk-enabled-help">
-        Off, the announcer program is told breaks are off, and new breaks and voice tracks are refused.  Turning breaks off drops the breaks still waiting for their song change; one already mixed into the next song change still plays.  Off by default.
+        Off, new announcer uploads are refused. Voice tracks can still be booked with server playback and saved-point transitions. Turning breaks off drops waiting announcer uploads; manual voice tracks and ad spots stay booked. Off by default.
       </span>
       <fieldset id="brk-placement">
         <legend>Where a DJ break goes</legend>
@@ -3045,9 +3006,6 @@
     <div id="voice-tracker">
       <p id="vt-help">
         Record a DJ break for the open song change, listen back, then book it.
-        The song change after the next song is the one still open: the next one is already mixed.
-        Your voice plays over the next song's intro (a talk-up) or between the songs.
-        Alt+R starts and stops recording.
       </p>
 
       <section class="card">
@@ -3056,43 +3014,47 @@
         <dl id="vt-slot" class="vt-facts" hidden>
           <dt>Ending song</dt><dd id="vt-ending"></dd>
           <dt>Next song</dt><dd id="vt-upcoming"></dd>
-          <dt>Intro of the next song</dt><dd id="vt-intro"></dd>
+          <dt>Time available</dt><dd id="vt-window"></dd>
+          <dt>Outro</dt><dd id="vt-outro"></dd>
+          <dt>Intro</dt><dd id="vt-intro"></dd>
           <dt>Time left to book</dt><dd id="vt-closes"></dd>
           <dt>Airs in about</dt><dd id="vt-airs"></dd>
         </dl>
+        <section id="vt-transition" hidden>
+          <h4 id="vt-transition-heading">Planned transition audio</h4>
+          <p id="vt-transition-summary"></p>
+          <ul id="vt-transition-items" role="list"></ul>
+        </section>
       </section>
 
       <section class="card">
         <h3 id="vt-record-heading">Record</h3>
         <!-- A refusal in words, linked to the control it is about. -->
         <p id="vt-error" class="field-error" hidden></p>
-        <button type="button" id="vt-record" aria-pressed="false" aria-describedby="vt-record-desc">Record</button>
-        <span class="setting-desc" id="vt-record-desc">
-          Press to start recording from your microphone, and again (or Alt+R) to stop.
-          The browser asks for the microphone the first time. Recording stops at 3 minutes,
-          or when you leave this tab or the page is hidden.
-        </span>
-        <p id="vt-timer">Not recording.</p>
+        <div class="settings-row">
+          <label for="vt-microphone">Microphone</label>
+          <select id="vt-microphone">
+            <option value="">System default</option>
+          </select>
+          <button type="button" id="vt-microphone-refresh">Refresh microphones</button>
+        </div>
+        <p id="vt-microphone-status" class="setting-desc" hidden></p>
+        <button type="button" id="vt-microphone-test" aria-pressed="false">Test microphone</button>
+        <audio id="vt-microphone-playback" preload="none" hidden data-preview-output></audio>
+        <button type="button" id="vt-record" aria-pressed="false">Record (Alt+R)</button>
+        <p id="vt-timer"></p>
         <!-- Played by Listen back, never shown: one named toggle instead of
              the browser's own player controls.  A preview, so it plays on
              the Preview output device (modules/preview-output.js). -->
         <audio id="vt-playback" preload="auto" hidden data-preview-output></audio>
         <div class="settings-row">
           <label for="vt-placement">Placement</label>
-          <select id="vt-placement" aria-describedby="vt-placement-desc">
-            <option value="auto">Automatic</option>
-            <option value="talk_up">Talk up the next song's intro</option>
-            <option value="standalone">Standalone, between the songs</option>
+          <select id="vt-placement">
+            <option value="auto">Fit over outro and intro</option>
+            <option value="standalone">Between songs</option>
           </select>
         </div>
-        <span class="setting-desc" id="vt-placement-desc"></span>
-        <div class="settings-check">
-          <input type="checkbox" id="vt-allow-outro" aria-describedby="vt-allow-outro-desc">
-          <label for="vt-allow-outro">Start over the ending song's outro</label>
-        </div>
-        <span class="setting-desc" id="vt-allow-outro-desc">
-          For a talk-up: your voice may begin while the ending song plays out, not only after it.
-        </span>
+        <p id="vt-fit" hidden></p>
         <div class="vt-actions">
           <button type="button" id="vt-listen" aria-pressed="false">Listen back</button>
           <button type="button" id="vt-book">Book voice track</button>
@@ -3412,6 +3374,16 @@
           <!-- A refused value's message, linked to the field while it shows. -->
           <p class="field-error" id="advanced-length-error" hidden></p>
           <button type="button" id="advanced-length-save">Save</button>
+        </fieldset>
+        <fieldset id="music-fade-drop-group">
+          <legend>Music fades</legend>
+          <div class="settings-row">
+            <label for="music-fade-drop">Music fade drop (dB)</label>
+            <input type="number" id="music-fade-drop" min="1" max="30" step="1" value="10" inputmode="numeric" aria-describedby="music-fade-drop-help">
+          </div>
+          <p class="setting-desc" id="music-fade-drop-help">Drop below normal level before a music fade qualifies.</p>
+          <p class="field-error" id="music-fade-drop-error" hidden></p>
+          <button type="button" id="music-fade-drop-save">Save</button>
         </fieldset>
         <fieldset id="auto-rescan">
           <legend>Automatic rescan every</legend>
@@ -3889,6 +3861,48 @@
       </form>
       <p id="intro-rules-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </details>
+
+  <details class="card" id="review-card">
+    <summary><h2>Programme review</h2></summary>
+    <p class="setting-desc">Privately review planned audio before broadcast mastering; future broadcast choices can differ.</p>
+    <form id="review-form" novalidate>
+      <div class="settings-row"><label for="review-source">Source</label>
+        <select id="review-source"><option value="show">Saved show</option><option value="queue">Current queue</option><option value="forecast">Forecast</option></select>
+      </div>
+      <div class="settings-row" id="review-show-row"><label for="review-show">Show</label><select id="review-show"></select></div>
+      <div class="settings-row"><label for="review-start">Intended start</label><input id="review-start" type="datetime-local" aria-describedby="review-start-hint"></div>
+      <p class="setting-desc" id="review-start-hint">Optional browser-local time; automatic content uses station time. Blank starts now.</p>
+      <div class="settings-row"><label for="review-minutes">Programme minutes</label><input id="review-minutes" type="number" min="1" max="60" step="1" value="60" required></div>
+      <div class="settings-row"><label for="review-selection-start">Range start (seconds)</label><input id="review-selection-start" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
+      <div class="settings-row"><label for="review-selection-end">Range end (seconds)</label><input id="review-selection-end" type="number" min="0" step="any" aria-describedby="review-range-hint"></div>
+      <p class="setting-desc" id="review-range-hint">Leave both blank for the full programme; boundaries expand to preserve complete clips and joins.</p>
+      <details><summary>Review timing</summary>
+        <div class="settings-row"><label for="review-head">Opening (seconds)</label><input id="review-head" type="number" min="0.001" max="3600" step="any" value="10" required></div>
+        <div class="settings-row"><label for="review-tail">Ending (seconds)</label><input id="review-tail" type="number" min="0.001" max="3600" step="any" value="10" required></div>
+        <div class="settings-row"><label for="review-threshold">Long clip (seconds)</label><input id="review-threshold" type="number" min="0.001" max="86400" step="any" value="300" required></div>
+        <div class="settings-row"><label for="review-tone">Skip tone (seconds)</label><input id="review-tone" type="number" min="0.001" max="10" step="any" value="0.25" required></div>
+      </details>
+      <button type="submit" id="review-generate">Generate review</button>
+      <button type="button" id="review-cancel" hidden>Cancel generation</button>
+    </form>
+    <p id="review-status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <div class="settings-row"><label for="review-snapshots">Saved review</label><select id="review-snapshots"></select></div>
+    <button type="button" id="review-refresh">Refresh reviews</button>
+    <button type="button" id="review-load">Load review</button>
+    <button type="button" id="review-delete">Delete review</button>
+    <section id="review-result" hidden>
+      <h3 id="review-heading" tabindex="-1">Review result</h3>
+      <p id="review-summary"></p>
+      <ul id="review-omissions" role="list"></ul>
+      <audio id="review-audio" controls preload="none" aria-label="Private programme review" data-preview-output></audio>
+      <div role="group" aria-label="Review navigation">
+        <button type="button" id="review-previous">Previous item</button><button type="button" id="review-next">Next item</button>
+      </div>
+      <ol id="review-items" role="list"></ol>
+      <a id="review-mp3" download>Download MP3</a>
+      <a id="review-wav" download>Download WAV</a>
+    </section>
+  </details>
   </section>
 
 <!-- Volume announcement region — only written on user-initiated volume changes -->

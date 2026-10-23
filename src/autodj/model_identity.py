@@ -18,6 +18,8 @@ the model.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import os
 import re
 import threading
 import time
@@ -41,6 +43,21 @@ _CHUNK = 1 << 20
 _MTIME_BLUR_NS = 2_000_000_000
 _digests: dict[tuple, str] = {}
 _digests_lock = threading.Lock()
+
+
+def model_analysis_available() -> bool:
+    """Whether local model analysis is enabled and its packages are installed.
+
+    Discover packages without importing the model or any compute runtime.
+    """
+    if os.environ.get("AUTODJ_NO_MODEL") == "1":
+        return False
+    try:
+        return all(
+            importlib.util.find_spec(name) is not None for name in ("torch", "muq", "transformers")
+        )
+    except (ImportError, ValueError):
+        return False
 
 
 def _weight_files(folder: Path) -> list[Path]:
@@ -153,5 +170,6 @@ __all__ = [
     "folder_commit",
     "local_model_commit",
     "local_model_folder",
+    "model_analysis_available",
     "weights_digest",
 ]

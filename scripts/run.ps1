@@ -11,19 +11,14 @@ function Update-ProcessPath {
 }
 
 function Find-MissingTools {
-    @('uv', 'ffmpeg') | Where-Object { -not (Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue) }
+    @('uv') | Where-Object { -not (Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue) }
 }
 
 function Get-ManualInstallMessage([string]$tool) {
     $help = @{
         uv = @('uv', 'astral-sh.uv', 'https://docs.astral.sh/uv/getting-started/installation/')
-        ffmpeg = @('FFmpeg', 'Gyan.FFmpeg', 'https://ffmpeg.org/download.html')
     }[$tool]
     "To install $($help[0]), run this command:`n  winget install --id $($help[1]) --exact --source winget --scope user`nOr download it from $($help[2]) and add its folder to PATH (the list of folders Windows searches for programs).`nThen close this window and open AutoDJ again."
-}
-
-function Warn-MissingFfmpeg {
-    [Console]::Error.WriteLine("AutoDJ: FFmpeg is optional for setup, but AutoDJ needs it to play MP3 and M4A files and to stream.`n$(Get-ManualInstallMessage 'ffmpeg')")
 }
 
 try {
@@ -58,46 +53,28 @@ try {
             if (-not $noInstall -and ($interactive -or $acceptInstall)) {
                 $winget = Get-Command 'winget' -CommandType Application -ErrorAction SilentlyContinue
                 if ($winget) {
-                    Write-Host 'AutoDJ uses uv to install Python and its packages, and FFmpeg to play MP3 and M4A files and to stream.'
+                    Write-Host 'AutoDJ uses uv to install Python and its packages.'
                     $answer = if ($acceptInstall) { 'yes' } else {
                         Read-Host ("Download and install {0} for your Windows account with WinGet? [y/N]" -f ($missing -join ', '))
                     }
                     if ($answer -and $answer.Trim() -match '^(y|yes)$') {
-                        $ids = @{ uv = 'astral-sh.uv'; ffmpeg = 'Gyan.FFmpeg' }
-                        foreach ($tool in $missing) {
-                            & $winget.Source install --id $ids[$tool] --exact --source winget --scope user --accept-source-agreements --accept-package-agreements
-                            if ($LASTEXITCODE -ne 0) {
-                                if ($tool -eq 'uv') {
-                                    throw "WinGet could not install uv (exit code $LASTEXITCODE).`n$(Get-ManualInstallMessage 'uv')"
-                                }
-                                [Console]::Error.WriteLine("AutoDJ: WinGet could not install FFmpeg (exit code $LASTEXITCODE).")
-                            }
+                        & $winget.Source install --id astral-sh.uv --exact --source winget --scope user --accept-source-agreements --accept-package-agreements
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "WinGet could not install uv (exit code $LASTEXITCODE).`n$(Get-ManualInstallMessage 'uv')"
                         }
                         Update-ProcessPath
                         $missing = @(Find-MissingTools)
                         if ($missing -contains 'uv') {
                             throw "WinGet finished, but Windows still cannot find uv.`n$(Get-ManualInstallMessage 'uv')"
                         }
-                        if ($missing -contains 'ffmpeg') {
-                            Warn-MissingFfmpeg
-                        }
                     } else {
-                        if ($missing -contains 'uv') {
-                            throw "AutoDJ needs uv to set up Python, so it cannot continue without it.`n$(Get-ManualInstallMessage 'uv')"
-                        }
-                        Warn-MissingFfmpeg
+                        throw "AutoDJ needs uv to set up Python, so it cannot continue without it.`n$(Get-ManualInstallMessage 'uv')"
                     }
                 } else {
-                    if ($missing -contains 'uv') {
-                        throw "AutoDJ needs uv, and WinGet is not available to install it.`n$(Get-ManualInstallMessage 'uv')"
-                    }
-                    Warn-MissingFfmpeg
+                    throw "AutoDJ needs uv, and WinGet is not available to install it.`n$(Get-ManualInstallMessage 'uv')"
                 }
             } elseif (-not $noInstall) {
-                if ($missing -contains 'uv') {
-                    throw "AutoDJ needs uv. It can only offer to install uv when you run it in a terminal window.`n$(Get-ManualInstallMessage 'uv')"
-                }
-                Warn-MissingFfmpeg
+                throw "AutoDJ needs uv. It can only offer to install uv when you run it in a terminal window.`n$(Get-ManualInstallMessage 'uv')"
             } elseif (-not (Get-Command 'uv' -CommandType Application -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $runtimePython -PathType Leaf)) {
                 throw "AutoDJ needs uv the first time it starts.`n$(Get-ManualInstallMessage 'uv')"
             }

@@ -10,8 +10,8 @@ The ``voice-tracks`` routes (#128) are the browser's: an operator signed in
 to the web UI records a DJ break for the open song change and books it.
 They take the session cookie and, for a change, the page's ``Origin``, as
 every other browser route does, and never a machine token.  A voice track
-is a break like any other: the same checks, caps, decoding, quota and
-placement.
+is a break like any other: the same validation, decode protections, shared
+station quota and placement, with its own 600-second and 64 MiB upload caps.
 
 The routes answer under ``/api/announcer/`` for the default station and
 ``/api/stations/<slug>/announcer/`` for any station by name:
@@ -45,7 +45,7 @@ The voice tracker's routes answer under ``/api/voice-tracks`` and
 
 Uploads stream to the station's announcements folder under a name the
 server makes up, are decoded off the event loop (one at a time, so a
-burst of uploads cannot starve the render-ahead worker of CPU), and are
+burst of uploads cannot starve the playout worker of CPU), and are
 deleted once the break airs, is dropped or expires.
 """
 
@@ -55,6 +55,7 @@ import asyncio
 import concurrent.futures
 import contextlib
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -63,7 +64,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -73,6 +74,8 @@ from autodj.breaks import (
     BREAKS_OFF,
     EXTENSIONS,
     KINDS,
+    QUEUED,
+    RENDERED,
     VOICE_TRACK,
     Break,
     BreakCues,
@@ -81,7 +84,6 @@ from autodj.breaks import (
     SlotPlan,
     file_name,
     new_id,
-    placement_for,
     speech_cues,
     valid_id,
 )
@@ -103,8 +105,13 @@ ANNOUNCER_PREFIX = "/api/announcer/"
 ANNOUNCER_SCOPES = {ANNOUNCER_PREFIX: SCOPE_ANNOUNCER}
 #: The upload route, for the request-body cap.
 UPLOAD_PATH = ANNOUNCER_PREFIX + "breaks"
-#: The voice tracker's upload route (#128), a browser route with the same cap.
+#: The voice tracker's upload route (#128), with its own body cap.
 VOICE_UPLOAD_PATH = "/api/voice-tracks"
+MAX_FORECAST_SECONDS = 600.0
+# Manual browser recordings have their own budget; announcer integrations
+# continue to use the station's configured break limits.
+VOICE_MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+VOICE_MAX_SECONDS = 600.0
 #: Room for the multipart framing and the form fields around the file.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 #: Plays and queued requests the context lists.
@@ -119,6 +126,9 @@ MIN_BODY_BYTES_PER_SECOND = 256 * 1024
 _NO_STORE = {"Cache-Control": "no-store"}
 #: ... and while the station does not play from saved segue points.
 NEEDS_SAVED_POINTS = "Breaks need saved-point playback (transition mode: use saved segue points)"
+VOICE_TRACK_NEEDS_RENDERER = (
+    "Voice tracks need server playback (server audio or stream) with saved-point playback"
+)
 #: Why the waiting breaks were dropped when breaks were turned off.
 TURNED_OFF = "breaks were turned off in Settings"
 
@@ -171,28 +181,158 @@ def _slot_view(
     points = player.saved_points(plan.upcoming)
     intro = points.get("intro")
     start = points.get("start") or 0.0
+    incoming_rate = player.music_playback_rate(plan.upcoming)
+    outgoing = player.saved_points(plan.ending)
+    outgoing_rate = player.music_playback_rate(plan.ending)
+    segue = outgoing.get("segue") or outgoing.get("end") or plan.ending.length
+    outro_point = outgoing.get("outro")
+    outro = max(
+        outgoing.get("start") or 0.0,
+        plan.ending_offset_s,
+        segue if outro_point is None else outro_point,
+    )
+    liner_spans = []
+    for entry, _queued in plan.liners:
+        cue = player.saved_points(entry)
+        first = cue.get("start") or 0.0
+        last = cue.get("end") or entry.length
+        speech_end = cue.get("segue") or last
+        liner_spans.append((max(0.0, last - first), max(0.0, speech_end - first)))
     desk: BreakDesk = station.breaks
+    active_chain = _active_voice_chain(desk, plan)
+    active_breaks = {f"break:{item.break_id}" for item in active_chain}
+    actions = dict(plan.transition_actions)
+    transition_items = [
+        {
+            **item.view(),
+            "committed": item.committed
+            or bool(plan.transition_order and item.item_id not in plan.transition_replaced),
+            "deferred": item.item_id in plan.transition_replaced,
+            "current_action": actions.get(
+                item.item_id,
+                "replace"
+                if item.source in {"automatic", "matched_intro", "intro_rule"}
+                else "after",
+            ),
+            "default_action": "replace"
+            if item.source in {"automatic", "matched_intro", "intro_rule"}
+            else "after",
+        }
+        for item in plan.transition_items
+        if not item.item_id.startswith("break:") or item.item_id in active_breaks
+    ]
+    known = {item["id"] for item in transition_items}
+    for item in active_chain:
+        key = f"break:{item.break_id}"
+        if key not in known:
+            transition_items.append(
+                {
+                    "id": key,
+                    "kind": "booked_voice" if item.source == VOICE_TRACK else "booked_break",
+                    "source": item.source,
+                    "label": item.label or "Booked break",
+                    "committed": True,
+                    "editable": False,
+                    "deferred": False,
+                    "default_action": "",
+                }
+            )
+            known.add(key)
+    if plan.transition_order:
+        transition_order = [key for key in plan.transition_order if key in known]
+        # The renderer appends breaks booked outside the frozen voice-track
+        # plan after its ordered items. Keep the API's effective order in sync.
+        transition_order.extend(
+            item["id"]
+            for item in transition_items
+            if item["kind"] in {"booked_voice", "booked_break"}
+            and item["id"] not in transition_order
+        )
+    else:
+        candidate_order = [item.item_id for item in plan.transition_items if item.editable]
+        split = next(
+            (
+                index
+                for index, item in enumerate(plan.transition_items)
+                if item.kind == "matched_intro"
+            ),
+            len(candidate_order),
+        )
+        booked = [
+            item["id"]
+            for item in transition_items
+            if item["kind"] in {"booked_voice", "booked_break"}
+        ]
+        transition_order = [*candidate_order[:split], *booked, *candidate_order[split:]]
     return {
         "slot_id": plan.slot_id,
         "ending": songs.view(plan.ending),
         "upcoming": songs.view(plan.upcoming),
         "closes_in_s": round(closes_in, 1),
         "airs_in_s": round(airs_in, 1),
-        "upcoming_intro_s": None if intro is None else round(max(0.0, intro - start), 3),
+        "upcoming_intro_s": None
+        if intro is None
+        else round(max(0.0, intro - start) / incoming_rate, 3),
+        "ending_outro_s": round(max(0.0, segue - outro) / outgoing_rate, 3),
+        "planned_liner_clip_s": round(sum(clip for clip, _speech in liner_spans), 3),
+        "planned_liner_speech_s": round(sum(speech for _clip, speech in liner_spans), 3),
         "pinned": plan.pinned,
-        "breaks_booked": desk.waiting_in(plan.slot_id),
+        "breaks_booked": (
+            len(active_chain) if getattr(plan, "live", False) else desk.waiting_in(plan.slot_id)
+        ),
+        "live": bool(getattr(plan, "live", False)),
+        "transition_revision": player._transition_revision(plan),
+        "transition_items": transition_items,
+        "transition_order": transition_order,
+        "transition_summary": [
+            next((item["label"] for item in transition_items if item["id"] == key), "Voice track")
+            for key in transition_order
+            if key not in plan.transition_replaced
+        ],
     }
 
 
-def _current_slot(station: StationRuntime) -> dict[str, Any] | None:
+def _voice_slot_status(player: Any) -> tuple[SlotPlan | None, float, float]:
+    """The voice tracker's handoff, using the active pair only while streaming."""
+    if getattr(player, "live_mixing", False):
+        return player.voice_slot_status()
+    return player.slot_status()
+
+
+def _active_voice_chain(desk: BreakDesk, plan: SlotPlan) -> list[Break]:
+    """Breaks in the selected slot plus speech already attached to a live handoff."""
+    live_ids = {
+        item.item_id.removeprefix("break:")
+        for item in plan.transition_items
+        if getattr(plan, "live", False)
+        and item.kind in {"booked_voice", "booked_break"}
+        and item.item_id.startswith("break:")
+    }
+    return sorted(
+        (
+            item
+            for item in desk.listing()
+            if (
+                item.slot_id == plan.slot_id
+                and item.state in ({QUEUED, RENDERED} if getattr(plan, "live", False) else {QUEUED})
+            )
+            or (item.break_id in live_ids and item.state == RENDERED)
+        ),
+        key=lambda item: (item.kind == "dj", item.created_at),
+    )
+
+
+def _current_slot(station: StationRuntime, *, voice_track: bool = False) -> dict[str, Any] | None:
     """The open slot now, or ``None`` (blocking: it reads the catalog)."""
-    plan, closes_in, airs_in = station.player.slot_status()
+    plan, closes_in, airs_in = (
+        _voice_slot_status(station.player) if voice_track else station.player.slot_status()
+    )
     if plan is None:
         return None
     return _slot_view(station, _Songs(station), plan, closes_in, airs_in)
 
 
-def _context(station: StationRuntime) -> dict[str, Any]:
+def _context(station: StationRuntime, *, voice_track: bool = False) -> dict[str, Any]:
     """Everything ``GET context`` says (blocking: it reads the catalog)."""
     player = station.player
     state = player._state
@@ -200,11 +340,18 @@ def _context(station: StationRuntime) -> dict[str, Any]:
     desk: BreakDesk = station.breaks
     config = desk.config
     reason = None
-    if not desk.enabled:
+    if not voice_track and not desk.enabled:
         reason = BREAKS_OFF
+    elif voice_track and not player.request_voice_track_slot():
+        reason = VOICE_TRACK_NEEDS_RENDERER
     elif not player._breaks_on():
         reason = NEEDS_SAVED_POINTS
-    plan, closes_in, airs_in = player.slot_status() if reason is None else (None, 0.0, 0.0)
+    if reason is not None:
+        plan, closes_in, airs_in = None, 0.0, 0.0
+    elif voice_track:
+        plan, closes_in, airs_in = _voice_slot_status(player)
+    else:
+        plan, closes_in, airs_in = player.slot_status()
     if reason is None and plan is None:
         reason = "No song change is open yet; ask again in a few seconds"
     playing = player._playing_render
@@ -247,6 +394,186 @@ def _context(station: StationRuntime) -> dict[str, Any]:
             "max_expires_s": config.max_expires_seconds,
             "dj_placement": config.dj_placement,
         },
+    }
+
+
+def _voice_chain_forecast(
+    station: StationRuntime,
+    plan: SlotPlan,
+    speech_s: float,
+    tail_s: float,
+    placement: str,
+    transition_choices: list[dict[str, str]] | None = None,
+) -> dict[str, float]:
+    """Place a proposed manual take with the same frame helpers as playout."""
+    from autodj.breaks import placement_for
+    from autodj.player import _music_output_points
+    from autodj.playout import liner_chain_placement, liner_chain_timing, liner_main_frames
+
+    player = station.player
+    desk: BreakDesk = station.breaks
+    rate_a = max(0.01, float(player.music_playback_rate(plan.ending)))
+    rate_b = max(0.01, float(player.music_playback_rate(plan.upcoming)))
+    outgoing_points = _music_output_points(player.saved_points(plan.ending), rate_a)
+    incoming_points = _music_output_points(player.saved_points(plan.upcoming), rate_b)
+    start_s, segue_s = player._clock_music_span(plan.ending)
+    start_frame = round(start_s * SAMPLE_RATE / rate_a)
+    segue_frame = round(segue_s * SAMPLE_RATE / rate_a)
+    outro = outgoing_points.get("outro")
+    safe_outro = max(
+        start_frame,
+        round(float(plan.ending_offset_s) * SAMPLE_RATE / rate_a),
+        min(
+            segue_frame,
+            round(float(outro) * SAMPLE_RATE) if outro is not None else segue_frame,
+        ),
+    )
+    incoming_start = float(incoming_points.get("start") or 0.0)
+    incoming_intro = max(
+        0.0, float(incoming_points.get("intro") or incoming_start) - incoming_start
+    )
+    intro_frames = round(incoming_intro * SAMPLE_RATE)
+    timing: list[tuple[int, int, float | None, bool]] = []
+    speech_spans: list[tuple[int, int]] = []
+    clip_frames = 0
+
+    def add(cues: dict[str, Any], length: float, allow_outro: bool) -> tuple[int, int] | None:
+        nonlocal clip_frames
+        first = round(float(cues.get("start") or 0.0) * SAMPLE_RATE)
+        last = round(float(cues.get("end") or length) * SAMPLE_RATE)
+        frames = max(0, last - first)
+        if not frames:
+            return None
+        offset = clip_frames
+        main = liner_main_frames(first, frames, cues.get("segue"))
+        timing.append((frames, main, cues.get("overlap_start"), allow_outro))
+        speech_spans.append((clip_frames, main))
+        clip_frames += frames
+        return offset, main
+
+    if player._is_liner(plan.ending):
+        points = player.saved_points(plan.ending)
+        add(points, plan.ending.length, False)
+
+    def add_liner(entry: Any) -> None:
+        points = player.saved_points(entry)
+        record = player._library.catalog.record_for_path(entry.path) if player._library else None
+        add(points, entry.length, bool(record and record.get("allow_outro", False)))
+
+    queued = _active_voice_chain(desk, plan)
+    config = desk.config
+
+    def add_break(item: Break, dj_followed: bool = False) -> None:
+        manual_fit = item.source == VOICE_TRACK and item.placement != "standalone"
+        if manual_fit:
+            is_talk_up = True
+        elif item.kind == "dj" and dj_followed:
+            is_talk_up = False  # Another break follows this one in the chain.
+        else:
+            is_talk_up = (
+                placement_for(
+                    item.kind,
+                    item.placement,
+                    config.dj_placement,
+                    incoming_intro,
+                    config.min_intro_seconds,
+                )[0]
+                == "talk_up"
+            )
+        add(
+            item.cues.points(is_talk_up),
+            item.cues.length,
+            manual_fit or (item.source != VOICE_TRACK and item.allow_outro),
+        )
+
+    manual_fit = placement != "standalone"
+
+    def add_take() -> None:
+        add(
+            {
+                "start": 0.0,
+                "segue": speech_s,
+                "end": speech_s + tail_s,
+                "overlap_start": 0.0 if manual_fit else None,
+            },
+            speech_s + tail_s,
+            manual_fit,
+        )
+
+    take_start = 0
+    order_for = getattr(player, "_voice_transition_order", None)
+    transition_items = tuple(getattr(plan, "transition_items", ()))
+    if transition_choices is not None and callable(order_for):
+        order, replaced = order_for(plan, "forecast", transition_choices)
+        replaced_set = set(replaced)
+        liners = {item.item_id: item.entry for item in transition_items if item.kind == "liner"}
+        intros = {
+            item.item_id: item.intro for item in transition_items if item.kind == "matched_intro"
+        }
+        breaks = {f"break:{item.break_id}": item for item in queued}
+        take_added = False
+        break_keys = set(breaks) | {"break:forecast"}
+        for index, key in enumerate(order):
+            if key == "break:forecast":
+                take_start = clip_frames
+                add_take()
+                take_added = True
+            elif key in liners and key not in replaced_set:
+                add_liner(liners[key])
+            elif key in breaks:
+                dj_followed = any(later in break_keys for later in order[index + 1 :])
+                add_break(breaks[key], dj_followed=dj_followed)
+            elif key in intros and key not in replaced_set:
+                intro = intros[key]
+                if intro is None:
+                    continue
+                events = player._add_intro(
+                    intro, lambda _audio, cues, length, allow_outro: add(cues, length, allow_outro)
+                )
+                if not events:
+                    raise ValueError("The matched intro could not be forecast")
+        if not take_added:
+            raise ValueError("The proposed take is missing from the transition plan")
+    else:
+        for entry, _queued in plan.liners:
+            add_liner(entry)
+        for item in queued:
+            add_break(item, dj_followed=True)
+        take_start = clip_frames
+        add_take()
+    main_frames, release, outro_lead_limit = liner_chain_timing(timing, incoming_intro)
+    liner_start, incoming_frame = liner_chain_placement(
+        start_frame,
+        segue_frame,
+        safe_outro,
+        main_frames,
+        intro_frames,
+        release,
+        outro_lead_limit,
+    )
+    end_source = round(
+        float(outgoing_points.get("end") or plan.ending.length / rate_a) * SAMPLE_RATE
+    )
+    end_frame = min(end_source, round(plan.ending.length * SAMPLE_RATE / rate_a))
+    fade_frames = round(float(player._cfg.playback.crossfade_seconds) * SAMPLE_RATE)
+    fade_start = max(start_frame, segue_frame - fade_frames // 3)
+    fade_end = min(end_frame, fade_start + fade_frames)
+    music_gap_start = max(fade_end, liner_start)
+    music_gap_end = max(segue_frame, incoming_frame)
+    without_music_frames = sum(
+        max(
+            0,
+            min(liner_start + offset + speech, music_gap_end)
+            - max(liner_start + offset, music_gap_start),
+        )
+        for offset, speech in speech_spans
+    )
+    return {
+        "recording_start_s": round((liner_start + take_start - start_frame) / SAMPLE_RATE, 3),
+        "music_entry_s": round(max(0, incoming_frame - segue_frame) / SAMPLE_RATE, 3),
+        "chain_speech_s": round(sum(speech for _offset, speech in speech_spans) / SAMPLE_RATE, 3),
+        "chain_clip_s": round(clip_frames / SAMPLE_RATE, 3),
+        "speech_without_music_s": round(without_music_frames / SAMPLE_RATE, 3),
     }
 
 
@@ -317,15 +644,25 @@ def install_breaks(router: StationRouter) -> None:
         together.  *who* names the sender in the log; *source* says where
         the break came from.
         """
-        require_breaks(station, desk)
+        is_voice_track = source == VOICE_TRACK
+        live_voice_track = bool(is_voice_track and getattr(station.player, "live_mixing", False))
+
+        async def current_slot() -> dict[str, Any] | None:
+            return await asyncio.to_thread(_current_slot, station, voice_track=is_voice_track)
+
+        if source == ANNOUNCER:
+            require_breaks(station, desk)
+        elif not station.player.request_voice_track_slot():
+            raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
         config = desk.config
-        cap = config.max_upload_bytes
+        cap = VOICE_MAX_UPLOAD_BYTES if source == VOICE_TRACK else config.max_upload_bytes
+        max_seconds = VOICE_MAX_SECONDS if source == VOICE_TRACK else config.max_seconds
         declared = request.headers.get("content-length")
         size = cap
         if declared is not None:
             if not declared.isdecimal() or int(declared) > cap + MULTIPART_OVERHEAD_BYTES:
                 raise HTTPException(
-                    status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                    status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                 )
             size = min(cap, int(declared))
         break_id = new_id()
@@ -355,7 +692,7 @@ def install_breaks(router: StationRouter) -> None:
                         status_code=422,
                         detail=f"expires_s must be at most {config.max_expires_seconds}",
                     )
-                slot = await asyncio.to_thread(_current_slot, station)
+                slot = await current_slot()
                 if slot is None or slot["slot_id"] != fields.slot_id:
                     return refused(409, "That song change is no longer open", "slot_closed", slot)
                 if (slot["ending"] or {}).get("id") != fields.ending_id or (
@@ -364,6 +701,53 @@ def install_breaks(router: StationRouter) -> None:
                     return refused(
                         409, "The songs around that song change have changed", "pair_changed", slot
                     )
+                transition_revision = (
+                    fields.transition_revision if isinstance(fields, _VoiceFields) else None
+                )
+                if live_voice_track and transition_revision is None:
+                    return refused(
+                        409,
+                        "The live handoff changed; refresh and choose again",
+                        "transition_changed",
+                        slot,
+                    )
+                transition_choices_text = (
+                    fields.transition_choices if isinstance(fields, _VoiceFields) else None
+                )
+                transition_choices = None
+                if transition_revision is not None:
+                    if slot.get("transition_revision") != transition_revision:
+                        return refused(
+                            409,
+                            "The planned transition changed; refresh and choose again",
+                            "transition_changed",
+                            slot,
+                        )
+                    try:
+                        transition_choices = json.loads(transition_choices_text or "[]")
+                    except (ValueError, RecursionError) as exc:
+                        raise HTTPException(
+                            status_code=422, detail="Transition choices must be valid JSON"
+                        ) from exc
+                    if not isinstance(transition_choices, list) or any(
+                        not isinstance(choice, dict)
+                        or set(choice) != {"id", "action"}
+                        or not all(isinstance(choice[key], str) for key in ("id", "action"))
+                        for choice in transition_choices
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="Transition choices must name each item and its action",
+                        )
+                # Announcer clients do not submit a transition revision. Keep
+                # the revision observed before upload/decode so a stream handoff
+                # that changes while the request is in flight cannot receive a
+                # recording intended for its predecessor.
+                expected_revision = transition_revision or (
+                    slot.get("transition_revision")
+                    if getattr(station.player, "live_mixing", False)
+                    else None
+                )
                 name = file_name(break_id, suffix)
                 try:
                     desk.retarget(break_id, fields.slot_id, name)
@@ -376,12 +760,102 @@ def install_breaks(router: StationRouter) -> None:
                     )
                 except LinerTooLargeError as exc:
                     raise HTTPException(
-                        status_code=413, detail=f"A break may be at most {config.max_upload_mb} MB"
+                        status_code=413, detail=f"A break may be at most {cap // (1024 * 1024)} MB"
                     ) from exc
             finally:
                 await upload.close()
             assert path is not None  # stored, or the request has already answered
-            cues = await decode_one(path, config.max_seconds)
+            cues = await decode_one(path, max_seconds)
+            checked_slot = await current_slot()
+            if checked_slot is None or checked_slot["slot_id"] != fields.slot_id:
+                return refused(
+                    409, "That song change is no longer open", "slot_closed", checked_slot
+                )
+            if (checked_slot["ending"] or {}).get("id") != fields.ending_id or (
+                checked_slot["upcoming"] or {}
+            ).get("id") != fields.upcoming_id:
+                return refused(
+                    409,
+                    "The songs around that song change have changed",
+                    "pair_changed",
+                    checked_slot,
+                )
+            if (
+                expected_revision is not None
+                and checked_slot.get("transition_revision") != expected_revision
+            ):
+                return refused(
+                    409,
+                    "The live handoff changed; refresh and choose again",
+                    "transition_changed",
+                    checked_slot,
+                )
+            if source == VOICE_TRACK:
+                manual_fit = fields.placement != "standalone"
+                if (
+                    live_voice_track
+                    and checked_slot.get("transition_revision") != transition_revision
+                ):
+                    return refused(
+                        409,
+                        "The live handoff changed; refresh and choose again",
+                        "transition_changed",
+                        checked_slot,
+                    )
+                slot = checked_slot
+                chain_plan = None
+                if live_voice_track:
+                    chain_plan, _closes_in, _airs_in = await asyncio.to_thread(
+                        _voice_slot_status, station.player
+                    )
+                    if chain_plan is None or chain_plan.slot_id != fields.slot_id:
+                        return refused(
+                            409,
+                            "That song change is no longer open",
+                            "slot_closed",
+                            checked_slot,
+                        )
+                chain = (
+                    _active_voice_chain(desk, chain_plan)
+                    if chain_plan is not None and chain_plan.slot_id == fields.slot_id
+                    else sorted(
+                        (
+                            queued
+                            for queued in desk.listing()
+                            if queued.slot_id == fields.slot_id and queued.state == QUEUED
+                        ),
+                        key=lambda queued: (queued.kind == "dj", queued.created_at),
+                    )
+                )
+                queued_clip = sum(max(0.0, queued.cues.end - queued.cues.start) for queued in chain)
+                start_at = time.time() + float(checked_slot["airs_in_s"])
+                if manual_fit:
+                    start_at -= float(checked_slot.get("ending_outro_s") or 0.0)
+                    duration = (
+                        float(checked_slot.get("ending_outro_s") or 0.0)
+                        + float(checked_slot.get("planned_liner_clip_s") or 0.0)
+                        + queued_clip
+                        + max(0.0, cues.end - cues.start)
+                    )
+                else:
+                    start_at += float(checked_slot.get("planned_liner_clip_s") or 0.0)
+                    start_at += queued_clip
+                    duration = max(0.0, cues.end - cues.start)
+                try:
+                    crosses = await asyncio.to_thread(
+                        station.player.voice_track_crosses_hard_boundary,
+                        start_at,
+                        duration,
+                    )
+                except Exception:
+                    crosses = True
+                if crosses:
+                    return refused(
+                        409,
+                        "This voice chain would cross or could not be checked against a hard scheduled boundary",
+                        "scheduled_boundary",
+                        checked_slot,
+                    )
             now = time.time()
             label = _clean_label(fields.label)
             if not label and source == VOICE_TRACK:
@@ -402,11 +876,29 @@ def install_breaks(router: StationRouter) -> None:
                 created_at=now,
                 expires_at=now + (fields.expires_s or config.default_expires_seconds),
                 source=source,
+                limit_s=max_seconds if source == VOICE_TRACK else None,
             )
             try:
-                await asyncio.to_thread(station.player.book_break, item)
+                if source == VOICE_TRACK and not station.player.request_voice_track_slot():
+                    raise HTTPException(status_code=409, detail=VOICE_TRACK_NEEDS_RENDERER)
+                if transition_revision is None:
+                    if expected_revision is None:
+                        await asyncio.to_thread(station.player.book_break, item)
+                    else:
+                        await asyncio.to_thread(
+                            station.player.book_break,
+                            item,
+                            transition_revision=expected_revision,
+                        )
+                else:
+                    await asyncio.to_thread(
+                        station.player.book_break,
+                        item,
+                        transition_revision=transition_revision,
+                        transition_choices=transition_choices or (),
+                    )
             except BreakError as exc:
-                slot = await asyncio.to_thread(_current_slot, station)
+                slot = await current_slot()
                 return refused(exc.status, exc.detail, exc.reason, slot)
             booked = True
         finally:
@@ -418,7 +910,7 @@ def install_breaks(router: StationRouter) -> None:
                 desk.release(break_id, path)
                 if path is not None:
                     await asyncio.shield(asyncio.to_thread(_quiet_unlink, path))
-        slot = await asyncio.to_thread(_current_slot, station)
+        slot = await current_slot()
         view = item.view()
         view["airs_in_s"] = (
             slot["airs_in_s"] if slot and slot["slot_id"] == fields.slot_id else None
@@ -453,13 +945,16 @@ def install_breaks(router: StationRouter) -> None:
         station: StationDep, request: Request, break_id: str
     ) -> JSONResponse:
         """Drop a break that is still waiting for its song change."""
-        _token, desk = announcer(request, station)
+        announcer(request, station)
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No break has that id")
         try:
             # Off the event loop: cancelling may unpin the player's slot.
             item = await asyncio.to_thread(
-                desk.cancel, break_id, "cancelled by the announcer", ANNOUNCER
+                station.player.cancel_break,
+                break_id,
+                "cancelled by the announcer",
+                ANNOUNCER,
             )
         except BreakError as exc:
             return refused(exc.status, exc.detail, exc.reason, None)
@@ -491,8 +986,46 @@ def install_breaks(router: StationRouter) -> None:
         return desk
 
     @router.get("/voice-tracks")
-    async def voice_tracks(station: SavedStationDep) -> JSONResponse:
+    async def voice_tracks(
+        station: SavedStationDep,
+        speech_s: float | None = Query(default=None, ge=0.5, le=MAX_FORECAST_SECONDS),
+        tail_s: float = Query(default=0.0, ge=0.0, le=MAX_FORECAST_SECONDS),
+        placement: Literal["auto", "talk_up", "standalone"] = "auto",
+        transition_revision: str | None = Query(default=None, max_length=64),
+        transition_choices: str | None = Query(default=None, max_length=8192),
+    ) -> JSONResponse:
         """The open song change, the limits, and this station's voice tracks."""
+        if speech_s is not None and speech_s + tail_s > MAX_FORECAST_SECONDS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"The voice track exceeds {MAX_FORECAST_SECONDS:g} seconds",
+            )
+        if (transition_revision is None) != (transition_choices is None):
+            raise HTTPException(status_code=422, detail="Transition choices need a revision")
+        if transition_choices is not None and speech_s is None:
+            raise HTTPException(status_code=422, detail="Transition choices need a speech estimate")
+        parsed_choices = None
+        if transition_choices is not None:
+            try:
+                parsed_choices = json.loads(transition_choices)
+            except (ValueError, TypeError, RecursionError) as exc:
+                raise HTTPException(
+                    status_code=422, detail="Transition choices must be valid JSON"
+                ) from exc
+            if (
+                not isinstance(parsed_choices, list)
+                or len(parsed_choices) > 64
+                or any(
+                    not isinstance(choice, dict)
+                    or set(choice) != {"id", "action"}
+                    or not isinstance(choice["id"], str)
+                    or not 1 <= len(choice["id"]) <= 128
+                    or not isinstance(choice["action"], str)
+                    or choice["action"] not in {"replace", "before", "after"}
+                    for choice in parsed_choices
+                )
+            ):
+                raise HTTPException(status_code=422, detail="Transition choices are invalid")
         desk: BreakDesk | None = getattr(station, "breaks", None)
         if desk is None:
             return JSONResponse(
@@ -505,27 +1038,33 @@ def install_breaks(router: StationRouter) -> None:
                 },
                 headers=_NO_STORE,
             )
-        return JSONResponse(await asyncio.to_thread(_voice_context, station), headers=_NO_STORE)
+        return JSONResponse(
+            await asyncio.to_thread(
+                _voice_context,
+                station,
+                speech_s,
+                tail_s,
+                placement,
+                transition_revision,
+                parsed_choices,
+            ),
+            headers=_NO_STORE,
+        )
 
     @router.post("/voice-tracks", status_code=201)
     async def voice_track_upload(station: StationDep, request: Request) -> JSONResponse:
-        """Book a voice track recorded in the browser for the open song change.
-
-        The same checks, caps, decoding and quota as an announcer's break.
-        """
+        """Book a browser voice track under its own duration/upload caps."""
         desk = voice_desk(station)
         return await receive(station, request, desk, _VoiceFields, "the voice tracker", VOICE_TRACK)
 
     @router.delete("/voice-tracks/{break_id}")
     async def voice_track_cancel(station: SavedStationDep, break_id: str) -> JSONResponse:
         """Cancel a voice track that is still waiting for its song change."""
-        desk = voice_desk(station)
+        voice_desk(station)
         if not valid_id(break_id):
             raise HTTPException(status_code=404, detail="No voice track has that id")
         try:
-            item = await asyncio.to_thread(
-                desk.cancel, break_id, "cancelled in the voice tracker", VOICE_TRACK
-            )
+            item = await asyncio.to_thread(station.player.cancel_voice_track, break_id)
         except BreakError as exc:
             detail = "No voice track has that id" if exc.status == 404 else exc.detail
             return refused(exc.status, detail, exc.reason, None)
@@ -546,9 +1085,8 @@ def install_breaks(router: StationRouter) -> None:
     ) -> JSONResponse:
         """Change the break settings; saved for this station at once and used from now on.
 
-        Turning breaks off drops the breaks still waiting for their song
-        change (a break already mixed into the next one still airs), so the
-        announcer hears at once that breaks are off.
+        Turning breaks off drops the announcer uploads still waiting for
+        their song change; manual voice tracks and mixed breaks remain.
         """
         config = station.cfg.breaks
         was_on = config.enabled is True
@@ -607,7 +1145,14 @@ def _pair_label(slot: dict[str, Any] | None) -> str:
     return f"{names[0]} into {names[1]}"
 
 
-def _voice_context(station: StationRuntime) -> dict[str, Any]:
+def _voice_context(
+    station: StationRuntime,
+    speech_s: float | None = None,
+    tail_s: float = 0.0,
+    placement: str = "auto",
+    transition_revision: str | None = None,
+    transition_choices: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     """What the voice tracker shows (blocking: it reads the catalog).
 
     The open song change, with where a voice track set to ``auto`` would
@@ -624,17 +1169,69 @@ def _voice_context(station: StationRuntime) -> dict[str, Any]:
             "slot": None,
         }
         if station.player is None
-        else _context(station)
+        else _context(station, voice_track=True)
     )
     desk: BreakDesk = station.breaks
     config = desk.config
     slot = context["slot"]
+    if transition_choices is not None and slot is None:
+        raise HTTPException(status_code=409, detail="No song change is open for this forecast")
     if slot is not None:
-        placement, note = placement_for(
-            "dj", "auto", config.dj_placement, slot["upcoming_intro_s"], config.min_intro_seconds
+        slot["auto_placement"] = "talk_up"
+        slot["auto_note"] = None
+        plan, _closes_in, _airs_in = _voice_slot_status(station.player)
+        queued = (
+            _active_voice_chain(desk, plan)
+            if plan is not None and plan.slot_id == slot["slot_id"]
+            else sorted(
+                (
+                    item
+                    for item in desk.listing()
+                    if item.slot_id == slot["slot_id"]
+                    and item.state in ({QUEUED, RENDERED} if slot.get("live", False) else {QUEUED})
+                ),
+                key=lambda item: (item.kind == "dj", item.created_at),
+            )
         )
-        slot["auto_placement"] = placement
-        slot["auto_note"] = note or None
+        slot["queued_chain_speech_s"] = round(sum(item.cues.speech for item in queued), 3)
+        slot["queued_chain_clip_s"] = round(
+            sum(max(0.0, item.cues.end - item.cues.start) for item in queued), 3
+        )
+        if speech_s is not None:
+            if plan is not None and plan.slot_id == slot["slot_id"]:
+                if transition_choices is not None:
+                    revision_for = getattr(station.player, "_transition_revision", None)
+                    order_for = getattr(station.player, "_voice_transition_order", None)
+                    if not callable(revision_for) or not callable(order_for):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="This transition plan cannot be forecast; refresh and try again",
+                        )
+                    if revision_for(plan) != transition_revision:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The planned transition changed; refresh and choose again",
+                        )
+                try:
+                    slot["voice_forecast"] = _voice_chain_forecast(
+                        station, plan, speech_s, tail_s, placement, transition_choices
+                    )
+                except BreakError as exc:
+                    if transition_choices is not None:
+                        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+                    logger.warning("Could not forecast the voice-track handoff", exc_info=True)
+                except Exception as exc:
+                    if transition_choices is not None:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="The planned transition changed; refresh and choose again",
+                        ) from exc
+                    logger.warning("Could not forecast the voice-track handoff", exc_info=True)
+            elif transition_choices is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The planned song change changed; refresh and choose again",
+                )
     return {
         "station": context["station"],
         "accepting": context["accepting"],
@@ -643,14 +1240,19 @@ def _voice_context(station: StationRuntime) -> dict[str, Any]:
         "next": context["next"],
         "slot": slot,
         "limits": {
-            "max_bytes": config.max_upload_bytes,
-            "max_seconds": config.max_seconds,
+            "max_bytes": VOICE_MAX_UPLOAD_BYTES,
+            "max_seconds": VOICE_MAX_SECONDS,
             "sample_rate": SAMPLE_RATE,
-            "dj_placement": config.dj_placement,
-            "min_intro_s": config.min_intro_seconds,
             "max_per_slot": config.max_per_slot,
         },
-        "tracks": [item.view() for item in desk.listing() if item.source == VOICE_TRACK],
+        "tracks": [
+            {
+                **item.view(),
+                "cancellable": station.player.can_cancel_voice_track(item.break_id),
+            }
+            for item in desk.listing()
+            if item.source == VOICE_TRACK
+        ],
     }
 
 
@@ -782,6 +1384,10 @@ class _VoiceFields(_UploadFields):
     """The form fields of a voice track: a DJ break, so ``kind`` may be left out."""
 
     kind: Literal["dj"] = "dj"
+    transition_revision: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
+    transition_choices: str | None = Field(default=None, max_length=8192)
 
 
 async def _read_form[F: _UploadFields](
@@ -827,6 +1433,8 @@ __all__ = [
     "ANNOUNCER_SCOPES",
     "MULTIPART_OVERHEAD_BYTES",
     "UPLOAD_PATH",
+    "VOICE_MAX_SECONDS",
+    "VOICE_MAX_UPLOAD_BYTES",
     "VOICE_UPLOAD_PATH",
     "decode_gate",
     "install_breaks",

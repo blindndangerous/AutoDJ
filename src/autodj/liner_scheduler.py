@@ -12,7 +12,9 @@ rotation semantics — and adds the one thing they intentionally do not
 do: decoding a file to the bus's stereo float32 format and calling
 :meth:`~autodj.mixbus.MixBus.play_liner`.
 
-With ``[playback] liners_talk_up`` on, a liner due as a track starts is
+Saved-point automatic liners are reserved for the shared cue-based handoff
+renderer. The legacy ``[playback] liners_talk_up`` setting affects live time
+checks and non-saved-point server liners, where a clip due as a track starts is
 timed like a radio talk-up: it ends just before the incoming track's
 vocal (:meth:`autodj.player.Player.vocal_start_s`).  When it fits the
 intro it is cued there; when it is too long for the intro but fits once
@@ -863,8 +865,8 @@ class LinerScheduler:
             self._play_locked(_Prepared("announcement", audio), None)
 
     def _planner_mode(self) -> bool:
-        """Whether saved-point talk-ups are owned by the renderer planner."""
-        return getattr(self._cfg, "transition_mode", None) == "saved_points" and self._talk_up()
+        """Whether saved-point liners are owned by the cue-based renderer."""
+        return getattr(self._cfg, "transition_mode", None) == "saved_points"
 
     def plan_for_handoff(self, key: str, tracks_ahead: int, seconds_ahead: float) -> str | None:
         """Reserve an automatic liner for a future saved-point handoff.
@@ -951,6 +953,58 @@ class LinerScheduler:
             if self._planned_key is None or (key is not None and key != self._planned_key):
                 return False
             self._planned_key = self._planned_name = None
+            return True
+
+    def reserve_frozen_handoff(
+        self, key: str, name: str, *, tracks_ahead: int, seconds_ahead: float
+    ) -> bool:
+        """Adopt a previously predicted handoff pick without drawing the RNG again."""
+        try:
+            seconds = float(seconds_ahead)
+        except (TypeError, ValueError):
+            return False
+        if not np.isfinite(seconds) or seconds < 0 or not key or not name or tracks_ahead < 0:
+            return False
+        registered = self._registered_entries()
+        files = [entry[0] for entry in registered]
+        if registered:
+            matches = [
+                index for index, (candidate, _path) in enumerate(registered) if candidate == name
+            ]
+        else:
+            self._refresh_library()
+            files = [path.name for path in self._library.files]
+            matches = [index for index, candidate in enumerate(files) if candidate == name]
+        if not matches:
+            return False
+        airs = self._wall_clock() + seconds
+        playable = [self.refusal(candidate, airs) is None for candidate in files]
+        selected = matches[0]
+        if not playable[selected]:
+            return False
+        with self._state():
+            if not self._planner_mode() or not self._cfg.liners_enabled:
+                return False
+            if self._planned_key is not None:
+                return self._planned_key == key and self._planned_name == name
+            minutes = (self._clock() - self._last_fire + seconds) / 60.0
+            if not self._trigger().should_fire(
+                track_count=self._tracks_since + tracks_ahead,
+                minutes_since_last=minutes,
+                random_target_minutes=self._random_target,
+            ):
+                return False
+            if self._cfg.liners_pick_mode == "sequential":
+                start = (
+                    self._registered_cursor % len(files)
+                    if registered
+                    else self._library.cursor % len(files)
+                )
+                moved = (selected - start) % len(files) + 1
+            else:
+                moved = 1
+            self._planned_key, self._planned_name = key, name
+            self._planned_moves = moved
             return True
 
     def mark_planned_fired(self, key: str) -> bool:

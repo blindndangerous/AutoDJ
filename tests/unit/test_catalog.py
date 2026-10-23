@@ -748,3 +748,27 @@ def test_pending_iterator_advances_past_rejected_pages_without_holding_lock(tmp_
                 ]
             finally:
                 candidates.close()
+
+
+@pytest.mark.parametrize("kind", [None, "music", "liner"])
+def test_bulk_records_match_single_lookups_with_one_query(tmp_path, kind):
+    """Bulk reads preserve uncovered records and decoding without per-row queries."""
+    with LibraryCatalog(tmp_path / "library.db") as catalog:
+        paths = [tmp_path / name for name in ("z.flac", "a.flac", "liner.wav")]
+        for path in paths:
+            catalog.put_entry(entry(path), "liner" if path.suffix == ".wav" else "music")
+        catalog._db().execute(
+            "UPDATE catalog_entries SET loudness=? WHERE path=?", ("broken", str(paths[0]))
+        )
+        expected = tuple(
+            catalog.record_for_path(path)
+            for path in sorted(paths)
+            if kind is None or ("liner" if path.suffix == ".wav" else "music") == kind
+        )
+        statements = []
+        catalog._db().set_trace_callback(statements.append)
+        try:
+            assert catalog.all_entries(kind) == expected
+        finally:
+            catalog._db().set_trace_callback(None)
+        assert sum(sql.lstrip().upper().startswith("SELECT") for sql in statements) == 1

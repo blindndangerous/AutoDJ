@@ -65,49 +65,66 @@ the next song because the nearer transition is already prepared.
 
 1. In **Settings**, **Transitions**, set **Transition mode** to **Use saved segue
    points**. This control saves on change; move focus away and recheck the value.
-2. In **Settings**, **Breaks**, check **Take breaks on this station** and press
-   **Save break settings**.
-3. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
+2. Open **Voice tracks**. Read **Ending song**, **Next song**, **Time left to
    book** and **Airs in about** under **Open song change**.
-4. Choose **Standalone, between the songs** in **Placement**. This avoids
-   depending on any particular intro length for your own music.
+3. Leave **Fit over outro and intro** selected to fit your voice against the
+   usable music in this song change. Choose **Between songs** when the take
+   should play on its own between the tracks.
+4. Read **Planned transition audio** in order. Items marked **committed** are
+   already queued; **predicted** items are eligible choices, not guarantees.
+   For each liner or matched intro, choose **Replace**, **Before** or **After**.
+   The default keeps explicit queued and clockwheel liners before your voice,
+   while replacing automatic liners and matched intros. Replaced queued liners
+   remain queued for a later transition. The ordered summary includes your new
+   voice track; conflicting choices are refused before upload is booked.
 
-Checkpoint: the song-pair facts are present and the tab is accepting a take.
+Checkpoint: with server audio and saved-point playback, the song-pair facts
+are present and the tab is accepting a take even when announcer uploads are off.
 The ending song shown here need not be the song playing right now. If the tab
-says breaks are off, return to Breaks, enable them and save. If it requires
-saved-point playback, recheck the transition mode and server output. If no
+requires server playback and saved-point playback, recheck the transition mode
+and output. If no
 change is open yet, let the station prepare songs and check again after a few
 seconds. Use [voice tracking procedures](../operations.md#voice-tracking-from-the-browser)
 if the explanation remains. Do not record against an unavailable slot.
 
 ## Capture and privately check one take
 
-1. Press **Record**. If the browser asks, allow microphone access for this site.
-2. Say “This is Practice radio. More music after this.” Keep the take to a few
+1. Choose the intended input in **Microphone**. AutoDJ remembers the choice in
+   this browser. **Refresh microphones** updates the list after connecting or
+   removing a device. If names are hidden, allow microphone permission; numbered
+   inputs can still be selected. Use **Test microphone** to hear a private live
+   monitor through **Preview output device**. Press **Stop microphone test** when
+   finished, and use headphones to avoid feedback.
+2. Press **Record**. If the browser asks, allow microphone access for this site.
+3. Say “This is Practice radio. More music after this.” Keep the take to a few
    seconds, then press **Record** again.
-3. Read the timer. It should describe a recorded duration and say **not booked
+4. Read the microphone status and timer. The status reports the active input
+   when the browser provides its track device settings; otherwise it says that
+   the browser cannot confirm it. The timer should describe a recorded duration and say **not booked
    yet**. The browser's microphone indicator should no longer show active capture.
-4. Press **Listen back**. Listen for your complete sentence. Press it again if
+5. Press **Listen back**. Listen for your complete sentence. Press it again if
    you want to stop the preview before it ends.
-5. Check **Booked voice tracks**. Your local take has not created a new booking.
+6. Check **Booked voice tracks**. Your local take has not created a new booking.
 
 The timer and absence of a booking establish the private state without relying
 on sound. Listening establishes whether the microphone captured usable speech.
 If the browser blocks recording, allow microphone access in that site's browser
-permissions and press Record again. For a missing microphone, connect/select one
-before retrying. On an insecure page, reopen using the secure or localhost
+permissions and press Record again. If the selected microphone is missing or
+unavailable, choose a different input or **System default**; an explicit choice
+is never silently replaced. On an insecure page, reopen using the secure or localhost
 address from the prerequisites; permissions alone cannot fix an insecure context.
 
 If the take is silent or clipped, check the input device and record again. A new
 recording replaces the old local take. **Discard recording** removes it without
-booking anything. Recording has a three-minute browser ceiling and can stop
-sooner under station limits; this short example should not approach either.
+booking anything. Recording has a three-minute browser ceiling and may stop
+sooner under station upload or storage limits; this short example should not
+approach either.
 
 ## Explicitly commit the take to Practice
 
 1. Re-read the current **Ending song** and **Next song**. The pair and deadline
    may have moved while you listened.
-2. Confirm **Placement** is **Standalone, between the songs**.
+2. Confirm the selected placement fits this take and the current song change.
 3. Press **Book voice track** once. This uploads and authorizes the take to play
    on Practice's server output. It would be on air for stream listeners if this
    were a streaming station.
@@ -148,17 +165,15 @@ Discard any remaining local take. In **Settings**, **Stations**, use **Stop** on
 the Practice row, confirm with **Stop station**, and wait for its button to
 change to **Start**. Closing the browser alone does not stop server playback.
 
-The music, category and clockwheel remain saved, as do Server sound card output,
-saved-point transition mode and enabled breaks. A local unbooked take is not a
+The music, category and clockwheel remain saved, as do Server sound card output
+and saved-point transition mode. A local unbooked take is not a
 saved liner. To reuse the earlier Browser lessons:
 
-1. With Practice still selected and stopped, open **Settings**, **Breaks**,
-   uncheck **Take breaks on this station** and press **Save break settings**.
-2. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
+1. In **Settings**, **Transitions**, set **Transition mode** to **Full intro and
    outro**; it saves on change. Move focus away and recheck the value.
-3. In **Settings**, **Stations**, set **Playback output** to **Browser** and
+2. In **Settings**, **Stations**, set **Playback output** to **Browser** and
    press **Save station options**.
-4. In the Practice row, press **Start**. Check for a successful start, then use
+3. In the Practice row, press **Start**. Check for a successful start, then use
    **Play or Pause** in **Now Playing** if needed to leave browser playback paused.
 
 For a reusable spoken asset, follow [the recorded liner lesson](recorded-liners.md).

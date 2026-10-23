@@ -1,6 +1,6 @@
 # Book announcer breaks and browser voice tracks
 
-Enable breaks, authorize an announcer or record in a paired browser, and book speech for the open song change.
+Enable external announcer uploads or record in a paired browser, and book speech for the open song change.
 
 [Operations index](../../operations.md) · [Settings reference](../../settings-reference.md)
 
@@ -11,28 +11,26 @@ about the songs, news, weather or music news. It asks AutoDJ which song change i
 writes a break for that pair of songs, and uploads it. AutoDJ mixes the break into that song
 change, reports when it airs, and deletes the file afterwards.
 
-AutoDJ prepares each song change one song ahead: while one song plays, the next one is already
-rendered together with its handoff. So a break cannot join the change that is coming up; it joins
-the one after, the *open slot*. As soon as the next song is rendered, AutoDJ also picks the song
-that follows it, so the open slot names both songs: the one the break follows (*ending*) and the
-one it leads into (*upcoming*). A break booked for the slot pins that pair: the upcoming song
-stays, whatever happens to the queue, because the break names it. A song queued after the booking
-plays after the upcoming song. News and weather therefore air about one song later than a system
-that splices them in at once.
+In streaming mode, external announcer uploads target the currently airing song change and its
+selected successor, like browser voice tracks. AutoDJ checks the handoff again after decoding and
+preparing the upload, and installs it only if the same change is still open and within its outro
+cutoff and applicable scheduled boundary. Scheduled ads/news keep their independent due/expiry
+tick and retry if a handoff changes during booking. Local server output continues to pin a booked
+pair. Streaming queue edits that affect associated speech offer keep, discard, or cancel.
 
 ## Turning breaks on
 
 Breaks need saved-point playback (Transition mode: Use saved segue points, or Clockwheel) and are
 off by default. Turn them on for each station that takes them in **Settings, Breaks**: tick
-**Take breaks on this station** and choose **Save break settings**. They work from then on, with
+**Accept announcer uploads** and choose **Save break settings**. They work from then on, with
 no restart. The same tab sets **Where a DJ break goes** (`dj_placement`), **Shortest intro to talk
 up** (`min_intro_seconds`) and **Music under a break** (`duck_db`; leave it blank to use the voice
 liner duck depth). It also says, in plain text, when breaks cannot be taken now, such as without
 saved-point playback. The result of a save is said once.
 
-Turning breaks off drops the breaks still waiting for their song change, from the announcer
-program and the Voice tracks tab; a break already mixed into the next song change still plays,
-and the ad schedule's spots stay. From then on the announcer's `GET context` answers
+Turning breaks off drops announcer uploads still waiting for their song change; a break already
+mixed into the next song change still plays. Manual voice tracks and the ad schedule's spots stay
+booked. From then on the announcer's `GET context` answers
 `"accepting": false` with the reason "Breaks are off for this station: turn them on in
 Settings, Breaks", and an upload is refused with 409 and the same words.
 
@@ -53,8 +51,9 @@ Until you save Settings, Breaks for the station, `enabled`, `dj_placement`,
 effect at the next start. Once you save Settings, Breaks (`POST /api/breaks/settings`, also
 under `/api/stations/<slug>/`; `GET` reads them), the station's `web_state.json` keeps all four,
 and they take the place of definition values at every start from then on. When the saved
-switch differs from the station definition, the log says so once at start. With breaks off,
-AutoDJ picks songs exactly as before and the API says so. The upload limits, quotas and waiting
+switch differs from the station definition, the log says so once at start. With external uploads
+off and no ad schedule or manual voice tracker requesting a slot, AutoDJ does no advance slot
+planning. The upload limits, quotas and waiting
 times below are station settings:
 
 - `dj_placement`: where a DJ break goes when its request says `auto`. `"auto"` talks up the
@@ -112,20 +111,32 @@ browser sends, is refused: these routes are for programs only.
 
 ## Voice tracking from the browser
 
-The **Voice tracks** tab records a DJ break with your microphone and books it for the open song
-change, the same as an announcer program's break (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)).
-It needs breaks turned on for the station (Settings, Breaks, with saved-point playback);
-otherwise the tab says why it cannot take a voice track. No token is needed: the tab uses your
-signed-in browser.
+The **Voice tracks** tab records a DJ break with your microphone, using the same booking desk as
+announcer breaks (see [Announcer breaks](#announcer-breaks-dj-breaks-news-and-weather)). In stream
+mode it targets the currently airing song and its selected successor. The booking window stays open
+until the current song's Outro, or closes earlier if existing speech or a tail begins before it.
+AutoDJ calculates the cutoff after decoding and checks it again atomically when it installs the
+take. Local server output retains its advance slot and render deadline.
+It works with server audio or stream output and saved-point transitions, even when external
+announcer uploads are off. Browser playback and stopped stations cannot render these tracks.
+In stream mode the playout controller maintains the live handoff; local output plans an advance
+slot while the voice-tracking tab is open. No token is needed: the tab uses your signed-in browser.
 
 The browser lets a page use the microphone only over a secure connection: open AutoDJ over HTTPS,
 or at `http://localhost:<port>` on the station's own computer. On a plain `http://` address from
 another computer the tab says so instead of recording.
 
-The tab shows the open song change: the ending song, the next song, how long the next song's
-intro is, the time left to book it and roughly when it airs. That change is the one after the next
-song, because the next one is already mixed. The time left counts down on the page; it is not
-read out on its own.
+The tab shows the open song change: the ending song, its selected successor, how long
+the next song's intro is, the time left to book it and roughly when it airs. The time left counts
+down on the page; it is not read out on its own.
+
+Choose **Microphone** before recording. The choice is remembered in this browser;
+**System default** forgets it. **Refresh microphones** updates the list; names may
+be hidden until permission is granted. The input status reports the acquired
+track's identity when the browser supplies it. An unavailable selected microphone
+is not silently replaced. Use **Test microphone** with headphones for a private
+monitor on the Preview output device, then **Stop microphone test** before recording.
+The monitor never books a take or joins the station output.
 
 1. Choose **Record**. The first time, the browser asks to use the microphone. Speak, then choose
    **Record** again to stop. **Alt+R** starts and stops recording from anywhere in the tab without
@@ -133,21 +144,47 @@ read out on its own.
 2. Choose **Listen back** to hear the take, on the Preview output device when one is chosen in
    Settings, Sound (headphones, say). **Record** again replaces it; **Discard recording**
    throws it away.
-3. Choose the **Placement**: **Automatic** (follows **Where a DJ break goes** in Settings, Breaks;
-   the description under it says what it will do for this change), **Talk up the next song's
-   intro** (your voice ends as the vocal starts), or **Standalone, between the songs**. For a
-   talk-up, **Start over the ending song's outro** lets your voice begin while the ending song
-   plays out.
+3. Leave **Placement** at **Fit over outro and intro** to use the ending song's usable
+   Outro and the next song's instrumental Intro. Speech uses its detected Start and Segue;
+   the original tail remains. When speech exceeds that musical window, the incoming song
+   waits so its vocal cannot cover the speech. **Between songs** plays a clean break instead.
+   The tab shows usable outro, intro, recorded and detected speech lengths, and the estimated
+   voice start, next-song entry and speech without song music. After WAV preparation, the
+   estimate includes the planned liner and queued-break cues and uses the playout timing rules;
+   changing placement refreshes it. The booking cutoff is calculated after decoding and checked
+   again when the take is installed. In stream mode it is the current song's Outro, or earlier if existing
+   speech or a tail begins before it.
 4. Choose **Book voice track**. The browser turns the take into a mono WAV at 44.1 kHz and
    uploads it; AutoDJ trims the silence before and after your voice as it does for any break.
 
+When a planned transition list is available, **Planned transition audio** shows which spoken
+items are already committed and which are predictions. Use each item's native **Voice track
+position** selector to put your recording **Before** or **After** that item, or choose **Replace**.
+Replace skips predicted automatic liners and matched intros for this transition; replacing an
+explicit queued or clockwheel liner defers it, leaving it queued for later. The defaults replace
+predicted items and place your voice after explicit queued and clockwheel liners. Scheduled breaks
+such as ads and news remain in their protected positions. The ordered summary updates as you
+change selectors.
+
+AutoDJ freezes predicted content for the open song pair without advancing liner rotation or intro
+cooldowns. It reserves the frozen candidates only when that transition is rendered. A retained
+intro advances its random chooser only when heard; replacing or discarding it does not. If Before,
+After and Replace choices contradict one another, booking is refused without changing the plan.
+A stale plan is also refused; refresh the list and submit your choice against the latest revision.
+
 The recording state is said once when recording starts and stops, then once a minute, and 30
 seconds before the length limit or before the song change closes. Recording stops by itself at
-three minutes, or sooner at the station's `max_seconds`, or when `max_upload_mb` could not hold
-that much WAV (about 5 MB per minute). Three minutes is the browser's own cap: booking decodes the
-whole take in the page, so the length is what keeps the page's memory down (about 80 MB at most).
+10 minutes or sooner if the station's upload and storage limits cannot hold the take. Manual voice
+tracks have their own 600-second limit and 64 MiB WAV upload allowance; the announcer program still
+uses `max_seconds` and `max_upload_mb`. The station's shared `max_queued`, `max_per_slot` and
+`quota_mb` still apply to both. The browser prepares the WAV in chunks and caches it for private
+listen-back and booking.
 Recording also stops, keeping the take and letting the microphone go, when you leave the Voice
 tracks tab or the page is hidden (another browser tab, a minimised window); that is said once.
+
+A standalone voice track cannot run across a hard scheduled event or a clockwheel restart. AutoDJ
+refuses it at booking when the timing is known, and checks again before rendering in case the
+schedule changed; a conflicting queued track is dropped whole rather than cut off.
 
 If the song change moves on before you book, the tab says which change is open now. When the open
 change has the same two songs (it was planned again), **Book voice track** books the take there.
@@ -157,9 +194,12 @@ blocked or missing microphone or a Cancel that failed, are shown under the Recor
 linked to the control they are about.
 
 **Booked voice tracks** lists what became of each voice track (waiting, mixed in, on the air,
-aired, dropped or expired, with the reason). **Cancel** drops one that is still waiting for its
-song change. Voice tracks share the station's break limits and quota with announcer breaks:
-`max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
+aired, dropped or expired, with the reason). **Cancel** drops a waiting recording. In stream mode,
+it can also remove a recording installed in the current or ready handoff before that recording
+starts. The server checks this again when applying the cancellation; other speech and approved
+assets are preserved, and audio already heard is unchanged. Voice tracks share the queue,
+per-song-change and disk quota limits with announcer
+breaks: `max_queued`, `max_per_slot` and `quota_mb`. Uploads and cancels count against
 `requests_per_minute` for the station.
 
 For scripts and other stations, the routes are `GET`, `POST` and `DELETE` under

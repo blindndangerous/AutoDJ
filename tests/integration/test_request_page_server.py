@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 from autodj.config import DmcaConfig, RequestsConfig, ServerConfig
 from autodj.indexer import IndexEntry
 from autodj.repeat_rules import PlayRecord, TrackKeyCache
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_entry
 
@@ -237,6 +237,42 @@ def test_the_operator_lists_approves_and_turns_down(bridge, tmp_path: Path) -> N
     assert client.post(f"/api/requests/{second['id']}/reject", headers=ORIGIN).status_code == 404
     by_name = client.get("/api/stations/default/requests").json()
     assert [row["status"] for row in by_name["recent"]] == ["rejected", "queued"]
+
+
+def test_operator_approve_returns_voice_conflict_for_a_fresh_choice(
+    bridge, tmp_path: Path, monkeypatch
+) -> None:
+    from autodj.live_queue import VoiceQueueConflict
+
+    client = _client(bridge, tmp_path, token=False, enabled=True)
+    track, token = _confirm(client, 2)
+    client.cookies.clear()
+    assert _send(client, track, token, "Fan").status_code == 200
+    request = client.get("/api/requests").json()["pending"][0]
+    detail = {
+        "code": "voice_track_conflict",
+        "revision": "fresh-revision",
+        "message": "This change affects an upcoming voice track.",
+    }
+    received = {}
+
+    def conflict(
+        entry, horizon, choose, *, with_view=False, voice_action=None, voice_revision=None
+    ):
+        received.update(action=voice_action, revision=voice_revision)
+        raise VoiceQueueConflict(detail)
+
+    monkeypatch.setattr(bridge, "insert_request", conflict)
+    response = client.post(
+        f"/api/requests/{request['id']}/approve",
+        headers=ORIGIN,
+        json={"voice_action": "keep", "voice_revision": "stale-revision"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == detail
+    assert received == {"action": "keep", "revision": "stale-revision"}
+    assert client.get("/api/requests").json()["pending"][0]["id"] == request["id"]
 
 
 def test_requests_off_lists_nothing_for_the_operator(bridge, tmp_path: Path) -> None:

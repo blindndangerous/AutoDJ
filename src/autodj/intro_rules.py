@@ -12,7 +12,7 @@ was; a file that is not a file of rules is set aside as ``.bad-<id>``; one
 that cannot be read just now is left alone, the rules last read are used and
 saves are refused.
 
-:meth:`IntroRules.choose` runs on the render-ahead thread and rolls on the
+:meth:`IntroRules.choose` runs on the render-ahead worker and rolls on the
 matched intros' own random source, never the picker's.  A liner folder's
 clips are gathered by :meth:`IntroRules.upkeep` on the station's tick, so a
 render does not walk a large liner library; and at most :data:`MAX_TRIES`
@@ -403,8 +403,8 @@ class IntroRules:
         while self._released:
             self._reserved.pop(self._released.popleft(), None)
 
-    def heard(self, key: str) -> None:
-        self._heard.append((key, time.time()))
+    def heard(self, key: str, *, at: float | None = None) -> None:
+        self._heard.append((key, at if at is not None else time.time()))
 
     def release_later(self, key: str) -> None:
         self._released.append(key)
@@ -413,6 +413,31 @@ class IntroRules:
         with self._lock:
             self._drain()
             self._reserved.pop(key, None)
+
+    def reserve_chosen(self, key: str, at: float) -> bool:
+        """Reserve a frozen rule choice without drawing a different clip."""
+        with self._lock:
+            self._drain()
+            rules = self._load()
+            rule = rules.get(key)
+            if rule is None or rule.dates.refusal(self._day_at(at)):
+                return False
+            last = max(
+                (
+                    value
+                    for value in (rule.last_aired, self._aired.get(key), self._reserved.get(key))
+                    if value is not None
+                ),
+                default=None,
+            )
+            if (
+                last is not None
+                and rule.cooldown_minutes
+                and abs(at - last) < rule.cooldown_minutes * 60
+            ):
+                return False
+            self._reserved[key] = at
+            return True
 
     def needs_upkeep(self) -> bool:
         return bool(self._heard or self._released or self._unwritten) or self.needs_warming()

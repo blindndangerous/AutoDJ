@@ -7,8 +7,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from autodj.review_api import ReviewBody
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 
 @pytest.mark.parametrize(

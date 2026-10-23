@@ -19,7 +19,7 @@ Stations**. Every station supports these choices. Startup flags
 | Browser must stay running for this output | Yes | No | No; listener/continuous policy still applies |
 | Crossfades, EQ, transitions, liners | Browser path | Server path | Server path |
 | DJ mixing beatmatching | Separate Beatmatch on skip control | Server DJ mixing | Server DJ mixing |
-| Record and book a voice track | No server song-change slot | Available with breaks enabled | Available with breaks enabled |
+| Record and book a voice track | No server song-change slot | Available with saved-point transitions; external breaks may stay off | Available with saved-point transitions; external breaks may stay off |
 | Volume, mute, device | Local browser controls | Server sound-card controls | Listening-device controls; no change to broadcast level |
 | Live DJ and browser talkover | Unavailable | Unavailable | Available with live-input requirements |
 | Broadcast recording and outbound relays | Unavailable | Unavailable | Available when configured |
@@ -58,10 +58,17 @@ enables the documented trusted-LAN exception. See [access management](../guides/
 - FFmpeg is required for streaming and analysis/server decoding of MP3, M4A,
   MP4 and AAC. Other formats use soundfile with FFmpeg fallback. Server sound-card
   output needs a usable system audio device and its platform audio support.
+- [No-model setup](../setup.md#no-model-installation) includes browser playback,
+  streaming and basic imports. It omits local model analysis and sound-card output
+  packages. For direct package installs, `index` adds local model analysis and
+  worker execution, `play` adds sound-card output, and `all` adds both. Guided
+  default setup and the container retain model analysis.
 - Basic imported songs remain playable without advanced embeddings. Similarity
   selection needs compatible advanced analysis; random rotation and queued songs
   can use songs without it. The advanced-analysis length cutoff can exclude long
   tracks without making them unplayable. See [music import](../guides/add-your-music.md).
+  A no-model server can accept remote analysis only with an existing compatible
+  server-side model cache; see [worker requirements](../guides/operations/gpu-worker.md#3-install-autodj-on-the-gpu-machine).
 - Speech synthesis needs a compatible configured endpoint or station TTS command.
   Preflight does not prove authentication, service availability or audio quality.
   Generation can cost money. Saved liners and activated complete time-check sets

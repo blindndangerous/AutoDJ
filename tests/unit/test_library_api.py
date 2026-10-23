@@ -22,11 +22,12 @@ from autodj.server import (
     LibraryDjAnalysisBody,
     LibraryFolderBody,
     LibraryFolderUpdateBody,
+    LibraryMusicFadeBody,
     LibraryRescanBody,
     SongPointsBody,
     _apply_time_settings,
-    create_app,
 )
+from tests._server import create_app
 from tests.unit._catalog_vectors import set_vector
 from tests.unit.test_library import Similarity, make_config, make_entry
 
@@ -156,6 +157,25 @@ def test_dj_analysis_route_saves_the_library_setting(library_api):
     }
     assert manager.dj_analysis_enabled() is False
     assert call("GET", "/api/library/dj-analysis") == {"enabled": False}
+
+
+def test_music_fade_route_persists_shared_threshold_and_rejects_invalid_json(library_api):
+    manager, call, app = library_api
+    assert call("GET", "/api/library/music-fade") == {"drop_db": 10}
+    assert call("PUT", "/api/library/music-fade", LibraryMusicFadeBody(drop_db=17)) == {
+        "drop_db": 17
+    }
+    assert manager.music_fade_drop_db() == 17
+    assert manager.catalog.get_setting("music_fade_drop_db") == 17
+    assert call("GET", "/api/library/music-fade") == {"drop_db": 17}
+    origin = app.state.security_policy.effective_allowed_origins()[0]
+    headers = {"host": urlsplit(origin).netloc, "origin": origin}
+    for bad in (True, 0, 31, 1.5, "17"):
+        response = TestClient(app).put(
+            "/api/library/music-fade", json={"drop_db": bad}, headers=headers
+        )
+        assert response.status_code == 422, bad
+    assert manager.music_fade_drop_db() == 17
 
 
 def test_advanced_length_route_saves_the_cutoff(library_api):
@@ -424,3 +444,54 @@ def test_track_browse_rejects_unknown_source_and_invalid_kind(library_api):
         headers={"host": urlsplit(origin).netloc, "origin": origin},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("kind", ["music", "liner"])
+def test_cue_rescan_compares_then_applies_only_selected_points(library_api, monkeypatch, kind):
+    from autodj import cue_rescan
+    from autodj.server import CueRescanApplyBody, CueRescanBody
+
+    manager, call, _app = library_api
+    if kind == "liner":
+        folder = manager.cfg.index.stations_dir / "default" / "liners" / "cue-rescan"
+        folder.mkdir(parents=True)
+        manager.catalog.add_source(folder, kind="liner")
+    else:
+        folder = manager.cfg.library.music_dir
+    path = folder / "cue-test.flac"
+    path.write_bytes(b"test audio")
+    entry = make_entry(path)
+    manager.catalog.put_entry(
+        entry, kind=kind, points={"start": 0, "segue": 150, "end": 180}, point_source="user"
+    )
+    manager.refresh()
+    before = manager.catalog.record_for_path(path)
+
+    def analyze(*args, **kwargs):
+        with pytest.raises(RuntimeError):
+            asyncio.get_running_loop()
+        assert kwargs["kind"] == kind
+        return entry, {"start": 0.1, "intro": 5, "outro": 179, "segue": 175, "end": 180}
+
+    monkeypatch.setattr(cue_rescan, "analyze_basic", analyze)
+    result = call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path)))
+    assert manager.catalog.record_for_path(path) == before
+    assert ("intro" in result["points"]) == (kind == "music")
+    body = CueRescanApplyBody(path=str(path), token=result["token"], fields=["segue"])
+    applied = call("POST", "/api/library/points/rescan/apply", body)
+    assert applied["points"]["segue"] == 175
+    assert applied["points"]["start"] == 0
+    assert applied["point_sources"]["segue"] == "analysis"
+    assert applied["point_sources"]["start"] == "user"
+    assert applied["title"] == before["title"]
+    with pytest.raises(HTTPException) as expired:
+        call("POST", "/api/library/points/rescan/apply", body)
+    assert expired.value.status_code == 409
+    with pytest.raises(HTTPException) as station:
+        call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path), station="missing"))
+    assert station.value.status_code == 404
+    path.unlink()
+    with pytest.raises(HTTPException) as missing:
+        call("POST", "/api/library/points/rescan", CueRescanBody(path=str(path)))
+    assert missing.value.status_code == 409
+    assert manager.catalog.points(path)["segue"] == 175
