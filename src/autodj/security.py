@@ -756,6 +756,7 @@ class SecurityMiddleware:
         machine_scopes: Mapping[str, str] | None = None,
         machine_auth: Callable[[str, str], object | None] | None = None,
         station_slugs: Callable[[], AbstractSet[str]] | None = None,
+        program_paths: AbstractSet[str] = frozenset(),
     ) -> None:
         """Wrap *app*; *body_limits* maps a path to its request-body cap in bytes.
 
@@ -775,6 +776,11 @@ class SecurityMiddleware:
         ``/api/`` also covers the same path under ``/api/stations/<slug>/``,
         whatever the name, so a station route is never a browser route by
         another address.
+
+        *program_paths* are routes a program calls before it has any
+        credential, such as ``autodj worker --pair``: no session is needed,
+        but like a machine route each refuses a request with an ``Origin``
+        and one over plain HTTP from another machine.
         """
         self.app = app
         self._policy = policy
@@ -785,6 +791,7 @@ class SecurityMiddleware:
         self._machine_scopes = dict(machine_scopes or {})
         self._machine_auth = machine_auth
         self._station_slugs = station_slugs or frozenset
+        self._program_paths = frozenset(program_paths)
 
     def _body_limit(self, path: str) -> Callable[[], int] | None:
         """The body cap for *path*: its own, or a pattern's with ``{name}`` segments."""
@@ -889,6 +896,11 @@ class SecurityMiddleware:
             rejection = (403, "Disallowed Host")
         elif machine_scope is not None:
             rejection = await self._machine_rejection(scope, machine_scope, origin_values)
+        elif path in self._program_paths:
+            if origin_values:
+                rejection = (403, "Machine routes do not accept browser requests")
+            elif not machine_transport_allowed(scope):
+                rejection = (403, "This route needs HTTPS")
         elif live_source:
             # A live DJ's source client (#48) has no session or Origin; the
             # route checks its Basic credentials and transport itself.

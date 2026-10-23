@@ -168,6 +168,9 @@ it with `--ca-cert`.
 
 ## 2. Create a token
 
+To skip copying a token, pair the worker instead: see [Pair the worker](#pair-the-worker) in
+step 4. The token below still works the same way.
+
 On any paired browser, open Settings, Analysis workers. Under Machine tokens, type a name for the
 computer, such as Studio PC, leave Token use at Analysis worker, and choose Create token. The
 token appears once, in a read-only field with a Copy token
@@ -260,6 +263,10 @@ uv run autodj worker --server https://nas.local:8080
   when it starts.
 - `--ca-cert FILE` trusts the server's self-signed certificate.
 - `--token TOKEN` gives the token on the command line instead of the environment variable.
+- `--pair CODE` trades a pairing code for a token; see [Pair the worker](#pair-the-worker).
+
+Without `--token` or `AUTODJ_WORKER_TOKEN`, the worker uses the token that `--pair` saved for the
+same `--server` address. Without any of these, it stops and says how to get a token.
 
 The worker logs one line per song. Network trouble is retried with a growing pause, up to five
 minutes, so a worker left running rides out a server restart. Ctrl+C finishes the song in hand,
@@ -273,6 +280,82 @@ instead receive the local recovery attempt described above.
 Settings, Analysis workers shows each worker (connected or not, its graphics card, when it was
 last seen, songs analysed and failed, and songs per hour), how many songs are waiting, and whether
 the server's own analysis is paused. Revoking a token stops its worker at its next request.
+
+### Pair the worker
+
+Pairing gives a worker its own token without copying the token by hand.
+
+1. On any paired browser, open Settings, Analysis workers. Under Worker pairing, optionally type a
+   Worker name, then choose Pair a worker. With no name, the token takes the worker computer's own
+   host name.
+2. The page shows an 8-digit pairing code and the command to run, with Copy code and Copy command
+   buttons. The code works once, for ten minutes. A new code replaces the old one.
+3. On the GPU machine, run the command, for example:
+
+   ```bash
+   uv run autodj worker --pair 12345678 --server https://nas.local:8080
+   ```
+
+The worker trades the code for a new analysis-worker token over HTTPS (or plain HTTP to the server
+machine itself) and starts working. It says where it saved the token: on Windows
+`%APPDATA%\autodj\worker-tokens.json`, elsewhere `~/.config/autodj/worker-tokens.json` (or under
+`$XDG_CONFIG_HOME`). Only your user account can read the file: mode 0600 on Linux and macOS, and
+an access list for your account alone on Windows. The worker refuses to use the file if others
+can read it. Later runs with the same `--server` address use the saved token, so leave out
+`--token` and `AUTODJ_WORKER_TOKEN`; `--pair` refuses to run when either is given.
+
+To remove the token, delete that file, or its entry for the server, and revoke the token in
+Settings, Analysis workers. Pair with one server at a time: two `--pair` runs at once can lose one
+of the saved tokens. Wrong codes have the same limits as browser pairing: after ten wrong
+codes from one computer, that computer must wait until the code expires; after fifty wrong codes in
+all, the code stops working and you need a new one.
+
+## Manage a worker from the server
+
+Each worker row in Settings, Analysis workers has its own settings and a Save button:
+
+- **Paused**: the server hands the worker no songs. A worker of this release stops claiming,
+  finishes the song in hand and gives the rest of its batch back. It keeps sending heartbeats, so
+  it still counts as connected and the server's own analysis stays paused too: you paused analysis
+  on purpose. Once the claims are back, the worker frees the model and runs `--after-command`
+  straight away, with or without an idle release, so a program sharing the GPU gets it back. A
+  worker that starts while paused does not run `--before-command` or load the model. When resumed,
+  it runs `--before-command` and loads the model again only when songs arrive. Paused counts as an
+  empty queue: `--once` stops at once, and `--idle-exit` stops after its wait. Without either, a
+  paused worker waits to be resumed or stopped.
+- **Songs per claim**: 1 to 16, like `--batch`.
+- **Idle release minutes**: 1 or more, like `--idle-release`. With it set, the worker loads the
+  model only while songs are waiting and runs `--before-command` and `--after-command` around each
+  load, as with `--idle-release`.
+
+Leave a box empty to use the worker's own setting. A value given on the worker's command line wins
+over the server's, and the worker logs that once. The worker applies a saved change at its next
+heartbeat or claim, within about a minute, without a restart. The row says whether the worker has
+applied the latest settings. A worker from an older release cannot apply settings, but Paused still
+stops the server handing it songs; it finishes the batch it holds first.
+
+After restoring the server from an older backup, restart the workers so they take the server's
+settings again: a worker ignores a settings revision at or below the one it already applied.
+
+The server never sends anything for the worker to run. `--before-command` and `--after-command`
+come only from the worker's own command line.
+
+## When the server refuses a worker
+
+When the server refuses a worker, Settings, Analysis workers lists it under Refused workers with
+when it happened and what to do, until that worker next connects successfully or you choose
+Dismiss. The server keeps only the latest refusal for each token.
+
+- **Model weights or analysis version differ**: the notice gives the fix, such as setting
+  `[model] revision = "<commit>"` in the worker's `config.toml` (see
+  [step 3](#3-install-autodj-on-the-gpu-machine)), or updating AutoDJ on both machines to the same
+  release. A worker of this release reports its model to the server, so this shows before it
+  loads anything. An older worker stops on its own, and the server sees the mismatch only if it
+  sends a result.
+- **Scan analysis version differs**: the worker still does advanced analysis, but the server
+  decodes new music itself. Update AutoDJ on both machines to the same release.
+- **Revoked token, wrong secret, or not a worker token**: pair the worker again, or give it a new
+  analysis-worker token.
 
 ## Sharing the GPU with another program
 
@@ -292,6 +375,8 @@ uv run autodj worker --server https://nas.local:8080 --idle-exit 10 `
 
 The worker logs "Queue empty; waiting up to 10 minutes for new songs." when it runs out of work,
 and "Queue empty for 10 minutes; stopping." when it gives up.
+
+An idle release set in Settings works the same as `--idle-release`.
 
 - Without `--idle-release`, `--before-command` runs once, after the worker has checked the token
   and the model with the server and before it loads the model.

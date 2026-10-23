@@ -182,6 +182,7 @@ from autodj.worker_api import (
     MACHINE_SCOPES,
     RESULT_BODY_MAX_BYTES,
     SMALL_BODY_MAX_BYTES,
+    WORKER_PAIR_PATH,
     WORKER_PREFIX,
     install_worker_api,
 )
@@ -1256,6 +1257,9 @@ def create_app(
         **{path: (lambda: SMALL_BODY_MAX_BYTES) for path in UPDATE_ROUTES},
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/machine-tokens/pairing-code": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/analysis/workers/{token_id}/settings": lambda: SMALL_BODY_MAX_BYTES,
+        WORKER_PAIR_PATH: lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
@@ -1312,6 +1316,7 @@ def create_app(
         body_limits=body_limits,
         machine_scopes={**MACHINE_SCOPES, **ANNOUNCER_SCOPES},
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
+        program_paths=frozenset({WORKER_PAIR_PATH}),
         station_slugs=stations.slugs,
     )
     model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))

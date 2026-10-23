@@ -545,6 +545,39 @@ tokens only to machines you trust with that.
 like a shell would but without a shell, with a two-minute limit. They come from the worker's own
 command line, never from the server.
 
+Settings managed by the server (#554). A paired browser can pause a worker or set its batch
+(1 to 16) and idle release (1 to 10,080 minutes) through
+`PUT /api/analysis/workers/<token id>/settings`, an ordinary paired-browser route that a machine
+token cannot open. Heartbeat and claim replies carry only those three values and a revision. The
+server never sends a worker a command, a path or any other setting, so a compromised server, or
+anyone who can change Settings, can make a worker idle, claim smaller or larger batches, or
+release its model, but cannot run code on the worker machine. Options typed on the worker's
+command line win over the server's values. A paused worker is handed no songs; it still sends
+heartbeats, which keep the server's own analysis paused.
+
+Refusal notices. The token database keeps, for each known worker token, only the latest refusal:
+its kind (model identity, scan analysis version, revoked, wrong secret or missing scope), its time
+and server-made text cut to 600 characters, which can quote the model name and commit a worker
+reported. It never holds a secret. Unknown token ids record nothing; the same refusal again writes
+at most once a minute. Noting a wrong secret for an existing id adds a write that an unknown id
+does not; ids are 128 random bits, so the difference tells a guesser nothing useful. A successful
+connect clears the row and Dismiss hides it. Paired browsers read the notices through
+`/api/analysis/workers`.
+
+Worker pairing codes. A paired browser can ask `POST /api/machine-tokens/pairing-code` for an
+8-digit code, kept only in the server's memory, that works once for ten minutes; a new code
+replaces it. `POST /api/worker-pair` trades it for a new analysis-worker token. That route needs no
+session or token, so the middleware refuses it to any request with an `Origin` header (a browser
+page) and to plain HTTP from another machine, as for machine routes; host allowlists still apply.
+Ten wrong codes from one client address lock it out until the code ends, and fifty wrong codes in
+all burn the code, the same limits as browser pairing; nothing counts while no code is open.
+Anyone who reads the code on screen before the worker uses it could take the token instead: it is
+shown only to a paired browser, and the operator sees the token in the list and can revoke it.
+The code and the token are never logged. The worker keeps the token in
+`%APPDATA%\autodj\worker-tokens.json` on Windows or `~/.config/autodj/worker-tokens.json`
+(`$XDG_CONFIG_HOME`) elsewhere, written atomically with mode 0600 or an access list for the current
+user alone, and refuses to read the file when others can.
+
 ### Announcer breaks
 
 An announcer token is bound to one station when it is created; the station is stored with the
