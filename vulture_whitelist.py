@@ -45,3 +45,10 @@ _.pytest_sessionstart
 _.pytest_deselected
 _.pytest_testnodedown
 _.pytest_sessionfinish
+
+# uvicorn.Server reads should_exit to stop; Settings, Updates' Restart sets it.
+_.should_exit
+# An UpdateCheck field, read through dataclasses.asdict() in UpdateCheck.to_dict.
+_.checked_at
+# The app's shared update checker; the update API tests replace its check.
+_.update_checker
