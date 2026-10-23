@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import faiss
 import numpy as np
 import pytest
 
@@ -19,7 +18,6 @@ from autodj.indexer import (
     IndexEntry,
     _combine_features,
     _extract_librosa_features,
-    build_faiss_index,
     load_index,
 )
 from tests.unit._legacy_index import save_index
@@ -136,41 +134,6 @@ class TestCombineFeatures:
         librosa_vec = np.random.randn(16).astype(np.float32)
         result = _combine_features(embedding_vec, librosa_vec)
         assert result.dtype == np.float32
-
-
-# ---------------------------------------------------------------------------
-# build_faiss_index
-# ---------------------------------------------------------------------------
-
-
-class TestBuildFaissIndex:
-    def test_builds_index_with_correct_size(self) -> None:
-        n = 5
-        vectors = np.random.randn(n, FEATURE_DIM).astype(np.float32)
-        # L2-normalize
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        vectors /= norms
-
-        index = build_faiss_index(vectors)
-        assert index.ntotal == n
-
-    def test_index_is_inner_product(self) -> None:
-        vectors = np.random.randn(3, FEATURE_DIM).astype(np.float32)
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        vectors /= norms
-        index = build_faiss_index(vectors)
-        assert isinstance(index, faiss.IndexFlatIP)
-
-    def test_nearest_neighbor_is_self(self) -> None:
-        """Querying a vector should return itself as the top result."""
-        vectors = np.random.randn(10, FEATURE_DIM).astype(np.float32)
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        vectors /= norms
-        index = build_faiss_index(vectors)
-
-        query = vectors[3:4]  # shape [1, FEATURE_DIM]
-        _, indices = index.search(query, 1)
-        assert indices[0][0] == 3
 
 
 # ---------------------------------------------------------------------------

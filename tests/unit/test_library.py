@@ -50,8 +50,8 @@ class Similarity:
     def entries_snapshot(self):
         return self.entries
 
-    def replace_catalog_index(self, entries, vectors):
-        self.replaced = (entries, vectors.copy())
+    def replace_catalog_faiss(self, entries, index):
+        self.replaced = (entries, index.reconstruct_n(0, index.ntotal))
 
     def replace_catalog_entries(self, entries):
         if self.replaced is None or [e.path for e in self.replaced[0]] != [e.path for e in entries]:

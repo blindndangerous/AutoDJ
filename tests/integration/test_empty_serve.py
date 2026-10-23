@@ -15,6 +15,7 @@ from autodj.player import Player
 from autodj.server import PlayerBridge
 from autodj.similarity import SimilarityIndex
 from tests._server import create_app
+from tests.unit._catalog_vectors import build_faiss_index
 from tests.unit._legacy_index import save_index
 
 
@@ -60,7 +61,7 @@ def test_empty_similarity_index_loads_catalog_vectors(tmp_path: Path) -> None:
     )
     vectors = np.zeros((1, FEATURE_DIM), dtype=np.float32)
     vectors[0, 0] = 1.0
-    sim.replace_catalog_index([entry], vectors)
+    sim.replace_catalog_faiss([entry], build_faiss_index(vectors))
     assert sim.ntotal == 1
     assert sim.entries_snapshot() == (entry,)
 
@@ -194,7 +195,7 @@ def test_player_uses_first_published_generation_after_waiting(tmp_path: Path) ->
         ]
         vectors = np.zeros((2, FEATURE_DIM), dtype=np.float32)
         vectors[:, 0] = 1.0
-        sim.replace_catalog_index(entries, vectors)
+        sim.replace_catalog_faiss(entries, build_faiss_index(vectors))
         assert sim.ntotal == 2
         wait_event.set()
         advanced = progressed.wait(timeout=2)
