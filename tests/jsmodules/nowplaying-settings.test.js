@@ -56,14 +56,12 @@ function authError() {
 describe("now-playing settings", () => {
   let panel;
   let request;
-  let saveShowNext;
   let clock;
 
   function install(overrides = {}) {
     return installNowPlayingSettings({
       doc: document,
       request,
-      saveShowNext,
       srStatus: byId("sr-status"),
       settingsStatus: byId("settings-status"),
       hostname: "192.168.1.20",
@@ -82,7 +80,6 @@ describe("now-playing settings", () => {
     panel = mount();
     clock = 1000;
     request = vi.fn(async (url) => (url === "/api/webhooks" ? HOOKS : { delivered: true }));
-    saveShowNext = vi.fn(async () => true);
   });
   afterEach(() => {
     delete navigator.clipboard;
@@ -166,27 +163,15 @@ describe("now-playing settings", () => {
     expect(document.activeElement).toBe(byId("np-url"));
   });
 
-  it("saves Show the next song publicly and says what changed", async () => {
-    install();
+  it("stages Show the next song publicly and keeps the draft across pushes", () => {
+    const ui = install();
+    ui.apply(STREAM_STATE);
     const box = byId("np-show-next");
     box.checked = true;
     box.dispatchEvent(new Event("change"));
-    await said("settings-status", "The public now-playing feed now shows the next song.");
-    expect(saveShowNext).toHaveBeenCalledWith(true, box);
-    box.checked = false;
-    box.dispatchEvent(new Event("change"));
-    await said("settings-status", "The public now-playing feed now hides the next song.");
-  });
-
-  it("puts the box back when the save fails, leaving the reason to postSettings", async () => {
-    saveShowNext.mockResolvedValue(false);
-    install();
-    const box = byId("np-show-next");
-    box.checked = true;
-    box.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(box.checked).toBe(false));
-    await tick();
-    expect(byId("settings-status").textContent).toBe("");
+    const changed = { stream_mode: true, settings: { playback: { nowplaying_show_next: false } } };
+    ui.apply(changed);
+    expect(box.checked).toBe(true);
   });
 
   it("in DMCA mode shows the status and keeps show-next focusable but unavailable", async () => {
@@ -217,7 +202,6 @@ describe("now-playing settings", () => {
     box.click();
     expect(box.checked).toBe(false);
     await said("settings-status", reason.textContent.trim());
-    expect(saveShowNext).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(box);
 
     ui.apply({ stream_mode: true, settings: { playback: {
@@ -279,16 +263,9 @@ describe("now-playing settings", () => {
     expect(byId("np-webhooks-list").hidden).toBe(true);
   });
 
-  it("loads the list only in stream mode while the Stream panel is seen", async () => {
+  it("loads saved webhooks outside stream mode when the Stream panel is seen", async () => {
     const ui = install();
     ui.apply({ stream_mode: false });
-    panel.open = true;
-    panel.dispatchEvent(new Event("toggle"));
-    ui.apply(null);
-    expect(request).not.toHaveBeenCalled();
-    panel.open = false;
-    ui.apply(STREAM_STATE);
-    expect(request).not.toHaveBeenCalled();
     panel.open = true;
     panel.dispatchEvent(new Event("toggle"));
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));

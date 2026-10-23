@@ -266,7 +266,7 @@ class SecurityPolicy:
                 return PairingBlock(
                     retry_after,
                     "Pairing is paused after too many wrong codes. "
-                    f"Try again in {retry_after} seconds with a new code.",
+                    f"Try again in {seconds_text(retry_after)} with a new code.",
                 )
         return None
 
@@ -288,7 +288,7 @@ class SecurityPolicy:
                 return PairingBlock(
                     retry_after,
                     "Too many wrong pairing codes from this device. "
-                    f"Try again in {retry_after} seconds.",
+                    f"Try again in {seconds_text(retry_after)}.",
                 )
         return None
 
@@ -461,6 +461,11 @@ class SecurityPolicy:
         except (TypeError, ValueError):
             return False
         return canonical in set(self.effective_allowed_origins())
+
+
+def seconds_text(count: int) -> str:
+    """``"1 second"`` or ``"N seconds"``, for a wait the page says aloud."""
+    return f"{count} second" if count == 1 else f"{count} seconds"
 
 
 def new_request_id() -> str:
@@ -751,6 +756,7 @@ class SecurityMiddleware:
         machine_scopes: Mapping[str, str] | None = None,
         machine_auth: Callable[[str, str], object | None] | None = None,
         station_slugs: Callable[[], AbstractSet[str]] | None = None,
+        program_paths: AbstractSet[str] = frozenset(),
     ) -> None:
         """Wrap *app*; *body_limits* maps a path to its request-body cap in bytes.
 
@@ -770,6 +776,11 @@ class SecurityMiddleware:
         ``/api/`` also covers the same path under ``/api/stations/<slug>/``,
         whatever the name, so a station route is never a browser route by
         another address.
+
+        *program_paths* are routes a program calls before it has any
+        credential, such as ``autodj worker --pair``: no session is needed,
+        but like a machine route each refuses a request with an ``Origin``
+        and one over plain HTTP from another machine.
         """
         self.app = app
         self._policy = policy
@@ -780,6 +791,7 @@ class SecurityMiddleware:
         self._machine_scopes = dict(machine_scopes or {})
         self._machine_auth = machine_auth
         self._station_slugs = station_slugs or frozenset
+        self._program_paths = frozenset(program_paths)
 
     def _body_limit(self, path: str) -> Callable[[], int] | None:
         """The body cap for *path*: its own, or a pattern's with ``{name}`` segments."""
@@ -884,6 +896,11 @@ class SecurityMiddleware:
             rejection = (403, "Disallowed Host")
         elif machine_scope is not None:
             rejection = await self._machine_rejection(scope, machine_scope, origin_values)
+        elif path in self._program_paths:
+            if origin_values:
+                rejection = (403, "Machine routes do not accept browser requests")
+            elif not machine_transport_allowed(scope):
+                rejection = (403, "This route needs HTTPS")
         elif live_source:
             # A live DJ's source client (#48) has no session or Origin; the
             # route checks its Basic credentials and transport itself.
@@ -925,7 +942,7 @@ class SecurityMiddleware:
         # Capped like the default station's route even for a name that is no
         # station: that request answers 404, but only after reading its body.
         limited = station_relative(path, None) or path
-        body_limit = self._body_limit(limited) if method in ("POST", "PUT") else None
+        body_limit = self._body_limit(limited) if method in ("POST", "PUT", "PATCH") else None
         downstream_receive = receive
         if body_limit is not None:
             cap = body_limit()

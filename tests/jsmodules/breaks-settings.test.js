@@ -9,22 +9,32 @@ import {
   OFF_REASON,
   installBreakSettings,
   parseNumber,
-  savedText,
 } from "../../src/autodj/static/modules/breaks-settings.js";
 import { initSubtabs } from "../../src/autodj/static/modules/subtabs.js";
+
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  settingsHaveChanges: () => false,
+  confirmSettingsNavigation: async () => true,
+  registerSettingsGroup: (spec) => {
+    const part = { ...spec, baseline: null };
+    groups.push(part);
+    return {
+      accept(body) {
+        if (part.baseline !== null && JSON.stringify(part.read()) !== JSON.stringify(part.baseline)) return;
+        part.write(body);
+        part.baseline = JSON.parse(JSON.stringify(part.read()));
+      },
+      dirty: () => part.baseline !== null && JSON.stringify(part.read()) !== JSON.stringify(part.baseline),
+    };
+  },
+}));
 
 // The real Settings markup, so the ids, labels and live region the module
 // relies on are the ones the page ships.
 
 const byId = (id) => document.getElementById(id);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-const said = () => vi.waitFor(() => {
-  const text = byId("brk-status").textContent;
-  if (!text) throw new Error("nothing said yet");
-  return text;
-});
-const submit = () => byId("brk-form").dispatchEvent(new Event("submit", { cancelable: true }));
-
 const SAVED = {
   enabled: true, dj_placement: "auto", min_intro_seconds: 2, duck_db: null,
   liners_duck_db: -12, reason: null,
@@ -50,7 +60,7 @@ async function install(request) {
   return controls;
 }
 
-beforeEach(installIndex);
+beforeEach(() => { groups.length = 0; installIndex(); });
 
 describe("Breaks panel markup", () => {
   it("is a Settings subtab between Time checks and Schedule, with no aria-controls", () => {
@@ -89,7 +99,6 @@ describe("Breaks panel markup", () => {
     expect(panel.querySelectorAll("[aria-live]")).toHaveLength(1);
     expect(byId("brk-status").getAttribute("role")).toBe("status");
     expect(byId("brk-reason").hasAttribute("aria-live")).toBe(false);
-    expect(byId("brk-save").textContent).toBe("Save break settings");
     // The placement help is the operations guide's, in words.
     expect(byId("brk-placement-auto-help").textContent).toMatch(/at least as long as the shortest intro/);
     expect(byId("brk-placement-talk-up-help").textContent).toMatch(/With no intro point the break still plays between the songs/);
@@ -125,16 +134,6 @@ describe("Break settings words", () => {
     expect(parseNumber("3", -30, 0)).toBeNull();
   });
 
-  it("says whether a save turned breaks on or off", () => {
-    expect(savedText({ enabled: false }, { enabled: true, reason: null })).toBe("Breaks are on.");
-    expect(savedText({ enabled: false }, { enabled: true, reason: "Breaks need saved-point playback" }))
-      .toBe("Breaks are on. Breaks need saved-point playback.");
-    expect(savedText({ enabled: true }, { enabled: false, dropped: 0 }))
-      .toBe("Breaks are off. New announcer uploads are refused.");
-    expect(savedText({ enabled: true }, { enabled: false, dropped: 1 }))
-      .toBe("Breaks are off. New announcer uploads are refused. 1 waiting break was dropped.");
-    expect(savedText({ enabled: true }, { enabled: true })).toBe("Break settings saved.");
-  });
 });
 
 describe("Break settings panel", () => {
@@ -160,71 +159,40 @@ describe("Break settings panel", () => {
     expect(byId("brk-duck").value).toBe("");
   });
 
-  it("saves every setting, busy but never disabled, and says so once", async () => {
+  it("exposes every setting in one validated draft body", async () => {
     const request = server();
     await install(request);
+    byId("brk-placement-auto").checked = false;
     byId("brk-placement-talk-up").checked = true;
     byId("brk-min-intro").value = "1,5";
     byId("brk-duck").value = "-8";
-    byId("brk-form").dispatchEvent(new Event("change"));
-    let answer;
-    request.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
-    const save = byId("brk-save");
-    submit();
-    expect(save.getAttribute("aria-busy")).toBe("true");
-    expect(save.classList.contains("is-pending")).toBe(true);
-    expect(save.hasAttribute("aria-disabled")).toBe(false);
-    expect(save.disabled).toBe(false);
-    const calls = request.mock.calls.length;
-    submit();  // a second press waits for the first
-    expect(request.mock.calls.length).toBe(calls);
-    const [, options] = request.mock.calls.at(-1);
-    expect(options.method).toBe("POST");
-    expect(JSON.parse(options.body)).toEqual({
+    const draft = groups.find((group) => group.group === "breaks");
+    expect(draft.read()).toEqual({
       enabled: true, dj_placement: "talk_up", min_intro_seconds: 1.5, duck_db: -8,
     });
-    answer({ ...SAVED, dj_placement: "talk_up", min_intro_seconds: 1.5, duck_db: -8, dropped: 0 });
-    expect(await said()).toBe("Break settings saved.");
-    expect(save.hasAttribute("aria-busy")).toBe(false);
-    expect(save.classList.contains("is-pending")).toBe(false);
+    expect(draft.validate()).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it("sends a blank duck as null: the voice liner duck", async () => {
+  it("keeps a blank duck as null for the voice liner default", async () => {
     const request = server({ duck_db: -6 });
     await install(request);
     byId("brk-duck").value = " ";
-    submit();
-    await said();
-    expect(JSON.parse(request.mock.calls.at(-1)[1].body).duck_db).toBeNull();
-  });
-
-  it("turning breaks off says announcer uploads are refused and how many were dropped", async () => {
-    const request = server();
-    await install(request);
-    byId("brk-enabled").checked = false;
-    byId("brk-form").dispatchEvent(new Event("change"));
-    submit();
-    expect(await said())
-      .toBe("Breaks are off. New announcer uploads are refused. 2 waiting breaks were dropped.");
-    expect(JSON.parse(request.mock.calls.at(-1)[1].body).enabled).toBe(false);
-    expect(byId("brk-reason").textContent).toBe(OFF_REASON);
+    expect(groups.find((group) => group.group === "breaks").read().duck_db).toBeNull();
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a value out of range: marked, linked, shown and focused, nothing sent", async () => {
     const request = server();
     await install(request);
-    const calls = request.mock.calls.length;
     const field = byId("brk-min-intro");
     field.value = "90";
-    submit();
-    await flush();
-    expect(request.mock.calls.length).toBe(calls);
+    expect(groups.find((group) => group.group === "breaks").validate()).toBe(false);
     expect(field.getAttribute("aria-invalid")).toBe("true");
     expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-help brk-min-intro-error");
     expect(byId("brk-min-intro-error").hidden).toBe(false);
     expect(byId("brk-min-intro-error").textContent).toBe(MIN_INTRO_ERROR);
     expect(document.activeElement).toBe(field);
-    expect(await said()).toBe(MIN_INTRO_ERROR);
 
     field.value = "2";
     field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -235,22 +203,12 @@ describe("Break settings panel", () => {
     expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-help");
     const duck = byId("brk-duck");
     duck.value = "6";
-    submit();
-    await flush();
+    expect(groups.find((group) => group.group === "breaks").validate()).toBe(false);
     expect(duck.getAttribute("aria-invalid")).toBe("true");
     expect(byId("brk-duck-error").textContent).toBe(DUCK_ERROR);
     expect(document.activeElement).toBe(duck);
     expect(field.getAttribute("aria-describedby")).toBe("brk-min-intro-help");
-    expect(request.mock.calls.length).toBe(calls);
-  });
-
-  it("says why a save failed and leaves the button usable", async () => {
-    const request = server();
-    await install(request);
-    request.mockRejectedValueOnce(new Error("Request failed (500)"));
-    submit();
-    expect(await said()).toBe("Could not save the break settings: Request failed (500)");
-    expect(byId("brk-save").hasAttribute("aria-busy")).toBe(false);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("does not overwrite settings being changed when it refreshes", async () => {

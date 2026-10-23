@@ -29,6 +29,7 @@ from autodj.live_routes import SourceEndpoint
 from autodj.playlog import plays_between, plays_csv, soundexchange_report
 from tests._layout import point_index
 from tests._server import create_app
+from tests.integration._helpers import patch_station_settings
 
 PASSWORD = "correct horse battery"
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
@@ -398,10 +399,13 @@ def test_the_operator_manages_djs_and_talkover_without_seeing_passwords(tmp_path
         ).status_code
         == 403
     )
-    settings = client.put("/api/live/settings", json={"mic_return_seconds": 2, "mic_duck_db": 6})
-    assert settings.json() == {"mic_return_seconds": 2.0, "mic_duck_db": 6.0}
+    settings = patch_station_settings(client, {"live": {"mic_return_seconds": 2, "mic_duck_db": 6}})
+    assert settings.json()["settings"]["values"]["live"] == {
+        "mic_return_seconds": 2.0,
+        "mic_duck_db": 6.0,
+    }
     assert client.app.state.stations.default.live.settings.mic_return_seconds == 2.0
-    bad = client.put("/api/live/settings", json={"mic_return_seconds": 0, "mic_duck_db": 6})
+    bad = patch_station_settings(client, {"live": {"mic_return_seconds": 0, "mic_duck_db": 6}})
     assert bad.status_code == 400 and "mic_return_seconds" in bad.json()["detail"]
     # Removing a DJ who is on the air takes them off.
     live = client.app.state.stations.default.live

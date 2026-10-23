@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from autodj.transitions import TRANSITION_EFFECT_NAMES
+from tests.integration._helpers import patch_station_settings
 
 _STATIC = Path(__file__).resolve().parents[2] / "src" / "autodj" / "static"
 _META_MODES = frozenset({"none", "random", "rotate", "auto"})
@@ -22,24 +23,24 @@ _META_MODES = frozenset({"none", "random", "rotate", "auto"})
 class TestServerAcceptsEveryEffect:
     @pytest.mark.parametrize("effect", sorted(TRANSITION_EFFECT_NAMES))
     def test_effect_round_trips(self, client, effect: str) -> None:
-        resp = client.post("/api/transition", json={"effect": effect})
+        resp = patch_station_settings(client, {"transition": {"effect": effect}})
         assert resp.status_code == 200
-        assert resp.json()["transition"] == effect
+        assert resp.json()["settings"]["transition"] == effect
 
     def test_unknown_effect_is_rejected(self, client) -> None:
-        resp = client.post("/api/transition", json={"effect": "wobble"})
+        resp = patch_station_settings(client, {"transition": {"effect": "wobble"}})
         assert resp.status_code == 400
         assert "wobble" in resp.json()["detail"]
 
     def test_rejected_effect_leaves_the_previous_choice(self, client) -> None:
-        client.post("/api/transition", json={"effect": "halftime"})
-        client.post("/api/transition", json={"effect": "wobble"})
+        patch_station_settings(client, {"transition": {"effect": "halftime"}})
+        patch_station_settings(client, {"transition": {"effect": "wobble"}})
         assert client.get("/api/status").json()["settings"]["transition"] == "halftime"
 
     def test_effect_name_is_case_insensitive(self, client) -> None:
-        resp = client.post("/api/transition", json={"effect": "HALFTIME"})
+        resp = patch_station_settings(client, {"transition": {"effect": "HALFTIME"}})
         assert resp.status_code == 200
-        assert resp.json()["transition"] == "halftime"
+        assert resp.json()["settings"]["transition"] == "halftime"
 
 
 class TestAllowlistsAreDerived:

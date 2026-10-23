@@ -1352,11 +1352,22 @@ def cmd_analyse_library(ctx: click.Context) -> None:
 )
 @click.option(
     "--token",
-    required=True,
+    default=None,
     envvar="AUTODJ_WORKER_TOKEN",
     help=(
         "Machine token from the server's Settings, Analysis workers.  Or set "
-        "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history."
+        "AUTODJ_WORKER_TOKEN, which keeps it out of the shell history.  Without either, "
+        "the token saved by --pair for this server is used."
+    ),
+)
+@click.option(
+    "--pair",
+    "pair_code",
+    default=None,
+    metavar="CODE",
+    help=(
+        "Pairing code from the server's Settings, Analysis workers, Pair a worker.  Trades "
+        "it for a token, saves that for this server in a file only you can read, then works."
     ),
 )
 @click.option(
@@ -1425,7 +1436,8 @@ def cmd_analyse_library(ctx: click.Context) -> None:
 def cmd_worker(
     ctx: click.Context,
     server: str,
-    token: str,
+    token: str | None,
+    pair_code: str | None,
     once: bool,
     idle_exit: int | None,
     idle_release: int | None,
@@ -1442,9 +1454,12 @@ def cmd_worker(
     folder is never read directly.  Ctrl+C stops after the current song.
     Without --once or --idle-exit it keeps running and waits for new songs.
     With --idle-release, it loads the model on demand and frees it between batches.
+    Settings, Analysis workers on the server can pause the worker and set its
+    batch and idle release; --batch and --idle-release given here win.
 
     
     Examples:
+      autodj worker --pair 12345678 --server https://nas.local:8765
       autodj worker --server https://nas.local:8765 --token adj1.…
       autodj worker --server https://nas.local:8765 --idle-exit 10 \
         --before-command "podman stop tts-service" --after-command "podman start tts-service"
@@ -1458,17 +1473,67 @@ def cmd_worker(
     from autodj.indexer import TrackAnalysis, analyse_file, analysis_identity
     from autodj.model import ModelLoadError, MuqWrapper
     from autodj.worker import (
+        MANAGED_OPTIONS,
         HttpTransport,
         ServerApi,
         Worker,
         WorkerError,
         choose_device,
+        load_worker_token,
+        pair_with_server,
         release_gpu,
         run_hook,
+        save_worker_token,
+        worker_token_file,
     )
 
     cfg = _load_cfg_or_exit(ctx.obj["config_path"])
     stop = threading.Event()
+    if pair_code is not None:
+        if token:
+            raise click.UsageError(
+                "--pair gets a new token: leave out --token and unset AUTODJ_WORKER_TOKEN."
+            )
+        code = "".join(pair_code.split()).replace("-", "")
+        if not (len(code) == 8 and code.isascii() and code.isdecimal()):
+            raise click.BadParameter("a pairing code is 8 digits", param_hint="--pair")
+        try:
+            token, name = pair_with_server(server, code, ca_cert=ca_cert)
+            saved = save_worker_token(server, token, name)
+        except WorkerError as exc:
+            raise click.ClickException(str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(
+                f"Paired as {name}, but the token could not be saved: {exc}.  Revoke {name} in "
+                "Settings, Analysis workers, then pair again."
+            ) from exc
+        console.print(
+            f"Paired with the server as {escape(name)}.  The token is saved in {escape(str(saved))}"
+            ", readable only by you, and later runs with this --server use it.  To remove it, "
+            f"delete that file (or its entry for {escape(server)}) and revoke {escape(name)} in "
+            "Settings, Analysis workers."
+        )
+    elif not token:
+        try:
+            token = load_worker_token(server)
+        except (OSError, ValueError) as exc:
+            raise click.ClickException(
+                f"Could not read the saved worker token in {worker_token_file()}: {exc}"
+            ) from exc
+        if token is None:
+            raise click.UsageError(
+                "No token for this server.  Pair with --pair CODE (Settings, Analysis workers, "
+                "Pair a worker), or give a token with --token or AUTODJ_WORKER_TOKEN."
+            )
+        console.print(
+            f"Using the token saved for this server in {escape(str(worker_token_file()))}."
+        )
+    # A value typed on the command line wins over the server's.
+    fixed = frozenset(
+        name
+        for name in MANAGED_OPTIONS
+        if ctx.get_parameter_source(name) is click.core.ParameterSource.COMMANDLINE
+    )
 
     def interrupted(_signum: int, _frame: object) -> None:
         stop.set()
@@ -1495,6 +1560,8 @@ def cmd_worker(
 
     def prepare() -> None:
         nonlocal wrapper, prepared
+        if prepared:
+            return
         prepared = True
         run_hook(before_command, "Before-command")
         console.print(f"Analysing on {escape(label)}.")
@@ -1522,8 +1589,10 @@ def cmd_worker(
         stop=stop,
         idle_exit=idle_seconds,
         idle_release=idle_release * 60.0 if idle_release is not None else None,
-        prepare=prepare if idle_release is not None else None,
-        release=release if idle_release is not None else None,
+        # The server may set an idle release later, so the worker always gets both.
+        prepare=prepare,
+        release=release,
+        fixed=fixed,
     )
     previous = signal.signal(signal.SIGINT, interrupted)
     try:
@@ -1535,10 +1604,14 @@ def cmd_worker(
 
         model_path = download_model_if_needed(cfg.model, cfg.index, hf_token=cfg.huggingface.token)
         worker.identity = analysis_identity(cfg.model.name, folder_commit(model_path))
+        worker.report_identity()
         worker.check_identity(server_identity)
         try:
-            if idle_release is None:
+            # Without an idle release, here or from the server, the model loads
+            # once now; a worker the server has paused waits for songs instead.
+            if worker.idle_release is None and not worker.paused:
                 prepare()
+                worker.prepared = True
             worker.run()
         finally:
             release()

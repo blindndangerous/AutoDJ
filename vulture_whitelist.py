@@ -52,3 +52,8 @@ _.should_exit
 _.checked_at
 # The app's shared update checker; the update API tests replace its check.
 _.update_checker
+# A worker request field (worker_api._ManagedBody) a managing worker sends; the server
+# accepts it so its strict bodies do not refuse that worker, and reads nothing from it.
+_.worker_manage_v1
+# The app's worker pairing state; the pairing tests move its clock.
+_.worker_pairing

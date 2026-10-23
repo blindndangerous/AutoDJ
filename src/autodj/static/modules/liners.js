@@ -10,6 +10,7 @@ import { installActionListNavigation } from "./action-list-navigation.js";
 import { dbg, listRow, nextRowControl, rowButton, stationDay } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parseSettingValue, refusalText } from "./mix-settings.js";
+import { registerSettingsGroup, settingsDraftHolds } from "./settings-drafts.js";
 import {
   captureAuthenticatedRequestEpoch,
   isAuthenticatedRequestCurrent,
@@ -182,9 +183,9 @@ async function _loadLibrary(els, epoch) {
   // is currently editing untouched.
   const c = body.config || {};
   const sync = (el, v) => {
-    if (el && document.activeElement !== el) el.value = v;
+    if (el && document.activeElement !== el && !settingsDraftHolds(el)) el.value = v;
   };
-  if (els.lnEnabled && document.activeElement !== els.lnEnabled) {
+  if (els.lnEnabled && document.activeElement !== els.lnEnabled && !settingsDraftHolds(els.lnEnabled)) {
     els.lnEnabled.checked = !!c.enabled;
   }
   sync(els.lnEveryN,    c.every_n_songs        != null ? c.every_n_songs        : "");
@@ -265,19 +266,6 @@ async function _deleteLiner(els, name, button, label = name) {
     return;
   }
   if (result && isAuthenticatedRequestCurrent(epoch)) _setStatus(els, result, { region });
-}
-
-function _postConfig(els, postSettings, control) {
-  const duckDb = _floatOrNull(els.lnDuckDb);
-  void postSettings("/api/playback-settings", {
-    liners_enabled:            !!(els.lnEnabled && els.lnEnabled.checked),
-    liners_every_n_songs:      _intOrOff(els.lnEveryN),
-    liners_every_minutes:      _floatOrOff(els.lnEveryMin),
-    liners_random_min_minutes: _floatOrOff(els.lnRandMin),
-    liners_random_max_minutes: _floatOrOff(els.lnRandMax),
-    liners_pick_mode:          els.lnPickMode ? els.lnPickMode.value : "random",
-    liners_duck_db:            duckDb === null ? null : (duckDb === 0 ? 0 : -duckDb),
-  }, control);
 }
 
 // Whether a liner may play on *day* (ISO dates compare as text); without a
@@ -494,6 +482,77 @@ function _installDatesForm(els, doc = document) {
 export function installLiners(els, deps) {
   state.lastFireAt = performance.now();
   let scheduledPlayback = null;
+  const controls = [els.lnEnabled, els.lnMatchedIntroOnlyWithoutLiner,
+    els.lnEveryN, els.lnEveryMin, els.lnRandMin, els.lnRandMax,
+    els.lnPickMode, els.lnDuckDb, els.lnTalkUp].filter(Boolean);
+  const panel = controls[0]?.closest("#spanel-liners");
+  const read = () => ({
+    liners_enabled: Boolean(els.lnEnabled?.checked),
+    matched_intro_only_without_liner: Boolean(els.lnMatchedIntroOnlyWithoutLiner?.checked),
+    liners_every_n_songs: _intOrOff(els.lnEveryN),
+    liners_every_minutes: _floatOrOff(els.lnEveryMin),
+    liners_random_min_minutes: _floatOrOff(els.lnRandMin),
+    liners_random_max_minutes: _floatOrOff(els.lnRandMax),
+    liners_pick_mode: els.lnPickMode?.value || "random",
+    liners_duck_db: _floatOrNull(els.lnDuckDb) === null ? null : -_floatOrNull(els.lnDuckDb),
+    liners_talk_up: Boolean(els.lnTalkUp?.checked),
+  });
+  registerSettingsGroup({
+    panel, group: "playback", controls, read,
+    write(value) {
+      const c = state.lib.config || (state.lib.config = {});
+      const fields = [
+        ["liners_enabled", els.lnEnabled, "checked", "enabled"],
+        ["matched_intro_only_without_liner", els.lnMatchedIntroOnlyWithoutLiner, "checked", null],
+        ["liners_every_n_songs", els.lnEveryN, "value", "every_n_songs"],
+        ["liners_every_minutes", els.lnEveryMin, "value", "every_minutes"],
+        ["liners_random_min_minutes", els.lnRandMin, "value", "random_min_minutes"],
+        ["liners_random_max_minutes", els.lnRandMax, "value", "random_max_minutes"],
+        ["liners_pick_mode", els.lnPickMode, "value", "pick_mode"],
+        ["liners_duck_db", els.lnDuckDb, "value", "duck_db"],
+        ["liners_talk_up", els.lnTalkUp, "checked", null],
+      ];
+      for (const [key, control, prop, configKey] of fields) {
+        if (!(key in value) || !control) continue;
+        const item = value[key];
+        control[prop] = prop === "value" && key === "liners_duck_db"
+          ? String(Math.abs(item ?? -3)) : prop === "value" ? String(item ?? "") : Boolean(item);
+        if (configKey) c[configKey] = item;
+      }
+      c.enabled = value.liners_enabled ?? c.enabled;
+      c.every_n_songs = value.liners_every_n_songs ?? c.every_n_songs;
+      c.every_minutes = value.liners_every_minutes ?? c.every_minutes;
+      c.random_min_minutes = value.liners_random_min_minutes ?? c.random_min_minutes;
+      c.random_max_minutes = value.liners_random_max_minutes ?? c.random_max_minutes;
+      c.pick_mode = value.liners_pick_mode ?? c.pick_mode;
+      if ("liners_duck_db" in value) c.duck_db = value.liners_duck_db;
+    },
+    validate() {
+      const fields = [
+        [els.lnEveryN, { label: "Songs between liners", min: 0, max: 500, integer: true }],
+        [els.lnEveryMin, { label: "Minutes between liners", min: 0, max: 240 }],
+        [els.lnRandMin, { label: "Shortest random interval", min: 0, max: 240 }],
+        [els.lnRandMax, { label: "Longest random interval", min: 0, max: 240 }],
+        [els.lnDuckDb, DUCK_DB],
+      ];
+      for (const [control, spec] of fields) {
+        if (!control || control.value === "") continue;
+        if (parseSettingValue(control.value, spec) !== null) continue;
+        control.setAttribute("aria-invalid", "true");
+        control.focus();
+        _setStatus(els, refusalText(spec, control.value), { force: true, tone: "error" });
+        return false;
+      }
+      if (_floatOrNull(els.lnRandMin) != null && _floatOrNull(els.lnRandMax) != null
+          && _floatOrNull(els.lnRandMin) > _floatOrNull(els.lnRandMax)) {
+        els.lnRandMax?.setAttribute("aria-invalid", "true");
+        els.lnRandMax?.focus();
+        _setStatus(els, "Longest random interval must be at least the shortest interval.", { force: true, tone: "error" });
+        return false;
+      }
+      return true;
+    },
+  });
   if (els.lnFileList) _installDatesForm(els, els.lnFileList.ownerDocument);
 
   if (els.lnUploadSubmit) {
@@ -538,14 +597,11 @@ export function installLiners(els, deps) {
     els.lnRandMin, els.lnRandMax, els.lnPickMode, els.lnDuckDb,
   ]) {
     if (!el) continue;
-    el.addEventListener("change", (event) => {
-      // A depth outside the range goes back to the saved one, and says so.
+    el.addEventListener("change", () => {
       if (el === els.lnDuckDb && parseSettingValue(el.value, DUCK_DB) === null) {
-        el.value = String(Math.abs(state.lib.config?.duck_db ?? -3));
         _setStatus(els, refusalText(DUCK_DB, el.value), { force: true, tone: "error" });
-        return;
+        el.setAttribute("aria-invalid", "true");
       }
-      _postConfig(els, deps.postSettings, event.currentTarget);
     });
   }
 

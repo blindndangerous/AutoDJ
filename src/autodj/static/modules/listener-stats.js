@@ -11,9 +11,10 @@
 //   - Download keeps focus on its button.
 
 import { requestFile, requestJson } from "./api-client.js";
-import { fmtTime, focusRevealed } from "./dom-helpers.js";
+import { fmtTime } from "./dom-helpers.js";
 import { saveFile } from "./history-export.js";
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const SPANS = { 7: "the last 7 days", 30: "the last 30 days", 90: "the last 90 days" };
 
@@ -93,7 +94,6 @@ export function installListenerStats({
   request = requestJson,
   download = requestFile,
   save = saveFile,
-  saveKeepDays,
   settingsStatus,
   locale = undefined,
 }) {
@@ -107,6 +107,15 @@ export function installListenerStats({
   const lengthsTitle = doc.getElementById("listener-stats-lengths-title");
   const lengths = doc.getElementById("listener-stats-lengths");
   const keep = doc.getElementById("listener-stats-keep");
+  const settingsDraft = registerSettingsGroup({
+    panel: doc.getElementById("spanel-stream") || keep.closest("details"),
+    group: "stream",
+    controls: [keep],
+    read: () => ({ stats_days: Number(keep.value) }),
+    write: (body) => {
+      if (body.stats_days != null) keep.value = String(body.stats_days);
+    },
+  });
   const exportButton = doc.getElementById("listener-stats-export");
   let active = false;
   let loaded = false;
@@ -157,7 +166,7 @@ export function installListenerStats({
     }));
     lengths.hidden = !anySessions;
     lengthsTitle.hidden = !anySessions;
-    if (doc.activeElement !== keep) keep.value = String(stats.keep_days);
+    settingsDraft.accept({ stats_days: stats.keep_days });
   }
 
   async function refresh({ spoken = "" } = {}) {
@@ -181,7 +190,7 @@ export function installListenerStats({
     active = Boolean(state?.stream_mode);
     if (!active) return;
     const pushed = state.settings?.playback?.stream_stats_days;
-    if (pushed != null && doc.activeElement !== keep && !keep.disabled) keep.value = String(pushed);
+    if (pushed != null) settingsDraft.accept({ stats_days: pushed });
     if (!loaded) {
       loaded = true;
       void refresh();
@@ -207,20 +216,6 @@ export function installListenerStats({
   });
   span.addEventListener("change", () => {
     void refresh({ spoken: `Showing ${spanText(Number(span.value))}.` });
-  });
-  keep.addEventListener("change", async () => {
-    const value = Number(keep.value);
-    if (!Number.isInteger(value) || value < 0 || value > 3650 || keep.value.trim() === "") {
-      say("Days to keep statistics must be a whole number from 0 to 3650.", "error");
-      focusRevealed(keep);
-      return;
-    }
-    if (!await saveKeepDays(value, keep)) return;
-    await refresh({
-      spoken: value
-        ? `Listener statistics are kept for ${plural(value, "day")}.`
-        : "Listener statistics are off, and those kept are deleted.",
-    });
   });
   exportButton.addEventListener("click", async () => {
     try {

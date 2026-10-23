@@ -261,7 +261,7 @@ limits keep using the artist limits. The file is `index/<name>/related-artists.t
 shipped sample there only when it is absent. Upgrades never replace an existing
 user copy. The Settings page shows this fixed location. The browser cannot
 choose another path. The file must be at most 1 MiB.
-Edit the file, then save repeat settings to reload it without restarting playback.
+Edit the file, then press **Save changes** in Settings, Song picking to reload it without restarting playback.
 
 The `[related]` table maps an artist to the artists it holds back. Links are
 one-way and are not followed further. For example, `"Bruno Mars" = ["Silk Sonic"]`
@@ -280,8 +280,8 @@ The **Use related tracks** checkbox, off by default, holds back tracks that soun
 air, such as a song and a later one that samples it, for as long as the Related tracks
 Tracks and Minutes limits say (20 tracks to start with). The groups are in
 `index/<name>/related-tracks.toml`; AutoDJ copies the shipped sample there only when it is
-absent, and never replaces your copy. The file must be at most 1 MiB. Edit it, then save
-repeat settings to reload it.
+absent, and never replaces your copy. The file must be at most 1 MiB. Edit it, then press
+**Save changes** in Settings, Song picking to reload it.
 
 Each entry in the `[related]` table is one group, a track and a list of tracks, written as
 "Artist - Title" with the lead artist:

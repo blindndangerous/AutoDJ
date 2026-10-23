@@ -8,8 +8,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applySettingsState, installSettingsControls, postSettings } from
+import { applySettingsState, installSettingsControls } from
   "../../src/autodj/static/modules/settings-panel.js";
+import { applySettingsDrafts, loadSettingsDrafts, resetSettingsDrafts, saveSettingsPanel } from
+  "../../src/autodj/static/modules/settings-drafts.js";
 
 function makeEls() {
   // Minimal stand-ins for every field settings-panel touches.
@@ -75,6 +77,7 @@ function makeEls() {
 
 describe("applySettingsState", () => {
   beforeEach(() => {
+    resetSettingsDrafts(document);
     document.body.innerHTML = "";
   });
 
@@ -173,7 +176,7 @@ describe("applySettingsState", () => {
     expect(els.pbLoudness.value).toBe("replaygain");
   });
 
-  it("matches the real Random walk option and retains compatibility with cached pure markup", () => {
+  it("matches the real Random walk option", () => {
     const template = document.createElement("template");
     template.innerHTML = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
     const actual = template.content.querySelector("#pb-pick-mode");
@@ -182,25 +185,24 @@ describe("applySettingsState", () => {
     els.pbPickMode = actual;
     applySettingsState({ playback: { pick_mode: "random" } }, els);
     expect(actual.value).toBe("random");
-
-    const oldMarkup = document.createElement("select");
-    oldMarkup.innerHTML = '<option value="pure">Random walk</option>';
-    els.pbPickMode = oldMarkup;
-    applySettingsState({ playback: { pick_mode: "random" } }, els);
-    expect(oldMarkup.value).toBe("pure");
   });
 
-  it("selects and saves Stereo Tool processing", () => {
+  it("stages Stereo Tool processing until the tab Save is pressed", async () => {
     const els = makeEls();
+    const panel = document.createElement("div");
+    panel.id = "spanel-sound";
+    panel.append(els.pbLoudness);
+    document.body.append(panel);
+    const api = settingsApi({ playback: { loudness_processing: "off" } });
     applySettingsState({ playback: { loudness_processing: "stereotool" } }, els);
     expect(els.pbLoudness.value).toBe("stereotool");
-    const save = vi.fn();
-    installSettingsControls(els, save);
+    installSettingsControls(els);
+    applySettingsDrafts({ revision: "one", values: { playback: { loudness_processing: "off" } } }, document);
     els.pbLoudness.value = "stereotool";
-    els.pbLoudness.dispatchEvent(new Event("change"));
-    expect(save).toHaveBeenCalledWith(
-      "/api/playback-settings", { loudness_processing: "stereotool" }, els.pbLoudness,
-    );
+    els.pbLoudness.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(api.requests).toHaveLength(0);
+    await saveSettingsPanel(panel);
+    expect(api.requests).toEqual([{ revision: "one", changes: { playback: { loudness_processing: "stereotool" } } }]);
   });
 
   it("hides settings that do not apply to saved-point transitions", () => {
@@ -326,181 +328,89 @@ describe("applySettingsState", () => {
   });
 });
 
-describe("installSettingsControls", () => {
-  it("saves each control to its own endpoint and field", () => {
-    const els = makeEls();
-    const save = vi.fn();
-    installSettingsControls(els, save);
-    const change = (control, value) => {
-      if (control.type === "checkbox") control.checked = value;
-      else control.value = value;
-      control.dispatchEvent(new Event("change"));
-      return save.mock.calls.at(-1)?.slice(0, 2);
-    };
-
-    expect(change(els.djPhraseAlign, true)).toEqual(["/api/djmix", { phrase_align: true }]);
-    expect(change(els.djDropMix, true)).toEqual(["/api/djmix", { drop_mix: true }]);
-    expect(change(els.djKeyShift, true)).toEqual(["/api/djmix", { key_shift: true }]);
-    expect(change(els.pbLoudness, "smooth"))
-      .toEqual(["/api/playback-settings", { loudness_processing: "smooth" }]);
-    expect(change(els.transitionSelect, "reverb_tail"))
-      .toEqual(["/api/transition", { effect: "reverb_tail" }]);
-    expect(change(els.pbPickMode, "random"))
-      .toEqual(["/api/playback-settings", { pick_mode: "random" }]);
-    expect(change(els.bpmLo, "90")).toEqual(["/api/bpm-range", { lo: 90, hi: null }]);
-    expect(change(els.pbSkipStyle, "backspin"))
-      .toEqual(["/api/playback-settings", { skip_style: "backspin" }]);
-    expect(change(els.lnTalkUp, true))
-      .toEqual(["/api/playback-settings", { liners_talk_up: true }]);
-    expect(change(els.lnMatchedIntroOnlyWithoutLiner, true))
-      .toEqual(["/api/playback-settings", { matched_intro_only_without_liner: true }]);
-    expect(change(els.djVocalGuard, false)).toEqual(["/api/djmix", { vocal_guard: false }]);
-    expect(change(els.pbPrefetch, false))
-      .toEqual(["/api/playback-settings", { prefetch_next_track: false }]);
-    expect(change(els.pbSilenceTrigger, false))
-      .toEqual(["/api/playback-settings", { silence_trigger_crossfade: false }]);
-    expect(change(els.pbHourFit, true))
-      .toEqual(["/api/playback-settings", { hour_fit: true }]);
-    els.discEvery.value = "7";
-    expect(change(els.discEnabled, true)).toEqual(["/api/discovery", { every: 7 }]);
-    expect(els.discEvery.disabled).toBe(false);
-  });
-});
-
-describe("postSettings", () => {
-  it("puts a checkbox back at once and says what it still is", async () => {
-    const els = makeEls();
-    document.body.innerHTML = '<label for="dj-beatmatch">Beatmatch</label>';
-    els.djBeatmatch.id = "dj-beatmatch";
-    document.body.append(els.djBeatmatch);
-    applySettingsState({ djmix: { beatmatch: false } }, els);
-    els.djBeatmatch.checked = true;
-    const settingsStatus = document.createElement("p");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      JSON.stringify({ detail: "Settings locked" }),
-      { status: 423, headers: { "Content-Type": "application/json" } },
-    )));
-
-    await postSettings("/api/djmix", { beatmatch: true }, {
-      settingsStatus, control: els.djBeatmatch,
+function settingsApi(initial, failPatch = false) {
+  let revision = "revision-1";
+  let values = JSON.parse(JSON.stringify(initial));
+  const requests = [];
+  const fetch = vi.fn(async (url, options = {}) => {
+    if (url !== "/api/settings") throw new Error(`Unexpected request: ${url}`);
+    if (options.method === "PATCH") {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      if (failPatch) return new globalThis.Response(JSON.stringify({ detail: "The settings service is busy." }), {
+        status: 503, headers: { "Content-Type": "application/json" },
+      });
+      for (const [group, patch] of Object.entries(request.changes)) {
+        values[group] = { ...values[group], ...patch };
+      }
+      revision = "revision-2";
+      return new globalThis.Response(JSON.stringify({
+        revision,
+        settings: { revision, values },
+        applied: Object.keys(request.changes),
+        failed: {},
+        message: "",
+      }), { headers: { "Content-Type": "application/json" } });
+    }
+    return new globalThis.Response(JSON.stringify({ revision, values }), {
+      headers: { "Content-Type": "application/json" },
     });
-    expect(els.djBeatmatch.checked).toBe(false);
-    await vi.waitFor(() => expect(settingsStatus.textContent)
-      .toBe("Could not save Beatmatch; it is still off. Settings locked"));
-    vi.unstubAllGlobals();
   });
+  vi.stubGlobal("fetch", fetch);
+  return { fetch, requests };
+}
 
-  it("returns false, announces failure, and restores the initiating control", async () => {
-    const settingsStatus = document.createElement("p");
-    const control = document.createElement("select");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      JSON.stringify({ detail: "Settings locked" }),
-      { status: 423, headers: { "Content-Type": "application/json" } },
-    )));
-
-    await expect(postSettings("/api/preset", { name: "party" }, {
-      settingsStatus,
-      control,
-    })).resolves.toBe(false);
-    // The failure is announced with force, which clears the region and
-    // sets it on the next task so a repeated save failure speaks again.
-    await vi.waitFor(() =>
-      expect(settingsStatus.textContent).toContain("Could not save"));
-    expect(settingsStatus.textContent).toContain("Settings locked");
-    expect(control.disabled).toBe(false);
-    vi.unstubAllGlobals();
-  });
-
-  it("hands the failure to onError instead of reverting or announcing it", async () => {
-    const settingsStatus = document.createElement("p");
-    const control = document.createElement("input");
-    control.type = "number";
-    control.value = "7";
-    const onError = vi.fn();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      JSON.stringify({ detail: "The related artists file is not valid: line 3." }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    )));
-
-    await expect(postSettings("/api/playback-settings", {}, {
-      settingsStatus, control, onError,
-    })).resolves.toBe(false);
-    expect(onError).toHaveBeenCalledOnce();
-    expect(onError.mock.calls[0][0].status).toBe(400);
-    expect(onError.mock.calls[0][0].message)
-      .toBe("The related artists file is not valid: line 3.");
-    expect(control.value).toBe("7");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(settingsStatus.textContent).toBe("");
-    vi.unstubAllGlobals();
-  });
-});
-
-describe("a setting being saved", () => {
-  const state = (beatmatch) => ({
-    available_presets: [], preset: "", transition: "echo_out",
-    djmix: { harmonic_mode: "off", beatmatch, phrase_align: false, outro_intro_align: false },
-    playback: {}, bpm_range: { lo: null, hi: null },
-    discovery_every: null, discovery_enabled: false,
-  });
-
-  it("keeps a ticked checkbox while its save is out, until the server echoes it", async () => {
-    document.body.innerHTML = "";
+describe("settings drafts from settings controls", () => {
+  function mount() {
+    const panel = document.createElement("div");
+    panel.id = "spanel-djmix";
+    panel.hidden = false;
     const els = makeEls();
-    for (const control of Object.values(els)) document.body.append(control);
-    applySettingsState(state(false), els);
-    let answer;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise((resolve) => {
-      answer = () => resolve(new globalThis.Response('{"ok":true}', {
-        headers: { "Content-Type": "application/json" },
-      }));
-    })));
-    const status = document.createElement("p");
-    installSettingsControls(els, (url, body, control) =>
-      postSettings(url, body, { settingsStatus: status, control }));
+    for (const control of [els.djBeatmatch, els.djDropMix, els.pbPrefetch]) panel.append(control);
+    document.body.append(panel);
+    installSettingsControls(els);
+    return { panel, els };
+  }
 
-    els.djBeatmatch.focus();
+  const initial = {
+    djmix: { beatmatch: false, drop_mix: false },
+    playback: { prefetch_next_track: true },
+  };
+
+  it("loads server values and patches only changed fields after Save", async () => {
+    const { panel, els } = mount();
+    const api = settingsApi(initial);
+    await loadSettingsDrafts(document);
+    expect(els.djBeatmatch.checked).toBe(false);
+    expect(els.pbPrefetch.checked).toBe(true);
     els.djBeatmatch.checked = true;
-    els.djBeatmatch.dispatchEvent(new Event("change"));
-    // The push from before the save would untick it under the listener.
-    applySettingsState(state(false), els);
+    els.djBeatmatch.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(api.requests).toHaveLength(0);
+    expect(api.fetch).toHaveBeenCalledTimes(1);
+
+    await saveSettingsPanel(panel);
+    expect(api.requests).toEqual([{ revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
+    expect(els.djBeatmatch.checked).toBe(true);
+    expect(els.djDropMix.checked).toBe(false);
+  });
+
+  it("keeps a failed patch as a draft and ignores the old pushed value", async () => {
+    const { panel, els } = mount();
+    const api = settingsApi(initial, true);
+    applySettingsDrafts({ revision: "revision-1", values: initial }, document);
+    els.djBeatmatch.checked = true;
+    els.djBeatmatch.dispatchEvent(new Event("change", { bubbles: true }));
+    applySettingsDrafts({ revision: "revision-old", values: initial }, document);
     expect(els.djBeatmatch.checked).toBe(true);
 
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    answer();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    applySettingsState(state(false), els);
+    await expect(saveSettingsPanel(panel)).resolves.toBe(false);
+    expect(api.requests).toEqual([{ revision: "revision-1", changes: { djmix: { beatmatch: true } } }]);
     expect(els.djBeatmatch.checked).toBe(true);
-    // Echoed: from here the box follows the server again.
-    applySettingsState(state(true), els);
-    applySettingsState(state(false), els);
-    expect(els.djBeatmatch.checked).toBe(false);
-    vi.unstubAllGlobals();
-  });
-
-  it("puts a checkbox back when its save fails", async () => {
-    document.body.innerHTML = "";
-    const els = makeEls();
-    for (const control of Object.values(els)) document.body.append(control);
-    applySettingsState(state(false), els);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new globalThis.Response(
-      '{"detail":"Settings locked"}',
-      { status: 423, headers: { "Content-Type": "application/json" } },
-    )));
-    const status = document.createElement("p");
-    installSettingsControls(els, (url, body, control) =>
-      postSettings(url, body, { settingsStatus: status, control }));
-
-    els.djBeatmatch.checked = true;
-    els.djBeatmatch.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(status.textContent).toContain("Settings locked"));
-    expect(els.djBeatmatch.checked).toBe(false);
-    applySettingsState(state(false), els);
-    expect(els.djBeatmatch.checked).toBe(false);
-    vi.unstubAllGlobals();
+    expect(panel.querySelector("[data-settings-save]").disabled).toBe(false);
+    await vi.waitFor(() => expect(panel.querySelector(".settings-save-status").textContent)
+      .toContain("The settings service is busy."));
   });
 });
-
 describe("saved segue points", () => {
   it("hides the effect and DJ-mix groups and shows the note in their place", () => {
     document.body.innerHTML = `

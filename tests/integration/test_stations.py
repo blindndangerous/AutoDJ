@@ -307,7 +307,7 @@ async def test_a_reader_still_running_keeps_the_library_open(
 async def test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """ADR-0008-25. Closing the DJ-meta cache under the scan would lose its writes.
+    """ADR-0008-31. Closing the DJ-meta cache under the scan would lose its writes.
 
     The plays since the last tick are saved all the same.
     """
@@ -337,7 +337,7 @@ async def test_a_scan_that_will_not_stop_keeps_the_cache_and_library_open(
 async def test_each_shutdown_step_logs_how_long_it_took(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """ADR-0008-25. Quick steps are logged at DEBUG; one slower than the threshold at INFO."""
+    """ADR-0008-31. Quick steps are logged at DEBUG; one slower than the threshold at INFO."""
     caplog.set_level(logging.DEBUG, logger="autodj.stations")
 
     async def step() -> str:

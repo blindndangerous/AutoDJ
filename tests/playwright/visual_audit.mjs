@@ -48,7 +48,7 @@
 //       - Settings > Sound > Preview output device: a named select with
 //         its help, 24 px targets, a described button, a visible reason
 //         where the browser cannot choose a device, and a change said
-//         politely without moving focus;
+//         staged without moving focus or announcing a save;
 //       - Settings > Analysis workers, Machine tokens: the Station choice
 //         is hidden until Token use is an announcer, then shows as a
 //         named select with linked help and 24 px targets, focus staying
@@ -439,6 +439,67 @@ const TIME_CHECKS = {
 };
 const timeCheckPages = new WeakSet();
 
+// Settings > Analysis workers (#554) with two stood-in workers, one too old
+// to apply settings, and a refusal notice, so the worker settings, their
+// state lines and Dismiss are measured on a server with no worker.  A
+// pairing code is stood in for too; Pair a worker shows it with its
+// command.  Saving settings and dismissing reach the real server, which
+// refuses the stood-in ids; the audit does neither.
+const NOW_SECONDS = Math.floor(Date.now() / 1000);
+const ANALYSIS_WORKERS = {
+  available: true, waiting: 1250, analysing: 4, server_paused: true,
+  workers: [
+    { token_id: "a".repeat(32), name: "Studio PC", device: "NVIDIA GeForce RTX 4060 (CUDA GPU)",
+      last_seen: NOW_SECONDS, connected: true, songs_done: 120, songs_failed: 2, songs_stale: 0,
+      rate_per_hour: 341.6, leased: 4, settings_applied: true,
+      settings: { paused: true, batch: 2, idle_release_minutes: 5, revision: 3 } },
+    { token_id: "b".repeat(32), name: "gpu-box-with-a-very-long-unbroken-hostname-for-reflow",
+      device: "", last_seen: NOW_SECONDS - 7200, connected: false, songs_done: 1, songs_failed: 0,
+      songs_stale: 0, rate_per_hour: 0, leased: 0, settings_applied: null,
+      settings: { paused: false, batch: null, idle_release_minutes: null, revision: 1 } },
+  ],
+  refusals: [
+    { token_id: "c".repeat(32), name: "Old PC", kind: "identity", refused_at: NOW_SECONDS - 300,
+      revoked: false, detail: "",
+      message: "The worker's copy of OpenMuQ/MuQ-MuLan-large (abc) is not the server's (def).  "
+        + "Update the model on the worker: set [model] revision = \"def\" in its config.toml, "
+        + "which downloads exactly the server's weights, and start it again." },
+  ],
+};
+const workerPages = new WeakSet();
+
+async function standInForWorkers(page) {
+  if (workerPages.has(page)) return;
+  workerPages.add(page);
+  await page.route("**/api/analysis/workers", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify(ANALYSIS_WORKERS) })
+    : route.continue()));
+  await page.route("**/api/machine-tokens/pairing-code", (route) => route.fulfill({
+    status: 201, contentType: "application/json",
+    body: JSON.stringify({ code: "12345678", valid_seconds: 600, name: null }),
+  }));
+}
+
+// A worker's settings refused in the browser (Songs per claim 17), the
+// error under the fields, linked and focused; then Pair a worker with its
+// code and command shown.  Nothing is saved.
+async function openWorkerStates(page, visit) {
+  const batch = page.locator(`#worker-${"a".repeat(32)}-batch`);
+  await batch.waitFor({ state: "visible" });
+  const before = await batch.inputValue();
+  await batch.fill("17");
+  await page.locator(`fieldset:has(#worker-${"a".repeat(32)}-batch) > button`).click();
+  await page.locator(`#worker-${"a".repeat(32)}-batch[aria-invalid="true"]`).waitFor();
+  await page.locator(`#worker-${"a".repeat(32)}-error`).waitFor({ state: "visible" });
+  await visit("settings/workers/settings-error");
+  await batch.fill(before);
+  await page.locator("#pair-worker-create").click();
+  await page.locator("#pair-worker-new").waitFor({ state: "visible" });
+  await visit("settings/workers/pairing");
+  await page.locator("#pair-worker-done").click();
+}
+
 // Now Playing, Hour preview (#126), opened: the server's answer is stood
 // in for, so its table, with fixed and predicted rows, and its backtiming
 // list are measured on an empty library.  One title has no spaces, for
@@ -770,7 +831,7 @@ async function openRepeatHoursError(page, visit) {
   await hours.waitFor({ state: "visible" });
   const before = await hours.inputValue();
   await hours.fill("6, 6");
-  await page.locator("#repeat-save").click();
+  await page.locator('#spanel-picking [data-settings-save]').click();
   await page.locator('#repeat-daypart-hours[aria-invalid="true"]').waitFor();
   await page.locator("#repeat-error").waitFor({ state: "visible" });
   await visit("settings/picking/repeat-hours-error");
@@ -1536,8 +1597,7 @@ async function newPage(context) {
   return page;
 }
 
-// Every view, and with Settings every subtab this server shows (Stream only
-// in stream mode).  `measure` runs once per target with that target shown,
+// Every view and Settings subtab. `measure` runs once per target with that target shown,
 // after the running transitions have ended: the states opened by a click
 // (a refused form, a dialog) are measured too.  After the click on
 // #clock-add-step that shows its hours error, WebKit was still running the
@@ -1552,6 +1612,7 @@ async function eachTarget(page, measure) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
+  await standInForWorkers(page);
   await standInForHourPreview(page);
   await standInForListenerStats(page);
   await standInForVoiceTracker(page);
@@ -1604,6 +1665,10 @@ async function eachTarget(page, measure) {
     const ids = await page.$$eval("#settings-tabs [role='tab']:not([hidden])",
       (tabs) => tabs.map((tab) => tab.id));
     for (const id of ids) {
+      // Reset fixture drafts only if they still differ when the click runs.
+      await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
+        for (const button of buttons) if (!button.disabled) button.click();
+      });
       await page.locator(`#${id}`).click();
       await page.waitForTimeout(150);
       await openEveryCard(page);
@@ -1617,6 +1682,7 @@ async function eachTarget(page, measure) {
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
       if (id === "stab-stations") await openStationCreateError(page, visit);
       if (id === "stab-live") await openLiveDjError(page, visit);
+      if (id === "stab-workers") await openWorkerStates(page, visit);
       if (id === "stab-updates") await openRestartConfirm(page, visit);
     }
   }
@@ -2072,7 +2138,7 @@ async function checkSystemTheme(browser, mode, out) {
 }
 
 // Choosing Dark in Settings, Display and keys: the page changes at once,
-// nothing is announced, and a reload keeps it.
+// the preview says nothing; Save persists it across reloads.
 async function themeSettingProblems(page) {
   const problems = [];
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
@@ -2094,9 +2160,10 @@ async function themeSettingProblems(page) {
   if (after.theme !== "dark" || after.background !== THEME_BG.dark) {
     problems.push(`after choosing Dark: ${JSON.stringify(after)}`);
   }
-  if (after.stored !== "dark") problems.push(`Dark not stored: ${after.stored}`);
   if (after.toast === false) problems.push(`choosing a theme showed a status message: ${after.toastText}`);
   if (await regions() !== before) problems.push("choosing a theme wrote a live region");
+  await page.locator('#spanel-display [data-settings-save]').click();
+  await page.waitForFunction(() => localStorage.getItem("autodj.theme") === "dark");
   await page.reload({ waitUntil: "networkidle" });
   const reloaded = await page.evaluate(() => ({
     theme: document.documentElement.getAttribute("data-theme"),
@@ -2108,6 +2175,8 @@ async function themeSettingProblems(page) {
   await page.locator("#tab-settings").click();
   await page.locator("#stab-display").click();
   await page.locator("#theme-system").click();
+  await page.locator('#spanel-display [data-settings-save]').click();
+  await page.waitForFunction(() => localStorage.getItem("autodj.theme") === "system");
   const system = await page.evaluate(() => ({
     theme: document.documentElement.getAttribute("data-theme"),
     stored: window.localStorage.getItem("autodj.theme"),
@@ -2695,12 +2764,10 @@ async function previewOutputProblems(page) {
     return problems;
   }
   await select.focus();
+  const statusBefore = await page.locator("#settings-status").textContent();
   await select.selectOption("");
-  try {
-    await page.waitForFunction(() => /Previews play on/.test(
-      document.getElementById("settings-status").textContent), null, { timeout: 3000 });
-  } catch {
-    problems.push("a change was not said in the status region");
+  if (await page.locator("#settings-status").textContent() !== statusBefore) {
+    problems.push("an unsaved device selection announced a result");
   }
   if (!await page.evaluate(() => document.activeElement?.id === "preview-device")) {
     problems.push("a change moved focus");

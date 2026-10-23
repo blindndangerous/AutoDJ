@@ -20,6 +20,7 @@ import {
 } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const MINUTES = 1440;
 // The intro or outro option that means "as config.toml says": never a
@@ -106,7 +107,6 @@ export function installTimeChecks({ doc = document, request = requestJson,
         box.id = `tc-pack-${index}`;
         box.value = pack.name;
         box.setAttribute("aria-describedby", `tc-pack-${index}-desc`);
-        box.addEventListener("change", save);
         const label = doc.createElement("label");
         label.htmlFor = box.id;
         label.textContent = pack.name;
@@ -266,7 +266,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...(from ? { not_before: from } : {}), ...(until ? { not_after: until } : {}) }),
       });
-      showSettings();
+      if (!draft.dirty()) draft.accept(settings);
       const pack = settings.packs?.find((item) => item.name === name);
       say(pack?.dates_text ? `Saved. Voice pack ${name}: ${pack.dates_text}.` : `Saved. Voice pack ${name} plays on any day.`);
     } catch (error) {
@@ -299,15 +299,54 @@ export function installTimeChecks({ doc = document, request = requestJson,
       + `Times are in the station time zone, ${settings.timezone}.`;
   }
 
+  const read = () => {
+    const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value,
+      enabled_packs: packBoxes().filter((box) => box.checked).map((box) => box.value),
+      pack_order: order.value };
+    if (hasFiles) {
+      body.recorded_folder = files.folder.value;
+      body.intro = clipChoice("intro");
+      body.outro = clipChoice("outro");
+    }
+    return body;
+  };
+  const draft = registerSettingsGroup({
+    panel, group: "time_checks",
+    controls: () => [enabled, format, rule, order, ...packBoxes(),
+      ...(hasFiles ? [files.folder, files.intro, files.outro] : [])],
+    read,
+    write(value) {
+      settings = { ...settings, ...value };
+      if (Array.isArray(value.enabled_packs) && Array.isArray(settings.packs)) {
+        const selected = new Set(value.enabled_packs);
+        settings.packs = settings.packs.map((pack) => ({ ...pack, enabled: selected.has(pack.name) }));
+      }
+      if (value.enabled === false || value.rule === "off") pending = false;
+      showSettings();
+    },
+    validate() {
+      if (!settings) {
+        say("Time check settings are still loading; try again in a moment.", "error");
+        return false;
+      }
+      return true;
+    },
+  });
+
+  function acceptSettings(value) {
+    settings = value;
+    draft.accept(value);
+    if (!draft.dirty()) showSettings();
+  }
+
   // Background loads write into the panel; they are not announced.
   async function refresh() {
     const mine = ++generation;
     try {
       const loaded = await request("/api/time-checks");
       if (mine !== generation) return;
-      settings = loaded;
       if (previousTrack && previousHour === null) previousHour = hourKey(now());
-      showSettings();
+      acceptSettings(loaded);
     } catch (error) {
       // A reply for the station the page has just left says nothing (#70).
       if (mine !== generation || isStaleStationReply(error)) return;
@@ -330,55 +369,6 @@ export function installTimeChecks({ doc = document, request = requestJson,
       for (const select of [files.folder, files.intro, files.outro]) {
         select.replaceChildren(select.options[0]);
       }
-    }
-  }
-
-  async function save() {
-    // Before the first load (or after a failed one) the pack list is
-    // empty: a save now would untick every pack on the server.
-    if (!settings) {
-      say("Time check settings are still loading; try again in a moment.", "error");
-      return;
-    }
-    const body = { enabled: enabled.checked, hour_format: format.value, rule: rule.value,
-      enabled_packs: packBoxes().filter((box) => box.checked).map((box) => box.value),
-      pack_order: order.value };
-    if (hasFiles) {
-      body.recorded_folder = files.folder.value;
-      body.intro = clipChoice("intro");
-      body.outro = clipChoice("outro");
-    }
-    try {
-      settings = await request("/api/time-checks", {
-        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (!settings.enabled || settings.rule === "off") pending = false;
-      showSettings();
-      say("Time check settings saved.");
-    } catch (error) {
-      // Answered after a station switch: the form now shows the new
-      // station's settings, so it is left alone (#70).
-      const left = staleActionText(error);
-      if (left) {
-        say(left, error.actionDone ? "info" : "error");
-        return;
-      }
-      if (settings) {
-        enabled.checked = settings.enabled;
-        format.value = settings.hour_format;
-        rule.value = settings.rule;
-        order.value = settings.pack_order;
-        packBoxes().forEach((box, index) => { box.checked = Boolean(settings.packs?.[index]?.enabled); });
-        if (hasFiles) {
-          files.folder.value = settings.recorded_folder || "";
-          for (const which of ["intro", "outro"]) {
-            const chosen = settings[which];
-            files[which].value = chosen == null
-              ? (settings[`${which}_config`] ? FROM_CONFIG : "") : chosen;
-          }
-        }
-      }
-      say(`Could not save time check settings: ${error.message}`, "error");
     }
   }
 
@@ -493,8 +483,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
       uploadFailure("pack", error, "Could not add the voice pack.");
       return;
     }
-    settings = reply;
-    showSettings();
+    acceptSettings(reply);
     files.packFile.value = "";
     files.packName.value = "";
     const added = reply.packs?.find((pack) => pack.name === reply.added);
@@ -532,7 +521,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
           tone = left && error.actionDone ? "info" : "error";
           return left ? null : button;
         }
-        showSettings();
+        acceptSettings(settings);
         result = `Removed voice pack ${name}.`;
         return packBoxes()[index] || packsGroup;
       },
@@ -575,8 +564,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
       uploadFailure("clip", error, "Could not upload the clip.");
       return;
     }
-    settings = reply;
-    showSettings();
+    acceptSettings(reply);
     files.clipFile.value = "";
     say(/^\d{2}_\d{2}\.[a-z0-9]+$/i.test(reply.uploaded)
       ? `Uploaded ${reply.uploaded} to the recorded minute clips folder.`
@@ -592,7 +580,7 @@ export function installTimeChecks({ doc = document, request = requestJson,
       sayFailure(error, "Could not look for voice packs.");
       return;
     }
-    showSettings();
+    acceptSettings(settings);
     const found = (settings.packs || []).filter((pack) => !before.has(pack.name));
     const total = settings.packs?.length || 0;
     const count = `${total} voice pack${total === 1 ? "" : "s"} listed.`;
@@ -640,12 +628,8 @@ export function installTimeChecks({ doc = document, request = requestJson,
     void playHere().catch(() => {}).finally(() => { playing = false; });
   }
 
-  for (const control of [enabled, format, rule, order]) control.addEventListener("change", save);
   test.addEventListener("click", () => withDisabled(test, testNow));
   if (hasFiles) {
-    for (const select of [files.folder, files.intro, files.outro]) {
-      select.addEventListener("change", save);
-    }
     files.packAdd.addEventListener("click", () => busyWhile(files.packAdd, () => addPack()));
     files.clipAdd.addEventListener("click", () => busyWhile(files.clipAdd, () => addClip()));
     files.rescan.addEventListener("click", () => busyWhile(files.rescan, rescan));

@@ -8,7 +8,16 @@ worker can claim songs, read the audio of the songs it claimed, post their
 analysis, report a failure, and keep its claims alive; nothing else.
 
 ``/api/machine-tokens`` and ``/api/analysis/workers`` are ordinary browser
-routes behind pairing, for Settings, Analysis workers.
+routes behind pairing, for Settings, Analysis workers.  There an operator
+pauses a worker or sets its batch size and idle release (#554); the worker
+reads them from its heartbeat and claim replies (``worker_manage_v1``), and
+a paused worker is handed no songs whatever its version.  The server never
+sends a worker anything to run.  Settings also shows the latest time the
+server refused each worker token, and why, until that worker connects again.
+
+``POST /api/machine-tokens/pairing-code`` makes a short-lived, single-use
+code; ``autodj worker --pair`` trades it at :data:`WORKER_PAIR_PATH`, over
+HTTPS and without a token, for a new analysis-worker token.
 
 A result is stored only when it was made with this server's model, model
 weights (the model's snapshot commit, never the branch name) and
@@ -27,10 +36,12 @@ import base64
 import binascii
 import logging
 import math
+import secrets
 import threading
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -45,14 +56,24 @@ from autodj.analysis_queue import WORKER_LEASE_SECONDS, Lease
 from autodj.indexer import FEATURE_DIM, file_fingerprint
 from autodj.machine_tokens import (
     KNOWN_SCOPES,
+    MAX_IDLE_RELEASE_MINUTES,
+    MAX_WORKER_BATCH,
     SCOPE_ANALYSIS_WORKER,
     STATION_SCOPES,
     MachineToken,
     MachineTokenStore,
+    WorkerSettings,
+    validate_name,
 )
 from autodj.scan_analysis import SCAN_ANALYSIS_VERSION, ScanResult
-from autodj.security import audit_as_routine
-from autodj.worker import identity_mismatch
+from autodj.security import (
+    PAIRING_CODE_WINDOW_SECONDS,
+    PAIRING_MAX_FAILURES_PER_CLIENT,
+    PAIRING_MAX_FAILURES_PER_WINDOW,
+    audit_as_routine,
+    peer_address,
+)
+from autodj.worker import WORKER_PAIR_PATH, identity_mismatch
 
 if TYPE_CHECKING:
     from autodj.library import LibraryManager
@@ -62,8 +83,10 @@ logger = logging.getLogger(__name__)
 #: Path prefix of the worker routes, and the token scope they need.
 WORKER_PREFIX = "/api/worker/"
 MACHINE_SCOPES = {WORKER_PREFIX: SCOPE_ANALYSIS_WORKER}
+#: How long a worker pairing code works: as long as a browser pairing code can.
+WORKER_PAIRING_SECONDS = 2 * PAIRING_CODE_WINDOW_SECONDS
 #: Most songs one claim hands out.
-MAX_BATCH = 16
+MAX_BATCH = MAX_WORKER_BATCH
 #: How often a worker should report in; a lease lasts twenty times this.
 HEARTBEAT_SECONDS = 30
 #: Request-body caps. Combined results also carry bounded beat grids and cues.
@@ -81,7 +104,26 @@ _Device = Annotated[str, Field(max_length=120)]
 _Finite = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 
 
-class ClaimBody(BaseModel):
+class WorkerIdentity(BaseModel):
+    """What a worker analyses with, as far as it knows yet (no weights before download)."""
+
+    model_config = ConfigDict(extra="forbid")
+    model: str | None = Field(default=None, max_length=200)
+    model_commit: str | None = Field(default=None, max_length=80)
+    analysis_version: str | None = Field(default=None, max_length=100)
+    dimension: StrictInt | None = None
+
+
+class _ManagedBody(BaseModel):
+    """Fields a worker sends once the server has said ``worker_manage_v1``."""
+
+    worker_manage_v1: StrictBool = False
+    # The settings revision the worker has applied.
+    settings_revision: StrictInt | None = Field(default=None, ge=0)
+    identity: WorkerIdentity | None = None
+
+
+class ClaimBody(_ManagedBody):
     """Ask for up to *batch* songs to analyse."""
 
     model_config = ConfigDict(extra="forbid")
@@ -91,7 +133,7 @@ class ClaimBody(BaseModel):
     scan_analysis_version: str = Field(default="", max_length=40)
 
 
-class HeartbeatBody(BaseModel):
+class HeartbeatBody(_ManagedBody):
     """A worker reporting its claims, or starting a new process with this token."""
 
     model_config = ConfigDict(extra="forbid")
@@ -146,6 +188,134 @@ class TokenCreateBody(BaseModel):
     scopes: list[str] = Field(min_length=1, max_length=len(KNOWN_SCOPES))
     # The station an announcer token works for.
     station: str | None = Field(default=None, max_length=40)
+
+
+class WorkerSettingsBody(BaseModel):
+    """One worker's settings from Settings; ``None`` leaves a value to the worker."""
+
+    model_config = ConfigDict(extra="forbid")
+    paused: StrictBool
+    batch: StrictInt | None = Field(ge=1, le=MAX_WORKER_BATCH)
+    idle_release_minutes: StrictInt | None = Field(ge=1, le=MAX_IDLE_RELEASE_MINUTES)
+
+
+class PairingCodeBody(BaseModel):
+    """Ask for a worker pairing code; *name* names the token it makes."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=200)
+
+
+class WorkerPairBody(BaseModel):
+    """A worker trading a pairing code; *name* is its host name, used if Settings gave none."""
+
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(pattern=r"^[0-9]{8}$")
+    name: str = Field(default="", max_length=200)
+
+
+@dataclass(frozen=True)
+class PairingOutcome:
+    """What one pairing attempt came to."""
+
+    paired: bool
+    name: str | None = None
+    retry_after: int | None = None
+
+
+class WorkerPairing:
+    """The one open worker pairing code, kept in memory: single use, short-lived.
+
+    Wrong codes follow the browser pairing's limits: one client address that
+    reaches :data:`~autodj.security.PAIRING_MAX_FAILURES_PER_CLIENT` is locked
+    out until the code ends, and once all clients together reach
+    :data:`~autodj.security.PAIRING_MAX_FAILURES_PER_WINDOW` the code is
+    burned.  Nothing is counted while no code is open, so the counts stay
+    bounded.  A new code replaces the old one and its counts.
+    """
+
+    def __init__(
+        self,
+        seconds: float = WORKER_PAIRING_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._seconds = seconds
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._code: str | None = None
+        self._name: str | None = None
+        self._until = 0.0
+        self._failures = 0
+        self._clients: dict[str, int] = {}
+
+    def open(self, name: str | None) -> tuple[str, int]:
+        """A new code for a token named *name* (or the worker's host name), and its life."""
+        code = f"{secrets.randbelow(100_000_000):08d}"
+        with self._lock:
+            self._code = code
+            self._name = name
+            self._until = self._monotonic() + self._seconds
+            self._failures = 0
+            self._clients.clear()
+        return code, int(self._seconds)
+
+    def take(self, candidate: str, client: str) -> PairingOutcome:
+        """Use the open code if *candidate* is it, closing it; count a wrong one."""
+        with self._lock:
+            now = self._monotonic()
+            if self._code is None or now > self._until:
+                self._code = None
+                return PairingOutcome(False)
+            retry_after = max(1, math.ceil(self._until - now))
+            if self._clients.get(client, 0) >= PAIRING_MAX_FAILURES_PER_CLIENT:
+                return PairingOutcome(False, retry_after=retry_after)
+            if secrets.compare_digest(candidate.encode("ascii"), self._code.encode("ascii")):
+                name = self._name
+                self._code = None
+                return PairingOutcome(True, name)
+            failures = self._clients.get(client, 0) + 1
+            self._clients[client] = failures
+            self._failures += 1
+            if failures == PAIRING_MAX_FAILURES_PER_CLIENT:
+                logger.warning(
+                    "Worker pairing locked for client %s for %d seconds after %d wrong codes.",
+                    client,
+                    retry_after,
+                    PAIRING_MAX_FAILURES_PER_CLIENT,
+                )
+            if self._failures >= PAIRING_MAX_FAILURES_PER_WINDOW:
+                self._code = None
+                logger.warning(
+                    "Worker pairing code invalidated after %d wrong attempts; someone may be "
+                    "guessing.  Choose Pair a worker again for a new code.",
+                    PAIRING_MAX_FAILURES_PER_WINDOW,
+                )
+            return PairingOutcome(False)
+
+
+#: What Settings says about each kind of refusal; ``identity`` and
+#: ``scan_version`` carry their own words.
+_REFUSAL_ADVICE = {
+    "revoked": "Its token was revoked.  Pair the worker again, or give it a new token, "
+    "and start it again.",
+    "invalid": "It sent a token whose secret is wrong.  Check AUTODJ_WORKER_TOKEN or the "
+    "token saved on the worker, or pair the worker again.",
+    "scope": "Its token is not an analysis worker token.  Pair the worker, or give it an "
+    "analysis worker token.",
+}
+
+
+def _refusal_view(refusal: dict[str, object]) -> dict[str, object]:
+    kind = str(refusal["kind"])
+    return {**refusal, "message": _REFUSAL_ADVICE.get(kind) or refusal["detail"]}
+
+
+def _host_token_name(name: str) -> str:
+    """A worker's host name as a token name, or a plain one if it will not do."""
+    try:
+        return validate_name(_clean_text(name, 64))
+    except ValueError:
+        return "Analysis worker"
 
 
 class RateLimiter:
@@ -233,12 +403,28 @@ def install_worker_api(
     """
     limiter = RateLimiter(rate_limit, 60.0)
     scan_mismatches: dict[str, None] = {}
+    # token_id -> the settings revision its worker last said it applied.
+    applied: dict[str, int] = {}
+    pairing = WorkerPairing()
+    app.state.worker_pairing = pairing
 
     def scan_capable(token: MachineToken, body: ClaimBody | HeartbeatBody) -> bool:
+        """Whether *token*'s worker decodes scans here; a mismatch is noted for Settings.
+
+        Runs off the event loop: noting a mismatch can write the token database.
+        """
         if body.scan_analysis_version == SCAN_ANALYSIS_VERSION:
             return bool(body.scan_decode_v1)
         if not body.scan_decode_v1 and not body.scan_analysis_version:
             return False
+        tokens().record_refusal(
+            token.token_id,
+            "scan_version",
+            f"Its scan analysis version is {_clean_text(body.scan_analysis_version) or 'unknown'}"
+            f" and this server's is {SCAN_ANALYSIS_VERSION}, so this server decodes new music "
+            "itself; the worker still does advanced analysis.  Update AutoDJ on both machines "
+            "to the same release.",
+        )
         if token.token_id not in scan_mismatches:
             if len(scan_mismatches) >= _MAX_SCAN_MISMATCHES:
                 del scan_mismatches[next(iter(scan_mismatches))]
@@ -282,25 +468,61 @@ def install_worker_api(
             raise HTTPException(status_code=503, detail="This server has no library catalog")
         return token, manager
 
+    def managed(
+        token: MachineToken, body: ClaimBody | HeartbeatBody, expected: dict[str, object]
+    ) -> None:
+        """Refuse a worker whose reported identity differs; note the revision it applied.
+
+        A worker reports only what it knows: before it has downloaded the
+        model, it has no weights to compare.  Runs off the event loop.
+        """
+        if body.identity is not None:
+            reported = {
+                key: value for key, value in body.identity.model_dump().items() if value is not None
+            }
+            if any(expected.get(key) != value for key, value in reported.items()):
+                detail = identity_mismatch(expected, {**expected, **reported})
+                tokens().record_refusal(token.token_id, "identity", detail)
+                raise HTTPException(status_code=409, detail=detail)
+        if body.settings_revision is not None:
+            applied[token.token_id] = body.settings_revision
+
+    def manage_reply(token: MachineToken) -> dict[str, object]:
+        """What every heartbeat and claim reply tells a worker about its settings."""
+        return {
+            "worker_manage_v1": True,
+            "settings": tokens().worker_settings(token.token_id).as_dict(),
+        }
+
     # ------------------------------------------------------------------
     # Worker routes (machine token with the analysis-worker scope)
     # ------------------------------------------------------------------
 
     @app.post(WORKER_PREFIX + "claim")
     async def worker_claim(body: ClaimBody, request: Request) -> JSONResponse:
-        """Lease up to *batch* songs to this worker and describe them."""
+        """Lease up to *batch* songs to this worker and describe them.
+
+        A worker paused in Settings is handed nothing, so pausing works
+        for older workers too.
+        """
         token, manager = worker_context(request)
         expected = await asyncio.to_thread(server_identity)
-        supports_scan = scan_capable(token, body)
 
         def claim() -> dict[str, Any]:
+            managed(token, body, expected)
+            supports_scan = scan_capable(token, body)
+            settings = tokens().worker_settings(token.token_id)
+            reply = {"worker_manage_v1": True, "settings": settings.as_dict()}
             queue = manager.analysis_queue
             queue.seen(token.token_id, token.name, body.device or None, scan_decode=supports_scan)
             by_path: dict[str, dict[str, Any]] = {}
             changed_paths: set[str] = set()
             leases: list[Lease] = []
-            advanced = manager.catalog.unembedded_paths()
-            pending_paths = queue.claimable_scans(limit=body.batch) if supports_scan else []
+            paused = settings.paused
+            advanced = [] if paused else manager.catalog.unembedded_paths()
+            pending_paths = (
+                queue.claimable_scans(limit=body.batch) if supports_scan and not paused else []
+            )
             pending = set(pending_paths)
             candidates = chain(
                 pending_paths,
@@ -395,6 +617,7 @@ def install_worker_api(
                 "songs": songs,
                 "scan_decode_v1": True,
                 "scan_analysis_version": SCAN_ANALYSIS_VERSION,
+                **reply,
             }
 
         reply = await asyncio.to_thread(claim)
@@ -456,7 +679,9 @@ def install_worker_api(
             "dimension": body.dimension,
         }
         if got != expected:
-            raise HTTPException(status_code=409, detail=identity_mismatch(expected, got))
+            detail = identity_mismatch(expected, got)
+            await asyncio.to_thread(tokens().record_refusal, token.token_id, "identity", detail)
+            raise HTTPException(status_code=409, detail=detail)
         try:
             vector = None if body.vector is None else decode_vector(body.vector)
         except ValueError as exc:
@@ -580,20 +805,29 @@ def install_worker_api(
 
     @app.post(WORKER_PREFIX + "heartbeat")
     async def worker_heartbeat(body: HeartbeatBody, request: Request) -> dict[str, object]:
-        """Renew reported claims, or release orphaned claims on process startup."""
-        token, manager = worker_context(request)
-        supports_scan = scan_capable(token, body)
+        """Renew reported claims, or release orphaned claims on process startup.
 
-        def beat() -> int:
+        A connect that passes the identity check clears the token's refusal
+        notice in Settings.
+        """
+        token, manager = worker_context(request)
+        expected = await asyncio.to_thread(server_identity)
+
+        def beat() -> tuple[int, dict[str, object]]:
+            managed(token, body, expected)
+            if body.connect:
+                tokens().clear_refusal(token.token_id)
+            supports_scan = scan_capable(token, body)
             queue = manager.analysis_queue
             queue.seen(token.token_id, token.name, body.device or None, scan_decode=supports_scan)
             if body.connect:
                 queue.release_claims(token.token_id)
-                return 0
-            return queue.renew(token.token_id, WORKER_LEASE_SECONDS, body.leases)
+                return 0, manage_reply(token)
+            return queue.renew(token.token_id, WORKER_LEASE_SECONDS, body.leases), manage_reply(
+                token
+            )
 
-        expected = await asyncio.to_thread(server_identity)
-        renewed = await asyncio.to_thread(beat)
+        renewed, reply = await asyncio.to_thread(beat)
         if not body.connect:
             audit_as_routine(request)
         return {
@@ -604,6 +838,7 @@ def install_worker_api(
             "identity": expected,
             "scan_decode_v1": True,
             "scan_analysis_version": SCAN_ANALYSIS_VERSION,
+            **reply,
         }
 
     @app.post(WORKER_PREFIX + "release")
@@ -675,12 +910,103 @@ def install_worker_api(
         if revoked is None:
             raise HTTPException(status_code=404, detail="No such active token")
         scan_mismatches.pop(token_id, None)
+        applied.pop(token_id, None)
         logger.info("Machine token %r revoked", revoked.name)
         return {"revoked": token_id, "name": revoked.name}
 
+    @app.post("/api/machine-tokens/pairing-code", status_code=201)
+    async def api_worker_pairing_code(body: PairingCodeBody) -> JSONResponse:
+        """A code that one worker can trade for its own token, once, for ten minutes.
+
+        The code is never logged.  A new code replaces one still open.
+        """
+        name = None
+        if body.name.strip():
+            try:
+                name = validate_name(body.name)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        code, seconds = pairing.open(name)
+        logger.info(
+            "Worker pairing code created for %s; it works once, for %d minutes.",
+            repr(name) if name else "the worker's host name",
+            seconds // 60,
+        )
+        return JSONResponse(
+            {"code": code, "valid_seconds": seconds, "name": name},
+            status_code=201,
+            headers=_NO_STORE,
+        )
+
+    @app.post(WORKER_PAIR_PATH, status_code=201)
+    async def worker_pair(body: WorkerPairBody, request: Request) -> JSONResponse:
+        """Trade a pairing code for a new analysis-worker token, shown only in this reply."""
+        outcome = pairing.take(body.code, peer_address(request.scope))
+        if outcome.retry_after is not None:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many wrong pairing codes from this computer.  Try again in "
+                f"{outcome.retry_after} seconds, or ask for a new code.",
+                headers={"Retry-After": str(outcome.retry_after)},
+            )
+        if not outcome.paired:
+            raise HTTPException(status_code=401, detail="Invalid or expired pairing code")
+        name = outcome.name or _host_token_name(body.name)
+        token, secret = await asyncio.to_thread(
+            lambda: tokens().create(name, [SCOPE_ANALYSIS_WORKER])
+        )
+        # The token's name, never its secret.
+        logger.info(  # nosemgrep: python-logger-credential-disclosure
+            "Machine token %r created by worker pairing", token.name
+        )
+        return JSONResponse(
+            {"token": secret, "token_id": token.token_id, "name": token.name},
+            status_code=201,
+            headers=_NO_STORE,
+        )
+
+    @app.put("/api/analysis/workers/{token_id}/settings")
+    async def api_worker_settings(token_id: str, body: WorkerSettingsBody) -> JSONResponse:
+        """Store what one worker should do; it applies them at its next heartbeat or claim."""
+        try:
+            saved = await asyncio.to_thread(
+                lambda: tokens().set_worker_settings(
+                    token_id, body.paused, body.batch, body.idle_release_minutes
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if saved is None:
+            raise HTTPException(
+                status_code=404, detail="No active analysis worker token has that id"
+            )
+        logger.info(
+            "Analysis worker %s settings: paused %s, batch %s, idle release %s (revision %d)",
+            token_id,
+            saved.paused,
+            saved.batch if saved.batch is not None else "the worker's own",
+            f"{saved.idle_release_minutes} min"
+            if saved.idle_release_minutes is not None
+            else "the worker's own",
+            saved.revision,
+        )
+        return JSONResponse(saved.as_dict(), headers=_NO_STORE)
+
+    @app.delete("/api/analysis/workers/{token_id}/refusal")
+    async def api_worker_refusal_dismiss(token_id: str) -> dict[str, str]:
+        """Hide a worker's refusal notice until it is refused for another reason."""
+        if not await asyncio.to_thread(tokens().dismiss_refusal, token_id):
+            raise HTTPException(status_code=404, detail="That worker has no refusal notice")
+        return {"dismissed": token_id}
+
     @app.get("/api/analysis/workers")
     async def api_analysis_workers() -> JSONResponse:
-        """Connected workers, how much is waiting, and whether the CPU job is paused."""
+        """Connected workers, how much is waiting, and whether the CPU job is paused.
+
+        Each worker carries its settings and whether it has applied them
+        (``None`` for a worker too old to say), and ``refusals`` lists the
+        latest time the server refused each worker token, and why.
+        """
         manager = library()
         if manager is None:
             return JSONResponse({"available": False, "workers": [], "waiting": 0, "analysing": 0})
@@ -688,12 +1014,22 @@ def install_worker_api(
         def snapshot() -> dict[str, Any]:
             queue = manager.analysis_queue
             workers = queue.workers()
+            store = tokens()
+            settings = store.all_worker_settings()
+            for worker in workers:
+                found = settings.get(str(worker["token_id"])) or WorkerSettings()
+                worker["settings"] = found.as_dict()
+                revision = applied.get(str(worker["token_id"]))
+                worker["settings_applied"] = (
+                    None if revision is None else revision == found.revision
+                )
             return {
                 "available": True,
                 "workers": workers,
                 "waiting": manager.catalog.unembedded_count(),
                 "analysing": queue.leased_count(),
                 "server_paused": any(worker["connected"] for worker in workers),
+                "refusals": [_refusal_view(refusal) for refusal in store.refusals()],
             }
 
         return JSONResponse(await asyncio.to_thread(snapshot), headers=_NO_STORE)
@@ -703,8 +1039,11 @@ __all__ = [
     "MACHINE_SCOPES",
     "RESULT_BODY_MAX_BYTES",
     "SMALL_BODY_MAX_BYTES",
+    "WORKER_PAIRING_SECONDS",
+    "WORKER_PAIR_PATH",
     "WORKER_PREFIX",
     "RateLimiter",
+    "WorkerPairing",
     "decode_vector",
     "install_worker_api",
 ]

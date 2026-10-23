@@ -31,7 +31,7 @@ name.
 
 Stream mode (``serve --stream``) adds ``GET /stream.mp3`` and
 ``GET /stream.m3u`` (no login required) and the authenticated
-``GET /api/stream`` and ``POST /api/stream/settings``.
+``GET /api/stream`` and persistent stream configuration through ``PATCH /api/settings``.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ from autodj.breaks_api import (
 )
 from autodj.breaks_api import MULTIPART_OVERHEAD_BYTES as BREAK_MULTIPART_OVERHEAD
 from autodj.catalog import ADVANCED_MAX_MINUTES_LIMIT
-from autodj.config import MAX_EMBED_ORIGINS, AdsConfig, BreaksConfig
+from autodj.config import AdsConfig, BreaksConfig
 from autodj.icy import METAINT
 from autodj.indexer import analysis_identity
 from autodj.lan import (
@@ -183,6 +183,7 @@ from autodj.worker_api import (
     MACHINE_SCOPES,
     RESULT_BODY_MAX_BYTES,
     SMALL_BODY_MAX_BYTES,
+    WORKER_PAIR_PATH,
     WORKER_PREFIX,
     install_worker_api,
 )
@@ -645,14 +646,6 @@ class LibraryRescanBody(BaseModel):
     override_tags: StrictBool = False
 
 
-class TimeSettingsBody(BaseModel):
-    """The station time zone and time format, shared by every station (#282, #286)."""
-
-    model_config = ConfigDict(extra="forbid")
-    timezone: StrictStr
-    time_format: Literal["12", "24"]
-
-
 class LibraryAutoRescanBody(BaseModel):
     """Shared library automatic rescan interval."""
 
@@ -996,6 +989,7 @@ def _header_text(value: str) -> str:
 
 # A schedule event is a few hundred bytes; this leaves ample room.
 _SCHEDULE_BODY_MAX_BYTES = 16 * 1024
+_SETTINGS_BODY_MAX_BYTES = 64 * 1024
 # A show's list (#106): 500 paths, each well under 2 KiB in practice.
 SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
@@ -1276,17 +1270,17 @@ def create_app(
         **{path: (lambda: SMALL_BODY_MAX_BYTES) for path in UPDATE_ROUTES},
         "/api/schedule": lambda: _SCHEDULE_BODY_MAX_BYTES,
         "/api/machine-tokens": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/machine-tokens/pairing-code": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/analysis/workers/{token_id}/settings": lambda: SMALL_BODY_MAX_BYTES,
+        WORKER_PAIR_PATH: lambda: SMALL_BODY_MAX_BYTES,
         "/api/live/djs": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/live/settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/time-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/station-settings": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/points/rescan/apply": lambda: SMALL_BODY_MAX_BYTES,
         "/api/library/music-fade": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/public-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/time-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/station-settings": lambda: SMALL_BODY_MAX_BYTES,
-        "/api/stations/{slug}/public-settings": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/settings": lambda: _SETTINGS_BODY_MAX_BYTES,
+        "/api/stations/{slug}/settings": lambda: _SETTINGS_BODY_MAX_BYTES,
+        "/api/stream/relays": lambda: SMALL_BODY_MAX_BYTES,
+        "/api/stations/{slug}/stream/relays": lambda: SMALL_BODY_MAX_BYTES,
         # The largest break any station takes; each station checks its own.
         UPLOAD_PATH: lambda: _break_upload_cap(stations),
         VOICE_UPLOAD_PATH: lambda: _voice_upload_cap(stations),
@@ -1332,6 +1326,7 @@ def create_app(
         body_limits=body_limits,
         machine_scopes={**MACHINE_SCOPES, **ANNOUNCER_SCOPES},
         machine_auth=lambda token, scope: machine_tokens().authenticate(token, scope),
+        program_paths=frozenset({WORKER_PAIR_PATH}),
         station_slugs=stations.slugs,
     )
     model_commit = CachedModelCommit(lambda: (cfg.model, cfg.index))
@@ -2384,62 +2379,15 @@ def create_app(
     async def api_time_settings(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(_time_settings, _settings_slug(request))
 
-    @station_router.put("/time-settings")
-    async def api_set_time_settings(request: Request, body: TimeSettingsBody) -> dict[str, Any]:
-        from autodj import timefmt
-
-        slug = _settings_slug(request)
-        try:
-            await asyncio.to_thread(stations.save_options, slug, {"timezone": body.timezone})
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        catalog = _catalog_library().catalog
-        await asyncio.to_thread(catalog.set_setting, "time_format", body.time_format)
-        timefmt.time_format = body.time_format
-        return await asyncio.to_thread(_time_settings, slug)
-
     @station_router.get("/station-settings")
     async def api_station_settings(request: Request) -> dict[str, Any]:
         from dataclasses import asdict
 
         return asdict(stations.configuration(_settings_slug(request)).station)
 
-    @station_router.put("/station-settings")
-    async def api_set_station_settings(request: Request, body: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return await asyncio.to_thread(stations.save_options, _settings_slug(request), body)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     @station_router.get("/public-settings")
     async def api_public_settings(request: Request) -> dict[str, Any]:
         return await asyncio.to_thread(stations.public_settings, _settings_slug(request))
-
-    @station_router.put("/public-settings")
-    async def api_set_public_settings(request: Request, body: dict[str, Any]) -> Any:
-        try:
-            return await asyncio.to_thread(
-                stations.save_public_settings, _settings_slug(request), body
-            )
-        except (TypeError, ValueError) as exc:
-            detail = str(exc)
-            if detail.startswith("player_page.embed_origins"):
-                if detail.startswith("player_page.embed_origins entry "):
-                    site = detail.removeprefix("player_page.embed_origins entry ").rsplit(
-                        " must be an HTTP(S) origin", 1
-                    )[0]
-                    detail = (
-                        f"Sites allowed to embed: {site} is not an http:// or https:// site "
-                        "address, such as https://radio.example.net."
-                    )
-                elif "allows at most" in detail:
-                    detail = f"Sites allowed to embed: use at most {MAX_EMBED_ORIGINS} sites."
-                else:
-                    detail = "Sites allowed to embed: enter one site per line."
-                return JSONResponse(
-                    status_code=400, content={"detail": detail, "field": "embed_origins"}
-                )
-            raise HTTPException(status_code=400, detail=detail) from exc
 
     @app.put("/api/library/auto-rescan")
     async def api_library_set_auto_rescan(body: LibraryAutoRescanBody) -> dict[str, int]:

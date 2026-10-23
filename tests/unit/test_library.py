@@ -3978,7 +3978,7 @@ def test_no_model_keeps_basic_tracks_and_remote_analysis_queue(
 
 @pytest.mark.dj_analysis
 def test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes(manager_factory, monkeypatch):
-    """ADR-0008-25. A scan running at shutdown ends before the DJ-meta cache closes.
+    """ADR-0008-31. A scan running at shutdown ends before the DJ-meta cache closes.
 
     It neither opens the cache again nor reloads the catalog.
     """
@@ -4033,7 +4033,7 @@ def test_shutdown_stops_the_scan_before_the_dj_meta_cache_closes(manager_factory
 
 
 def test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped(manager_factory, monkeypatch):
-    """ADR-0008-25. Waiting for the scan to stop has a time limit, and no scan starts after."""
+    """ADR-0008-31. Waiting for the scan to stop has a time limit, and no scan starts after."""
     manager = manager_factory()
     scanning, release = threading.Event(), threading.Event()
 
@@ -4053,7 +4053,7 @@ def test_stop_scan_is_bounded_for_a_scan_that_has_not_stopped(manager_factory, m
 
 
 def test_discovery_stops_between_folders_once_the_library_closes(manager_factory, monkeypatch):
-    """ADR-0008-25. Listing a big library's folders stops at the next folder."""
+    """ADR-0008-31. Listing a big library's folders stops at the next folder."""
     manager = manager_factory()
     music = manager.cfg.library.music_dir
     for name in ("a", "b", "c"):
@@ -4075,7 +4075,7 @@ def test_discovery_stops_between_folders_once_the_library_closes(manager_factory
 def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
     manager_factory, monkeypatch
 ):
-    """ADR-0008-25. Listing unanalysed songs reads every row: shutdown cuts that short."""
+    """ADR-0008-31. Listing unanalysed songs reads every row: shutdown cuts that short."""
     from autodj.dj_meta import DjMeta
 
     manager = manager_factory()
@@ -4103,7 +4103,7 @@ def test_the_dj_backlog_stops_reading_the_cache_once_the_library_closes(
 
 
 def test_a_closing_library_starts_no_analysis_job(manager_factory, monkeypatch):
-    """ADR-0008-25. Shutdown has stopped the job runner: the tick must not start a job."""
+    """ADR-0008-31. Shutdown has stopped the job runner: the tick must not start a job."""
     manager = manager_factory()
     monkeypatch.setattr(manager, "analysis_pending", lambda force=False: [{"path": "song"}])
     monkeypatch.setattr("autodj.model_identity.model_analysis_available", lambda: True)
@@ -4184,7 +4184,7 @@ def test_scan_summary_counts_work_left_to_a_worker_and_the_take_back(abandoned_s
 
 
 def test_the_tick_does_not_reload_a_library_that_is_closing(manager_factory, monkeypatch, caplog):
-    """ADR-0008-25. A scan stopped by shutdown wrote records; the tick still does not reload.
+    """ADR-0008-31. A scan stopped by shutdown wrote records; the tick still does not reload.
 
     Its summary says the scan stopped rather than finished.
     """

@@ -54,6 +54,17 @@ def wav_bytes(seconds: float = 0.1) -> bytes:
     return output.getvalue()
 
 
+def patch_station_settings(client, changes, *, base="/api", headers=None):
+    """Submit settings through the revision-checked station endpoint."""
+    url = f"{base.rstrip('/')}/settings"
+    current = client.get(url, headers=headers)
+    return client.patch(
+        url,
+        json={"revision": current.json()["revision"], "changes": changes},
+        headers=headers,
+    )
+
+
 def _make_entry(i: int = 0) -> IndexEntry:
     """Build a deterministic test ``IndexEntry`` keyed by ``i``."""
     return IndexEntry(

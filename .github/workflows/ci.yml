@@ -164,9 +164,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Install FFmpeg (Linux)
+      # From GitHub's cache after the first run, so a slow Ubuntu mirror cannot
+      # use up the job's time.
+      - name: Install FFmpeg (Linux, cached)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ffmpeg
+          version: v1
+          execute_install_scripts: true
 
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
@@ -198,7 +205,25 @@ jobs:
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
-      - run: npx --no-install playwright install --with-deps chromium firefox
+      # Playwright's missing system packages come from GitHub's cache after the
+      # first run, so a slow Ubuntu mirror cannot use up the job's time.
+      - name: List missing browser packages
+        id: browser-packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          report=$(npx --no-install playwright install-deps --dry-run chromium firefox 2>&1) || true
+          packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
+          printf 'packages=%s\n' "$packages" >>"$GITHUB_OUTPUT"
+      - name: Install browser packages (cached)
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ${{ steps.browser-packages.outputs.packages }}
+          version: v1
+          execute_install_scripts: true
+          empty_packages_behavior: ignore
+      - run: npx --no-install playwright install chromium firefox
       - name: Check rendered documentation
         shell: bash
         env:
@@ -286,14 +311,29 @@ jobs:
           cache: npm
       - run: uv sync --frozen --all-extras
       - run: npm ci --ignore-scripts
-      - run: npx --no-install playwright install --with-deps chromium
+      # Playwright's missing system packages and ffmpeg come from GitHub's cache
+      # after the first run, so a slow Ubuntu mirror cannot use up the job's time.
+      - name: List missing browser packages
+        id: browser-packages
+        shell: bash
+        run: |
+          set -uo pipefail
+          report=$(npx --no-install playwright install-deps --dry-run chromium 2>&1) || true
+          packages=$(printf '%s\n' "$report" | sed -n 's/^  \([a-z0-9][a-z0-9.+-]*\)$/\1/p' | tr '\n' ' ')
+          printf 'packages=%s\n' "${packages}ffmpeg" >>"$GITHUB_OUTPUT"
+      - name: Install browser packages and ffmpeg (cached)
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        timeout-minutes: 15
+        with:
+          packages: ${{ steps.browser-packages.outputs.packages }}
+          version: v1
+          execute_install_scripts: true
+      - run: npx --no-install playwright install chromium
       - name: Start stream-mode server
         shell: bash
         run: |
           set -euo pipefail
-          # Stream mode encodes with ffmpeg and refuses to start without it.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
+          # Stream mode encodes with ffmpeg (installed above) and refuses to start without it.
           mkdir -p "$RUNNER_TEMP/stream/music" "$RUNNER_TEMP/stream/index" "$RUNNER_TEMP/stream/models"
           printf '[server]\nport = 8081\n' >"$RUNNER_TEMP/stream/config.toml"
           AUTODJ_LIBRARY_MUSIC_DIR="$RUNNER_TEMP/stream/music" \

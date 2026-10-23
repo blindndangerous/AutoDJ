@@ -316,16 +316,23 @@ def load_or_create_secret(
 private_json_lock = threading.RLock()
 
 
-def read_private_json(path: Path) -> dict[str, Any]:
+def read_private_json(path: Path, *, require_private: bool = False) -> dict[str, Any]:
     """The version 1 JSON object at *path*, without ``version``; empty when there is no file.
 
+    With *require_private*, the opened file must be readable only by its
+    owner, as :func:`write_private_file` leaves it.
+
     Raises:
-        OSError: The file is there but cannot be read.
+        OSError: The file is there but cannot be read, or (``PermissionError``)
+            others may read it.
         ValueError: The file does not hold a version 1 JSON object.  The
             message names the file only, never what it holds.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        with path.open(encoding="utf-8") as handle:
+            if require_private:
+                _check_private_file(handle.fileno())
+            text = handle.read()
     except FileNotFoundError:
         return {}
     except UnicodeDecodeError:
