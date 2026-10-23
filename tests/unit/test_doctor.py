@@ -1252,10 +1252,11 @@ def test_doctor_offline_skips_the_update_check_network(tmp_path: Path, monkeypat
     check = doctor._update_check(cfg)
     assert check.status is doctor.CheckStatus.WARN
     assert "v0.22.0" in check.summary
+    assert "autodj check-update" in check.summary
     assert len(fetch) == 1
 
 
-def test_doctor_reports_an_unreachable_update_check_as_a_warning(
+def test_doctor_passes_an_unreachable_update_check_with_its_message(
     tmp_path: Path, monkeypatch
 ) -> None:
     """ADR-0016-03."""
@@ -1271,7 +1272,8 @@ def test_doctor_reports_an_unreachable_update_check_as_a_warning(
 
     monkeypatch.setattr(updates, "_fetch_text", offline)
     check = doctor._update_check(_config(tmp_path))
-    assert check.status is doctor.CheckStatus.WARN
+    # Offline is not a problem with this installation: it passes, with the message.
+    assert check.status is doctor.CheckStatus.PASS
     assert check.summary.startswith("Could not check for updates")
 
 
@@ -1292,3 +1294,25 @@ def test_check_update_cli_prints_the_result(tmp_path: Path, monkeypatch) -> None
     assert "Channel: Development (set in Settings)." in text.output
     assert "does not record its commit" in text.output
     assert json.loads(as_json.output)["check"]["status"] == "unavailable"
+
+
+def test_restore_runs_doctor_offline(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-02: restore's Doctor asks no network about updates."""
+    from autodj import updates
+
+    monkeypatch.delenv(updates.CHECK_ENV, raising=False)
+    cfg = _config(tmp_path)
+    archive = tmp_path / "backup.zip"
+    archive.write_bytes(b"")
+    seen = []
+    with (
+        patch("autodj.cli._load_cfg_or_exit", return_value=cfg),
+        patch("autodj.backup.restore_backup", return_value=0),
+        patch(
+            "autodj.doctor.run_doctor",
+            side_effect=lambda cfg, **kwargs: seen.append(kwargs) or doctor.DoctorReport(()),
+        ),
+    ):
+        result = CliRunner().invoke(cli, ["restore", str(archive)])
+    assert result.exit_code == 0, result.output
+    assert seen == [{"check_updates": False}]

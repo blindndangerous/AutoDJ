@@ -598,7 +598,8 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
 def _update_check(cfg: AutoDJConfig, *, network: bool = True) -> DoctorCheck:
     """Whether a newer AutoDJ is available on this installation's channel.
 
-    Only a warning when the check cannot reach the network; asks nothing
+    Warns only when an update is available; a check that cannot reach the
+    network, or a checkout on another branch, passes with its message.  Asks nothing
     when the saved setting turns the check off or *network* is false.  It
     uses ``git ls-remote`` or GitHub's API, so nothing is written.
     """
@@ -623,11 +624,11 @@ def _update_check(cfg: AutoDJConfig, *, network: bool = True) -> DoctorCheck:
             "updates",
             CheckStatus.WARN,
             f"update available on the {channel} channel: {result.latest}; "
-            "update from Settings, Updates or follow docs/guides/backups-and-updates.md",
+            "run `autodj check-update` for its release notes and the commands to update",
             detail,
         )
-    if result.status in {"unavailable", "unknown", "branch"}:
-        return DoctorCheck("updates", CheckStatus.WARN, result.message, detail)
+    # Offline, a feature branch or an unknown commit is not a problem with
+    # this installation: the message says so, and only an update warns.
     return DoctorCheck("updates", CheckStatus.PASS, result.message, detail)
 
 

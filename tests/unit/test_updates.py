@@ -363,11 +363,20 @@ def test_restart_detection_prefers_the_launcher_loop(tmp_path: Path) -> None:
     assert (found.mode, found.available) == ("launcher", True)
 
 
-def test_restart_detection_finds_a_container(tmp_path: Path) -> None:
-    """ADR-0016-04."""
+def test_restart_detection_trusts_a_container_only_with_its_restart_policy(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-04: a container file alone does not prove anything restarts it."""
     marker = tmp_path / ".containerenv"
     marker.touch()
-    assert updates.restart_support({}, markers=(marker,)).mode == "container"
+    declared = updates.restart_support(
+        {updates.RESTART_POLICY_ENV: "unless-stopped"}, markers=(marker,)
+    )
+    assert declared.mode == "container"
+    for environ in ({}, {updates.RESTART_POLICY_ENV: "no"}):
+        found = updates.restart_support(environ, markers=(marker,))
+        assert found.mode is None
+        assert updates.RESTART_POLICY_ENV in found.message
 
 
 @pytest.mark.parametrize(
@@ -403,9 +412,9 @@ def test_systemd_policy_comes_from_the_unit_in_the_cgroup(tmp_path: Path, monkey
         encoding="utf-8",
     )
     monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/" + name)
-    runner = Mock(return_value=_done("on-failure\n"))
+    runner = Mock(return_value=_done("Restart=on-failure\nMainPID=4242\n"))
     policy = updates.systemd_restart_policy(
-        {"INVOCATION_ID": "x"}, runner=runner, cgroup_file=cgroup
+        {"INVOCATION_ID": "x"}, runner=runner, cgroup_file=cgroup, pids=(4242, 1)
     )
     assert policy == "on-failure"
     assert runner.call_args.args[0] == [
@@ -413,10 +422,28 @@ def test_systemd_policy_comes_from_the_unit_in_the_cgroup(tmp_path: Path, monkey
         "--user",
         "show",
         "--property=Restart",
-        "--value",
+        "--property=MainPID",
         "autodj.service",
     ]
+    assert runner.call_args.kwargs["timeout"] == 3.0
     assert updates.systemd_restart_policy({}, runner=runner, cgroup_file=cgroup) is None
+
+
+def test_systemd_restart_needs_autodj_to_be_the_units_main_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ADR-0016-04: another main process exiting would leave AutoDJ off the air."""
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/system.slice/autodj.service\n", encoding="utf-8")
+    monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/" + name)
+    runner = Mock(return_value=_done("Restart=always\nMainPID=99\n"))
+    assert (
+        updates.systemd_restart_policy(
+            {"INVOCATION_ID": "x"}, runner=runner, cgroup_file=cgroup, pids=(4242, 1)
+        )
+        is None
+    )
+    assert "--user" not in runner.call_args.args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -477,3 +504,76 @@ def test_the_notice_gives_the_commands_for_each_installation(tmp_path: Path) -> 
     assert (
         updates.update_commands(_git_checkout(tmp_path), replace(available, status="current")) == []
     )
+
+
+# ---------------------------------------------------------------------------
+# Bounded git and one check at a time
+# ---------------------------------------------------------------------------
+
+
+def test_a_timeout_ends_the_whole_process_tree_without_waiting_on_its_pipes() -> None:
+    """ADR-0016-03: a grandchild holding the output pipe (git's transport) cannot hold the check."""
+    import sys
+    import time
+
+    grandchild = "import time; time.sleep(30)"
+    child = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {grandchild!r}]); time.sleep(30)"
+    )
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        updates.run_bounded([sys.executable, "-c", child], timeout=1.0)
+    assert time.monotonic() - started < 10
+
+
+def test_git_never_asks_for_a_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-0016-03."""
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    environment = updates._git_environment()
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert environment["GCM_INTERACTIVE"] == "never"
+    assert environment["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i my-key")
+    assert updates._git_environment()["GIT_SSH_COMMAND"] == "ssh -i my-key"
+
+
+def test_callers_during_a_slow_check_wait_for_it_instead_of_starting_more(
+    tmp_path: Path,
+) -> None:
+    """ADR-0016-03."""
+    import itertools
+    import threading
+    import time
+
+    ticks = itertools.count()
+    release = threading.Event()
+    calls = []
+
+    def slow_check(installation: Installation, settings: UpdateSettings) -> updates.UpdateCheck:
+        calls.append(1)
+        release.wait(5)
+        return updates.UpdateCheck(
+            status="current", channel="stable", channel_source="installation", message="ok"
+        )
+
+    checker = UpdateChecker(
+        lambda: tmp_path,
+        installation=lambda: Installation(kind="package", version="0.21.0"),
+        check=slow_check,
+        clock=lambda: float(next(ticks)),
+    )
+    results = []
+    threads = [
+        threading.Thread(target=lambda force=force: results.append(checker.result(force=force)))
+        for force in (False, True, False, True)
+    ]
+    for thread in threads:
+        thread.start()
+    time.sleep(0.3)
+    release.set()
+    for thread in threads:
+        thread.join(5)
+    assert len(calls) == 1
+    assert len(results) == 4

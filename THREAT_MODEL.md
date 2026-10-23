@@ -1308,9 +1308,13 @@ three channel names.
 
 **The check.** It contacts only the checkout's own `origin` remote (`git ls-remote`, which writes
 nothing) or GitHub's REST API at an address fixed in the code; no request or setting can point it
-anywhere else. git runs from an argument list with `GIT_TERMINAL_PROMPT=0`, so it never waits for
-a password, and with a 15-second timeout; the API call has a 10-second timeout and reads at most
-1 MiB. A tag is offered only when it is `vX.Y.Z`. A failure is reported by kind (timed out, exit
+anywhere else. git runs from an argument list with `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`
+and, unless the operator set their own, `GIT_SSH_COMMAND="ssh -o BatchMode=yes"`, so it never waits
+for a password or a host key. It has a 15-second timeout that ends git's whole process tree (its own
+process group on POSIX, `taskkill /T` on Windows), because git's transport (`git-remote-https`,
+`ssh`) would otherwise keep the output pipes open and hold the check well past the timeout. Only
+one check runs at a time; page loads during a slow one wait for it rather than starting more. The
+API call has a 10-second timeout and reads at most 1 MiB. A tag is offered only when it is `vX.Y.Z`. A failure is reported by kind (timed out, exit
 status) without git's own messages or the remote's address, which may hold credentials. Answers
 are cached, so opening the page does not ask the network every time, and Check now is limited to
 one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothing is asked. A
@@ -1322,11 +1326,15 @@ Updating from the web page is a later decision in
 
 **Restart.** The server stops through uvicorn's own shutdown and exits with status 75. It is
 offered only when the checkout's launcher, a systemd service with `Restart=always` or
-`on-failure`, or a container will start it again; reading the systemd policy runs
-`systemctl show` with the unit name taken from `/proc/self/cgroup` and checked against a strict
-pattern. Restart is limited to one a minute and six an hour, counted in
-`<index_dir>/logs/restart-requests.json` so a restart does not reset the count, and the launcher
-stops after five restarts in a minute. Restart takes every station off the air for a moment, which
+`on-failure` whose main process is AutoDJ or its parent, or a container that declares its restart
+policy in `AUTODJ_RESTART_POLICY` will start it again. A container file alone does not count.
+Reading the systemd policy runs `systemctl show` with a 3-second timeout and the unit name taken
+from `/proc/self/cgroup`, checked against a strict pattern. Restart is limited to one a minute and
+six an hour, counted in `<index_dir>/logs/restart-requests.json` so a restart does not reset the
+count; a time in that file ahead of the clock counts as now, and when the file cannot be written
+the restart is refused (503). The launcher stops after five restarts in a minute. Ctrl+C or SIGTERM
+during a restart's shutdown stops AutoDJ instead of restarting it, and shutting down stops a
+running Library tools job, so no job is left running beside the next server. Restart takes every station off the air for a moment, which
 is the remaining risk of a stolen browser session. Check, restart and their refusals are audited
 as `update-check` and `server-restart` with the usual closed-schema fields.
 

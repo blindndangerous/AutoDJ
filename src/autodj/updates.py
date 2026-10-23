@@ -25,6 +25,7 @@ failure is reported as "could not check", never raised.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -61,10 +62,15 @@ _BRANCH_PATTERN = re.compile(r"[A-Za-z0-9._/-]{1,200}\Z")
 RESTART_EXIT_CODE = 75
 #: Set to ``1`` by the launcher for a ``serve`` it restarts on RESTART_EXIT_CODE.
 SUPERVISOR_ENV = "AUTODJ_SUPERVISOR"
-#: ``0`` turns the network check off for this process (tests, unattended setup).
+#: ``0`` turns the network check off for this process.  The tests set it, and
+#: so do setup's and restore's Doctor runs.
 CHECK_ENV = "AUTODJ_UPDATE_CHECK"
 #: Files that only exist inside a Docker or Podman container.
 CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
+#: Set by compose.yaml beside ``restart:``: the container's restart policy.  A
+#: container is only trusted to come back when this names one that restarts it.
+RESTART_POLICY_ENV = "AUTODJ_RESTART_POLICY"
+_CONTAINER_POLICIES = frozenset({"always", "unless-stopped", "on-failure"})
 
 GIT_TIMEOUT_SECONDS = 15.0
 HTTP_TIMEOUT_SECONDS = 10.0
@@ -231,14 +237,104 @@ def _git_environment() -> dict[str, str]:
     """The environment for git: never ask for a password, never page output."""
     # A git hook's GIT_DIR and friends would point git at another repository.
     environment = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION}
-    environment.update({"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "LC_ALL": "C", "LANG": "C"})
+    environment.update(
+        {
+            "GIT_TERMINAL_PROMPT": "0",
+            # Git Credential Manager would otherwise open a sign-in window.
+            "GCM_INTERACTIVE": "never",
+            "GIT_PAGER": "cat",
+            "LC_ALL": "C",
+            "LANG": "C",
+        }
+    )
+    if "GIT_SSH_COMMAND" not in environment and "GIT_SSH" not in environment:
+        # ssh would otherwise ask for a passphrase or a host key on the terminal.
+        environment["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"
     return environment
+
+
+def _kill_tree(process: subprocess.Popen[str]) -> None:
+    """Kill *process* and everything it started.
+
+    git runs its transport as a grandchild (``git-remote-https``, ``ssh``),
+    which keeps the output pipes open after git itself is killed, so killing
+    only git leaves the reader waiting for the transport's own timeout.
+    """
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(  # nosec B603 B607 -- fixed argv, pid from Popen
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+    else:
+        import signal
+
+        with contextlib.suppress(OSError, ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(OSError):
+        process.kill()
+
+
+def run_bounded(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run *argv* (no shell) and kill its whole process tree after *timeout* seconds.
+
+    The child runs in its own process group (POSIX session, Windows process
+    group), so a timeout kills the programs it started too.  After a
+    timeout the output pipes are closed rather than read to their end: a
+    survivor holding them cannot keep the caller waiting.
+
+    Raises:
+        OSError: the program could not start.
+        subprocess.TimeoutExpired: it ran past *timeout*.
+    """
+    options: dict[str, Any] = {}
+    if sys.platform == "win32":
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        options["start_new_session"] = True
+    process = subprocess.Popen(  # nosec B603 -- argv list from the callers here, no shell
+        argv,
+        cwd=cwd,
+        env=None if env is None else dict(env),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **options,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(process)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                with contextlib.suppress(OSError):
+                    stream.close()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+        raise subprocess.TimeoutExpired(argv, timeout) from None
+    except BaseException:
+        _kill_tree(process)
+        raise
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
 def git(
     root: Path,
     *args: str,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git <args>`` in *root* with a timeout; never through a shell.
@@ -248,14 +344,7 @@ def git(
         subprocess.TimeoutExpired: git ran past *timeout*.
     """
     return runner(  # nosec B603 B607 -- fixed argv list, no shell
-        ["git", *args],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        env=_git_environment(),
-        stdin=subprocess.DEVNULL,
+        ["git", *args], cwd=root, timeout=timeout, env=_git_environment()
     )
 
 
@@ -292,7 +381,7 @@ def detect_installation(
     root: Path | None = None,
     environ: Mapping[str, str] | None = None,
     markers: tuple[Path, ...] = CONTAINER_MARKERS,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     version: str | None = None,
     working_dir: Path | None = None,
 ) -> Installation:
@@ -461,7 +550,7 @@ class CheckFailed(Exception):
 def latest_release_tag(
     installation: Installation,
     *,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     fetch_text: FetchText | None = None,
     timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> str:
@@ -499,7 +588,7 @@ def latest_release_tag(
 def development_head(
     installation: Installation,
     *,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     fetch_text: FetchText | None = None,
     timeout: float = HTTP_TIMEOUT_SECONDS,
 ) -> str:
@@ -561,7 +650,7 @@ def check_for_update(
     *,
     network: bool = True,
     environ: Mapping[str, str] | None = None,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     fetch_text: FetchText | None = None,
     clock: Callable[[], float] = time.time,
 ) -> UpdateCheck:
@@ -683,7 +772,11 @@ def _compare_development(
 
 
 class UpdateChecker:
-    """Caches one check result for the web page; Check now refreshes it."""
+    """Caches one check result for the web page; Check now refreshes it.
+
+    One check runs at a time.  A caller that arrives while one is running
+    waits for it and gets its result, rather than starting another.
+    """
 
     def __init__(
         self,
@@ -701,6 +794,8 @@ class UpdateChecker:
         self._check = check
         self._clock = clock
         self._lock = threading.Lock()
+        # Held while a check runs; a second caller waits here for its result.
+        self._checking = threading.Lock()
         self._cached: tuple[float, tuple[str, bool], UpdateCheck] | None = None
         self._installed: Installation | None = None
 
@@ -730,23 +825,40 @@ class UpdateChecker:
                 return self._cached[2]
         return None
 
-    def result(self, *, force: bool = False) -> UpdateCheck:
-        """A fresh enough result: from the cache unless stale or *force*."""
+    def fresh(self) -> UpdateCheck | None:
+        """The cached result when it is still fresh for the current settings; never checks."""
         settings = self.settings()
-        installation = self.installation(refresh=force)
-        key = (channel_for(installation, settings)[0], settings.check)
-        now = self._clock()
+        key = (channel_for(self.installation(), settings)[0], settings.check)
         with self._lock:
             cached = self._cached
-        if cached is not None and not force and cached[1] == key:
-            age = now - cached[0]
-            limit = FAILED_CACHE_SECONDS if cached[2].status == "unavailable" else CACHE_SECONDS
-            if age < limit:
+        if cached is None or cached[1] != key:
+            return None
+        limit = FAILED_CACHE_SECONDS if cached[2].status == "unavailable" else CACHE_SECONDS
+        return cached[2] if self._clock() - cached[0] < limit else None
+
+    def result(self, *, force: bool = False) -> UpdateCheck:
+        """A fresh enough result: from the cache unless stale or *force*.
+
+        A check that finished while this call waited for the running one
+        counts as fresh, even with *force*.
+        """
+        if not force and (found := self.fresh()) is not None:
+            return found
+        asked = self._clock()
+        with self._checking:
+            with self._lock:
+                cached = self._cached
+            if cached is not None and cached[0] > asked:
                 return cached[2]
-        result = self._check(installation, settings)
-        with self._lock:
-            self._cached = (now, key, result)
-        return result
+            if not force and (found := self.fresh()) is not None:
+                return found
+            settings = self.settings()
+            installation = self.installation(refresh=force)
+            key = (channel_for(installation, settings)[0], settings.check)
+            result = self._check(installation, settings)
+            with self._lock:
+                self._cached = (self._clock(), key, result)
+            return result
 
 
 # ---------------------------------------------------------------------------
@@ -797,30 +909,42 @@ def _systemd_unit(cgroup_file: Path = Path("/proc/self/cgroup")) -> tuple[str, b
 def systemd_restart_policy(
     environ: Mapping[str, str],
     *,
-    runner: Runner = subprocess.run,
+    runner: Runner = run_bounded,
     cgroup_file: Path = Path("/proc/self/cgroup"),
+    pids: tuple[int, ...] | None = None,
 ) -> str | None:
-    """The ``Restart=`` setting of the systemd service running AutoDJ, or ``None``."""
+    """The ``Restart=`` setting of the systemd service whose main process is AutoDJ.
+
+    ``None`` when AutoDJ is not in a service, or when the service's main
+    process is neither AutoDJ nor its parent (``uv run``, say): systemd
+    restarts a service only when its main process exits, so another
+    process in the unit exiting would leave AutoDJ off the air.
+    """
     if not environ.get("INVOCATION_ID") or shutil.which("systemctl") is None:
         return None
     found = _systemd_unit(cgroup_file)
     if found is None:
         return None
     unit, user = found
-    command = ["systemctl", *(["--user"] if user else []), "show", "--property=Restart", "--value"]
+    command = [
+        "systemctl",
+        *(["--user"] if user else []),
+        "show",
+        "--property=Restart",
+        "--property=MainPID",
+    ]
     try:
-        done = runner(  # nosec B603 B607 -- fixed argv list, unit name validated
-            [*command, unit],
-            capture_output=True,
-            text=True,
-            timeout=3.0,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
+        done = runner([*command, unit], timeout=3.0)  # nosec B603 B607 -- unit name validated
     except (OSError, subprocess.SubprocessError):
         return None
-    value = done.stdout.strip() if done.returncode == 0 else ""
-    return value or None
+    if done.returncode != 0:
+        return None
+    values = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
+    main = values.get("MainPID", "").strip()
+    allowed = pids if pids is not None else (os.getpid(), os.getppid())
+    if not main.isdigit() or int(main) not in allowed:
+        return None
+    return values.get("Restart", "").strip() or None
 
 
 def restart_support(
@@ -835,9 +959,18 @@ def restart_support(
     if environment.get(SUPERVISOR_ENV) == "1":
         return RestartSupport("launcher", "The AutoDJ launcher starts AutoDJ again.")
     if any(marker.exists() for marker in markers):
+        # A container file alone says nothing about the restart policy;
+        # compose.yaml says which one it set, beside `restart:`.
+        declared = environment.get(RESTART_POLICY_ENV, "").strip()
+        if declared in _CONTAINER_POLICIES:
+            return RestartSupport(
+                "container", f"The container's restart policy ({declared}) starts AutoDJ again."
+            )
         return RestartSupport(
-            "container",
-            "The container's restart policy starts AutoDJ again.",
+            None,
+            "AutoDJ runs in a container that does not say it restarts. Give the service "
+            f"restart: unless-stopped and the environment variable {RESTART_POLICY_ENV}="
+            "unless-stopped, as compose.yaml does, or restart the container yourself.",
         )
     if platform.startswith("linux"):
         policy = systemd_policy(environment)

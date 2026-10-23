@@ -33,6 +33,9 @@ from setup_support import (
 
 from autodj.host_tools import ensure_ffmpeg
 
+#: Setup's read-only Doctor run gives up after this long.
+DOCTOR_TIMEOUT_SECONDS = 600
+
 
 def ask(prompt: str, default: str) -> str:
     """Ask a plain-text question with a visible default."""
@@ -295,16 +298,26 @@ def execute(args: argparse.Namespace, root: Path = ROOT) -> int:
     if not (root / "config.toml").exists():
         create_configuration(root, port)
     initialize_paths(root, python, env)
-    doctor = subprocess.run(
-        [str(python), "-m", "autodj", "doctor", "--no-fix", "--json"],
-        cwd=root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    findings = doctor_findings(doctor.stdout)
-    if findings or doctor.returncode:
+    # Doctor stays offline here: setup is not the place to ask about updates.
+    doctor_env = {**env, "AUTODJ_UPDATE_CHECK": "0"}
+    try:
+        doctor = subprocess.run(
+            [str(python), "-m", "autodj", "doctor", "--no-fix", "--json"],
+            cwd=root,
+            env=doctor_env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DOCTOR_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"Doctor did not finish within {DOCTOR_TIMEOUT_SECONDS // 60} minutes; setup will keep "
+            "the verified runtime selection. Run `autodj doctor` to check."
+        )
+        doctor = None
+    findings = doctor_findings(doctor.stdout) if doctor is not None else []
+    if doctor is not None and (findings or doctor.returncode):
         print("Doctor reported an issue; setup will keep the verified runtime selection.")
         if findings is not None:
             for finding in findings:

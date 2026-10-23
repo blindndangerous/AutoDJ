@@ -1024,7 +1024,8 @@ def cmd_restore(ctx: click.Context, archive: Path, force: bool) -> None:
     click.echo(f"Restored {restored} files.")
     for warning in warnings:
         click.echo(f"Warning: {warning}")
-    report = run_doctor(cfg)
+    # Restore is offline: it reports on the restored files, not on updates.
+    report = run_doctor(cfg, check_updates=False)
     click.echo(render_text(report))
     if report.exit_code:
         raise click.ClickException(

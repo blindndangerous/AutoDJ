@@ -206,3 +206,79 @@ def test_only_a_paired_browser_on_this_site_reaches_the_update_routes(tmp_path: 
     assert foreign.status_code == 403
     server_exit.assert_not_called()
     assert client.get("/api/updates").status_code == 200
+
+
+@pytest.mark.usefixtures("supported")
+def test_restart_is_refused_when_its_count_cannot_be_saved(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    """ADR-0016-06: the limit fails closed."""
+    import autodj.fsutil
+
+    def unwritable(*_args, **_kwargs) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(autodj.fsutil, "atomic_write", unwritable)
+    client = _client(tmp_path)
+    server_exit = Mock()
+    client.app.state.server_exit = server_exit
+    with caplog.at_level(logging.INFO, logger="autodj.audit"):
+        response = client.post("/api/server/restart", json={})
+    assert response.status_code == 503
+    assert "did not restart" in response.json()["detail"]
+    server_exit.assert_not_called()
+    assert [entry["outcome"] for entry in _audits(caplog, "server-restart")] == ["failed"]
+
+
+def test_a_restart_time_ahead_of_the_clock_still_counts(tmp_path: Path) -> None:
+    """ADR-0016-06: setting the clock back does not clear the limit."""
+    path = tmp_path / "times.json"
+    path.write_text(json.dumps([10_000.0 + 86_400]), encoding="utf-8")
+    limiter = updates_api.RestartLimiter(lambda: path, clock=lambda: 10_000.0)
+    wait = limiter.take()
+    assert wait == int(updates_api.RESTART_MIN_INTERVAL_SECONDS)
+
+
+def test_page_loads_during_a_slow_check_share_it(tmp_path: Path) -> None:
+    """ADR-0016-03: one check in flight; other loads wait for it without starting more."""
+    import threading
+
+    client = _client(tmp_path)
+    release = threading.Event()
+    calls = []
+
+    def slow(installation, settings) -> UpdateCheck:
+        calls.append(1)
+        release.wait(5)
+        return UpdateCheck(
+            status="current", channel="stable", channel_source="installation", message="ok"
+        )
+
+    client.app.state.update_checker._check = slow
+    answers = []
+    threads = [
+        threading.Thread(target=lambda: answers.append(client.get("/api/updates")))
+        for _ in range(4)
+    ]
+    with client:  # one event loop for every request, as in the server
+        for thread in threads:
+            thread.start()
+        time.sleep(0.5)
+        release.set()
+        for thread in threads:
+            thread.join(10)
+    assert [answer.status_code for answer in answers] == [200] * 4
+    assert len(calls) == 1
+
+
+def test_shutting_down_stops_a_running_library_job(tmp_path: Path, monkeypatch) -> None:
+    """ADR-0016-10: a restart does not leave an index or analysis job running."""
+    import autodj.jobs
+
+    manager = Mock()
+    manager.shutdown.return_value = True
+    monkeypatch.setattr(autodj.jobs, "get_manager", lambda: manager)
+    client = _client(tmp_path)
+    with client:
+        manager.shutdown.assert_not_called()
+    manager.shutdown.assert_called_once()

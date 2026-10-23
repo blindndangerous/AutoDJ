@@ -415,3 +415,84 @@ def test_a_real_child_reports_its_exit_status() -> None:
         [launcher.sys.executable, "-c", "raise SystemExit(75)"], dict(os.environ)
     )
     assert status == launcher.RESTART_EXIT_CODE
+
+
+def test_a_stop_signal_ends_the_loop_even_when_the_server_asked_to_restart() -> None:
+    """ADR-0016-10: Ctrl+C or SIGTERM wins over a pending restart."""
+    import signal
+
+    calls: list[list[str]] = []
+
+    def run_child(command: list[str], environment: dict[str, str]) -> int:
+        calls.append(command)
+        raise launcher.StopRequested(signal.SIGTERM, launcher.RESTART_EXIT_CODE)
+
+    ended = Mock(return_value=128 + signal.SIGTERM)
+    assert (
+        launcher.run_supervised(["serve"], {}, run_child=run_child, end_with_signal=ended)
+        == 128 + signal.SIGTERM
+    )
+    assert len(calls) == 1
+    ended.assert_called_once_with(signal.SIGTERM)
+
+
+_LAUNCHER = """
+import os, sys
+from autodj.launcher import run_supervised
+child = [sys.executable, sys.argv[1], sys.argv[2]]
+raise SystemExit(run_supervised(child, dict(os.environ)))
+"""
+
+_SERVER = """
+import os, signal, sys, time
+from pathlib import Path
+folder = Path(sys.argv[1])
+(folder / f"started-{os.getpid()}").touch()
+def stop(signum, frame):
+    (folder / "stopped-by").write_text(signal.Signals(signum).name)
+    raise SystemExit(75)  # as if a web restart was pending too
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+(folder / "ready").touch()
+time.sleep(60)
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+@pytest.mark.parametrize("signame", ["SIGTERM", "SIGINT"])
+def test_a_signal_to_the_launcher_reaches_the_server_and_ends_the_launcher_with_it(
+    tmp_path: Path, signame: str
+) -> None:
+    """ADR-0016-10: the launcher passes the signal on, never restarts, and dies of it."""
+    import signal
+    import subprocess
+    import time
+
+    folder = tmp_path / "run"
+    folder.mkdir()
+    (tmp_path / "launcher.py").write_text(_LAUNCHER, encoding="utf-8")
+    (tmp_path / "server.py").write_text(_SERVER, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(Path(launcher.__file__).resolve().parents[1])}
+    env.pop(launcher.SUPERVISOR_ENV, None)
+    process = subprocess.Popen(
+        [
+            launcher.sys.executable,
+            str(tmp_path / "launcher.py"),
+            str(tmp_path / "server.py"),
+            str(folder),
+        ],
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (folder / "ready").exists():
+            assert time.monotonic() < deadline, "the server did not start"
+            time.sleep(0.05)
+        process.send_signal(getattr(signal, signame))
+        status = process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    assert status == -getattr(signal, signame)
+    assert (folder / "stopped-by").read_text() == signame
+    assert len(list(folder.glob("started-*"))) == 1

@@ -12,7 +12,9 @@ tokens never reach them.  Check, restart and their refusals are audited
 under their own action names as well as by the request middleware.
 Restart is refused when nothing would start AutoDJ again
 (:func:`autodj.updates.restart_support`), and is limited to one a minute
-and six an hour, counted in a file so a restart does not reset the count.
+and six an hour, counted in a file so a restart does not reset the count;
+when that file cannot be written, restart is refused.  One update check
+runs at a time: page loads during a slow check wait for it.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool
 from autodj.security import emit_audit, new_request_id
 from autodj.updates import (
     RestartSupport,
+    UpdateCheck,
     UpdateChecker,
     UpdateSettings,
     channel_for,
@@ -68,8 +71,16 @@ class EmptyBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LimitUnavailable(Exception):
+    """The restart count could not be saved, so a restart is refused."""
+
+
 class RestartLimiter:
-    """Counts accepted restarts and updates in a file that outlives the process."""
+    """Counts accepted restarts in a file that outlives the process.
+
+    It fails closed: when the count cannot be saved, the restart is refused,
+    since a restart would otherwise reset the limit.
+    """
 
     def __init__(self, path: Callable[[], Path], clock: Callable[[], float] = time.time) -> None:
         """*path* gives the JSON file that keeps the recent times."""
@@ -84,14 +95,22 @@ class RestartLimiter:
             return []
         if not isinstance(raw, list):
             return []
-        return [
-            float(value)
+        # A time ahead of the clock (the clock was set back) counts as now, so
+        # setting the clock back cannot clear the limit.
+        return sorted(
+            min(float(value), now)
             for value in raw[-RESTART_MAX_PER_HOUR:]
-            if isinstance(value, (int, float)) and now - 3600.0 < float(value) <= now
-        ]
+            if isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and now - 3600.0 < min(float(value), now)
+        )
 
     def take(self) -> int | None:
-        """Count one restart now; or, when over the limit, the seconds to wait instead."""
+        """Count one restart now; or, when over the limit, the seconds to wait instead.
+
+        Raises:
+            LimitUnavailable: The count could not be saved.
+        """
         from autodj.fsutil import atomic_write
 
         with self._lock:
@@ -109,17 +128,17 @@ class RestartLimiter:
                 atomic_write(self._path(), json.dumps(recent[-RESTART_MAX_PER_HOUR:]))
             except OSError as exc:
                 logger.warning("Could not record the restart time: %s", exc)
+                raise LimitUnavailable(str(exc)) from exc
             return None
 
 
 def updates_view(
-    checker: UpdateChecker, support: RestartSupport, *, check: bool = True
+    checker: UpdateChecker, support: RestartSupport, result: UpdateCheck | None
 ) -> dict[str, Any]:
-    """Everything Settings, Updates shows; checks when *check* and the result is stale."""
+    """Everything Settings, Updates shows, with *result* as the last check."""
     installation = checker.installation()
     settings = checker.settings()
     channel, source = channel_for(installation, settings)
-    result = checker.result() if check else checker.cached()
     return {
         "installation": installation.to_dict(),
         "settings": settings.to_dict(),
@@ -151,6 +170,21 @@ def install_updates(
     checker = checker or UpdateChecker(index_dir)
     limiter = RestartLimiter(lambda: Path(index_dir()) / "logs" / "restart-requests.json")
     last_check: list[float] = []
+    # The one check in flight.  Page loads while it runs await it instead of
+    # each holding a worker thread for as long as git or GitHub takes.
+    in_flight: dict[str, asyncio.Future[UpdateCheck]] = {}
+
+    async def shared_check(*, force: bool) -> UpdateCheck:
+        if not force:
+            found = await asyncio.to_thread(checker.fresh)
+            if found is not None:
+                return found
+        task = in_flight.get("check")
+        if task is None or task.done():
+            task = asyncio.ensure_future(asyncio.to_thread(checker.result, force=force))
+            in_flight["check"] = task
+        return await asyncio.shield(task)
+
     app.state.update_checker = checker
     app.state.restart_requested = False
 
@@ -181,7 +215,8 @@ def install_updates(
     async def api_updates() -> dict[str, Any]:
         """Version, channel, settings, the last check and whether Restart is possible."""
         found = await asyncio.to_thread(current_support)
-        return await asyncio.to_thread(updates_view, checker, found)
+        result = await shared_check(force=False)
+        return await asyncio.to_thread(updates_view, checker, found, result)
 
     @app.post("/api/updates/check")
     async def api_updates_check(request: Request, _body: EmptyBody | None = None) -> Any:
@@ -198,7 +233,7 @@ def install_updates(
                 headers={"Retry-After": str(wait)},
             )
         last_check[:] = [now]
-        result = await asyncio.to_thread(checker.result, force=True)
+        result = await shared_check(force=True)
         audit(
             request,
             "update-check",
@@ -207,7 +242,7 @@ def install_updates(
             200,
         )
         found = await asyncio.to_thread(current_support)
-        return await asyncio.to_thread(updates_view, checker, found, check=False)
+        return await asyncio.to_thread(updates_view, checker, found, result)
 
     @app.put("/api/updates/settings")
     async def api_updates_settings(request: Request, body: SettingsBody) -> dict[str, Any]:
@@ -224,7 +259,8 @@ def install_updates(
                 status_code=500, detail="Could not save the update settings."
             ) from None
         found = await asyncio.to_thread(current_support)
-        return await asyncio.to_thread(updates_view, checker, found, check=False)
+        cached = await asyncio.to_thread(checker.cached)
+        return await asyncio.to_thread(updates_view, checker, found, cached)
 
     @app.post("/api/server/restart", status_code=202)
     async def api_server_restart(
@@ -237,7 +273,15 @@ def install_updates(
         if not found.available:
             audit(request, "server-restart", "rejected", route, 409)
             raise HTTPException(status_code=409, detail=found.message)
-        wait = await asyncio.to_thread(limiter.take)
+        try:
+            wait = await asyncio.to_thread(limiter.take)
+        except LimitUnavailable:
+            audit(request, "server-restart", "failed", route, 503)
+            raise HTTPException(
+                status_code=503,
+                detail="AutoDJ could not record the restart in its logs folder, so it did not "
+                "restart. Check that the index folder is writable.",
+            ) from None
         if wait is not None:
             audit(request, "server-restart", "rejected", route, 429)
             return JSONResponse(

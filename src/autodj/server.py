@@ -1050,6 +1050,12 @@ def create_app(
             yield
         finally:
             logger.info("Shutting down...")
+            # A Library tools job is a child process: stop it as its Stop
+            # button does, so a restart does not leave it beside the next server.
+            from autodj.jobs import get_manager
+
+            if await asyncio.to_thread(get_manager().shutdown, _SHUTDOWN_TIMEOUT_S):
+                logger.info("Stopped the running library job")
             speech = getattr(app.state, "speech", None)
             if speech is not None and not await asyncio.to_thread(
                 speech.shutdown, _SHUTDOWN_TIMEOUT_S
@@ -3395,13 +3401,20 @@ def serve(
         server.should_exit = True
 
     app.state.server_exit = _server_exit
+    interrupted = False
     try:
-        with contextlib.suppress(KeyboardInterrupt):
-            server.run()
+        server.run()
+    except KeyboardInterrupt:
+        interrupted = True
     finally:
         for reloader in reloaders:
             reloader.stop()
+    # uvicorn records each stop signal it handled; Ctrl+C or SIGTERM during a
+    # restart's shutdown means stop, not restart.
+    captured = getattr(server, "_captured_signals", None)
+    if isinstance(captured, list) and captured:
+        interrupted = True
     if not server.started:
         # What uvicorn.run does when the server could not start (port in use).
         sys.exit(3)
-    return bool(getattr(app.state, "restart_requested", False))
+    return bool(getattr(app.state, "restart_requested", False)) and not interrupted

@@ -78,8 +78,14 @@ AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 For the development channel, replace the two `git` lines with `git fetch origin`,
 `git switch master` and `git merge --ff-only origin/master`. With Podman, use `podman compose` in
 place of `docker compose`. The container's channel follows the checkout's branch: `master` is
-Development, anything else is Stable. **Restart AutoDJ** works in a container: AutoDJ exits and
-the restart policy (`restart: unless-stopped`) starts it again.
+Development, anything else is Stable.
+
+**Restart AutoDJ** works in a container when the Compose file says how the container restarts.
+`compose.yaml` sets `restart: unless-stopped` and, beside it, the environment variable
+`AUTODJ_RESTART_POLICY: unless-stopped`; AutoDJ exits and the restart policy starts it again. A
+container cannot see its own restart policy, so without that variable (`always`,
+`unless-stopped` or `on-failure`) the page offers no Restart and says how to turn it on. If you
+copied an older `compose.yaml`, add the variable with the same value as `restart:`.
 
 ## Build stamp
 

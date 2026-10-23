@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -13,6 +14,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from autodj.child_jobs import bind_to_autodj
 from autodj.updates import RESTART_EXIT_CODE, SUPERVISOR_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,87 +117,71 @@ def _supervised(arguments: list[str], environ: Mapping[str, str]) -> bool:
     )
 
 
-def _kill_with_launcher(process: subprocess.Popen[bytes]) -> object | None:
-    """On Windows, put *process* in a job that ends it when the launcher ends.
+class StopRequested(Exception):
+    """The launcher got Ctrl+C or SIGTERM while the server ran: stop, never restart."""
 
-    A POSIX child gets SIGTERM from :func:`_run_child` instead.  Returns
-    the job handle, which must stay open while the child runs.
-    """
-    if os.name != "nt":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        class _Limits(ctypes.Structure):
-            _fields_ = [
-                ("per_process_time", ctypes.c_int64),
-                ("per_job_time", ctypes.c_int64),
-                ("flags", wintypes.DWORD),
-                ("min_working_set", ctypes.c_size_t),
-                ("max_working_set", ctypes.c_size_t),
-                ("active_processes", wintypes.DWORD),
-                ("affinity", ctypes.c_size_t),
-                ("priority", wintypes.DWORD),
-                ("scheduling", wintypes.DWORD),
-            ]
-
-        class _ExtendedLimits(ctypes.Structure):
-            _fields_ = [
-                ("basic", _Limits),
-                ("io", ctypes.c_uint64 * 6),
-                ("process_memory", ctypes.c_size_t),
-                ("job_memory", ctypes.c_size_t),
-                ("peak_process_memory", ctypes.c_size_t),
-                ("peak_job_memory", ctypes.c_size_t),
-            ]
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        job = kernel32.CreateJobObjectW(None, None)
-        if not job:
-            return None
-        limits = _ExtendedLimits()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        kernel32.SetInformationJobObject(
-            wintypes.HANDLE(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)
-        )
-        handle = getattr(process, "_handle", None)
-        if handle is None or not kernel32.AssignProcessToJobObject(
-            wintypes.HANDLE(job), wintypes.HANDLE(int(handle))
-        ):
-            kernel32.CloseHandle(wintypes.HANDLE(job))
-            return None
-        return job
-    except (OSError, AttributeError, ValueError):
-        return None
+    def __init__(self, signum: int, status: int) -> None:
+        """*signum* is the stop signal; *status* the server's exit status."""
+        super().__init__(signum, status)
+        self.signum = signum
+        self.status = status
 
 
 def _run_child(command: list[str], environment: Mapping[str, str]) -> int:
-    """Run the server once and wait for it, passing SIGTERM on to it.
+    """Run the server once and wait for it.
 
-    Ctrl+C reaches the server as well, which shuts down by itself, so the
-    launcher keeps waiting for it rather than leaving it behind.
+    On POSIX the server runs in its own process group, so a terminal's
+    Ctrl+C reaches only the launcher, which passes SIGINT and SIGTERM on to
+    the server once each.  On Windows Ctrl+C reaches both; the launcher
+    keeps waiting while the server shuts down.
+
+    Raises:
+        StopRequested: A stop signal arrived; the server has exited.
     """
-    process = subprocess.Popen(command, env=dict(environment))  # nosec B603 -- argv only
-    job = _kill_with_launcher(process)
-    previous: Any = None
+    options: dict[str, Any] = {}
+    if os.name != "nt":
+        options["process_group"] = 0
+    process = subprocess.Popen(command, env=dict(environment), **options)  # nosec B603
+    # Windows: a job object ends the server with the launcher, however the
+    # launcher ends (the shared helper the mastering processes use).
+    bind_to_autodj(process)
+    stopped: list[int] = []
+    previous: dict[int, Any] = {}
     if os.name != "nt":
 
         def forward(signum: int, _frame: object) -> None:
-            process.send_signal(signum)
+            stopped.append(signum)
+            with contextlib.suppress(OSError):
+                process.send_signal(signum)
 
-        previous = signal.signal(signal.SIGTERM, forward)
+        for stop in (signal.SIGINT, signal.SIGTERM):
+            previous[stop] = signal.signal(stop, forward)
     try:
         while True:
             try:
-                return process.wait()
+                status = process.wait()
+                break
             except KeyboardInterrupt:
-                continue
+                stopped.append(signal.SIGINT)
     finally:
-        if previous is not None:
-            signal.signal(signal.SIGTERM, previous)
-        del job
+        for handled, handler in previous.items():
+            signal.signal(handled, handler)
+    if stopped:
+        raise StopRequested(stopped[0], status)
+    return status
+
+
+def _end_with_signal(signum: int) -> int:
+    """End the launcher the way the signal it got would have; returns ``128 + signum`` otherwise.
+
+    systemd counts a service killed by SIGTERM as stopped cleanly, but an
+    exit status of 143 as failed, so on POSIX the launcher dies of the
+    same signal.
+    """
+    if os.name != "nt":
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    return 128 + signum
 
 
 def run_supervised(
@@ -204,17 +190,22 @@ def run_supervised(
     *,
     run_child: Callable[[list[str], Mapping[str, str]], int] = _run_child,
     clock: Callable[[], float] = time.monotonic,
+    end_with_signal: Callable[[int], int] = _end_with_signal,
 ) -> int:
     """Run ``serve`` and start it again each time it exits with RESTART_EXIT_CODE.
 
     Settings, Updates' Restart makes the server exit with that code.  When
     MAX_RESTARTS restarts fall within RESTART_WINDOW_SECONDS the loop ends
     with that code, so a server that asks again and again does not spin.
+    A Ctrl+C or SIGTERM always wins over a pending restart.
     """
     child_environment = {**environment, SUPERVISOR_ENV: "1"}
     restarts: deque[float] = deque(maxlen=MAX_RESTARTS)
     while True:
-        status = run_child(command, child_environment)
+        try:
+            status = run_child(command, child_environment)
+        except StopRequested as stop:
+            return end_with_signal(stop.signum)
         if status != RESTART_EXIT_CODE:
             return status
         now = clock()

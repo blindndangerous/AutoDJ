@@ -379,3 +379,36 @@ def test_verbose_job_keeps_recent_output_without_retaining_the_entire_run() -> N
     assert lines[-1] in retained
     assert lines[0] not in retained
     assert manager.snapshot()["exit_code"] == 0
+
+
+class TestJobShutdown:
+    def test_shutdown_stops_a_running_job_and_waits_for_it(self) -> None:
+        """ADR-0016-10: a web restart does not leave a library job beside the next server."""
+        import sys
+
+        mgr = JobManager()
+        with patch.object(
+            mgr, "_child_argv", return_value=[sys.executable, "-c", "import time; time.sleep(60)"]
+        ):
+            assert mgr.start("stats", []) is True
+        assert mgr.running
+        assert mgr.shutdown(10) is True
+        assert not mgr.running
+        assert mgr.snapshot()["stopped"] is True
+
+    def test_shutdown_kills_a_job_that_ignores_stop(self) -> None:
+        """ADR-0016-10."""
+        import subprocess
+
+        mgr = JobManager()
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired("job", 1), 0]
+        mgr._proc = proc
+        assert mgr.shutdown(1) is True
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+
+    def test_shutdown_when_idle_does_nothing(self) -> None:
+        """ADR-0016-10."""
+        assert JobManager().shutdown(1) is False
