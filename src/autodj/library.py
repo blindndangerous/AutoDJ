@@ -1117,7 +1117,20 @@ class LibraryManager:
         """Read *path*'s tags, cue points and analysis as needed; ``False`` on failure."""
         try:
             old = self.catalog.record_for_path(path)
-            unchanged = old is not None and old["kind"] == kind and self._same_identity(old, path)
+            same_identity = old is not None and self._same_identity(old, path)
+            unchanged = same_identity and old is not None and old["kind"] == kind
+            if (
+                old is not None
+                and not same_identity
+                and (self.cfg.index.library_dir / "dj_meta.db").is_file()
+            ):
+                # Path-keyed DJ analysis belongs to the old bytes, even when analysis is disabled.
+                from autodj.dj_meta import DjMeta
+
+                cache = self._dj_cache()
+                if cache is not None:
+                    cache.set(str(path), DjMeta())
+                    cache.flush(force=True)
             mtime_changed = bool(
                 unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
             )
@@ -1183,7 +1196,9 @@ class LibraryManager:
                 else:
                     fresh, points = analyze_basic(path, kind=kind, audio=audio)
                 fresh = self._basic_entry(fresh, old, path)
-                suggestions = self._legacy_point_suggestions(path)
+                suggestions = (
+                    self._legacy_point_suggestions(path) if old is None or same_identity else {}
+                )
                 for name, value in suggestions.items():
                     if points.get(name) is None:
                         points[name] = value

@@ -1202,8 +1202,94 @@ def test_liner_source_takes_over_scanned_music(manager_factory, tmp_path):
 
 
 @pytest.mark.dj_analysis
+@pytest.mark.parametrize("change", ["size", "fingerprint"])
+@pytest.mark.parametrize("dj_enabled", [False, True])
+def test_changed_file_recalculates_cues_without_inheriting_dj_cache(
+    manager_factory, tmp_path, change, dj_enabled
+):
+    """ADR-0006-05: timing analysis belongs to the current file identity."""
+    from autodj.dj_meta import Cue, DjMeta, DjMetaCache
+
+    song = tmp_path / "Music" / "song.flac"
+    song.parent.mkdir()
+    song.write_bytes(b"a" * 1000)
+    manager = manager_factory(music=song.parent)
+    original = make_entry(song)
+    original.length = 18
+    object.__setattr__(manager.cfg.playback, "import_external_cues", False)
+    record_id = manager.catalog.put_entry(
+        original,
+        points={"start": 0, "intro": 8, "outro": 12, "end": 18},
+        point_source="user",
+    )
+    original_identity = file_fingerprint(song)
+    cache = manager._dj_cache()
+    cache.set(
+        str(song),
+        DjMeta(
+            analysed=True,
+            intro_end_s=8,
+            outro_start_s=12,
+            beats=[8, 12],
+            cues=[Cue(12, type="outro_downbeat")],
+        ),
+    )
+    cache.flush(force=True)
+    manager.set_dj_analysis_enabled(dj_enabled)
+    song.write_bytes(b"b" * (1200 if change == "size" else 1000))
+    assert file_fingerprint(song) != original_identity
+    fresh = make_entry(song)
+    fresh.length = 24
+    fresh_meta = DjMeta(analysed=True, outro_start_s=24, beats=[2, 4])
+    with (
+        patch(
+            "autodj.library.analyze_basic",
+            return_value=(
+                fresh,
+                {
+                    "start": 0,
+                    "intro": None,
+                    "outro": None,
+                    "end": 24,
+                },
+            ),
+        ),
+        patch(
+            "autodj.library.load_for_analysis", return_value=np.zeros((24 * 44100, 2), np.float32)
+        ) as decode,
+        patch.object(manager, "_legacy_point_suggestions", side_effect=AssertionError("old cues")),
+        patch("autodj.dj_meta.analyse_decoded", return_value=fresh_meta) as analyse,
+        patch("autodj.intro_lift.measure_source_intro", return_value=0),
+    ):
+        assert manager._read_track("music", song, override_tags=False)
+        record = manager.catalog.record_for_path(song)
+        assert record["id"] == record_id
+        assert (record["size"], record["fingerprint"]) == file_fingerprint(song)
+        assert record["length"] == 24
+        assert record["points"]["end"] == 24
+        assert record["points"]["intro"] is None
+        assert record["points"]["outro"] is None
+        if not dj_enabled:
+            analyse.assert_not_called()
+            decode.assert_not_called()
+            assert cache.get(str(song)) == DjMeta()
+            disk = DjMetaCache(manager.cfg.index.library_dir / "dj_meta.db", song.parent)
+            try:
+                assert disk.get(str(song)) == DjMeta()
+            finally:
+                disk.close()
+            manager.set_dj_analysis_enabled(True)
+            manager._dj_backlog()
+        analyse.assert_called_once()
+        assert analyse.call_args.kwargs["intro_end_s"] == 0
+        assert analyse.call_args.kwargs["outro_start_s"] == 24
+        assert cache.get(str(song)) == fresh_meta
+
+
+@pytest.mark.dj_analysis
 @pytest.mark.parametrize("migrated", [False, True])
 def test_rescan_reads_external_tag_edit_with_unchanged_size(manager_factory, tmp_path, migrated):
+    """ADR-0006-05: unchanged identities preserve their existing timing analysis."""
     from autodj.dj_meta import Cue, DjMeta
 
     song = tmp_path / "Music" / "song.flac"
