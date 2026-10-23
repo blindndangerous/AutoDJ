@@ -26,6 +26,12 @@ services:
     image: autodj:local
     container_name: autodj
     restart: unless-stopped
+    # How long a stop or recreation waits before it kills AutoDJ, which saves
+    # its state as it stops.  That normally takes a few seconds; every step
+    # has its own time limit, and together they come to about 75 seconds for
+    # one station whose workers will not stop.  Each further station can add
+    # up to 30 seconds.  Docker's default of 10 seconds could cut the save short.
+    stop_grace_period: 90s
     network_mode: host
     user: "${AUTODJ_UID:-10001}:${AUTODJ_GID:-10001}"
     # config.toml and config.local.toml are read from the working directory.

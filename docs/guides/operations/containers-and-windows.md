@@ -61,6 +61,14 @@ is not supported: the `Secure` cookie flag and the origin checks follow AutoDJ's
 For remote access, see [HTTPS with your own domain](domain-https.md#https-with-your-own-domain). The image's
 health check tries HTTP and then HTTPS, so it works either way.
 
+## Stop the container
+
+AutoDJ saves its state as it stops, which normally takes a few seconds. `compose.yaml` sets
+`stop_grace_period: 90s`, so `docker compose down`, `docker compose restart` and the recreation
+that `docker compose up -d` does wait up to 90 seconds before they kill AutoDJ. Docker's default
+is 10 seconds. If you copied an older `compose.yaml`, add the same line beside `restart:`. To stop
+the container with plain Docker, give it the same time: `docker stop --time 90 autodj`.
+
 ## Update the container
 
 AutoDJ in a container checks for updates like any installation and says in **Settings**,
@@ -74,6 +82,9 @@ git fetch --tags origin
 git switch --detach vX.Y.Z
 AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
+
+The rebuild replaces the running container, which gets the
+[time to stop](#stop-the-container) set in `compose.yaml`.
 
 For the development channel, replace the two `git` lines with `git fetch origin`,
 `git switch master` and `git merge --ff-only origin/master`. With Podman, use `podman compose` in
