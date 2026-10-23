@@ -26,16 +26,17 @@ export function installStereoToolPresets({ document: doc = document, request = r
   const speak = (message, error = false) => announceStatus(status, message,
     { force: true, dwellMs: 8000, tone: error ? "error" : "info" });
   let active = INCLUDED;
-  let saving = false;
   let uploading = false;
+  let selectionDirty = false;
   const labelOf = (name) =>
     [...select.options].find((option) => option.value === name)?.textContent || name;
   // Delete stays enabled while its confirmation is open, so Cancel can
   // put focus back on it.
-  const syncDelete = () => { remove.disabled = saving || select.value === INCLUDED; };
+  const syncDelete = () => { remove.disabled = select.value === INCLUDED; };
 
   async function refresh() {
     const data = await request("/api/stereo-tool-presets");
+    const selected = select.value;
     active = data.active;
     select.replaceChildren(...data.presets.map((preset) => {
       const option = doc.createElement("option");
@@ -43,7 +44,8 @@ export function installStereoToolPresets({ document: doc = document, request = r
       option.textContent = preset.label;
       return option;
     }));
-    select.value = active;
+    select.value = selectionDirty
+      && [...select.options].some((option) => option.value === selected) ? selected : active;
     syncDelete();
   }
 
@@ -57,36 +59,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
   const choose = (name) => request("/api/playback-settings", { method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ stereotool_preset: name }) });
-
-  // Arrow keys on a closed list fire change for every option passed, so
-  // one save runs at a time and, when it ends, saves the newest choice.
-  async function saveSelection() {
-    if (saving) return;
-    saving = true;
-    syncDelete();
-    try {
-      while (select.value !== active) {
-        const chosen = select.value;
-        try {
-          await choose(chosen);
-        } catch (error) {
-          select.value = active;
-          speak(`Could not select preset ${labelOf(chosen)}: ${error.message}`, true);
-          select.focus();
-          return;
-        }
-        active = chosen;
-        if (select.value === chosen) speak(`Preset ${labelOf(chosen)} active`);
-      }
-    } finally {
-      saving = false;
-      syncDelete();
-    }
-  }
-  select.addEventListener("change", () => {
-    syncDelete();
-    void saveSelection();
-  });
+  select.addEventListener("change", () => { selectionDirty = true; syncDelete(); });
 
   // Upload is not disabled while it runs: a disabled button loses focus,
   // and NVDA would fall back to the top of the page.  A second press is
@@ -135,7 +108,7 @@ export function installStereoToolPresets({ document: doc = document, request = r
 
   remove.addEventListener("click", async () => {
     const name = select.value;
-    if (name === INCLUDED || saving) return;
+    if (name === INCLUDED) return;
     const label = labelOf(name);
     const wasActive = name === active;
     let result = null;
@@ -154,10 +127,12 @@ export function installStereoToolPresets({ document: doc = document, request = r
           }
           await request(`/api/stereo-tool-presets/${encodeURIComponent(name)}`,
             { method: "DELETE" });
+          selectionDirty = false;
           await refresh();
           result = [`Preset ${label} deleted. ${labelOf(active)} is active.`, false];
         } catch (error) {
           select.value = active;
+          selectionDirty = false;
           syncDelete();
           result = [`Could not delete preset ${label}: ${error.message}`, true];
         }
@@ -168,5 +143,13 @@ export function installStereoToolPresets({ document: doc = document, request = r
   });
 
   syncDelete();
-  return { refresh };
+  return {
+    refresh,
+    reset: () => { active = INCLUDED; selectionDirty = false; select.value = INCLUDED; syncDelete(); },
+    setActive: (name) => {
+      active = name;
+      if (select.value === name) selectionDirty = false;
+      syncDelete();
+    },
+  };
 }

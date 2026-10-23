@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { formatPlayedAt } from "../../src/autodj/static/modules/history-format.js";
-import { applyMixSettings, installMixSettings } from
+import { applyMixSettings, installMixSettings, resetMixSettings } from
   "../../src/autodj/static/modules/mix-settings.js";
 import { installProfiles, profileFromSettings } from
   "../../src/autodj/static/modules/profiles.js";
@@ -137,18 +137,18 @@ describe("mix settings", () => {
     document.body.innerHTML = `
       <input type="number" id="top-k" value="1">
       <input type="number" id="glide" value="8">
-      <input type="number" id="clip" value="1">
+      <input type="number" id="temperature" value="1">
       <p id="settings-status"></p><div id="status-toast" hidden></div>`;
     const els = {
       pbPickTopK: document.querySelector("#top-k"),
       djGlideBars: document.querySelector("#glide"),
-      pbRgClip: document.querySelector("#clip"),
+      pbPickTemperature: document.querySelector("#temperature"),
     };
     const settingsStatus = document.querySelector("#settings-status");
     const postSettings = vi.fn().mockResolvedValue(true);
     installMixSettings(els, { postSettings, settingsStatus });
     applyMixSettings({
-      playback: { pick_top_k: 3, replaygain_max_clip_safe_gain: 1 },
+      playback: { pick_top_k: 3, pick_temperature: 1 },
       djmix: { beatmatch_glide_bars: 8 },
     }, els);
     expect(els.pbPickTopK.value).toBe("3");
@@ -165,10 +165,10 @@ describe("mix settings", () => {
     ));
 
     postSettings.mockClear();
-    els.pbRgClip.value = "3";
-    els.pbRgClip.dispatchEvent(new Event("change"));
+    els.pbPickTemperature.value = "11";
+    els.pbPickTemperature.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Could not save ReplayGain peak limit: enter a number from 0.1 to 2.  It is still 1.",
+      "Could not save Pick randomness: enter a number from 0 to 10.  It is still 1.",
     ));
     expect(postSettings).not.toHaveBeenCalled();
   });
@@ -198,25 +198,134 @@ describe("mix settings", () => {
     ));
   });
 
-  it("saves Stereo Tool AGC drive within its server range and reads the saved value", async () => {
-    document.body.innerHTML = '<input type="number" id="boost" value="9">';
-    const pbStereoAgcDrive = document.querySelector("#boost");
-    const postSettings = vi.fn().mockResolvedValue(true);
-    installMixSettings({ pbStereoAgcDrive }, { postSettings });
-    applyMixSettings({ playback: { stereotool_agc_drive_db: 9 } }, { pbStereoAgcDrive });
-
-    pbStereoAgcDrive.value = "12.1";
-    pbStereoAgcDrive.dispatchEvent(new Event("change"));
-    expect(pbStereoAgcDrive.value).toBe("9");
+  it("saves output processing together and keeps edits until the save succeeds", async () => {
+    document.body.innerHTML = `
+      <select id="mode"><option>off</option><option>replaygain</option><option>smooth</option><option>stereotool</option></select>
+      <input type="number" id="lift" value="4"><input type="number" id="target" value="-14">
+      <input type="number" id="clip" value="1"><input type="number" id="trim" value="0">
+      <input type="number" id="boost" value="7"><input type="number" id="speed" value="0">
+      <select id="preset"><option value="included">Included</option><option value="Night.sts">Night</option></select>
+      <input type="checkbox" id="prefetch" checked><input type="checkbox" id="silence" checked>
+      <button id="save">Save sound settings</button>
+      <p id="settings-status"></p><div id="status-toast" hidden></div>`;
+    const els = {
+      pbLoudness: document.querySelector("#mode"),
+      pbIntroLift: document.querySelector("#lift"),
+      pbRgTarget: document.querySelector("#target"),
+      pbRgClip: document.querySelector("#clip"),
+      pbStereoTrim: document.querySelector("#trim"),
+      pbStereoAgcDrive: document.querySelector("#boost"),
+      pbMusicSpeed: document.querySelector("#speed"),
+      stereoPreset: document.querySelector("#preset"),
+      pbPrefetch: document.querySelector("#prefetch"),
+      pbSilenceTrigger: document.querySelector("#silence"),
+      masteringSave: document.querySelector("#save"),
+    };
+    let fails = true;
+    const postSettings = vi.fn().mockImplementation(async () => !fails);
+    installMixSettings(els, { postSettings, settingsStatus: document.querySelector("#settings-status") });
+    applyMixSettings({ playback: {
+      loudness_processing: "stereotool", intro_lift_max_db: 4,
+      replaygain_target_db: -14, replaygain_max_clip_safe_gain: 1,
+      stereotool_input_trim_db: 0, stereotool_agc_drive_db: 7,
+      music_speed_percent: 0, stereotool_preset: "included",
+      prefetch_next_track: true, silence_trigger_crossfade: true,
+    } }, els);
+    els.pbLoudness.value = "replaygain";
+    els.pbIntroLift.value = "5";
+    els.pbRgTarget.value = "-12";
+    els.pbRgClip.value = "1.2";
+    els.pbStereoTrim.value = "-2";
+    els.pbStereoAgcDrive.value = "5.5";
+    els.pbMusicSpeed.value = "2.5";
+    els.stereoPreset.value = "Night.sts";
+    els.pbPrefetch.checked = false;
+    els.pbSilenceTrigger.checked = false;
+    for (const control of [els.pbLoudness, els.pbIntroLift, els.pbRgTarget,
+      els.pbRgClip, els.pbStereoTrim, els.pbMusicSpeed, els.stereoPreset]) {
+      control.dispatchEvent(new Event("input"));
+    }
+    els.pbStereoAgcDrive.dispatchEvent(new Event("input"));
+    els.pbPrefetch.dispatchEvent(new Event("change"));
+    els.pbSilenceTrigger.dispatchEvent(new Event("change"));
+    expect(els.masteringSave.disabled).toBe(false);
     expect(postSettings).not.toHaveBeenCalled();
 
-    pbStereoAgcDrive.value = "5.5";
-    pbStereoAgcDrive.dispatchEvent(new Event("change"));
+    els.pbStereoAgcDrive.value = "12.1";
+    els.pbStereoAgcDrive.dispatchEvent(new Event("input"));
+    els.masteringSave.click();
+    await vi.waitFor(() => expect(document.querySelector("#settings-status").textContent)
+      .toContain("enter a number from 0 to 12"));
+    expect(postSettings).not.toHaveBeenCalled();
+    els.pbStereoAgcDrive.value = "5.5";
+
+    els.masteringSave.click();
     await vi.waitFor(() => expect(postSettings).toHaveBeenCalledWith(
-      "/api/playback-settings", { stereotool_agc_drive_db: 5.5 }, pbStereoAgcDrive,
+      "/api/playback-settings", {
+        loudness_processing: "replaygain", intro_lift_max_db: 5,
+        replaygain_target_db: -12, replaygain_max_clip_safe_gain: 1.2,
+        stereotool_input_trim_db: -2, stereotool_agc_drive_db: 5.5,
+        music_speed_percent: 2.5, stereotool_preset: "Night.sts",
+        prefetch_next_track: false, silence_trigger_crossfade: false,
+      }, els.masteringSave, expect.any(Object),
     ));
-    applyMixSettings({ playback: { stereotool_agc_drive_db: 5.5 } }, { pbStereoAgcDrive });
-    expect(pbStereoAgcDrive.value).toBe("5.5");
+    applyMixSettings({ playback: {
+      loudness_processing: "stereotool", intro_lift_max_db: 4,
+      replaygain_target_db: -14, replaygain_max_clip_safe_gain: 1,
+      stereotool_input_trim_db: 0, stereotool_agc_drive_db: 7,
+      music_speed_percent: 0, stereotool_preset: "included",
+      prefetch_next_track: true, silence_trigger_crossfade: true,
+    } }, els);
+    expect(els.pbStereoAgcDrive.value).toBe("5.5");
+    expect(els.pbLoudness.value).toBe("replaygain");
+
+    fails = false;
+    els.masteringSave.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(document.querySelector("#settings-status").textContent)
+      .toContain("Sound settings saved."));
+    expect(els.masteringSave.disabled).toBe(true);
+    expect(els.pbStereoAgcDrive.value).toBe("5.5");
+    expect(document.querySelector("#settings-status").textContent).toContain("Sound settings saved.");
+  });
+
+  it("keeps edits made during a save and ignores a reply after the station changes", async () => {
+    document.body.innerHTML = '<input type="number" id="boost" value="7">'
+      + '<button id="save"></button><p id="status"></p>';
+    const pbStereoAgcDrive = document.querySelector("#boost");
+    const masteringSave = document.querySelector("#save");
+    const els = { pbStereoAgcDrive, masteringSave };
+    let finish;
+    let station = "first";
+    const postSettings = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    installMixSettings(els, { postSettings, getStation: () => station,
+      settingsStatus: document.querySelector("#status") });
+    applyMixSettings({ playback: { stereotool_agc_drive_db: 7 } }, els);
+    pbStereoAgcDrive.value = "5";
+    pbStereoAgcDrive.dispatchEvent(new Event("input"));
+    masteringSave.click();
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(postSettings).toHaveBeenCalledWith("/api/playback-settings",
+      { stereotool_agc_drive_db: 5 }, masteringSave, expect.any(Object));
+    pbStereoAgcDrive.value = "6";
+    pbStereoAgcDrive.dispatchEvent(new Event("input"));
+    finish(true);
+    await vi.waitFor(() => expect(document.querySelector("#status").textContent)
+      .toContain("Sound settings saved."));
+    expect(pbStereoAgcDrive.value).toBe("6");
+    applyMixSettings({ playback: { stereotool_agc_drive_db: 7 } }, els);
+    expect(pbStereoAgcDrive.value).toBe("6");
+
+    masteringSave.click();
+    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledTimes(2));
+    station = "second";
+    resetMixSettings(els);
+    document.querySelector("#status").textContent = "";
+    finish(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(document.querySelector("#status").textContent).toBe("");
+    expect(pbStereoAgcDrive.value).toBe("7");
   });
 });
 

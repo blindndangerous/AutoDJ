@@ -1466,9 +1466,8 @@
                inputmode="decimal" aria-describedby="pb-stereo-agc-drive-desc">
       </div>
       <span class="setting-desc" id="pb-stereo-agc-drive-desc">
-        Changing this reloads Stereo Tool, with a brief bypass while it warms up.
+        Controls how strongly Stereo Tool brings up quieter passages. 7 dB is the default. 0 keeps the selected preset's original drive; it does not turn AGC off. For stream and server audio playback.
       </span>
-      <p class="setting-desc">Controls how strongly Stereo Tool brings up quieter passages. 7 dB is the default. 0 keeps the selected preset's original drive; it does not turn AGC off. For stream and server audio playback.</p>
     </fieldset>
 
     <fieldset>
@@ -1482,7 +1481,6 @@
         Adjust music speed from 10% slower to 10% faster.
       </span>
     </fieldset>
-
     <fieldset>
       <legend>Browser playback</legend>
       <div class="settings-row">
@@ -1522,6 +1520,10 @@
         Start the crossfade early when the playing song has gone silent past its halfway point, so long fade-outs leave no dead air.  On by default.  For browser playback.
       </span>
     </fieldset>
+    <div class="settings-row">
+      <button type="button" id="mastering-save" aria-describedby="mastering-save-note">Save sound settings</button>
+    </div>
+    <p class="setting-desc" id="mastering-save-note">Changing the Stereo Tool preset or AGC drive restarts Stereo Tool, with a brief bypass while it warms up.</p>
   </div>
 
   <div class="card" role="tabpanel" id="spanel-display" aria-labelledby="stab-display" hidden>
