@@ -292,3 +292,126 @@ def test_saved_model_mode_overrides_inherited_no_model(tmp_path, monkeypatch, ba
     assert env.get("AUTODJ_NO_MODEL") == ("1" if backend == "no-model" else None)
     if backend == "no-model":
         assert env["AUTODJ_GPU"] == "0"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["serve"], True),
+        (["-v", "serve", "--lan"], True),
+        (["--config", "x.toml", "serve"], True),
+        (["--config=x.toml", "--verbose", "serve"], True),
+        (["doctor"], False),
+        (["--config", "serve"], False),
+        ([], False),
+    ],
+)
+def test_runs_serve_finds_the_command_after_global_options(
+    arguments: list[str], expected: bool
+) -> None:
+    """ADR-0016-04."""
+    assert launcher.runs_serve(arguments) is expected
+
+
+def test_the_restart_loop_starts_serve_again_on_the_restart_code() -> None:
+    """ADR-0016-04: the dedicated exit status, then any other status ends the loop."""
+    statuses = iter([launcher.RESTART_EXIT_CODE, launcher.RESTART_EXIT_CODE, 0])
+    seen: list[dict[str, str]] = []
+
+    def run_child(command: list[str], environment: dict[str, str]) -> int:
+        seen.append(dict(environment))
+        return next(statuses)
+
+    clock = iter([0.0, 100.0, 200.0])
+    assert (
+        launcher.run_supervised(
+            ["python", "-m", "autodj", "serve"],
+            {"A": "1"},
+            run_child=run_child,
+            clock=lambda: next(clock),
+        )
+        == 0
+    )
+    assert len(seen) == 3
+    assert all(env[launcher.SUPERVISOR_ENV] == "1" and env["A"] == "1" for env in seen)
+
+
+def test_the_restart_loop_stops_a_server_that_keeps_asking(capsys) -> None:
+    """ADR-0016-04."""
+    calls = []
+
+    def run_child(command: list[str], environment: dict[str, str]) -> int:
+        calls.append(command)
+        return launcher.RESTART_EXIT_CODE
+
+    assert (
+        launcher.run_supervised(["serve"], {}, run_child=run_child, clock=lambda: 1.0)
+        == launcher.RESTART_EXIT_CODE
+    )
+    assert len(calls) == launcher.MAX_RESTARTS
+    assert "not restarting again" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("same_prefix", [False, True])
+def test_the_checkout_launcher_supervises_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_prefix: bool
+) -> None:
+    """ADR-0016-04: only the checkout's launcher loops, and only for serve."""
+    root = _project(tmp_path, monkeypatch)
+    environment = root / "runtime"
+    _save(root, environment)
+    if same_prefix:
+        monkeypatch.setattr(launcher.sys, "prefix", str(environment.resolve()))
+    monkeypatch.setattr(launcher.sys, "argv", ["autodj", "serve"])
+    monkeypatch.setenv("AUTODJ_BOOTSTRAP", "1")
+    monkeypatch.delenv(launcher.SUPERVISOR_ENV, raising=False)
+    supervised = Mock(return_value=0)
+    monkeypatch.setattr(launcher, "run_supervised", supervised)
+    monkeypatch.setattr(launcher, "_cli", Mock(side_effect=AssertionError("not in-process")))
+
+    assert launcher.main() == 0
+    command, child_environment = supervised.call_args.args
+    expected = (
+        launcher.sys.executable
+        if same_prefix
+        else str(launcher._python_path(environment.resolve()))
+    )
+    assert command == [expected, "-m", "autodj", "serve"]
+    assert child_environment["AUTODJ_GPU"] == "0"
+    assert child_environment.get("AUTODJ_RUNTIME") == ("current" if same_prefix else "")
+
+
+@pytest.mark.parametrize(
+    "environ",
+    [{}, {"AUTODJ_BOOTSTRAP": "1", launcher.SUPERVISOR_ENV: "1"}],
+    ids=["installed-command", "already-supervised"],
+)
+def test_serve_is_not_supervised_twice_or_outside_the_checkout_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, environ: dict[str, str]
+) -> None:
+    """ADR-0016-04."""
+    root = _project(tmp_path, monkeypatch)
+    environment = root / "runtime"
+    _save(root, environment)
+    monkeypatch.setattr(launcher.sys, "prefix", str(environment.resolve()))
+    monkeypatch.setattr(launcher.sys, "argv", ["autodj", "serve"])
+    monkeypatch.delenv("AUTODJ_BOOTSTRAP", raising=False)
+    monkeypatch.delenv(launcher.SUPERVISOR_ENV, raising=False)
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    supervised = Mock()
+    monkeypatch.setattr(launcher, "run_supervised", supervised)
+    cli = Mock(return_value=0)
+    monkeypatch.setattr(launcher, "_cli", cli)
+
+    assert launcher.main() == 0
+    supervised.assert_not_called()
+    cli.assert_called_once_with()
+
+
+def test_a_real_child_reports_its_exit_status() -> None:
+    """ADR-0016-04: on Windows the child also joins a job that ends with the launcher."""
+    status = launcher._run_child(
+        [launcher.sys.executable, "-c", "raise SystemExit(75)"], dict(os.environ)
+    )
+    assert status == launcher.RESTART_EXIT_CODE

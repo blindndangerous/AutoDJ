@@ -499,12 +499,18 @@ def cmd_setup(arguments: tuple[str, ...]) -> None:
     metavar="SLUG",
     help="Check only this station besides the server: default, or a [stations.<slug>] name.",
 )
+@click.option(
+    "--offline",
+    is_flag=True,
+    help="Do not ask the network whether a newer AutoDJ is available.",
+)
 @click.pass_context
 def cmd_doctor(
     ctx: click.Context,
     as_json: bool,
     fix: bool | None,
     station: str | None,
+    offline: bool,
 ) -> None:
     """Check configuration, storage, dependencies, model, network, and stream health.
 
@@ -542,21 +548,21 @@ def cmd_doctor(
         raise click.exceptions.Exit(1) from None
     if station is not None and station not in {"default", *(s.slug for s in cfg.stations)}:
         raise click.BadParameter(f"no station is named {station!r}", param_hint="--station")
-    report = run_doctor(cfg, station=station)
+    report = run_doctor(cfg, station=station, check_updates=not offline)
     click.echo(report.to_json() if as_json else render_text(report))
     if offer_repairs and _doctor_repair_saved_settings(cfg, report, fix is True):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     if offer_repairs and _doctor_create_directories(
         cfg, report, fix is True, server=server_repairs
     ):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     if server_repairs and _doctor_recover_restore(cfg, report):
         click.echo("Rechecking after repairs...")
-        report = run_doctor(cfg, station=station)
+        report = run_doctor(cfg, station=station, check_updates=False)
         click.echo(render_text(report))
     recovery_failed = False
     if server_repairs:
@@ -567,6 +573,48 @@ def cmd_doctor(
         )
     if report.exit_code or recovery_failed:
         raise click.exceptions.Exit(1)
+
+
+@cli.command("check-update")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+@click.option(
+    "--channel",
+    type=click.Choice(["stable", "development"]),
+    default=None,
+    help="Check this channel instead of the saved or inferred one.",
+)
+@click.pass_context
+def cmd_check_update(ctx: click.Context, as_json: bool, channel: str | None) -> None:
+    """Say whether a newer AutoDJ is available on this installation's channel.
+
+    Stable follows release tags, development follows master.  A failed or
+    offline check is reported, never an error; with the check turned off in
+    Settings, Updates, nothing is asked.
+    """
+    import dataclasses
+
+    from autodj.updates import (
+        check_for_update,
+        describe_check,
+        detect_installation,
+        load_settings,
+    )
+
+    cfg = _load_cfg_or_exit(ctx.obj["config_path"])
+    settings = load_settings(cfg.index.index_dir)
+    if channel is not None:
+        settings = dataclasses.replace(settings, channel=channel)
+    installation = detect_installation()
+    result = check_for_update(installation, settings)
+    if as_json:
+        click.echo(
+            json.dumps(
+                {"installation": installation.to_dict(), "check": result.to_dict()}, indent=2
+            )
+        )
+        return
+    for line in describe_check(installation, result):
+        click.echo(line)
 
 
 def _doctor_load_config(
@@ -1897,7 +1945,7 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     try:
-        serve(
+        restart = serve(
             cfg=cfg,
             sim=sim,
             library=library,
@@ -1910,6 +1958,13 @@ def cmd_serve(  # pragma: no cover -- end-to-end orchestrator, exercised by smok
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Stopped.[/]")
+        return
+    if restart is True:
+        from autodj.updates import RESTART_EXIT_CODE
+
+        # The launcher, a systemd service or the container starts it again.
+        console.print("[yellow]Restarting AutoDJ...[/]")
+        raise click.exceptions.Exit(RESTART_EXIT_CODE)
 
 
 # ---------------------------------------------------------------------------

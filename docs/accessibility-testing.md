@@ -271,6 +271,11 @@ must keep a refused create silent apart from the focused field. A stood-in succe
 must announce once in the panel's status region and move focus to Switch. The audit never
 creates a station; the stand-in answers every create request.
 
+Settings > Updates is shown with a stood-in update: its release notes link, the update commands
+(a long unbroken wheel address included, for reflow) and Restart AutoDJ. Enter on Restart must open
+the confirmation with focus on Cancel and a message that says the stream goes off the air, and
+Escape must close it with focus back on Restart. The audit never restarts the server.
+
 ## Announcement contract
 
 Every message the interface reports follows three rules. They exist because a live region that is

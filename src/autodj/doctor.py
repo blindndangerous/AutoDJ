@@ -595,6 +595,42 @@ def _network_check(cfg: AutoDJConfig) -> DoctorCheck:
     )
 
 
+def _update_check(cfg: AutoDJConfig, *, network: bool = True) -> DoctorCheck:
+    """Whether a newer AutoDJ is available on this installation's channel.
+
+    Only a warning when the check cannot reach the network; asks nothing
+    when the saved setting turns the check off or *network* is false.  It
+    uses ``git ls-remote`` or GitHub's API, so nothing is written.
+    """
+    from autodj.updates import (
+        channel_label,
+        check_for_update,
+        detect_installation,
+        load_settings,
+    )
+
+    installation = detect_installation()
+    result = check_for_update(installation, load_settings(cfg.index.index_dir), network=network)
+    detail = {
+        "installation": installation.describe(),
+        "channel": result.channel,
+        "channel_source": result.channel_source,
+        "latest": result.latest,
+    }
+    channel = channel_label(result.channel).lower()
+    if result.status == "available":
+        return DoctorCheck(
+            "updates",
+            CheckStatus.WARN,
+            f"update available on the {channel} channel: {result.latest}; "
+            "update from Settings, Updates or follow docs/guides/backups-and-updates.md",
+            detail,
+        )
+    if result.status in {"unavailable", "unknown", "branch"}:
+        return DoctorCheck("updates", CheckStatus.WARN, result.message, detail)
+    return DoctorCheck("updates", CheckStatus.PASS, result.message, detail)
+
+
 def _stream_check(cfg: AutoDJConfig) -> DoctorCheck:
     """Check stream-mode prerequisites.
 
@@ -752,6 +788,7 @@ def run_doctor(
     *,
     python_version: tuple[int, int] | None = None,
     station: str | None = None,
+    check_updates: bool = True,
 ) -> DoctorReport:
     """Run all checks in stable order without repairing anything.
 
@@ -761,6 +798,8 @@ def run_doctor(
         station: Only this station's own checks (``"default"`` for the
             default station's); every station's when omitted.  The
             server-wide checks always run.
+        check_updates: Ask the network whether a newer AutoDJ exists
+            (``doctor --offline`` turns it off; so does the saved setting).
     """
     from autodj.stations import DEFAULT_SLUG
 
@@ -784,6 +823,7 @@ def run_doctor(
         _dependency_check(),
         _model_cache_check(cfg),
         _network_check(cfg),
+        _update_check(cfg, network=check_updates),
     ]
     if default:
         checks += [_stream_check(cfg), *_relay_checks(cfg)]

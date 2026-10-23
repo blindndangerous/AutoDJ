@@ -370,6 +370,7 @@ These values are saved for the selected station or browser rather than in the co
 - **Return time (seconds)**: 0.1 to 10; default 0.5. Raises the music after browser talkover. **Duck amount (dB)**: 0 to 30; default 12. Lowers music while someone talks.
 - **Record broadcast** in **Stream**: on or off; default off. Saves the server mix as MP3 files.
 - **Station name**, **Quality**, and other stream page controls map to the `stream` entries above.
+- **Check for updates** in **Settings**, **Updates**: on or off; default on. When off, AutoDJ never asks GitHub or the git remote about updates. **Update channel**: Automatic, Stable or Development; default Automatic, which follows what the installation runs (a release tag is Stable, `master` is Development). Saved for every station in `shared/updates.json`. See [Check for updates and restart](guides/backups-and-updates.md#check-for-updates-and-restart).
 
 ### Transition effect choices
 

@@ -61,6 +61,26 @@ is not supported: the `Secure` cookie flag and the origin checks follow AutoDJ's
 For remote access, see [HTTPS with your own domain](domain-https.md#https-with-your-own-domain). The image's
 health check tries HTTP and then HTTPS, so it works either way.
 
+## Update the container
+
+AutoDJ in a container checks for updates like any installation and says in **Settings**,
+**Updates** when one is available, with a link to its release notes and the commands to run. It
+does not update itself, and nothing in the Compose file gets the Docker or Podman socket. Make a
+backup, then, on the computer that runs the container, in the folder with `compose.yaml`, update
+the checkout and rebuild. For a release:
+
+```bash
+git fetch --tags origin
+git switch --detach vX.Y.Z
+AUTODJ_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
+```
+
+For the development channel, replace the two `git` lines with `git fetch origin`,
+`git switch master` and `git merge --ff-only origin/master`. With Podman, use `podman compose` in
+place of `docker compose`. The container's channel follows the checkout's branch: `master` is
+Development, anything else is Stable. **Restart AutoDJ** works in a container: AutoDJ exits and
+the restart policy (`restart: unless-stopped`) starts it again.
+
 ## Build stamp
 
 The footer of the web page names the commit the server runs, linked to that commit on GitHub,

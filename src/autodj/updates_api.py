@@ -1,0 +1,260 @@
+"""Settings, Updates: the update check, its settings, and restarting AutoDJ.
+
+``GET /api/updates`` answers with this installation's version and channel,
+the update settings, the last check (checking again when it is stale) and
+whether AutoDJ can restart itself.  ``POST /api/updates/check`` checks now;
+``PUT /api/updates/settings`` saves the settings; ``POST /api/server/restart``
+restarts AutoDJ.  Every station shares them.
+
+They are browser routes like every settings change: a paired browser
+session when pairing is on, an allowed Origin for the writes, and machine
+tokens never reach them.  Check, restart and their refusals are audited
+under their own action names as well as by the request middleware.
+Restart is refused when nothing would start AutoDJ again
+(:func:`autodj.updates.restart_support`), and is limited to one a minute
+and six an hour, counted in a file so a restart does not reset the count.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, StrictBool
+
+from autodj.security import emit_audit, new_request_id
+from autodj.updates import (
+    RestartSupport,
+    UpdateChecker,
+    UpdateSettings,
+    channel_for,
+    restart_support,
+    update_commands,
+)
+
+logger = logging.getLogger(__name__)
+
+#: Routes this module adds; each takes at most a small JSON body.
+ROUTES = ("/api/updates/check", "/api/updates/settings", "/api/server/restart")
+#: Seconds the page waits between two Check now presses.
+CHECK_INTERVAL_SECONDS = 10.0
+#: At most one restart (or update) a minute, and this many an hour.
+RESTART_MIN_INTERVAL_SECONDS = 60.0
+RESTART_MAX_PER_HOUR = 6
+#: Seconds between the answer and the exit, so the answer reaches the page.
+EXIT_DELAY_SECONDS = 1.0
+
+
+class SettingsBody(BaseModel):
+    """Whether to check for updates, and which channel to follow."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    check: StrictBool
+    channel: Literal["auto", "stable", "development"]
+
+
+class EmptyBody(BaseModel):
+    """A POST that takes no options."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RestartLimiter:
+    """Counts accepted restarts and updates in a file that outlives the process."""
+
+    def __init__(self, path: Callable[[], Path], clock: Callable[[], float] = time.time) -> None:
+        """*path* gives the JSON file that keeps the recent times."""
+        self._path = path
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    def _recent(self, now: float) -> list[float]:
+        try:
+            raw = json.loads(self._path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [
+            float(value)
+            for value in raw[-RESTART_MAX_PER_HOUR:]
+            if isinstance(value, (int, float)) and now - 3600.0 < float(value) <= now
+        ]
+
+    def take(self) -> int | None:
+        """Count one restart now; or, when over the limit, the seconds to wait instead."""
+        from autodj.fsutil import atomic_write
+
+        with self._lock:
+            now = self._clock()
+            recent = self._recent(now)
+            wait = 0.0
+            if recent:
+                wait = max(wait, recent[-1] + RESTART_MIN_INTERVAL_SECONDS - now)
+            if len(recent) >= RESTART_MAX_PER_HOUR:
+                wait = max(wait, recent[-RESTART_MAX_PER_HOUR] + 3600.0 - now)
+            if wait > 0:
+                return max(1, int(wait + 0.999))
+            recent.append(now)
+            try:
+                atomic_write(self._path(), json.dumps(recent[-RESTART_MAX_PER_HOUR:]))
+            except OSError as exc:
+                logger.warning("Could not record the restart time: %s", exc)
+            return None
+
+
+def updates_view(
+    checker: UpdateChecker, support: RestartSupport, *, check: bool = True
+) -> dict[str, Any]:
+    """Everything Settings, Updates shows; checks when *check* and the result is stale."""
+    installation = checker.installation()
+    settings = checker.settings()
+    channel, source = channel_for(installation, settings)
+    result = checker.result() if check else checker.cached()
+    return {
+        "installation": installation.to_dict(),
+        "settings": settings.to_dict(),
+        "channel": {
+            "name": channel,
+            "source": source,
+            "inferred": installation.inferred_channel,
+        },
+        "check": result.to_dict() if result is not None else None,
+        "commands": update_commands(installation, result) if result is not None else [],
+        "restart": support.to_dict(),
+    }
+
+
+def install_updates(
+    app: FastAPI,
+    index_dir: Callable[[], Path],
+    *,
+    checker: UpdateChecker | None = None,
+    support: Callable[[], RestartSupport] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> UpdateChecker:
+    """Register the update and restart routes; returns the checker they share.
+
+    ``serve`` sets ``app.state.server_exit`` to a callable that stops the
+    server; without it (a test client, an embedding) restart is refused.
+    After a restart request, ``app.state.restart_requested`` is true.
+    """
+    checker = checker or UpdateChecker(index_dir)
+    limiter = RestartLimiter(lambda: Path(index_dir()) / "logs" / "restart-requests.json")
+    last_check: list[float] = []
+    app.state.update_checker = checker
+    app.state.restart_requested = False
+
+    def audit(request: Request, action: str, outcome: str, route: str, code: int) -> None:
+        emit_audit(
+            getattr(request.state, "request_id", None) or new_request_id(),
+            action,
+            outcome,
+            method=request.method,
+            route=route,
+            status=code,
+            level=logging.INFO if code < 400 else logging.WARNING,
+        )
+
+    def browser_only(request: Request, action: str, route: str) -> None:
+        if getattr(request.state, "machine_token", None) is not None:
+            # Not reachable: machine tokens work only under their own prefixes.
+            audit(request, action, "rejected", route, 403)
+            raise HTTPException(status_code=403, detail="Only a paired browser can do this")
+
+    def current_support() -> RestartSupport:
+        found = (support or restart_support)()
+        if found.available and getattr(app.state, "server_exit", None) is None:
+            return RestartSupport(None, "This server cannot stop itself, so it cannot restart.")
+        return found
+
+    @app.get("/api/updates")
+    async def api_updates() -> dict[str, Any]:
+        """Version, channel, settings, the last check and whether Restart is possible."""
+        found = await asyncio.to_thread(current_support)
+        return await asyncio.to_thread(updates_view, checker, found)
+
+    @app.post("/api/updates/check")
+    async def api_updates_check(request: Request, _body: EmptyBody | None = None) -> Any:
+        """Check for an update now, past the cache."""
+        route = "/api/updates/check"
+        browser_only(request, "update-check", route)
+        now = clock()
+        if last_check and now - last_check[0] < CHECK_INTERVAL_SECONDS:
+            wait = int(CHECK_INTERVAL_SECONDS - (now - last_check[0]) + 0.999)
+            audit(request, "update-check", "rejected", route, 429)
+            return JSONResponse(
+                {"detail": f"AutoDJ checked a moment ago. Try again in {wait} seconds."},
+                status_code=429,
+                headers={"Retry-After": str(wait)},
+            )
+        last_check[:] = [now]
+        result = await asyncio.to_thread(checker.result, force=True)
+        audit(
+            request,
+            "update-check",
+            "failed" if result.status == "unavailable" else "success",
+            route,
+            200,
+        )
+        found = await asyncio.to_thread(current_support)
+        return await asyncio.to_thread(updates_view, checker, found, check=False)
+
+    @app.put("/api/updates/settings")
+    async def api_updates_settings(request: Request, body: SettingsBody) -> dict[str, Any]:
+        """Turn the update check on or off and choose the channel."""
+        browser_only(request, "update-settings", "/api/updates/settings")
+        settings = UpdateSettings(
+            check=body.check, channel=None if body.channel == "auto" else body.channel
+        )
+        try:
+            await asyncio.to_thread(checker.save, settings)
+        except OSError as exc:
+            logger.warning("Could not save the update settings: %s", exc)
+            raise HTTPException(
+                status_code=500, detail="Could not save the update settings."
+            ) from None
+        found = await asyncio.to_thread(current_support)
+        return await asyncio.to_thread(updates_view, checker, found, check=False)
+
+    @app.post("/api/server/restart", status_code=202)
+    async def api_server_restart(
+        request: Request, background: BackgroundTasks, _body: EmptyBody | None = None
+    ) -> Any:
+        """Stop AutoDJ so its launcher, service manager or container starts it again."""
+        route = "/api/server/restart"
+        browser_only(request, "server-restart", route)
+        found = await asyncio.to_thread(current_support)
+        if not found.available:
+            audit(request, "server-restart", "rejected", route, 409)
+            raise HTTPException(status_code=409, detail=found.message)
+        wait = await asyncio.to_thread(limiter.take)
+        if wait is not None:
+            audit(request, "server-restart", "rejected", route, 429)
+            return JSONResponse(
+                {"detail": f"AutoDJ restarted a moment ago. Try again in {wait} seconds."},
+                status_code=429,
+                headers={"Retry-After": str(wait)},
+            )
+        audit(request, "server-restart", "accepted", route, 202)
+        logger.warning("Restart requested from the web page; AutoDJ is restarting.")
+        background.add_task(schedule_exit, app)
+        return {"restarting": True, "message": found.message}
+
+    return checker
+
+
+async def schedule_exit(app: FastAPI, delay: float | None = None) -> None:
+    """Stop the server shortly after the answer has gone; ``serve`` then exits to restart."""
+    app.state.restart_requested = True
+    loop = asyncio.get_running_loop()
+    loop.call_later(EXIT_DELAY_SECONDS if delay is None else delay, app.state.server_exit)

@@ -2056,7 +2056,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run", player_run),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
@@ -2125,7 +2126,8 @@ class TestServeFunction:
             patch.object(Player, "__init__", spy_init),
             patch("autodj.player.Player.run", run),
             patch("autodj.server.create_app", wraps=create_app) as app_spy,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg_mock, sim=sim, seed_entry=_make_entry(0), **serve_kwargs)
             captured["create_app_kwargs"] = app_spy.call_args.kwargs
@@ -2250,7 +2252,8 @@ class TestServeFunction:
         cfg.default_station.cfg.station.output = "server"
         with (
             patch("autodj.server._missing_audio_modules", return_value=["soundfile"]),
-            patch("uvicorn.run") as uvicorn_run,
+            patch("uvicorn.Config") as uvicorn_run,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
             app = uvicorn_run.call_args.args[0]
@@ -2285,7 +2288,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=sim, seed_entry=None)
 
@@ -2307,7 +2311,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="wildcard binding requires"),
         ):
             serve(
@@ -2341,7 +2346,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError) as raised,
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2364,7 +2370,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
 
@@ -2408,7 +2415,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player.run"),
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             caplog.at_level(logging.INFO, logger="autodj.server"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2455,7 +2463,8 @@ class TestServeFunction:
             caplog.clear()
             with (
                 patch("autodj.player.Player.run"),
-                patch("uvicorn.run") as mock_uvicorn,
+                patch("uvicorn.Config") as mock_uvicorn,
+                patch("uvicorn.Server"),
                 caplog.at_level(logging.INFO, logger="autodj.server"),
             ):
                 serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
@@ -2506,7 +2515,8 @@ class TestServeFunction:
 
         with (
             patch("autodj.player.Player") as player_class,
-            patch("uvicorn.run") as mock_uvicorn,
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
             pytest.raises(ValueError, match="allowed origin"),
         ):
             serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)

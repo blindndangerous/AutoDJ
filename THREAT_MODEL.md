@@ -1294,6 +1294,42 @@ file in the index folder it serves, and restore refuses while it is held; an `au
 trusted through operating-system ACLs. AutoDJ does not defend against an attacker who already
 controls them and can race filesystem operations.
 
+## Updates and restart from the web
+
+Settings, Updates checks for a newer AutoDJ and restarts it
+([ADR 16](docs/adr/0016-update-and-restart-from-the-web.md)). Its routes are
+`GET /api/updates`, `POST /api/updates/check`, `PUT /api/updates/settings` and
+`POST /api/server/restart`. They follow the same session, Host and Origin policy as every other
+settings route: when pairing is on, only a paired browser reaches them, and a page on another site
+cannot press Restart. There are no user roles, so every paired browser may restart AutoDJ; pairing
+already grants control of playback. Machine tokens and live DJ credentials never reach these
+routes. Each takes at most 8 KiB of JSON and no free text: the settings are a boolean and one of
+three channel names.
+
+**The check.** It contacts only the checkout's own `origin` remote (`git ls-remote`, which writes
+nothing) or GitHub's REST API at an address fixed in the code; no request or setting can point it
+anywhere else. git runs from an argument list with `GIT_TERMINAL_PROMPT=0`, so it never waits for
+a password, and with a 15-second timeout; the API call has a 10-second timeout and reads at most
+1 MiB. A tag is offered only when it is `vX.Y.Z`. A failure is reported by kind (timed out, exit
+status) without git's own messages or the remote's address, which may hold credentials. Answers
+are cached, so opening the page does not ask the network every time, and Check now is limited to
+one in 10 seconds. With **Check for updates** off, or `doctor --offline`, nothing is asked. A
+remote that lies can only make the page say an update exists; the check changes nothing.
+AutoDJ does not update itself: the notice links the release notes on GitHub (a URL built from
+the fixed repository address and a validated tag) and lists commands for the operator to run.
+Updating from the web page is a later decision in
+[#552](https://github.com/blindndangerous/AutoDJ/issues/552); nothing gets the Docker socket.
+
+**Restart.** The server stops through uvicorn's own shutdown and exits with status 75. It is
+offered only when the checkout's launcher, a systemd service with `Restart=always` or
+`on-failure`, or a container will start it again; reading the systemd policy runs
+`systemctl show` with the unit name taken from `/proc/self/cgroup` and checked against a strict
+pattern. Restart is limited to one a minute and six an hour, counted in
+`<index_dir>/logs/restart-requests.json` so a restart does not reset the count, and the launcher
+stops after five restarts in a minute. Restart takes every station off the air for a moment, which
+is the remaining risk of a stolen browser session. Check, restart and their refusals are audited
+as `update-check` and `server-restart` with the usual closed-schema fields.
+
 ## Container and dependency controls
 
 The container image runs as UID/GID 10001 by default with all capabilities dropped and
