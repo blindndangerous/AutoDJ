@@ -58,6 +58,8 @@ class Harness:
             if playing is not before:
                 assert playing is not None
                 return playing.entry.path
+            # Yield to the worker, as the real bus does between clock-paced blocks.
+            time.sleep(0.001)
         raise AssertionError("the bus never started another track")
 
     def upcoming(self) -> IndexEntry:
