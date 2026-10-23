@@ -435,18 +435,22 @@ What a worker can do with a valid token:
   identity and update pending identity in the same transaction. Tag-only listings update both
   identities while retaining the pending row's new-listing provenance.
   Deferred completion compares current user/imported points and manual key/BPM with a durable
-  deferral snapshot. Only changed choices override results, including explicit point clears;
-  rows without snapshots preserve none. Old-byte edits follow ordinary replacement rules.
+  deferral snapshot when pending and catalog byte identities differ. Only changed choices
+  override replacement results, including explicit point clears; rows without snapshots
+  preserve none for changed bytes. Matching identities retain all current manual choices,
+  including legacy rows without snapshots. Old-byte edits follow ordinary replacement rules.
   Saved bounds clamp to measured duration; impossible bounds revert to analysis provenance.
   Mix points clamp inside those bounds, never becoming user clears solely because the new
   recording is shorter. Automatic trim expands to include valid saved mix points. DJ storage
-  aligns protected markers, merges duplicates by source priority and drops cues beyond measured
+  aligns markers with catalog points, discards saved markers without retained user/imported
+  provenance, merges duplicates by source priority and drops cues beyond measured
   length with debug logging. Editing an unmeasured listing does not establish measured duration.
   A confirmed unique pending move transfers pending identity, edit snapshot, provenance and
   retry state in the catalog rekey transaction. Present catalog and pending identities both
   block ambiguous matches. Claimed path-bound leases are cancelled, so old submissions cannot
-  write to either path. Failed and stale holds move with unchanged expiry; destination claims
-  remain subject to those holds and the preserved retry state.
+  write to either path. Failed and stale holds move with unchanged expiry; colliding holds keep
+  the later expiry in the same transaction. A failed move restores both holds and the original
+  catalog and pending paths. Destination claims respect the retained hold and retry state.
   Scan numbers require numeric types and finite values. Length is positive, at most 24 hours,
   and within the larger of two seconds or two percent of the known catalog duration when that
   duration describes measured, claimed bytes. Silent tag-only listings (zero energy and no

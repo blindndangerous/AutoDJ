@@ -1185,6 +1185,114 @@ def test_pending_completion_preserves_only_edits_after_defer(
     assert set(record["user_tags"]) == ({"bpm", "key"} if timing == "after" else set())
 
 
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("source", ["user", "imported"])
+def test_same_bytes_pending_completion_keeps_existing_edits(
+    server, monkeypatch, fallback, legacy, source
+):
+    """ADR-0008-23. Same-byte rereads retain edits, including rows predating snapshots."""
+    from autodj.analysis_queue import AnalysisQueue
+
+    manager, path = server.manager, server.songs[0]
+    catalog, queue = manager.catalog, manager.analysis_queue
+    catalog.set_points(path, {"intro": 50.0, "outro": None}, source=source)
+    catalog.retag(path, {"bpm": 99.0, "key": 7, "mode": 1})
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(manager, "_scan_worker_available", lambda: True)
+    manager._scan_pending = queue.pending_scans()
+    assert manager._read_track_local("music", path, False, allow_defer=True)
+    assert queue.scan_pending(_path(path))
+    if legacy:
+        with queue._write() as db:
+            db.execute("ALTER TABLE scan_pending DROP COLUMN edit_snapshot")
+        upgraded = AnalysisQueue(queue.path)
+        try:
+            assert upgraded._read("SELECT edit_snapshot FROM scan_pending") == [(None,)]
+        finally:
+            upgraded.close()
+    measurements = scan_result()
+    measurements["dj"] = None
+    if fallback:
+        monkeypatch.setattr(
+            "autodj.library.analyze_basic",
+            lambda *a, **k: (make_entry(path), measurements["points"]),
+        )
+        monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *a: 1.0)
+        with manager._scan_lock:
+            assert manager._recover_scan_one(False)
+    else:
+        _token, secret = server.token()
+        song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()[
+            "songs"
+        ][0]
+        assert song["scan"]["saved_points"] == {"intro": 50.0, "outro": None}
+        body, _ = server.result(song, song["lease"], scan=measurements)
+        reply = server.call("POST", "/api/worker/result", secret, json=body)
+        assert reply.status_code == 200, reply.text
+    record = catalog.record_for_path(path)
+    assert record["points"]["intro"] == 50.0
+    assert record["points"]["outro"] is None
+    assert record["point_sources"]["intro"] == source
+    assert record["point_sources"]["outro"] == source
+    assert record["bpm"] == 99.0
+    assert (record["key"], record["mode"]) == (7, 1)
+    assert set(record["user_tags"]) == {"bpm", "key"}
+
+
+@pytest.mark.parametrize("source", ["user", "mixxx"])
+def test_scan_replaces_old_byte_markers_with_catalog_points(server, monkeypatch, source):
+    """ADR-0008-23. Discarded marker edits cannot override analysis in the DJ cache."""
+    from autodj.dj_meta import Cue, DjMeta
+    from autodj.indexer import file_fingerprint
+
+    manager, path = server.manager, server.songs[0]
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: True)
+    manager.catalog.set_points(
+        path,
+        {"start": 5.0, "intro": 25.0, "outro": 140.0},
+        source="user" if source == "user" else "imported",
+    )
+    hot = Cue(60.0, "hot", "Saved", source)
+    manager._dj_cache().set(
+        str(path),
+        DjMeta(
+            intro_start_s=5.0,
+            intro_end_s=25.0,
+            outro_start_s=140.0,
+            analysed=True,
+            cues=[
+                Cue(5.0, "intro_start", source=source),
+                Cue(25.0, "intro_end", source=source),
+                Cue(140.0, "outro_start", source=source),
+                hot,
+            ],
+        ),
+    )
+    path.write_bytes(b"replacement recording")
+    manager.analysis_queue.defer_scan(_path(path), *file_fingerprint(path))
+    _token, secret = server.token()
+    song = server.call("POST", "/api/worker/claim", secret, json=SCAN_CAPABILITY).json()["songs"][0]
+    body, _ = server.result(song, song["lease"], scan=scan_result())
+    reply = server.call("POST", "/api/worker/result", secret, json=body)
+    assert reply.status_code == 200, reply.text
+    record = manager.catalog.record_for_path(path)
+    meta = manager._dj_cache().get(str(path))
+    for point, marker, field in (
+        ("start", "intro_start", "intro_start_s"),
+        ("intro", "intro_end", "intro_end_s"),
+        ("outro", "outro_start", "outro_start_s"),
+    ):
+        assert record["point_sources"][point] == "analysis"
+        assert getattr(meta, field) == record["points"][point]
+        assert all(
+            cue.time_s == record["points"][point] and cue.source == "auto"
+            for cue in meta.cues
+            if cue.type == marker
+        )
+    assert hot in meta.cues
+
+
 @pytest.mark.parametrize("cue_case", ["duplicate", "past_end"])
 def test_scan_saved_cues_are_unique_and_within_duration(server, monkeypatch, caplog, cue_case):
     """ADR-0008-23. Saved markers merge after alignment; old cues cannot exceed new duration."""

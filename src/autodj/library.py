@@ -1603,7 +1603,10 @@ class LibraryManager:
                     ("outro", "outro_start", "outro_start_s", record["length"]),
                 ):
                     if record["point_sources"].get(point) not in {"user", "imported"}:
-                        continue
+                        # Discard saved markers whose old-byte provenance the catalog rejected.
+                        meta.cues = [
+                            cue for cue in meta.cues if cue.type != marker or cue.source == "auto"
+                        ]
                     value = record["points"].get(point)
                     setattr(meta, field, default if value is None else value)
                     meta.cues = [

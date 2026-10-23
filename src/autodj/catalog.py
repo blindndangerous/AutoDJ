@@ -918,12 +918,23 @@ class LibraryCatalog:
         """Compare current manual choices with the durable baseline for this pending scan."""
         pending = (
             self._db()
-            .execute("SELECT edit_snapshot FROM scan_pending WHERE path=?", (row["path"],))
+            .execute(
+                "SELECT size,fingerprint,edit_snapshot FROM scan_pending WHERE path=?",
+                (row["path"],),
+            )
             .fetchone()
         )
-        if pending is None or pending["edit_snapshot"] is None:
+        if pending is None:
             return {}, []
-        snapshot = json.loads(pending["edit_snapshot"])
+        same_bytes = (pending["size"], pending["fingerprint"]) == (row["size"], row["fingerprint"])
+        # Replacement tag refreshes filter edits before advancing the catalog identity;
+        # retagging a playable replacement keeps its old analysis identity until completion.
+        if same_bytes:
+            snapshot = {}
+        elif pending["edit_snapshot"] is None:
+            return {}, []
+        else:
+            snapshot = json.loads(pending["edit_snapshot"])
         sources = json.loads(row["point_sources"])
         saved = {
             name: value
@@ -947,7 +958,7 @@ class LibraryCatalog:
         return saved, tags
 
     def pending_scan_points(self, path: str | Path) -> dict:
-        """Return only post-deferral point edits for remote scan hints."""
+        """Return eligible saved points for remote scan hints, including same-byte edits."""
         with self._lock:
             row = (
                 self._db()
@@ -2047,6 +2058,17 @@ class LibraryCatalog:
                         "DELETE FROM analysis_leases WHERE path IN (?,?) AND state='claimed'",
                         (old_path, new_path),
                     )
+                    holds = db.execute(
+                        "SELECT path,expires_at FROM analysis_leases "
+                        "WHERE path IN (?,?) AND state IN ('failed','stale')",
+                        (old_path, new_path),
+                    ).fetchall()
+                    if len(holds) == 2:
+                        # Keep the later hold, preferring the destination when expiry ties.
+                        loser = min(
+                            holds, key=lambda hold: (hold["expires_at"], hold["path"] == new_path)
+                        )
+                        db.execute("DELETE FROM analysis_leases WHERE path=?", (loser["path"],))
                     db.execute(
                         "UPDATE analysis_leases SET path=? WHERE path=? AND state IN ('failed','stale')",
                         (new_path, old_path),
