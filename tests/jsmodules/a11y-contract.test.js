@@ -1912,8 +1912,10 @@ describe("static accessibility contracts", () => {
     expect(listen.hidden).toBe(false);
     // The route selector names the device path directly before Listen.
     expect(listen.previousElementSibling.id).toBe("listen-route");
-    expect(listen.closest('[role="group"]').getAttribute("aria-label"))
-      .toBe("Playback controls");
+    const listeningGroup = listen.closest('[role="group"]');
+    expect(listeningGroup.getAttribute("aria-label")).toBe("Listening controls");
+    const playbackGroup = document.querySelector("#btn-pause").closest('[role="group"]');
+    expect(listeningGroup.nextElementSibling).toBe(playbackGroup);
 
     const note = document.querySelector("#stream-idle-note");
     expect(note.hidden).toBe(true);

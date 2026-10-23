@@ -224,6 +224,17 @@
   <details class="card" id="controls-card" open>
     <summary><h2>Controls</h2></summary>
 
+    <div role="group" aria-label="Listening controls">
+      <div class="controls-row">
+        <!-- Listen controls this browser; Play / Pause controls the station. -->
+        <label for="listen-route">Listen through</label>
+        <select id="listen-route" aria-describedby="listen-unavailable"><option value="local">Local</option><option value="stream">Stream</option></select>
+        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station"><span aria-hidden="true">🔊</span> Listen</button>
+        <span id="listen-unavailable" class="setting-desc"></span>
+      </div>
+      <p id="listen-station" class="stream-detail" hidden></p>
+    </div>
+
     <!-- A labelled group, not a toolbar: a toolbar promises arrow-key
          movement between its buttons, and five buttons are simpler to
          reach with Tab than with a roving tabindex. -->
@@ -239,11 +250,6 @@
         <!-- No title attributes on Play, Skip and Mute: NVDA read each one
              as a description that only repeated the name. -->
         <button id="btn-pause" aria-label="Play or Pause" disabled><span aria-hidden="true">▶ Play or Pause</span></button>
-        <!-- Listen controls this browser; Play / Pause controls the station. -->
-        <label for="listen-route">Listen through</label>
-        <select id="listen-route" aria-describedby="listen-unavailable"><option value="local">Local</option><option value="stream">Stream</option></select>
-        <button type="button" id="btn-listen" aria-pressed="false" aria-describedby="listen-station"><span aria-hidden="true">🔊</span> Listen</button>
-        <span id="listen-unavailable" class="setting-desc"></span>
         <button id="btn-skip">
           <span aria-hidden="true">⏭</span> Skip
         </button>
@@ -258,10 +264,6 @@
           <span aria-hidden="true">◈</span> Discovery
         </button>
       </div>
-      <!-- Listen here plays the station it was started on (#70).  Once the
-           page controls another station this says which, and describes
-           Listen here.  Plain text, not live. -->
-      <p id="listen-station" class="stream-detail" hidden></p>
       <!-- Browser talkover (#48), shown while the station can go live.
            Hold to talk; a quick press latches it on until the next press.
            A fixed name: aria-pressed says whether this page is talking.
