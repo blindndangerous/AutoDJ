@@ -18,7 +18,7 @@
 
 import { DEFAULT_STATION, currentStation } from "./stations.js";
 import { announceStatus } from "./live-region.js";
-import { saveHolds } from "./settings-panel.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 import { listRow, rowButton } from "./dom-helpers.js";
 import { installActionListNavigation } from "./action-list-navigation.js";
 import { isLoopbackHost } from "./stream-mode.js";
@@ -89,9 +89,6 @@ export function installNowPlayingSettings({
   doc = document,
   // requestJson from api-client.js.
   request,
-  // (checked, control) => Promise<boolean>, through postSettings, which
-  // says why a save failed and puts the box back.
-  saveShowNext,
   srStatus,
   settingsStatus,
   hostname = doc.location.hostname,
@@ -109,6 +106,15 @@ export function installNowPlayingSettings({
   const list = doc.getElementById("np-webhooks-list");
   const empty = doc.getElementById("np-webhooks-empty");
   if (!link || !copy || !showNext || !list || !empty) return null;
+  const settingsDraft = registerSettingsGroup({
+    panel,
+    group: "stream",
+    controls: [showNext],
+    read: () => ({ show_next: showNext.checked }),
+    write: (body) => {
+      if (body.show_next != null) showNext.checked = Boolean(body.show_next);
+    },
+  });
   const listNavigation = installActionListNavigation(list);
 
   const statusOpen = doc.getElementById("np-status-open");
@@ -285,34 +291,18 @@ export function installNowPlayingSettings({
     showNext.setAttribute("aria-describedby", ids.join(" "));
   }
 
-  showNext.addEventListener("change", async () => {
-    const chosen = showNext.checked;
-    const saved = await saveShowNext(chosen, showNext);
-    if (!saved) {
-      // postSettings has said why; the box shows what the server has.
-      showNext.checked = !chosen;
-      return;
-    }
-    say(settingsStatus, chosen
-      ? "The public now-playing feed now shows the next song."
-      : "The public now-playing feed now hides the next song.");
-  });
-
   function apply(state) {
     showAddresses();
     // A push without settings leaves DMCA mode as it was.
     const dmcaSetting = state?.settings?.playback?.dmca_enabled;
     if (typeof dmcaSetting === "boolean" && dmcaSetting !== dmcaLocked()) applyDmca(dmcaSetting);
     const dmca = dmcaLocked();
-    if (!state || !state.stream_mode) {
+    if (!state) {
       active = false;
       return;
     }
     const pushed = state.settings?.playback?.nowplaying_show_next;
-    if (!dmca && typeof pushed === "boolean" && !saveHolds(showNext, pushed)
-        && showNext.checked !== pushed) {
-      showNext.checked = pushed;
-    }
+    if (!dmca && typeof pushed === "boolean") settingsDraft.accept({ show_next: pushed });
     const wasActive = active;
     active = true;
     if (!seen()) return;

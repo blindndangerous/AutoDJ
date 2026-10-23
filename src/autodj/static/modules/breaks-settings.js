@@ -6,15 +6,13 @@
 //
 // The panel loads when it is seen.  A refresh fills the form only while
 // nobody is changing it.  #brk-reason is plain text, not live: it says why
-// breaks cannot be taken now, if they cannot.  Save break settings says its
-// result once through #brk-status.  While it saves, the button is marked
-// busy (aria-busy and .is-pending), never aria-disabled, so NVDA does not
-// call the pressed button unavailable (#331).  A refused value gets
+// breaks cannot be taken now, if they cannot. A refused value gets
 // aria-invalid, its error linked to the field and shown under it, and focus.
 
-import { isStaleStationReply, requestJson, staleActionText } from "./api-client.js";
+import { isStaleStationReply, requestJson } from "./api-client.js";
 import { focusRevealed } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 export const MIN_INTRO_ERROR = "Enter the shortest intro in seconds, from 0 to 60, such as 2 or 1.5.";
 export const DUCK_ERROR = "Enter how far the music drops in decibels, from minus 30 to 0, such as -12, or leave it blank.";
@@ -34,21 +32,6 @@ function decibels(value) {
   return number < 0 ? `minus ${-number}` : String(number);
 }
 
-// What a save says.
-export function savedText(before, after) {
-  if (before?.enabled !== true && after.enabled === true) {
-    return after.reason ? `Breaks are on. ${after.reason}.` : "Breaks are on.";
-  }
-  if (before?.enabled === true && after.enabled !== true) {
-    const dropped = Number(after.dropped) || 0;
-    const gone = dropped
-      ? ` ${dropped} waiting break${dropped === 1 ? " was" : "s were"} dropped.`
-      : "";
-    return `Breaks are off. New announcer uploads are refused.${gone}`;
-  }
-  return "Break settings saved.";
-}
-
 export function installBreakSettings({ doc = document, request = requestJson } = {}) {
   const get = (name) => doc.getElementById(`brk-${name}`);
   const panel = doc.getElementById("spanel-breaks");
@@ -58,15 +41,11 @@ export function installBreakSettings({ doc = document, request = requestJson } =
   const duck = get("duck");
   const status = get("status");
   const reason = get("reason");
-  const save = get("save");
   const linerDuck = get("duck-liners");
-  if (!form || !enabled || !minIntro || !duck || !status || !save) {
+  if (!form || !enabled || !minIntro || !duck || !status) {
     return { refresh: async () => {}, clear: () => {} };
   }
   const errors = new Map([[minIntro, get("min-intro-error")], [duck, get("duck-error")]]);
-  let settings = null;
-  let dirty = false;
-  let saving = false;
   let generation = 0;
 
   function say(message, tone = "info") {
@@ -119,7 +98,6 @@ export function installBreakSettings({ doc = document, request = requestJson } =
     if (linerDuck && Number.isFinite(state.liners_duck_db)) {
       linerDuck.textContent = `, now ${decibels(state.liners_duck_db)}`;
     }
-    if (dirty || saving || form.contains(doc.activeElement)) return;
     enabled.checked = state.enabled === true;
     const choice = form.querySelector(
       `input[name="brk-placement"][value="${["talk_up", "standalone"].includes(state.dj_placement) ? state.dj_placement : "auto"}"]`,
@@ -129,14 +107,33 @@ export function installBreakSettings({ doc = document, request = requestJson } =
     duck.value = state.duck_db == null ? "" : String(state.duck_db);
   }
 
+  const controls = [enabled, ...form.querySelectorAll('input[name="brk-placement"]'), minIntro, duck];
+  const read = () => ({ enabled: enabled.checked, dj_placement: placement(),
+    min_intro_seconds: parseNumber(minIntro.value, 0, 60),
+    duck_db: duck.value.trim() === "" ? null : parseNumber(duck.value, -30, 0) });
+  const draft = registerSettingsGroup({
+    panel, group: "breaks", controls, read, write: fill,
+    validate() {
+      clearErrors();
+      if (read().min_intro_seconds === null) {
+        fail(minIntro, MIN_INTRO_ERROR);
+        return false;
+      }
+      if (duck.value.trim() !== "" && read().duck_db === null) {
+        fail(duck, DUCK_ERROR);
+        return false;
+      }
+      return true;
+    },
+  });
+
   // Background loads write into the panel; they are not announced.
   async function refresh() {
     const mine = ++generation;
     try {
       const loaded = await request("/api/breaks/settings");
       if (mine !== generation) return;
-      settings = loaded;
-      fill(loaded);
+      draft.accept(loaded);
     } catch (error) {
       // A reply for the station the page has just left says nothing (#70).
       if (mine !== generation || isStaleStationReply(error)) return;
@@ -150,63 +147,15 @@ export function installBreakSettings({ doc = document, request = requestJson } =
   // A station switch: what this panel showed was the old station's.
   function clear() {
     generation += 1;
-    settings = null;
-    dirty = false;
     clearErrors();
     status.textContent = "";
     showReason(null);
     if (linerDuck) linerDuck.textContent = "";
   }
 
-  async function submit() {
-    clearErrors();
-    const intro = parseNumber(minIntro.value, 0, 60);
-    if (intro === null) {
-      fail(minIntro, MIN_INTRO_ERROR);
-      return;
-    }
-    const blank = duck.value.trim() === "";
-    const duckDb = blank ? null : parseNumber(duck.value, -30, 0);
-    if (!blank && duckDb === null) {
-      fail(duck, DUCK_ERROR);
-      return;
-    }
-    const body = {
-      enabled: enabled.checked,
-      dj_placement: placement(),
-      min_intro_seconds: intro,
-      duck_db: duckDb,
-    };
-    const before = settings;
-    // saving holds off another press; aria-busy, not aria-disabled (#331).
-    saving = true;
-    save.classList.add("is-pending");
-    save.setAttribute("aria-busy", "true");
-    try {
-      const reply = await request("/api/breaks/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      settings = reply;
-      dirty = false;
-      saving = false;
-      fill(reply);
-      say(savedText(before, reply));
-    } catch (error) {
-      // Answered after a station switch: the form is the new station's (#70).
-      const left = staleActionText(error);
-      if (left) say(left, error?.actionDone ? "info" : "error");
-      else say(`Could not save the break settings: ${error?.message || "no answer"}`, "error");
-    } finally {
-      saving = false;
-      save.classList.remove("is-pending");
-      save.removeAttribute("aria-busy");
-    }
-  }
+  form.addEventListener("submit", (event) => event.preventDefault());
 
   form.addEventListener("input", (event) => {
-    dirty = true;
     if (event.target.getAttribute?.("aria-invalid") === "true") {
       event.target.removeAttribute("aria-invalid");
       const node = errors.get(event.target);
@@ -216,12 +165,6 @@ export function installBreakSettings({ doc = document, request = requestJson } =
         node.hidden = true;
       }
     }
-  });
-  form.addEventListener("change", () => { dirty = true; });
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (saving) return;
-    void submit();
   });
   panel?.addEventListener("toggle", () => {
     if (panel.open) void refresh();

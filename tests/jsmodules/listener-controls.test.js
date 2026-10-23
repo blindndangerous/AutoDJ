@@ -5,6 +5,14 @@ import { requestJson } from "../../src/autodj/static/modules/api-client.js";
 
 vi.mock("../../src/autodj/static/modules/api-client.js", () => ({ requestJson: vi.fn() }));
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => {
+    groups.push(spec);
+    return { accept: (body) => spec.write(body), dirty: () => false };
+  },
+}));
+
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 function setup() {
@@ -22,13 +30,13 @@ function setup() {
       <button type="submit">Ban address</button><button type="button" id="listener-ban-cancel">Cancel</button></form>
     <h4 id="listener-bans-title" tabindex="-1">Bans</h4><ul id="listener-ban-list"></ul>
     <p id="listener-ban-empty" hidden>No bans.</p>`;
-  const saveLimit = vi.fn(async () => true);
-  const controls = createListenerControls(document, document.getElementById("settings-status"), saveLimit);
-  return { controls, saveLimit };
+  const controls = createListenerControls(document, document.getElementById("settings-status"));
+  return { controls };
 }
 
 describe("listener controls", () => {
   beforeEach(() => {
+    groups.length = 0;
     vi.clearAllMocks();
     requestJson.mockImplementation(async (url, options) => {
       if (url === "/api/stream/listeners") return {
@@ -73,8 +81,8 @@ describe("listener controls", () => {
     });
   });
 
-  it("saves the per-address limit and shows only the password state", async () => {
-    const { controls, saveLimit } = setup();
+  it("reads the per-address limit into the stream draft and shows only the password state", async () => {
+    const { controls } = setup();
     controls.apply({ stream_mode: true, stream_listener_revision: 1 });
     await tick();
     expect(document.getElementById("listener-password-state").textContent).toBe("Listener password not set.");
@@ -82,10 +90,9 @@ describe("listener controls", () => {
     limit.value = "2";
     limit.dispatchEvent(new Event("change"));
     await tick();
-    expect(saveLimit).toHaveBeenCalledWith(2, limit);
-    await vi.waitFor(() => {
-      expect(document.getElementById("settings-status").textContent).toBe("Connections per address set to 2.");
-    });
+    expect(groups.find((group) => group.group === "stream").read())
+      .toEqual({ max_listeners_per_address: 2 });
+    expect(requestJson.mock.calls.some(([, options]) => options?.method)).toBe(false);
   });
 
   it("moves focus to the next listener and updates names after refresh", async () => {

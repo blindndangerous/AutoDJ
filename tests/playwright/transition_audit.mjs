@@ -2,7 +2,7 @@
 //
 // Loads the live web UI, captures console output, waits for an <audio>
 // element, loads each worklet module into a fresh AudioContext to see
-// whether it loads, and posts each effect to /api/transition.  The page's
+// whether it loads, and saves each effect through /api/settings. The page's
 // own worklet state is module-private and not read.  Output is written as
 // a JSON report so we can diff worklet-load success and crossfade trigger
 // logs across Chromium / Firefox / WebKit.
@@ -76,9 +76,10 @@ export async function audit(name, launcher) {
   // state-changing calls.  Match the trusted origin of the page under audit.
   const transitions = {};
   for (const fx of EFFECTS) {
-    const res = await page.request.post(`${ORIGIN}/api/transition`, {
+    const snapshot = await (await page.request.get(`${ORIGIN}/api/settings`)).json();
+    const res = await page.request.patch(`${ORIGIN}/api/settings`, {
       headers: { "Content-Type": "application/json", Origin: ORIGIN },
-      data: JSON.stringify({ effect: fx }),
+      data: JSON.stringify({ revision: snapshot.revision, changes: { transition: { effect: fx } } }),
     });
     transitions[fx] = { status: res.status() };
   }

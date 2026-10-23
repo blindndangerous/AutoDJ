@@ -1,3 +1,4 @@
+import { settingsHaveChanges, confirmSettingsNavigation } from "./settings-drafts.js";
 // Section router -- single-page navigation. Audio
 // graph + crossfade state survive every navigation because the
 // document never reloads; only the `hidden` attribute toggles on
@@ -16,6 +17,7 @@ const _viewLinks = new Map();
 let _initialised = false;
 let _returnFocus = null;
 let _currentView = null;
+let _navigationPending = false;
 
 export function initViewRouter() {
   if (_initialised) return;
@@ -32,9 +34,7 @@ export function initViewRouter() {
   for (const lnk of _viewLinks.values()) {
     lnk.addEventListener("click", () => {
       const target = lnk.dataset.view;
-      clearStaleStatus(target);
-      if (location.hash !== "#" + target) location.hash = target;
-      else applyView(target, true);
+      selectTab(target);
     });
     // Activates the focused tab on move (automatic activation) -- panel
     // swap is just a `hidden` toggle, no perf reason for manual.
@@ -55,8 +55,7 @@ export function initViewRouter() {
     const returning = _returnFocus?.view === selected ? _returnFocus : null;
     _returnFocus = null;
     if (!returning && selected === _currentView) return;
-    applyView(selected, !returning);
-    focusReturn(returning);
+    navigate(selected, !returning, () => focusReturn(returning));
   });
   // Initial paint -- no focus stealing on first load.
   const initial = (location.hash || "#now").replace(/^#/, "");
@@ -107,10 +106,22 @@ function _onTabKeydown(e) {
 // aria-controls (see index.html): that relation to the panel shown here
 // made NVDA speak the focused tab a second time.
 function selectTab(name) {
-  clearStaleStatus(name);
-  applyView(name, false);
-  _viewLinks.get(name)?.focus();
-  if (location.hash !== "#" + name) location.hash = name;
+  navigate(name, false, () => {
+    _viewLinks.get(name)?.focus();
+    if (location.hash !== "#" + name) location.hash = name;
+  });
+}
+
+function navigate(name, focus, after = () => {}) {
+  const finish = () => { clearStaleStatus(name); applyView(name, focus); after(); };
+  if (_currentView !== "settings" || name === "settings" || !settingsHaveChanges()) { finish(); return; }
+  if (_navigationPending) return;
+  _navigationPending = true;
+  void confirmSettingsNavigation().then((allowed) => {
+    _navigationPending = false;
+    if (allowed) finish();
+    else window.history.replaceState(window.history.state, "", "#settings");
+  });
 }
 
 // The visible status mirror reports what was just done in the view being

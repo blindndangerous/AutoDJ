@@ -1,6 +1,6 @@
 # Plan a schedule
 
-Use **Settings**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Stations**, under **Time for the selected station**, then press **Save time settings**. The change takes effect when that station next starts. In **Stations on this server**, use its **Stop**, confirm **Stop station**, then **Start**. This applies to the default station too and disconnects its listeners.
+Use **Settings**, **Schedule** to change a station at set times. Events use the selected station's time zone, shown at the top of the panel. Set it in **Settings**, **Stations**, under **Time for the selected station**, then press **Save changes** in **Stations**. The change takes effect when that station next starts. In **Stations on this server**, use its **Stop**, confirm **Stop station**, then **Start**. This applies to the default station too and disconnects its listeners.
 
 ## Add an event
 

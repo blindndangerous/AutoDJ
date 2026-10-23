@@ -708,6 +708,7 @@
   <h2>Settings</h2>
 
   <!-- Shared polite status region for Settings saves and failures. -->
+  <p>Changes stay in the form until you choose Save changes. Discard changes restores the saved settings. Record editors and actions have their own buttons.</p>
   <div id="settings-status" role="status" aria-live="polite" aria-atomic="true" class="visually-hidden"></div>
 
   <!-- Like the section tabs, these carry no aria-controls: that relation
@@ -725,7 +726,7 @@
     <button type="button" role="tab" id="stab-breaks" data-subview="breaks" data-panel="spanel-breaks" aria-selected="false" tabindex="-1">Breaks</button>
     <button type="button" role="tab" id="stab-schedule" data-subview="schedule" data-panel="spanel-schedule" aria-selected="false" tabindex="-1">Schedule</button>
     <button type="button" role="tab" id="stab-stream" data-subview="stream" data-panel="spanel-stream" aria-selected="false" tabindex="-1">Stream</button>
-    <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1" hidden>Live DJ</button>
+    <button type="button" role="tab" id="stab-live" data-subview="live" data-panel="spanel-live" aria-selected="false" tabindex="-1">Live DJ</button>
     <button type="button" role="tab" id="stab-stations" data-subview="stations" data-panel="spanel-stations" aria-selected="false" tabindex="-1" aria-describedby="shared-context">Stations</button>
     <button type="button" role="tab" id="stab-access" data-subview="access" data-panel="spanel-access" aria-selected="false" tabindex="-1">Profiles and access</button>
     <button type="button" role="tab" id="stab-workers" data-subview="workers" data-panel="spanel-workers" aria-selected="false" tabindex="-1">Analysis workers</button>
@@ -1275,7 +1276,6 @@
       <!-- A refused value's message; the script moves it under the field it
            names and links it there with aria-describedby. -->
       <p class="field-error" id="repeat-error" hidden></p>
-      <button type="button" id="repeat-save">Save repeat settings</button>
     </fieldset>
     </details>
 
@@ -1501,7 +1501,6 @@
       <span class="setting-desc" id="pb-silence-trigger-desc">Starts the crossfade when a track goes silent after its halfway point.</span>
     </fieldset>
     <div class="settings-row">
-      <button type="button" id="mastering-save">Save sound settings</button>
     </div>
     <p class="setting-desc" id="mastering-save-note">Changing the Stereo Tool preset or AGC drive restarts Stereo Tool, with a brief bypass.</p>
   </div>
@@ -1907,7 +1906,7 @@
   <div class="card" role="tabpanel" id="spanel-breaks" aria-labelledby="stab-breaks" hidden>
     <h3>Breaks</h3>
     <!-- breaks-settings.js fills this panel when it is seen.  The settings
-         are this station's, saved with Save break settings; the result is
+         are this station's, saved with Save changes; the result is
          said once through #brk-status.  The upload limits, quotas and
          waiting times stay in config.toml.  #brk-reason is plain text,
          not live: it says why breaks cannot be taken now, if they cannot. -->
@@ -1964,7 +1963,6 @@
         <span class="setting-desc" id="brk-duck-help">How far the music drops under a break's voice, from minus 30 to 0. Blank uses the voice liner duck depth<span id="brk-duck-liners"></span>.</span>
         <p id="brk-duck-error" class="field-error" hidden></p>
       </div>
-      <button type="submit" id="brk-save">Save break settings</button>
     </form>
   </div>
 
@@ -2104,7 +2102,6 @@
         <div class="settings-row"><label for="public-origins">Sites allowed to embed</label><textarea id="public-origins" rows="3" aria-describedby="public-origins-help"></textarea></div>
         <p class="setting-desc" id="public-origins-help">One HTTP(S) site per line, or * for any site; blank allows only this server.</p>
         <p class="field-error" id="public-origins-error" hidden></p>
-        <button type="submit" id="public-page-save">Save player pages</button>
       </fieldset>
     </form>
     <!-- Live stream controls appear only in stream mode. The listener count
@@ -2143,7 +2140,6 @@
       <div class="settings-row"><label for="stream-station-description">Description</label><input id="stream-station-description" maxlength="255" autocomplete="off"></div>
       <div class="settings-row"><label for="stream-station-url">Website URL</label><input id="stream-station-url" type="url" maxlength="2048" autocomplete="url"></div>
       <p class="setting-desc">Station metadata changes reconnect enabled relays after you save. Description is sent to Icecast; Shoutcast and direct listener streams do not support it.</p>
-      <button type="button" id="stream-metadata-save">Save station metadata</button>
       <div class="settings-row">
         <label for="stream-bitrate">Quality</label>
         <select id="stream-bitrate" aria-describedby="stream-bitrate-desc">
@@ -2208,7 +2204,6 @@
         <span class="setting-desc" id="recording-free-space-desc">
           Recording pauses when the recordings drive has less free space than this, and resumes when space returns. The stream keeps playing.
         </span>
-        <button type="button" id="recording-save">Save recording settings</button>
       </fieldset>
       <!-- Relays, More formats, the now-playing feed and Listener statistics
            are set up once or read now and then, so each is a card closed by
@@ -2225,7 +2220,7 @@
         </div>
         <form id="stream-relay-form" hidden>
           <h5 id="stream-relay-form-title">Add relay</h5>
-          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required pattern="[A-Za-z0-9_-]+">
+          <label for="stream-relay-name">Name</label><input id="stream-relay-name" maxlength="32" required>
           <label for="stream-relay-type">Server type</label><select id="stream-relay-type"><option value="icecast">Icecast</option><option value="shoutcast1">Shoutcast 1</option><option value="shoutcast2">Shoutcast 2</option></select>
           <label for="stream-relay-host">Host</label><input id="stream-relay-host" required autocomplete="off">
           <label for="stream-relay-port">Listener port</label><input id="stream-relay-port" type="number" min="1" max="65535" value="8000" required>
@@ -2458,7 +2453,6 @@
           <option value="12">12 hour (3:04 PM)</option>
         </select>
       </div>
-      <button type="button" id="time-settings-save">Save time settings</button>
     </fieldset>
     <fieldset>
       <legend>Output for the selected station</legend>
@@ -2472,7 +2466,6 @@
       <label for="station-upload-cap">Maximum liner upload size (MiB)</label>
       <input type="number" id="station-upload-cap" min="1" max="1024" step="1">
       <p>Output changes apply when this station next starts.</p>
-      <button type="button" id="station-options-save">Save station options</button>
     </fieldset>
     <h4 id="stations-list-heading">Stations on this server</h4>
     <div class="data-table-scroll">
@@ -2623,7 +2616,6 @@
         </div>
         <span class="setting-desc" id="live-duck-desc">How far below its normal level the music plays while you talk, from 0 to 30 decibels.</span>
         <p class="field-error" id="live-talkover-error" hidden></p>
-        <button type="button" id="live-talkover-save">Save talk settings</button>
       </fieldset>
     </div>
   </div>

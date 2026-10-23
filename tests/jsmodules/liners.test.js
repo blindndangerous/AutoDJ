@@ -3,7 +3,17 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { groups } = vi.hoisted(() => ({ groups: [] }));
+vi.mock("../../src/autodj/static/modules/settings-drafts.js", () => ({
+  registerSettingsGroup: (spec) => {
+    groups.push(spec);
+    return { accept: (body) => spec.write(body), dirty: () => false };
+  },
+  settingsDraftHolds: () => false,
+}));
+
 afterEach(() => {
+  groups.length = 0;
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -639,48 +649,62 @@ describe("liner settings and upload", () => {
     headers: { "Content-Type": "application/json" },
   }));
 
-  it("sends 0 for a cleared trigger so clearing it turns the trigger off", async () => {
+  it("reads 0 for cleared triggers into the playback draft without persisting", async () => {
     vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: {} })));
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
-    const postSettings = vi.fn().mockResolvedValue(true);
     const elements = els();
-    installLiners(elements, { postSettings, canPlay: () => false });
+    installLiners(elements, { canPlay: () => false });
 
     elements.lnEveryN.dispatchEvent(new Event("change"));
 
-    expect(postSettings.mock.calls[0][1]).toMatchObject({
+    expect(groups.find((group) => group.group === "playback").read()).toMatchObject({
       liners_every_n_songs: 0,
       liners_every_minutes: 0,
       liners_random_min_minutes: 0,
       liners_random_max_minutes: 0,
     });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("shows duck depth as positive dB and saves the existing negative API value", async () => {
+  it("keeps the blank duck choice null and reads positive dB as a negative setting", async () => {
     vi.stubGlobal("fetch", vi.fn(() => ok({ files: [], config: { duck_db: -9 } })));
     const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
-    const postSettings = vi.fn().mockResolvedValue(true);
     const elements = els();
-    installLiners(elements, { postSettings, canPlay: () => false });
+    installLiners(elements, { canPlay: () => false });
     await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("9"));
 
-    for (const typed of ["31", "-1", ""]) {
+    for (const typed of ["31", "-1"]) {
       elements.lnDuckDb.value = typed;
       elements.lnDuckDb.dispatchEvent(new Event("change"));
-      expect(elements.lnDuckDb.value).toBe("9");
-      await vi.waitFor(() => expect(elements.lnStatus.textContent).toBe(
-        "Could not save Music duck: enter a number from 0 to 30.  It is still 9.",
-      ));
+      expect(elements.lnDuckDb.value).toBe(typed);
+      await vi.waitFor(() => expect(elements.lnStatus.textContent).toMatch(/enter a number from 0 to 30/));
       elements.lnStatus.textContent = "";
     }
-    expect(postSettings).not.toHaveBeenCalled();
-
-    elements.lnDuckDb.value = "0";
-    elements.lnDuckDb.dispatchEvent(new Event("change"));
-    expect(postSettings.mock.calls[0][1]).toMatchObject({ liners_duck_db: 0 });
     elements.lnDuckDb.value = "8";
     elements.lnDuckDb.dispatchEvent(new Event("change"));
-    expect(postSettings.mock.calls[1][1]).toMatchObject({ liners_duck_db: -8 });
+    expect(groups.find((group) => group.group === "playback").read().liners_duck_db).toBe(-8);
+    elements.lnDuckDb.value = "";
+    expect(groups.find((group) => group.group === "playback").read().liners_duck_db).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the default duck after a saved null replaces an older depth", async () => {
+    vi.stubGlobal("fetch", vi.fn((url) => url === "/api/liners"
+      ? ok({ files: ["station-id.mp3"], config: { duck_db: -12 } })
+      : Promise.resolve(new globalThis.Response(new Uint8Array([1]), {
+        headers: { "Content-Type": "audio/mpeg" },
+      }))));
+    const { installLiners } = await import("../../src/autodj/static/modules/liners.js");
+    document.body.insertAdjacentHTML("beforeend", '<ul id="liner-files"></ul><button id="liner-test">Test</button>');
+    const playLiner = vi.fn().mockResolvedValue(true);
+    const elements = { ...els(), lnFileList: document.getElementById("liner-files"),
+      lnTestBtn: document.getElementById("liner-test") };
+    installLiners(elements, { canPlay: () => false, testOnServer: () => false,
+      prepareTest: () => null, playLiner });
+    await vi.waitFor(() => expect(elements.lnDuckDb.value).toBe("12"));
+    groups.find((group) => group.group === "playback").write({ liners_duck_db: null });
+    elements.lnTestBtn.click();
+    await vi.waitFor(() => expect(playLiner).toHaveBeenCalledWith(expect.any(ArrayBuffer), -3, expect.any(Number)));
   });
 
   it("asks the server to replace an existing file only when ticked", async () => {

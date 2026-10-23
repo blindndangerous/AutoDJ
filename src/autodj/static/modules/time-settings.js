@@ -1,9 +1,8 @@
 // Settings > Stations, Time for every station (#282, #286): the station
-// time zone and the time format.  Loads when the Stations tab is shown;
-// Save says the result through #stations-status.
+// time zone and the time format. Loads when the Stations tab is shown.
 import { requestJson } from "./api-client.js";
-import { announceStatus } from "./live-region.js";
 import { setTimeFormat } from "./time-format.js";
+import { registerSettingsGroup } from "./settings-drafts.js";
 
 const ENDPOINT = "/api/time-settings";
 
@@ -11,14 +10,10 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
   const panel = doc.getElementById("spanel-stations");
   const zone = doc.getElementById("time-zone");
   const format = doc.getElementById("time-format");
-  const save = doc.getElementById("time-settings-save");
-  const status = doc.getElementById("stations-status");
-  if (!panel || !zone || !format || !save || !status) return { load: async () => {} };
-  let running = null;
+  if (!panel || !zone || !format) return { load: async () => {} };
   const output = doc.getElementById("station-output");
   const monitor = doc.getElementById("station-monitor");
   const cap = doc.getElementById("station-upload-cap");
-  const optionsSave = doc.getElementById("station-options-save");
   function showOptions(value) {
     output.value = value.output;
     monitor.checked = value.server_audio_too;
@@ -29,23 +24,9 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
     monitor.disabled = output.value !== "stream";
     if (monitor.disabled) monitor.checked = false;
   });
-  optionsSave?.addEventListener("click", async () => {
-    try {
-      showOptions(await request("/api/station-settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ output: output.value, server_audio_too: monitor.checked,
-          liner_upload_max_mib: Number(cap.value) }),
-      }));
-      announceStatus(status, "Station options saved. Output changes apply on the next start.", { force: true });
-    } catch (error) {
-      announceStatus(status, `Could not save station options: ${error.message}`, { force: true, tone: "error" });
-    }
-  });
 
   function show(value) {
-    running = value.running_timezone;
-    if (zone.options.length !== value.timezones.length) {
+    if (Array.isArray(value.timezones) && zone.options.length !== value.timezones.length) {
       zone.replaceChildren(...value.timezones.map((name) => {
         const option = doc.createElement("option");
         option.value = name;
@@ -53,36 +34,34 @@ export function installTimeSettings({ doc = document, request = requestJson } = 
         return option;
       }));
     }
-    zone.value = value.timezone;
-    format.value = value.time_format;
-    setTimeFormat(value.time_format);
+    if (value.timezone != null) zone.value = value.timezone;
+    if (value.time_format != null) {
+      format.value = value.time_format;
+      setTimeFormat(value.time_format);
+    }
   }
+
+  const timeDraft = registerSettingsGroup({
+    panel, group: "time", controls: [zone, format],
+    read: () => ({ timezone: zone.value, time_format: format.value }),
+    write: show,
+  });
+  const stationDraft = output && monitor && cap ? registerSettingsGroup({
+    panel, group: "station", controls: [output, monitor, cap],
+    read: () => ({ output: output.value, server_audio_too: monitor.checked,
+      liner_upload_max_mib: Number(cap.value) }),
+    write: showOptions,
+  }) : null;
 
   async function load() {
     try {
-      show(await request(ENDPOINT));
-      if (output) showOptions(await request("/api/station-settings"));
+      timeDraft.accept(await request(ENDPOINT));
+      if (stationDraft) stationDraft.accept(await request("/api/station-settings"));
     } catch {
       // The fields keep what they show; Save reports any problem.
     }
   }
 
-  save.addEventListener("click", async () => {
-    try {
-      const value = await request(ENDPOINT, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timezone: zone.value, time_format: format.value }),
-      });
-      show(value);
-      announceStatus(status, value.timezone === running
-        ? "Time settings saved."
-        : "Time settings saved. The new time zone applies when this station restarts.", { force: true });
-    } catch (error) {
-      announceStatus(status, `Could not save the time settings: ${error.message}`,
-        { force: true, tone: "error" });
-    }
-  });
   panel.addEventListener("toggle", () => { if (panel.open) void load(); });
   return { load };
 }

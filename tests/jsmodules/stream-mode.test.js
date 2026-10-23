@@ -4,7 +4,6 @@ import {
   createStreamMode,
   createStreamSettings,
   ADDRESS_RETRY_MS,
-  BITRATE_SETTLE_MS,
   NOT_LOADED_NOTE,
   STREAM_DELAY_ESTIMATE_S,
   relayText,
@@ -694,6 +693,7 @@ const announced = (text) =>
 
 function settingsDom() {
   document.body.innerHTML = `
+    <div id="spanel-stream">
     <details class="card" open><summary><h2>Settings</h2></summary>
     <div id="settings-status" role="status" aria-live="polite" aria-atomic="true"></div>
     <fieldset id="stream-settings" hidden>
@@ -713,7 +713,7 @@ function settingsDom() {
         <ul id="stream-relays-list" aria-labelledby="stream-relays-intro"></ul>
       </div>
     </fieldset>
-    </details>
+    </details></div>
     <div id="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>`;
 }
 
@@ -721,7 +721,6 @@ function makeSettings(overrides = {}) {
   const opts = {
     doc: document,
     fetchInfo: vi.fn(async () => INFO),
-    saveBitrate: vi.fn(async () => true),
     srStatus: document.getElementById("sr-status"),
     settingsStatus: document.getElementById("settings-status"),
     ...overrides,
@@ -773,24 +772,25 @@ describe("stream settings", () => {
     expect(byId("stream-loopback-note").hidden).toBe(!loopback);
   });
 
-  it("saves the keep-playing choice independently of listener controls", async () => {
+  it("stages the keep-playing choice", async () => {
     settingsDom();
-    const saveContinuous = vi.fn(async () => true);
-    const { ui } = makeSettings({ saveContinuous });
+    const { ui } = makeSettings();
     ui.apply({ stream_mode: true, stream_listeners: 0 });
     await vi.waitFor(() => expect(byId("stream-url").value).not.toBe(""));
     const control = byId("stream-continuous");
     control.checked = true;
     control.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(saveContinuous).toHaveBeenCalledWith(true, control));
+    expect(control.checked).toBe(true);
   });
 
-  it("stays hidden and fetches nothing outside stream mode", () => {
+  it("keeps configuration available without looking up a stream address", () => {
     settingsDom();
     const { ui, opts } = makeSettings();
     ui.apply({ stream_mode: false });
-    expect(byId("stream-settings").hidden).toBe(true);
+    expect(byId("stream-settings").hidden).toBe(false);
     expect(opts.fetchInfo).not.toHaveBeenCalled();
+    expect(byId("stream-url").value).toBe("");
+    expect(byId("stream-m3u").hasAttribute("href")).toBe(false);
   });
 
   it("fills address, playlist link, quality and listener count", async () => {
@@ -831,11 +831,12 @@ describe("stream settings", () => {
     expect(listeners.hasAttribute("role")).toBe(false);
   });
 
-  it("does not overwrite the quality while it has focus", async () => {
+  it("keeps an edited quality while refreshing stream details", async () => {
     settingsDom();
     const { ui } = makeSettings({ fetchInfo: vi.fn(async () => ({ ...INFO, bitrate: 128 })) });
     const select = byId("stream-bitrate");
     ui.apply({ stream_mode: true, stream_listeners: 0 });
+    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 320 } } });
     select.focus();
     select.value = "192";
     await ui.refresh();
@@ -988,149 +989,34 @@ describe("stream settings", () => {
     await announced(COPY_FAIL);
   });
 
-  it("saves the quality once the choice settles and says 1 listener correctly", async () => {
+  it("stages quality and continuous playback without saving, and keeps edits across pushes", async () => {
     settingsDom();
-    const { ui, opts } = makeSettings({ fetchInfo: vi.fn(async () => ({ ...INFO, listeners: 1 })) });
+    const { ui } = makeSettings({ fetchInfo: vi.fn(async () => ({ ...INFO, continuous: false, listeners: 1 })) });
     ui.apply({ stream_mode: true, stream_listeners: 1 });
     await ui.refresh();
     expect(byId("stream-listeners").textContent).toBe("1 listener");
-    vi.useFakeTimers();
     const select = byId("stream-bitrate");
     select.value = "192";
     select.dispatchEvent(new Event("change"));
-    expect(opts.saveBitrate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(opts.saveBitrate).toHaveBeenCalledWith(192, select);
-  });
-
-  it("sends one save for quick arrow presses, with the last value", async () => {
-    settingsDom();
-    const { ui, opts } = makeSettings();
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    for (const value of ["256", "192", "128"]) {
-      select.value = value;
-      select.dispatchEvent(new Event("change"));
-      await vi.advanceTimersByTimeAsync(200);
-    }
-    expect(opts.saveBitrate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(opts.saveBitrate).toHaveBeenCalledOnce();
-    expect(opts.saveBitrate).toHaveBeenCalledWith(128, select);
-  });
-
-  it("sends nothing when the choice settles back on the saved quality", async () => {
-    settingsDom();
-    const { ui, opts } = makeSettings();
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    for (const value of ["256", "320"]) {
-      select.value = value;
-      select.dispatchEvent(new Event("change"));
-    }
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS * 2);
-    expect(opts.saveBitrate).not.toHaveBeenCalled();
-  });
-
-  it("follows a save in flight with exactly one save of the newest choice", async () => {
-    settingsDom();
-    const replies = [];
-    const saveBitrate = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
-    const { ui } = makeSettings({ saveBitrate });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    select.value = "256";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(saveBitrate).toHaveBeenCalledTimes(1);
-    for (const value of ["192", "128"]) {
-      select.value = value;
-      select.dispatchEvent(new Event("change"));
-      await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    }
-    // Still one: the first save has not answered yet.
-    expect(saveBitrate).toHaveBeenCalledTimes(1);
-    replies[0](true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(saveBitrate).toHaveBeenCalledTimes(2);
-    expect(saveBitrate).toHaveBeenLastCalledWith(128, select);
-    replies[1](true);
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS * 2);
-    expect(saveBitrate).toHaveBeenCalledTimes(2);
-    expect(select.value).toBe("128");
-  });
-
-  it("skips the follow-up when the newest choice is what was just saved", async () => {
-    settingsDom();
-    const replies = [];
-    const saveBitrate = vi.fn(() => new Promise((resolve) => replies.push(resolve)));
-    const { ui } = makeSettings({ saveBitrate });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    select.value = "256";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    select.value = "192";
-    select.dispatchEvent(new Event("change"));
-    select.value = "256";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    replies[0](true);
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(saveBitrate).toHaveBeenCalledOnce();
-  });
-
-  it("puts the quality back when saving it fails", async () => {
-    settingsDom();
-    const { ui } = makeSettings({ saveBitrate: vi.fn(async () => false) });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    select.value = "128";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(select.value).toBe("320");
-  });
-
-  it("keeps a saved quality when a later save fails", async () => {
-    settingsDom();
-    const saveBitrate = vi.fn(async () => true);
-    const { ui } = makeSettings({ saveBitrate });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    select.value = "192";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    saveBitrate.mockResolvedValueOnce(false);
-    select.value = "128";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
+    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 256 } } });
     expect(select.value).toBe("192");
+    const always = byId("stream-continuous");
+    always.checked = true;
+    always.dispatchEvent(new Event("change"));
+    expect(always.checked).toBe(true);
   });
 
-  it("drops an unsent quality change when stream mode ends", async () => {
+  it("accepts pushed quality when clean and preserves an edited value", async () => {
     settingsDom();
-    const { ui, opts } = makeSettings();
+    const { ui } = makeSettings();
     ui.apply({ stream_mode: true });
     await ui.refresh();
-    vi.useFakeTimers();
     const select = byId("stream-bitrate");
+    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 192 } } });
+    expect(select.value).toBe("192");
     select.value = "128";
-    select.dispatchEvent(new Event("change"));
-    ui.apply({ stream_mode: false });
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(opts.saveBitrate).not.toHaveBeenCalled();
+    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 256 } } });
+    expect(select.value).toBe("128");
   });
 
   it("follows the quality the server pushes", async () => {
@@ -1144,36 +1030,18 @@ describe("stream settings", () => {
     });
     ui.apply(pushed(192));
     expect(select.value).toBe("192");
-    // Never while it has focus...
+    // A clean control follows the server value even while focused.
     select.focus();
     ui.apply(pushed(256));
-    expect(select.value).toBe("192");
-    select.blur();
-    ui.apply(pushed(256));
     expect(select.value).toBe("256");
-    // ...nor while a change of it is waiting to be saved.
-    vi.useFakeTimers();
+    select.blur();
     select.value = "128";
     select.dispatchEvent(new Event("change"));
-    ui.apply(pushed(256));
+    ui.apply(pushed(192));
     expect(select.value).toBe("128");
     // A push without the key leaves it alone.
     ui.apply({ stream_mode: true, settings: null });
     expect(select.value).toBe("128");
-  });
-
-  it("treats a pushed quality as the value to undo a failed save to", async () => {
-    settingsDom();
-    const { ui } = makeSettings({ saveBitrate: vi.fn(async () => false) });
-    ui.apply({ stream_mode: true });
-    await ui.refresh();
-    ui.apply({ stream_mode: true, settings: { playback: { stream_bitrate: 192 } } });
-    vi.useFakeTimers();
-    const select = byId("stream-bitrate");
-    select.value = "128";
-    select.dispatchEvent(new Event("change"));
-    await vi.advanceTimersByTimeAsync(BITRATE_SETTLE_MS);
-    expect(select.value).toBe("192");
   });
 
   it("shows a plain note and retries while the address is missing", async () => {
@@ -1214,15 +1082,15 @@ describe("stream settings", () => {
     expect(fetchInfo).toHaveBeenCalledTimes(3);
   });
 
-  it("hides the section and moves focus out when stream mode ends", async () => {
+  it("keeps settings and focus available when stream mode ends", async () => {
     settingsDom();
     const { ui } = makeSettings();
     ui.apply({ stream_mode: true });
     await ui.refresh();
     byId("stream-url").focus();
     ui.apply({ stream_mode: false });
-    expect(byId("stream-settings").hidden).toBe(true);
-    expect(document.activeElement).toBe(document.querySelector("summary"));
+    expect(byId("stream-settings").hidden).toBe(false);
+    expect(document.activeElement).toBe(byId("stream-url"));
   });
 
   it("reset() clears the address for sign-out", async () => {

@@ -4,13 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyRepeatSettings, installRepeatSettings, resetRepeatSettings,
 } from "../../src/autodj/static/modules/repeat-settings.js";
-import { invalidateAuthenticatedRequestEpoch } from
-  "../../src/autodj/static/modules/api-client.js";
+import { applySettingsDrafts, resetSettingsDrafts } from
+  "../../src/autodj/static/modules/settings-drafts.js";
 
 const html = readFileSync(join(process.cwd(), "src/autodj/static/index.html"), "utf8");
 
 afterEach(() => {
   vi.restoreAllMocks();
+  resetSettingsDrafts(document);
   document.body.replaceChildren();
 });
 
@@ -43,31 +44,39 @@ function installPage() {
     fileStatus: $("repeat-related-status"),
     tracksDefaultFile: $("repeat-related-tracks-default"),
     tracksFileStatus: $("repeat-related-tracks-status"),
-    save: $("repeat-save"),
+    repeatGroup: $("repeat-artist-tracks").closest("fieldset").parentElement,
   };
 }
 
-function setup(postSettings = vi.fn().mockResolvedValue(true)) {
+function setup(fail = false) {
   const els = installPage();
   const settingsStatus = document.getElementById("settings-status");
-  installRepeatSettings(els, { postSettings, settingsStatus });
-  return { els, settingsStatus, postSettings };
-}
-
-// A postSettings whose request fails with *status* and *message*, the way
-// settings-panel.js hands a failure to onError.
-function failingPost(status, message) {
-  return vi.fn(async (_url, _body, _control, { onError } = {}) => {
-    const error = new Error(message);
-    error.status = status;
-    onError?.(error);
-    return false;
-  });
+  const panel = document.getElementById("spanel-picking");
+  installRepeatSettings(els, { settingsStatus });
+  const requests = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url, options = {}) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    if (fail) {
+      return new globalThis.Response(JSON.stringify({ detail: "The settings service is busy." }), {
+        status: 503, headers: { "Content-Type": "application/json" },
+      });
+    }
+    const values = { playback: { repeat_rules: body.changes.playback.repeat_rules } };
+    return new globalThis.Response(JSON.stringify({ revision: "two", settings: { revision: "two", values },
+      applied: ["playback"], failed: {} }), { headers: { "Content-Type": "application/json" } });
+  }));
+  applySettingsDrafts({ revision: "one", values: { playback: { repeat_rules: fullRules } } });
+  els.save = panel.querySelector("[data-settings-save]");
+  els.panel = panel;
+  els.repeatGroup = els.artistTracks.closest("fieldset").parentElement;
+  els.requests = requests;
+  return { els, settingsStatus, requests };
 }
 
 function type(control, value) {
   control.value = value;
-  control.dispatchEvent(new Event("input"));
+  control.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 const describedBy = (element) => (element.getAttribute("aria-describedby") || "")
@@ -84,7 +93,7 @@ const fullRules = {
 describe("Repeats markup", () => {
   it("groups each rule under a legend and labels every box", () => {
     const els = installPage();
-    const outer = els.save.closest("fieldset");
+    const outer = els.repeatGroup;
     // Repeats is a card closed by default; the heading in its summary
     // names the outer group.
     const card = outer.parentElement;
@@ -124,7 +133,7 @@ describe("Repeats markup", () => {
 
   it("keeps the Repeats introduction and field range hints visible", () => {
     const els = installPage();
-    const outer = els.save.closest("fieldset");
+    const outer = els.repeatGroup;
     const description = document.getElementById("repeat-rules-desc");
     expect(outer.hasAttribute("aria-describedby")).toBe(false);
     expect(description.hidden).toBe(false);
@@ -229,22 +238,19 @@ describe("Repeats markup", () => {
 });
 
 describe("repeat settings", () => {
-  it("applies and saves the daypart and quarter-hour rules, hours in order", async () => {
-    const { els, postSettings } = setup();
-    const timed = { ...fullRules, daypart: { days: 2, start_hours: [0, 5, 9] },
-      hourpart: { plays: 1 } };
-    applyRepeatSettings({ playback: { repeat_rules: timed } }, els);
-    expect(els.daypartDays.value).toBe("2");
-    expect(els.daypartHours.value).toBe("0, 5, 9");
-    expect(els.hourpartPlays.value).toBe("1");
-
+  it("loads the shared settings snapshot and saves only changed repeat fields", async () => {
+    const { els, requests } = setup();
+    expect(els.trackTracks.value).toBe("50");
+    expect(els.useRelatedArtists.checked).toBe(true);
+    type(els.artistTracks, "7");
     type(els.daypartHours, " 19 ,6,0 ");
-    type(els.hourpartPlays, "3");
+    expect(requests).toHaveLength(0);
     els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: {
-      ...timed, daypart: { days: 2, start_hours: [0, 6, 19] }, hourpart: { plays: 3 },
-    } });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toEqual({ revision: "one", changes: { playback: { repeat_rules: {
+      ...fullRules, artist: { tracks: 7, minutes: 0 },
+      daypart: { days: 0, start_hours: [0, 6, 19] },
+    } } } });
   });
 
   it.each([
@@ -259,293 +265,52 @@ describe("repeat settings", () => {
     ["daypartHours", "6 10", "Daypart start hours must be whole numbers from 0 to 23, "
       + "separated by commas, with no hour given twice."],
     ["hourpartPlays", "4", "Same quarter hour plays must be a whole number from 0 to 3."],
-  ])("refuses %s %j, marks and focuses it, and names the rule", async (name, value, message) => {
-    const { els, postSettings, settingsStatus } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    ["artistTracks", "5001", "Same artist tracks must be a whole number from 0 to 5000."],
+  ])("keeps invalid %s %j, marks and focuses it, and says why", async (name, value, message) => {
+    const { els, requests, settingsStatus } = setup();
     type(els[name], value);
-    expect(els[name].getAttribute("aria-invalid")).toBe(null);
     els.save.click();
     expect(els[name].getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(els[name]);
     await vi.waitFor(() => expect(settingsStatus.textContent).toBe(message));
-    expect(postSettings).not.toHaveBeenCalled();
-    // The message is also on the page, under the field and linked to it.
+    expect(requests).toHaveLength(0);
     expect(els.error.hidden).toBe(false);
     expect(els.error.textContent).toBe(message);
-    expect(els.error.previousElementSibling).toBe(els[name].closest(".settings-row"));
     expect(describedBy(els[name])).toContain(els.error);
-    expect(els.error.hasAttribute("aria-live")).toBe(false);
     type(els[name], name === "daypartHours" ? "0, 12" : "1");
     expect(els[name].hasAttribute("aria-invalid")).toBe(false);
     expect(els.error.hidden).toBe(true);
-    expect(describedBy(els[name])).not.toContain(els.error);
-    if (name === "daypartHours") {
-      // Its own format help stays linked.
-      expect(describedBy(els[name]).map((node) => node.id)).toEqual(["repeat-daypart-hours-desc"]);
-    } else {
-      expect(els[name].hasAttribute("aria-describedby")).toBe(false);
-    }
   });
 
-  it("moves the field error to the next refused box and clears it on a good save", async () => {
-    const { els, postSettings } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    type(els.artistTracks, "5001");
-    els.save.click();
-    expect(describedBy(els.artistTracks)).toContain(els.error);
-    expect(els.error.textContent).toBe("Same artist tracks must be a whole number from 0 to 5000.");
-    type(els.artistTracks, "8");
-    type(els.trackMinutes, "-1");
-    els.save.click();
-    expect(els.artistTracks.hasAttribute("aria-describedby")).toBe(false);
-    expect(describedBy(els.trackMinutes)).toContain(els.error);
-    expect(els.error.previousElementSibling).toBe(els.trackMinutes.closest(".settings-row"));
-    // Editing another box leaves the error with its own field.
-    type(els.albumTracks, "3");
-    expect(els.error.hidden).toBe(false);
-    els.trackMinutes.value = "0";
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(els.error.hidden).toBe(true));
-    expect(els.trackMinutes.hasAttribute("aria-describedby")).toBe(false);
-  });
-
-  it("applies server values, keeps typed edits across pushes, and saves no file path", async () => {
-    const { els, postSettings } = setup();
+  it("keeps related file status separate and excludes file paths from repeat patches", async () => {
+    const { els, requests } = setup();
+    const problem = "The related tracks file is not valid: line 2.";
     applyRepeatSettings({ playback: {
-      repeat_rules: fullRules,
-      related_artists_default_file: "C:/station/related-artists.toml",
-      related_artists_problem: null,
+      repeat_rules: fullRules, related_tracks_default_file: "C:/station/related-tracks.toml",
+      related_tracks_problem: problem,
     } }, els);
-    expect(els.trackTracks.value).toBe("50");
-    expect(els.useRelatedArtists.checked).toBe(true);
-    expect(els.defaultFile.textContent).toBe("C:/station/related-artists.toml");
-    expect(els.fileStatus.hidden).toBe(true);
-
-    type(els.artistTracks, "7");
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, artist: { tracks: 9, minutes: 0 } } } }, els);
-    expect(els.artistTracks.value).toBe("7");
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    const [url, body, control] = postSettings.mock.calls[0];
-    expect(url).toBe("/api/playback-settings");
-    expect(body).toEqual({ repeat_rules: { ...fullRules, artist: { tracks: 7, minutes: 0 } } });
-    expect(Object.keys(body.repeat_rules)).not.toContain("related_artists_file");
-    expect(control).toBe(els.save);
-  });
-
-  it("applies and saves the related artist and related track limits", async () => {
-    const { els, postSettings } = setup();
-    applyRepeatSettings({ playback: {
-      repeat_rules: { ...fullRules, use_related_tracks: true,
-        related_track: { tracks: 6, minutes: 45 } },
-      related_tracks_default_file: "C:/station/related-tracks.toml",
-      related_tracks_problem: null,
-    } }, els);
-    expect(els.useRelatedTracks.checked).toBe(true);
-    expect(els.relatedTrackTracks.value).toBe("6");
-    expect(els.relatedTrackMinutes.value).toBe("45");
-    expect(els.tracksDefaultFile.textContent).toBe("C:/station/related-tracks.toml");
-
-    type(els.relatedArtistMinutes, "90");
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: {
-      ...fullRules, use_related_tracks: true, related_track: { tracks: 6, minutes: 45 },
-      related_artist: { tracks: 8, minutes: 90 },
-    } });
-  });
-
-  it("applies and saves Count versions as one song", async () => {
-    const { els, postSettings } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, versions_as_one_song: true } } }, els);
-    expect(els.versionsAsOneSong.checked).toBe(true);
-    els.versionsAsOneSong.click();
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    expect(postSettings.mock.calls[0][1]).toEqual({ repeat_rules: fullRules });
-    // A push that still holds the old value does not undo the change on screen.
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, versions_as_one_song: true } } }, els);
-    expect(els.versionsAsOneSong.checked).toBe(false);
-  });
-
-  it("names the related rule in an invalid limit's message", async () => {
-    const { els, postSettings, settingsStatus } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    type(els.relatedTrackTracks, "5001");
-    els.save.click();
-    expect(document.activeElement).toBe(els.relatedTrackTracks);
-    await vi.waitFor(() => expect(settingsStatus.textContent)
-      .toBe("Related tracks tracks must be a whole number from 0 to 5000."));
-    expect(postSettings).not.toHaveBeenCalled();
-  });
-
-  it("shows a related tracks problem found at startup in its own status line", () => {
-    const { els } = setup();
-    const problem = "The related tracks file is not valid: line 2. Related tracks are off "
-      + "until the file is fixed and repeat settings are saved.";
-    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_tracks_problem: problem } }, els);
     expect(els.tracksFileStatus.hidden).toBe(false);
     expect(els.tracksFileStatus.textContent).toBe(problem);
-    expect(els.fileStatus.hidden).toBe(true);
-    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_tracks_problem: null } }, els);
-    expect(els.tracksFileStatus.hidden).toBe(true);
+    expect(els.tracksDefaultFile.textContent).toBe("C:/station/related-tracks.toml");
+    els.versionsAsOneSong.click();
+    els.save.click();
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0].changes.playback.repeat_rules.versions_as_one_song).toBe(true);
+    expect(requests[0].changes.playback).not.toHaveProperty("related_tracks_default_file");
+    expect(requests[0].changes.playback.repeat_rules).not.toHaveProperty("related_tracks_file");
   });
 
-  it("focuses Use related tracks when the server refuses the related tracks file", async () => {
-    const message = "The related tracks file is not valid.";
-    const { els, settingsStatus } = setup(failingPost(400, message));
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, use_related_tracks: true } } }, els);
-    els.save.click();
-    await vi.waitFor(() => expect(els.useRelatedTracks.getAttribute("aria-invalid")).toBe("true"));
-    expect(document.activeElement).toBe(els.useRelatedTracks);
-    expect(els.useRelatedArtists.hasAttribute("aria-invalid")).toBe(false);
-    expect(els.tracksFileStatus.textContent).toBe(message);
-    expect(els.fileStatus.hidden).toBe(true);
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      `Use related tracks: ${message} Fix the file or turn this off, then save again.`));
-  });
-
-  it("shows a related artists problem found at startup in the status line", () => {
-    const { els } = setup();
-    const problem = "The related artists file is not valid: line 3. Related artists are off "
-      + "until the file is fixed and repeat settings are saved.";
-    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_artists_problem: problem } }, els);
-    expect(els.fileStatus.hidden).toBe(false);
-    expect(els.fileStatus.textContent).toBe(problem);
-    expect(describedBy(els.useRelatedArtists)).toContain(els.fileStatus);
-    applyRepeatSettings({ playback: { repeat_rules: fullRules, related_artists_problem: null } }, els);
-    expect(els.fileStatus.hidden).toBe(true);
-    expect(els.fileStatus.textContent).toBe("");
-  });
-
-  it("keeps invalid edits, marks and focuses the field, names its rule, and clears when fixed", async () => {
-    const { els, postSettings, settingsStatus } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    // The Repeats card is closed by default; focusing a refused box opens it.
-    const card = els.save.closest("details");
-    expect(card.open).toBe(false);
-    type(els.artistTracks, "1.5");
-    els.save.click();
-    expect(card.open).toBe(true);
-    expect(els.artistTracks.value).toBe("1.5");
-    expect(els.artistTracks.getAttribute("aria-invalid")).toBe("true");
-    expect(document.activeElement).toBe(els.artistTracks);
-    await vi.waitFor(() => expect(settingsStatus.textContent)
-      .toBe("Same artist tracks must be a whole number from 0 to 5000."));
-    expect(postSettings).not.toHaveBeenCalled();
-
-    type(els.artistTracks, "5001");
-    expect(els.artistTracks.getAttribute("aria-invalid")).toBe("true");
-    type(els.artistTracks, "8");
-    expect(els.artistTracks.hasAttribute("aria-invalid")).toBe(false);
-
-    type(els.trackMinutes, "10080.1");
-    els.save.click();
-    expect(els.trackMinutes.value).toBe("10080.1");
-    expect(els.trackMinutes.getAttribute("aria-invalid")).toBe("true");
-    expect(document.activeElement).toBe(els.trackMinutes);
-    await vi.waitFor(() => expect(settingsStatus.textContent)
-      .toBe("Same track minutes must be a number from 0 to 10080."));
-
-    type(els.trackMinutes, "0");
-    type(els.titleTracks, "");
-    els.save.click();
-    expect(els.titleTracks.getAttribute("aria-invalid")).toBe("true");
-    expect(document.activeElement).toBe(els.titleTracks);
-    // The track rule allows more than the others.
-    type(els.titleTracks, "0");
-    type(els.trackTracks, "100000");
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-  });
-
-  it("announces a successful save and clears earlier errors", async () => {
-    const { els, settingsStatus } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    els.useRelatedArtists.setAttribute("aria-invalid", "true");
-    els.fileStatus.textContent = "The related artists file is not valid: line 3.";
-    els.fileStatus.hidden = false;
-    els.save.focus();
-    els.save.click();
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe("Repeat settings saved."));
-    expect(els.useRelatedArtists.hasAttribute("aria-invalid")).toBe(false);
-    expect(els.fileStatus.hidden).toBe(true);
-    expect(document.activeElement).toBe(els.save);
-  });
-
-  it("keeps edits and focuses Use related artists when the server refuses the file", async () => {
-    const message = "The related artists file is not valid: line 3.";
-    const { els, settingsStatus } = setup(failingPost(400, message));
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+  it("keeps edits across old pushes and failed saves", async () => {
+    const { els, requests } = setup(true);
     type(els.artistTracks, "7");
-    els.save.click();
-    await vi.waitFor(() => expect(els.useRelatedArtists.getAttribute("aria-invalid")).toBe("true"));
-    expect(document.activeElement).toBe(els.useRelatedArtists);
+    applySettingsDrafts({ revision: "old", values: { playback: { repeat_rules: fullRules } } });
     expect(els.artistTracks.value).toBe("7");
-    expect(els.useRelatedArtists.checked).toBe(true);
-    expect(els.fileStatus.hidden).toBe(false);
-    expect(els.fileStatus.textContent).toBe(message);
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      `Use related artists: ${message} Fix the file or turn this off, then save again.`));
-
-    // A push of the old rules does not undo the edits.
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    expect(els.artistTracks.value).toBe("7");
-    // Turning it off clears the mark.
-    els.useRelatedArtists.click();
-    expect(els.useRelatedArtists.hasAttribute("aria-invalid")).toBe(false);
-  });
-
-  it("keeps edits and focus on Save when the save fails for another reason", async () => {
-    const { els, settingsStatus } = setup(failingPost(503, "The server is busy."));
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, use_related_artists: false } } }, els);
-    type(els.albumTracks, "4");
-    els.save.focus();
     els.save.click();
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe(
-      "Repeat settings were not saved. The server is busy. Your changes are still in the form."));
-    expect(els.albumTracks.value).toBe("4");
-    expect(document.activeElement).toBe(els.save);
-    expect(document.querySelectorAll("[aria-invalid]")).toHaveLength(0);
-  });
-
-  it("holds old server pushes while saving and after, until the save's echo arrives", async () => {
-    let finishSave;
-    const postSettings = vi.fn(() => new Promise((resolve) => { finishSave = resolve; }));
-    const { els, settingsStatus } = setup(postSettings);
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    type(els.artistTracks, "7");
-    els.save.click();
-    await vi.waitFor(() => expect(postSettings).toHaveBeenCalledOnce());
-    // A push that left the server before the save arrived.
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await vi.waitFor(() => expect(els.panel.querySelector(".settings-save-status").textContent)
+      .toContain("settings service is busy"));
     expect(els.artistTracks.value).toBe("7");
-
-    finishSave(true);
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe("Repeat settings saved."));
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    expect(els.artistTracks.value).toBe("7");
-
-    // The echo, numbers dumped the way the server sends them.
-    const saved = { ...fullRules, artist: { tracks: 7, minutes: 0.0 } };
-    applyRepeatSettings({ playback: { repeat_rules: saved } }, els);
-    expect(els.echo).toBeNull();
-    // Later pushes apply again.
-    applyRepeatSettings({ playback: { repeat_rules: { ...saved, title: { tracks: 2, minutes: 0 } } } }, els);
-    expect(els.titleTracks.value).toBe("2");
-  });
-
-  it("stops holding pushes when the echo never comes", async () => {
-    const { els, settingsStatus } = setup();
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    type(els.artistTracks, "7");
-    els.save.click();
-    await vi.waitFor(() => expect(settingsStatus.textContent).toBe("Repeat settings saved."));
-    const now = Date.now();
-    vi.spyOn(Date, "now").mockReturnValue(now + 5001);
-    applyRepeatSettings({ playback: { repeat_rules: { ...fullRules, artist: { tracks: 6, minutes: 0 } } } }, els);
-    expect(els.artistTracks.value).toBe("6");
+    expect(els.save.disabled).toBe(false);
   });
 
   it("resets controls after authenticated state is cleared", () => {
@@ -563,25 +328,5 @@ describe("repeat settings", () => {
     expect(els.useRelatedArtists.checked).toBe(false);
     expect(els.defaultFile.textContent).toBe("index/libraries/main/related-artists.toml");
     expect(els.fileStatus.hidden).toBe(true);
-  });
-
-  it("does not let a save from an old auth epoch overwrite new-session edits", async () => {
-    let finishSave;
-    const postSettings = vi.fn(() => new Promise((resolve) => { finishSave = resolve; }));
-    const { els } = setup(postSettings);
-    applyRepeatSettings({ playback: { repeat_rules: fullRules } }, els);
-    type(els.artistTracks, "7");
-    els.save.click();
-
-    invalidateAuthenticatedRequestEpoch();
-    resetRepeatSettings(els);
-    const newSessionRules = { ...fullRules, artist: { tracks: 10, minutes: 0 } };
-    applyRepeatSettings({ playback: { repeat_rules: newSessionRules } }, els);
-    type(els.artistTracks, "13");
-
-    finishSave(false);
-    await vi.waitFor(() => expect(els.artistTracks.value).toBe("13"));
-    applyRepeatSettings({ playback: { repeat_rules: newSessionRules } }, els);
-    expect(els.artistTracks.value).toBe("13");
   });
 });

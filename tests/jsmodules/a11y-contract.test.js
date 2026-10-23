@@ -2056,7 +2056,7 @@ describe("static accessibility contracts", () => {
     // heading: the summary's name is the heading text, and the browser
     // says expanded or collapsed, so no ARIA state is added.
     const folded = [
-      ["#repeat-save", "#spanel-picking", "H4", "Repeats"],
+      ["#repeat-daypart-hours", "#spanel-picking", "H4", "Repeats"],
       ["#rotation-test", "#spanel-picking", "H4", "Test rotation"],
       ["#stream-relay-add", "#spanel-stream", "H4", "Relays"],
       ["#stream-formats", "#spanel-stream", "H4", "More formats"],
@@ -2336,9 +2336,7 @@ describe("static accessibility contracts", () => {
       expect(describedBy(input)).toHaveLength(1);
       expect(describedBy(input).every(Boolean)).toBe(true);
     }
-    const save = document.querySelector("#recording-save");
-    expect(save.getAttribute("type")).toBe("button");
-    expect(save.textContent.trim()).toBe("Save recording settings");
+    expect(document.querySelector("#recording-save")).toBeNull();
     // Nothing on the page names or edits the recordings folder.
     expect(group.querySelector("input[type=text], input[type=file]")).toBeNull();
   });
@@ -2679,7 +2677,7 @@ describe("static accessibility contracts", () => {
 
   it("gives the daypart and quarter-hour repeat rules labelled native fields and silent help", () => {
     installDocument({ html: htmlSource });
-    const repeats = document.querySelector("#repeat-save").closest("fieldset");
+    const repeats = document.querySelector('fieldset[aria-labelledby="repeat-heading"]');
     expect(repeats.closest("#spanel-picking")).not.toBeNull();
     for (const [id, label, type, legend] of [
       ["repeat-daypart-days", "Days", "number", "Prevent a song from playing in the same daypart"],
@@ -3290,9 +3288,9 @@ describe("static accessibility contracts", () => {
     // The shortcut is listed with the others, in words.
     const keys = [...document.querySelectorAll("#hotkey-help-modal dt kbd")].map((kbd) => kbd.textContent);
     expect(keys).toContain("Alt+M");
-    // Settings > Live DJ: its own tab and panel, hidden until the station can go live.
+    // Settings > Live DJ remains available independently of station playout.
     const tab = document.getElementById("stab-live");
-    expect(tab.hidden).toBe(true);
+    expect(tab.hidden).toBe(false);
     expect(tab.textContent).toBe("Live DJ");
     const panel = document.getElementById(tab.dataset.panel);
     expect(panel.getAttribute("aria-labelledby")).toBe("stab-live");

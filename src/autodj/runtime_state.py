@@ -83,7 +83,7 @@ BREAK_SETTING_KEYS = (
 )
 
 #: Saved under ``playback`` but set by their own routes (``/api/volume``,
-#: ``/api/mute``, ``/api/stream/settings``).
+#: ``/api/mute``, ``PATCH /api/settings``).
 _OWN_ROUTE_PLAYBACK_FIELDS = frozenset(
     {
         "volume",
@@ -514,7 +514,9 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     load_into_settings(bridge.settings, index_dir)
 
 
-def save_from_player(settings: dict, index_dir: Path | None) -> None:
+def save_from_player(
+    settings: dict, index_dir: Path | None, *, raise_on_error: bool = False
+) -> None:
     """Write *settings* (PlayerBridge.get_settings shape) to disk atomically.
 
     The ``available_presets`` list and the playback values no settings route
@@ -555,3 +557,5 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         atomic_write(path, json.dumps(payload, indent=2, ensure_ascii=False))
     except OSError as exc:
         logger.warning("Failed to save web_state.json: %s", exc)
+        if raise_on_error:
+            raise
