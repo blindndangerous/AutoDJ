@@ -1,10 +1,9 @@
-# Quick checks run on every commit.  The slow ones (the full test suite with
-# its coverage gate, the related frontend tests and unused-code scan, the dependency
-# audits, the code-quality scans and the Trivy scan) run once per `git push`
-# instead, so a ten-commit branch pays for one full test run rather than ten.
-# CI still runs everything on every push.
-# `uv run pre-commit install` wires all three hook types below; run the slow
-# set by hand with `uv run pre-commit run --all-files --hook-stage pre-push`.
+# Commits run static, baseline and secret checks. Pushes run a small Python
+# smoke profile and the applicable related frontend checks. Full CI is required
+# before merge; drafts run fast CI and ready PRs run all CI jobs.
+# Heavy local scans are opt-in: run `uv run --frozen --no-sync pre-commit run
+# --all-files --hook-stage manual`. CI retains the full scans.
+# `uv run --frozen --no-sync pre-commit install` wires all three hook types below.
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
 default_stages: [pre-commit]
 
@@ -63,8 +62,8 @@ repos:
   # declarations (DEP001), unused declarations (DEP002), and transitive-dep
   # imports that should be explicit (DEP003).
   #
-  # Every entry passes --frozen so no hook can rewrite uv.lock underneath the
-  # commit it is checking.
+  # Entries use --frozen --no-sync to preserve the explicitly installed
+  # environment and avoid rewriting uv.lock or silently changing extras.
   - repo: local
     hooks:
       - id: architecture-docs
@@ -76,62 +75,62 @@ repos:
 
       - id: ruff
         name: ruff
-        entry: uv run --frozen ruff check --fix src/ tests/ scripts/
+        entry: uv run --frozen --no-sync ruff check --fix src/ tests/ scripts/
         language: system
         pass_filenames: false
         files: \.py$
 
       - id: ruff-format
         name: ruff-format
-        entry: uv run --frozen ruff format src/ tests/ scripts/
+        entry: uv run --frozen --no-sync ruff format src/ tests/ scripts/
         language: system
         pass_filenames: false
         files: \.py$
 
       - id: mypy
         name: mypy
-        entry: uv run --frozen mypy src/autodj/
+        entry: uv run --frozen --no-sync mypy src/autodj/
         language: system
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
       - id: bandit
         name: bandit
-        entry: uv run --frozen bandit -r src/ -c pyproject.toml
+        entry: uv run --frozen --no-sync bandit -r src/ -c pyproject.toml
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
       - id: vulture
         name: vulture
-        entry: uv run --frozen vulture
+        entry: uv run --frozen --no-sync vulture
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(src/|scripts/|vulture_whitelist\.py$|pyproject\.toml$)
 
       - id: deptry
         name: deptry
-        entry: uv run --frozen deptry src/autodj
+        entry: uv run --frozen --no-sync deptry src/autodj
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(src/|pyproject\.toml$)
 
       - id: pip-audit
         name: pip-audit
-        entry: uv run --frozen pip-audit
+        entry: uv run --frozen --no-sync pip-audit
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
 
       - id: pip-licenses
         name: pip-licenses
-        entry: uv run --frozen pip-licenses --format=markdown --order=license
+        entry: uv run --frozen --no-sync pip-licenses --format=markdown --order=license
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml)$
 
@@ -139,7 +138,7 @@ repos:
         name: OSV-Scanner
         entry: osv-scanner --recursive --config=osv-scanner.toml ./
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(uv\.lock|osv-scanner\.toml)$
 
@@ -147,13 +146,13 @@ repos:
         name: Trivy filesystem scan
         entry: trivy fs --format table --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --skip-dirs .venv --skip-dirs node_modules --skip-dirs .codex-tmp .
         language: system
-        stages: [pre-push]
+        stages: [manual]
         pass_filenames: false
         files: ^(uv\.lock|pyproject\.toml|src/|tests/)
 
       - id: pytest
-        name: pytest
-        entry: uv run --frozen python scripts/ci_pytest.py
+        name: pytest (small smoke profile)
+        entry: uv run --frozen --no-sync python scripts/ci_pytest.py --profile smoke
         language: system
         stages: [pre-push]
         pass_filenames: false
@@ -173,7 +172,7 @@ repos:
       # unused code, then run only tests related to the pushed frontend files.
       - id: knip
         name: knip (unused frontend code)
-        entry: uv run --frozen python scripts/frontend_checks.py deadcode
+        entry: uv run --frozen --no-sync python scripts/frontend_checks.py deadcode
         language: system
         stages: [pre-push]
         pass_filenames: false
@@ -181,7 +180,7 @@ repos:
 
       - id: vitest
         name: vitest (tests related to the push)
-        entry: uv run --frozen python scripts/frontend_checks.py test
+        entry: uv run --frozen --no-sync python scripts/frontend_checks.py test
         language: system
         stages: [pre-push]
         require_serial: true
