@@ -2115,6 +2115,62 @@ class TestServeFunction:
             assert runtime.bridge.player.on_track_started is not None
             player_run.assert_called_once_with(seed_entry=None)
 
+    def test_uvicorn_errors_reach_the_root_handlers_once(self, tmp_path) -> None:
+        """uvicorn's errors reach the log file on the root logger; its access log does not."""
+        import logging
+        from unittest.mock import MagicMock, patch
+
+        import uvicorn
+
+        from autodj.server import serve
+
+        cfg = _test_config(tmp_path)
+        cfg.station.output = "browser"
+        cfg.default_station.cfg.station.output = "browser"
+        with (
+            patch("autodj.player.Player.run", MagicMock()),
+            patch("uvicorn.Config") as mock_uvicorn,
+            patch("uvicorn.Server"),
+        ):
+            serve(cfg=cfg, sim=_make_sim_mock(), seed_entry=None)
+        kwargs = mock_uvicorn.call_args.kwargs
+
+        class Collect(logging.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.records: list[logging.LogRecord] = []
+
+            def emit(self, record: logging.LogRecord) -> None:
+                self.records.append(record)
+
+        root = logging.getLogger()
+        names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+        saved = [(root, root.handlers[:], root.level, root.propagate)]
+        for name in names:
+            named = logging.getLogger(name)
+            saved.append((named, named.handlers[:], named.level, named.propagate))
+            # As a new process has them, before uvicorn configures anything.
+            named.handlers, named.propagate = [], True
+            named.setLevel(logging.NOTSET)
+        collect = Collect()
+        root.handlers = [collect]
+        root.setLevel(logging.INFO)
+        try:
+            uvicorn.Config(mock_uvicorn.call_args.args[0], **kwargs)
+            logging.getLogger("uvicorn.error").error("timeout graceful shutdown exceeded")
+            logging.getLogger("uvicorn.error").info("Started server process")
+            logging.getLogger("uvicorn.access").info('"GET /api/status HTTP/1.1" 200')
+            handlers = [logging.getLogger(name).handlers for name in names]
+        finally:
+            for logger_, handlers_, level, propagate in saved:
+                logger_.handlers = handlers_
+                logger_.setLevel(level)
+                logger_.propagate = propagate
+        assert [(record.name, record.getMessage()) for record in collect.records] == [
+            ("uvicorn.error", "timeout graceful shutdown exceeded")
+        ]
+        assert handlers == [[], [], []]
+
     def test_serve_starts_player_thread(self, tmp_path) -> None:
         """The supplied factory launches a daemon Player thread when it is built."""
         captured = self._serve_capturing_player(tmp_path, no_playback=True)
