@@ -260,7 +260,8 @@ screen-reader sample for this release is in
   Traktor and Mixxx match library songs.
 - A malformed repick request can no longer stop song picking, failed listener logins can no
   longer grow memory without bound, and the server log no longer keeps the startup pairing code.
-- Certifi and Pillow are updated for published security advisories.
+- Certifi, Pillow, filelock, setuptools and virtualenv are updated for published security
+  advisories.
 
 ### Removed
 
