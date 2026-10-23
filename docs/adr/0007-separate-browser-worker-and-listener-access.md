@@ -89,6 +89,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0007-11` | SSO control and microphone sockets expire after the shorter of 900 seconds and the configured session TTL. | automated | `tests/integration/test_trusted_proxy_server.py::test_sso_control_socket_expires_and_requires_a_new_proxy_handshake`; `tests/unit/test_trusted_proxy_security.py::test_sso_microphone_rejects_frames_after_socket_age_limit` |
 | `ADR-0007-12` | Direct and file proxy-secret sources are mutually exclusive; a shared-readable secret file cannot authorize startup. | automated | `tests/unit/test_trusted_proxy_security.py::test_proxy_secret_sources_are_mutually_exclusive`; `tests/unit/test_trusted_proxy_security.py::test_proxy_secret_file_rejects_other_readers` |
 | `ADR-0007-13` | Non-loopback trusted-proxy startup without AutoDJ TLS warns once about exposing the secret. | automated | `tests/integration/test_trusted_proxy_server.py::test_proxy_plaintext_network_bind_warns_once` |
+| `ADR-0007-14` | A worker pairing code is made only by a paired browser, works once for ten minutes, follows the browser pairing's per-client and server-wide wrong-code limits, and is traded only by a program (no Origin) over HTTPS or loopback for an analysis-worker token. A worker token opens neither the pairing-code nor the worker-settings routes. | automated | `tests/unit/test_worker_api.py::test_a_pairing_code_trades_once_for_an_analysis_worker_token`; `tests/unit/test_worker_api.py::test_a_pairing_code_expires_and_a_new_one_replaces_it`; `tests/unit/test_worker_api.py::test_wrong_pairing_codes_lock_out_a_client`; `tests/unit/test_worker_api.py::test_many_wrong_pairing_codes_burn_the_code`; `tests/unit/test_worker_api.py::test_the_pairing_route_takes_only_programs_over_https`; `tests/unit/test_worker_api.py::test_a_worker_token_cannot_manage_workers_or_make_pairing_codes` |
+| `ADR-0007-15` | A paired worker keeps its token only in a per-user file readable by its owner alone, one entry per server, refuses a file others can read, and never combines `--pair` with a given token. | automated | `tests/unit/test_worker.py::test_pair_with_server_trades_a_code_for_a_token`; `tests/unit/test_worker.py::test_saved_worker_tokens_are_private_and_kept_per_server`; `tests/unit/test_worker.py::test_worker_pair_saves_the_token_and_later_runs_use_it` |
 
 ## Verification
 
@@ -201,3 +203,23 @@ SSO network failures keep the existing WebSocket retry path. Only explicit
 authentication rejection or a gateway sign-in redirect triggers reauthentication.
 Native microphone sessions retain one validity check per frame; SSO also checks
 after receiving to reject frames that arrive after its connection-age limit.
+
+## Amendment 2026-10-23: Worker pairing codes
+
+Status remains Proposed. Issue #554 adds a way to give a worker its own token without copying it.
+A paired browser asks `POST /api/machine-tokens/pairing-code` for an 8-digit code, optionally
+naming the token. The code is random, kept only in the server's memory, works once for ten minutes
+(the longest a browser pairing code lives), and a new code replaces it. A restart drops it.
+
+`autodj worker --pair` trades the code at `POST /api/worker-pair` for a new analysis-worker token
+named by the operator or by the worker's host name. That route needs no session and no token, but
+the middleware treats it like a machine route: it refuses a request with an `Origin` header and a
+plain-HTTP request from another machine. Wrong codes follow the browser pairing limits: ten from one
+client address lock that client out until the code ends, and fifty in all burn the code. Nothing is
+counted while no code is open, so the counts stay bounded. Code creation and the exchange are
+audited like other unsafe requests, and neither logs the code or the token.
+
+The worker saves the token in a per-user file readable only by its owner (mode 0600, or an access
+list for the current user alone on Windows), one entry per server address, and refuses to read a
+file others can read. An explicit `--token` or `AUTODJ_WORKER_TOKEN` wins over the file; `--pair`
+refuses to run with either. Contracts ADR-0007-14 and ADR-0007-15 cover this amendment.

@@ -15,16 +15,26 @@
 // field; switching to another tab does not, so the token is not lost
 // before it is copied.  Every button result is said once through
 // #workers-status.
+//
+// Each worker row has its settings from this server (#554): Paused, Songs
+// per claim and Idle release minutes, saved with the row's own Save
+// button.  A refresh leaves a row whose fields were changed and not saved
+// as the user left it.  A refused save says why under the row's fields,
+// marks the field and moves focus there.  Pair a worker shows a single-use
+// code and the command to run on the worker, each with a Copy button.  A
+// refusal notice newly seen by a refresh is said once; Dismiss hides it.
 
 import { requestJson, withDisabled } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
-import { copyByCommand, lastSeenWords } from "./devices.js";
+import { copyByCommand, lastSeenWords, shownCode, spokenCode } from "./devices.js";
 import { nextRowControl, rowButton } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 
 const POLL_MS = 10000;
 export const ONCE_WARNING =
   "This token is shown only now and cannot be shown again.  Copy it before you leave this page.";
+const MAX_BATCH = 16;
+const MAX_IDLE_RELEASE = 10080;
 
 function plural(count, word) {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -63,6 +73,54 @@ export function queueWords(view) {
     ? "This server's own analysis is paused while a worker is connected."
     : "With no worker connected, this server analyses them itself.";
   return `${waiting}${now}.  ${server}`;
+}
+
+// "Settings: paused, 2 songs per claim, the worker's own idle release.
+// The worker has applied them."
+export function settingsWords(worker) {
+  const settings = worker.settings || {};
+  const batch = settings.batch == null
+    ? "the worker's own batch size" : `${plural(settings.batch, "song")} per claim`;
+  const idle = settings.idle_release_minutes == null
+    ? "the worker's own idle release"
+    : `idle release after ${plural(settings.idle_release_minutes, "minute")}`;
+  const text = `Settings: ${settings.paused ? "paused" : "running"}, ${batch}, ${idle}.`;
+  if (!settings.revision) return text;
+  if (worker.settings_applied === true) return `${text}  The worker has applied them.`;
+  if (worker.settings_applied === false) return `${text}  Waiting for the worker to apply them.`;
+  return `${text}  The worker has not said it applied them; an older worker cannot, `
+    + "but Paused still stops this server handing it songs.";
+}
+
+// "Refused: Studio PC, 5 minutes ago.  The worker's copy of ... "
+export function refusalWords(refusal, nowMs = Date.now()) {
+  const revoked = refusal.revoked ? " (revoked token)" : "";
+  return `Refused: ${refusal.name}${revoked}, ${lastSeenWords(refusal.refused_at, nowMs)}.  `
+    + `${refusal.message}`;
+}
+
+// The command a worker runs to pair with this page's server.
+export function pairCommand(code, origin = globalThis.location?.origin || "") {
+  return `autodj worker --pair ${code} --server ${origin}`;
+}
+
+// Whether a worker can pair from here: HTTPS, or this computer.
+export function pairTransportOk(loc = globalThis.location) {
+  if (!loc || loc.protocol === "https:") return true;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(loc.hostname);
+}
+
+// The number in *text* from 1 to *max*, null for empty, or NaN when it is not one.
+function wholeOrEmpty(text, max) {
+  const trimmed = String(text).trim();
+  if (trimmed === "") return null;
+  if (!/^\d+$/.test(trimmed)) return Number.NaN;
+  const value = Number(trimmed);
+  return value >= 1 && value <= max ? value : Number.NaN;
+}
+
+function clockTime(ms, locale = undefined) {
+  return new Date(ms).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
 }
 
 // "news-bot.  Announcer, for Night Owl.
@@ -105,13 +163,32 @@ export function installAnalysisWorkers({
   const done = get("token-done");
   const tokenList = get("token-list");
   const tokensEmpty = get("token-list-empty");
+  const refusalHeading = get("workers-refusals-heading");
+  const refusalList = get("workers-refusals");
+  const pairName = get("pair-worker-name");
+  const pairCreate = get("pair-worker-create");
+  const pairNew = get("pair-worker-new");
+  const pairCode = get("pair-worker-code");
+  const pairExpiry = get("pair-worker-expiry");
+  const pairCopyCode = get("pair-worker-copy-code");
+  const pairCommandField = get("pair-worker-command");
+  const pairCopyCommand = get("pair-worker-copy-command");
+  const pairDone = get("pair-worker-done");
+  const pairHttp = get("pair-worker-http");
   if (!panel || !status || !queue || !workerList || !refresh || !nameInput || !create
       || !fresh || !freshName || !secretField || !copy || !done || !tokenList || !tokensEmpty
-      || !scopeSelect || !stationRow || !stationSelect || !stationDesc) {
+      || !scopeSelect || !stationRow || !stationSelect || !stationDesc || !refusalHeading
+      || !refusalList || !pairName || !pairCreate || !pairNew || !pairCode || !pairExpiry
+      || !pairCopyCode || !pairCommandField || !pairCopyCommand || !pairDone || !pairHttp) {
     return { load: async () => false };
   }
 
   const workerRows = new Map();
+  const refusalRows = new Map();
+  // Refusals seen so far, by token id, time and kind; null until the first
+  // load, which says nothing about the ones already there.
+  let seenRefusals = null;
+  const pairing = { code: null, until: 0 };
   const tokenRows = new Map();
   let tokens = [];
   let scopeLabels = new Map([...scopeSelect.options].map((option) => [option.value,
@@ -125,42 +202,228 @@ export function installAnalysisWorkers({
     announceStatus(status, message, { force: true, dwellMs: tone === "error" ? 6000 : 4000, tone });
   };
 
+  function field(row, kind, type, labelText) {
+    const wrap = doc.createElement("div");
+    wrap.className = type === "checkbox" ? "settings-check" : "settings-row";
+    const input = doc.createElement("input");
+    input.type = type;
+    input.id = `worker-${row.id}-${kind}`;
+    const label = doc.createElement("label");
+    label.htmlFor = input.id;
+    label.textContent = labelText;
+    if (type === "checkbox") wrap.append(input, label);
+    else wrap.append(label, input);
+    for (const event of ["input", "change"]) {
+      input.addEventListener(event, () => { row.dirty = true; });
+    }
+    return [wrap, input];
+  }
+
+  function newWorkerRow(worker) {
+    const li = doc.createElement("li");
+    const row = { id: worker.token_id, li, worker, dirty: false };
+    row.summary = doc.createElement("p");
+    row.state = doc.createElement("p");
+    const fieldset = doc.createElement("fieldset");
+    row.legend = doc.createElement("legend");
+    const [pausedRow, paused] = field(row, "paused", "checkbox", "Paused");
+    const [batchRow, batch] = field(row, "batch", "number", "Songs per claim");
+    batch.min = "1";
+    batch.max = String(MAX_BATCH);
+    batch.step = "1";
+    const [idleRow, idle] = field(row, "idle", "number", "Idle release minutes");
+    idle.min = "1";
+    idle.max = String(MAX_IDLE_RELEASE);
+    idle.step = "1";
+    const help = doc.createElement("span");
+    help.className = "setting-desc";
+    help.textContent = "Empty uses the worker's own setting; its command line wins.";
+    row.error = doc.createElement("p");
+    row.error.className = "field-error";
+    row.error.id = `worker-${row.id}-error`;
+    row.error.hidden = true;
+    row.save = rowButton(doc, "Save", "", (button) => void saveWorker(row, button));
+    row.save.dataset.action = "save-worker";
+    fieldset.append(row.legend, pausedRow, batchRow, idleRow, help, row.error, row.save);
+    li.append(row.summary, row.state, fieldset);
+    Object.assign(row, { paused, batch, idle });
+    return row;
+  }
+
+  function fillWorkerRow(row, worker) {
+    row.worker = worker;
+    row.summary.textContent = workerWords(worker);
+    row.state.textContent = settingsWords(worker);
+    row.legend.textContent = `Settings for ${worker.name}`;
+    row.save.setAttribute("aria-label", `Save settings for ${worker.name}`);
+    if (row.dirty || row.saving) return;
+    const settings = worker.settings || {};
+    row.paused.checked = Boolean(settings.paused);
+    row.batch.value = settings.batch == null ? "" : String(settings.batch);
+    row.idle.value = settings.idle_release_minutes == null
+      ? "" : String(settings.idle_release_minutes);
+  }
+
+  function clearRowError(row) {
+    row.error.hidden = true;
+    row.error.textContent = "";
+    for (const input of [row.batch, row.idle]) {
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+    }
+  }
+
+  function rowError(row, input, message) {
+    row.error.textContent = message;
+    row.error.hidden = false;
+    if (input) {
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", row.error.id);
+      input.focus();
+    }
+    say(message, "error");
+  }
+
+  async function saveWorker(row, button) {
+    if (row.saving) return;
+    clearRowError(row);
+    const name = row.worker.name;
+    const batch = wholeOrEmpty(row.batch.value, MAX_BATCH);
+    if (Number.isNaN(batch)) {
+      rowError(row, row.batch, `Could not save settings for ${name}: enter songs per claim `
+        + `from 1 to ${MAX_BATCH}, or leave it empty.`);
+      return;
+    }
+    const idle = wholeOrEmpty(row.idle.value, MAX_IDLE_RELEASE);
+    if (Number.isNaN(idle)) {
+      rowError(row, row.idle, `Could not save settings for ${name}: enter idle release `
+        + `minutes from 1 to ${MAX_IDLE_RELEASE}, or leave it empty.`);
+      return;
+    }
+    const payload = { paused: row.paused.checked, batch, idle_release_minutes: idle };
+    row.saving = true;
+    let saved;
+    try {
+      saved = await withDisabled(button, () => request(
+        `/api/analysis/workers/${encodeURIComponent(row.id)}/settings`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }));
+    } catch (errorValue) {
+      row.saving = false;
+      const text = String(errorValue.message || "").toLowerCase();
+      const input = text.includes("batch") || text.includes("per claim") ? row.batch
+        : text.includes("idle") ? row.idle : null;
+      rowError(row, input, `Could not save settings for ${name}: ${errorValue.message}  `
+        + "Your changes are still in the form.");
+      return;
+    }
+    row.saving = false;
+    row.dirty = false;
+    fillWorkerRow(row, { ...row.worker, settings: saved,
+      settings_applied: row.worker.settings_applied == null ? null : false });
+    say(`Settings for ${name} saved: ${saved.paused ? "paused" : "running"}.  `
+      + "The worker applies them at its next heartbeat, within a minute.");
+  }
+
   function showWorkers(view) {
     queue.textContent = queueWords(view);
     const workers = Array.isArray(view.workers) ? view.workers : [];
     const ids = new Set(workers.map((worker) => worker.token_id));
-    for (const [id, li] of workerRows) {
+    for (const [id, row] of workerRows) {
       if (!ids.has(id)) {
-        li.remove();
+        row.li.remove();
         workerRows.delete(id);
       }
     }
     for (const worker of workers) {
-      let li = workerRows.get(worker.token_id);
-      if (!li) {
-        li = doc.createElement("li");
-        workerRows.set(worker.token_id, li);
+      let row = workerRows.get(worker.token_id);
+      if (!row) {
+        row = newWorkerRow(worker);
+        workerRows.set(worker.token_id, row);
       }
-      workerList.append(li);
-      li.textContent = workerWords(worker);
+      // Appending a row that is already last moves nothing, so focus stays.
+      if (workerList.lastElementChild !== row.li) workerList.append(row.li);
+      fillWorkerRow(row, worker);
     }
     if (workers.length === 0) {
       const none = doc.createElement("li");
       none.textContent = "No worker has connected yet.";
-      workerRows.set("", none);
+      workerRows.set("", { li: none });
       workerList.append(none);
     }
     return workers;
+  }
+
+  function showRefusals(view) {
+    const refusals = Array.isArray(view.refusals) ? view.refusals : [];
+    const ids = new Set(refusals.map((refusal) => refusal.token_id));
+    for (const [id, row] of refusalRows) {
+      if (!ids.has(id)) {
+        row.li.remove();
+        refusalRows.delete(id);
+      }
+    }
+    const fresh = [];
+    for (const refusal of refusals) {
+      const key = `${refusal.token_id}:${refusal.refused_at}:${refusal.kind}`;
+      if (seenRefusals !== null && !seenRefusals.has(key)) fresh.push(refusal);
+      let row = refusalRows.get(refusal.token_id);
+      if (!row) {
+        const li = doc.createElement("li");
+        const text = doc.createElement("p");
+        const dismiss = rowButton(doc, "Dismiss", "", (button) => void dismissRefusal(row, button));
+        dismiss.dataset.action = "dismiss-refusal";
+        li.append(text, dismiss);
+        row = { li, text, dismiss };
+        refusalRows.set(refusal.token_id, row);
+      }
+      row.refusal = refusal;
+      if (refusalList.lastElementChild !== row.li) refusalList.append(row.li);
+      row.text.textContent = refusalWords(refusal);
+      row.dismiss.setAttribute("aria-label", `Dismiss the notice for ${refusal.name}`);
+    }
+    seenRefusals = new Set(refusals.map((refusal) =>
+      `${refusal.token_id}:${refusal.refused_at}:${refusal.kind}`));
+    refusalHeading.hidden = refusals.length === 0;
+    refusalList.hidden = refusals.length === 0;
+    return fresh;
+  }
+
+  async function dismissRefusal(row, button) {
+    const { refusal } = row;
+    const rows = [...refusalList.querySelectorAll('button[data-action="dismiss-refusal"]')];
+    const index = rows.indexOf(button);
+    try {
+      await withDisabled(button, () => request(
+        `/api/analysis/workers/${encodeURIComponent(refusal.token_id)}/refusal`,
+        { method: "DELETE" }));
+    } catch (errorValue) {
+      say(`Could not dismiss the notice for ${refusal.name}: ${errorValue.message}`, "error");
+      return;
+    }
+    await loadWorkers();
+    const next = nextRowControl(refusalList, 'button[data-action="dismiss-refusal"]', index,
+      refresh);
+    next.focus();
+    say(`Notice for ${refusal.name} dismissed.`);
   }
 
   async function loadWorkers({ announce = false } = {}) {
     try {
       const view = await request("/api/analysis/workers");
       const workers = showWorkers(view);
+      const fresh = showRefusals(view);
       if (announce) {
         const connected = workers.filter((worker) => worker.connected).length;
+        const refused = refusalRows.size
+          ? `  ${plural(refusalRows.size, "refusal notice")}.` : "";
         say(`Workers refreshed.  ${plural(connected, "worker")} connected.  `
-          + `${plural(view.waiting || 0, "song")} waiting.`);
+          + `${plural(view.waiting || 0, "song")} waiting.${refused}`);
+      } else if (fresh.length) {
+        // A worker newly refused is said once, even by a quiet refresh.
+        say(refusalWords(fresh[0]), "error");
       }
       return true;
     } catch (errorValue) {
@@ -367,6 +630,84 @@ export function installAnalysisWorkers({
     if (result) say(...result);
   }
 
+  function hidePairing() {
+    pairing.code = null;
+    pairing.until = 0;
+    pairNew.hidden = true;
+    pairCode.replaceChildren();
+    pairExpiry.textContent = "";
+    pairCommandField.value = "";
+  }
+
+  async function createPairing() {
+    const name = pairName.value.trim();
+    let body;
+    try {
+      body = await withDisabled(pairCreate, () => request("/api/machine-tokens/pairing-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      }));
+    } catch (errorValue) {
+      if (errorValue.status === 422) {
+        pairName.setAttribute("aria-invalid", "true");
+        pairName.focus();
+      }
+      say(`Could not get a pairing code: ${errorValue.message}`, "error");
+      return;
+    }
+    pairName.removeAttribute("aria-invalid");
+    pairing.code = String(body.code);
+    pairing.until = Date.now() + body.valid_seconds * 1000;
+    const shown = doc.createElement("span");
+    shown.setAttribute("aria-hidden", "true");
+    shown.textContent = shownCode(pairing.code);
+    const heard = doc.createElement("span");
+    heard.className = "visually-hidden";
+    heard.textContent = spokenCode(pairing.code);
+    pairCode.replaceChildren(shown, heard);
+    const until = clockTime(pairing.until);
+    const named = body.name ? `, for a token named ${body.name}` : "";
+    pairExpiry.textContent = `Works once, until ${until}${named}.`;
+    pairCommandField.value = pairCommand(pairing.code);
+    pairHttp.hidden = pairTransportOk();
+    pairNew.hidden = false;
+    pairCommandField.focus();
+    pairCommandField.select();
+    say(`Pairing code ${spokenCode(pairing.code)}.  It works once, until ${until}.  `
+      + "The command to run on the worker is selected.");
+  }
+
+  async function copyPairing(text, what) {
+    if (!text) return;
+    if (Date.now() > pairing.until) {
+      say("This pairing code has expired.  Choose Pair a worker for a new one.", "error");
+      return;
+    }
+    try {
+      await clipboard().writeText(text);
+    } catch (_) {
+      if (!copyByCommand(text, doc)) {
+        const fallback = what === "Pairing code"
+          ? `The code is ${spokenCode(pairing.code)}.`
+          : "The command is selected in its field: press Control+C to copy it.";
+        if (what !== "Pairing code") {
+          pairCommandField.focus();
+          pairCommandField.select();
+        }
+        say(`Could not copy.  ${fallback}`, "error");
+        return;
+      }
+    }
+    say(`${what} copied.`);
+  }
+
+  function finishPairing() {
+    hidePairing();
+    pairCreate.focus();
+    say("Pairing code hidden.");
+  }
+
   function startPolling() {
     if (timer !== null) return;
     timer = setTimer(() => void loadWorkers(), POLL_MS);
@@ -394,6 +735,16 @@ export function installAnalysisWorkers({
   });
   copy.addEventListener("click", () => void copySecret());
   done.addEventListener("click", finishSecret);
+  pairCreate.addEventListener("click", () => void createPairing());
+  pairName.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void createPairing();
+  });
+  pairCopyCode.addEventListener("click", () => void copyPairing(pairing.code, "Pairing code"));
+  pairCopyCommand.addEventListener("click",
+    () => void copyPairing(pairCommandField.value, "Command"));
+  pairDone.addEventListener("click", finishPairing);
   panel.addEventListener("toggle", () => {
     if (panel.open) {
       void load();

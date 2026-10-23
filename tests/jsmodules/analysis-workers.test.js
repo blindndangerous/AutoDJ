@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installIndexMarkup as installIndex } from "./helpers.js";
 
 import {
-  installAnalysisWorkers, ONCE_WARNING, queueWords, tokenWords, workerWords,
+  installAnalysisWorkers, ONCE_WARNING, pairCommand, pairTransportOk, queueWords, refusalWords,
+  settingsWords, tokenWords, workerWords,
 } from "../../src/autodj/static/modules/analysis-workers.js";
 
 // The real Settings markup, so the ids, labels and live region the module
@@ -28,12 +29,30 @@ const TOKEN = {
   created_at: NOW - 86400, last_used_at: NOW,
 };
 
-function server({ workers = [WORKER], tokens = [TOKEN] } = {}) {
-  const state = { workers, tokens };
+function server({ workers = [WORKER], tokens = [TOKEN], refusals = [] } = {}) {
+  const state = { workers, tokens, refusals };
   const request = vi.fn(async (url, options = {}) => {
     if (url === "/api/analysis/workers") {
       return { available: true, workers: state.workers, waiting: 125, analysing: 4,
-        server_paused: state.workers.some((w) => w.connected) };
+        server_paused: state.workers.some((w) => w.connected), refusals: state.refusals };
+    }
+    if (url.endsWith("/settings") && options.method === "PUT") {
+      const body = JSON.parse(options.body);
+      const id = url.split("/")[4];
+      const worker = state.workers.find((w) => w.token_id === id);
+      const settings = { ...body, revision: (worker.settings?.revision || 0) + 1 };
+      state.workers = state.workers.map((w) => (w.token_id === id
+        ? { ...w, settings, settings_applied: false } : w));
+      return settings;
+    }
+    if (url.endsWith("/refusal") && options.method === "DELETE") {
+      const id = url.split("/")[4];
+      state.refusals = state.refusals.filter((r) => r.token_id !== id);
+      return { dismissed: id };
+    }
+    if (url === "/api/machine-tokens/pairing-code") {
+      const body = JSON.parse(options.body);
+      return { code: "12345678", valid_seconds: 600, name: body.name || null };
     }
     if (url === "/api/machine-tokens" && options.method === "POST") {
       const body = JSON.parse(options.body);
@@ -333,5 +352,159 @@ describe("worker words", () => {
     expect(queueWords({ available: true, waiting: 1, analysing: 0, server_paused: false }))
       .toBe("1 song waiting for analysis.  "
         + "With no worker connected, this server analyses them itself.");
+  });
+});
+
+const REFUSAL = {
+  token_id: "c".repeat(32), name: "Old PC", kind: "revoked", detail: "", refused_at: NOW - 300,
+  revoked: true, message: "Its token was revoked.  Pair the worker again, or give it a new "
+    + "token, and start it again.",
+};
+
+describe("managing workers from Settings (#554)", () => {
+  // ADR-0008-30
+  it("gives each worker labelled native settings, filled from the server", async () => {
+    install({ workers: [{ ...WORKER, settings: { paused: true, batch: 2,
+      idle_release_minutes: null, revision: 3 }, settings_applied: true }] });
+    open();
+    const id = "a".repeat(32);
+    await vi.waitFor(() => expect(byId(`worker-${id}-paused`)).not.toBeNull());
+    const fieldset = byId(`worker-${id}-paused`).closest("fieldset");
+    expect(fieldset.querySelector("legend").textContent).toBe("Settings for Studio PC");
+    for (const [kind, type, label] of [["paused", "checkbox", "Paused"],
+      ["batch", "number", "Songs per claim"], ["idle", "number", "Idle release minutes"]]) {
+      const input = byId(`worker-${id}-${kind}`);
+      expect(input.type).toBe(type);
+      expect(document.querySelector(`label[for="${input.id}"]`).textContent).toBe(label);
+      expect(input.hasAttribute("aria-describedby")).toBe(false);
+    }
+    expect(byId(`worker-${id}-paused`).checked).toBe(true);
+    expect(byId(`worker-${id}-batch`).value).toBe("2");
+    expect(byId(`worker-${id}-idle`).value).toBe("");
+    const save = fieldset.querySelector("button");
+    expect(save.type).toBe("button");
+    expect(save.textContent).toBe("Save");
+    expect(save.getAttribute("aria-label")).toBe("Save settings for Studio PC");
+    expect(byId("workers-list").textContent).toContain(
+      "Settings: paused, 2 songs per claim, the worker's own idle release.  "
+      + "The worker has applied them.");
+  });
+
+  // ADR-0008-30
+  it("saves a row, says so, and a refresh keeps changes not yet saved", async () => {
+    const { request } = install({ workers: [{ ...WORKER, settings_applied: true, settings: {
+      paused: false, batch: null, idle_release_minutes: null, revision: 1 } }] });
+    open();
+    const id = "a".repeat(32);
+    await vi.waitFor(() => expect(byId(`worker-${id}-batch`)).not.toBeNull());
+    byId(`worker-${id}-paused`).checked = true;
+    byId(`worker-${id}-paused`).dispatchEvent(new Event("change"));
+    byId(`worker-${id}-idle`).value = "5";
+    byId(`worker-${id}-idle`).dispatchEvent(new Event("input"));
+    // A refresh before Save leaves what was typed.
+    byId("workers-refresh").click();
+    await said();
+    expect(byId(`worker-${id}-idle`).value).toBe("5");
+    byId("workers-status").textContent = "";
+    byId(`worker-${id}-paused`).closest("fieldset").querySelector("button").click();
+    expect(await said()).toMatch(/^Settings for Studio PC saved: paused\./);
+    const put = request.mock.calls.find(([, options]) => options?.method === "PUT");
+    expect(put[0]).toBe(`/api/analysis/workers/${id}/settings`);
+    expect(JSON.parse(put[1].body)).toEqual({ paused: true, batch: null, idle_release_minutes: 5 });
+    expect(byId("workers-list").textContent).toContain("Waiting for the worker to apply them.");
+  });
+
+  // ADR-0008-30
+  it("marks a value out of range, says why and moves focus to it", async () => {
+    const { request } = install();
+    open();
+    const id = "a".repeat(32);
+    await vi.waitFor(() => expect(byId(`worker-${id}-batch`)).not.toBeNull());
+    const batch = byId(`worker-${id}-batch`);
+    batch.value = "17";
+    batch.dispatchEvent(new Event("input"));
+    batch.closest("fieldset").querySelector("button").click();
+    expect(await said()).toMatch(/enter songs per claim from 1 to 16/);
+    expect(batch.getAttribute("aria-invalid")).toBe("true");
+    const error = byId(batch.getAttribute("aria-describedby"));
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toMatch(/from 1 to 16/);
+    expect(document.activeElement).toBe(batch);
+    expect(request.mock.calls.some(([, options]) => options?.method === "PUT")).toBe(false);
+  });
+
+  // ADR-0008-30
+  it("shows refusal notices in words, says a new one once, and dismisses them", async () => {
+    const { state } = install();
+    open();
+    await vi.waitFor(() => expect(byId("workers-list").children).toHaveLength(1));
+    expect(byId("workers-refusals").hidden).toBe(true);
+    expect(byId("workers-refusals-heading").hidden).toBe(true);
+    // A refresh on the timer finds a new refusal and says it once.
+    state.refusals = [REFUSAL];
+    byId("workers-status").textContent = "";
+    byId("spanel-workers").dispatchEvent(new Event("toggle"));
+    expect(await said()).toMatch(/^Refused: Old PC \(revoked token\), 5 minutes ago\./);
+    expect(byId("workers-refusals").hidden).toBe(false);
+    expect(byId("workers-refusals").textContent).toMatch(
+      /^Refused: Old PC \(revoked token\), 5 minutes ago\. {2}Its token was revoked\./);
+    byId("workers-status").textContent = "";
+    byId("workers-refresh").click();
+    expect(await said()).toMatch(/1 refusal notice\.$/);
+    const dismiss = byId("workers-refusals").querySelector("button");
+    expect(dismiss.getAttribute("aria-label")).toBe("Dismiss the notice for Old PC");
+    byId("workers-status").textContent = "";
+    dismiss.click();
+    expect(await said()).toBe("Notice for Old PC dismissed.");
+    expect(byId("workers-refusals").hidden).toBe(true);
+    expect(document.activeElement).toBe(byId("workers-refresh"));
+  });
+
+  // ADR-0008-30
+  it("pairs a worker with a spoken code, a selected command and Copy buttons", async () => {
+    const { request, clipboard } = install();
+    open();
+    expect(document.querySelector('label[for="pair-worker-name"]').textContent)
+      .toBe("Worker name");
+    expect(byId("pair-worker-command").readOnly).toBe(true);
+    byId("pair-worker-name").value = " Studio PC ";
+    byId("pair-worker-create").click();
+    await vi.waitFor(() => expect(byId("pair-worker-new").hidden).toBe(false));
+    const post = request.mock.calls.find(([url]) => url === "/api/machine-tokens/pairing-code");
+    expect(JSON.parse(post[1].body)).toEqual({ name: "Studio PC" });
+    expect(await said()).toMatch(/^Pairing code 1 2 3 4, 5 6 7 8\. {2}It works once, until /);
+    expect(byId("pair-worker-code").querySelector("[aria-hidden=true]").textContent)
+      .toBe("1234 5678");
+    expect(byId("pair-worker-command").value)
+      .toBe(`autodj worker --pair 12345678 --server ${location.origin}`);
+    expect(document.activeElement).toBe(byId("pair-worker-command"));
+    expect(byId("pair-worker-expiry").textContent).toMatch(/for a token named Studio PC\.$/);
+    byId("workers-status").textContent = "";
+    byId("pair-worker-copy-code").click();
+    expect(await said()).toBe("Pairing code copied.");
+    expect(clipboard.writeText).toHaveBeenCalledWith("12345678");
+    byId("workers-status").textContent = "";
+    byId("pair-worker-copy-command").click();
+    expect(await said()).toBe("Command copied.");
+    byId("workers-status").textContent = "";
+    byId("pair-worker-done").click();
+    expect(byId("pair-worker-new").hidden).toBe(true);
+    expect(byId("pair-worker-command").value).toBe("");
+    expect(document.activeElement).toBe(byId("pair-worker-create"));
+  });
+
+  it("words settings, refusals and the pairing command", () => {
+    expect(settingsWords({ settings: { paused: false, batch: null, idle_release_minutes: 1,
+      revision: 0 } })).toBe("Settings: running, the worker's own batch size, "
+      + "idle release after 1 minute.");
+    expect(settingsWords({ settings: { paused: true, batch: 1, idle_release_minutes: null,
+      revision: 2 }, settings_applied: null })).toMatch(/an older worker cannot, but Paused/);
+    expect(refusalWords({ ...REFUSAL, revoked: false, refused_at: NOW }, NOW * 1000))
+      .toBe(`Refused: Old PC, just now.  ${REFUSAL.message}`);
+    expect(pairCommand("12345678", "https://nas.local:8765"))
+      .toBe("autodj worker --pair 12345678 --server https://nas.local:8765");
+    expect(pairTransportOk({ protocol: "http:", hostname: "192.168.1.5" })).toBe(false);
+    expect(pairTransportOk({ protocol: "http:", hostname: "localhost" })).toBe(true);
+    expect(pairTransportOk({ protocol: "https:", hostname: "nas.local" })).toBe(true);
   });
 });

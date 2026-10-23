@@ -1898,3 +1898,342 @@ def test_store_analysis_checks_the_record_inside_its_transaction(server):
         catalog._db().commit()
     assert catalog.store_analysis(song, record["size"], record["fingerprint"], fields, vector)
     assert catalog.record_for_path(song)["key"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Managing workers from Settings (#554): settings, pairing, refusal notices
+# ---------------------------------------------------------------------------
+
+ORIGIN = {"Origin": "http://127.0.0.1:8080"}
+
+
+def put_settings(server, token_id, **settings):
+    body = {"paused": False, "batch": None, "idle_release_minutes": None, **settings}
+    return server.client.put(
+        f"/api/analysis/workers/{token_id}/settings", json=body, headers=ORIGIN
+    )
+
+
+def managed_beat(server, secret, **body):
+    return server.call(
+        "POST", "/api/worker/heartbeat", secret, json={"worker_manage_v1": True, **body}
+    )
+
+
+def workers_view(server):
+    return server.client.get("/api/analysis/workers").json()
+
+
+def test_worker_settings_round_trip_with_a_revision_per_change(server):
+    """ADR-0008-25. Settings are stored per token and sent in heartbeat and claim replies."""
+    token, secret = server.token()
+    saved = put_settings(server, token.token_id, paused=True, batch=2, idle_release_minutes=5)
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {"paused": True, "batch": 2, "idle_release_minutes": 5, "revision": 1}
+    beat = server.call("POST", "/api/worker/heartbeat", secret, json={}).json()
+    assert beat["worker_manage_v1"] is True
+    assert beat["settings"] == saved.json()
+    assert claim(server, secret)["settings"] == saved.json()
+    # The same values again change nothing, so a worker has nothing new to apply.
+    again = put_settings(server, token.token_id, paused=True, batch=2, idle_release_minutes=5)
+    assert again.json()["revision"] == 1
+    assert put_settings(server, token.token_id, batch=2).json()["revision"] == 2
+    (worker,) = workers_view(server)["workers"]
+    assert worker["settings"]["revision"] == 2
+    # This worker never said which revision it applied.
+    assert worker["settings_applied"] is None
+    managed_beat(server, secret, settings_revision=1)
+    assert workers_view(server)["workers"][0]["settings_applied"] is False
+    managed_beat(server, secret, settings_revision=2)
+    assert workers_view(server)["workers"][0]["settings_applied"] is True
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"batch": 0},
+        {"batch": 17},
+        {"batch": 2.5},
+        {"idle_release_minutes": 0},
+        {"idle_release_minutes": 7 * 24 * 60 + 1},
+        {"paused": "yes"},
+        {"before_command": "rm -rf /"},
+    ],
+)
+def test_worker_settings_out_of_range_are_refused(server, settings):
+    """ADR-0008-28. Only pause, batch and idle release exist; no setting names a command."""
+    token, _secret = server.token()
+    assert put_settings(server, token.token_id, **settings).status_code == 422
+    assert server.app.state.machine_tokens().worker_settings(token.token_id).revision == 0
+
+
+def test_worker_settings_need_an_active_worker_token(server):
+    token, _secret = server.token()
+    announcer, _ = server.app.state.machine_tokens().create(
+        "news-bot", [SCOPE_ANNOUNCER], "default"
+    )
+    assert put_settings(server, "0" * 32).status_code == 404
+    assert put_settings(server, announcer.token_id).status_code == 404
+    server.client.delete(f"/api/machine-tokens/{token.token_id}", headers=ORIGIN)
+    assert put_settings(server, token.token_id).status_code == 404
+
+
+def test_a_paused_worker_is_handed_no_songs_and_still_pauses_server_analysis(server):
+    """ADR-0008-26. Pause holds for any worker version; the CPU job stays paused too."""
+    token, secret = server.token()
+    put_settings(server, token.token_id, paused=True)
+    # An older worker's claim: no manage fields at all.
+    paused = claim(server, secret, batch=4)
+    assert paused["songs"] == []
+    assert paused["settings"]["paused"] is True
+    assert server.manager.analysis_queue.held_paths() == set()
+    view = workers_view(server)
+    assert view["server_paused"] is True
+    assert view["workers"][0]["connected"] is True
+    put_settings(server, token.token_id, paused=False)
+    assert len(claim(server, secret, batch=4)["songs"]) == 3
+
+
+def test_an_older_worker_keeps_working_with_a_managing_server(server):
+    """ADR-0008-27. Legacy request shapes are accepted; new reply fields are only additions."""
+    _token, secret = server.token()
+    beat = server.call("POST", "/api/worker/heartbeat", secret, json={"device": "GPU"})
+    assert beat.status_code == 200
+    songs = claim(server, secret, batch=1)["songs"]
+    body, _ = server.result(songs[0], songs[0]["lease"])
+    assert server.call("POST", "/api/worker/result", secret, json=body).json() == {"stored": True}
+
+
+def test_an_identity_mismatch_is_refused_noted_and_cleared_on_the_next_connect(server):
+    """ADR-0008-29. The notice names the worker and what to set; a good connect clears it."""
+    token, secret = server.token()
+    wrong = {**server.identity(), "model_commit": "f" * 40}
+    refused = managed_beat(server, secret, connect=True, identity=wrong)
+    assert refused.status_code == 409
+    assert f'revision = "{COMMIT}"' in refused.json()["detail"]
+    (notice,) = workers_view(server)["refusals"]
+    assert notice["token_id"] == token.token_id
+    assert notice["name"] == "Studio PC"
+    assert notice["kind"] == "identity"
+    assert f'revision = "{COMMIT}"' in notice["message"]
+    assert secret not in str(notice)
+    # Before it has the model, a worker reports no weights; that passes.
+    partial = {key: value for key, value in server.identity().items() if key != "model_commit"}
+    assert managed_beat(server, secret, identity=partial).status_code == 200
+    assert workers_view(server)["refusals"]
+    # Its claims are refused the same way while the weights differ.
+    refused_claim = server.call(
+        "POST", "/api/worker/claim", secret, json={"worker_manage_v1": True, "identity": wrong}
+    )
+    assert refused_claim.status_code == 409
+    ok = managed_beat(server, secret, connect=True, identity=server.identity())
+    assert ok.status_code == 200
+    assert workers_view(server)["refusals"] == []
+
+
+def test_an_older_workers_mismatched_result_is_noted(server):
+    """ADR-0008-29."""
+    _token, secret = server.token()
+    song = claim(server, secret)["songs"][0]
+    body, _ = server.result(song, song["lease"], model_commit="f" * 40)
+    assert server.call("POST", "/api/worker/result", secret, json=body).status_code == 409
+    (notice,) = workers_view(server)["refusals"]
+    assert notice["kind"] == "identity"
+
+
+def test_a_scan_version_mismatch_is_noted_until_the_versions_match(server):
+    """ADR-0008-29."""
+    _token, secret = server.token()
+    mismatch = {"scan_decode_v1": True, "scan_analysis_version": "unsupported"}
+    assert managed_beat(server, secret, connect=True, **mismatch).status_code == 200
+    (notice,) = workers_view(server)["refusals"]
+    assert notice["kind"] == "scan_version"
+    assert "unsupported" in notice["message"]
+    assert "same release" in notice["message"]
+    managed_beat(server, secret, connect=True, **SCAN_CAPABILITY)
+    assert workers_view(server)["refusals"] == []
+
+
+def test_token_refusals_are_noted_once_per_token_without_secrets(server):
+    """ADR-0008-29. Revoked, wrong-secret and wrong-scope tokens of known ids; nothing else."""
+    store = server.app.state.machine_tokens()
+    revoked, revoked_secret = server.token("Old PC")
+    _wrong, wrong_secret = server.token("Typo PC")
+    _announcer, announcer_secret = store.create("news-bot", [SCOPE_ANNOUNCER], "default")
+    store.revoke(revoked.token_id)
+    for _ in range(20):
+        assert server.call("POST", "/api/worker/claim", revoked_secret, json={}).status_code == 401
+    bad = wrong_secret[:-1] + ("A" if wrong_secret[-1] != "A" else "B")
+    assert server.call("POST", "/api/worker/claim", bad, json={}).status_code == 401
+    assert server.call("POST", "/api/worker/claim", announcer_secret, json={}).status_code == 401
+    unknown = f"adj1.{'0' * 32}.{'A' * 43}"
+    assert server.call("POST", "/api/worker/claim", unknown, json={}).status_code == 401
+    notices = workers_view(server)["refusals"]
+    by_name = {notice["name"]: notice for notice in notices}
+    assert set(by_name) == {"Old PC", "Typo PC", "news-bot"}
+    assert by_name["Old PC"]["kind"] == "revoked"
+    assert by_name["Old PC"]["revoked"] is True
+    assert "Pair the worker again" in by_name["Old PC"]["message"]
+    assert by_name["Typo PC"]["kind"] == "invalid"
+    assert by_name["news-bot"]["kind"] == "scope"
+    for secret in (revoked_secret, wrong_secret, announcer_secret, bad):
+        assert secret.split(".")[-1] not in str(notices)
+    with store._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM worker_refusals").fetchone()[0] == 3
+
+
+def test_refusal_details_are_cut_short(server):
+    """ADR-0008-29."""
+    token, _secret = server.token()
+    store = server.app.state.machine_tokens()
+    store.record_refusal(token.token_id, "identity", "x" * 5000 + "\n\x1b")
+    (notice,) = store.refusals()
+    assert len(notice["detail"]) == 600
+    store.record_refusal("not-an-id", "identity", "ignored")
+    store.record_refusal(token.token_id, "made-up kind", "ignored")
+    assert len(store.refusals()) == 1
+
+
+def test_a_dismissed_refusal_stays_hidden_until_another_reason(server):
+    """ADR-0008-29."""
+    token, secret = server.token()
+    store = server.app.state.machine_tokens()
+    store.revoke(token.token_id)
+    server.call("POST", "/api/worker/claim", secret, json={})
+    gone = server.client.delete(f"/api/analysis/workers/{token.token_id}/refusal", headers=ORIGIN)
+    assert gone.status_code == 200
+    assert workers_view(server)["refusals"] == []
+    store._refused.clear()  # past the once-a-minute write limit
+    server.call("POST", "/api/worker/claim", secret, json={})
+    assert workers_view(server)["refusals"] == []
+    store.record_refusal(token.token_id, "invalid")
+    assert [notice["kind"] for notice in workers_view(server)["refusals"]] == ["invalid"]
+    missing = server.client.delete(f"/api/analysis/workers/{'0' * 32}/refusal", headers=ORIGIN)
+    assert missing.status_code == 404
+
+
+def pairing_code(server, name=""):
+    reply = server.client.post(
+        "/api/machine-tokens/pairing-code", json={"name": name}, headers=ORIGIN
+    )
+    assert reply.status_code == 201, reply.text
+    assert reply.headers["cache-control"] == "no-store"
+    return reply.json()
+
+
+def pair(server, code, name="gpu-box", client=None):
+    return (client or server.client).post("/api/worker-pair", json={"code": code, "name": name})
+
+
+def _other(code):
+    return f"{(int(code) + 1) % 100_000_000:08d}"
+
+
+def test_a_pairing_code_trades_once_for_an_analysis_worker_token(server, caplog):
+    """ADR-0007-14. Single use; the token is a worker token named by Settings or the host."""
+    caplog.set_level("INFO")
+    made = pairing_code(server, "Studio PC")
+    assert len(made["code"]) == 8 and made["code"].isdecimal()
+    assert made["valid_seconds"] == 600
+    paired = pair(server, made["code"])
+    assert paired.status_code == 201, paired.text
+    assert paired.headers["cache-control"] == "no-store"
+    secret = paired.json()["token"]
+    assert paired.json()["name"] == "Studio PC"
+    assert server.call("POST", "/api/worker/claim", secret, json={}).status_code == 200
+    token = server.app.state.machine_tokens().get(paired.json()["token_id"])
+    assert token.scopes == (SCOPE_ANALYSIS_WORKER,)
+    # Used once; the same code again is refused.
+    assert pair(server, made["code"]).status_code == 401
+    # Without a name from Settings, the worker's host name names it.
+    named = pair(server, pairing_code(server)["code"], name="gpu-box\x07").json()
+    assert named["name"] == "gpu-box"
+    assert made["code"] not in caplog.text
+    assert secret not in caplog.text
+
+
+def test_a_pairing_code_expires_and_a_new_one_replaces_it(server, monkeypatch):
+    """ADR-0007-14."""
+    clock = [1000.0]
+    monkeypatch.setattr(server.app.state.worker_pairing, "_monotonic", lambda: clock[0])
+    first = pairing_code(server)["code"]
+    second = pairing_code(server)["code"]
+    if first != second:
+        assert pair(server, first).status_code == 401
+    clock[0] += 601
+    assert pair(server, second).status_code == 401
+
+
+def test_wrong_pairing_codes_lock_out_a_client(server):
+    """ADR-0007-14. The browser pairing's per-client limit, checked before comparing."""
+    code = pairing_code(server)["code"]
+    for _ in range(10):
+        assert pair(server, _other(code)).status_code == 401
+    locked = pair(server, code)
+    assert locked.status_code == 429
+    assert int(locked.headers["retry-after"]) > 0
+    # A new code from Settings starts the counts again.
+    assert pair(server, pairing_code(server)["code"]).status_code == 201
+
+
+def test_many_wrong_pairing_codes_burn_the_code():
+    """ADR-0007-14. The server-wide limit burns the code; with no code open nothing counts."""
+    from autodj.worker_api import WorkerPairing
+
+    pairing = WorkerPairing()
+    assert not pairing.take("12345678", "a").paired
+    assert pairing._clients == {}
+    code, _ = pairing.open(None)
+    for n in range(50):
+        assert not pairing.take(_other(code), f"client-{n % 9}").paired
+    assert not pairing.take(code, "someone-else").paired
+    code, _ = pairing.open("Studio PC")
+    outcome = pairing.take(code, "a")
+    assert outcome.paired
+    assert outcome.name == "Studio PC"
+
+
+def test_the_pairing_route_takes_only_programs_over_https(server):
+    """ADR-0007-14. No session is needed; a browser Origin or plain HTTP from afar is refused."""
+    code = pairing_code(server)["code"]
+    browser = server.client.post(
+        "/api/worker-pair", json={"code": code, "name": "x"}, headers=ORIGIN
+    )
+    assert browser.status_code == 403
+    plain = TestClient(server.app, base_url="http://127.0.0.1:8080")
+    assert pair(server, code, client=plain).status_code == 403
+    assert pair(server, "1234567").status_code == 422
+    assert pair(server, code).status_code == 201
+
+
+def test_a_worker_token_cannot_manage_workers_or_make_pairing_codes(tmp_path):
+    """ADR-0007-14. These are paired-browser routes; a worker token opens none of them."""
+    made = Server(tmp_path / "paired", access_token=secrets.token_urlsafe(32))
+    open_server = Server(tmp_path / "open")
+    try:
+        settings = {"paused": True, "batch": None, "idle_release_minutes": None}
+
+        def attempts(token_id):
+            return [
+                ("PUT", f"/api/analysis/workers/{token_id}/settings", settings),
+                ("POST", "/api/machine-tokens/pairing-code", {"name": ""}),
+                ("DELETE", f"/api/analysis/workers/{token_id}/refusal", None),
+            ]
+
+        token, secret = made.token()
+        for method, path, body in [
+            *attempts(token.token_id),
+            ("GET", "/api/analysis/workers", None),
+        ]:
+            # Without an Origin an unsafe request stops even before the session check.
+            assert made.call(method, path, secret, json=body).status_code in {401, 403}, path
+            with_origin = made.call(method, path, secret, json=body, headers=ORIGIN)
+            assert with_origin.status_code == 401, path
+        # Without pairing, a program sending no Origin still cannot change anything.
+        token, secret = open_server.token()
+        for method, path, body in attempts(token.token_id):
+            assert open_server.call(method, path, secret, json=body).status_code == 403, path
+        assert open_server.app.state.machine_tokens().worker_settings(token.token_id).revision == 0
+    finally:
+        made.close()
+        open_server.close()

@@ -775,7 +775,7 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(
     tmp_path, simulated_model_runtime
 ):
     order = []
-    fake_worker = MagicMock()
+    fake_worker = MagicMock(idle_release=None)
     fake_worker.connect.side_effect = lambda: order.append("connect")
     fake_worker.run.side_effect = lambda: order.append("run")
     with (
@@ -809,7 +809,7 @@ def test_worker_command_runs_hooks_around_the_model_and_frees_the_gpu(
 
 def test_worker_command_runs_the_after_command_on_errors(tmp_path, simulated_model_runtime):
     order = []
-    fake_worker = MagicMock()
+    fake_worker = MagicMock(idle_release=None)
     fake_worker.run.side_effect = WorkerError("token revoked")
     with (
         patch("autodj.worker.Worker", return_value=fake_worker),
@@ -1197,3 +1197,402 @@ def test_a_rescan_clears_holds_on_songs_whose_file_changed(tmp_path):
         assert not queue.clear_holds(_path(same), songs[1][1], songs[1][2])
     finally:
         manager.close()
+
+
+# ---------------------------------------------------------------------------
+# Settings from the server, refusal reports and pairing (#554)
+# ---------------------------------------------------------------------------
+
+ORIGIN = {"Origin": "http://127.0.0.1:8080"}
+
+
+def set_worker(server, token_id, **settings):
+    body = {"paused": False, "batch": None, "idle_release_minutes": None, **settings}
+    reply = server.client.put(
+        f"/api/analysis/workers/{token_id}/settings", json=body, headers=ORIGIN
+    )
+    assert reply.status_code == 200, reply.text
+    return reply.json()
+
+
+def managed_worker(server, **kwargs):
+    token, secret = server.token()
+    model = FakeModel()
+    transport = ClientTransport(server, secret)
+    worker = Worker(
+        ServerApi(transport),
+        lambda path: analyse_file(path, model),
+        server.identity(),
+        idle_seconds=0,
+        **kwargs,
+    )
+    return worker, transport, token
+
+
+def test_worker_applies_server_settings_once_per_revision(server, caplog):
+    """ADR-0008-25. Each revision applies once; an unset value goes back to the worker's own."""
+    caplog.set_level("INFO", logger="autodj.worker")
+    worker, transport, token = managed_worker(server, batch=4, idle_release=None)
+    set_worker(server, token.token_id, batch=2, idle_release_minutes=5)
+    worker.connect()
+    assert (worker.batch, worker.idle_release, worker.settings_revision) == (2, 300.0, 1)
+    assert worker.api.manages is True
+    worker.apply_settings(worker.api.heartbeat()["settings"])
+    assert caplog.text.count("The server set a batch of 2 songs.") == 1
+    # The applied revision goes back to the server with the next request.
+    body = {}
+    request = transport.request
+
+    def spy(method, path, payload=None, sink=None):
+        body.update(payload or {})
+        return request(method, path, payload, sink)
+
+    transport.request = spy
+    worker.api.heartbeat()
+    assert body["settings_revision"] == 1
+    assert body["worker_manage_v1"] is True
+    set_worker(server, token.token_id)
+    worker.apply_settings(worker.api.heartbeat()["settings"])
+    assert (worker.batch, worker.idle_release, worker.settings_revision) == (4, None, 2)
+    worker.api.heartbeat()
+    view = server.client.get("/api/analysis/workers").json()
+    assert view["workers"][0]["settings_applied"] is True
+
+
+def test_command_line_settings_win_and_are_logged_once(caplog):
+    """ADR-0008-25. --batch and --idle-release on the command line beat the server's values."""
+    caplog.set_level("INFO", logger="autodj.worker")
+    identity = {"model": "m", "analysis_version": "v", "dimension": 3, "model_commit": "c"}
+    worker = Worker(
+        QueueApi(identity),
+        Mock(),
+        identity,
+        batch=3,
+        idle_release=120.0,
+        fixed=frozenset({"batch", "idle_release"}),
+    )
+    for revision in (1, 2, 3):
+        worker.apply_settings(
+            {
+                "revision": revision,
+                "paused": revision == 2,
+                "batch": 8 + revision,
+                "idle_release_minutes": 10,
+            }
+        )
+    assert (worker.batch, worker.idle_release) == (3, 120.0)
+    assert worker.settings_revision == 3
+    assert caplog.text.count("on the command line wins") == 2
+    assert "The server asks for a batch of 9 songs; --batch 3 on the command line wins." in (
+        caplog.text
+    )
+    assert "--idle-release 2 on the command line wins" in caplog.text
+    # Pause has no command-line option, so the server always decides it.
+    assert caplog.text.count("Paused by the server") == 1
+    assert caplog.text.count("Resumed by the server.") == 1
+
+
+def test_server_settings_never_carry_a_command_to_run():
+    """ADR-0008-28. Unknown setting names are ignored; the hooks stay the worker's own."""
+    identity = {"model": "m", "analysis_version": "v", "dimension": 3, "model_commit": "c"}
+    worker = Worker(QueueApi(identity), Mock(), identity, batch=4)
+    before = dict(vars(worker))
+    worker.apply_settings(
+        {
+            "revision": 1,
+            "before_command": "evil",
+            "after_command": "evil",
+            "batch": "16",
+            "idle_release_minutes": -1,
+            "paused": "yes",
+        }
+    )
+    after = dict(vars(worker))
+    assert after.pop("settings_revision") == 1
+    before.pop("settings_revision")
+    assert after == before
+    assert "evil" not in str(vars(worker))
+
+
+def test_pause_gives_back_the_rest_of_the_batch_then_resume_carries_on(server, caplog):
+    """ADR-0008-26. The song in hand finishes, the rest go back, nothing is claimed meanwhile."""
+    caplog.set_level("INFO", logger="autodj.worker")
+    worker, transport, token = managed_worker(server, batch=3, once=True)
+    worker.connect()
+    analyse = worker.analyse
+    calls = []
+
+    def analyse_then_pause(path):
+        calls.append(path)
+        if len(calls) == 1:
+            set_worker(server, token.token_id, paused=True)
+            worker.apply_settings(worker.api.heartbeat()["settings"])
+        return analyse(path)
+
+    worker.analyse = analyse_then_pause
+    claims_while_paused = []
+
+    def wait(seconds):
+        claims_while_paused.append(transport.paths.count("/api/worker/claim"))
+        if len(claims_while_paused) == 3:
+            assert server.manager.analysis_queue.held_paths() == set()
+            set_worker(server, token.token_id, paused=False)
+            worker.apply_settings(worker.api.heartbeat()["settings"])
+
+    worker._wait = wait
+    stats = worker.run()
+    assert stats.done == 3
+    # One claim before the pause, none during it, then the rest.
+    assert claims_while_paused == [1, 1, 1]
+    assert "Gave 2 unanalysed songs back to the server." in caplog.text
+    assert "Paused by the server" in caplog.text
+    assert "Resumed by the server." in caplog.text
+
+
+def test_a_paused_worker_frees_the_model_as_if_idle_and_never_exits_for_it(server, caplog):
+    """ADR-0008-26. Paused time counts toward --idle-release but not toward --idle-exit."""
+    caplog.set_level("INFO", logger="autodj.worker")
+    identity = server.identity()
+    api = QueueApi(identity)
+    clock = [0.0]
+    released = []
+    worker = idle_worker(
+        api,
+        identity,
+        clock,
+        idle_exit=60,
+        idle_release=90,
+        release=lambda: released.append(clock[0]),
+    )
+    worker.prepared = True
+    worker.apply_settings({"revision": 1, "paused": True})
+
+    def wait(seconds):
+        clock[0] += seconds
+        if clock[0] >= 600:
+            worker.stop.set()
+
+    worker._wait = wait
+    worker.run()
+    assert released == [90.0]
+    assert api.claimed == 0
+    assert "Paused for 1.5 minutes; released analysis resources." in caplog.text
+    assert "stopping" not in caplog.text
+
+
+def test_new_worker_with_an_older_server_sends_no_manage_fields(server):
+    """ADR-0008-27. Without worker_manage_v1 in replies the worker keeps the old shapes."""
+    worker, transport, _token = managed_worker(server, once=True)
+    request = transport.request
+    bodies = []
+
+    def older(method, path, body=None, sink=None):
+        bodies.append(dict(body or {}))
+        status, headers, raw = request(method, path, body, sink)
+        if sink is None and raw:
+            reply = json.loads(raw)
+            reply.pop("worker_manage_v1", None)
+            reply.pop("settings", None)
+            raw = json.dumps(reply).encode()
+        return status, headers, raw
+
+    transport.request = older
+    worker.report_identity()
+    assert worker.run().done == 3
+    managed = {"worker_manage_v1", "settings_revision", "identity"}
+    assert not any(managed & set(body) for body in bodies)
+    assert worker.settings_revision is None
+
+
+def test_new_worker_drops_manage_fields_a_server_rejects():
+    """ADR-0008-27. A server that refuses the fields gets the request again without them."""
+    sent = []
+
+    class Transport:
+        def request(self, method, path, body=None, sink=None):
+            sent.append(dict(body))
+            if "worker_manage_v1" in body:
+                return 422, {}, b'{"detail": "extra fields"}'
+            return 200, {}, json.dumps({"worker_manage_v1": True, "settings": {}}).encode()
+
+    api = ServerApi(Transport())
+    api.identity = {"model": "m"}
+    api.heartbeat()
+    assert api.manages is True
+    api.heartbeat()
+    assert sent[1]["worker_manage_v1"] is True
+    assert "worker_manage_v1" not in sent[2]
+    assert "identity" not in sent[2]
+
+
+def test_a_worker_reports_its_weights_so_the_server_can_say_why_it_refused(server):
+    """ADR-0008-29. The refusal reaches Settings, and the worker stops with the same advice."""
+    worker, _transport, token = managed_worker(server, once=True)
+    worker.identity = {key: v for key, v in server.identity().items() if key != "model_commit"}
+    worker.connect()
+    worker.identity = {**server.identity(), "model_commit": "f" * 40}
+    with pytest.raises(WorkerError, match=r'revision = "c{40}"'):
+        worker.report_identity()
+    (notice,) = server.client.get("/api/analysis/workers").json()["refusals"]
+    assert notice["token_id"] == token.token_id
+    assert notice["kind"] == "identity"
+
+
+def _pair_transport(server):
+    """HttpTransport stand-in: pairing goes to the app with no token."""
+
+    def make(address, token, ca_cert=None, timeout=60.0):
+        return ClientTransport(server, token)
+
+    return make
+
+
+@pytest.fixture
+def token_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("APPDATA", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    return home
+
+
+def test_pair_with_server_trades_a_code_for_a_token(server, token_home):
+    """ADR-0007-15. The token comes from a single-use code, under the host name or Settings' name."""
+    from autodj.worker import pair_with_server
+
+    code = server.client.post(
+        "/api/machine-tokens/pairing-code", json={"name": ""}, headers=ORIGIN
+    ).json()["code"]
+    with patch("autodj.worker.HttpTransport", _pair_transport(server)):
+        token, name = pair_with_server("https://nas.local:8765", code, name="gpu-box")
+        assert name == "gpu-box"
+        assert server.call("POST", "/api/worker/claim", token, json={}).status_code == 200
+        with pytest.raises(WorkerError, match="refused the pairing code"):
+            pair_with_server("https://nas.local:8765", code, name="gpu-box")
+
+
+def test_pairing_with_an_older_server_says_to_create_a_token():
+    from autodj.worker import pair_with_server
+
+    class Older:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def request(self, method, path, body=None, sink=None):
+            return 404, {}, b'{"detail": "Not Found"}'
+
+    with (
+        patch("autodj.worker.HttpTransport", Older),
+        pytest.raises(WorkerError, match="Create a token"),
+    ):
+        pair_with_server("https://old.local:8765", "12345678", name="gpu-box")
+
+
+def test_saved_worker_tokens_are_private_and_kept_per_server(token_home):
+    """ADR-0007-15. Owner-only file, one entry per server; a shared-readable file is refused."""
+    from autodj.secret_files import _check_private_file
+    from autodj.worker import load_worker_token, save_worker_token, worker_token_file
+
+    first = "adj1." + "a" * 32 + "." + "A" * 43
+    second = "adj1." + "b" * 32 + "." + "B" * 43
+    path = save_worker_token("https://NAS.local:8765/", first, "Studio PC")
+    assert path == worker_token_file()
+    assert path.parent.parent == token_home
+    save_worker_token("https://other.local", second, "Studio PC")
+    with path.open("rb") as handle:
+        _check_private_file(handle.fileno())
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert load_worker_token("https://nas.local:8765") == first
+    assert load_worker_token("https://other.local/") == second
+    assert load_worker_token("https://unknown.local") is None
+    assert first not in path.read_text().replace(first, "", 1)
+    # A file anyone else can read is refused rather than used.
+    loose = token_home / "loose.json"
+    loose.write_text(path.read_text())
+    if os.name != "nt":
+        loose.chmod(0o644)
+    with pytest.raises(PermissionError):
+        load_worker_token("https://nas.local:8765", loose)
+
+
+def _invoke_worker(args, server_api_tokens):
+    """Run ``autodj worker`` with the model and the loop stubbed; note each token used."""
+    fake_worker = MagicMock(idle_release=None)
+
+    def transport(address, token, ca_cert=None, timeout=60.0):
+        server_api_tokens.append(token)
+        return Mock()
+
+    with (
+        patch("autodj.worker.Worker", return_value=fake_worker),
+        patch("autodj.worker.HttpTransport", side_effect=transport),
+        patch("autodj.worker.choose_device", return_value="cpu"),
+        patch("autodj.worker.run_hook"),
+        patch("autodj.worker.release_gpu"),
+        patch("autodj.model.download_model_if_needed", return_value=Path(".")),
+        patch("autodj.model.load_model", return_value=Mock()),
+    ):
+        return CliRunner().invoke(cli, ["worker", *args], env={"AUTODJ_WORKER_TOKEN": None})
+
+
+def test_worker_pair_saves_the_token_and_later_runs_use_it(token_home, simulated_model_runtime):
+    """ADR-0007-15. --pair saves the token, says where, and a later run finds it by server."""
+    token = "adj1." + "c" * 32 + "." + "C" * 43
+    used = []
+    with patch("autodj.worker.pair_with_server", return_value=(token, "gpu-box")) as paired:
+        result = _invoke_worker(["--server", "https://nas.local:8765", "--pair", "1234 5678"], used)
+    assert result.exit_code == 0, result.output
+    assert paired.call_args.args == ("https://nas.local:8765", "12345678")
+    words = " ".join(result.output.split())  # the console wraps long lines
+    assert "worker-tokens.json" in words
+    assert "delete that file" in words
+    assert token not in result.output
+    assert used == [token]
+    used.clear()
+    again = _invoke_worker(["--server", "https://nas.local:8765"], used)
+    assert again.exit_code == 0, again.output
+    assert used == [token]
+    assert "Using the token saved for this server" in " ".join(again.output.split())
+    missing = _invoke_worker(["--server", "https://other.local:8765"], used)
+    assert missing.exit_code == 2
+    assert "--pair CODE" in " ".join(missing.output.split())
+
+
+def test_worker_pair_refuses_a_token_too_and_a_malformed_code(token_home, simulated_model_runtime):
+    used = []
+    both = _invoke_worker(
+        ["--server", "https://nas.local:8765", "--pair", "12345678", "--token", "adj1.x"], used
+    )
+    assert both.exit_code == 2
+    assert "--pair gets a new token" in " ".join(both.output.split())
+    bad = _invoke_worker(["--server", "https://nas.local:8765", "--pair", "12ab"], used)
+    assert bad.exit_code == 2
+    assert "8 digits" in bad.output
+    assert used == []
+
+
+def test_command_line_values_are_fixed_and_server_idle_release_reaches_the_worker(
+    tmp_path, simulated_model_runtime
+):
+    """ADR-0008-25. Only options typed on the command line are fixed; hooks are always local."""
+    made = {}
+
+    def capture(*args, **kwargs):
+        made.update(kwargs)
+        return MagicMock(idle_release=None)
+
+    with (
+        patch("autodj.worker.Worker", side_effect=capture),
+        patch("autodj.worker.choose_device", return_value="cpu"),
+        patch("autodj.worker.run_hook"),
+        patch("autodj.worker.release_gpu"),
+        patch("autodj.model.download_model_if_needed", return_value=tmp_path),
+        patch("autodj.model.load_model", return_value=Mock()),
+    ):
+        CliRunner().invoke(
+            cli, ["worker", "--server", "https://nas:1", "--token", "adj1.x", "--batch", "2"]
+        )
+        assert made["fixed"] == frozenset({"batch"})
+        assert made["prepare"] is not None and made["release"] is not None
+        CliRunner().invoke(cli, ["worker", "--server", "https://nas:1", "--token", "adj1.x"])
+        assert made["fixed"] == frozenset()

@@ -48,7 +48,9 @@ for one lost browser. Do not share the signing token.
    token for its intended use and copy it immediately; it is shown only once.
    Analysis workers can claim songs, fetch claimed audio and submit analysis.
    Announcer tokens are bound to a station and its break operations. Neither
-   token is a browser-control login.
+   token is a browser-control login. For a worker, **Pair a worker** instead
+   gives it a single-use, ten-minute code that it trades for its own token;
+   see [Pair the worker](operations/gpu-worker.md#pair-the-worker).
 2. Put the replacement in the client's private configuration, test its next
    request, then **Revoke** the old token. For suspected compromise, revoke
    first and accept the interruption. Workers stop at their next request.

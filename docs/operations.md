@@ -290,6 +290,18 @@ See [Run analysis on a GPU worker — 3. Install AutoDJ on the GPU machine](guid
 
 See [Run analysis on a GPU worker — 4. Run the worker](guides/operations/gpu-worker.md#4-run-the-worker).
 
+### Pair the worker
+
+See [Run analysis on a GPU worker — Pair the worker](guides/operations/gpu-worker.md#pair-the-worker).
+
+### Manage a worker from the server
+
+See [Run analysis on a GPU worker — Manage a worker from the server](guides/operations/gpu-worker.md#manage-a-worker-from-the-server).
+
+### When the server refuses a worker
+
+See [Run analysis on a GPU worker — When the server refuses a worker](guides/operations/gpu-worker.md#when-the-server-refuses-a-worker).
+
 ### Sharing the GPU with another program
 
 See [Run analysis on a GPU worker — Sharing the GPU with another program](guides/operations/gpu-worker.md#sharing-the-gpu-with-another-program).

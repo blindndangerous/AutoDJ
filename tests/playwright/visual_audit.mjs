@@ -439,6 +439,67 @@ const TIME_CHECKS = {
 };
 const timeCheckPages = new WeakSet();
 
+// Settings > Analysis workers (#554) with two stood-in workers, one too old
+// to apply settings, and a refusal notice, so the worker settings, their
+// state lines and Dismiss are measured on a server with no worker.  A
+// pairing code is stood in for too; Pair a worker shows it with its
+// command.  Saving settings and dismissing reach the real server, which
+// refuses the stood-in ids; the audit does neither.
+const NOW_SECONDS = Math.floor(Date.now() / 1000);
+const ANALYSIS_WORKERS = {
+  available: true, waiting: 1250, analysing: 4, server_paused: true,
+  workers: [
+    { token_id: "a".repeat(32), name: "Studio PC", device: "NVIDIA GeForce RTX 4060 (CUDA GPU)",
+      last_seen: NOW_SECONDS, connected: true, songs_done: 120, songs_failed: 2, songs_stale: 0,
+      rate_per_hour: 341.6, leased: 4, settings_applied: true,
+      settings: { paused: true, batch: 2, idle_release_minutes: 5, revision: 3 } },
+    { token_id: "b".repeat(32), name: "gpu-box-with-a-very-long-unbroken-hostname-for-reflow",
+      device: "", last_seen: NOW_SECONDS - 7200, connected: false, songs_done: 1, songs_failed: 0,
+      songs_stale: 0, rate_per_hour: 0, leased: 0, settings_applied: null,
+      settings: { paused: false, batch: null, idle_release_minutes: null, revision: 1 } },
+  ],
+  refusals: [
+    { token_id: "c".repeat(32), name: "Old PC", kind: "identity", refused_at: NOW_SECONDS - 300,
+      revoked: false, detail: "",
+      message: "The worker's copy of OpenMuQ/MuQ-MuLan-large (abc) is not the server's (def).  "
+        + "Update the model on the worker: set [model] revision = \"def\" in its config.toml, "
+        + "which downloads exactly the server's weights, and start it again." },
+  ],
+};
+const workerPages = new WeakSet();
+
+async function standInForWorkers(page) {
+  if (workerPages.has(page)) return;
+  workerPages.add(page);
+  await page.route("**/api/analysis/workers", (route) => (route.request().method() === "GET"
+    ? route.fulfill({ status: 200, contentType: "application/json",
+      body: JSON.stringify(ANALYSIS_WORKERS) })
+    : route.continue()));
+  await page.route("**/api/machine-tokens/pairing-code", (route) => route.fulfill({
+    status: 201, contentType: "application/json",
+    body: JSON.stringify({ code: "12345678", valid_seconds: 600, name: null }),
+  }));
+}
+
+// A worker's settings refused in the browser (Songs per claim 17), the
+// error under the fields, linked and focused; then Pair a worker with its
+// code and command shown.  Nothing is saved.
+async function openWorkerStates(page, visit) {
+  const batch = page.locator(`#worker-${"a".repeat(32)}-batch`);
+  await batch.waitFor({ state: "visible" });
+  const before = await batch.inputValue();
+  await batch.fill("17");
+  await page.locator(`fieldset:has(#worker-${"a".repeat(32)}-batch) > button`).click();
+  await page.locator(`#worker-${"a".repeat(32)}-batch[aria-invalid="true"]`).waitFor();
+  await page.locator(`#worker-${"a".repeat(32)}-error`).waitFor({ state: "visible" });
+  await visit("settings/workers/settings-error");
+  await batch.fill(before);
+  await page.locator("#pair-worker-create").click();
+  await page.locator("#pair-worker-new").waitFor({ state: "visible" });
+  await visit("settings/workers/pairing");
+  await page.locator("#pair-worker-done").click();
+}
+
 // Now Playing, Hour preview (#126), opened: the server's answer is stood
 // in for, so its table, with fixed and predicted rows, and its backtiming
 // list are measured on an empty library.  One title has no spaces, for
@@ -1495,6 +1556,7 @@ async function eachTarget(page, measure) {
   await standInForRotationTest(page);
   await standInForTrackInfo(page);
   await standInForTimeChecks(page);
+  await standInForWorkers(page);
   await standInForHourPreview(page);
   await standInForListenerStats(page);
   await standInForVoiceTracker(page);
@@ -1559,6 +1621,7 @@ async function eachTarget(page, measure) {
       if (id === "stab-time-checks") await openPackDatesError(page, visit);
       if (id === "stab-stations") await openStationCreateError(page, visit);
       if (id === "stab-live") await openLiveDjError(page, visit);
+      if (id === "stab-workers") await openWorkerStates(page, visit);
     }
   }
 }
