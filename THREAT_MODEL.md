@@ -838,14 +838,15 @@ What a listener can and cannot do:
 - Every other check in `SecurityMiddleware` still applies to them, including the Host allowlist,
   so the name typed into the player must be one this AutoDJ instance is configured to accept.
 - `/stream.` followed by anything else, and any path under `/stream/`, is not public: it needs
-  a session like any other path, and then returns 404. `/stream.aac` and `/stream.opus` (and
-  their `/stations/` forms) are public stream paths too, for the other formats below. Optional
+  a session like any other path, and then returns 404. `/stream.aac` and `/stream.opus` are
+  public stream paths too, for the other formats below. Optional
   HTTP Basic credentials protect only these stream paths and `/stream.m3u` (and the
-  `/stations/` stream paths below); the playlist never includes them.
-- Each station's stream is also public at `/stations/<slug>.mp3` and `/stations/<slug>.m3u`,
-  but only for a configured slug (`[stations.<slug>]`). The default station's is
-  `/stations/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
-  with one station. Any other `/stations/...` path needs a session and then returns 404. A
+  station stream paths below); the playlist never includes them.
+- Each station's stream is also public at `/<slug>.mp3` and `/<slug>.m3u` (and `.aac` and
+  `.opus`), but only for a configured station's slug. The default station's is
+  `/default.mp3`, public with the same credentials as `/stream.mp3` even on a server
+  with one station. A station cannot be named `stream`. Any other `/<name>.mp3` path needs a
+  session. Any other `/stations/...` path needs a session and then returns 404. A
   stopped station answers 503, which shows that the slug exists; this is accepted. Each
   station's listener credentials, bans and listener limits are its own: a ban on one station
   does not cover another, and the listener slots of all stations add up. Starting and stopping

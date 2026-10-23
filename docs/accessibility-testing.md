@@ -99,6 +99,11 @@ records remain under `local/sso-audit/`; remove that directory when finished.
 
 ## Published evidence
 
+For 0.22.0, the release sample is recorded in [accessibility-samples/0.22.0.md](accessibility-samples/0.22.0.md).
+The record gives the revision, operating system, browsers, screen reader and date of the sample,
+lists the flows with a pass or fail per browser, the defects found and the limits of the method.
+It covers only those pairings and flows.
+
 For 0.21.0, the release sample is recorded in [accessibility-samples/0.21.0.md](accessibility-samples/0.21.0.md).
 It was taken on 2026-10-14 on the release branch at b895fdef with the fix for its one blocker
 applied, on Windows 11 with NVDA 2026.2 and Google Chrome 155.0.8059.79 (all the flows listed

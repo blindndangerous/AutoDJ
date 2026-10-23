@@ -77,6 +77,10 @@ enables the documented trusted-LAN exception. See [access management](../guides/
   Preflight does not prove authentication, service availability or audio quality.
   Generation can cost money. Saved liners and activated complete time-check sets
   play locally without provider access; missing clips are not synthesized on demand.
+- The update check in **Settings**, **Updates** needs network access to the source checkout's
+  `origin` or to GitHub. **Restart AutoDJ** appears only when the checkout launcher, a systemd
+  unit with a restart policy, or a container restart policy will start AutoDJ again. AutoDJ
+  does not install updates itself.
 - Stereo Tool needs a separately obtained compatible library and applicable licence;
   container images do not bundle it. External music, voice packs, playlists and
   tools must remain reachable at their configured paths.
