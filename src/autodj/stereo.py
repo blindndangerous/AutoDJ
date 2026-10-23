@@ -382,6 +382,39 @@ def envelope(env: np.ndarray, like: np.ndarray) -> np.ndarray:
     return env if like.ndim == 1 else env[:, None]
 
 
+class UnplayableAudioError(RuntimeError):
+    """The decoder rejected the audio, rather than failing to run."""
+
+
+class AudioAccessError(RuntimeError):
+    """The decoder could not access its input or required system resources."""
+
+
+def decode_error(path: str | Path, detail: str) -> RuntimeError:
+    """Classify explicit invalid audio; unknown decoder/system failures remain retryable."""
+    invalid = any(
+        message in detail
+        for message in (
+            "Invalid data found when processing input",
+            "matches no streams",
+            "does not contain any stream",
+        )
+    )
+    unavailable = any(
+        message in detail
+        for message in (
+            "Permission denied",
+            "Input/output error",
+            "No such file or directory",
+            "Cannot allocate memory",
+            "No space left on device",
+            "Resource temporarily unavailable",
+        )
+    )
+    error = AudioAccessError if unavailable else UnplayableAudioError if invalid else RuntimeError
+    return error(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+
+
 class TrackTooLongError(ValueError):
     """A track is longer than the caller is willing to hold in memory.
 
@@ -448,7 +481,7 @@ def load_with_ffmpeg(
         )
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg could not decode {path}: {detail or 'unknown error'}")
+            raise decode_error(path, detail)
         detail = "\n".join(
             line
             for line in detail.splitlines()

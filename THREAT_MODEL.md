@@ -417,16 +417,110 @@ What a worker can do with a valid token:
   of a `manual_path` folder; never the branch name, which two machines can resolve to different
   weights), the analysis version and the vector size equal its own, the vector is exactly 1040 finite float32 values
   of unit length, the analysed fields are in range, and the record and the file on disk still have
-  the claimed size and fingerprint. A result for a changed file is refused as stale. A result can
-  change only a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo
-  confidence, stale-check time and vector; it cannot touch paths, tags, cues, plays or settings.
-- Report a song it could not analyse (held back for six hours) and give unanalysed claims back.
+  the claimed size and fingerprint. For scan results, the pending row supplies this identity;
+  an existing playable catalog row may still describe older bytes. Claims validate the pending
+  identity, and storage checks it within the catalog transaction as well as checking the file
+  on disk. A result for old bytes or a second rewrite is refused as stale. A result can
+  change a song's energy, key, mode, BPM estimate (when the song has no BPM tag), tempo
+  confidence, stale-check time and vector. A negotiated `scan_decode_v1` result with a matching scan algorithm version for pending work can
+  also set decoded length, automatic cue suggestions, intro lift, loudness, and DJ analysis.
+  Without a vector, same-byte results change only scan measurements, including scan energy;
+  key, mode, BPM, tempo confidence and embedding time remain unchanged. Changed-byte results
+  refresh tags locally and reset stale analysis metadata. An existing vector survives same-byte
+  scan results; changed bytes invalidate it atomically with measurement replacement. Until then,
+  the existing playable row and vector remain available to selection unless a known new tag
+  duration differs by more than the larger of two seconds or two percent of the old duration.
+  That replacement becomes a silent tag-only listing until measured; unknown durations preserve
+  the playable record. Tag edits during a pending replacement preserve the record's analysis
+  identity and update pending identity in the same transaction. Tag-only listings update both
+  identities while retaining the pending row's new-listing provenance.
+  Scan numbers require numeric types and finite values. Length is positive, at most 24 hours,
+  and within the larger of two seconds or two percent of the known catalog duration when that
+  duration describes measured, claimed bytes. Silent tag-only listings (zero energy and no
+  points) supply estimates, allowing half to twice the positive tag duration with three seconds
+  of slack at each end. Replacements use the new bytes' tags; unknown tag durations add no cross-check.
+  Older catalog durations do not constrain replacements. Automatic
+  basic points use the same normalization as local scans: invalid Start/End become the whole
+  song and suggestions outside that range become null. Intro may follow Outro. DJ times stay
+  within the song, beats strictly increase, and cues are ordered. Beat grids are capped at
+  20,000 entries and DJ cues at 4,096, with bounded text and automatic provenance only.
+  Loudness must have the current version, music kind and consistent finite LUFS/gain fields;
+  the server supplies its own file timestamp and size. Intro lift is bounded to 0–6 dB.
+  Catalog measurements and vectors are stored together after the existing file identity checks.
+  DJ metadata commits separately afterward; a cache failure leaves the catalog measurements and
+  pending scan recovery intact. External DJ libraries refresh off the request path; result storage
+  merges a cached snapshot and preserves saved user and imported DJ cues. Results arriving
+  before snapshot loading are retained and merged with imported cues when loading completes.
+  A vector-only claim issued before scan deferral can finish without
+  clearing pending scan work. Result validation failures, including malformed measurements,
+  immediately fail the submitting token's owned lease. Pending scans pass to local recovery;
+  advanced-only invalid content receives the existing failure hold. Vector-only model-identity
+  conflicts remain releasable immediately without a failed hold. Other holders' leases are untouched.
+  Loudness failure may return null and does not prevent storing other measurements.
+  User/imported cue points retain precedence. Worker results cannot set paths, tags, plays or
+  settings. Lyrics and external DJ cue imports remain server-owned.
+  - Report a song it could not analyse (held back for six hours for advanced analysis) and give
+    unanalysed claims back. Remote scan failures release their analysis lease and reserve local recovery without imposing
+    a vector hold. Scan retry state is separate from CPU vector holds. Local scan
+    automatic failures wait six hours and stop after three attempts. Changed-byte refreshes reset the
+    budget except during settling or after local handoff, which retain attempts and backoff for
+    the same pending lifetime; all clear old failure evidence. A later scan without a capable worker can retry unchanged
+    pending bytes despite backoff or exhaustion, but cannot steal a live remote claim.
+    Deferred local decoding checks identity before and after decoding. A rewrite discards the
+    measurements and refreshes readable pending bytes for retry instead of completing the row.
+    This retains the attempt already counted and waits 60 seconds for the new bytes to settle,
+    allowing other eligible rows to proceed. Repeated mid-decode rewrites exhaust the same budget.
+    Decoder rejection removes only the unchanged tag-only listing created by that pending scan,
+    after rechecking that the same bytes remain readable. Older catalog records are preserved.
+    Missing or unreadable files retain their stored identity and receive backoff; they remain
+    subject to the confirmed missing-file cleanup flow. Other decoder and analysis exceptions
+    consume a local attempt with backoff. On exhaustion, any non-access failure permits removal
+    of the pending scan's unchanged, still-readable new tag-only listing and pending row.
+    Missing FFmpeg, decode timeouts, unsupported decoders and analysis errors follow this rule.
+    Access-only exhaustion preserves the listing and reopens the retry budget on the next scan,
+    whether a capable worker is available or decoding stays local. Every local failure is recorded
+    in import errors. Older records and history are preserved; source files are never deleted.
+    Recent successful claims preserve a connected capable worker's unclaimed scan backlog.
+    Recovery decoding runs on the library scan thread, including between scan files; queue
+    errors are rate-limited warnings and do not terminate the ticker. The tick checks for an
+    eligible candidate outside the library lock, at most every 30 seconds, before taking scan
+    ownership or starting a thread. Once admitted, the same thread takes candidates serially,
+    without an interval between songs, until none remain, shutdown is requested, a scan is queued,
+    or a capable worker resumes claiming. During active worker progress, indexed handoff and failed,
+    stale or expired lease lookups exclude the ordinary pending backlog. Exhausted attempts,
+    backoff and live remote claims do not trigger recovery threads. Due automatic rescans have
+    priority. Remote claims filter pending paths in SQL with a batch limit before file work.
+    Identity mismatches skipped during a claim request immediate local scan recovery.
+    Pending membership checks use indexed candidate-path lookups instead of loading every pending
+    row. Missing or unreadable pending files receive backoff so later claims can reach live files.
+    Claims leave pending rows without catalog records untouched until their deadline passes,
+    then hand them to local recovery. Only recovery under the scan lock cancels rows whose
+    catalog records are still absent, so a concurrent tag read cannot lose deferred work.
+    Recovery reloads the catalog at most every 30 seconds and once on exit. External cue
+    libraries load lazily once per scan pass or recovery run. Between scans, remote DJ results
+    can request a snapshot refresh on the same background slot, at most once a minute;
+    request handling only merges the cached snapshot and never parses external libraries.
+
+Use one token per worker process. Negotiated capability and heartbeat renewal belong to the
+token, so sharing a token between processes is unsupported. Scan version mismatch disables
+remote scan work and logs once per retained token. Warning history holds at most 1,024 token IDs,
+with one entry per token, evicts the oldest on overflow, and removes revoked tokens. Version
+strings cannot grow that history. Vector analysis retains its own negotiation. Transient network
+errors and server failures preserve scan capability; actual refusal or incompatible server
+responses change it.
+
+Compatible workers negotiate `lease_tracking` through a legacy-shaped heartbeat, then send
+`connect=true` at process startup to release that token's claimed leases. Failed/stale holds
+and other tokens' leases remain intact. Subsequent heartbeats carry at most 64 lease IDs and
+renew only matching claimed leases owned by that token; an empty list renews none. Older
+workers that omit the list retain holder-wide renewal. Sharing a token lets one process
+release another's claims at startup, so tokens must not be shared between worker processes.
 
 Limits: each token may make 600 requests a minute (429 with `Retry-After` past that); a result
-body may be 64 KiB and the other worker bodies 8 KiB (413 past that). A worker's failure reason is
+body may be 1 MiB and the other worker bodies 8 KiB (413 past that). A worker's failure reason is
 cut to 300 printable characters before it is logged. A malicious worker holding a valid token can
-still post wrong but well-formed vectors for the songs it claims, which would make those songs
-match badly in search; revoke the token and re-analyse them with `autodj index --force`. Give
+still post wrong but well-formed measurements or vectors for the songs it claims, affecting
+playback or search; revoke the token and re-analyse affected songs locally. Give
 tokens only to machines you trust with that.
 
 `autodj worker --before-command` and `--after-command` run a program the operator typed, split

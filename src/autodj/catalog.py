@@ -1318,12 +1318,15 @@ class LibraryCatalog:
         size: int,
         fingerprint: str,
         analysis: dict[str, float | int],
-        vector: np.ndarray,
+        vector: np.ndarray | None,
+        *,
+        scan: dict | None = None,
     ) -> bool:
         """Save a song's advanced analysis if it is still the file it was made from.
 
-        The record must still be music with this *size* and *fingerprint*,
-        and the file must still match those values.
+        The record must still be music, and the file must match this *size*
+        and *fingerprint*. Scan results must match the pending row; vector-only
+        results must match the catalog record.
         The analysed fields, the stale-check
         stamp and the vector change in one transaction, so the change
         counters show the server a complete result.
@@ -1335,6 +1338,10 @@ class LibraryCatalog:
             analysis: ``energy``, ``key``, ``mode``, ``bpm`` and
                 ``tempo_confidence``, as ``autodj index`` measures them.
             vector: The combined vector.
+                ``None`` for scan-only work excluded from advanced analysis.
+            scan: Optional scan measurements already validated by the worker API.
+                Length, cues, intro lift and loudness join the same transaction;
+                loudness uses the server file's timestamp, never the worker's.
 
         Returns:
             ``False`` when the song is gone or its file changed (a stale
@@ -1345,9 +1352,11 @@ class LibraryCatalog:
         """
         from autodj.indexer import FEATURE_DIM, _apply_analysis_metadata, source_mtime
 
-        value = np.asarray(vector, dtype=np.float32)
-        if value.shape != (FEATURE_DIM,) or not np.isfinite(value).all():
+        value = None if vector is None else np.asarray(vector, dtype=np.float32)
+        if value is not None and (value.shape != (FEATURE_DIM,) or not np.isfinite(value).all()):
             raise ValueError(f"vector must be a finite float32 array of shape ({FEATURE_DIM},)")
+        if value is None and scan is None:
+            raise ValueError("analysis needs a vector or scan measurements")
         normalized = _path(path)
         if not size or not fingerprint or file_fingerprint(normalized) != (size, fingerprint):
             return False
@@ -1359,36 +1368,100 @@ class LibraryCatalog:
                 row = db.execute(
                     "SELECT * FROM catalog_entries WHERE path=?", (normalized,)
                 ).fetchone()
+                identity = (
+                    db.execute(
+                        "SELECT size,fingerprint FROM scan_pending WHERE path=?", (normalized,)
+                    ).fetchone()
+                    if scan is not None
+                    else row
+                )
                 if (
                     row is None
                     or row["kind"] != "music"
-                    or row["size"] != size
-                    or row["fingerprint"] != fingerprint
+                    or normalized in self._editing
+                    or identity is None
+                    or identity["size"] != size
+                    or identity["fingerprint"] != fingerprint
+                    or file_fingerprint(normalized) != (size, fingerprint)
                 ):
                     db.rollback()
                     return False
                 entry = self._entry(row)
-                _apply_analysis_metadata(
-                    entry, analysis, keep=_user_tags(row["user_tags"], row["fingerprint"])
-                )
-                db.execute(
-                    "UPDATE catalog_entries SET energy=?, key=?, mode=?, bpm=?, "
-                    "tempo_confidence=?, embedded_at=? WHERE id=?",
-                    (
-                        entry.energy,
-                        entry.key,
-                        entry.mode,
-                        entry.bpm,
-                        entry.tempo_confidence,
-                        mtime,
-                        row["id"],
-                    ),
-                )
-                db.execute(
-                    "INSERT INTO catalog_vectors VALUES (?,?) ON CONFLICT(entry_id) "
-                    "DO UPDATE SET vector=excluded.vector",
-                    (row["id"], value.tobytes()),
-                )
+                if scan is not None:
+                    changed = (row["size"], row["fingerprint"]) != (size, fingerprint)
+                    if changed:
+                        from autodj.audio_meta import read_file_tags
+
+                        tags = read_file_tags(normalized)
+                        entry = IndexEntry(
+                            normalized,
+                            tags.title or Path(normalized).stem,
+                            tags.artist,
+                            tags.album,
+                            tags.genre,
+                            tags.bpm,
+                            tags.year,
+                            scan["length"],
+                            scan["energy"],
+                            -1,
+                            -1,
+                            0.0,
+                            size=size,
+                            fingerprint=fingerprint,
+                            embedded_at=mtime,
+                        )
+                        self._put(entry, "music", None, "analysis")
+                    loudness = scan["loudness"]
+                    if loudness is not None:
+                        loudness = {
+                            **loudness,
+                            "size": size,
+                            "mtime_ns": os.stat(normalized).st_mtime_ns,
+                        }
+                    db.execute(
+                        "UPDATE catalog_entries SET length=?, intro_lift_db=?, loudness=?, "
+                        "size=?, fingerprint=?, mtime_ns=? WHERE id=?",
+                        (
+                            scan["length"],
+                            scan["intro_lift_db"],
+                            json.dumps(loudness or {}),
+                            size,
+                            fingerprint,
+                            os.stat(normalized).st_mtime_ns,
+                            row["id"],
+                        ),
+                    )
+                    self._merge_points(normalized, scan["points"], "analysis")
+                if value is not None:
+                    _apply_analysis_metadata(
+                        entry, analysis, keep=_user_tags(row["user_tags"], fingerprint)
+                    )
+                    db.execute(
+                        "UPDATE catalog_entries SET energy=?, key=?, mode=?, bpm=?, "
+                        "tempo_confidence=?, embedded_at=? WHERE id=?",
+                        (
+                            entry.energy,
+                            entry.key,
+                            entry.mode,
+                            entry.bpm,
+                            entry.tempo_confidence,
+                            mtime,
+                            row["id"],
+                        ),
+                    )
+                    db.execute(
+                        "INSERT INTO catalog_vectors VALUES (?,?) ON CONFLICT(entry_id) "
+                        "DO UPDATE SET vector=excluded.vector",
+                        (row["id"], value.tobytes()),
+                    )
+                elif scan is not None:
+                    db.execute(
+                        "UPDATE catalog_entries SET energy=? WHERE id=?",
+                        (scan["energy"], row["id"]),
+                    )
+                if file_fingerprint(normalized) != (size, fingerprint):
+                    db.rollback()
+                    return False
                 db.commit()
             except BaseException:
                 db.rollback()
@@ -1620,6 +1693,8 @@ class LibraryCatalog:
         it hands it back to the analysis.  ``remember_manual=False`` is for
         imported embedded tags: manual BPM/key overrides stay untouched, and
         unchanged tags and file identity do not cause a database write.
+        A pending replacement keeps the record's old analysis identity; only
+        its pending scan identity follows the rewritten bytes.
 
         Args:
             path: The recording, rewritten on disk or left as it was.
@@ -1653,6 +1728,19 @@ class LibraryCatalog:
                 if row is None:
                     db.rollback()
                     return False
+                pending = (
+                    db.execute(
+                        "SELECT size,fingerprint FROM scan_pending WHERE path=?", (normalized,)
+                    ).fetchone()
+                    if db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scan_pending'"
+                    ).fetchone()
+                    else None
+                )
+                replacement_pending = pending is not None and (
+                    pending["size"],
+                    pending["fingerprint"],
+                ) != (row["size"], row["fingerprint"])
                 manual_tags = set(_user_tags(row["user_tags"], row["fingerprint"]))
                 if not remember_manual:
                     protected = manual_tags | ({"mode"} if "key" in manual_tags else set())
@@ -1668,12 +1756,15 @@ class LibraryCatalog:
                     ):
                         db.rollback()
                         return True
-                values: dict[str, Any] = {
-                    **fields,
-                    "size": size,
-                    "fingerprint": fingerprint,
-                    "mtime_ns": stat.st_mtime_ns,
-                }
+                values: dict[str, Any] = dict(fields)
+                if pending is not None:
+                    db.execute(
+                        "UPDATE scan_pending SET size=?, fingerprint=?, attempts=0, retry_at=0, "
+                        "non_access_failure=0 WHERE path=? AND (size!=? OR fingerprint!=?)",
+                        (size, fingerprint, normalized, size, fingerprint),
+                    )
+                if not replacement_pending:
+                    values.update(size=size, fingerprint=fingerprint, mtime_ns=stat.st_mtime_ns)
                 for name in _USER_TAGS:
                     if name in fields:
                         # A key is 0 to 11, -1 when cleared; a BPM 0 when cleared.
@@ -1683,14 +1774,19 @@ class LibraryCatalog:
                             manual_tags.add(name)
                         else:
                             manual_tags.discard(name)
-                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual_tags), fingerprint))
-                if row["embedded_at"]:
+                tag_identity = row["fingerprint"] if replacement_pending else fingerprint
+                values["user_tags"] = json.dumps(dict.fromkeys(sorted(manual_tags), tag_identity))
+                if row["embedded_at"] and not replacement_pending:
                     values["embedded_at"] = stat.st_mtime
                 try:
                     loudness = json.loads(row["loudness"])
                 except (TypeError, json.JSONDecodeError):
                     loudness = None
-                if isinstance(loudness, dict) and loudness.get("size") == row["size"]:
+                if (
+                    not replacement_pending
+                    and isinstance(loudness, dict)
+                    and loudness.get("size") == row["size"]
+                ):
                     loudness.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns)
                     values["loudness"] = json.dumps(loudness, allow_nan=False)
                 assignments = ",".join(f"{name}=?" for name in values)
