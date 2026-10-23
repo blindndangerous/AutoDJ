@@ -420,7 +420,7 @@ class AnalysisQueue:
         """Whether any worker was seen in the last :data:`WORKER_ACTIVE_SECONDS`."""
         return bool(
             self._read(
-                "SELECT 1 FROM analysis_workers WHERE last_seen >= ? "
+                "SELECT 1 FROM analysis_workers WHERE last_seen >= ? "  # nosec B608 -- fixed clauses only; values are bound
                 + (
                     "AND token_id IN (SELECT token_id FROM scan_workers WHERE enabled=1) "
                     if scan_decode
@@ -506,7 +506,7 @@ class AnalysisQueue:
         if progressing:
             # Start from handoffs and failed/expired leases, never the ordinary backlog.
             return (
-                " FROM scan_pending p INDEXED BY sqlite_autoindex_scan_pending_1 WHERE p.path IN ("
+                " FROM scan_pending p INDEXED BY sqlite_autoindex_scan_pending_1 WHERE p.path IN ("  # nosec B608 -- fixed SQL and a constant; values are bound
                 "SELECT path FROM scan_pending INDEXED BY scan_pending_handoff "
                 f"WHERE deadline=0 AND attempts<{SCAN_MAX_ATTEMPTS} AND retry_at<=? "
                 "UNION SELECT path FROM analysis_leases WHERE holder!=? "
