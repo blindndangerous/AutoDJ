@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from autodj import hour_preview
 from autodj.repeat_rules import PlayRecord
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 from tests.unit._rotation_station import category_step, make_station, song
 
 

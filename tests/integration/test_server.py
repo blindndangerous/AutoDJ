@@ -29,9 +29,10 @@ import pytest
 from autodj.config import PlayerPageConfig, RequestsConfig, ServerConfig, TimeChecksConfig
 from autodj.live_protocol import IcecastSourceH11Protocol
 from autodj.repeat_settings import RepeatRule, RepeatSettings
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.settings_bodies import PlaybackSettingsBody
 from tests._layout import layout_index, point_index
+from tests._server import create_app
 
 from ._helpers import NO_INDEX_DIR, _make_entry, _make_player_mock, _make_sim_mock, wav_bytes
 
@@ -2646,7 +2647,7 @@ class TestSettingsEndpoints:
         )
         assert bridge.player._cfg.playback.crossfade_seconds == 5.5
         assert bridge.player._cfg.playback.crossfade_eq_duck is True
-        assert bridge.player._pure_shuffle is True
+        assert bridge.player._cfg.playback.pick_mode == "random"
         assert bridge.player._cfg.replaygain.enabled is True
 
     def test_post_playback_settings_transition_mode(self, bridge, tmp_path) -> None:
@@ -2715,7 +2716,7 @@ class TestSettingsEndpoints:
         point_index(bridge.player._cfg.index, tmp_path)
         tc = TestClient(create_app(bridge))
         tc.post("/api/playback-settings", json={"pure_shuffle": True})
-        assert bridge.player._pure_shuffle is True
+        assert bridge.player._cfg.playback.pick_mode == "random"
 
     def test_post_playback_show_lyrics_false_clears_buffer(self, bridge, tmp_path) -> None:
         from fastapi.testclient import TestClient
@@ -3700,13 +3701,15 @@ class TestMisc:
         assert picked.path in calls
         assert nxt2.path in calls
 
-    def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge) -> None:
+    def test_lyrics_endpoint_reads_each_requested_index_path(self, bridge, monkeypatch) -> None:
         from fastapi.testclient import TestClient
 
         from autodj.audio_meta import LyricLine
 
         first, second = bridge.sim.entries[:2]
-        bridge.player._read_lyrics_for_path.side_effect = [
+        read_lyrics = MagicMock()
+        monkeypatch.setattr("autodj.audio_meta.read_library_lyrics", read_lyrics)
+        read_lyrics.side_effect = [
             ([LyricLine(time_s=1.0, text="first")], ""),
             ([LyricLine(time_s=2.0, text="second")], ""),
         ]
@@ -3723,20 +3726,24 @@ class TestMisc:
             "path": second.path,
             "lyrics": [{"time_s": 2.0, "text": "second"}],
         }
-        assert bridge.player._read_lyrics_for_path.call_args_list == [
-            ((first.path,), {}),
-            ((second.path,), {}),
+        assert read_lyrics.call_args_list == [
+            ((first.path, bridge.player._cfg.library), {}),
+            ((second.path, bridge.player._cfg.library), {}),
         ]
 
-    def test_lyrics_endpoint_rejects_an_unknown_path_without_reading_it(self, bridge) -> None:
+    def test_lyrics_endpoint_rejects_an_unknown_path_without_reading_it(
+        self, bridge, monkeypatch
+    ) -> None:
         from fastapi.testclient import TestClient
 
+        read_lyrics = MagicMock()
+        monkeypatch.setattr("autodj.audio_meta.read_library_lyrics", read_lyrics)
         tc = TestClient(create_app(bridge))
 
         response = tc.get("/api/lyrics", params={"path": "Z:/not-indexed.flac"})
 
         assert response.status_code == 404
-        bridge.player._read_lyrics_for_path.assert_not_called()
+        read_lyrics.assert_not_called()
 
     def test_lyrics_lookup_runs_off_the_event_loop(self, bridge, monkeypatch) -> None:
         from fastapi.testclient import TestClient
@@ -3752,10 +3759,11 @@ class TestMisc:
             called.append("to_thread")
             return function(*args, **kwargs)
 
-        bridge.lyrics_for = read_lyrics  # type: ignore[assignment]
         monkeypatch.setattr("autodj.server.asyncio.to_thread", fake_to_thread)
 
-        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+        app = create_app(bridge)
+        app.state.library_services.lyrics_for = read_lyrics
+        response = TestClient(app).get("/api/lyrics", params={"path": path})
 
         assert response.status_code == 200
         assert called[-2:] == ["to_thread", path]
@@ -3769,9 +3777,9 @@ class TestMisc:
             bridge.sim.entries = bridge.sim.entries[1:]
             return [{"time": 0.0, "text": "stale secret"}]
 
-        bridge.lyrics_for = swap_index_generation  # type: ignore[assignment]
-
-        response = TestClient(create_app(bridge)).get("/api/lyrics", params={"path": path})
+        app = create_app(bridge)
+        app.state.library_services.lyrics_for = swap_index_generation
+        response = TestClient(app).get("/api/lyrics", params={"path": path})
 
         assert response.status_code == 409
         assert "stale secret" not in response.text
@@ -3803,9 +3811,9 @@ class TestMisc:
                 assert release_first.wait(10.0)
             return []
 
-        bridge.entry_for_path = observe_request  # type: ignore[assignment]
-        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
         app = create_app(bridge)
+        app.state.library_services.entry_for_path = observe_request
+        app.state.library_services.lyrics_for = slow_lyrics
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:
@@ -3855,11 +3863,11 @@ class TestMisc:
                 loop.call_soon_threadsafe(second_started.set)
             return []
 
-        bridge.entry_for_path = observe_request  # type: ignore[assignment]
-        bridge.lyrics_for = slow_lyrics  # type: ignore[assignment]
         read_gate = asyncio.Semaphore(1)
         with patch("autodj.server.asyncio.Semaphore", return_value=read_gate):
             app = create_app(bridge)
+        app.state.library_services.entry_for_path = observe_request
+        app.state.library_services.lyrics_for = slow_lyrics
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:
@@ -4626,7 +4634,8 @@ class TestHistoryEndpoint:
     def _client_with_history(self, entries):
         from fastapi.testclient import TestClient
 
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
         from tests.integration._helpers import _make_player_mock, _make_sim_mock
 
         bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
@@ -4707,7 +4716,8 @@ class TestHistoryEndpoint:
 
         from fastapi.testclient import TestClient
 
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
         from tests.integration._helpers import _make_player_mock, _make_sim_mock
 
         bridge = PlayerBridge(player=_make_player_mock(), sim=_make_sim_mock())
@@ -4907,8 +4917,9 @@ class TestStateIsBuiltOffTheEventLoop:
             seen.append(("search", _on_event_loop()))
             return real_search(query, limit)
 
-        bridge.get_state, bridge.search = get_state, search
+        bridge.get_state = get_state
         tc = TestClient(create_app(bridge))
+        tc.app.state.library_services.search = search
         assert tc.get("/api/status").status_code == 200
         assert tc.post("/api/skip").status_code == 200
         assert tc.post("/api/advance").status_code == 200

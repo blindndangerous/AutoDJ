@@ -35,6 +35,7 @@ _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 # block.  Kept well under the master processors' 16-18 block output cushion
 # (see :mod:`autodj.mastering`), so a catch-up burst never drains it.
 CATCH_UP_BLOCKS = 8
+_LAG_WARNING_SECONDS = 10.0
 _NO_LINER = np.zeros((0, 2), np.float32)
 # Live source audio buffered before it plays, and again after an underrun,
 # so network jitter does not crackle (#48); a browser talker's, shorter.
@@ -1095,44 +1096,70 @@ class MixBus:
         """
         period = self.BLOCK / SAMPLE_RATE
         next_due = self._clock.now()
-        while not stop.is_set():
-            master, master_enabled = self._master_state()
-            try:
-                # Warm the processor without advancing tracks, liners, or their callbacks.
-                block = (
-                    np.zeros((self.BLOCK, 2), np.float32)
-                    if master is not None and master_enabled and master.startup_pending
-                    else self.render_block(master_enabled=master_enabled)
-                )
-            except Exception:
-                logger.exception("Mix bus render_block failed; emitting silence")
-                block = np.zeros((self.BLOCK, 2), np.float32)
-            if master is not None:
+        last_lag_warning = -math.inf
+        skipped_periods = 0
+        worst_delay = 0.0
+
+        def report_lag(now: float) -> None:
+            nonlocal last_lag_warning, skipped_periods, worst_delay
+            logger.warning(
+                "Mix bus fell behind by up to %.3f s; skipped %d periods of %.0f ms since last warning",
+                worst_delay,
+                skipped_periods,
+                period * 1000,
+            )
+            last_lag_warning = now
+            skipped_periods = 0
+            worst_delay = 0.0
+
+        try:
+            while not stop.is_set():
+                master, master_enabled = self._master_state()
                 try:
-                    processed = np.asarray(
-                        master.process(block, enabled=master_enabled), np.float32
+                    # Warm the processor without advancing tracks, liners, or their callbacks.
+                    block = (
+                        np.zeros((self.BLOCK, 2), np.float32)
+                        if master is not None and master_enabled and master.startup_pending
+                        else self.render_block(master_enabled=master_enabled)
                     )
-                    if processed.shape != (self.BLOCK, 2):
-                        raise ValueError("master returned an invalid block shape")
-                    block = processed
                 except Exception:
-                    logger.exception("Mix bus master failed; emitting bounded dry audio")
-                nan_to_num_in_place(block)
-                np.clip(block, -1.0, 1.0, out=block)
-            with self._lock:
-                outputs = list(self._outputs)
-            for output in outputs:
-                try:
-                    output.write(block)
-                except Exception:
-                    logger.exception("Mix bus output failed; removing it")
-                    self.remove_output(output)
-            next_due += period
-            delay = next_due - self._clock.now()
-            if delay > 0:
-                self._clock.sleep(delay)
-            elif delay < -CATCH_UP_BLOCKS * period:
-                # Make up at most CATCH_UP_BLOCKS: a longer burst could drain
-                # a healthy processor's output cushion.  Whole periods are
-                # dropped, so the schedule keeps its phase.
-                next_due += (math.ceil(-delay / period) - CATCH_UP_BLOCKS) * period
+                    logger.exception("Mix bus render_block failed; emitting silence")
+                    block = np.zeros((self.BLOCK, 2), np.float32)
+                if master is not None:
+                    try:
+                        processed = np.asarray(
+                            master.process(block, enabled=master_enabled), np.float32
+                        )
+                        if processed.shape != (self.BLOCK, 2):
+                            raise ValueError("master returned an invalid block shape")
+                        block = processed
+                    except Exception:
+                        logger.exception("Mix bus master failed; emitting bounded dry audio")
+                    nan_to_num_in_place(block)
+                    np.clip(block, -1.0, 1.0, out=block)
+                with self._lock:
+                    outputs = list(self._outputs)
+                for output in outputs:
+                    try:
+                        output.write(block)
+                    except Exception:
+                        logger.exception("Mix bus output failed; removing it")
+                        self.remove_output(output)
+                next_due += period
+                now = self._clock.now()
+                delay = next_due - now
+                if delay < -CATCH_UP_BLOCKS * period:
+                    # Make up at most CATCH_UP_BLOCKS: a longer burst could drain
+                    # a healthy processor's output cushion.  Whole periods are
+                    # dropped, so the schedule keeps its phase.
+                    skipped = math.ceil(-delay / period) - CATCH_UP_BLOCKS
+                    next_due += skipped * period
+                    skipped_periods += skipped
+                    worst_delay = max(worst_delay, -delay)
+                if skipped_periods and now - last_lag_warning >= _LAG_WARNING_SECONDS:
+                    report_lag(now)
+                if delay > 0:
+                    self._clock.sleep(delay)
+        finally:
+            if skipped_periods:
+                report_lag(self._clock.now())

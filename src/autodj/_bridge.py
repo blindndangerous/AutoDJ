@@ -451,31 +451,8 @@ class PlayerBridge(LibraryAccess):
     _track_dicts: dict[str, tuple[Any, Any, tuple, dict]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
-        from autodj.station_settings import StationSettings
-
         if self.settings is None:
-            candidate = getattr(self.player, "_settings", None)
-            if isinstance(candidate, StationSettings):
-                self.settings = candidate
-        if self.settings is None:
-            self.settings = StationSettings(self.player._cfg, self.library, self.sim, self.paths)
-            for name in (
-                "_preset",
-                "_bpm_range",
-                "_pure_shuffle",
-                "_anchor_to_seed",
-                "_eq_low",
-                "_eq_mid",
-                "_eq_high",
-                "_discovery_every",
-            ):
-                if hasattr(self.player, name):
-                    setattr(self.settings, name, getattr(self.player, name))
-            state = getattr(self.player, "_state", None)
-            if state is not None:
-                self.settings._volume = getattr(state, "volume", 1.0)
-                self.settings._is_muted = getattr(state, "is_muted", False)
-                self.settings._discovery_enabled = getattr(state, "discovery_enabled", False)
+            self.settings = self.player._settings
         self.settings.library = self.library or self.settings.library
         self.settings.sim = self.sim or self.settings.sim
         self.settings.paths = self.paths or self.settings.paths

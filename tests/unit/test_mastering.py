@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import subprocess
 import threading
@@ -15,7 +16,9 @@ import numpy as np
 import pytest
 
 from autodj.mastering import (
+    _MEASURED_PIPELINE_BLOCKS,
     _QUEUE_BLOCKS,
+    _RUNNING_INPUT_BLOCKS,
     BLOCK_FRAMES,
     BLOCK_SECONDS,
     STEREOTOOL_MISSING,
@@ -70,8 +73,8 @@ def _live_step(
     The bus calls ``process`` every 20 ms and never waits; these tests keep
     that pace but also wait until FFmpeg and the pipe threads have handled
     the previous blocks.  On a busy machine they can fall a few blocks
-    behind, which the master rightly treats as an underrun and restarts;
-    that is scheduling, not the behaviour under test.  ``cushion_due`` marks
+    behind, which the master covers with delayed dry audio; that is
+    scheduling, not the behaviour under test.  ``cushion_due`` marks
     the block at the advertised latency, by which the output cushion must
     be full.
     """
@@ -99,7 +102,6 @@ def test_live_pipeline_processes_continuously_and_closes() -> None:
         assert max(float(np.max(np.abs(sample))) for sample in audible) <= 0.871
         assert master.error is None
         assert len(spawned) == 1  # never restarted
-        assert master.latency_seconds == pytest.approx(_LATENCY_BLOCKS * BLOCK_SECONDS)
     finally:
         start = time.monotonic()
         master.close()
@@ -266,8 +268,12 @@ def test_switching_processors_preserves_delayed_fallback() -> None:
         master._fallback_delay.extend(_block(0.03) for _ in range(25))
         master._input.append((0, b"stale"))
         master._output.append((0, _block(0.1)))
+        master._owed_blocks = 2
+        master._stall_started = 100.0
         master._switch(True, "stereotool")
         assert not master._input and not master._output
+        assert master._owed_blocks == 0
+        assert master._stall_started is None
         assert master._recovering
         assert np.any(master._delayed_fallback())
         master._switch(False)
@@ -285,25 +291,373 @@ def test_old_writer_leaves_new_processor_input_queued() -> None:
 
 
 @pytest.mark.parametrize("mode", ["smooth", "stereotool"])
-def test_output_cushion_absorbs_jitter_then_recovers_from_real_underrun(mode) -> None:
+def test_output_cushion_absorbs_jitter_then_recovers_from_real_underrun(
+    mode, monkeypatch, caplog
+) -> None:
     master = ContinuousMaster(mode=lambda: "off")
     master.close()
     # Run the consumer without a worker so the output pause is deterministic.
     master._closed = False
     master._select_mode = lambda: mode
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    caplog.set_level("INFO", logger="autodj.mastering")
     try:
         with master._lock:
             master._switch(True, mode)
             generation = master._generation
             available = master._output_guard_blocks + 1
-            master._output.extend((generation, _block(0.1)) for _ in range(available))
-            master._fallback_delay.extend(_block(0.03) for _ in range(24))
-            for _ in range(available):
-                np.testing.assert_array_equal(master.process(_block(0.03)), _block(0.1))
+            master._output.extend((generation, _block(0.4 + i / 1000)) for i in range(available))
+            master._fallback_delay.extend(_block(i / 1000) for i in range(24))
+            for i in range(available):
+                np.testing.assert_array_equal(
+                    master.process(_block((i + 24) / 1000)), _block(0.4 + i / 1000)
+                )
             assert master.error is None
+            # An earlier overflow must not suppress the stall's own warning.
+            master._set_error("master input queue overflow; dropped oldest block")
+            for i in range(available, available + 3):
+                now[0] += BLOCK_SECONDS
+                np.testing.assert_allclose(
+                    master.process(_block((i + 24) / 1000)),
+                    _block(i / 1000 * 10 ** (9.01 / 20)),
+                )
+                assert "using delayed dry audio" in master.error
+                assert master._generation == generation
+            assert master._owed_blocks == 3
+            assert len(master._input) == available + 3
+
+            # A partial answer pays some debt but still cannot cover this period.
+            master._output.append((generation, _block(0.4 + available / 1000)))
+            now[0] += BLOCK_SECONDS
+            i = available + 3
+            np.testing.assert_allclose(
+                master.process(_block((i + 24) / 1000)),
+                _block(i / 1000 * 10 ** (9.01 / 20)),
+            )
+            assert master._owed_blocks == 3
+            master._output.extend(
+                (generation, _block(0.4 + i / 1000)) for i in range(available + 1, available + 6)
+            )
+            for i in range(available + 4, available + 6):
+                now[0] += BLOCK_SECONDS
+                np.testing.assert_array_equal(
+                    master.process(_block((i + 24) / 1000)), _block(0.4 + i / 1000)
+                )
+            assert master._owed_blocks == 0
+            assert master._generation == generation
+            assert master.error is None
+            assert caplog.text.count("using delayed dry audio") == 1
+            assert "covered 4 blocks; longest stall 0.080 s" in caplog.text
+
+            master.process(_block())
+            assert caplog.text.count("using delayed dry audio") == 1
+    finally:
+        master.close()
+
+
+def test_sustained_output_stall_restarts_after_limit(monkeypatch) -> None:
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        master._ready = True
+        master._fallback_delay.extend(_block(0.03) for _ in range(24))
+        generation = master._generation
+        for i in range(150):
+            now[0] = 100.0 + i * BLOCK_SECONDS
             assert np.any(master.process(_block(0.03)))
-            assert master.error == "master output underrun; restarting processor"
-            assert master._generation == generation + 1
+            assert master._generation == generation
+        # Ready input buffering must outlast the short warmup queue.
+        assert len(master._input) == 150
+        assert master._owed_blocks == 150
+        now[0] = 103.01
+        assert np.any(master.process(_block(0.03)))
+        assert master._generation == generation + 1
+        assert "restarting processor" in master.error
+        assert master._recovering and not master._ready
+        assert not master._input and not master._output
+        assert master._owed_blocks == 0
+    finally:
+        master.close()
+
+
+def test_trickled_output_restarts_at_stall_age_limit(monkeypatch) -> None:
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: now[0])
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        master._ready = True
+        master._fallback_delay.extend(_block(0.03) for _ in range(24))
+        generation = master._generation
+        master.process(_block(0.03))
+        for now[0] in (102.9, 105.8, 108.7, 109.99):
+            master._output.append((generation, _block(0.8)))
+            np.testing.assert_allclose(
+                master.process(_block(0.03)), _block(0.03 * 10 ** (9.01 / 20))
+            )
+            assert master._generation == generation
+            assert master._owed_blocks == 1
+        now[0] = 110.0
+        master._output.append((generation, _block(0.8)))
+        np.testing.assert_allclose(master.process(_block(0.03)), _block(0.03 * 10 ** (9.01 / 20)))
+        assert master._generation == generation + 1
+        assert "restarting processor" in master.error
+        assert master._recovering and not master._ready
+    finally:
+        master.close()
+
+
+def test_stall_logs_are_rate_limited_with_totals_and_immediate_status(monkeypatch, caplog):
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time", SimpleNamespace(monotonic=lambda: now[0]))
+    caplog.set_level("INFO", logger="autodj.mastering")
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        master._ready = True
+        generation = master._generation
+        for start, blocks in ((100.0, 1), (102.0, 2), (104.0, 3), (110.0, 1)):
+            for offset in range(blocks):
+                now[0] = start + offset * BLOCK_SECONDS
+                master.process(_block(0.01))
+                assert master.error == "master output stalled; using delayed dry audio"
+            now[0] = start + blocks * BLOCK_SECONDS
+            master._output.extend((generation, _block(0.01)) for _ in range(blocks + 1))
+            master.process(_block(0.01))
+            assert master.error is None
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        recoveries = [r for r in caplog.records if "stall ended" in r.message]
+        assert len(warnings) == len(recoveries) == 2
+        assert "stalls: 3; covered 6 blocks; longest stall 0.060 s" in warnings[1].message
+        assert "stalls: 3; covered 6 blocks; longest stall 0.060 s" in recoveries[1].message
+        assert master._generation == generation
+    finally:
+        master.close()
+
+
+def test_gated_processor_stall_preserves_every_delayed_input(monkeypatch) -> None:
+    """Real pipe threads must discard covered output, then resume at the advertised delay."""
+    now = [100.0]
+    monkeypatch.setattr("autodj.mastering.time", SimpleNamespace(monotonic=lambda: now[0]))
+
+    class InputPipe:
+        def __init__(self):
+            self.blocks = queue.Queue()
+
+        def write(self, data):
+            self.blocks.put(bytes(data))
+            return len(data)
+
+        def close(self):
+            self.blocks.put(b"")
+
+    class OutputPipe:
+        def __init__(self, stdin):
+            self.stdin = stdin
+            self.gate = threading.Semaphore(0)
+            self.entered = threading.Event()
+            self.condition = threading.Condition()
+            self.completed = 0
+            self.returned = False
+            self.closed = False
+
+        def read(self, size):
+            # Entering the next read acknowledges that the real reader has
+            # enqueued the previous block. No production queues are edited.
+            with self.condition:
+                if self.returned:
+                    self.completed += 1
+                self.condition.notify_all()
+            self.entered.set()
+            self.gate.acquire()
+            if self.closed:
+                return b""
+            data = self.stdin.blocks.get()
+            assert len(data) <= size
+            self.returned = bool(data)
+            return data
+
+        def advance(self, blocks):
+            with self.condition:
+                target = self.completed + blocks
+                self.gate.release(blocks)
+                assert self.condition.wait_for(lambda: self.completed == target, timeout=5), (
+                    "processor reader did not finish the released blocks"
+                )
+
+        def close(self):
+            self.closed = True
+            self.gate.release()
+
+    class Processor:
+        def __init__(self):
+            self.stdin = InputPipe()
+            self.stdout = OutputPipe(self.stdin)
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+            self.stdin.close()
+            self.stdout.close()
+
+        kill = terminate
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    spawned = []
+    created = threading.Event()
+
+    def factory(*args, **kwargs):
+        child = Processor()
+        spawned.append(child)
+        created.set()
+        return child
+
+    master = ContinuousMaster(popen_factory=factory)
+    heard = []
+    dry_at = []
+    processed_at = []
+    inputs = []
+    try:
+        # Wait for lifecycle initialization before feeding the first block.
+        assert created.wait(timeout=5)
+        child = spawned[0]
+        assert child.stdout.entered.wait(timeout=5)
+        delay = _MEASURED_PIPELINE_BLOCKS
+        for index in range(150):
+            now[0] = 100.0 + index * BLOCK_SECONDS
+            source = _block((index + 1) / 1000)
+            source[:, 1] = 0.9 if index % 2 else -0.9  # Exercise the dry limiter too.
+            inputs.append(source.copy())
+            output = master.process(source)
+            if index < delay:
+                assert not np.any(output)
+            else:
+                expected = inputs[index - delay]
+                if np.array_equal(output, expected):
+                    processed_at.append(index)
+                    decoded = float(output[0, 0])
+                else:
+                    dry_at.append(index)
+                    np.testing.assert_allclose(
+                        output, np.clip(expected * 10 ** (9.01 / 20), -0.87096359, 0.87096359)
+                    )
+                    decoded = float(output[0, 0]) / 10 ** (9.01 / 20)
+                heard.append(round(decoded * 1000) - 1)
+                assert (index - heard[-1]) * BLOCK_SECONDS == pytest.approx(master.latency_seconds)
+            # One second of processor silence, followed by up to three blocks
+            # per bus period until caught up. The gate, not wall time, sets pace.
+            if not 40 <= index < 90:
+                child.stdout.advance(min(3, index + 1 - child.stdout.completed))
+        assert dry_at and processed_at[0] < dry_at[0] < dry_at[-1] < processed_at[-1]
+        assert heard == list(range(150 - delay))  # No repeated or missing input indices.
+        assert master.error is None
+        assert len(spawned) == 1
+    finally:
+        assert master.close()
+
+
+def test_ready_input_overflow_reduces_debt_and_preserves_alignment(monkeypatch) -> None:
+    # A smaller running bound exercises the exceptional drop before the timeout.
+    monkeypatch.setattr("autodj.mastering._RUNNING_INPUT_BLOCKS", 26)
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: 100.0)
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        master._ready = True
+        generation = master._generation
+        master._fallback_delay.extend(_block(i / 1000) for i in range(24))
+        for i in range(40):
+            np.testing.assert_allclose(
+                master.process(_block((i + 24) / 1000)),
+                _block(i / 1000 * 10 ** (9.01 / 20)),
+            )
+        assert len(master._input) == 26
+        assert master._owed_blocks == 26  # 40 dry periods, 14 inputs never processed
+        assert master._generation == generation
+        assert master._warmup_audio_drops == master._warmup_silent_drops == 0
+        # The writer has taken the surviving inputs. Blocks 24..37 were dropped;
+        # blocks 0..23 were already in the processor when the stall began.
+        master._input.clear()
+        master._output.extend(
+            (generation, _block(0.4 + i / 1000)) for i in (*range(24), 38, 39, 40, 41)
+        )
+        for i in (40, 41):
+            np.testing.assert_array_equal(
+                master.process(_block((i + 24) / 1000)), _block(0.4 + i / 1000)
+            )
+        assert master._owed_blocks == 0
+        assert master.error is None
+    finally:
+        master.close()
+
+
+def test_stall_debt_larger_than_output_queue_releases_reader(monkeypatch) -> None:
+    import io
+
+    master = ContinuousMaster(mode=lambda: "off")
+    master.close()
+    master._closed = False
+    master._select_mode = lambda: "smooth"
+    monkeypatch.setattr("autodj.mastering.time.monotonic", lambda: 100.0)
+    try:
+        with master._lock:
+            master._switch(True, "smooth")
+        master._ready = True
+        generation = master._generation
+        master._fallback_delay.extend(_block(i / 1000) for i in range(24))
+        for i in range(45):
+            master.process(_block((i + 24) / 1000))
+        assert master._owed_blocks == 45
+        master._input.clear()
+        waits = []
+
+        def consume_when_backpressured(timeout=None):
+            # Run the consumer at the reader's wait point, without threads or
+            # sleeps. It must free space even though debt exceeds the queue.
+            waits.append(len(master._output))
+            assert waits == [_QUEUE_BLOCKS]
+            np.testing.assert_allclose(
+                master.process(_block(0.069)), _block(0.045 * 10 ** (9.01 / 20))
+            )
+            assert not master._output
+            return True
+
+        monkeypatch.setattr(master._output_cond, "wait", consume_when_backpressured)
+        stdout = io.BytesIO(b"".join(_block(0.4 + i / 1000).tobytes() for i in range(48)))
+        master._read_loop(SimpleNamespace(stdout=stdout), generation, threading.Event())
+        assert waits == [_QUEUE_BLOCKS]
+        assert len(master._output) == 10
+        for i in (46, 47):
+            np.testing.assert_array_equal(
+                master.process(_block((i + 24) / 1000)), _block(0.4 + i / 1000)
+            )
+        assert master._owed_blocks == 0
+        assert master._generation == generation
+        assert master.error is None
     finally:
         master.close()
 
@@ -816,7 +1170,8 @@ def test_warmup_does_not_hide_program_or_running_overflows(phase, caplog):
         master._ready = phase == "ready"
         master._recovering = phase == "recovering"
         queued = _block(1e-12 if phase == "quiet_music" else 0).tobytes()
-        master._input.extend((master._generation, queued) for _ in range(_QUEUE_BLOCKS))
+        limit = _RUNNING_INPUT_BLOCKS if master._ready else _QUEUE_BLOCKS
+        master._input.extend((master._generation, queued) for _ in range(limit))
         if master._ready:
             master._output.append((master._generation, _block()))
         master.process(_block(1e-12 if phase == "quiet_music" else 0))
@@ -824,7 +1179,7 @@ def test_warmup_does_not_hide_program_or_running_overflows(phase, caplog):
         assert master.error == "master input queue overflow; dropped oldest block"
         assert master._warmup_audio_drops == (1 if phase == "quiet_music" else 0)
         assert master._warmup_silent_drops == (1 if phase in {"after_music", "recovering"} else 0)
-        assert len(master._input) == _QUEUE_BLOCKS
+        assert len(master._input) == limit
     finally:
         master.close()
 

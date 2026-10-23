@@ -512,7 +512,6 @@ def load_into_bridge(bridge: PlayerBridge, index_dir: Path | None) -> None:
     """Compatibility wrapper for callers that still hold a PlayerBridge."""
     bridge.settings.paths = bridge.paths or bridge.settings.paths
     load_into_settings(bridge.settings, index_dir)
-    bridge.settings.sync_to_player()
 
 
 def save_from_player(settings: dict, index_dir: Path | None) -> None:
@@ -530,7 +529,11 @@ def save_from_player(settings: dict, index_dir: Path | None) -> None:
         return
     playback = settings.get("playback", {})
     persisted_playback = (
-        {key: value for key, value in playback.items() if key in PERSISTED_PLAYBACK_FIELDS}
+        {
+            key: value
+            for key, value in playback.items()
+            if key in PERSISTED_PLAYBACK_FIELDS and key != "pure_shuffle"
+        }
         if isinstance(playback, dict)
         else {}
     )

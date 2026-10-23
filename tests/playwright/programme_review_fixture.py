@@ -60,11 +60,11 @@ def build(root: Path, port: int):
 
     from autodj import review_source
     from autodj._bridge import PlayerBridge
-    from autodj.server import create_app
     from autodj.shows import Show, ShowStore
     from autodj.station_settings import StationSettings
     from autodj.stations import StationPaths
     from tests._layout import point_index
+    from tests._server import create_app
     from tests.integration._helpers import _make_player_mock, _make_sim_mock
     from tests.unit._rotation_station import make_station, song
 

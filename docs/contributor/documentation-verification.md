@@ -11,7 +11,13 @@ Deterministic checks belong in existing CI. Disposable native Linux/Bash and
 Windows/PowerShell execution environments, and the four independent reader
 journeys, are supplied upstream after the PR. Keep those results pending until
 run; upstream reviewers decide merge. This guide adds no separate approval gate.
-Existing contributor and release verification requirements still apply.
+Use the [contributor change-to-check table](../../CONTRIBUTING.md#choose-checks-for-the-change)
+to select local checks and record reused evidence. Prose/link changes need
+structural checks and source review; non-executing annotation changes do not
+require rerunning unaffected behavioral tests when their prior evidence is
+explicitly identified and applicable. The procedures below apply to the affected
+documentation outcomes, not every prose edit. Existing release verification
+requirements still apply.
 
 ## Choose the evidence
 
@@ -89,13 +95,14 @@ synthesis requests or broadcast publicly without separate authorization.
 
 ## Run deterministic checks
 
-Run from the candidate checkout with contributor dependencies installed. These
+Run from the candidate checkout with the supported no-model test or dev
+dependencies installed (see [contributor setup](../../CONTRIBUTING.md#quick-start)). These
 are executable repository commands, not sample outputs:
 
 ```bash
 uv run --frozen --no-sync python scripts/check_architecture_docs.py
 uv run --frozen --no-sync python scripts/check_architecture_docs.py --include-untracked
-uv run --frozen --no-sync pytest -q --no-cov -p no:cacheprovider tests/unit/test_architecture_docs.py tests/unit/test_documentation_examples.py tests/unit/test_documentation_rendering.py
+uv run --frozen --no-sync python -m pytest -q --no-cov -p no:cacheprovider tests/unit/test_architecture_docs.py tests/unit/test_documentation_examples.py tests/unit/test_documentation_rendering.py
 ```
 
 The first command follows tracked files; the second includes new candidate

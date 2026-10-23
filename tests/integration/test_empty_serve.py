@@ -12,8 +12,9 @@ from autodj.config import ServerConfig, load_config
 from autodj.index_manifest import IndexConsistencyError, read_manifest
 from autodj.indexer import FEATURE_DIM, IndexEntry
 from autodj.player import Player
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.similarity import SimilarityIndex
+from tests._server import create_app
 from tests.unit._catalog_vectors import build_faiss_index
 from tests.unit._legacy_index import save_index
 

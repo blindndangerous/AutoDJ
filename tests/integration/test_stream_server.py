@@ -15,9 +15,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from autodj._bridge import PlayerBridge, StreamSeekUnavailable
 from autodj.listener_access import proxy_allowlist
-from autodj.server import create_app
 from autodj.stream import EncoderUnavailableError, ListenerLimitError
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_entry, _make_player_mock, _make_sim_mock
 

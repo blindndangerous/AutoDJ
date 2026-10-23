@@ -89,6 +89,8 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0001-01` | The documentation gate is read-only, fails invalid contracts, and does not execute tests or accept decisions. | automated | `tests/unit/test_architecture_docs.py::test_valid_contracts_are_read_only_and_do_not_claim_execution`; `tests/unit/test_architecture_docs.py::test_invalid_contracts_fail_with_actionable_diagnostics`; `tests/unit/test_architecture_docs.py::test_class_methods_resolve_without_importing_test_modules`; `tests/unit/test_architecture_docs.py::test_proposed_contracts_remain_proposed_and_retired_ids_need_no_tests`; `tests/unit/test_architecture_docs.py::test_repository_architecture_contracts_are_consistent` |
 | `ADR-0001-02` | GitHub owns shared requirements/status; Beads is optional execution tracking. | manual | Review issue/PR context and contributor/agent guidance; work must be resumable without Beads. |
 | `ADR-0001-03` | An architectural change records a reasoned ADR disposition without automatic issue or ADR mutation. | manual | PR review records existing_adr_still_valid, update_existing_adr, create_new_adr, create_superseding_adr, or no_adr_needed with rationale and follow-up. |
+| `ADR-0001-04` | Required validation cannot pass when its tests are skipped, deselected or missing. | automated | `tests/unit/test_ci_pytest.py::test_required_checks_must_execute` |
+| `ADR-0001-05` | Draft checks provide scoped evidence; full required CI executes on the final ready PR revision before merge. | manual | Exercise draft, ready-for-review and subsequent ready-PR push events; inspect actual required job execution and results on the final head. Local YAML checks do not establish GitHub event behavior. |
 
 ## Amendment, 2026-10-16: local contract enforcement
 
@@ -112,3 +114,29 @@ reviewable boundary. Revisit if actual drift demonstrates the need for more.
 Verification uses the validator fixtures, real-repository smoke test, referenced
 behavioral tests, and explicit manual/gap reports. Failed behavior is a defect to
 investigate; do not weaken the ADR to make a gate green.
+
+## Amendment, 2026-10-20: scoped local checks and designated CI execution
+
+Amendment status: Proposed; pending maintainer acceptance.
+The operator requested a reproducible contributor path on a constrained no-model
+host after repeated broad runs, missing prerequisites and shared temporary-state
+collisions interrupted local work. [CONTRIBUTING](../../CONTRIBUTING.md#choose-checks-for-the-change)
+owns the change-to-check table, commands, evidence reuse and failure handling;
+agent guidance points there rather than maintaining a second policy.
+
+Use explicit smoke, no-model and full profiles with native uv and pytest. The
+no-model environment must lack the model packages; a mode flag does not establish
+that property. Required tests must execute in their designated environment.
+Optional platform skips remain explicit, and a small scratch test does not
+establish hour-long rendering capacity. Fast draft checks defer full CI until a
+PR becomes ready, and full CI runs again for later ready-PR revisions. Missing
+prerequisites are blocked execution, not successful validation. Keep failures and
+their follow-ups visible rather than automatically retrying behavioral tests.
+
+This trades early full integration feedback for shorter draft iterations while
+retaining final-revision CI and its coverage requirement. Unaffected behavioral
+evidence may be explicitly reused after non-executing edits. An automatic
+test-impact selector, evidence cache and new orchestration framework are outside
+scope. Revisit if measured missed coverage or contributor friction justifies
+them. Verify the runner behavior separately from GitHub event/platform evidence;
+this amendment does not claim those remote jobs have executed.

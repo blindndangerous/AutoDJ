@@ -9,8 +9,8 @@ from fastapi.testclient import TestClient
 from httpx2 import Headers
 from starlette.websockets import WebSocketDisconnect
 
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 from .test_stream_server import _stream_mock
 

@@ -469,13 +469,17 @@ def _dependency_check() -> DoctorCheck:
         details.append(
             "Install FFmpeg to index, analyse and mix .mp3, .m4a, .mp4 and .aac files, "
             "which are skipped without it, and to use stream mode. Optional ALAC browser transcoding is "
-            "unavailable; raw ALAC fallback remains available."
+            "unavailable; raw ALAC fallback remains available. "
+            "On Windows, interactive `autodj doctor` offers installation through WinGet. "
+            "Otherwise install FFmpeg from https://ffmpeg.org/download.html "
+            "and add it to PATH. Then rerun `autodj doctor`."
         )
     return DoctorCheck(
         "dependencies",
         CheckStatus.WARN,
         "; ".join(issues) + ".",
         "Action: " + " ".join(details),
+        repair="install-ffmpeg" if not ffmpeg and sys.platform == "win32" else None,
     )
 
 

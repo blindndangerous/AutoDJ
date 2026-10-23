@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.config import ServerConfig
-from autodj.server import create_app
+from tests._server import create_app
 from tests.unit._break_station import make_station
 from tests.unit.test_breaks_api import LOCAL, wav
 from tests.unit.test_library import make_config
