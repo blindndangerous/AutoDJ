@@ -16,7 +16,7 @@ are present-day tradeoffs, not invented accounts of historical deliberations.
 
 | ADR | Status | Governs |
 | --- | --- | --- |
-| [1: Record decisions](0001-record-architecture-decisions.md) | Accepted; proposed process amendments 2026-10-16 | Requirements, lifecycle, evidence, agent discovery, GitHub/Beads boundary |
+| [1: Record decisions](0001-record-architecture-decisions.md) | Accepted; proposed process amendments 2026-10-16 and 2026-10-20 | Requirements, lifecycle, scoped validation, designated CI evidence, agent discovery, GitHub/Beads boundary |
 | [2: FAISS](0002-faiss-for-vector-search.md) | Accepted search choice; storage description historical | Exact similarity search; see Proposed ADR 6 for current storage |
 | [3: Browser playback](0003-browser-driven-playback.md) | Accepted default; partially superseded by ADR 4 | Browser audio ownership and device-local controls |
 | [4: Server mix bus](0004-server-mix-bus-and-stream-mode.md) | Accepted; amendments apply | Server audio, stream fan-out, mastering, live input, recordings |

@@ -1417,7 +1417,7 @@ class StationControlError(RuntimeError):
 
 @dataclass(frozen=True)
 class ExtraStation:
-    """A station besides the default one (``[stations.<slug>]``) and how to build it.
+    """A configured station and how to build it.
 
     Attributes:
         slug: The station's name.
@@ -1591,35 +1591,22 @@ def _saved_preset(paths: StationPaths) -> str | None:
 
 
 class StationRegistry:
-    """The stations of one server, each held by a runtime or build factory.
+    """The stations of one server, built through the same lifecycle."""
 
-    A legacy injected default runtime remains running for its whole lifetime.
-    Production can pass an ``ExtraStation`` factory for the default too; it
-    then starts, stops and rebuilds under the same lifecycle as other stations.
-    """
-
-    def __init__(
-        self, default: StationRuntime | ExtraStation, extras: Sequence[ExtraStation] = ()
-    ) -> None:
-        self._default = default
+    def __init__(self, default: ExtraStation, extras: Sequence[ExtraStation] = ()) -> None:
         self._extras = {extra.slug: extra for extra in extras}
-        if isinstance(default, ExtraStation):
-            if default.slug != DEFAULT_SLUG:
-                raise ValueError(f"the default station factory must use {DEFAULT_SLUG!r}")
-            if DEFAULT_SLUG in self._extras:
-                raise ValueError(f"station {DEFAULT_SLUG!r} is already registered")
-            self._extras[DEFAULT_SLUG] = default
-        elif default.slug != DEFAULT_SLUG:
-            raise ValueError(f"the default station runtime must use {DEFAULT_SLUG!r}")
+        if default.slug != DEFAULT_SLUG:
+            raise ValueError(f"the default station factory must use {DEFAULT_SLUG!r}")
+        if DEFAULT_SLUG in self._extras:
+            raise ValueError(f"station {DEFAULT_SLUG!r} is already registered")
+        self._extras[DEFAULT_SLUG] = default
         # The name each stopped station shows: its saved one, read the first
         # time it is asked for, then the name it had when it last stopped (it
         # changes only while the station runs).
         self._stopped_names: dict[str, str] = {}
         # Whether each stopped station takes requests, kept the same way.
         self._stopped_requests: dict[str, bool] = {}
-        self._running: dict[str, StationRuntime] = (
-            {} if isinstance(default, ExtraStation) else {default.slug: default}
-        )
+        self._running: dict[str, StationRuntime] = {}
         # One start or stop of a station at a time.  Each station has its
         # own lock, held for the whole start or stop, so one station's
         # slow stop never holds up another station's start.  Stereo Tool
@@ -1656,8 +1643,8 @@ class StationRegistry:
 
     @property
     def default(self) -> StationRuntime | StoppedStation:
-        """The default station, or its stand-in while a factory-built one is stopped."""
-        return self.get(DEFAULT_SLUG) if isinstance(self._default, ExtraStation) else self._default
+        """The default station, or its stand-in while it is stopped."""
+        return self.get(DEFAULT_SLUG)
 
     def get(self, slug: str) -> StationRuntime | StoppedStation:
         """The station named *slug*, or its stand-in while it is stopped.
@@ -1701,13 +1688,7 @@ class StationRegistry:
         result = {}
         for slug in self.slugs():
             runtime = self._running.get(slug)
-            paths = (
-                runtime.paths
-                if runtime is not None
-                else (
-                    self._default.paths if slug == self._default.slug else self._extras[slug].paths
-                )
-            )
+            paths = runtime.paths if runtime is not None else self._extras[slug].paths
             baseline = (
                 runtime.cfg.stream.relays if runtime is not None else paths._cfg.stream.relays
             )
@@ -1716,7 +1697,7 @@ class StationRegistry:
 
     def slugs(self) -> frozenset[str]:
         """The name of every configured station, running or not."""
-        return frozenset({DEFAULT_SLUG, *self._extras})
+        return frozenset(self._extras)
 
     def add(self, extra: ExtraStation) -> None:
         """Register a stopped station without touching running stations."""
@@ -1732,7 +1713,7 @@ class StationRegistry:
     def paths(self) -> tuple[StationPaths, ...]:
         """Every configured station's paths, the default first."""
         return (
-            self._default.paths,
+            self._extras[DEFAULT_SLUG].paths,
             *(extra.paths for slug, extra in self._extras.items() if slug != DEFAULT_SLUG),
         )
 
@@ -1744,12 +1725,12 @@ class StationRegistry:
         """
         out = []
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
-            extra = self._extras.get(slug)
+            extra = self._extras[slug]
             out.append(
                 {
                     **self.get(slug).summary(),
-                    "autostart": True if extra is None else extra.autostart,
-                    "autostart_locked": extra is None or extra.defined_in != "web",
+                    "autostart": extra.autostart,
+                    "autostart_locked": extra.defined_in != "web",
                 }
             )
         return out
@@ -1773,8 +1754,6 @@ class StationRegistry:
 
     def configuration(self, slug: str) -> AutoDJConfig:
         """Saved configuration is available independently of the running engine."""
-        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
-            return self._default.cfg
         return self._extras[slug].paths._cfg
 
     def save_options(self, slug: str, changes: dict[str, Any]) -> dict[str, Any]:
@@ -1851,8 +1830,6 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The page cannot change it for this station.
         """
-        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
-            raise StationControlError("The injected station has no saved definition.")
         from autodj.fsutil import atomic_write
 
         with self.configuration_lock:
@@ -1883,12 +1860,6 @@ class StationRegistry:
 
     async def start_all(self) -> None:
         """Start configured autostart stations; a failure leaves the server available."""
-        if not isinstance(self._default, ExtraStation):
-            await _run_as(
-                self._default.slug,
-                self._default.start(),
-                getattr(self._default, "thread_scope", None),
-            )
         for slug in dict.fromkeys((DEFAULT_SLUG, *self._extras)):
             extra = self._extras.get(slug)
             if extra is None or not extra.autostart:
@@ -1905,8 +1876,6 @@ class StationRegistry:
             KeyError: No station has that name.
             StationControlError: The station could not start.
         """
-        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
-            return self._default
         extra = self._extras[slug]
         self._refuse_while_stopping(extra)
         # Shielded: a request cancelled at shutdown must not leave a
@@ -1971,10 +1940,7 @@ class StationRegistry:
 
         Raises:
             KeyError: No station has that name.
-            StationControlError: *slug* is the injected legacy default runtime.
         """
-        if slug == DEFAULT_SLUG and not isinstance(self._default, ExtraStation):
-            raise StationControlError("The default station cannot be stopped.")
         extra = self._extras[slug]
         if slug in self._stopping:
             return []  # already stopping; its summary says so

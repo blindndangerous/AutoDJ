@@ -9,8 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from autodj.config import PlayerPageConfig, ServerConfig, WebhookConfig
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 _TOKEN = "player-page-test-access-token-32-bytes"
 

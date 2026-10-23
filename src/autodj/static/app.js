@@ -892,9 +892,6 @@ function applyState(s, { announceTrack = true } = {}) {
 function applySavedSettings(settings) {
   if (!settings) return;
   applySettingsState(settings, _settingsEls());
-  if (document.activeElement !== _musicSpeedNumber && !musicSpeedSliderBusy(_musicSpeedSlider)) {
-    syncMusicSpeedSlider(_musicSpeedNumber, _musicSpeedSlider, _musicSpeedOutput);
-  }
   applyMixSettings(settings, _mixEls);
   applyRepeatSettings(settings, _repeatEls);
 }
@@ -917,13 +914,7 @@ import {
   postSettings as _postSettingsModule,
   resetSettingsState,
 } from "./modules/settings-panel.js";
-import {
-  installMusicSpeedSlider, musicSpeedSliderBusy, syncMusicSpeedSlider,
-} from "./modules/music-speed.js";
-
 const _musicSpeedNumber = document.getElementById("pb-music-speed-number");
-const _musicSpeedSlider = document.getElementById("pb-music-speed-slider");
-const _musicSpeedOutput = document.getElementById("pb-music-speed-value");
 
 const _settingsEls = () => ({
   presetSelect, transitionSelect, harmonicMode,
@@ -941,7 +932,6 @@ const _settingsEls = () => ({
   pbPrefetch: document.getElementById("pb-prefetch"),
   pbSilenceTrigger: document.getElementById("pb-silence-trigger"),
   pbMusicSpeed: _musicSpeedNumber,
-  pbMusicSpeedSlider: _musicSpeedSlider,
 });
 
 function postSettings(url, body, control, { onError } = {}) {
@@ -949,7 +939,6 @@ function postSettings(url, body, control, { onError } = {}) {
 }
 
 installSettingsControls(_settingsEls(), postSettings);
-installMusicSpeedSlider({ number: _musicSpeedNumber, slider: _musicSpeedSlider, output: _musicSpeedOutput });
 
 // Preview output device: Track info's cue point player on a device of its
 // own (headphones), apart from the browser mix.  Installed before the

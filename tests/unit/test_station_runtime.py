@@ -225,14 +225,14 @@ def _extra(slug: str, build: Any, tmp_path: Path, autostart: bool = True) -> Ext
 def test_a_stopped_station_has_a_stand_in(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path)],
     )
     assert registry.slugs() == {"default", "nightowl"}
     stand_in = registry.get("nightowl")
     assert isinstance(stand_in, StoppedStation)
     assert stand_in.stopped
-    assert [station.slug for station in registry.all()] == ["default"]
+    assert registry.all() == ()
     assert registry.summaries()[1] == {
         "slug": "nightowl",
         "defined_in": "config",
@@ -272,7 +272,7 @@ def test_a_stopped_station_shows_the_name_saved_in_settings(tmp_path: Path) -> N
         return built[-1]
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [
             _extra("nightowl", build, tmp_path, autostart=False),
             _extra("daybreak", build, tmp_path, autostart=False),
@@ -310,7 +310,9 @@ def test_a_stopped_stations_request_page_follows_its_saved_switch(tmp_path: Path
 
     nightowl = _extra("nightowl", build, tmp_path, autostart=False)
     daybreak = replace(_extra("daybreak", build, tmp_path, autostart=False), requests_enabled=True)
-    registry = StationRegistry(_Runtime("default", log), [nightowl, daybreak])  # type: ignore[arg-type]
+    registry = StationRegistry(
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path), [nightowl, daybreak]
+    )  # type: ignore[arg-type]
     registry.prepare = lambda station: None
     assert registry.get("nightowl").requests_enabled is True  # saved on; config off
     assert registry.get("daybreak").requests_enabled is True  # nothing saved: config
@@ -337,7 +339,7 @@ def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
         disconnected.append(station.slug)
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", build, tmp_path, autostart=False)],
     )
     registry.prepare = lambda station: prepared.append(station.slug)
@@ -353,8 +355,6 @@ def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
         await registry.stop("nightowl")  # already stopped
         assert registry.get("nightowl").stopped
         assert await registry.start("nightowl") is not first
-        with pytest.raises(StationControlError, match="cannot be stopped"):
-            await registry.stop("default")
         with pytest.raises(KeyError):
             await registry.start("daybreak")
 
@@ -366,7 +366,7 @@ def test_start_and_stop_build_and_tear_down_a_station(tmp_path: Path) -> None:
         "nightowl closed",
         "nightowl started",
     ]
-    assert prepared == ["nightowl", "nightowl"]
+    assert prepared == ["default", "nightowl", "nightowl"]
     # Once as the stop is asked for, and again after the teardown in case
     # a page connected in between.
     assert disconnected == ["nightowl", "nightowl"]
@@ -432,7 +432,7 @@ def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
         raise StationControlError("Daybreak's processor could not start")
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [
             _extra("nightowl", lambda _r: _Runtime("nightowl", log, fail=True), tmp_path),
             _extra("daybreak", refuse, tmp_path),
@@ -455,7 +455,7 @@ def test_a_station_that_fails_to_start_is_torn_down_and_left_stopped(
 def test_every_stations_stereo_tool_preset(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log, stereo=True),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log, stereo=True), tmp_path),  # type: ignore[arg-type]
         [
             _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path),
             _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path),
@@ -464,6 +464,7 @@ def test_every_stations_stereo_tool_preset(tmp_path: Path) -> None:
     saved = tmp_path / "nightowl" / "web_state.json"
     saved.parent.mkdir(parents=True)
     saved.write_text(json.dumps({"playback": {"stereotool_preset": "Owl.sts"}}), "utf-8")
+    asyncio.run(registry.start("default"))
     # Running: the live setting.  Stopped: the saved one, else the configured one.
     assert registry.stereo_tool_presets() == [
         ("Default", "default.sts"),
@@ -578,7 +579,7 @@ def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
         return _Runtime("nightowl", log)
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [
             _extra("nightowl", build, tmp_path, autostart=False),
             _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path, autostart=False),
@@ -603,10 +604,8 @@ def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
     # before the library closed, and closed with the others.
     assert log == [
         "nightowl started",
-        "default stopped",
         "nightowl stopped",
         "library closed",
-        "default closed",
         "nightowl closed",
     ]
 
@@ -614,7 +613,7 @@ def test_a_start_cut_off_at_shutdown_still_ends_stopped(tmp_path: Path) -> None:
 def test_a_stop_cut_off_half_way_still_finishes(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
     )
 
@@ -640,16 +639,14 @@ def test_a_stop_cut_off_half_way_still_finishes(tmp_path: Path) -> None:
         "nightowl started",
         "nightowl stopped",
         "nightowl closed",
-        "default stopped",
         "library closed",
-        "default closed",
     ]
 
 
 def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
     )
 
@@ -687,7 +684,7 @@ def test_a_stopping_station_answers_at_once(tmp_path: Path) -> None:
 def test_a_stopping_stations_pages_are_closed_before_its_player_finishes(tmp_path: Path) -> None:
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [
             _extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False),
             _extra("daybreak", lambda _r: _Runtime("daybreak", log), tmp_path, autostart=False),
@@ -788,7 +785,7 @@ def test_a_shutdown_then_a_queued_stop_tears_down_once(tmp_path: Path) -> None:
                 await super().close()
 
     registry = StationRegistry(
-        _Once("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Once("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Once("nightowl", log), tmp_path, autostart=False)],
     )
 
@@ -865,7 +862,7 @@ def test_a_station_whose_player_will_not_stop_keeps_its_master_and_licence(
 
     stuck = _Stuck()
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: stuck, tmp_path, autostart=False)],
     )
 
@@ -896,7 +893,7 @@ def test_a_failed_build_with_a_stuck_player_is_held_too(tmp_path: Path) -> None:
 
     log: list[str] = []
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Runtime("nightowl", log), tmp_path, autostart=False)],
     )
     release = threading.Event()
@@ -934,7 +931,7 @@ def test_a_start_queued_behind_another_refuses_once_a_stop_begins(tmp_path: Path
         return _Runtime("nightowl", log)
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", build, tmp_path, autostart=False)],
     )
 
@@ -1326,7 +1323,7 @@ def test_a_mastering_process_that_outlives_the_close_keeps_the_licence(
             return len(tries) >= 3
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Lingering(), tmp_path, autostart=False)],
     )
     registry.stuck_warning_s = 0.05
@@ -1365,7 +1362,7 @@ def test_a_hold_that_fails_still_closes_the_pages(tmp_path: Path) -> None:
             return True
 
     registry = StationRegistry(
-        _Runtime("default", log),  # type: ignore[arg-type]
+        _extra("default", lambda _r: _Runtime("default", log), tmp_path),  # type: ignore[arg-type]
         [_extra("nightowl", lambda _r: _Stuck("nightowl", log), tmp_path, autostart=False)],
     )
 

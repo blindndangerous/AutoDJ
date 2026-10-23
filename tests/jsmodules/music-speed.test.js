@@ -1,37 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installMusicSpeedSlider, syncMusicSpeedSlider } from
-  "../../src/autodj/static/modules/music-speed.js";
-
-describe("music speed control", () => {
-  beforeEach(() => { document.body.innerHTML = '<input id="n" type="number"><input id="s" type="range"><output id="o"></output>'; });
-  afterEach(() => { document.body.replaceChildren(); });
-
-  it("hydrates exact hundredths and formats the displayed percentage", () => {
-    const number = document.querySelector("#n");
-    const slider = document.querySelector("#s");
-    const output = document.querySelector("#o");
-    number.value = "1.23";
-    syncMusicSpeedSlider(number, slider, output);
-    expect(slider.value).toBe("1.23");
-    expect(output.value).toBe("+1.23%");
-  });
-
-  it("moves by one percentage point with arrow keys and emits the save change", () => {
-    const number = document.querySelector("#n");
-    const slider = document.querySelector("#s");
-    const output = document.querySelector("#o");
-    number.value = "1.23";
-    installMusicSpeedSlider({ number, slider, output });
-    syncMusicSpeedSlider(number, slider, output);
-    const changed = vi.fn();
-    number.addEventListener("change", changed);
-    slider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
-    expect(number.value).toBe("2.23");
-    expect(slider.value).toBe("2.23");
-    expect(output.value).toBe("+2.23%");
-    expect(changed).toHaveBeenCalledOnce();
-  });
-});
 
 describe("audio engine music speed", () => {
   beforeEach(() => {

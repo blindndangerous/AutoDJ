@@ -1715,7 +1715,7 @@ describe("static accessibility contracts", () => {
       ["pb-crossfade", "number", "pb-crossfade-desc"],
       ["pb-show-lyrics", "checkbox", "pb-show-lyrics-desc"],
       ["theme-system", "radio", "theme-choice-desc"],
-      ["pb-music-speed-slider", "range", "pb-music-speed-desc"],
+      ["pb-music-speed-number", "number", "pb-music-speed-desc"],
       ["categories-not-before", "date", "categories-daypart-help"],
       ["stereo-preset-file", "file", null],
       ["stream-relay-password", "password", "stream-relay-password-help"],

@@ -143,7 +143,6 @@ from autodj.station_log import (
     CURRENT_STATION,
     DEFAULT_SLUG,
     install_log_prefix,
-    new_station_scope,
     station_thread,
 )
 from autodj.station_routes import (
@@ -1000,63 +999,21 @@ SHOWS_SONGS_BODY_MAX_BYTES = 1024 * 1024
 
 
 def create_app(
-    bridge: PlayerBridge | None = None,
-    player_thread: threading.Thread | None = None,
     *,
+    services: LibraryServices,
+    default_station: ExtraStation,
     secure_cookie: bool = False,
-    stream_mode: bool = False,
-    stream_first_track: IndexEntry | None = None,
-    server_audio: bool = False,
     extra_stations: Sequence[ExtraStation] = (),
-    services: LibraryServices | None = None,
-    default_station: ExtraStation | None = None,
 ) -> FastAPI:
-    """Create and return the FastAPI application.
-
-    Args:
-        bridge: A fully initialised :class:`PlayerBridge`.
-        player_thread: Optional main player thread to join during shutdown.
-        stream_mode: Start the stream output and station when the app
-            starts up (the bridge's player must have been built in stream
-            mode).
-        stream_first_track: In stream mode, the track the first set
-            starts with (``--seed``).
-        server_audio: Plain ``--server-audio`` (no stream): voice liners
-            fire into the player's mix bus, which must already exist.
-        extra_stations: The stations besides the default one; those with
-            ``autostart`` start with the app, the others when asked.
-
-    Returns:
-        A configured :class:`fastapi.FastAPI` instance.
-    """
+    """Create the server with shared library services and station factories."""
     _lyrics_read_gate = asyncio.Semaphore(1)
     install_log_prefix()
-    shared: PlayerBridge | LibraryServices
-    if bridge is not None:
-        cfg = bridge.player._cfg
-        shared = bridge
-        scope = new_station_scope(DEFAULT_SLUG)
-        runtime = StationRuntime(
-            bridge,
-            timezone=cfg.station.timezone or system_timezone(),
-            player_thread=player_thread,
-            stream_mode=stream_mode,
-            server_audio=server_audio,
-            first_track=stream_first_track,
-            thread_scope=scope,
-        )
-        stations = StationRegistry(runtime, extra_stations)
-    else:
-        if services is None or default_station is None:
-            raise ValueError("Library services and a default station factory are required")
-        cfg = services.cfg
-        shared = services
-        runtime = None
-        stations = StationRegistry(default_station, extra_stations)
+    cfg = services.cfg
+    shared = services
+    stations = StationRegistry(default_station, extra_stations)
     station_timezone = cfg.station.timezone or system_timezone()
     station_create_lock = asyncio.Lock()
     stations.stop_timeout_s = _SHUTDOWN_TIMEOUT_S
-    listener_access = runtime.listener_access if runtime is not None else None
     listener_auth_limiter = ListenerAuthLimiter()
 
     async def _read_lyrics_owned(path: str) -> list[dict[str, object]]:
@@ -1182,7 +1139,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
-    app.state.listener_access = listener_access
+    app.state.listener_access = None
     app.state.stations = stations
     from autodj.cue_rescan import CueRescan
 
@@ -1248,10 +1205,6 @@ def create_app(
         secure_cookie=secure_cookie,
         device_is_active=(device_registry.is_active if device_registry is not None else None),
     )
-    if runtime is not None:
-        runtime.bridge.public_state_changed = runtime.public_state_changed
-        runtime.bridge.track_started_callback = runtime.track_started
-        _share_station(stations, runtime)
     # Read-only handles for serve()'s startup banner and for tests; the
     # routes and the middleware use these same objects directly.
     app.state.security_policy = policy
@@ -2841,9 +2794,6 @@ def create_app(
         policy,
         allow_lan_plain_http=bool(getattr(cfg.server, "live_plain_http_lan", False)),
     )
-
-    for station in stations.all():
-        _equip_station(station)
 
     def prepare(station: StationRuntime) -> None:
         """Wire a station that is about to start to this app."""

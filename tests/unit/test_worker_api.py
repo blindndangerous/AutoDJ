@@ -21,8 +21,8 @@ from autodj.config import ServerConfig
 from autodj.indexer import ANALYSIS_VERSION, FEATURE_DIM, analysis_identity
 from autodj.library import LibraryManager
 from autodj.machine_tokens import SCOPE_ANALYSIS_WORKER, SCOPE_ANNOUNCER
-from autodj.server import create_app
 from autodj.worker_api import RESULT_BODY_MAX_BYTES, RateLimiter, decode_vector
+from tests._server import create_app
 from tests.unit._catalog_vectors import vectors_snapshot
 from tests.unit.test_library import Similarity, make_config, make_entry
 

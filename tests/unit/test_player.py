@@ -86,7 +86,6 @@ def _init_bare_player_settings(player: Player) -> None:
     player._settings = SimpleNamespace(
         _preset=None,
         _bpm_range=None,
-        _pure_shuffle=False,
         _anchor_to_seed=False,
         _eq_low=1.0,
         _eq_mid=1.0,
@@ -274,6 +273,10 @@ class TestPlayerConstruction:
 class TestPlayerPickNext:
     def _make_player(self, n: int = 10, **settings) -> Player:
         player = Player(_make_cfg_mock(), _make_sim_index(n))
+        if "pure_shuffle" in settings:
+            player._cfg.playback.pick_mode = (
+                "random" if settings.pop("pure_shuffle") else "similarity"
+            )
         for name, value in settings.items():
             setattr(player, f"_{name}", value)
         return player
@@ -382,7 +385,7 @@ class TestPlayerPickNext:
     def test_pure_shuffle_does_not_admit_unknown_or_out_of_range_bpm(self) -> None:
         sim = _make_sim_index(4, bpms=[110.0, 0.0, 150.0, 125.0])
         player = Player(_make_cfg_mock(), sim)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
@@ -397,7 +400,7 @@ class TestPlayerPickNext:
             entry.energy = 0.0
         sim = SimilarityIndex(faiss_index=_make_sim_index(6).faiss_index, entries=entries)
         player = Player(_make_cfg_mock(), sim)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         current = sim.entries_snapshot()[0]
         player._state.current_track = current
         player._state.record_played(current)
@@ -407,7 +410,7 @@ class TestPlayerPickNext:
     def test_pure_shuffle_raises_when_no_track_satisfies_hard_bpm(self) -> None:
         sim = _make_sim_index(3, bpms=[0.0] * 3)
         player = Player(_make_cfg_mock(), sim)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         player._bpm_range = (120.0, 130.0)
         entries = sim.entries_snapshot()
         player._state.current_track = entries[0]
@@ -474,8 +477,8 @@ class TestLoadLyricsToggle:
         import asyncio
 
         from autodj._bridge import PlayerBridge
-        from autodj.server import create_app
         from autodj.settings_bodies import EqBody
+        from tests._server import create_app
 
         player = self._make()
         point_index(player._cfg.index, tmp_path)
@@ -697,7 +700,8 @@ class TestAnalyseTrackInBackground:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import DjMeta, DjMetaCache, get_cache
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
 
         player = self._make()
         cache = get_cache(tmp_path)
@@ -784,7 +788,8 @@ class TestAnalyseTrackInBackground:
         from fastapi.testclient import TestClient
 
         from autodj.dj_meta import DjMeta, close_cache, get_cache
-        from autodj.server import PlayerBridge, create_app
+        from autodj.server import PlayerBridge
+        from tests._server import create_app
 
         player = self._make()
         cache = get_cache(tmp_path)
@@ -1639,7 +1644,7 @@ class TestPickNextBranches:
         from collections import deque
 
         player = self._make_player(n=3)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         # Force recently_played to cover every entry path so the filter
         # leaves an empty pool and triggers the full-library fallback.
         entries = player._sim.entries_snapshot()
@@ -2575,7 +2580,7 @@ class TestRenderAheadRepeatAvoidance:
 
     def test_pure_shuffle_never_repeats_the_track_it_follows(self) -> None:
         player = _bus_player(3)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         current = player._sim.entries[0]
         player._render_track = _stub_render  # type: ignore[method-assign]
         for _ in range(10):

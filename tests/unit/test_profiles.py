@@ -49,6 +49,13 @@ class TestProfileSnapshotRoundTrip:
         again = ProfileSnapshot.from_dict(d)
         assert again == snap
 
+    def test_legacy_shuffle_profile_saves_only_pick_mode(self) -> None:
+        profile = ProfileSnapshot.from_dict({"name": "Old", "pure_shuffle": True})
+        saved = profile.to_dict()
+        assert saved["pick_mode"] == "random"
+        assert "pure_shuffle" not in saved
+        assert ProfileSnapshot.from_dict(saved).to_dict() == saved
+
     @pytest.mark.parametrize(
         ("data", "message"),
         [

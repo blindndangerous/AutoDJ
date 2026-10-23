@@ -16,6 +16,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -100,6 +101,16 @@ _OUTPUT_GUARD_BLOCKS: Final = STARTUP_BLOCKS + 6
 _STEREOTOOL_GUARD_BLOCKS: Final = 16
 _MEASURED_PIPELINE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 6
 _QUEUE_BLOCKS: Final = _OUTPUT_GUARD_BLOCKS + 20
+# Three seconds without output is beyond ordinary scheduling jitter. Covering
+# shorter stalls avoids paying the much longer processor startup cost again.
+_STALL_TIMEOUT_SECONDS: Final = 3.0
+# A processor slower than real time can repay debt forever without catching up.
+# Ten seconds gives transient load time to clear but bounds continuous dry playout.
+_STALL_MAX_SECONDS: Final = 10.0
+_STALL_LOG_SECONDS: Final = 10.0
+# Keep a warmup queue's worth of margin beyond the stall limit once running.
+# Warmup retains its smaller bound so its existing drop accounting still applies.
+_RUNNING_INPUT_BLOCKS: Final = math.ceil(_STALL_TIMEOUT_SECONDS / BLOCK_SECONDS) + _QUEUE_BLOCKS
 _LIMIT: Final = 0.87096359
 _MAKEUP: Final = 10 ** (9.01 / 20)
 # The limiter works at 176.4 kHz; the final 44.1 kHz resample adds up to about
@@ -209,6 +220,31 @@ def _unavailable(
     return str(exc)
 
 
+@dataclass
+class _StallLog:
+    """Accumulate a separate window for stall warnings and recovery reports."""
+
+    logged_at: float = -math.inf
+    stalls: int = 0
+    blocks: int = 0
+    longest: float = 0.0
+
+    def log(self, now: float, level: int, message: str) -> None:
+        if now - self.logged_at < _STALL_LOG_SECONDS:
+            return
+        logger.log(
+            level,
+            "%s; stalls: %d; covered %d blocks; longest stall %.3f s since last report",
+            message,
+            self.stalls,
+            self.blocks,
+            self.longest,
+        )
+        self.logged_at = now
+        self.stalls = self.blocks = 0
+        self.longest = 0.0
+
+
 class ContinuousMaster:
     """A persistent raw-PCM processor; ``process`` never waits on I/O.
 
@@ -284,6 +320,13 @@ class ContinuousMaster:
         self._input_cond = threading.Condition(self._lock)
         self._proc: subprocess.Popen[bytes] | None = None
         self._ready = False
+        # Processed blocks owed for periods already covered by dry audio, and
+        # the stall being covered now (see _reset_stall).
+        self._owed_blocks = 0
+        self._stall_started: float | None = None
+        self._stall_progress_at = 0.0
+        self._stall_warning = _StallLog()
+        self._stall_recovery = _StallLog()
         self._warmup_started = time.monotonic()
         self._warmup_silent_drops = 0
         self._warmup_audio_drops = 0
@@ -366,8 +409,13 @@ class ContinuousMaster:
             if self._failed:
                 return self._delayed_fallback()
             generation = self._generation
-            if len(self._input) >= _QUEUE_BLOCKS:
+            input_limit = _RUNNING_INPUT_BLOCKS if self._ready else _QUEUE_BLOCKS
+            if len(self._input) >= input_limit:
                 dropped = self._input.popleft()[1]
+                if self._ready:
+                    # The oldest queued input is already covered by dry audio.
+                    # Its output will never arrive, so it cannot repay debt.
+                    self._owed_blocks = max(0, self._owed_blocks - 1)
                 silent = not np.any(np.frombuffer(dropped, dtype=np.float32))
                 if not self._ready:
                     if silent:
@@ -400,9 +448,30 @@ class ContinuousMaster:
                     self._warmup_silent_drops,
                     self._warmup_audio_drops,
                 )
+            if self._ready and self._owed_blocks:
+                discarded = 0
+                # Debt counts processed blocks for periods already played dry.
+                # Drain whatever has arrived even if it cannot repay all debt:
+                # waiting for the whole debt would deadlock a full output queue.
+                while self._owed_blocks and self._output and self._output[0][0] == generation:
+                    self._output.popleft()
+                    self._owed_blocks -= 1
+                    discarded += 1
+                if discarded:
+                    self._stall_progress_at = time.monotonic()
+                    self._output_cond.notify_all()
             if self._ready and self._output and self._output[0][0] == generation:
                 output = self._output.popleft()[1]
                 self._output_cond.notify_all()
+                if self._stall_started is not None:
+                    now = time.monotonic()
+                    for summary in (self._stall_warning, self._stall_recovery):
+                        summary.longest = max(summary.longest, now - self._stall_started)
+                    self._stall_recovery.log(now, logging.INFO, "Master output stall ended")
+                    self._reset_stall()
+                    self._error = None
+                    self._overflow_reported = False
+                    self._healthy_outputs = 0
                 if self._recovering:
                     if not np.any(output):
                         fallback = self._delayed_fallback()
@@ -427,11 +496,41 @@ class ContinuousMaster:
                         self._healthy_outputs = 0
                 return output
             if self._ready:
-                self._set_error("master output underrun; restarting processor")
-                self._switch(True)
+                now = time.monotonic()
+                message = "master output stalled; using delayed dry audio"
+                if self._stall_started is None:
+                    self._stall_started = self._stall_progress_at = now
+                    # A preceding input overflow must not hide this warning.
+                    self._healthy_outputs = 0
+                    self._stall_warning.stalls += 1
+                    self._stall_recovery.stalls += 1
+                self._error = message
+                self._owed_blocks += 1
+                for summary in (self._stall_warning, self._stall_recovery):
+                    summary.blocks += 1
+                    summary.longest = max(summary.longest, now - self._stall_started)
+                restart = None
+                if now - self._stall_progress_at >= _STALL_TIMEOUT_SECONDS:
+                    restart = "master output stalled for 3 seconds; restarting processor"
+                elif now - self._stall_started >= _STALL_MAX_SECONDS:
+                    restart = "master output stall lasted 10 seconds; restarting processor"
+                if restart is not None:
+                    # A restart is rare and costly: always say so, whatever
+                    # the stall summaries have logged lately.
+                    logger.warning("%s", restart)
+                    self._error = restart
+                    self._switch(True)
+                else:
+                    self._stall_warning.log(now, logging.WARNING, self._error)
+                return self._delayed_fallback()
             if self._recovering:
                 return self._delayed_fallback()
             return np.zeros_like(audio)
+
+    def _reset_stall(self) -> None:
+        self._owed_blocks = 0
+        self._stall_started = None
+        self._stall_progress_at = 0.0
 
     def _switch(self, enabled: bool, mode: str | None = None) -> None:
         changing_processor = enabled and self._enabled
@@ -446,6 +545,7 @@ class ContinuousMaster:
         self._input.clear()
         self._output.clear()
         self._ready = False
+        self._reset_stall()
         self._warmup_started = time.monotonic()
         self._warmup_silent_drops = 0
         self._warmup_audio_drops = 0
@@ -680,6 +780,7 @@ class ContinuousMaster:
                             self._preset_temp.cleanup()
                             return
                         self._failed = True
+                        self._reset_stall()
                         self._recovering = True
                         self._recovery_outputs = 0
                         self._input.clear()
@@ -707,6 +808,7 @@ class ContinuousMaster:
                     if active_generation == self._generation and self._enabled:
                         self._proc = proc
                         self._ready = False
+                        self._reset_stall()
                         self._failed = False
                         self._overflow_reported = False
                         if not self._recovering:
@@ -733,6 +835,7 @@ class ContinuousMaster:
                 with self._lock:
                     self._proc = None
                     self._ready = False
+                    self._reset_stall()
                     self._failed = True
                     self._recovering = True
                     self._recovery_outputs = 0

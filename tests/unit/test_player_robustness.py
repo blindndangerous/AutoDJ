@@ -134,7 +134,7 @@ class TestFailedPickRecovers:
 
     def test_pure_shuffle_with_nothing_in_the_bpm_range_falls_back(self) -> None:
         player = _player(4)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         player._bpm_range = (200.0, 210.0)
         current = player._sim.entries[0]
         entry, mode = player._choose_next(current, player._pick_context(current))
@@ -256,7 +256,7 @@ class TestRelaxedPicksKeepTheirHistory:
     ) -> None:
         player = _player(4)
         player._state = PlayerState(no_repeat_window=4, artist_repeat_window=0)
-        player._pure_shuffle = True
+        player._cfg.playback.pick_mode = "random"
         pending, starting, _c, _d = player._sim.entries
         for entry in player._sim.entries:
             player._state.record_played(entry)  # every track is recent

@@ -38,3 +38,10 @@ _._fx_plans
 # A worker scan result field (autodj.scan_analysis.ScanResult), read from
 # model_dump() when LibraryCatalog.store_analysis stores it.
 _.intro_lift_db
+
+# Pytest discovers these registered plugin hooks by name (-p scripts.ci_pytest).
+_.pytest_addoption
+_.pytest_sessionstart
+_.pytest_deselected
+_.pytest_testnodedown
+_.pytest_sessionfinish

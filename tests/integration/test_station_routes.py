@@ -12,9 +12,10 @@ from starlette.websockets import WebSocketDisconnect
 
 from autodj.config import ServerConfig, StationConfig
 from autodj.security import station_relative
-from autodj.server import PlayerBridge, create_app
+from autodj.server import PlayerBridge
 from autodj.station_routes import STATION_PREFIX
 from tests._layout import point_index
+from tests._server import create_app
 
 from ._helpers import _make_player_mock, _make_sim_mock
 

@@ -10,8 +10,8 @@ import soundfile as sf
 from fastapi.testclient import TestClient
 
 from autodj.config import TimeChecksConfig
-from autodj.server import create_app
 from tests._layout import point_index
+from tests._server import create_app
 
 
 def test_settings_routes_save_only_switches_and_register_action(bridge, tmp_path) -> None:
