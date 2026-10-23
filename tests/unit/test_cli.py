@@ -7,6 +7,7 @@ or index required.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1207,12 +1208,31 @@ def test_third_party_info_logs_are_quiet_unless_verbose() -> None:
     import logging
 
     CliRunner().invoke(cli, ["doctor", "--help"])
-    for name in ("faiss.loader", "httpx"):
+    for name in ("faiss.loader", "httpx", "httpx2"):
         assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
 
     CliRunner().invoke(cli, ["-v", "doctor", "--help"])
-    for name in ("faiss.loader", "httpx"):
+    for name in ("faiss.loader", "httpx", "httpx2"):
         assert logging.getLogger(name).getEffectiveLevel() == logging.DEBUG
+
+
+@pytest.mark.parametrize(
+    ("arguments", "before", "after"),
+    [
+        (["doctor", "--help"], None, "1"),
+        (["doctor", "--help"], "0", "0"),
+        (["-v", "doctor", "--help"], None, None),
+    ],
+)
+def test_model_download_progress_bars_are_off_without_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str], before: str | None, after: str | None
+) -> None:
+    """Progress bars in a non-tty journal are control characters; a user's value or -v wins."""
+    monkeypatch.setenv("HF_HUB_DISABLE_PROGRESS_BARS", before or "")
+    if before is None:
+        monkeypatch.delenv("HF_HUB_DISABLE_PROGRESS_BARS")
+    CliRunner().invoke(cli, arguments)
+    assert os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == after
 
 
 # ---------------------------------------------------------------------------

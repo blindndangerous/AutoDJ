@@ -3368,6 +3368,11 @@ def serve(
         "host": host,
         "port": port,
         "log_level": "warning",
+        # No handlers of uvicorn's own: its warnings and errors go through the
+        # root logger, so they reach the log file once, in AutoDJ's format.
+        # Access lines are not logged at all.
+        "log_config": None,
+        "access_log": False,
     }
     # Uvicorn rewrites request.client and scheme only for configured proxy
     # peers, in every mode: the listener limits, the pairing lockout and the

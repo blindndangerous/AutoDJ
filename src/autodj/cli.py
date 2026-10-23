@@ -432,10 +432,14 @@ def cli(ctx: click.Context, config_path: str | None, verbose: bool) -> None:
     # level takes effect regardless of import order.
     logging.getLogger().setLevel(level)
     # At INFO these read as errors or noise: faiss logs a ModuleNotFoundError
-    # each time it picks its CPU build, and httpx logs every model-download
-    # request.  -v shows them again.
-    for name in ("faiss.loader", "httpx"):
+    # each time it picks its CPU build, and httpx (httpx2 under the Hugging
+    # Face hub) logs every model-download request.  -v shows them again.
+    for name in ("faiss.loader", "httpx", "httpx2"):
         logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
+    # Without a terminal, the hub's download progress bars only add control
+    # characters to the journal or log.  A value the user set is kept.
+    if not verbose and not sys.stderr.isatty():
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
 def _file_log_record(record: logging.LogRecord) -> logging.LogRecord:

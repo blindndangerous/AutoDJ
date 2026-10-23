@@ -8,6 +8,7 @@ import logging
 import os
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -100,6 +101,36 @@ class _ImportState(TypedDict):
 _Indexed = tuple[IndexEntry, str]
 
 
+_SCAN_SUMMARY = (
+    ("new", "new"),
+    ("changed", "changed"),
+    ("moved", "moved"),
+    ("gone", "gone"),
+    ("unreadable", "unreadable"),
+    ("sent", "sent to an analysis worker"),
+    ("decoded", "decoded here"),
+    ("failed", "failed"),
+)
+
+
+def _log_scan_summary(counts: Counter[str], seconds: float, completed: bool) -> None:
+    """Log one line for a scan: INFO with its non-zero counts, DEBUG when nothing changed."""
+    minutes, secs = divmod(round(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        took = f"{hours} h {minutes} min"
+    elif minutes:
+        took = f"{minutes} min {secs} s"
+    else:
+        took = f"{secs} s"
+    ended = "finished" if completed else "stopped"
+    parts = [f"{counts[key]:,} {label}" for key, label in _SCAN_SUMMARY if counts[key]]
+    if parts:
+        logger.info("Library scan %s in %s: %s", ended, took, ", ".join(parts))
+    else:
+        logger.debug("Library scan %s in %s: nothing changed", ended, took)
+
+
 def _browse_order(entries: tuple[IndexEntry, ...]) -> list[_Indexed]:
     """Entries sorted for browsing, each with its casefolded searchable text."""
     indexed = [
@@ -145,6 +176,8 @@ class LibraryManager:
         self._dj_cues_requested = False
         self._dj_cues_pending: set[str] = set()
         self._scan_pending: set[str] | None = None
+        # What the scan in progress did, for its one summary line.
+        self._scan_counts: Counter[str] | None = None
         self._scan_worker_checked = float("-inf")
         self._scan_worker_active = False
         self._scan_fallback_running = False
@@ -867,6 +900,7 @@ class LibraryManager:
                 continue
             root = Path(source["path"])
             if not root.is_dir():
+                self._tally("unreadable")
                 with self._lock:
                     self._import_errors.append(
                         {"path": str(root), "error": "source directory is missing"}
@@ -875,6 +909,7 @@ class LibraryManager:
             try:
                 resolved_root = root.resolve(strict=True)
             except OSError as exc:
+                self._tally("unreadable")
                 with self._lock:
                     self._import_errors.append({"path": str(root), "error": str(exc)})
                     self._walk_failed = True
@@ -904,6 +939,7 @@ class LibraryManager:
                         # Listed but not resolvable just now (a share flapping):
                         # seen, so it is not marked gone, but not scanned.
                         logger.debug("Library scan could not resolve %s: %s", path, exc)
+                        self._tally("unreadable")
                         with self._lock:
                             self._seen_unresolved.add(_path(path))
                         continue
@@ -923,6 +959,7 @@ class LibraryManager:
     def _walk_error(self, error: OSError) -> None:
         """A folder the scan could not read: noted, and nothing is marked gone."""
         logger.warning("Library scan could not read %s: %s", error.filename, error)
+        self._tally("unreadable")
         with self._lock:
             self._import_errors.append({"path": str(error.filename), "error": str(error)})
             self._walk_failed = True
@@ -1000,6 +1037,7 @@ class LibraryManager:
             for source, (track, _mtime) in moves.items():
                 if not self.catalog.rekey(source, track.path):
                     continue
+                self._tally("moved")
                 if self._scan_pending is not None and source in self._scan_pending:
                     self._scan_pending.discard(source)
                     self._scan_pending.add(_path(track.path))
@@ -1034,6 +1072,7 @@ class LibraryManager:
                     missing.discard(source)
         with self._lock:
             kept = {path for path in self._missing if not coverage.covered(path)}
+            self._tally("gone", len(missing - self._missing))
             self._missing = frozenset(kept | missing)
             changed = self._missing != self._loaded_missing
             self._reconciled = True
@@ -1093,7 +1132,10 @@ class LibraryManager:
             if self._stop.is_set():
                 break
             self._set_state(current=str(path))
-            new_music = kind == "music" and self.catalog.record_for_path(path) is None
+            new = self.catalog.record_for_path(path) is None
+            if new:
+                self._tally("new")
+            new_music = kind == "music" and new
             if new_music and self._scan_worker_available():
                 self._refresh_scan_cues()
                 # Publish pending work before the tag record, so a worker cannot
@@ -1101,6 +1143,7 @@ class LibraryManager:
                 key = _path(path)
                 size, fingerprint = file_fingerprint(path)
                 self.analysis_queue.defer_scan(key, size, fingerprint, new_listing=True)
+                self._tally("sent")
                 self._scan_pending.add(key)
                 self._add_from_tags(path, allow_unknown_length=True)
                 self._read_track(kind, path, override_tags)
@@ -1210,6 +1253,7 @@ class LibraryManager:
         except OSError as exc:
             queue.fail_scan(key)
             logger.warning("Deferred scan file unavailable for %s: %s", path, exc)
+            self._tally("failed")
             with self._lock:
                 self._import_errors.append({"path": str(path), "error": str(exc)})
             return False
@@ -1265,6 +1309,7 @@ class LibraryManager:
                 exc, TimeoutError
             )
             logger.warning("Deferred scan analysis failed for %s: %s", path, exc)
+            self._tally("failed")
             with self._lock:
                 self._import_errors.append({"path": str(path), "error": str(exc)})
             return False
@@ -1313,6 +1358,7 @@ class LibraryManager:
             same_identity = old is not None and self._same_identity(old, path)
             unchanged = same_identity and old is not None and old["kind"] == kind
             if old is not None and not same_identity and scan_identity is None:
+                self._tally("changed")
                 self._reset_dj_cache(path)
             mtime_changed = bool(
                 unchanged and old is not None and path.stat().st_mtime_ns != old["mtime_ns"]
@@ -1368,6 +1414,7 @@ class LibraryManager:
                 key = _path(path)
                 size, fingerprint = file_fingerprint(path)
                 self.analysis_queue.defer_scan(key, size, fingerprint)
+                self._tally("sent")
                 if self._scan_pending is not None:
                     self._scan_pending.add(key)
                 if not unchanged:
@@ -1426,6 +1473,7 @@ class LibraryManager:
                     preserve_edits=scan_identity is not None,
                 )
                 self._publish_entry(self.catalog.entry_for_path(path) or fresh, kind)
+                self._tally("decoded")
                 # New bytes are a new chance for a song held back after a
                 # failed or stale analysis.
                 self.analysis_queue.clear_holds(_path(path), fresh.size, fresh.fingerprint)
@@ -1451,6 +1499,7 @@ class LibraryManager:
             if raise_errors:
                 raise
             logger.warning("Basic library scan failed for %s: %s", path, exc)
+            self._tally("failed")
             with self._lock:
                 self._import_errors.append({"path": str(path), "error": str(exc)})
             return False
@@ -1481,6 +1530,8 @@ class LibraryManager:
 
     def _scan(self, source_ids: set[str] | None = None, override_tags: bool = False) -> None:
         queued = self._scan_lock.locked()
+        started = self._clock()
+        self._scan_counts = Counter()
         with self._lock:
             self._import_errors = []
             self._walk_failed = False
@@ -1538,6 +1589,7 @@ class LibraryManager:
                         self.catalog.set_loudness(path, analyze_loudness(path, kind))
                 except Exception as exc:
                     logger.warning("Loudness analysis failed for %s: %s", path, exc)
+                    self._tally("failed")
                     with self._lock:
                         self._import_errors.append({"path": str(path), "error": str(exc)})
                 finally:
@@ -1553,6 +1605,8 @@ class LibraryManager:
             self._scan_pending = None
             self._refresh_unless_closing()
             self._set_state(running=False, current="")
+            counts, self._scan_counts = self._scan_counts, None
+            _log_scan_summary(counts or Counter(), self._clock() - started, completed)
             done_hook = self.on_scan_done
             with self._lock:
                 clean = completed and not self._walk_failed and self._reconciled
@@ -1566,6 +1620,11 @@ class LibraryManager:
                     done_hook()
                 except Exception:
                     logger.exception("Library: the after-scan tidy-up failed")
+
+    def _tally(self, outcome: str, count: int = 1) -> None:
+        """Count *outcome* toward the summary of the scan in progress, if any."""
+        if self._scan_counts is not None:
+            self._scan_counts[outcome] += count
 
     def _dj_cache(self) -> Any:
         """The DJ-meta cache (beat grid and cues), or ``None`` when it cannot open."""

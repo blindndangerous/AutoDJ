@@ -4111,3 +4111,73 @@ def test_a_closing_library_starts_no_analysis_job(manager_factory, monkeypatch):
     with patch("autodj.jobs.get_manager") as jobs:
         assert not manager.schedule_analysis()
         jobs.assert_not_called()
+
+
+def _scan_summaries(caplog, level=logging.INFO):
+    """The scan summary lines logged at *level*; any other summary line fails the test."""
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "autodj.library" and record.getMessage().startswith("Library scan ")
+    ]
+    caplog.clear()
+    assert all(record.levelno == level for record in records)
+    return [record.getMessage() for record in records]
+
+
+def test_a_scan_logs_one_summary_only_when_something_changed(manager_factory, monkeypatch, caplog):
+    """Per-song detail stays out of INFO; a periodic rescan that found nothing adds no line."""
+    manager = manager_factory()
+    now = [1000.0]
+    manager._clock = lambda: now[0]
+    monkeypatch.setattr(manager, "dj_analysis_enabled", lambda: False)
+    monkeypatch.setattr(manager, "schedule_analysis", lambda: False)
+    monkeypatch.setattr("autodj.intro_lift.measure_source_intro", lambda *args: 1.0)
+
+    def decode(path, **kwargs):
+        now[0] += 25
+        return fake_basic(path, **kwargs)
+
+    monkeypatch.setattr("autodj.library.analyze_basic", decode)
+    music = manager.cfg.library.music_dir
+    songs = [music / f"song-{number}.flac" for number in range(3)]
+    for number, song in enumerate(songs):
+        sf.write(song, np.ones((22050 + number, 2)) * 0.1, 22050)
+
+    with caplog.at_level(logging.DEBUG, logger="autodj.library"):
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 1 min 15 s: 3 new, 3 decoded here"
+        ]
+        manager.scan()
+        assert _scan_summaries(caplog, logging.DEBUG) == [
+            "Library scan finished in 0 s: nothing changed"
+        ]
+
+        sf.write(songs[0], np.ones((44100, 2)) * 0.2, 22050)
+        songs[1].rename(music / "renamed.flac")
+        songs[2].unlink()
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 25 s: 1 changed, 1 moved, 1 gone, 1 decoded here"
+        ]
+
+
+def test_scan_summary_counts_work_left_to_a_worker_and_the_take_back(abandoned_scan, caplog):
+    """One line names the songs sent to a worker, one the songs taken back."""
+    manager, queue, now, _songs = abandoned_scan
+    song = manager.cfg.library.music_dir / "late.flac"
+    sf.write(song, np.ones((22050, 2)) * 0.3, 22050)
+    with caplog.at_level(logging.INFO, logger="autodj.library"):
+        manager.scan()
+        assert _scan_summaries(caplog) == [
+            "Library scan finished in 0 s: 1 new, 1 sent to an analysis worker"
+        ]
+        now[0] += 121
+        tick_and_wait(manager)
+    assert not queue.pending_scans()
+    taken = [record.getMessage() for record in caplog.records if "abandoned" in record.message]
+    assert taken == [
+        "Server starting abandoned scan work: 3 songs",
+        "Server finished abandoned scan work",
+    ]

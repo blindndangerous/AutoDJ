@@ -1006,9 +1006,12 @@ status. They do not include tokens, request bodies, query strings, client-suppli
 music paths.
 
 Rejected requests are audited. Successful or rejected unsafe HTTP actions are audited after
-response status is known. The WebSocket only pushes state; frames a browser sends on it are
-ignored. WebSocket connection, error, and disconnect events are audited. These records support
-single-user incident review but do not provide per-user attribution.
+response status is known. A worker's routine polls are audited at DEBUG, so they stay out of the
+default log: a successful heartbeat that is not a connect, and a successful claim that hands out
+no songs. Refusals and failures stay at WARNING or ERROR. The WebSocket only pushes state; frames
+a browser sends on it are ignored. WebSocket connection, error, and disconnect events are
+audited. These records support single-user incident review but do not provide per-user
+attribution.
 
 ### Live DJ source mounts and talkover (#48)
 
