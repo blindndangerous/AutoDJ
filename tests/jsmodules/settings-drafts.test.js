@@ -232,4 +232,12 @@ describe("Settings drafts", () => {
     mocks.choose.mockResolvedValue("alternate"); mocks.request.mockResolvedValue(snapshot());
     expect(await drafts.confirmSettingsNavigation()).toBe(true); expect(input.value).toBe("0");
   });
+  it("lists each dirty part with what it reads and its baseline", () => {
+    input.id = "speed";
+    register(); drafts.applySettingsDrafts(snapshot());
+    expect(drafts.dirtySettingsParts()).toEqual([]);
+    edit(2);
+    expect(drafts.dirtySettingsParts()).toEqual([{ panel: "spanel-sound", group: "playback", controls: ["speed"],
+      read: { music_speed_percent: 2 }, baseline: { music_speed_percent: 0 } }]);
+  });
 });

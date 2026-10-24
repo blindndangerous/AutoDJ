@@ -295,6 +295,25 @@ export async function saveSettingsPanel(element) {
   }
 }
 
+// For diagnostics (the browser audits): every part with unsaved changes,
+// with what it reads now and the baseline it is compared against.
+export function dirtySettingsParts(doc = document) {
+  const editor = editors.get(doc);
+  if (!editor) return [];
+  const found = [];
+  for (const panel of editor.panels.values()) {
+    for (const part of panel.parts) {
+      if (!dirty(part)) continue;
+      found.push({
+        panel: panel.element.id, group: part.group || null,
+        controls: controls(part).map((control) => control.id || control.name || control.tagName.toLowerCase()),
+        read: clone(part.read()), baseline: clone(part.baseline),
+      });
+    }
+  }
+  return found;
+}
+
 export function settingsHaveChanges(doc = document) {
   return [...editorFor(doc).panels.values()].some(dirtyPanel);
 }
