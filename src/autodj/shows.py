@@ -898,6 +898,17 @@ class ShowRunner:
             air = self._on_air
             return air.name if air is not None and not air.stopping else None
 
+    def on_air_show(self) -> dict[str, str] | None:
+        """The ``id`` and ``name`` of the show on the air, or ``None`` (any thread).
+
+        Like :meth:`on_air_name`, a show that was asked to stop is no longer on the air.
+        """
+        with self._state_lock:
+            air = self._on_air
+            if air is None or air.stopping:
+                return None
+            return {"id": air.show_id, "name": air.name}
+
     #: Set by the station: the name of a show the schedule starts within the
     #: given seconds, or ``None``.
     starts_within: Callable[[float], str | None] | None = None

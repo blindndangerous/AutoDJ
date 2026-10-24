@@ -88,6 +88,7 @@ or evidence limits. Narrative above retains rationale and scope.
 | `ADR-0009-03` | Forecast cache invalidation includes picking, handoff, schedule, and library changes. | automated | `tests/unit/test_hour_preview.py::test_cache_freshness_covers_handoff_rules_schedule_library_and_refresh` |
 | `ADR-0009-04` | Time checks fall back from voice packs to recorded clips to configured synthesis. | automated | `tests/unit/test_time_checks.py::test_voice_pack_speaks_first_and_falls_back_to_clips_then_tts` |
 | `ADR-0009-05` | Forecast accuracy and omitted simulation features require explicit operational interpretation. | manual | Compare predictions with observed station output and document simulation omissions; forecasts are not immutable playout promises. |
+| `ADR-0009-06` | The announcer context reports the programming the live station is using (the clockwheel picking, a show on the air and the pick mode), read from the live player and show runner rather than from a copy of the schedule. | automated | `tests/unit/test_breaks_api.py::test_context_says_which_programming_is_on_the_air`; `tests/unit/test_shows.py::test_a_stop_that_cannot_take_the_songs_out_keeps_trying` |
 | `ADR-0009-07` | A relative date condition (a Beets date within the last N days) saves the number of days, not a date, and is judged against the time of the pick; cached step and category results are worked out again when its hourly window moves, not for every pick. | automated | `tests/unit/test_clock_conditions.py::test_within_days_matches_beets_dates_in_the_last_n_days`; `tests/unit/test_clock_conditions.py::test_within_days_moves_with_the_clock`; `tests/unit/test_clock_condition_picks.py::test_relative_date_steps_are_worked_out_again_each_hour`; `tests/unit/test_categories.py::test_a_new_music_category_follows_the_clock`; `tests/unit/test_clock_category_player.py::test_a_relative_date_step_is_judged_for_when_the_song_starts`; `tests/jsmodules/condition-editor.test.js::offers within the last N days for a Beets date and reads a whole number of days` |
 
 ## Verification
@@ -115,6 +116,16 @@ end-to-end parity. Historical alternatives and policy acceptance remain pending.
 ## Related proposal — 2026-10-17
 
 Prepared editions bind local speech to stable song occurrences and consume the isolated programme review engine. Their identity and approval proposal is [ADR 15](0015-prepare-speech-for-specific-show-editions.md). This cross-reference does not accept that proposal or change this record's status.
+
+## Amendment 2026-10-24: Programming in the announcer context
+
+Issue [#469](https://github.com/blindndangerous/AutoDJ/issues/469) adds a `programming` object
+to the announcer context: the clockwheel picking the songs, the show on the air and the pick mode.
+An announcer that matches its tone to the show reads it from the station instead of keeping its
+own copy of the schedule, which drifts when hours change, a show runs long or an operator
+switches a clockwheel by hand. The fields are added; no existing field changes, and the
+announcer token needs no new scope. The context does not forecast the next scheduled change.
+`ADR-0009-06` maps the check. This amendment does not change this record's Proposed status.
 
 ## Amendment 2026-10-24: Relative date conditions
 
