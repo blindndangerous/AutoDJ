@@ -2557,11 +2557,16 @@ def install_station_routes(router: StationRouter) -> None:
     @router.post("/play-next", response_model=None)
     async def api_play_next(
         station: StationDep, body: PlayNextBody
-    ) -> dict[str, bool] | JSONResponse:
-        """Insert a track at the head of the queue."""
+    ) -> dict[str, Any] | JSONResponse:
+        """Make a track the one that plays next, after the song playing.
+
+        There is one "play next" song (#519): another Play next takes its
+        place.  The answer names a song it replaced, so the page can say so.
+        """
         # Off the event loop: the check reads the renders and the library (#217).
         if refusal := await asyncio.to_thread(_dmca_refusal, station, body, append=False):
             return refusal
+        earlier = station.bridge.player._state.queued_next
         try:
             queued = station.bridge.play_next(
                 body.path,
@@ -2574,7 +2579,24 @@ def install_station_routes(router: StationRouter) -> None:
         if not queued:
             raise HTTPException(status_code=404, detail=TRACK_GONE_DETAIL)
         station.nowplaying.refresh()
-        return {"ok": True}
+        replaced = (
+            earlier
+            if not body.now
+            and earlier is not None
+            and station.bridge.player._state.queued_next is not earlier
+            and getattr(earlier, "path", None) != body.path
+            else None
+        )
+        if replaced is None:
+            return {"ok": True}
+        return {
+            "ok": True,
+            "replaced": {
+                "path": replaced.path,
+                "artist": replaced.artist or "",
+                "title": replaced.title or "",
+            },
+        }
 
     @router.post("/queue/add", response_model=None)
     async def api_queue_add(

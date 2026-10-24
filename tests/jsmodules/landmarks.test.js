@@ -77,6 +77,11 @@ describe("landmark words", () => {
     expect(upcomingSpeech(LANDMARKS, 235, { duration: 250 })).toBe("No more landmarks. The song ends in 0:15.");
     expect(upcomingSpeech(LANDMARKS, 235)).toBe("No more landmarks in this song.");
     expect(upcomingSpeech([], 0)).toBe("No landmarks for this song yet.");
+    // Phrases left after the last major landmark: Right bracket still finds
+    // them, so Shift+U does not say there are no landmarks at all.
+    const phrasesLeft = [...LANDMARKS.slice(0, 5), lm(110, "phrase", "Phrase", { bar: 57, major: false })];
+    expect(upcomingSpeech(phrasesLeft, 100, { duration: 250 })).toBe("No more major landmarks. The song ends in 2:30.");
+    expect(upcomingSpeech(phrasesLeft, 100)).toBe("No more major landmarks in this song.");
     const merged = { ...lm(120, "drop", "Drop and vocals"), kinds: ["drop", "vocals"] };
     expect(upcomingSpeech([merged], 100, { bpm: 120 })).toBe("Drop and vocals in 0:20, 10 bars.");
   });

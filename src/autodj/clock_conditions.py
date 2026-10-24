@@ -59,6 +59,16 @@ def genres(value: Any) -> list[str]:
     return result
 
 
+def genre_text(value: Any) -> str:
+    """A genre field as the Tags form shows it, each value apart by "; ".
+
+    A file's several values are stored apart by null characters, which a
+    screen reader skips and an edit refuses.  A semicolon reads, and
+    :func:`genres` splits it back into the same values when it is saved.
+    """
+    return "; ".join(genres(value))
+
+
 def validate_category_condition(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a reference to a saved music category."""
     category = value.get("category")

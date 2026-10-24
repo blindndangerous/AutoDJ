@@ -228,8 +228,10 @@ export function installSearch({
       // Play now resolves false when it has already said why nothing plays.
       if (now && !sent.value) return;
       const over = sent.confirmed ? ", over the DMCA limit" : "";
+      // There is one "play next" song: say which one this took the place of.
+      const replaced = next && sent.value?.replaced ? `, in place of ${fmtTrack(sent.value.replaced)}` : "";
       announce(now ? `Playing ${name} now${over}.`
-        : next ? `${name} plays next${over}.`
+        : next ? `${name} plays next${replaced}${over}.`
           : `Added ${name} to queue${over}.`);
     } catch (errorValue) {
       if (!isAuthenticatedRequestCurrent(epoch)) return;

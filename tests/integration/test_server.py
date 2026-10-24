@@ -1507,6 +1507,24 @@ class TestPlayNext:
         assert bridge.player._state.queued_next is not None
         assert bridge.player._state.queued_next.path == path
 
+    def test_a_second_play_next_names_the_song_it_replaced(self, bridge) -> None:
+        # One song plays next (#519); a second Play next replaced the first
+        # without the page saying so.
+        from fastapi.testclient import TestClient
+
+        client = TestClient(create_app(bridge))
+        first, second = bridge.sim.entries[0], bridge.sim.entries[1]
+        assert "replaced" not in client.post("/api/play-next", json={"path": first.path}).json()
+        data = client.post("/api/play-next", json={"path": second.path}).json()
+        assert data["replaced"] == {
+            "path": first.path,
+            "artist": first.artist,
+            "title": first.title,
+        }
+        assert bridge.player._state.queued_next.path == second.path
+        # The same song again replaces nothing.
+        assert "replaced" not in client.post("/api/play-next", json={"path": second.path}).json()
+
     def test_play_now_also_triggers_skip(self, bridge) -> None:
         from fastapi.testclient import TestClient
 

@@ -310,6 +310,7 @@ function cleanupApp() {
 
 afterEach(cleanupApp);
 
+
 describe("app fixture cleanup", () => {
   it("removes microphone permission callbacks from the discarded app", async () => {
     const permission = await navigator.permissions.query({ name: "microphone" });
@@ -886,6 +887,100 @@ describe("app request behavior", () => {
 
     expect(records.filter((r) => r.addedNodes.length > 0)).toHaveLength(1);
     expect(pill.textContent).toBe("Disconnected, retrying");
+  });
+
+  it("says nothing and does not retry when the socket closes as the page unloads", async () => {
+    // A reload said "Disconnected, retrying": Firefox closes the socket
+    // after beforeunload and before pagehide.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const before = pill.textContent;
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    webSocket.onerror();
+    webSocket.onclose({ code: 1001, wasClean: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pill.textContent).toBe(before);
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(pill.textContent).toBe(before);
+    expect(WebSocketImpl).toHaveBeenCalledOnce();
+    // Brought back from the back-forward cache, the page connects again.
+    webSocket.readyState = 3;
+    const shown = new Event("pageshow");
+    Object.defineProperty(shown, "persisted", { value: true });
+    window.dispatchEvent(shown);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("still reports a dropped link when an unload prompt keeps the page", async () => {
+    // The unsaved-settings prompt can cancel the unload; a close held back
+    // after beforeunload must then be said and retried as usual.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pill.textContent).toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("says nothing when the leave-page prompt closes and the page then goes", async () => {
+    // The prompt gives focus back as it closes, before pagehide: focus must
+    // not count as staying ("Disconnected, retrying" on a reload with
+    // unsaved settings).
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const before = pill.textContent;
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    await vi.advanceTimersByTimeAsync(2500);
+    window.dispatchEvent(new Event("focus"));
+    webSocket.onerror();
+    webSocket.onclose({ code: 1001, wasClean: true });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(pill.textContent).toBe(before);
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(pill.textContent).toBe(before);
+    expect(WebSocketImpl).toHaveBeenCalledOnce();
+  });
+
+  it("waits for focus before saying a drop held while the page may be leaving", async () => {
+    // While the prompt has focus the page may still go; once it has focus
+    // again and no pagehide follows, the drop is said and retried.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    focus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pill.textContent).toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+    focus.mockRestore();
   });
 
   it("backs off between retries instead of hammering every three seconds", async () => {

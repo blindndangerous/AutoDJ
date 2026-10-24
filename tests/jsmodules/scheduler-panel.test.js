@@ -333,7 +333,7 @@ describe("Schedule panel", () => {
     await vi.waitFor(() => expect(byId("schedule-form-error").textContent).toBe(message));
     expect(document.activeElement).toBe(wait);
     expect(wait.getAttribute("aria-invalid")).toBe("true");
-    expect(wait.getAttribute("aria-describedby")).toBe("schedule-wait-desc schedule-form-error");
+    expect(wait.getAttribute("aria-describedby")).toBe("schedule-form-error schedule-wait-desc");
     expect(byId("schedule-form-error").textContent).toBe(message);
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
     wait.value = "45";
@@ -413,7 +413,8 @@ describe("Schedule panel", () => {
     const end = byId("schedule-end-date");
     expect(document.activeElement).toBe(end);
     expect(end.getAttribute("aria-invalid")).toBe("true");
-    expect(end.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc schedule-form-error");
+    // The error is read before the long repeat help.
+    expect(end.getAttribute("aria-describedby")).toBe("schedule-form-error schedule-dates-repeat-desc");
     expect(byId("schedule-form-error").textContent).toBe("End date must be on or after the start date");
     end.value = "2026-12-31";
     end.dispatchEvent(new Event("input", { bubbles: true }));

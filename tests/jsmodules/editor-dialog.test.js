@@ -39,6 +39,24 @@ function makeEditor(id, { fallback, parent = document.body, save = vi.fn(), onCa
 
 afterEach(() => document.body.replaceChildren());
 
+describe("the dialog's name", () => {
+  it("is not given again to a group around the form, as Add category's legend was", () => {
+    // NVDA said "Add category dialog", then "Add category grouping".
+    const form = document.createElement("form");
+    form.id = "cat";
+    form.innerHTML = `<fieldset><legend><h1 id="cat-legend">Add category</h1></legend>
+      <label for="cat-name">Name</label><input id="cat-name">
+      <fieldset id="cat-source"><legend>Songs come from</legend><input type="radio" aria-label="Query"></fieldset>
+      <button id="cat-cancel" type="button">Cancel</button></fieldset>`;
+    document.body.append(form);
+    const editor = createEditorDialog({ form, heading: byId("cat-legend"), cancel: byId("cat-cancel"), fallback: null, save: vi.fn() });
+    expect(editor.dialog.getAttribute("aria-labelledby")).toBe("cat-legend");
+    expect(form.querySelector("fieldset").getAttribute("role")).toBe("none");
+    // A group of its own inside the form keeps its role.
+    expect(byId("cat-source").hasAttribute("role")).toBe(false);
+  });
+});
+
 describe("editor dialog controller", () => {
   it("closes child editors and invalidates their pending work with the parent", async () => {
     const parent = makeEditor("parent");

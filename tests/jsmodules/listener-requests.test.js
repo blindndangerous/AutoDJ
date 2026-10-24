@@ -576,7 +576,7 @@ describe("smooth transitions (#49)", () => {
     await flush();
     expect(request.mock.calls.length).toBe(calls);
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(field.getAttribute("aria-describedby")).toBe("requests-threshold-help requests-threshold-error");
+    expect(field.getAttribute("aria-describedby")).toBe("requests-threshold-error requests-threshold-help");
     expect(byId("requests-threshold-error").hidden).toBe(false);
     expect(byId("requests-threshold-error").textContent).toBe(THRESHOLD_ERROR);
     expect(document.activeElement).toBe(field);

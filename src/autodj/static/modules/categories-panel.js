@@ -245,7 +245,7 @@ export function installCategoriesPanel({ document: doc = document, request = req
     if (!control || !errorText) return;
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
       .filter((id) => id && id !== errorText.id);
-    if (linked) ids.push(errorText.id);
+    if (linked) ids.unshift(errorText.id);
     if (ids.length) control.setAttribute("aria-describedby", ids.join(" "));
     else control.removeAttribute("aria-describedby");
   }

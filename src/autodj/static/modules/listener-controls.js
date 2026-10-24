@@ -2,6 +2,7 @@ import { registerSettingsGroup } from "./settings-drafts.js";
 // Settings > Stream listener admission and ban controls.
 import { requestJson } from "./api-client.js";
 import { announceStatus } from "./live-region.js";
+import { clearFieldError, showFieldError } from "./dom-helpers.js";
 
 const FORMAT_NAMES = { aac: "AAC", opus: "Opus" };
 
@@ -12,6 +13,14 @@ export function createListenerControls(doc, status) {
   const banHeading = doc.getElementById("listener-bans-title");
   const form = doc.getElementById("listener-ban-form");
   const address = doc.getElementById("listener-ban-address");
+  let banError = doc.getElementById("listener-ban-error");
+  if (!banError && address) {
+    banError = doc.createElement("p");
+    banError.id = "listener-ban-error";
+    banError.className = "field-error";
+    banError.hidden = true;
+    address.after(banError);
+  }
   const duration = doc.getElementById("listener-ban-duration");
   const note = doc.getElementById("listener-ban-note");
   const limit = doc.getElementById("stream-per-address");
@@ -48,6 +57,7 @@ export function createListenerControls(doc, status) {
 
   function openBan(target, trigger) {
     opener = trigger;
+    clearFieldError(address, banError);
     address.value = target;
     note.value = "";
     form.hidden = false;
@@ -206,9 +216,16 @@ export function createListenerControls(doc, status) {
   doc.getElementById("listener-ban-new").addEventListener("click", (event) => {
     openBan("", event.currentTarget);
   });
+  address.addEventListener("input", () => clearFieldError(address, banError));
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const target = address.value.trim();
+    // The form is novalidate (index.html says why): an empty address is
+    // refused here, linked to the field and focused.
+    if (!target) {
+      showFieldError(address, "Enter an address or CIDR range to ban.", banError, status);
+      return;
+    }
     const chosen = duration.selectedOptions[0].textContent;
     try {
       await requestJson("/api/stream/bans", {

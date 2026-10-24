@@ -170,7 +170,8 @@ function showFieldError(els, control, message) {
   error.textContent = message;
   error.hidden = false;
   (control.closest(".settings-row") || control).after(error);
-  control.setAttribute("aria-describedby", [...describedIds(control), error.id].join(" "));
+  // The error first: it is read before the field's longer help.
+  control.setAttribute("aria-describedby", [error.id, ...describedIds(control)].join(" "));
   els.errorFor = control;
 }
 

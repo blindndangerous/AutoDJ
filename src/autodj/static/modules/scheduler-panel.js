@@ -322,7 +322,9 @@ export function installSchedulerPanel({ doc = document, request = requestJson, n
       }
       control.id = id;
       control.dataset.param = field.name;
-      control.required = true;
+      // Checked by firstProblem; native required made Firefox call the
+      // group "invalid entry" before anything was typed.
+      control.setAttribute("aria-required", "true");
       if (value != null) control.value = value;
       row.append(label, control);
       return row;
