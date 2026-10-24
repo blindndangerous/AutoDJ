@@ -48,6 +48,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/announcer/co
   },
   "history": [{"id": "…", "title": "…", "artist": "…", "album": "…", "played_at": 1760000000.0}],
   "requests": [{"id": "…", "title": "…", "…": "…"}],
+  "programming": {"clockwheel": "Weekend Electronic", "show": null, "pick_mode": "clock"},
   "limits": {"kinds": ["dj", "news", "weather", "music_news"],
              "extensions": [".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac"],
              "max_bytes": 41943040, "max_seconds": 300.0, "max_queued": 6, "max_per_slot": 2,
@@ -64,6 +65,17 @@ curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/announcer/co
 - `upcoming_intro_s` is the upcoming song's intro in seconds, or `null` without an intro point:
   what a talk-up has to fit.
 - `history` is the latest plays, newest first; `requests` is the queue.
+- `programming` says what is on the air now, so an announcer can match the show without keeping its
+  own copy of the schedule. It follows schedule changes, a show that runs long and a switch made
+  by hand, and is there even while `accepting` is `false`:
+  - `clockwheel` is the name of the clockwheel picking the songs, or `null`. It is `null` unless
+    `pick_mode` is `clock`, and also while the station's clockwheel cannot play and the station
+    falls back to ordinary picks.
+  - `show` is `{"id": "…", "name": "…"}` for a show on the air, or `null`. A show that was asked
+    to stop is no longer on the air, even while its last queued songs play.
+  - `pick_mode` is the station's pick mode: `similarity`, `random`, `least_recent` or `clock`.
+    While a show is on the air its list plays first; the pick mode chooses the songs after it.
+  The context does not say when the programming changes next.
 
 ### POST breaks
 

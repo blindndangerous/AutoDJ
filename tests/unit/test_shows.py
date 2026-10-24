@@ -666,18 +666,21 @@ def test_stop_cancels_a_pending_resume_and_never_resumes(
 
 
 def test_a_stop_that_cannot_take_the_songs_out_keeps_trying(tmp_path: Path) -> None:
+    """ADR-0009-06: a show asked to stop is no longer the show on the air."""
     source, hits, gold = _station(tmp_path)
     _playing(source, gold[0], time.time() - 30)
     runner, bridge, _store, show_id, _published = _runner(
         source, tmp_path, [entry.path for entry in hits[:4]]
     )
     asyncio.run(runner.start(show_id))
+    assert runner.on_air_show() == {"id": show_id, "name": "Remembering the 2000s"}
     real = bridge.queue_remove_if
     bridge.queue_remove_if = lambda _index, _view: False  # the queue keeps changing
     assert asyncio.run(runner.stop()) == {"name": "Remembering the 2000s", "done": False}
     status = runner.status()
     assert (status["stopping"], status["waiting"]) == (True, AHEAD)
     assert runner.on_air_name() is None
+    assert runner.on_air_show() is None
     # Nothing more is fed while it stops; the next song change takes them out.
     bridge.queue_remove_if = real
     _settle(runner)
