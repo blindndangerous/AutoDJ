@@ -1061,7 +1061,7 @@ class CategoryIndex:
             self._resolved = None
 
     def _signature(
-        self, categories: Sequence[Category], entries: Sequence[Any], now: float
+        self, categories: Sequence[Category], entries: Sequence[Any], now: float | None = None
     ) -> tuple:
         folder = self.folder
         beets = self._cfg.library.beets_db
@@ -1083,7 +1083,7 @@ class CategoryIndex:
             _stat(Path(beets)) if reads_beets and beets else None,
             _stat(Path(f"{beets}-wal")) if reads_beets and beets else None,
             tuple(playlists),
-            relative_date_now(now)
+            relative_date_now(self._clock() if now is None else now)
             if any(uses_relative_dates(c.conditions) for c in categories)
             else None,
         )
@@ -1093,7 +1093,7 @@ class CategoryIndex:
         with self._lock:
             categories = self.categories()
         entries = self._entries()
-        return (id(entries), self._signature(categories, entries, self._clock()))
+        return (id(entries), self._signature(categories, entries))
 
     def resolutions(self) -> tuple[tuple[Category, ...], dict[str, Resolution]]:
         """The saved categories and what each holds, worked out again if a source changed."""
