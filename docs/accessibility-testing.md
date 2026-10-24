@@ -385,7 +385,7 @@ Before every release, each flow below must be sampled with either NVDA and Firef
   Enter or Space on its heading, and confirm it is read as collapsed, then expanded): Copy
   now-playing link said once per press,
   Show the next song publicly saved and its result said once, the webhook list read as plain text
-  (or the config.local.toml note when there are none), and each Send test naming its host and
+  (or the secrets.json note when there are none), and each Send test naming its host and
   saying "Sending" and then the result once, with focus staying on the button.
 - Stream mode, Settings, Stream, More formats and Listener statistics (#50), each a card closed
   by default (open each first, with Enter or Space on its heading): AAC quality and

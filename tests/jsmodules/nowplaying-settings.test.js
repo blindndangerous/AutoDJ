@@ -254,7 +254,19 @@ describe("now-playing settings", () => {
     expect(list.closest("[aria-live], [role=status], [role=alert]")).toBeNull();
   });
 
-  it("points to config.local.toml when no webhooks are set up", async () => {
+  it("sends station secrets to secrets.json in the Stream panel's help", () => {
+    const template = document.createElement("template");
+    template.innerHTML = htmlSource;
+    const text = template.content.getElementById("spanel-stream").textContent;
+    expect(text).not.toContain("config.local.toml");
+    expect(text).toContain("listener_password in this station's secrets.json");
+  });
+
+  it("points to the station's secrets.json when no webhooks are set up", async () => {
+    // Webhooks live in each station's secrets.json; config.local.toml is
+    // read only once, to move old entries there.
+    expect(NO_WEBHOOKS_TEXT).toContain("this station's secrets.json");
+    expect(NO_WEBHOOKS_TEXT).not.toContain("config.local.toml");
     request.mockResolvedValue([]);
     const ui = install();
     open(ui);
@@ -339,7 +351,7 @@ describe("now-playing settings", () => {
     request.mockImplementation(async (url) => (url === "/api/webhooks" ? HOOKS : { delivered: false }));
     byId("np-webhooks-list").querySelectorAll("button")[1].click();
     await said("settings-status",
-      "Test to hooks.example.org failed. Check its address in config.local.toml and the AutoDJ log.");
+      "Test to hooks.example.org failed. Check its address in this station's secrets.json and the AutoDJ log.");
   });
 
   it("says when the test request itself fails, and nothing after a sign-in prompt", async () => {

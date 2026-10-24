@@ -2278,8 +2278,8 @@
         <ul class="stream-detail" id="stream-formats-list" aria-labelledby="stream-formats-intro"></ul>
       </fieldset>
       </details>
-      <!-- The public now-playing feed and the webhooks from
-           config.local.toml; nowplaying-settings.js fills it.  Nested so
+      <!-- The public now-playing feed and the webhooks from the station's
+           secrets.json; nowplaying-settings.js fills it.  Nested so
            it shows, hides and hands focus away with the Stream settings.
            The webhook list and its empty note are plain text, not live:
            results of Copy, the show-next save and Send test go to the
@@ -2325,7 +2325,7 @@
         <h4 id="listener-control-title" tabindex="-1">Listeners</h4>
         <p class="stream-detail" id="stream-listeners"></p>
         <p id="listener-password-state">Listener password status not loaded.</p>
-        <p class="setting-desc">Set or clear listener_user and listener_password in config.local.toml, or a station's secrets.json, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
+        <p class="setting-desc">Set or clear listener_user and listener_password in this station's secrets.json, then restart AutoDJ. Some players cannot send credentials. HTTP sends the password in plain text.</p>
         <div class="settings-row">
           <label for="stream-per-address">Connections per address (0 for unlimited)</label>
           <input id="stream-per-address" type="number" min="0" max="100" step="1">
