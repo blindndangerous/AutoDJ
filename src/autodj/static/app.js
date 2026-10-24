@@ -1434,32 +1434,48 @@ let _ws = null;
 // is not a dropped link, so nothing is said or retried: NVDA said
 // "Disconnected, retrying" on every reload.  Firefox closes the socket
 // after beforeunload and before pagehide, so beforeunload already holds a
-// close or error back.  It is only provisional, as the unsaved-settings
-// prompt can keep the page: when the page is still here a moment later, or
-// takes focus back, what was held runs as usual.  pagehide drops it.  A
-// page brought back from the back-forward cache connects again.
+// close or error back, and pagehide drops it.  It is only provisional, as
+// the unsaved-settings prompt can keep the page.  A held drop is reported,
+// a little late, only when no pagehide has come 3 seconds after
+// beforeunload, or after the page last took focus back, and the page has
+// focus: the prompt takes focus and gives it back as it closes, whichever
+// way it is answered, so focus alone says nothing.  After a minute it is
+// reported whatever the focus.  A page brought back from the back-forward
+// cache connects again.
 const LEAVE_GRACE_MS = 3000;
+const LEAVE_RECHECK_MS = 1000;
+const LEAVE_LIMIT_MS = 60000;
 let pageLeft = false;
 let leaveGrace = null;
+let leaveSince = 0;
 let heldWhileLeaving = [];
 function unlessLeaving(handler) {
   if (pageLeft) return;
   if (leaveGrace === null) handler();
   else heldWhileLeaving.push(handler);
 }
-function pageStayed() {
-  if (leaveGrace === null) return;
+function waitToLeave(ms) {
   clearTimeout(leaveGrace);
+  leaveGrace = setTimeout(leftOrStayed, ms);
+}
+function leftOrStayed() {
+  const focused = typeof document.hasFocus !== "function" || document.hasFocus();
+  if (!focused && Date.now() - leaveSince < LEAVE_LIMIT_MS) {
+    waitToLeave(LEAVE_RECHECK_MS);
+    return;
+  }
   leaveGrace = null;
   const held = heldWhileLeaving;
   heldWhileLeaving = [];
   for (const handler of held) handler();
 }
 window.addEventListener("beforeunload", () => {
-  clearTimeout(leaveGrace);
-  leaveGrace = setTimeout(pageStayed, LEAVE_GRACE_MS);
+  leaveSince = Date.now();
+  waitToLeave(LEAVE_GRACE_MS);
 });
-window.addEventListener("focus", pageStayed);
+window.addEventListener("focus", () => {
+  if (leaveGrace !== null) waitToLeave(LEAVE_GRACE_MS);
+});
 window.addEventListener("pagehide", () => {
   pageLeft = true;
   clearTimeout(leaveGrace);
