@@ -2247,6 +2247,11 @@ class SharedLibrary:
     async def start(self) -> None:
         """Start the library's scan and its two-second tick."""
         if self.library is not None:
+            from autodj.library import freeze_long_lived
+
+            # The library and the stations have loaded: what they hold now
+            # lives as long as the server, so full collections skip it.
+            freeze_long_lived()
             self.library.on_scan_done = self._scan_done
             self.library.start_scan()
             self._ticker = asyncio.create_task(self._tick())
