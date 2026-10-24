@@ -175,7 +175,7 @@ describe("clock folder and points controls", () => {
     expect(status.textContent).toBe("");
     running = false;
     await controls.refresh();
-    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 indexed."));
+    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 with advanced analysis."));
     const changes = [];
     const observer = new window.MutationObserver((records) => changes.push(...records));
     observer.observe(status, { childList: true, characterData: true, subtree: true });
@@ -195,7 +195,7 @@ describe("clock folder and points controls", () => {
     expect(status.textContent).toBe("");
     job = { running: true, phase: "recovering analysis", done: 0, total: 3 };
     await controls.refresh();
-    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 indexed."));
+    await vi.waitFor(() => expect(status.textContent).toBe("2 tracks ready; 1 with advanced analysis."));
     expect(document.getElementById("source-folders-progress").textContent).toBe("Recovering analysis: 0 of 3");
   });
 
@@ -216,7 +216,7 @@ describe("clock folder and points controls", () => {
     await controls.refresh();
     const progress = document.getElementById("source-folders-progress");
     const list = document.getElementById("source-folders-errors");
-    expect(progress.textContent).toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 indexed.");
+    expect(progress.textContent).toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 with advanced analysis.");
     expect(progress.textContent).not.toContain("a.flac");
     expect(list.tagName).toBe("DETAILS");
     expect(list.hidden).toBe(false);
@@ -231,7 +231,7 @@ describe("clock folder and points controls", () => {
     await controls.refresh();
     expect(list.hidden).toBe(true);
     expect(list.open).toBe(false);
-    expect(progress.textContent).toBe("1,204 tracks ready; 1,100 indexed.");
+    expect(progress.textContent).toBe("1,204 tracks ready; 1,100 with advanced analysis.");
     controls.destroy();
   });
 

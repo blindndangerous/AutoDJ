@@ -111,16 +111,16 @@ describe("import summary (#391)", () => {
   it("gives counts, never the joined paths", () => {
     const errors = ["/music/a.flac: could not decode", "/music/b.mp3: could not decode"];
     expect(importSummary({ import: { running: false, errors }, tracks_ready: 1204, tracks_indexed: 1100 }))
-      .toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 indexed.");
+      .toBe("Import finished with 2 errors; the list follows. 1,204 tracks ready; 1,100 with advanced analysis.");
     expect(importSummary({ import: { running: true, phase: "reading tracks", done: 3, total: 9, current: "/music/c.flac", errors: [errors[0]] } }))
       .toBe("Importing tracks (reading tracks): 3 of 9; /music/c.flac; 1 error so far");
-    expect(importSummary({ import: { errors: [] }, tracks_ready: 1, tracks_indexed: 0 })).toBe("1 track ready; 0 indexed.");
+    expect(importSummary({ import: { errors: [] }, tracks_ready: 1, tracks_indexed: 0 })).toBe("1 track ready; 0 with advanced analysis.");
   });
 
   it("says how many long songs have basic analysis only, without calling them errors", () => {
     expect(importSummary({ import: { errors: [] }, tracks_ready: 60, tracks_indexed: 1, too_long_for_analysis: 59, advanced_max_minutes: 15 }))
-      .toBe("60 tracks ready; 1 indexed. 59 songs longer than 15 minutes have basic analysis only.");
+      .toBe("60 tracks ready; 1 with advanced analysis. 59 songs longer than 15 minutes have basic analysis only.");
     expect(importSummary({ import: { errors: [] }, tracks_ready: 2, tracks_indexed: 1, too_long_for_analysis: 1, advanced_max_minutes: 20 }))
-      .toBe("2 tracks ready; 1 indexed. 1 song longer than 20 minutes has basic analysis only.");
+      .toBe("2 tracks ready; 1 with advanced analysis. 1 song longer than 20 minutes has basic analysis only.");
   });
 });
