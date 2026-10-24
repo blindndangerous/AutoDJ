@@ -763,7 +763,7 @@ describe("clockwheel editor", () => {
     expect(field.getAttribute("aria-describedby")).toBe("clock-station-name-help");
     expect(error.hidden).toBe(true);
     byId("clock-save").click();
-    await vi.waitFor(() => expect(status()).toContain("Saved Morning, 3 steps."));
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. The station name applies now."));
     expect(server.calls.find((call) => call.method === "PUT").body.station_name).toBe("Example FM Night Shift");
     expect(field.value).toBe("Example FM Night Shift");
     // The server's refusal of the name goes to the field as well.
@@ -783,6 +783,28 @@ describe("clockwheel editor", () => {
     expect(server.calls.filter((call) => call.method === "PUT")[2].body.station_name).toBe("");
   });
 
+  // ADR-0009-08
+  it("says the restart note only when the steps or restart minutes changed", async () => {
+    await open(fakeServer());
+    const field = byId("clock-station-name");
+    const type = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    // Nothing that waits for a restart changed: no restart note.
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    type(field, "Example FM Night Shift");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. The station name applies now."));
+    // Restart minutes wait for the restart, with or without a new name.
+    type(field, "Example FM After Dark");
+    type(byId("clock-resync-minutes"), "0, 30");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. Changes apply at the next clock restart."));
+    // So do steps.
+    rowButton(0, "delete").click();
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 2 steps. Changes apply at the next clock restart."));
+  });
+
   it("sends immediate apply timing when selected", async () => {
     const server = await open(fakeServer());
     byId("clock-resync-minutes").value = "15";
@@ -796,6 +818,8 @@ describe("clockwheel editor", () => {
 
   it("sends continue apply timing when selected", async () => {
     const server = await open(fakeServer());
+    // A step change, so there is something to apply.
+    rowButton(0, "delete").click();
     byId("clock-apply-timing").value = "continue";
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toContain("continuing at the next step"));

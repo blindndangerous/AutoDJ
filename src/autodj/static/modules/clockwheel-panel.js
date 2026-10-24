@@ -92,6 +92,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
+  // How the saved wheel picks (steps and restart minutes), to tell a save
+  // that changes only its station name, which applies at once (#472).
+  let savedPicking = null;
+  const picking = (value) => JSON.stringify([value.steps, value.resync_minutes]);
   let undoHistory = [];
   let dirty = false;
   let editing = null; // index of the step in the form, or null when adding
@@ -945,6 +949,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clock = copy(value);
     isNew = fresh;
     dirty = fresh;
+    savedPicking = fresh ? null : picking(value);
     resetForm();
     nameInput.value = clock.name;
     resync.value = clock.resync_minutes.join(", ");
@@ -1065,18 +1070,23 @@ export function installClockwheelPanel({ document: doc = document, request = req
     if (stationNameError) clearFieldError(stationName, stationNameError);
     const body = { version: 1, name: clock.name, steps: clock.steps, resync_minutes: minutes, station_name: named.name };
     const timing = el("clock-apply-timing")?.value || "next_restart";
+    // Only the station name changed: nothing waits for a restart.
+    const nameOnly = !isNew && savedPicking === picking(body);
+    const nameChanged = (clock.station_name || "") !== named.name;
     const url = isNew ? "/api/library/clock" : `${clockUrl(clock.name)}?apply_timing=${encodeURIComponent(timing)}`;
     const saved = await command(() => send(url, isNew ? "POST" : "PUT", body),
       (result) => load(result));
     if (saved) {
       const activeEdit = !isNew && data.active === saved.name;
-      const timingMessage = activeEdit
-        ? timing === "next_restart"
+      let timingMessage = "";
+      if (activeEdit && nameOnly) timingMessage = nameChanged ? " The station name applies now." : "";
+      else if (activeEdit) {
+        timingMessage = timing === "next_restart"
           ? " Changes apply at the next clock restart."
           : timing === "continue"
             ? " Changes apply immediately, continuing at the next step."
-            : " Changes apply immediately from step 1."
-        : "";
+            : " Changes apply immediately from step 1.";
+      }
       say(`Saved ${saved.name}, ${count(saved.steps.length)}.${timingMessage}`);
     }
   });
