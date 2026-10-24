@@ -75,10 +75,13 @@ export function upcomingSpeech(landmarks, position, { bpm = 0, duration = 0 } = 
   if (!list.length) return "No landmarks for this song yet.";
   const next = list.find((item) => item.major && item.time_s > position + AHEAD_S);
   if (!next) {
+    // Phrases ahead are still stops for the bracket keys, so with some
+    // left the words say only the major ones are over.
+    const what = nextLandmark(list, position) ? "major landmarks" : "landmarks";
     const left = duration - position;
     return left >= 1
-      ? `No more landmarks. The song ends in ${fmtTime(left)}.`
-      : "No more landmarks in this song.";
+      ? `No more ${what}. The song ends in ${fmtTime(left)}.`
+      : `No more ${what} in this song.`;
   }
   const lead = (next.kinds || [next.kind]).length === 1 && SOON[next.kind] ? SOON[next.kind] : next.name;
   const seconds = next.time_s - position;
