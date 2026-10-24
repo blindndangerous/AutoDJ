@@ -363,8 +363,13 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
         item.dataset.station = station.slug;
         item.className = "station-switcher-item";
       }
+      // A changed count rewrites the item's one text node in place: a new
+      // node leaves the item without a name until the browser has built it,
+      // and NVDA with Firefox once read an item as only "radio menu item".
       const text = stationItemText(station);
-      if (item.textContent !== text) item.textContent = text;
+      if (item.childNodes.length === 1 && item.firstChild.nodeType === 3) {
+        if (item.firstChild.data !== text) item.firstChild.data = text;
+      } else if (item.textContent !== text) item.textContent = text;
       const checked = station.slug === currentStation() ? "true" : "false";
       if (item.getAttribute("aria-checked") !== checked) item.setAttribute("aria-checked", checked);
       return item;
@@ -398,12 +403,15 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
     focusItem(index);
   }
 
+  // Collapsed, then focus on the button, then the menu hidden: hiding the
+  // focused item first left focus nowhere for a moment, and NVDA with
+  // Firefox once read the button as still expanded.
   function close(returnFocus = true) {
     if (!isOpen()) return;
-    menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
     typed = "";
     if (returnFocus) button.focus();
+    menu.hidden = true;
   }
 
   function choose(item) {

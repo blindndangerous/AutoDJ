@@ -374,6 +374,30 @@ describe("the station switcher (APG menu button)", () => {
     expect(chosen).toEqual([]);
   });
 
+  it("collapses and moves focus to the button before it hides the menu", () => {
+    key(button(), "Enter");
+    key(items()[0], "ArrowDown");
+    const seen = [];
+    button().addEventListener("focus", () => {
+      seen.push([menu().hidden, button().getAttribute("aria-expanded")]);
+    });
+    key(items()[1], "Escape");
+    // The focused item was still shown when focus left it, and the button
+    // already said collapsed.
+    expect(seen).toEqual([[false, "false"]]);
+    expect(menu().hidden).toBe(true);
+  });
+
+  it("keeps an item's text node when its count changes, so it is never nameless", () => {
+    const night = items()[1];
+    const node = night.firstChild;
+    setKnownStations([AUTODJ, { ...OWL, listeners: 2 }, OLDIES]);
+    switcher.render();
+    expect(items()[1]).toBe(night);
+    expect(night.firstChild).toBe(node);
+    expect(night.textContent).toBe("Night Owl Radio, on air, 2 listeners");
+  });
+
   it("works with the mouse: the button toggles, an item chooses, outside closes", () => {
     button().click();
     expect(menu().hidden).toBe(false);
