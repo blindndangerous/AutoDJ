@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -36,11 +37,52 @@ _TAIL_BLEND_FRAMES = int(0.01 * SAMPLE_RATE)
 # (see :mod:`autodj.mastering`), so a catch-up burst never drains it.
 CATCH_UP_BLOCKS = 8
 _LAG_WARNING_SECONDS = 10.0
+# The interpreter's thread switch interval while any bus runs.  The bus
+# thread gives up the GIL several times per block (pipe writes, locks the
+# encoder and master threads share, sleeping), and each time it waits for
+# it again, a thread running Python keeps it for a whole switch interval.
+# At CPython's default 5 ms, two or three such threads (song picking, a
+# library reload, a scan, an hour preview) left the bus seconds behind on a
+# small CPU; at 0.5 ms they cost it a few milliseconds a block.
+REALTIME_SWITCH_INTERVAL = 0.0005
+_switch_lock = threading.Lock()
+_switch_users = 0
+_switch_saved: float | None = None
+_switch_applied: float | None = None
 _NO_LINER = np.zeros((0, 2), np.float32)
 # Live source audio buffered before it plays, and again after an underrun,
 # so network jitter does not crackle (#48); a browser talker's, shorter.
 _LIVE_PREROLL_FRAMES = int(0.3 * SAMPLE_RATE)
 _MIC_PREROLL_FRAMES = int(0.06 * SAMPLE_RATE)
+
+
+@contextlib.contextmanager
+def realtime_switching() -> Iterator[None]:
+    """Use :data:`REALTIME_SWITCH_INTERVAL` while at least one bus runs.
+
+    The interval is process-wide, so it is shortened when the first bus
+    starts and put back when the last one stops, unless something else
+    changed it meanwhile.  A shorter interval already set is kept.
+    """
+    global _switch_users, _switch_saved, _switch_applied
+    with _switch_lock:
+        if _switch_users == 0:
+            current = sys.getswitchinterval()
+            if current > REALTIME_SWITCH_INTERVAL:
+                sys.setswitchinterval(REALTIME_SWITCH_INTERVAL)
+                _switch_saved, _switch_applied = current, sys.getswitchinterval()
+            else:
+                _switch_saved = _switch_applied = None
+        _switch_users += 1
+    try:
+        yield
+    finally:
+        with _switch_lock:
+            _switch_users -= 1
+            if _switch_users == 0 and _switch_saved is not None:
+                if sys.getswitchinterval() == _switch_applied:
+                    sys.setswitchinterval(_switch_saved)
+                _switch_saved = _switch_applied = None
 
 
 @dataclass(frozen=True)
@@ -1092,11 +1134,17 @@ class MixBus:
         ``on_need_track``, or the EQ path — the failure is logged and a
         silent block is substituted so pacing continues. An output whose
         ``write`` raises is logged and removed so the rest of the run
-        keeps going.
+        keeps going.  While it runs, the process uses the short
+        :data:`REALTIME_SWITCH_INTERVAL` (see :func:`realtime_switching`).
 
         Args:
             stop: Set by another thread to end the loop.
         """
+        with realtime_switching():
+            self._run_paced(stop)
+
+    def _run_paced(self, stop: threading.Event) -> None:
+        """The paced loop of :meth:`run`."""
         period = self.BLOCK / SAMPLE_RATE
         next_due = self._clock.now()
         last_lag_warning = -math.inf

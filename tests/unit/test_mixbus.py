@@ -13,12 +13,14 @@ import pytest
 
 from autodj.mixbus import (
     CATCH_UP_BLOCKS,
+    REALTIME_SWITCH_INTERVAL,
     BusEvents,
     LinerCue,
     MixBus,
     RenderedTrack,
     SkipTail,
     SystemClock,
+    realtime_switching,
 )
 from tests.unit._fakes import FakeClock
 
@@ -468,6 +470,68 @@ def test_run_flushes_pending_lag_after_recovery_or_exit(exit_early, caplog) -> N
     assert "39 periods of 20 ms" in records[1].message
     assert "0.930 s" in records[1].message
     assert flushed_while_running is not exit_early
+
+
+@pytest.fixture
+def switch_interval():
+    """Start each test at CPython's default interval and put the real one back."""
+    saved = sys.getswitchinterval()
+    sys.setswitchinterval(0.005)
+    yield
+    sys.setswitchinterval(saved)
+
+
+def _run_bus_for(blocks: int, during=None) -> list[float]:
+    """Run a bus on a fake clock for *blocks* blocks; the interval seen at each write."""
+    bus, _, _ = _bus([_track(0.5, 882 * (blocks + 1))])
+    seen: list[float] = []
+    stop = threading.Event()
+
+    class Watch:
+        def write(self, _block: np.ndarray) -> None:
+            seen.append(sys.getswitchinterval())
+            if during is not None:
+                during(len(seen))
+            if len(seen) >= blocks:
+                stop.set()
+
+    bus.add_output(Watch())
+    bus.start_set()
+    bus.run(stop)
+    return seen
+
+
+def test_run_shortens_the_switch_interval_until_the_last_bus_stops(switch_interval) -> None:
+    """ADR-0004-15: a thread running Python must not keep the GIL from the bus 5 ms at a time.
+
+    With CPython's 5 ms default, two or three busy threads left the bus seconds
+    behind on a small CPU, and both stations of one process skipped periods
+    together.
+    """
+    seen = _run_bus_for(3)
+    assert seen == [pytest.approx(REALTIME_SWITCH_INTERVAL)] * 3
+    assert sys.getswitchinterval() == pytest.approx(0.005)
+
+    # Another station's bus still running keeps the short interval.
+    with realtime_switching():
+        _run_bus_for(2)
+        assert sys.getswitchinterval() == pytest.approx(REALTIME_SWITCH_INTERVAL)
+    assert sys.getswitchinterval() == pytest.approx(0.005)
+
+
+def test_run_leaves_an_interval_someone_else_chose(switch_interval) -> None:
+    """ADR-0004-15: an interval changed during the run, or already shorter, is kept."""
+
+    def choose(written: int) -> None:
+        if written == 1:
+            sys.setswitchinterval(0.002)
+
+    _run_bus_for(2, during=choose)
+    assert sys.getswitchinterval() == pytest.approx(0.002)
+
+    sys.setswitchinterval(0.0002)  # already shorter: kept, and not raised afterwards
+    assert _run_bus_for(2) == [pytest.approx(0.0002)] * 2
+    assert sys.getswitchinterval() == pytest.approx(0.0002)
 
 
 def test_run_skips_sleep_when_slightly_behind_schedule() -> None:
