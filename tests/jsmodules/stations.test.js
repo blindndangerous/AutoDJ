@@ -293,14 +293,14 @@ describe("the station switcher (APG menu button)", () => {
     setUp();
   });
 
-  it("is hidden with one station and names the current one in the button", () => {
+  it("is hidden with one station and names the current one in the button", async () => {
     expect(document.getElementById("wrap").hidden).toBe(false);
     expect(button().textContent.replace(/\s+/g, " ").trim()).toBe("Station: AutoDJ");
     setUp([AUTODJ]);
     expect(document.getElementById("wrap").hidden).toBe(true);
   });
 
-  it("lists every station as a menuitemradio, the current one checked", () => {
+  it("lists every station as a menuitemradio, the current one checked", async () => {
     expect(items().map((item) => item.textContent)).toEqual([
       "AutoDJ, on air, 3 listeners", "Night Owl Radio, on air, 1 listener", "Oldies, off air",
     ]);
@@ -308,24 +308,27 @@ describe("the station switcher (APG menu button)", () => {
     expect(items().every((item) => item.tabIndex === -1)).toBe(true);
   });
 
-  it.each(["Enter", " ", "ArrowDown"])("opens on the checked item with %j", (name) => {
+  it.each(["Enter", " ", "ArrowDown"])("opens on the checked item with %j", async (name) => {
     selectStation("nightowl");
     switcher.render();
     button().focus();
     key(button(), name);
+    await frame();
     expect(menu().hidden).toBe(false);
     expect(button().getAttribute("aria-expanded")).toBe("true");
     expect(document.activeElement).toBe(items()[1]);
     expect(chosen).toEqual([]);
   });
 
-  it("opens on the last item with Up Arrow", () => {
+  it("opens on the last item with Up Arrow", async () => {
     key(button(), "ArrowUp");
+    await frame();
     expect(document.activeElement).toBe(items()[2]);
   });
 
-  it("moves with the arrows (wrapping), Home, End and a typed letter", () => {
+  it("moves with the arrows (wrapping), Home, End and a typed letter", async () => {
     key(button(), "Enter");
+    await frame();
     key(items()[0], "ArrowUp");
     expect(document.activeElement).toBe(items()[2]);
     key(items()[2], "ArrowDown");
@@ -350,6 +353,7 @@ describe("the station switcher (APG menu button)", () => {
 
   it("chooses with Enter or Space and puts focus back on the button", async () => {
     key(button(), "Enter");
+    await frame();
     key(items()[0], "ArrowDown");
     key(items()[1], "Enter");
     // The choice is made once focus is back on the button.
@@ -360,6 +364,7 @@ describe("the station switcher (APG menu button)", () => {
     expect(button().getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(button());
     key(button(), "Enter");
+    await frame();
     key(document.activeElement, " ");
     await frame();
     expect(chosen).toEqual(["nightowl", "default"]);
@@ -367,12 +372,14 @@ describe("the station switcher (APG menu button)", () => {
 
   it("closes without choosing on Escape, and on Tab without taking focus back", async () => {
     key(button(), "Enter");
+    await frame();
     key(items()[0], "ArrowDown");
     key(items()[1], "Escape");
     await frame();
     expect(menu().hidden).toBe(true);
     expect(document.activeElement).toBe(button());
     key(button(), "Enter");
+    await frame();
     const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
     items()[0].dispatchEvent(tab);
     expect(tab.defaultPrevented).toBe(false);
@@ -380,10 +387,48 @@ describe("the station switcher (APG menu button)", () => {
     expect(chosen).toEqual([]);
   });
 
+  it("puts focus on the item a frame after the menu shows, and never on the menu", async () => {
+    // NVDA with Firefox moved to the menu itself when the menu's appearance
+    // was reported after the item's focus; the first Escape then only left
+    // focus mode.
+    const menuFocus = vi.spyOn(menu(), "focus");
+    const focused = [];
+    menu().addEventListener("focusin", (event) => focused.push(event.target));
+    button().focus();
+    key(button(), "Enter");
+    expect(menu().hidden).toBe(false);
+    expect(button().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(button());
+    await frame();
+    expect(document.activeElement).toBe(items()[0]);
+    await frame();
+    await frame();
+    expect(focused).toEqual([items()[0]]);
+    expect(menuFocus).not.toHaveBeenCalled();
+    expect(menu().hasAttribute("tabindex")).toBe(false);
+    // One Escape closes it.
+    key(items()[0], "Escape");
+    await frame();
+    expect(menu().hidden).toBe(true);
+    expect(document.activeElement).toBe(button());
+  });
+
+  it("closes on Escape while the menu waits to take focus", async () => {
+    button().focus();
+    key(button(), "Enter");
+    key(button(), "Escape");
+    await frame();
+    await frame();
+    expect(menu().hidden).toBe(true);
+    expect(button().getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(button());
+  });
+
   it("says collapsed a frame before focus returns to the button, then hides the menu", async () => {
     // NVDA with Firefox read "Station: AutoDJ button expanded" each time
     // focus reached the button in the same task as the change.
     key(button(), "Enter");
+    await frame();
     key(items()[0], "ArrowDown");
     const seen = [];
     button().addEventListener("focus", () => {
@@ -401,7 +446,7 @@ describe("the station switcher (APG menu button)", () => {
     expect(menu().hidden).toBe(true);
   });
 
-  it("keeps an item's text node when its count changes, so it is never nameless", () => {
+  it("keeps an item's text node when its count changes, so it is never nameless", async () => {
     const night = items()[1];
     const node = night.firstChild;
     setKnownStations([AUTODJ, { ...OWL, listeners: 2 }, OLDIES]);
@@ -423,8 +468,9 @@ describe("the station switcher (APG menu button)", () => {
     expect(menu().hidden).toBe(true);
   });
 
-  it("keeps the items in step with pushes, without stealing focus", () => {
+  it("keeps the items in step with pushes, without stealing focus", async () => {
     key(button(), "Enter");
+    await frame();
     key(items()[0], "ArrowDown");
     setKnownStations([AUTODJ, { ...OWL, listeners: 5 }, OLDIES]);
     switcher.render();
@@ -436,7 +482,7 @@ describe("the station switcher (APG menu button)", () => {
     expect(items()[1].getAttribute("aria-checked")).toBe("true");
   });
 
-  it("names a station not yet listed by its slug", () => {
+  it("names a station not yet listed by its slug", async () => {
     setKnownStations([]);
     expect(stationName("nightowl")).toBe("nightowl");
     expect(stationName(DEFAULT_STATION)).toBe("AutoDJ");

@@ -310,6 +310,9 @@ function cleanupApp() {
 
 afterEach(cleanupApp);
 
+// The Station menu takes focus a frame after it shows.
+const nextFrame = () => new Promise((resolve) => window.requestAnimationFrame(() => setTimeout(resolve, 0)));
+
 describe("app fixture cleanup", () => {
   it("removes microphone permission callbacks from the discarded app", async () => {
     const permission = await navigator.permissions.query({ name: "microphone" });
@@ -933,17 +936,53 @@ describe("app request behavior", () => {
     expect(WebSocketImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("says a dropped link at once when the page takes focus back after a kept unload", async () => {
-    const { webSocket } = await setupApp({
+  it("says nothing when the leave-page prompt closes and the page then goes", async () => {
+    // The prompt gives focus back as it closes, before pagehide: focus must
+    // not count as staying ("Disconnected, retrying" on a reload with
+    // unsaved settings).
+    const { webSocket, WebSocketImpl } = await setupApp({
       initialState: { current_track: { path: "current.mp3", title: "Current" } },
       onRequest: () => jsonResponse({ ok: true }),
     });
     const pill = document.querySelector("#conn-status");
+    const before = pill.textContent;
     vi.useFakeTimers();
     window.dispatchEvent(new Event("beforeunload"));
+    await vi.advanceTimersByTimeAsync(2500);
     window.dispatchEvent(new Event("focus"));
+    webSocket.onerror();
+    webSocket.onclose({ code: 1001, wasClean: true });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(pill.textContent).toBe(before);
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(pill.textContent).toBe(before);
+    expect(WebSocketImpl).toHaveBeenCalledOnce();
+  });
+
+  it("waits for focus before saying a drop held while the page may be leaving", async () => {
+    // While the prompt has focus the page may still go; once it has focus
+    // again and no pagehide follows, the drop is said and retried.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
     webSocket.onclose({ code: 1006, wasClean: false });
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    focus.mockReturnValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(100);
     expect(pill.textContent).toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+    focus.mockRestore();
   });
 
   it("backs off between retries instead of hammering every three seconds", async () => {
@@ -4015,10 +4054,11 @@ describe("several stations (#70)", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  function chooseOwl() {
+  async function chooseOwl() {
     const button = document.getElementById("station-button");
     button.focus();
     button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await nextFrame();
     // Keys go where focus is: from the checked AutoDJ down to Night Owl.
     const press = (key) => document.activeElement.dispatchEvent(
       new KeyboardEvent("keydown", { key, bubbles: true }));
@@ -4056,7 +4096,7 @@ describe("several stations (#70)", () => {
     expect(document.getElementById("station-button").textContent.replace(/\s+/g, " ").trim())
       .toBe("Station: AutoDJ▾");
 
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
 
     // The old socket is closed on purpose and never reconnects.
@@ -4092,7 +4132,7 @@ describe("several stations (#70)", () => {
     const sockets = trackSockets(app.WebSocketImpl);
     const pill = document.getElementById("conn-status");
     pill.textContent = "Off air";
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0].onopen();
     expect(pill.textContent).toBe("Live");
@@ -4130,7 +4170,7 @@ describe("several stations (#70)", () => {
     new window.MutationObserver(() => { if (song.textContent) songs.push(song.textContent); })
       .observe(song, { childList: true, characterData: true, subtree: true });
 
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     await vi.waitFor(() => expect(said.join(" | ")).toContain("Night Owl Radio. Playing Owl — Hoot. On air, 3 listeners."));
     expect(document.getElementById("now-playing-title").textContent).toContain("Owl — Hoot");
@@ -4167,7 +4207,7 @@ describe("several stations (#70)", () => {
   it("says a stopped station is off air and offers to start it", async () => {
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
     const sockets = trackSockets(app.WebSocketImpl);
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     vi.useFakeTimers();
     sockets[0].onclose({ code: 4409, wasClean: true });
@@ -4198,7 +4238,7 @@ describe("several stations (#70)", () => {
       onRequest,
     });
     const sockets = trackSockets(app.WebSocketImpl);
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0].onclose({ code: 4409, wasClean: true });
 
@@ -4240,7 +4280,7 @@ describe("several stations (#70)", () => {
       confirm.dispatchEvent(new Event("close"));
     });
 
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
     expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
     document.getElementById("confirm-cancel").click();
@@ -4249,7 +4289,7 @@ describe("several stations (#70)", () => {
     expect(sockets).toHaveLength(0);
     expect(document.getElementById("page-heading").textContent).toBe("AutoDJ");
 
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
     document.getElementById("confirm-accept").click();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4282,7 +4322,7 @@ describe("several stations (#70)", () => {
         confirm.dispatchEvent(new Event("close"));
       });
 
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
       // One dialog names both losses: the decks that stop and the work dropped.
       expect(document.getElementById("confirm-title").textContent).toBe("Switch to Night Owl Radio?");
@@ -4296,7 +4336,7 @@ describe("several stations (#70)", () => {
       expect(clockwheel.clearProtectedData).not.toHaveBeenCalled();
       expect(stopAllDecks).not.toHaveBeenCalled();
 
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4322,7 +4362,7 @@ describe("several stations (#70)", () => {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
       confirm.showModal = vi.fn(() => { confirm.open = true; });
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalled());
       expect(document.getElementById("confirm-message").textContent)
         .toBe("Switching discards the clockwheel changes not saved yet.");
@@ -4350,7 +4390,7 @@ describe("several stations (#70)", () => {
       await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
       const confirm = document.getElementById("confirm-dialog");
       confirm.showModal = vi.fn(() => { confirm.open = true; });
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
       expect(document.getElementById("confirm-message").textContent).toBe(
         "Switching discards the clockwheel changes not saved yet and the voice track not booked yet.");
@@ -4388,7 +4428,7 @@ describe("several stations (#70)", () => {
       });
       const button = document.getElementById("station-button");
 
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledOnce());
       expect(opener).toBe(button);
       expect(document.activeElement).toBe(document.getElementById("confirm-cancel"));
@@ -4396,7 +4436,7 @@ describe("several stations (#70)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(document.activeElement).toBe(button);
 
-      chooseOwl();
+      await chooseOwl();
       await vi.waitFor(() => expect(confirm.showModal).toHaveBeenCalledTimes(2));
       document.getElementById("confirm-accept").click();
       await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -4416,7 +4456,7 @@ describe("several stations (#70)", () => {
         : owlRequests(url)),
     });
     const sockets = trackSockets(app.WebSocketImpl);
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(document.getElementById("station-off-air").hidden).toBe(false));
     expect(document.getElementById("station-off-air-text").textContent).toBe("Night Owl Radio is off air.");
     expect(document.getElementById("conn-status").textContent).toBe("Off air");
@@ -4432,7 +4472,7 @@ describe("several stations (#70)", () => {
     });
     const sockets = trackSockets(app.WebSocketImpl);
     const said = spoken();
-    chooseOwl();
+    await chooseOwl();
     // The socket brings the state when it opens.
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(sockets[0].url).toMatch(/\/api\/stations\/nightowl\/ws$/);
@@ -4446,7 +4486,7 @@ describe("several stations (#70)", () => {
     const app = await setupApp({ stations: [AUTODJ, OWL], onRequest: owlRequests });
     const sockets = trackSockets(app.WebSocketImpl);
     app.webSocket.onclose({ code: 1006, wasClean: false });
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(document.getElementById("sr-status").textContent)
       .toBe("AutoDJ is reconnecting. Choose the station again once it is back."));
     expect(sockets).toHaveLength(0);
@@ -4469,7 +4509,7 @@ describe("several stations (#70)", () => {
     await vi.waitFor(() => expect(audio.play).toHaveBeenCalled());
     expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
 
-    chooseOwl();
+    await chooseOwl();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     expect(audio.src).toMatch(/\/stream\.mp3\?connection=/);
     expect(document.getElementById("btn-listen").getAttribute("aria-pressed")).toBe("true");
@@ -4546,6 +4586,7 @@ describe("several stations: the first station (#70 review)", () => {
     const button = document.getElementById("station-button");
     button.focus();
     button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await nextFrame();
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(storage.values.get("autodj.station")).toBe("nightowl"));

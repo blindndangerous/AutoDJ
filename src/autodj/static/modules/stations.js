@@ -398,12 +398,26 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
     items[wrapped].focus();
   }
 
+  // A menu just shown gets focus on its item a frame later.  Firefox tells
+  // NVDA that a menu has appeared, and when that came after the item's
+  // focus, NVDA moved to the menu itself ("Station: AutoDJ menu"): the
+  // first arrow read an item without its name, and the first Escape only
+  // left focus mode.  Waiting lets the menu's appearance come first.
+  let opening = 0;
   function open(index) {
     if (wrap.hidden || !items.length) return;
     closing = false;
+    const shown = menu.hidden;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
-    focusItem(index);
+    if (!shown) {
+      focusItem(index);
+      return;
+    }
+    const mine = ++opening;
+    afterNextFrame(() => {
+      if (mine === opening && isOpen()) focusItem(index);
+    });
   }
 
   // Collapsed first, then, a frame later, focus on the button and the menu
@@ -415,6 +429,7 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
   // (unsaved settings) opens its question from the button.
   function close(returnFocus = true, then = null) {
     if (!isOpen()) return;
+    opening += 1;
     button.setAttribute("aria-expanded", "false");
     typed = "";
     if (!returnFocus) {
@@ -464,7 +479,10 @@ export function installStationSwitcher({ wrap, button, menu, onChoose }) {
   });
   button.addEventListener("keydown", (event) => {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
-    if (["Enter", " ", "ArrowDown"].includes(event.key)) {
+    if (event.key === "Escape" && isOpen()) {
+      event.preventDefault();
+      close(true);
+    } else if (["Enter", " ", "ArrowDown"].includes(event.key)) {
       event.preventDefault();
       open(checkedIndex());
     } else if (event.key === "ArrowUp") {
