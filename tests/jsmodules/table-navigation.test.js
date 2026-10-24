@@ -40,7 +40,9 @@ describe("native table grid navigation", () => {
     expect([one, two, three, four].filter((item) => item.tabIndex === 0)).toEqual([three]);
   });
 
-  it("names the heading in another column and the song on another row", () => {
+  it("names the song on another row and leaves the column heading to NVDA", () => {
+    // NVDA says the column heading itself in focus mode, so adding it to the
+    // cell's name made it say "6:50, Length LENGTH".
     document.body.innerHTML = `<table><thead><tr><th>Title</th><th>Artist</th></tr></thead><tbody id="rows">
       <tr><td role="gridcell" data-name>Song 1</td><td role="gridcell">Band 1</td></tr>
       <tr><td role="gridcell" data-name>Song 2</td><td role="gridcell">Band 2</td></tr>
@@ -51,17 +53,56 @@ describe("native table grid navigation", () => {
     song1.focus();
     song1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(document.activeElement).toBe(band1);
-    expect(band1.getAttribute("aria-label")).toBe("Band 1, Artist");
+    expect(band1.hasAttribute("aria-label")).toBe(false);
     band1.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement).toBe(band2);
-    expect(band1.hasAttribute("aria-label")).toBe(false);
     expect(band2.getAttribute("aria-label")).toBe("Band 2, Song 2");
     band2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    expect(song2.getAttribute("aria-label")).toBe("Song 2, Title");
-    band2.innerHTML = '<button aria-label="Track info for Song 2">Track info</button>';
-    song2.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    expect(document.activeElement).toBe(band2);
     expect(band2.hasAttribute("aria-label")).toBe(false);
+    expect(song2.hasAttribute("aria-label")).toBe(false);
+  });
+
+  it("reads an action cell as a button named by its song, not by the column heading", () => {
+    // The button's own name, "Play now, Song 1", was read before NVDA's
+    // column heading "Play now", and the focused cell said no "button".
+    document.body.innerHTML = `<table><thead><tr><th>Track</th><th>Play now</th><th>Add subfolders</th></tr></thead><tbody id="rows">
+      <tr><td role="gridcell" data-name>Song 1</td>
+        <td role="gridcell"><button type="button" aria-label="Play now, Song 1">Play now</button></td>
+        <td role="gridcell"><label><input type="checkbox"> Add subfolders</label></td></tr>
+      <tr><td role="gridcell"></td>
+        <td role="gridcell"><button type="button" aria-label="Edit relay">Edit</button></td>
+        <td role="gridcell"><button type="button" disabled>Remove</button></td></tr>
+    </tbody></table>`;
+    const body = document.getElementById("rows");
+    installTableNavigation(body);
+    const [song, play, checkboxCell, , edit, remove] = body.querySelectorAll("td");
+    song.focus();
+    song.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(document.activeElement).toBe(play);
+    expect(play.getAttribute("aria-label")).toBe("Song 1");
+    expect(play.getAttribute("aria-roledescription")).toBe("button");
+    play.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    const checkbox = checkboxCell.querySelector("input");
+    expect(document.activeElement).toBe(checkbox);
+    expect(play.hasAttribute("aria-label")).toBe(false);
+    expect(play.hasAttribute("aria-roledescription")).toBe(false);
+    expect(checkboxCell.getAttribute("aria-label")).toBe("Song 1");
+    expect(checkboxCell.hasAttribute("aria-roledescription")).toBe(false);
+    checkbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(remove);
+    expect(checkboxCell.hasAttribute("aria-label")).toBe(false);
+    // A disabled button is not described as one to press.
+    expect(remove.hasAttribute("aria-roledescription")).toBe(false);
+    remove.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    // A row with no name keeps the button's own name.
+    expect(document.activeElement).toBe(edit);
+    expect(edit.hasAttribute("aria-label")).toBe(false);
+    expect(edit.getAttribute("aria-roledescription")).toBe("button");
+    // Focus handed back to the button, as Track info does, describes its cell too.
+    play.querySelector("button").focus();
+    expect(document.activeElement).toBe(play);
+    expect(play.getAttribute("aria-roledescription")).toBe("button");
+    expect(edit.hasAttribute("aria-roledescription")).toBe(false);
   });
 
   it("moves between data rows across browsable date headings", () => {

@@ -3,22 +3,34 @@
 // on to the button made NVDA read the cell and then the button.  Enter or
 // Space on the cell presses the button, which is for the mouse and browse
 // mode.  A checkbox takes focus itself, so its state is read.
-// NVDA says no table headings in focus mode, so until focus leaves, a
-// moved-to cell's name is its text, then the column heading (in another
-// column) and the row's name cell, such as its song (on another row).
-// A button or checkbox already names itself, so its cell gets nothing.
+// NVDA says the column heading itself in focus mode, after the cell, with
+// Firefox and Chrome alike, so a cell's own name never repeats it.  Until
+// focus leaves, a cell moved to on another row is named with its text and
+// the row's name cell, such as its song.  A cell that holds a button is
+// named by the row's song and described as a button, so NVDA says
+// "<song> button Play now" rather than the button's own name, which starts
+// with the column heading.  A checkbox's cell, read before the focused
+// checkbox, is named by the row's song for the same reason.
 export function installTableNavigation(body) {
   if (!body) return { refresh() {} };
   const cells = () => [...body.querySelectorAll("tr > td[role=gridcell], tr > td[role=rowheader]")];
   const controls = (cell) => cell ? [...cell.querySelectorAll("button, input")] : [];
   const input = (cell) => controls(cell).find((item) => item.tagName === "INPUT" && !item.disabled);
   const stop = (cell) => input(cell) || cell;
-  const place = (cell) => {
-    const row = [...cell.parentElement.children];
-    return row.slice(0, row.indexOf(cell)).reduce((sum, item) => sum + item.colSpan, 0);
-  };
   const text = (cell) => cell?.textContent.replace(/\s+/g, " ").trim();
-  const heading = (cell) => text(cell.closest("table")?.querySelector("thead tr")?.children[place(cell)]);
+  const button = (cell) => controls(cell).find((item) => item.tagName === "BUTTON" && !item.disabled);
+  const rowName = (cell) => !cell.hasAttribute("data-name") && text(cell.parentElement.querySelector("[data-name]"));
+  const label = (cell, name, role = null) => {
+    if (name) cell.setAttribute("aria-label", name);
+    if (role) cell.setAttribute("aria-roledescription", role);
+    cell.dataset.headingLabel = "";
+  };
+  const unlabel = (cell) => {
+    if (cell?.dataset.headingLabel === undefined) return;
+    cell.removeAttribute("aria-label");
+    cell.removeAttribute("aria-roledescription");
+    delete cell.dataset.headingLabel;
+  };
   function setRovingFocus(active) {
     for (const cell of cells()) {
       cell.tabIndex = active === cell ? 0 : -1;
@@ -41,6 +53,9 @@ export function installTableNavigation(body) {
     // back, moves to the cell.
     if (event.target !== target) { target.focus(); return; }
     setRovingFocus(target);
+    const song = rowName(cell);
+    if (target === cell && button(cell)) label(cell, song, "button");
+    else if (target !== cell && song) label(cell, song);
   });
   body.addEventListener("keydown", (event) => {
     const rowEdge = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
@@ -78,19 +93,12 @@ export function installTableNavigation(body) {
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) event.preventDefault();
     if (!target) return;
-    const song = target.parentElement !== row && !target.hasAttribute("data-name")
-      && text(target.parentElement.querySelector("[data-name]"));
-    const header = place(target) !== place(cell) && heading(target);
-    if ((song || header) && !controls(target).length) {
-      target.setAttribute("aria-label", [text(target), header, song].filter(Boolean).join(", "));
-      target.dataset.headingLabel = "";
-    }
+    const song = target.parentElement !== row && rowName(target);
+    if (song && !controls(target).length) label(target, `${text(target)}, ${song}`);
     stop(target).focus();
   });
   body.addEventListener("focusout", (event) => {
-    if (event.target.dataset?.headingLabel === undefined) return;
-    event.target.removeAttribute("aria-label");
-    delete event.target.dataset.headingLabel;
+    unlabel(event.target.closest?.("td"));
   });
   refresh();
   return { refresh };
