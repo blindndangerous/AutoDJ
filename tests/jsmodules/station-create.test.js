@@ -245,7 +245,7 @@ describe("Settings > Stations", () => {
     await vi.waitFor(() => expect(slug.getAttribute("aria-invalid")).toBe("true"));
     expect(request).not.toHaveBeenCalled();
     expect(slug.getAttribute("aria-describedby").split(" "))
-      .toEqual(["station-create-slug-help", "station-create-error"]);
+      .toEqual(["station-create-error", "station-create-slug-help"]);
     expect(byId("station-create-error").hidden).toBe(false);
     expect(byId("station-create-error").textContent).toMatch(/already has the ID nightowl/);
     expect(document.activeElement).toBe(slug);

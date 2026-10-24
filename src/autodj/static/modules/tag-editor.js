@@ -89,7 +89,7 @@ export function installTagEditor({ document: doc = document, request = requestJs
     const input = inputs[field];
     const error = errors[field];
     const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== error.id);
-    if (linked) ids.push(error.id);
+    if (linked) ids.unshift(error.id);
     if (ids.length) input.setAttribute("aria-describedby", ids.join(" "));
     else input.removeAttribute("aria-describedby");
   }

@@ -338,7 +338,7 @@ describe("categories form", () => {
     const until = byId("categories-not-after");
     expect(document.activeElement).toBe(until);
     expect(until.getAttribute("aria-invalid")).toBe("true");
-    expect(until.getAttribute("aria-describedby")).toBe("categories-dates-repeat-help categories-form-error");
+    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error categories-dates-repeat-help");
     expect(byId("categories-form-error").textContent).toBe(
       "Do not play after must be on or after the Not before date.");
     until.value = "2026-12-31";
@@ -412,7 +412,7 @@ describe("categories form", () => {
     const from = byId("categories-not-before");
     expect(document.activeElement).toBe(from);
     expect(from.getAttribute("aria-invalid")).toBe("true");
-    expect(from.getAttribute("aria-describedby")).toBe("categories-dates-repeat-help categories-form-error");
+    expect(from.getAttribute("aria-describedby")).toBe("categories-form-error categories-dates-repeat-help");
     expect(byId("categories-form-error").textContent).toBe("Enter a Not before date to repeat the dates.");
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
     // Don't repeat is never sent, as the server never saves it.

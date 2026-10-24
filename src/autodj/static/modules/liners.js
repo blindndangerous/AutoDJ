@@ -375,7 +375,7 @@ function _installDatesForm(els, doc = document) {
   function linkError(control, linked) {
     const ids = (control.getAttribute("aria-describedby") || "").split(/\s+/)
       .filter((id) => id && id !== errorText.id);
-    if (linked) ids.push(errorText.id);
+    if (linked) ids.unshift(errorText.id);
     control.setAttribute("aria-describedby", ids.join(" "));
   }
 

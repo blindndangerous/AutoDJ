@@ -183,7 +183,7 @@ describe("Track info tag editor", () => {
     for (const name of ["year", "isrc"]) {
       const error = document.getElementById(`tag-${name}-error`);
       expect(field(name).getAttribute("aria-invalid")).toBe("true");
-      expect(field(name).getAttribute("aria-describedby").split(" ")).toEqual([`tag-${name}-help`, error.id]);
+      expect(field(name).getAttribute("aria-describedby").split(" ")).toEqual([error.id, `tag-${name}-help`]);
       expect(error.hidden).toBe(false);
       expect(error.textContent).not.toBe("");
     }
