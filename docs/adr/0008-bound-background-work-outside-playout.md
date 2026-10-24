@@ -518,13 +518,17 @@ song's DJ-meta row through the cache, which keeps each analysed row, beats and c
 the rest of the run. On a large library that grew the server's memory by gigabytes, and the many
 new objects set off full passes over that bigger heap. With 80,000 synthetic songs the worst
 probe delay of a paced 20 ms thread was about 300 ms, 400 ms with a further 1.2 GB of heap, and
-memory grew by 2.4 GB.
+memory grew by 2.4 GB. The stalls went on after the scan while a remote worker's results arrived:
+each stored result changes the catalog, and the next tick reloads every entry and rebuilds the
+vector index, so each reload set off a full pass over the grown heap, about 300 ms each in the
+same benchmark when 100 results arrived in batches of 4.
 
 The backlog now asks the catalog for paths and the cache for analysed flags in one query each,
 and keeps nothing. Once the library and the stations have loaded, and after each refresh that
 reloads the entries, the server calls `gc.freeze()`, so the long-lived library objects leave the
 collector's passes. Frozen objects are still freed when their reference count drops; only a
 reference cycle among them would stay, and the entries a refresh replaces hold none. On the same
-benchmark the worst delay fell to 25 to 50 ms and memory grew by 0.65 GB. These are measurements
+benchmark the worst delay fell to 25 to 50 ms during a scan and to about 20 ms while results
+arrived, and memory grew by 0.65 GB. A reload still costs about a second of work per result. These are measurements
 on one machine, not a latency guarantee. Running the scan in a child process remains an option if
 the field shows further stalls. Contract ADR-0008-33 records this; the ADR remains Proposed.
