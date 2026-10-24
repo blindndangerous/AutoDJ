@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy.signal import sosfilt
@@ -125,3 +128,12 @@ def test_duck_and_mix_matches_the_numpy_ramp(ramp_frames: int, liner_left: int) 
     expected[: len(piece)] += piece
     duck_and_mix_in_place(block, gain, step, ramp_frames, target, liner, pos)
     np.testing.assert_array_equal(block, expected)
+
+
+def test_each_test_process_compiles_into_its_own_numba_cache() -> None:
+    """#558: xdist workers sharing one numba cache corrupt it, so each process has its own."""
+    folder = Path(os.environ["NUMBA_CACHE_DIR"])
+    assert str(folder) == kernels.numba.config.CACHE_DIR
+    assert folder.name.startswith(f"autodj-numba-{os.environ.get('PYTEST_XDIST_WORKER', 'main')}-")
+    # The kernels compiled at import were cached there, not beside the sources.
+    assert any(folder.rglob("*.nbi"))
