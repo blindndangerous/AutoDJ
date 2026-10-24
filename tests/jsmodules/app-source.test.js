@@ -889,7 +889,8 @@ describe("app request behavior", () => {
   });
 
   it("says nothing and does not retry when the socket closes as the page unloads", async () => {
-    // A reload said "Disconnected, retrying" as the old page went.
+    // A reload said "Disconnected, retrying": Firefox closes the socket
+    // after beforeunload and before pagehide.
     const { webSocket, WebSocketImpl } = await setupApp({
       initialState: { current_track: { path: "current.mp3", title: "Current" } },
       onRequest: () => jsonResponse({ ok: true }),
@@ -897,9 +898,12 @@ describe("app request behavior", () => {
     const pill = document.querySelector("#conn-status");
     const before = pill.textContent;
     vi.useFakeTimers();
-    window.dispatchEvent(new Event("pagehide"));
+    window.dispatchEvent(new Event("beforeunload"));
     webSocket.onerror();
     webSocket.onclose({ code: 1001, wasClean: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pill.textContent).toBe(before);
+    window.dispatchEvent(new Event("pagehide"));
     await vi.advanceTimersByTimeAsync(60000);
     expect(pill.textContent).toBe(before);
     expect(WebSocketImpl).toHaveBeenCalledOnce();
@@ -909,6 +913,37 @@ describe("app request behavior", () => {
     Object.defineProperty(shown, "persisted", { value: true });
     window.dispatchEvent(shown);
     expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("still reports a dropped link when an unload prompt keeps the page", async () => {
+    // The unsaved-settings prompt can cancel the unload; a close held back
+    // after beforeunload must then be said and retried as usual.
+    const { webSocket, WebSocketImpl } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(pill.textContent).not.toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pill.textContent).toBe("Disconnected, retrying");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(WebSocketImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("says a dropped link at once when the page takes focus back after a kept unload", async () => {
+    const { webSocket } = await setupApp({
+      initialState: { current_track: { path: "current.mp3", title: "Current" } },
+      onRequest: () => jsonResponse({ ok: true }),
+    });
+    const pill = document.querySelector("#conn-status");
+    vi.useFakeTimers();
+    window.dispatchEvent(new Event("beforeunload"));
+    window.dispatchEvent(new Event("focus"));
+    webSocket.onclose({ code: 1006, wasClean: false });
+    expect(pill.textContent).toBe("Disconnected, retrying");
   });
 
   it("backs off between retries instead of hammering every three seconds", async () => {

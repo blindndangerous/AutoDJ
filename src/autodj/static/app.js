@@ -1432,13 +1432,43 @@ const timeSettings = installTimeSettings();
 let _ws = null;
 // A reload, or leaving the page, closes the socket as the page goes.  That
 // is not a dropped link, so nothing is said or retried: NVDA said
-// "Disconnected, retrying" on every reload.  A page brought back from the
-// back-forward cache connects again.
-let pageLeaving = false;
-window.addEventListener("pagehide", () => { pageLeaving = true; });
+// "Disconnected, retrying" on every reload.  Firefox closes the socket
+// after beforeunload and before pagehide, so beforeunload already holds a
+// close or error back.  It is only provisional, as the unsaved-settings
+// prompt can keep the page: when the page is still here a moment later, or
+// takes focus back, what was held runs as usual.  pagehide drops it.  A
+// page brought back from the back-forward cache connects again.
+const LEAVE_GRACE_MS = 3000;
+let pageLeft = false;
+let leaveGrace = null;
+let heldWhileLeaving = [];
+function unlessLeaving(handler) {
+  if (pageLeft) return;
+  if (leaveGrace === null) handler();
+  else heldWhileLeaving.push(handler);
+}
+function pageStayed() {
+  if (leaveGrace === null) return;
+  clearTimeout(leaveGrace);
+  leaveGrace = null;
+  const held = heldWhileLeaving;
+  heldWhileLeaving = [];
+  for (const handler of held) handler();
+}
+window.addEventListener("beforeunload", () => {
+  clearTimeout(leaveGrace);
+  leaveGrace = setTimeout(pageStayed, LEAVE_GRACE_MS);
+});
+window.addEventListener("focus", pageStayed);
+window.addEventListener("pagehide", () => {
+  pageLeft = true;
+  clearTimeout(leaveGrace);
+  leaveGrace = null;
+  heldWhileLeaving = [];
+});
 window.addEventListener("pageshow", (event) => {
-  if (!event.persisted || !pageLeaving) return;
-  pageLeaving = false;
+  if (!event.persisted || !pageLeft) return;
+  pageLeft = false;
   if (!_ws || _ws.readyState >= 2) {  // CLOSING or CLOSED
     _ws = null;
     connectWS();
@@ -1556,10 +1586,10 @@ function connectWS({ quiet = false, switching = false } = {}) {
     } catch (_) {}
   };
 
-  ws.onclose = (event) => {
+  const socketClosed = (event) => {
     // A switch to another station closed it; the new station's socket is
     // already open or opening (#70).
-    if (ws.closedForSwitch || socketStation !== currentStation() || pageLeaving) return;
+    if (ws.closedForSwitch || socketStation !== currentStation()) return;
     _ws = null;
     if (!authenticatedActivityActive) return;
     // The station was stopped (4409) or is no longer configured (4404):
@@ -1619,9 +1649,10 @@ function connectWS({ quiet = false, switching = false } = {}) {
     }, reconnectDelayMs);
     reconnectDelayMs = Math.min(reconnectDelayMs * 2, RECONNECT_MAX_MS);
   };
+  ws.onclose = (event) => unlessLeaving(() => socketClosed(event));
 
-  ws.onerror = () => {
-    if (ws.closedForSwitch || socketStation !== currentStation() || pageLeaving) return;
+  const socketFailed = () => {
+    if (ws.closedForSwitch || socketStation !== currentStation()) return;
     // #conn-status is the single announcement path for transport state.
     // Writing the same sentence into the track-title region as well made
     // NVDA speak the outage three or four times every three seconds and
@@ -1638,6 +1669,7 @@ function connectWS({ quiet = false, switching = false } = {}) {
     setLinkUp(false);
     streamMode.setLinkUp(false);
   };
+  ws.onerror = () => unlessLeaving(socketFailed);
 }
 
 // ----------------------------------------------------------------
