@@ -81,7 +81,9 @@ save. It takes the same characters as **Station name**, up to 100.
   brings the normal name back, with no second schedule event.
 - A change is published within a second: the now-playing feed, the status and player pages, and
   the next webhook show it. Enabled relays reconnect to send it, as they do when you save the
-  station name, so a relay's listeners may hear a short gap. A listener's player shows it the next
+  station name, so a relay's listeners may hear a short gap. They wait until the name has stayed
+  the same for about 2 seconds, so changes close together, such as a clockwheel switch just
+  before a show, reconnect them once. A listener's player shows it the next
   time it connects. Saving a new name for the clockwheel that is playing applies at once, whatever
   **Apply saved changes** says, and does not restart the wheel.
 - The normal **Station name** in Settings, Stream stays as you saved it. After a restart AutoDJ

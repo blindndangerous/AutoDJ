@@ -255,15 +255,55 @@ def test_a_show_on_the_air_names_the_station_before_the_clockwheel(tmp_path: Pat
     assert sync() == NIGHT
     asyncio.run(runner.start(show_id))
     assert sync() == LIVE
-    # A name saved while it airs applies at once; a blank one leaves the wheel's.
-    store.update(show_id, lambda show: show.model_copy(update={"station_name": ""}))
-    assert sync() == NIGHT
-    store.update(show_id, lambda show: show.model_copy(update={"station_name": LIVE}))
+    # A name saved while it airs (the shows route tells the runner) applies
+    # at once; a blank one leaves the wheel's.
+    for name, expected in (("", NIGHT), (LIVE, LIVE)):
+        saved = store.update(
+            show_id, lambda show, name=name: show.model_copy(update={"station_name": name})
+        )
+        runner.show_saved(show_id, saved)
+        assert sync() == expected
+    # Another show saved meanwhile changes nothing.
+    runner.show_saved("f" * 32, None)
     assert sync() == LIVE
     # Off the air, the wheel's name is back.
     asyncio.run(runner.stop())
     assert runner.on_air_station_name() == ""
     assert sync() == NIGHT
+
+
+def test_an_unchanged_check_reads_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR-0009-08: the per-second check reads memory only, with a show and a wheel on the air."""
+    source, bridge, hits = _station(tmp_path)
+    _select(source, "Night")
+    _playing(source, hits[0])
+    store = ShowStore(tmp_path / "shows.json")
+    show_id, _show = store.add(
+        parse_spec(
+            {"name": "Late show", "source": "category", "category": "hits", "station_name": LIVE}
+        )
+    )
+    store.update(show_id, lambda show: with_songs(show, [entry.path for entry in hits[4:8]]))
+
+    async def publish(_message: dict) -> None:
+        return None
+
+    runner = ShowRunner(bridge, store, publish, state_path=tmp_path / "show_on_air.json")
+    asyncio.run(runner.start(show_id))
+    published = _Published()
+    assert sync_name(bridge, runner, published.refresh, published.reconnect) is True
+
+    def refuse(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("the per-second check touched the shows file")
+
+    for name in ("all", "get", "_load_locked"):
+        monkeypatch.setattr(ShowStore, name, refuse)
+    monkeypatch.setattr("autodj.shows.file_signature", refuse)
+    monkeypatch.setattr("autodj.clockwheel_store.ClockwheelStore.load", refuse)
+    for _second in range(5):
+        assert sync_name(bridge, runner, published.refresh, published.reconnect) is False
+    assert listener_name(bridge) == LIVE
+    assert (published.refreshed, published.reconnected) == (1, 1)
 
 
 def test_after_a_restart_the_name_matches_what_is_on_the_air(tmp_path: Path) -> None:

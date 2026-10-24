@@ -314,7 +314,11 @@ def install_shows(router: StationRouter) -> None:
                 current.clockwheel,
             ):
                 _check_source_exists(station, spec)
-            store.update(show_id, lambda show: with_spec(show, spec))
+            saved = store.update(show_id, lambda show: with_spec(show, spec))
+            runner = getattr(station, "show_runner", None)
+            if runner is not None:
+                # A new station name for the show on the air applies at once (#472).
+                runner.show_saved(show_id, saved)
             return _one_view(station, show_id)
 
         try:

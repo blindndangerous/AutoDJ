@@ -47,7 +47,7 @@ def _text(value: Any) -> str:
 def programmed_name(player: Any, show_runner: Any) -> str:
     """The name the programming on the air asks for, or ``""`` for the normal name.
 
-    Blocking: the show's name is read from the shows file, which may have changed.
+    Only memory is read, so the station can ask every second for nothing.
     """
     if show_runner is not None:
         name = _text(show_runner.on_air_station_name())
@@ -71,9 +71,10 @@ def sync_name(
 ) -> bool:
     """Publish the name the programming asks for; whether the published name changed.
 
-    A change refreshes the now-playing feed (*refresh*) and reconnects the
-    relays (*reconnect*), which take a new name only when they connect, as
-    they do when the station name is saved in Settings.  Blocking.
+    A change refreshes the now-playing feed (*refresh*) and asks for the
+    relays to reconnect (*reconnect*), since they take a new name only when
+    they connect, as they do when the station name is saved in Settings.
+    Without a change it reads a few attributes and does nothing else.
     """
     wanted = programmed_name(bridge.player, show_runner)
     before = listener_name(bridge)

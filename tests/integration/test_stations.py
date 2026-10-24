@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -273,11 +274,27 @@ async def test_relays_connect_with_the_name_on_the_air_and_reconnect_when_it_cha
     assert seen == ["Example FM Night Shift"]
     # Relays not yet connected when the name was set: they start with it.
     assert reconnected == []
+    assert runtime.relay_reconnect_due(now=math.inf) is False
+    # A wheel switch, then a show just after it: the feed follows each at
+    # once, the relays reconnect once, after the name settles, with the last.
     bridge.player.clock_station_name = lambda: ""
-    assert await asyncio.to_thread(runtime.sync_station_name) is True
-    assert listener_name(bridge) == runtime.cfg.stream.station_name
+    assert runtime.sync_station_name() is True
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "Example FM Live")
+    assert runtime.sync_station_name() is True
+    assert log.count("feed refreshed") == 3
+    assert reconnected == []
+    assert runtime.reconnect_relays_if_due() is False  # not settled yet
+    assert await asyncio.to_thread(runtime.reconnect_relays_if_due, math.inf) is True
     assert reconnected == [(True, True)]
-    assert log.count("feed refreshed") == 2
+    assert runtime.relay_name == "Example FM Live"
+    assert runtime.reconnect_relays_if_due(math.inf) is False  # nothing more booked
+    # A name that comes back before the reconnect is due costs no reconnect.
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "")
+    assert runtime.sync_station_name() is True
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "Example FM Live")
+    assert runtime.sync_station_name() is True
+    assert runtime.reconnect_relays_if_due(math.inf) is False
+    assert reconnected == [(True, True)]
     await registry.shutdown(shared, 1.0)
 
 

@@ -97,6 +97,7 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.station_log import CURRENT_STATION
+from autodj.station_name import listener_name
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import FORMATS
@@ -601,6 +602,8 @@ def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
 def _refresh_relay_metadata(station: StationRuntime, registry: Any) -> None:
     with registry.relay_lock:
         station.bridge.relays.reconfigure(station.cfg.stream.relays.values(), restart_all=True)
+    # They now have the name on the air (#472): no second reconnect for it.
+    station.relay_name = listener_name(station.bridge)
 
 
 def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]) -> None:
