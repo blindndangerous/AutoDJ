@@ -362,7 +362,7 @@ def test_the_warnings_name_what_holds_the_songs_back(caplog) -> None:
 
 
 def test_a_weekly_season_keeps_its_weekdays_from_its_first_date() -> None:
-    """ADR-0009-08: Friday 6th to Sunday 8th is every Friday to Sunday from the 6th."""
+    """ADR-0009-09: Friday 6th to Sunday 8th is every Friday to Sunday from the 6th."""
     weekend = category(not_before="2026-11-06", not_after="2026-11-08", dates_repeat="weekly")
     assert not weekend.allows(wall("2026-10-31 12:00"))  # a Saturday before the first date
     assert weekend.allows(wall("2026-11-06 00:00"))
@@ -389,7 +389,7 @@ def test_a_weekly_season_keeps_its_weekdays_from_its_first_date() -> None:
 
 
 def test_a_yearly_season_runs_past_new_year_and_keeps_29_february() -> None:
-    """ADR-0009-08: month and day only; 29 February is 28 February in a common year."""
+    """ADR-0009-09: month and day only; 29 February is 28 February in a common year."""
     holidays = category(not_before="2026-12-20", not_after="2026-01-02", dates_repeat="yearly")
     assert not holidays.allows(wall("2029-12-19 23:59"))
     assert holidays.allows(wall("2029-12-20 00:00"))
@@ -402,7 +402,7 @@ def test_a_yearly_season_runs_past_new_year_and_keeps_29_february() -> None:
 
 
 def test_repeating_seasons_in_words() -> None:
-    """ADR-0009-08: the list says how the dates repeat."""
+    """ADR-0009-09: the list says how the dates repeat."""
     assert (
         describe_daypart(
             category(not_before="2026-11-06", not_after="2026-11-08", dates_repeat="weekly")
@@ -464,7 +464,7 @@ def test_repeating_seasons_in_words() -> None:
 def test_a_repeating_season_that_cannot_be_saved_names_its_field(
     changes: dict[str, Any], field: str, message: str
 ) -> None:
-    """ADR-0009-08: the field errors for repeating dates."""
+    """ADR-0009-09: the field errors for repeating dates."""
     body = {"name": "Christmas", "source": "query", "query": "genre:Xmas"}
     with pytest.raises(CategoryError) as caught:
         parse_spec({**body, **changes})
@@ -472,7 +472,7 @@ def test_a_repeating_season_that_cannot_be_saved_names_its_field(
 
 
 def test_a_repeating_season_is_saved_only_when_set(tmp_path: Path) -> None:
-    """ADR-0009-08: Don't repeat is never written; old files load with it."""
+    """ADR-0009-09: Don't repeat is never written; old files load with it."""
     path = tmp_path / "categories.json"
     old = {
         "name": "A", "source": "query", "query": "genre:Rock", "playlist": "", "id": "a1",

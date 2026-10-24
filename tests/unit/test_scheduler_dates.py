@@ -315,7 +315,7 @@ def test_files_without_dates_load_unchanged_and_stay_readable(tmp_path: Path) ->
 
 
 def test_a_yearly_range_runs_every_year_past_new_year() -> None:
-    """ADR-0009-08: the dates' years are ignored and the range may wrap past New Year."""
+    """ADR-0009-09: the dates' years are ignored and the range may wrap past New Year."""
     item = spec(time="08:00", start_date="2026-12-20", end_date="2026-01-02", dates_repeat="yearly")
     found = runs(item, "2026-10-11 12:00", 16, UTC_ZONE)
     assert found[0] == "2026-12-20 08:00"
@@ -340,7 +340,7 @@ def test_a_yearly_range_runs_every_year_past_new_year() -> None:
 
 
 def test_a_yearly_29_february_runs_on_28_february_in_common_years() -> None:
-    """ADR-0009-08: 29 February counts as 28 February in a year without one."""
+    """ADR-0009-09: 29 February counts as 28 February in a year without one."""
     leap = spec(time="09:00", start_date="2028-02-29", dates_repeat="yearly")
     assert runs(leap, "2026-10-11 12:00", 3, UTC_ZONE) == [
         "2027-02-28 09:00",
@@ -357,7 +357,7 @@ def test_a_yearly_29_february_runs_on_28_february_in_common_years() -> None:
 
 
 def test_next_events_show_next_years_run_once_this_years_has_passed(tmp_path: Path) -> None:
-    """ADR-0009-08: Next events lists the next occurrence, next year's after this year's."""
+    """ADR-0009-09: Next events lists the next occurrence, next year's after this year's."""
     rig = Rig(tmp_path / "schedule.json", now="2026-10-11 12:00")
     rig.schedule.start()
     rig.add(
@@ -396,7 +396,7 @@ def test_next_events_show_next_years_run_once_this_years_has_passed(tmp_path: Pa
 
 
 def test_a_one_time_event_in_a_yearly_range() -> None:
-    """ADR-0009-08: a one-time date is checked against the month and day."""
+    """ADR-0009-09: a one-time date is checked against the month and day."""
     assert (
         spec(
             repeat="once",
@@ -432,7 +432,7 @@ def test_a_one_time_event_in_a_yearly_range() -> None:
     ],
 )
 def test_bad_yearly_dates_name_the_field(changes: dict[str, Any], field: str, message: str) -> None:
-    """ADR-0009-08: a repeating range needs a start date; events never repeat weekly."""
+    """ADR-0009-09: a repeating range needs a start date; events never repeat weekly."""
     assert field_of(**changes) == (field, message)
 
 
@@ -448,7 +448,7 @@ def test_describe_yearly_dates_in_words() -> None:
 
 
 def test_yearly_dates_are_saved_only_when_set_and_old_files_load(tmp_path: Path) -> None:
-    """ADR-0009-08: Don't repeat is never written, so older files and readers agree."""
+    """ADR-0009-09: Don't repeat is never written, so older files and readers agree."""
     path = tmp_path / "schedule.json"
     rig = Rig(path)
     rig.schedule.start()

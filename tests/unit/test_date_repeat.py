@@ -18,7 +18,7 @@ def days_in(first: date, last: date | None, repeat: str, start: date, count: int
 
 
 def test_a_yearly_range_runs_past_new_year_in_every_year() -> None:
-    """ADR-0009-08: month and day only; a range may wrap past New Year."""
+    """ADR-0009-09: month and day only; a range may wrap past New Year."""
     first, last = date(2026, 12, 20), date(2026, 1, 2)
     assert contains(date(2030, 12, 19), first, last, "yearly") is False
     assert contains(date(2030, 12, 20), first, last, "yearly")
@@ -37,7 +37,7 @@ def test_a_yearly_range_runs_past_new_year_in_every_year() -> None:
 
 
 def test_29_february_is_28_february_in_a_common_year() -> None:
-    """ADR-0009-08: the leap day rule."""
+    """ADR-0009-09: the leap day rule."""
     leap = date(2028, 2, 29)
     assert on_year(leap, 2027) == date(2027, 2, 28)
     assert on_year(leap, 2032) == date(2032, 2, 29)
@@ -50,7 +50,7 @@ def test_29_february_is_28_february_in_a_common_year() -> None:
 
 
 def test_a_weekly_window_runs_from_its_first_date_and_may_wrap_past_sunday() -> None:
-    """ADR-0009-08: the two dates' weekdays set the window, from the first date on."""
+    """ADR-0009-09: the two dates' weekdays set the window, from the first date on."""
     friday, sunday = date(2026, 11, 6), date(2026, 11, 8)
     assert days_in(friday, sunday, "weekly", date(2026, 11, 1), 16) == [
         "2026-11-06",
@@ -73,7 +73,7 @@ def test_a_weekly_window_runs_from_its_first_date_and_may_wrap_past_sunday() -> 
 
 
 def test_a_weekly_range_with_one_date_is_that_weekday() -> None:
-    """ADR-0009-08: no last date, or the same date, is one weekday every week."""
+    """ADR-0009-09: no last date, or the same date, is one weekday every week."""
     friday = date(2026, 11, 6)
     expected = ["2026-11-06", "2026-11-13", "2026-11-20"]
     assert days_in(friday, None, "weekly", date(2026, 10, 30), 22) == expected
@@ -92,7 +92,7 @@ def test_dates_that_do_not_repeat_keep_their_meaning() -> None:
 
 
 def test_what_is_wrong_with_a_range() -> None:
-    """ADR-0009-08: the checks behind the field errors."""
+    """ADR-0009-09: the checks behind the field errors."""
     first, last = date(2026, 11, 6), date(2026, 11, 12)
     assert problem(None, last, "weekly") == "needs_first"
     assert problem(None, None, "yearly") == "needs_first"

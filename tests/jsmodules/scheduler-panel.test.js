@@ -354,7 +354,7 @@ describe("Schedule panel", () => {
     expect(server.calls.find((call) => call.method === "PUT").body.wait_seconds).toBe(0);
   });
 
-  // ADR-0009-08
+  // ADR-0009-09
   it("repeats an event's dates every year and shows next year's run in Next events", async () => {
     const server = fakeServer();
     await openPanel(server);

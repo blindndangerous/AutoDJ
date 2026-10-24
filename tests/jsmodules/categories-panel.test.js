@@ -347,7 +347,7 @@ describe("categories form", () => {
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
   });
 
-  // ADR-0009-08
+  // ADR-0009-09
   it("repeats a season every week or every year, with help the date fields read too", async () => {
     const server = await open();
     byId("categories-add").click();
