@@ -1985,14 +1985,17 @@
     <button type="button" id="schedule-add">Add event</button>
     <!-- Add and Edit share this form.  It checks its own fields: an error
          is said, the field gets aria-invalid and focus, and the words stay
-         in #schedule-form-error. -->
+         in #schedule-form-error.  Its required fields are aria-required,
+         not required: Firefox calls an empty required field, even a hidden
+         one such as Date for a repeating event, and its group "invalid
+         entry" before anything is typed. -->
     <form id="schedule-form" novalidate hidden>
       <fieldset>
         <legend><h1 id="schedule-form-legend">Add event</h1></legend>
         <p id="schedule-form-error" class="field-error" hidden></p>
         <div class="settings-row">
           <label for="schedule-name">Name</label>
-          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" required>
+          <input type="text" id="schedule-name" maxlength="100" autocomplete="off" aria-required="true">
         </div>
         <div class="settings-row">
           <label for="schedule-action">Action</label>
@@ -2013,16 +2016,16 @@
         <!-- data-repeat lists the repeat choices each part belongs to. -->
         <div class="settings-row" data-repeat="once">
           <label for="schedule-date">Date</label>
-          <input type="date" id="schedule-date" required>
+          <input type="date" id="schedule-date" aria-required="true">
         </div>
         <div class="settings-row" data-repeat="once daily weekdays days">
           <label for="schedule-time">Time</label>
-          <input type="time" id="schedule-time" required>
+          <input type="time" id="schedule-time" aria-required="true">
         </div>
         <div data-repeat="interval">
           <div class="settings-row">
             <label for="schedule-interval">Minutes between runs</label>
-            <input type="number" id="schedule-interval" min="1" max="1440" step="1" required>
+            <input type="number" id="schedule-interval" min="1" max="1440" step="1" aria-required="true">
           </div>
           <div class="settings-row">
             <label for="schedule-window-start">Active from</label>

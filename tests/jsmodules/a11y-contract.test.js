@@ -2413,7 +2413,7 @@ describe("static accessibility contracts", () => {
     // entry", "New station grouping invalid entry".  These forms check their
     // own fields, so the fields are aria-required instead.
     installDocument();
-    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form"]) {
+    for (const id of ["stream-settings", "station-create-form", "categories-form", "shows-form", "schedule-form"]) {
       const group = document.getElementById(id);
       const empty = [...group.querySelectorAll("input[required], textarea[required], select[required]")]
         .filter((control) => !control.value);
@@ -2424,7 +2424,8 @@ describe("static accessibility contracts", () => {
       }
     }
     for (const id of ["stream-relay-name", "stream-relay-host", "listener-ban-address",
-      "station-create-name", "station-create-slug", "categories-name", "shows-name"]) {
+      "station-create-name", "station-create-slug", "categories-name", "shows-name",
+      "schedule-name", "schedule-date", "schedule-time", "schedule-interval"]) {
       expect(document.getElementById(id).getAttribute("aria-required"), id).toBe("true");
     }
   });
