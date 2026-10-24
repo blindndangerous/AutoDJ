@@ -628,7 +628,10 @@ def test_each_push_lists_the_stations_when_there_are_several() -> None:
         registry = SimpleNamespace(
             slugs=lambda slugs=slugs: frozenset(slugs),
             summaries=lambda: entries,
+            relay_lock=object(),
         )
         runtime = station()
         _share_station(registry, runtime)  # type: ignore[arg-type]
         assert (runtime.station_list is not None) is listed
+        # Every station reconnects its relays under the registry's one lock (#472).
+        assert runtime.relay_lock is registry.relay_lock

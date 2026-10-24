@@ -24,6 +24,9 @@ below Clockwheels. Each station has its own.
      **A clockwheel** (see [Clockwheels](clockwheels.md#clockwheels)), whose steps may use conditions such as
      Genre is Rock and categories.
    - **Target length (minutes)**: 5 to 360.
+   - **Station name while active** (optional): the station name listeners see while the show is
+     on the air. Leave it empty to keep the name in use, the active clockwheel's or the normal one.
+     See [A station name while a clockwheel or show is on the air](../streaming-and-relays.md#a-station-name-while-a-clockwheel-or-show-is-on-the-air).
 
    Press **Save show**, then **Open list** on the show.
 2. Press **Generate list**. AutoDJ runs the rotation tester's dry run of the station's own picker
@@ -51,7 +54,7 @@ below Clockwheels. Each station has its own.
    list (409) until the new list is saved. A list holds at most 500 songs, and a station at most
    200 shows.
 
-**Edit** changes the name, source or target and keeps the list; generate again to apply a new
+**Edit** changes the name, source, target or station name and keeps the list; generate again to apply a new
 source. **Delete** asks first and names the schedule events that play the show; those events
 fail, in the run log, until you change them.
 

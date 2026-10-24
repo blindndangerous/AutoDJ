@@ -191,3 +191,18 @@ def test_the_list_cannot_be_changed_while_it_is_generated(client: TestClient, st
         assert again.status_code == 409
     saved = client.put(f"/api/shows/{show['id']}/songs", json={"songs": [hits[0].path]})
     assert saved.status_code == 200
+
+
+def test_a_show_keeps_the_station_name_the_form_sends(client: TestClient) -> None:
+    """ADR-0009-08: saved and shown with the show; a refusal names the field."""
+    created = client.post("/api/shows", json={**SHOW, "station_name": "Example FM Live"})
+    assert created.status_code == 201, created.text
+    assert created.json()["station_name"] == "Example FM Live"
+    url = f"/api/shows/{created.json()['id']}"
+    refused = client.put(url, json={**SHOW, "station_name": "Live\tnow"})
+    assert refused.status_code == 400
+    assert refused.json()["field"] == "station_name"
+    assert refused.json()["detail"].startswith("Station name while active")
+    cleared = client.put(url, json=SHOW)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["station_name"] == ""

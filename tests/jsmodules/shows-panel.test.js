@@ -231,10 +231,44 @@ describe("planning a show", () => {
     await vi.waitFor(() => expect(items()).toHaveLength(2));
     expect(server.calls.find((call) => call.method === "POST").body).toEqual({
       name: "Throwback hour", source: "clockwheel", category: "", clockwheel: "Throwback", target_minutes: 45,
+      station_name: "",
     });
     expect(byId("shows-form").hidden).toBe(true);
     await vi.waitFor(() => expect(document.activeElement).toBe(rowButton(1, "open")));
     await vi.waitFor(() => expect(status()).toContain("Saved Throwback hour."));
+  });
+
+  // ADR-0009-08
+  it("saves a show's station name while active and puts a refusal on the field", async () => {
+    const server = await open();
+    const field = byId("shows-station-name");
+    expect(document.querySelector('label[for="shows-station-name"]').textContent).toBe("Station name while active");
+    expect(field.maxLength).toBe(100);
+    expect(field.getAttribute("aria-describedby")).toBe("shows-station-name-help");
+    rowButton(0, "edit").click();
+    expect(field.value).toBe("");
+    field.value = "Live\tnow";
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["shows-form-error", "shows-station-name-help"]);
+    expect(byId("shows-form-error").textContent).toBe("Station name while active cannot contain tabs, line breaks or other control characters.");
+    expect(document.activeElement).toBe(field);
+    expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
+    field.value = " Example FM Live ";
+    field.dispatchEvent(new Event("input"));
+    expect(field.hasAttribute("aria-invalid")).toBe(false);
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(status()).toContain("Saved Remembering the 2000s."));
+    expect(server.calls.find((call) => call.method === "PUT").body.station_name).toBe("Example FM Live");
+    expect(items()[0].firstElementChild.textContent).toContain("Station name while on the air: Example FM Live.");
+    // The server names the field it refuses; the page marks and focuses it.
+    rowButton(0, "edit").click();
+    expect(field.value).toBe("Example FM Live");
+    server.refuse = new FieldError("Station name while active can be at most 100 characters", "station_name");
+    byId("shows-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+    expect(byId("shows-form-error").textContent).toBe("Station name while active can be at most 100 characters");
+    expect(document.activeElement).toBe(field);
   });
 
   it("keeps focus on Save show until the saved show's Open list button takes it", async () => {

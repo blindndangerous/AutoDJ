@@ -97,6 +97,7 @@ from autodj.settings_bodies import (
     validate_playback_choices,
 )
 from autodj.station_log import CURRENT_STATION
+from autodj.station_name import listener_name
 from autodj.stations import DEFAULT_SLUG, StationRuntime
 from autodj.stream import EncoderUnavailableError
 from autodj.stream_formats import FORMATS
@@ -391,6 +392,8 @@ class ClockBody(BaseModel):
     name: str = PydanticField(max_length=64)
     steps: list[Any] = PydanticField(max_length=256)
     resync_minutes: list[Any] = PydanticField(max_length=60)
+    # The station name while it is active (#472); clockwheel_store checks it.
+    station_name: str = ""
 
 
 class ClockStepCheckBody(BaseModel):
@@ -599,6 +602,8 @@ def _require_stream_mode(station: StationRuntime) -> ListenerAccess:
 def _refresh_relay_metadata(station: StationRuntime, registry: Any) -> None:
     with registry.relay_lock:
         station.bridge.relays.reconfigure(station.cfg.stream.relays.values(), restart_all=True)
+    # They now have the name on the air (#472): no second reconnect for it.
+    station.relay_name = listener_name(station.bridge)
 
 
 def _persist_relay_set(station: StationRuntime, proposed: dict[str, RelayConfig]) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from autodj._bridge import PlayerBridge
+from autodj.station_name import listener_name
 from autodj.stream_mounts import StreamMounts
 
 #: Version of the public payload; 2 added the peak and uptime fields.
@@ -127,7 +128,8 @@ class NowPlaying:
         stream_path = getattr(self.bridge, "stream_path", None)
         payload: dict[str, Any] = {
             "schema": SCHEMA_VERSION,
-            "station_name": cfg.stream.station_name,
+            # The clockwheel's or show's name while one asks for it (#472).
+            "station_name": listener_name(self.bridge),
             "current_track": current,
             "live": live,
             # DMCA mode never announces a song before it plays.

@@ -10,8 +10,9 @@ for any station by name:
 * ``GET shows/<id>``: one show with its songs and their total length.
 * ``POST shows``: add a show (``name``, ``source`` ``category`` or
   ``clockwheel``, the ``category`` ID or the ``clockwheel`` name, and
-  ``target_minutes``); its list starts empty.
-* ``PUT shows/<id>``: change its name, source or target; the list stays.
+  ``target_minutes``, and an optional ``station_name`` while it is on the
+  air); its list starts empty.
+* ``PUT shows/<id>``: change its name, source, target or station name; the list stays.
 * ``PUT shows/<id>/songs``: save its list (``songs``, file paths in order).
   A song added must be in the library; one already in the list may stay
   after its file has gone, and is skipped on the air.
@@ -169,6 +170,7 @@ def _show_view(
         "clockwheel": show.clockwheel,
         "source_text": _source_text(show, categories),
         "target_minutes": show.target_minutes,
+        "station_name": show.station_name,
         "count": len(show.songs),
         "missing": sum(1 for row in rows if row["missing"]),
         "total_seconds": round(total, 1),
@@ -312,7 +314,11 @@ def install_shows(router: StationRouter) -> None:
                 current.clockwheel,
             ):
                 _check_source_exists(station, spec)
-            store.update(show_id, lambda show: with_spec(show, spec))
+            saved = store.update(show_id, lambda show: with_spec(show, spec))
+            runner = getattr(station, "show_runner", None)
+            if runner is not None:
+                # A new station name for the show on the air applies at once (#472).
+                runner.show_saved(show_id, saved)
             return _one_view(station, show_id)
 
         try:

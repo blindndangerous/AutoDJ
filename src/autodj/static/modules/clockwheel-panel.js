@@ -22,7 +22,7 @@ import { installActionListNavigation } from "./action-list-navigation.js";
 import { captureAuthenticatedRequestEpoch, isAuthenticatedRequestCurrent, requestJson } from "./api-client.js";
 import { confirmAction } from "./confirm-dialog.js";
 import { createEditorDialog, showEditorError } from "./editor-dialog.js";
-import { clearFormErrors } from "./dom-helpers.js";
+import { clearFieldError, clearFormErrors, showFieldError } from "./dom-helpers.js";
 import { announceStatus } from "./live-region.js";
 import { parsePointTime } from "./library-folders.js";
 import { createConditionRow, readConditionRows, renumberConditionRows, updateConditionCategories } from "./condition-editor.js";
@@ -30,6 +30,7 @@ import { describeStep } from "./clockwheel-step.js";
 import { addBrowseButton, libraryFolderSource } from "./path-picker.js";
 export { describeStep } from "./clockwheel-step.js";
 import { fillStepHours, installStepHours, readStepHours } from "./step-hours.js";
+import { checkStationName, isStationNameError } from "./station-name-field.js";
 
 const NAME = /^[A-Za-z0-9 _-]{1,64}$/;
 const RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
@@ -68,6 +69,9 @@ export function installClockwheelPanel({ document: doc = document, request = req
   const editor = steps?.closest(".card");
   const nameInput = el("clock-name");
   const resync = el("clock-resync-minutes");
+  // The station name while this wheel is active (#472), and its error.
+  const stationName = el("clock-station-name");
+  const stationNameError = el("clock-station-name-error");
   const status = el("clock-status");
   const listNavigation = installActionListNavigation(list);
   const typeSelect = el("clock-step-type");
@@ -88,6 +92,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
   let data = empty();
   let clock = null; // the working copy, or null when none is open
   let isNew = false; // created in the page and never saved
+  // How the saved wheel picks (steps and restart minutes), to tell a save
+  // that changes only its station name, which applies at once (#472).
+  let savedPicking = null;
+  const picking = (value) => JSON.stringify([value.steps, value.resync_minutes]);
   let undoHistory = [];
   let dirty = false;
   let editing = null; // index of the step in the form, or null when adding
@@ -915,6 +923,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
     stepEditor.open(typeSelect, newStep);
   });
   resync.addEventListener("input", () => { if (clock) { dirty = true; renderNext(); } });
+  stationName?.addEventListener("input", () => {
+    if (stationNameError) clearFieldError(stationName, stationNameError);
+    if (clock) { dirty = true; renderNext(); }
+  });
+  // A refused station name: marked, its error tied to it and said, focus on it.
+  function refuseStationName(message) {
+    if (stationName && stationNameError) showFieldError(stationName, message, stationNameError, stepEditor.region(status));
+    else say(message, true);
+  }
   el("clock-step-match")?.addEventListener("change", scheduleStepCount);
 
   // ---- Opening, saving and the clockwheel buttons ---------------------
@@ -932,10 +949,15 @@ export function installClockwheelPanel({ document: doc = document, request = req
     clock = copy(value);
     isNew = fresh;
     dirty = fresh;
+    savedPicking = fresh ? null : picking(value);
     resetForm();
     nameInput.value = clock.name;
     resync.value = clock.resync_minutes.join(", ");
     resync.removeAttribute("aria-invalid");
+    if (stationName) {
+      stationName.value = clock.station_name || "";
+      if (stationNameError) clearFieldError(stationName, stationNameError);
+    }
     listSignature = "";
     renderList();
     renderSteps();
@@ -995,6 +1017,7 @@ export function installClockwheelPanel({ document: doc = document, request = req
       return current(epoch, mine) ? result : null;
     } catch (error) {
       if (current(epoch, mine)) {
+        if (isStationNameError(error.message)) { refuseStationName(error.message); return null; }
         say(error.message, true);
         const step = /^Step (\d+):/.exec(error.message);
         if (step && clock) focusRow(Number(step[1]) - 1, "edit");
@@ -1042,20 +1065,28 @@ export function installClockwheelPanel({ document: doc = document, request = req
       return;
     }
     resync.removeAttribute("aria-invalid");
-    const body = { version: 1, name: clock.name, steps: clock.steps, resync_minutes: minutes };
+    const named = checkStationName(stationName?.value);
+    if (named.error) { refuseStationName(named.error); return; }
+    if (stationNameError) clearFieldError(stationName, stationNameError);
+    const body = { version: 1, name: clock.name, steps: clock.steps, resync_minutes: minutes, station_name: named.name };
     const timing = el("clock-apply-timing")?.value || "next_restart";
+    // Only the station name changed: nothing waits for a restart.
+    const nameOnly = !isNew && savedPicking === picking(body);
+    const nameChanged = (clock.station_name || "") !== named.name;
     const url = isNew ? "/api/library/clock" : `${clockUrl(clock.name)}?apply_timing=${encodeURIComponent(timing)}`;
     const saved = await command(() => send(url, isNew ? "POST" : "PUT", body),
       (result) => load(result));
     if (saved) {
       const activeEdit = !isNew && data.active === saved.name;
-      const timingMessage = activeEdit
-        ? timing === "next_restart"
+      let timingMessage = "";
+      if (activeEdit && nameOnly) timingMessage = nameChanged ? " The station name applies now." : "";
+      else if (activeEdit) {
+        timingMessage = timing === "next_restart"
           ? " Changes apply at the next clock restart."
           : timing === "continue"
             ? " Changes apply immediately, continuing at the next step."
-            : " Changes apply immediately from step 1."
-        : "";
+            : " Changes apply immediately from step 1.";
+      }
       say(`Saved ${saved.name}, ${count(saved.steps.length)}.${timingMessage}`);
     }
   });
@@ -1162,6 +1193,10 @@ export function installClockwheelPanel({ document: doc = document, request = req
     reconcileRows(list, [], (name) => name, () => null, () => {}, { fallback: el("clock-create") });
     nameInput.value = "";
     resync.value = "0";
+    if (stationName) {
+      stationName.value = "";
+      if (stationNameError) clearFieldError(stationName, stationNameError);
+    }
     const file = el("clock-pal-file");
     if (file) file.value = "";
     resetForm();

@@ -391,3 +391,24 @@ def test_old_single_clock_data_is_reported_with_the_way_back(tmp_path):
         assert snapshot["notice"] == OLD_CLOCK_MESSAGE
         assert "Import .PAL" in OLD_CLOCK_MESSAGE
         assert "Activate" in OLD_CLOCK_MESSAGE
+
+
+def test_a_clockwheel_keeps_the_station_name_the_editor_sends(tmp_path):
+    """ADR-0009-08: saved with the wheel, refused in words that name the field."""
+    with LibraryCatalog(tmp_path / "library.sqlite") as catalog:
+        music, _liners = add_sources(catalog, tmp_path)
+        _bridge, routes = app_for(catalog, tmp_path)
+        steps = [{"type": "music", "source": music["id"], "folder": "top"}]
+        named = body("Night", steps=steps).model_copy(
+            update={"station_name": "Example FM Night Shift"}
+        )
+        saved = call(routes, "POST", "/api/library/clock", named)
+        assert saved["station_name"] == "Example FM Night Shift"
+        assert call(routes, "GET", "/api/library/clock/{name}", "Night") == saved
+        bad = named.model_copy(update={"station_name": "Night\nShift"})
+        with pytest.raises(HTTPException) as refused:
+            call(routes, "PUT", "/api/library/clock/{name}", "Night", bad, "immediate")
+        assert refused.value.status_code == 400
+        assert refused.value.detail.startswith("Station name while active")
+        cleared = call(routes, "PUT", "/api/library/clock/{name}", "Night", body("Night", steps))
+        assert "station_name" not in cleared

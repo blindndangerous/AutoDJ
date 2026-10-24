@@ -52,7 +52,8 @@ Network Stream. Listening never needs pairing.
 In Settings, Stream:
 
 - **Station name** is what players show, up to 100 characters. Players pick up a new name the
-  next time they connect.
+  next time they connect. A clockwheel or show can use another name while it is on the air; see
+  [A station name while a clockwheel or show is on the air](#a-station-name-while-a-clockwheel-or-show-is-on-the-air).
 - **Genre** and **Website URL** are sent to players and relays. **Description** is sent only to Icecast. Press
   **Save changes** in **Stream** after changing any of them. Saving reconnects any relays that are
   turned on.
@@ -61,6 +62,33 @@ In Settings, Stream:
 - **Keep playing without listeners** keeps the station running when nobody is listening. When it
   is off, the station starts when the first listener connects. It stops 30 seconds after the last
   listener leaves. A relay that is turned on, or broadcast recording, also keeps it playing.
+
+### A station name while a clockwheel or show is on the air
+
+A clockwheel and a show each have an optional **Station name while active** field, such as
+"Example FM Night Shift" for a late wheel or a holiday name for a December one. Set it in the
+clockwheel editor, under **Station name**, or in the show's **Add show** or **Edit** form, and
+save. It takes the same characters as **Station name**, up to 100.
+
+- A clockwheel's name is used while it picks the songs: **Pick mode** is **Clockwheel** and it
+  is the active clockwheel. It does not matter whether you pressed **Activate** or a schedule
+  event switched to it.
+- A show's name is used while the show is on the air, and comes before the clockwheel's. A
+  prepared edition uses the name of the show it was made from.
+- An empty field changes nothing at that level. With an empty show name, the clockwheel's name is
+  used; with an empty clockwheel name too, the normal **Station name**. So switching to a wheel
+  with an empty field, choosing another pick mode, turning the clockwheel off or ending the show
+  brings the normal name back, with no second schedule event.
+- A change is published within a second: the now-playing feed, the status and player pages, and
+  the next webhook show it. Enabled relays reconnect to send it, as they do when you save the
+  station name, so a relay's listeners may hear a short gap. They wait until the name has stayed
+  the same for about 2 seconds, so changes close together, such as a clockwheel switch just
+  before a show, reconnect them once. A listener's player shows it the next
+  time it connects. Saving a new name for the clockwheel that is playing applies at once, whatever
+  **Apply saved changes** says, and does not restart the wheel.
+- The normal **Station name** in Settings, Stream stays as you saved it. After a restart AutoDJ
+  uses the name of the clockwheel that is active again; a show resumed after a restart uses its
+  name again from its next song.
 
 ### More formats: AAC and Opus
 

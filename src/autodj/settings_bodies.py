@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from autodj.config import MAX_FADE_SECONDS
 from autodj.repeat_settings import RepeatSettings
+from autodj.station_name import STATION_NAME_MAX
 
 #: The groups of settings :attr:`autodj._bridge.PlayerBridge.page_saved` can
 #: name: once a group's own route has saved it for a station, it is written to
@@ -153,7 +154,7 @@ class StreamSettingsBody(BaseModel):
     # Days of listener statistics to keep; 0 keeps none.
     stats_days: Annotated[int, Field(ge=0, le=3650, strict=True)] | None = None
     continuous: bool | None = Field(default=None, strict=True)
-    station_name: Annotated[str, Field(max_length=100)] | None = None
+    station_name: Annotated[str, Field(max_length=STATION_NAME_MAX)] | None = None
     genre: Annotated[str, Field(max_length=255)] | None = None
     description: Annotated[str, Field(max_length=255)] | None = None
     url: Annotated[str, Field(max_length=2048)] | None = None

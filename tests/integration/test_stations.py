@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from autodj._bridge import PlayerBridge
 from autodj.breaks import BreakDesk, new_id
 from autodj.carts import CartStore
 from autodj.config import AutoDJConfig, load_config
+from autodj.station_name import listener_name
 from autodj.stations import (
     ExtraStation,
     SharedLibrary,
@@ -237,6 +239,62 @@ async def test_station_start_sweeps_old_break_files_before_starting_services(
     runtime.schedule.start = start_schedule
     await registry.start_all()
     assert not leftover.exists()
+    await registry.shutdown(shared, 1.0)
+
+
+async def test_relays_connect_with_the_name_on_the_air_and_reconnect_when_it_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0009-08: after a restart relays start with the name of what is on the air."""
+    log: list[str] = []
+    runtime, registry, shared, bridge = _rig(tmp_path, monkeypatch, log)
+    bridge.player.clock_station_name = lambda: "Example FM Night Shift"
+    seen: list[str] = []
+
+    def start_stream(*_args: Any) -> Any:
+        seen.append(listener_name(bridge))
+        return SimpleNamespace(name="stream encoder", close=lambda: log.append("stream closed"))
+
+    monkeypatch.setattr(stations, "start_stream_station", start_stream)
+    reconnected: list[tuple[bool, bool]] = []
+
+    def reconfigure(_configs: Any, *, restart_all: bool = False) -> None:
+        # Another thread cannot take the relay lock while this runs.
+        taken: list[bool] = []
+        other = threading.Thread(target=lambda: taken.append(runtime.relay_lock.acquire(False)))
+        other.start()
+        other.join()
+        reconnected.append((restart_all, taken == [False]))
+
+    bridge.relays.reconfigure = reconfigure
+    runtime.public_state_changed = lambda: log.append("feed refreshed")
+    await registry.start_all()
+    # The ticker would also notice the change below; this test makes it once.
+    runtime._schedule_ticker.cancel()
+    assert seen == ["Example FM Night Shift"]
+    # Relays not yet connected when the name was set: they start with it.
+    assert reconnected == []
+    assert runtime.relay_reconnect_due(now=math.inf) is False
+    # A wheel switch, then a show just after it: the feed follows each at
+    # once, the relays reconnect once, after the name settles, with the last.
+    bridge.player.clock_station_name = lambda: ""
+    assert runtime.sync_station_name() is True
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "Example FM Live")
+    assert runtime.sync_station_name() is True
+    assert log.count("feed refreshed") == 3
+    assert reconnected == []
+    assert runtime.reconnect_relays_if_due() is False  # not settled yet
+    assert await asyncio.to_thread(runtime.reconnect_relays_if_due, math.inf) is True
+    assert reconnected == [(True, True)]
+    assert runtime.relay_name == "Example FM Live"
+    assert runtime.reconnect_relays_if_due(math.inf) is False  # nothing more booked
+    # A name that comes back before the reconnect is due costs no reconnect.
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "")
+    assert runtime.sync_station_name() is True
+    runtime.show_runner = SimpleNamespace(on_air_station_name=lambda: "Example FM Live")
+    assert runtime.sync_station_name() is True
+    assert runtime.reconnect_relays_if_due(math.inf) is False
+    assert reconnected == [(True, True)]
     await registry.shutdown(shared, 1.0)
 
 

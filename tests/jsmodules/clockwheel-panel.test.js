@@ -737,6 +737,74 @@ describe("clockwheel editor", () => {
     expect(put.body.resync_minutes).toEqual([0]);
   });
 
+  // ADR-0009-08
+  it("saves the station name while active and puts a refusal on the field", async () => {
+    const server = await open(fakeServer());
+    const field = byId("clock-station-name");
+    const error = byId("clock-station-name-error");
+    expect(document.querySelector('label[for="clock-station-name"]').textContent).toBe("Station name while active");
+    expect(field.maxLength).toBe(100);
+    expect(field.getAttribute("aria-describedby")).toBe("clock-station-name-help");
+    expect(byId("clock-station-name-help").textContent).toContain("Leave empty for the station's normal name.");
+    expect(field.value).toBe("");
+    field.value = "Night\tShift";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(byId("clock-next").textContent).toBe("Save to play these changes.");
+    byId("clock-save").click();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby").split(" ")).toEqual(["clock-station-name-error", "clock-station-name-help"]);
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe("Station name while active cannot contain tabs, line breaks or other control characters.");
+    expect(document.activeElement).toBe(field);
+    expect(server.calls.some((call) => call.method === "PUT")).toBe(false);
+    field.value = "  Example FM Night Shift ";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(field.hasAttribute("aria-invalid")).toBe(false);
+    expect(field.getAttribute("aria-describedby")).toBe("clock-station-name-help");
+    expect(error.hidden).toBe(true);
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. The station name applies now."));
+    expect(server.calls.find((call) => call.method === "PUT").body.station_name).toBe("Example FM Night Shift");
+    expect(field.value).toBe("Example FM Night Shift");
+    // The server's refusal of the name goes to the field as well.
+    byId("clock-save").focus();
+    server.fail = new Error("Station name while active can be at most 100 characters");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(field.getAttribute("aria-invalid")).toBe("true"));
+    expect(error.textContent).toBe("Station name while active can be at most 100 characters");
+    expect(document.activeElement).toBe(field);
+    // A blank name is sent as blank: the station's normal name.
+    server.fail = null;
+    field.value = "";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    byId("clock-save").click();
+    // Saved, refused, then saved blank.
+    await vi.waitFor(() => expect(server.calls.filter((call) => call.method === "PUT")).toHaveLength(3));
+    expect(server.calls.filter((call) => call.method === "PUT")[2].body.station_name).toBe("");
+  });
+
+  // ADR-0009-08
+  it("says the restart note only when the steps or restart minutes changed", async () => {
+    await open(fakeServer());
+    const field = byId("clock-station-name");
+    const type = (input, value) => { input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); };
+    // Nothing that waits for a restart changed: no restart note.
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps."));
+    type(field, "Example FM Night Shift");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. The station name applies now."));
+    // Restart minutes wait for the restart, with or without a new name.
+    type(field, "Example FM After Dark");
+    type(byId("clock-resync-minutes"), "0, 30");
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 3 steps. Changes apply at the next clock restart."));
+    // So do steps.
+    rowButton(0, "delete").click();
+    byId("clock-save").click();
+    await vi.waitFor(() => expect(status()).toBe("Saved Morning, 2 steps. Changes apply at the next clock restart."));
+  });
+
   it("sends immediate apply timing when selected", async () => {
     const server = await open(fakeServer());
     byId("clock-resync-minutes").value = "15";
@@ -750,6 +818,8 @@ describe("clockwheel editor", () => {
 
   it("sends continue apply timing when selected", async () => {
     const server = await open(fakeServer());
+    // A step change, so there is something to apply.
+    rowButton(0, "delete").click();
     byId("clock-apply-timing").value = "continue";
     byId("clock-save").click();
     await vi.waitFor(() => expect(status()).toContain("continuing at the next step"));
@@ -976,6 +1046,7 @@ describe("clockwheel editor", () => {
       version: 1,
       name: "Night",
       resync_minutes: [0, 30],
+      station_name: "",
       steps: [{
         type: "music",
         match: "all",

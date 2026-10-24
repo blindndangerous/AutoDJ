@@ -49,6 +49,7 @@ from autodj.station_log import (
     new_station_scope,
     wait_for_station_threads,
 )
+from autodj.station_name import listener_name, sync_name
 
 if TYPE_CHECKING:
     from autodj._bridge import PlayerBridge
@@ -73,6 +74,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _THREAD_JOIN_TIMEOUT_S = 5.0
+#: How long the station name must stay put before relays reconnect for it
+#: (#472): changes close together, such as a clockwheel switch just before a
+#: show at the top of the hour, cost relay listeners one gap, not two.
+RELAY_SETTLE_S = 1.5
 
 # A station's name: lower-case letters, digits and inner hyphens, at most 32
 # characters.  It names a folder and a URL path segment.
@@ -421,9 +426,10 @@ def start_stream_station(
             cfg.stream.relays.values(),
             stream_out,
             make_output=make_output,
-            station_name=lambda: cfg.stream.station_name,
+            # The name on the air (#472): a relay takes it when it connects.
+            station_name=lambda: listener_name(bridge),
             station_metadata=lambda: {
-                "name": cfg.stream.station_name,
+                "name": listener_name(bridge),
                 "genre": cfg.stream.genre,
                 "description": cfg.stream.description,
                 "url": cfg.stream.url,
@@ -987,6 +993,12 @@ class StationRuntime:
         self.station_list: Callable[[], list[dict[str, Any]]] | None = None
         # Scans in a row that found the liner folder empty (see prune_liner_dates).
         self.liner_folder_empty_scans = 0
+        # Held while relays are reconfigured; the registry shares its own.
+        self.relay_lock: threading.RLock = threading.RLock()
+        # The station name the relays last connected with, and when a
+        # reconnect for a newer one is due (monotonic seconds), if one is.
+        self.relay_name: str | None = None
+        self._relay_reconnect_at: float | None = None
 
     def _playable_liners(self, entries: Sequence[Any], at: float | None = None) -> Sequence[Any]:
         """The liners among *entries* that may play at the expected air time.
@@ -1063,6 +1075,53 @@ class StationRuntime:
             self.nowplaying.refresh()
         except Exception:
             logger.exception("Could not refresh now-playing state")
+
+    def sync_station_name(self) -> bool:
+        """Publish the name the clockwheel or show on the air asks for (#472).
+
+        Whether the published name changed.  It reads memory only, so the
+        schedule tick runs it on the event loop every second at no cost.  A
+        change refreshes the feed at once and books a relay reconnect for
+        :data:`RELAY_SETTLE_S` later (see :meth:`reconnect_relays_if_due`).
+        """
+        return sync_name(
+            self.bridge,
+            getattr(self, "show_runner", None),
+            self.public_state_changed,
+            self._book_relay_reconnect,
+        )
+
+    def _book_relay_reconnect(self) -> None:
+        # A later change moves the reconnect on: the relays reconnect once.
+        self._relay_reconnect_at = time.monotonic() + RELAY_SETTLE_S
+
+    def relay_reconnect_due(self, now: float | None = None) -> bool:
+        """Whether a booked relay reconnect is due (cheap; any thread)."""
+        due = self._relay_reconnect_at
+        return due is not None and (time.monotonic() if now is None else now) >= due
+
+    def reconnect_relays_if_due(self, now: float | None = None) -> bool:
+        """Reconnect the relays once the name has settled; whether they reconnected.
+
+        Blocking.  A name that came back to the one the relays have needs no
+        reconnect at all.
+        """
+        if not self.relay_reconnect_due(now):
+            return False
+        self._relay_reconnect_at = None
+        bridge = self.bridge
+        relays = getattr(bridge, "relays", None)
+        name = listener_name(bridge)
+        if not getattr(bridge, "stream_mode", False) or relays is None or name == self.relay_name:
+            return False
+        self.relay_name = name
+        try:
+            with self.relay_lock:
+                relays.reconfigure(self.cfg.stream.relays.values(), restart_all=True)
+        except Exception:
+            logger.exception("Could not reconnect the relays with the new station name")
+            return False
+        return True
 
     def live_state(self) -> dict[str, Any]:
         """The live DJ and talkover state for the page's push and ``/api/status``."""
@@ -1193,6 +1252,14 @@ class StationRuntime:
                     loop.call_soon_threadsafe(runner.track_changed)
 
         bridge.scheduler_track_changed = schedule_track_changed
+        # The name of what is on the air after a restart, before relays
+        # connect: they start with it, so no reconnect is owed.
+        try:
+            self.sync_station_name()
+        except Exception:
+            logger.exception("Could not set the station name on the air")
+        self.relay_name = listener_name(bridge)
+        self._relay_reconnect_at = None
         self._schedule_ticker = asyncio.create_task(self._tick_schedule())
         if self.stream_mode:
             from autodj.recorder import Recorder
@@ -1428,6 +1495,16 @@ class StationRuntime:
                     await asyncio.to_thread(intros.upkeep)
             except Exception:
                 logger.exception("Matched intro upkeep failed")
+            try:
+                # Whatever changed the programming (a schedule event, an
+                # operator, a show that ended), the name follows within a
+                # second.  Memory only, on the loop; the relays reconnect off
+                # it once the name has settled.
+                self.sync_station_name()
+                if self.relay_reconnect_due():
+                    await asyncio.to_thread(self.reconnect_relays_if_due)
+            except Exception:
+                logger.exception("Station name update failed")
 
 
 # ---------------------------------------------------------------------------

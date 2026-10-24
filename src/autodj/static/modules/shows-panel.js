@@ -26,13 +26,14 @@ import { confirmAction } from "./confirm-dialog.js";
 import { announceStatus, sayIfStillPending } from "./live-region.js";
 import { clearFieldError, fmtTime, placeRows, selectOnFocus, showFieldError } from "./dom-helpers.js";
 import { installPreparedEditions } from "./prepared-editions.js";
+import { checkStationName } from "./station-name-field.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const POLL_MS = 15000;
 const SEARCH_LIMIT = 20;
 const FIELD_IDS = {
   name: "shows-name", source: "shows-source-category", category: "shows-category",
-  clockwheel: "shows-clockwheel", target_minutes: "shows-target",
+  clockwheel: "shows-clockwheel", target_minutes: "shows-target", station_name: "shows-station-name",
 };
 
 const number = (n) => Number(n || 0).toLocaleString("en-US");
@@ -43,6 +44,7 @@ export function describeShow(show) {
   const sentences = [`${show.name}: ${plural(show.count, "song", "songs")}, ${show.count ? show.total_text : "no list yet"}.`];
   sentences.push(`From ${show.source_text}, target ${plural(show.target_minutes, "minute", "minutes")}.`);
   if (show.missing) sentences.push(`${plural(show.missing, "song is", "songs are")} no longer in the library.`);
+  if (show.station_name) sentences.push(`Station name while on the air: ${show.station_name}.`);
   const events = show.events || [];
   sentences.push(events.length ? `Played by ${events.join(", ")}.` : "No schedule event plays it.");
   return sentences.join(" ");
@@ -108,6 +110,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
   const categorySelect = el("shows-category");
   const clockSelect = el("shows-clockwheel");
   const targetInput = el("shows-target");
+  const stationNameInput = el("shows-station-name");
   const errorText = el("shows-form-error");
   const legend = el("shows-form-legend");
   const editor = el("shows-editor");
@@ -271,6 +274,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       category: kind === "category" ? categorySelect.value : "",
       clockwheel: kind === "clockwheel" ? clockSelect.value : "",
       target_minutes: Number(targetInput.value.trim()),
+      station_name: checkStationName(stationNameInput?.value).name ?? "",
     };
   }
 
@@ -291,6 +295,8 @@ export function installShowsPanel({ document: doc = document, request = requestJ
       showError("target_minutes", `Target length must be a whole number of minutes from ${low} to ${high}.`);
       return false;
     }
+    const named = checkStationName(stationNameInput?.value);
+    if (named.error) { showError("station_name", named.error); return false; }
     return true;
   }
 
@@ -301,6 +307,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     clearErrors();
     nameInput.value = show?.name || "";
     targetInput.value = String(show?.target_minutes || 60);
+    if (stationNameInput) stationNameInput.value = show?.station_name || "";
     el(show?.source === "clockwheel" ? "shows-source-clockwheel" : "shows-source-category").checked = true;
     renderSources(show);
     showSource();
@@ -786,7 +793,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     say("Cancelled. Nothing was saved.");
   });
   for (const id of ["shows-source-category", "shows-source-clockwheel"]) el(id)?.addEventListener("change", showSource);
-  for (const field of [nameInput, categorySelect, clockSelect, targetInput]) {
+  for (const field of [nameInput, categorySelect, clockSelect, targetInput, stationNameInput].filter(Boolean)) {
     field.addEventListener("input", () => {
       if (field.getAttribute("aria-invalid") === "true") clearFieldError(field, errorText);
     });
@@ -863,6 +870,7 @@ export function installShowsPanel({ document: doc = document, request = requestJ
     closeForm();
     closeEditor();
     nameInput.value = "";
+    if (stationNameInput) stationNameInput.value = "";
     searchInput.value = "";
     categorySelect.replaceChildren();
     clockSelect.replaceChildren();

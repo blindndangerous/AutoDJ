@@ -108,7 +108,8 @@ For scripts and other stations, the routes are under `/api/shows` and
   use, the show on the air (`on_air`) and any shows the file skips (`problem`).
 - `GET /api/shows/<id>`: one show with its `songs` (path, title, length, `missing`) and total.
 - `POST /api/shows`: `name`, `source` (`category` or `clockwheel`), `category` (its ID) or
-  `clockwheel` (its name), and `target_minutes`. `201` answers with the show.
+  `clockwheel` (its name), `target_minutes`, and an optional `station_name` (up to 100
+  characters, `""` for none). `201` answers with the show.
 - `PUT /api/shows/<id>`: the same fields; the list stays.
 - `PUT /api/shows/<id>/songs`: `songs`, the file paths in order. A song added must be in the
   library.

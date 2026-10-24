@@ -425,6 +425,9 @@ class PlayerBridge(LibraryAccess):
     # The stream in every format (:class:`~autodj.stream_mounts.StreamMounts`):
     # the MP3 stream above and the AAC and Opus mounts that are on.
     mounts: Any = None
+    # The station name the clockwheel or show on the air asks for, or "" for
+    # the normal one (#472); kept by the station, read by autodj.station_name.
+    station_name_override: str = ""
     public_state_changed: Callable[[], Any] | None = None
     track_started_callback: Callable[[], None] | None = None
     # History is appended on the mix-bus thread, trimmed by the station's
