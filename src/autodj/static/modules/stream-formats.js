@@ -9,6 +9,8 @@
 //     so reading it is not disturbed by the once-a-second push.
 //   - Copy is a user action: its confirmation is forced, and focus stays
 //     on the button.
+//   - A push whose saved bitrates differ from the list's asks for the
+//     addresses again, once, so a saved format is listed without a reload.
 
 import { announceStatus } from "./live-region.js";
 import { registerSettingsGroup } from "./settings-drafts.js";
@@ -52,7 +54,7 @@ async function copyText(doc, text) {
 }
 
 export function installStreamFormats({
-  doc, srStatus,
+  doc, srStatus, refresh = () => {},
 }) {
   const list = doc.getElementById("stream-formats-list");
   const intro = doc.getElementById("stream-formats-intro");
@@ -70,6 +72,12 @@ export function installStreamFormats({
     },
     describe: (body) => formatSavedText(labels[name], body[`${name}_bitrate`]),
   })]));
+
+  // The bitrates the list was drawn from, and the pushed ones a lookup was
+  // last asked for.
+  let shown = null;
+  let asked = null;
+  const bitrates = (bitrateOf) => FORMATS.map((name) => Number(bitrateOf(name) || 0)).join();
 
   function showList(items) {
     const origin = doc.location.origin;
@@ -112,6 +120,7 @@ export function installStreamFormats({
         [`${item.format}_bitrate`]: item.bitrate,
       });
     }
+    shown = bitrates((name) => items.find((item) => item.format === name)?.bitrate);
     showList(items);
   }
 
@@ -122,9 +131,16 @@ export function installStreamFormats({
     for (const name of FORMATS) {
       settingsDrafts[name].accept({ [`${name}_bitrate`]: playback[`stream_${name}_bitrate`] });
     }
+    const pushed = bitrates((name) => playback[`stream_${name}_bitrate`]);
+    if (shown !== null && pushed !== shown && pushed !== asked) {
+      asked = pushed;
+      refresh();
+    }
   }
 
   function reset() {
+    shown = null;
+    asked = null;
     for (const name of FORMATS) {
       selects[name].value = "0";
     }
