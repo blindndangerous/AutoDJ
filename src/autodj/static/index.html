@@ -2054,12 +2054,21 @@
           <legend>Date range</legend>
           <div class="settings-row">
             <label for="schedule-start-date">Start date</label>
-            <input type="date" id="schedule-start-date">
+            <input type="date" id="schedule-start-date" aria-describedby="schedule-dates-repeat-desc">
           </div>
           <div class="settings-row">
             <label for="schedule-end-date">End date</label>
-            <input type="date" id="schedule-end-date">
+            <input type="date" id="schedule-end-date" aria-describedby="schedule-dates-repeat-desc">
           </div>
+          <div class="settings-row">
+            <label for="schedule-dates-repeat">Repeat dates</label>
+            <select id="schedule-dates-repeat" aria-describedby="schedule-dates-repeat-desc">
+              <option value="none">Don't repeat</option>
+              <option value="yearly">Every year</option>
+            </select>
+          </div>
+          <!-- scheduler-panel.js sets the words for the Repeat dates choice. -->
+          <p class="setting-desc" id="schedule-dates-repeat-desc">The event runs only between these dates, both included.</p>
         </fieldset>
         <div class="settings-row">
           <label for="schedule-timing">Timing</label>
@@ -3610,12 +3619,22 @@
             </div>
             <div class="settings-row">
               <label for="categories-not-before">Not before</label>
-              <input type="date" id="categories-not-before">
+              <input type="date" id="categories-not-before" aria-describedby="categories-dates-repeat-help">
             </div>
             <div class="settings-row">
               <label for="categories-not-after">Do not play after</label>
-              <input type="date" id="categories-not-after">
+              <input type="date" id="categories-not-after" aria-describedby="categories-dates-repeat-help">
             </div>
+            <div class="settings-row">
+              <label for="categories-dates-repeat">Repeat dates</label>
+              <select id="categories-dates-repeat" aria-describedby="categories-dates-repeat-help">
+                <option value="none">Don't repeat</option>
+                <option value="weekly">Every week</option>
+                <option value="yearly">Every year</option>
+              </select>
+            </div>
+            <!-- categories-panel.js sets the words for the Repeat dates choice. -->
+            <p class="setting-desc" id="categories-dates-repeat-help">The songs play only between these dates, both included.</p>
           </fieldset>
           <button type="button" id="categories-check">Check</button>
           <!-- Browseable count; completed results are announced through categories-status. -->

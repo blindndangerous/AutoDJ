@@ -200,6 +200,55 @@ def test_song_picking_lists_each_clockwheel_and_switches_to_it(
     assert "no clockwheel named 'Morning'" in gone["message"]
 
 
+def test_switching_clockwheels_on_schedule_plans_the_next_song_once(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    """Selecting the wheel re-plans the next song; the unchanged mode must not again.
+
+    The second pick and render at the top of the hour cost the mix buses time.
+    """
+    client, bridge, active = rig
+    music = active / "music"
+    music.mkdir()
+    bridge.library = MagicMock()
+    bridge.library.clock_beets.snapshot.return_value = (frozenset(), {}, None)
+    bridge.library.entries_snapshot.return_value = ()
+    bridge.library.catalog.sources.return_value = [
+        {"id": "src1", "kind": "music", "path": str(music), "recursive": True}
+    ]
+    bridge.library.catalog.get_setting.return_value = {}
+    for name in ("Morning", "Evening"):
+        ClockwheelStore(active / "stations" / "default" / "clockwheels").save(
+            {
+                "version": 1,
+                "name": name,
+                "steps": [{"type": "music", "source": "src1"}],
+                "resync_minutes": [0],
+            }
+        )
+    player = bridge.player
+    player._cfg.playback.pick_mode = "similarity"
+    morning = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Morning"})
+    ).json()["id"]
+    evening = client.post(
+        "/api/schedule", json=event(action="pick_mode", params={"mode": "clock:Evening"})
+    ).json()["id"]
+
+    # From another picking mode the mode itself changes, so it re-plans.
+    assert client.post(f"/api/schedule/{morning}/run").json()["result"] == "ok"
+    assert player._cfg.playback.pick_mode == "clock"
+    assert player.refresh_playout.call_count == 1
+
+    player.refresh_playout.reset_mock()
+    player.configure_clock_after_selection.reset_mock()
+    assert client.post(f"/api/schedule/{evening}/run").json()["result"] == "ok"
+    bridge.library.ledger.select_clock.assert_called_with("Evening", None, None)
+    player.configure_clock_after_selection.assert_called_once()
+    player.refresh_playout.assert_not_called()
+    assert player._cfg.playback.pick_mode == "clock"
+
+
 REFUSED = [
     (event(name=" "), "name", "Enter a name of up to 100 characters"),
     (event(time="25:00"), "time", None),
@@ -271,6 +320,34 @@ def test_date_ranges_are_saved_described_and_skipped_until_they_start(
     first = client.get("/api/schedule").json()["upcoming"][0]
     assert first["time"] == "2099-11-27T00:00:00+00:00"
     assert first["repeat_text"].endswith("from 27 November to 26 December 2099")
+
+
+def test_yearly_dates_are_saved_described_and_refused_without_a_start(
+    rig: tuple[TestClient, PlayerBridge, Path],
+) -> None:
+    client, _bridge, active = rig
+    yearly = event(
+        time="00:00", start_date="2000-12-20", end_date="2000-01-02", dates_repeat="yearly"
+    )
+    created = client.post("/api/schedule", json=yearly)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["repeat_text"] == "Every day at 00:00, every year from 20 December to 2 January"
+    assert (body["dates_repeat"], body["ended"]) == ("yearly", False)
+    saved = json.loads(
+        (active / "stations" / "default" / "schedule.json").read_text(encoding="utf-8")
+    )["events"][0]
+    assert saved["dates_repeat"] == "yearly"
+    # The dates are years ago, yet the next run is in this year's or next year's range.
+    first = client.get("/api/schedule").json()["upcoming"][0]
+    month, day = int(first["time"][5:7]), int(first["time"][8:10])
+    assert (month, day) >= (12, 20) or (month, day) <= (1, 2)
+    refused = client.post("/api/schedule", json=event(end_date="2099-12-26", dates_repeat="yearly"))
+    assert refused.status_code == 400
+    assert refused.json() == {
+        "detail": "Enter a start date to repeat the dates every year",
+        "field": "start_date",
+    }
 
 
 def test_dates_with_no_run_left_are_refused_in_words(

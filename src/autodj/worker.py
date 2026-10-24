@@ -83,6 +83,9 @@ logger = logging.getLogger(__name__)
 MAX_BACKOFF_SECONDS = 300.0
 #: How long an empty queue waits before asking again.
 IDLE_POLL_SECONDS = 30.0
+#: How long the server may stay unreachable before a prepared worker without an
+#: idle release frees the model and runs its after-command.
+UNREACHABLE_RELEASE_SECONDS = 600.0
 #: How long a --before-command or --after-command may run.
 HOOK_TIMEOUT_SECONDS = 120.0
 _CHUNK = 1 << 16
@@ -573,8 +576,10 @@ class Worker:
             An expired *idle_exit* takes precedence.
         prepare: Acquire resources before processing the first nonempty batch,
             and again after an idle release. Heartbeats renew leases during preparation.
-        release: Free prepared resources on idle release. The caller owns exit cleanup,
-            including cleanup after a failed preparation.
+        release: Free prepared resources on idle release, on a pause, or once the
+            server has been unreachable for the idle release (or
+            :data:`UNREACHABLE_RELEASE_SECONDS` without one). The caller owns exit
+            cleanup, including cleanup after a failed preparation.
         fixed: The settings given on the command line (keys of
             :data:`MANAGED_OPTIONS`): the server's values for them are ignored.
 
@@ -614,6 +619,7 @@ class Worker:
         self._heartbeat_every = 30.0
         self.server_identity: dict[str, object] | None = None
         self.prepared = False
+        self._unreachable_since: float | None = None
         # Settings from the server (#554), applied by the heartbeat thread and the loop.
         self.fixed = fixed
         self.paused = False
@@ -731,15 +737,50 @@ class Worker:
                     ) from exc
                 if not exc.transient or (give_up_on_stop and self.stop.is_set()):
                     raise
-                self._wait(self._retry_pause(exc))
+                self._wait(self._release_while_unreachable(self._retry_pause(exc)))
                 continue
             except NetworkError as exc:
                 if give_up_on_stop and self.stop.is_set():
                     raise
-                self._wait(self._retry_pause(exc))
+                self._wait(self._release_while_unreachable(self._retry_pause(exc)))
                 continue
             self._backoff = 0.0
+            self._unreachable_since = None
             return result
+
+    def _release_while_unreachable(self, pause: float) -> float:
+        """Free prepared resources once the server has been unreachable long enough.
+
+        The limit is the idle release, or :data:`UNREACHABLE_RELEASE_SECONDS`
+        without one, so another program sharing the GPU gets it back during a
+        long outage.  The next songs prepare again.
+
+        Returns how long to wait before trying again.
+        """
+        now = self._now()
+        if self._unreachable_since is None:
+            self._unreachable_since = now
+        if not self.prepared:
+            return pause
+        limit = UNREACHABLE_RELEASE_SECONDS if self.idle_release is None else self.idle_release
+        left = self._unreachable_since + limit - now
+        if left > 0:
+            return min(pause, left)
+        self.prepared = False
+        if self.release is not None:
+            self.release()
+        logger.info(
+            "Server unreachable for %s; released analysis resources until it hands out songs.",
+            _minutes(limit),
+        )
+        return pause
+
+    def _prepare(self) -> None:
+        """Acquire the resources for analysis unless they are already prepared."""
+        if not self.prepared:
+            if self.prepare is not None:
+                self.prepare()
+            self.prepared = True
 
     def check_identity(
         self, server: dict[str, object], fields: tuple[str, ...] | None = None
@@ -827,6 +868,8 @@ class Worker:
             if file_fingerprint(path) != (size, fingerprint):
                 self._report_failure(lease, name, number, "the download did not match the song")
                 return
+            # An outage during the download may have released the model.
+            self._prepare()
             try:
                 scan = None
                 if song.get("scan") is not None:
@@ -948,7 +991,6 @@ class Worker:
         held: list[str] = []
         empty_since: float | None = None
         paused_since: float | None = None
-        prepared = self.prepared
         try:
             with tempfile.TemporaryDirectory(prefix="autodj-worker-") as folder:
                 while not self.stop.is_set():
@@ -956,10 +998,10 @@ class Worker:
                         now = self._now()
                         if paused_since is None:
                             paused_since = now
-                            if prepared:
+                            if self.prepared:
+                                self.prepared = False
                                 if self.release is not None:
                                     self.release()
-                                prepared = False
                                 logger.info("Paused; released analysis resources.")
                         # Paused is an empty queue for --once and --idle-exit.
                         empty_since = now if empty_since is None else empty_since
@@ -988,8 +1030,8 @@ class Worker:
                         pause = self._idle_pause(empty_since, now)
                         if pause is None:
                             break
-                        prepared, pause = self._release_when_idle(
-                            prepared, empty_since, now, pause, "Queue empty"
+                        self.prepared, pause = self._release_when_idle(
+                            self.prepared, empty_since, now, pause, "Queue empty"
                         )
                         self._wait(pause)
                         continue
@@ -1000,10 +1042,7 @@ class Worker:
                         self._release(held)
                         held = []
                         continue
-                    if not prepared:
-                        if self.prepare is not None:
-                            self.prepare()
-                        prepared = True
+                    self._prepare()
                     waiting = int(claim.get("waiting", 0))
                     for position, song in enumerate(songs, 1):
                         # Paused: the rest of the batch goes back after the song in hand.

@@ -75,6 +75,13 @@ function accept(part, value) {
   }
   part.echoUntil = 0;
   part.latest = clone(value);
+  // A draft the server now holds is no longer a change.  Without this a
+  // part that once differed stayed dirty for good, and Settings asked to
+  // save changes that were not there.
+  if (dirty(part) && Object.entries(part.read()).every(([key, item]) => equal(value[key], item))) {
+    part.baseline = clone(part.read());
+    return;
+  }
   if (!dirty(part)) {
     const unchanged = part.baseline !== null && Object.entries(part.baseline).every(([key, item]) => equal(value[key], item));
     if (!unchanged) part.write(value);
@@ -293,6 +300,25 @@ export async function saveSettingsPanel(element) {
     stopPending();
     if (generation === editor.generation) { panel.saving = false; refresh(panel); }
   }
+}
+
+// For diagnostics (the browser audits): every part with unsaved changes,
+// with what it reads now and the baseline it is compared against.
+export function dirtySettingsParts(doc = document) {
+  const editor = editors.get(doc);
+  if (!editor) return [];
+  const found = [];
+  for (const panel of editor.panels.values()) {
+    for (const part of panel.parts) {
+      if (!dirty(part)) continue;
+      found.push({
+        panel: panel.element.id, group: part.group || null,
+        controls: controls(part).map((control) => control.id || control.name || control.tagName.toLowerCase()),
+        read: clone(part.read()), baseline: clone(part.baseline),
+      });
+    }
+  }
+  return found;
 }
 
 export function settingsHaveChanges(doc = document) {

@@ -1946,7 +1946,7 @@ class PlayerBridge(LibraryAccess):
                 if error or not fields <= known:
                     return "the clockwheel conditions cannot be read", None
                 beets = items
-            if entry.path not in condition_paths(step, [entry], beets, categories):
+            if entry.path not in condition_paths(step, [entry], beets, categories, when):
                 return "the song does not match the clockwheel conditions", None
         elif entry.path not in {song.path for song in _slot_entries(step, [entry])}:
             return "the song does not match the clockwheel folder", None

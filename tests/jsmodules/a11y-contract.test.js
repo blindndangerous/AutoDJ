@@ -1278,6 +1278,31 @@ describe("static accessibility contracts", () => {
     expect(appSource).toMatch(/setConnStatus\("connected",\s*"[^"\r\n]+"[,)]/);
   });
 
+  it("keeps a busy control at full contrast, unlike an unavailable one", () => {
+    // .is-pending marks a control that keeps focus and stays enabled while
+    // its request runs (withDisabled).  It was dimmed to 0.45 like a disabled
+    // one, so a Save changes button mid-save fell under 4.5:1 (WCAG 1.4.3).
+    const pendingRules = cssRules.filter((rule) => rule.selectors.some((selector) => selector.includes(".is-pending")));
+    expect(pendingRules.length).toBeGreaterThan(0);
+    for (const rule of pendingRules) {
+      const opacity = rule.declarations.get("opacity");
+      if (opacity !== undefined) expect(Number(opacity), rule.selectors.join(", ")).toBe(1);
+      for (const property of ["color", "background", "background-color", "filter", "border-color"]) {
+        expect(rule.declarations.has(property), `${rule.selectors.join(", ")} ${property}`).toBe(false);
+      }
+    }
+    for (const selector of ["button.is-pending", 'input[type="checkbox"].is-pending']) {
+      expect(lastValue(selector, "opacity"), selector).toBe("1");
+      expect(lastValue(selector, "cursor"), selector).toBe("progress");
+    }
+    // A shape cue as well as the cursor, kept in forced colours.
+    expect(lastValue("button.is-pending", "border-style")).toBe("dashed");
+    // Unavailable controls stay dimmed.
+    for (const selector of ["button:disabled", 'button[aria-disabled="true"]']) {
+      expect(lastValue(selector, "opacity"), selector).toBe("0.45");
+    }
+  });
+
   it("gives controls real high-contrast boundaries and retains focus", () => {
     expect(normalizedColor("#abc")).toBe("#aabbcc");
     expect(normalizedColor("#abcf")).toBe("#aabbcc");
@@ -2601,10 +2626,18 @@ describe("static accessibility contracts", () => {
       const input = document.getElementById(id);
       expect(input.getAttribute("type")).toBe("date");
       expect(document.querySelector(`label[for="${id}"]`).textContent.trim()).toBe(label);
-      // Optional: no required attribute, and the description says so in words.
+      // Optional: no required attribute.  The help under Repeat dates says
+      // how the dates are read (the year is ignored for Every year), so the
+      // date fields read it too.
       expect(input.hasAttribute("required")).toBe(false);
-      expect(input.hasAttribute("aria-describedby")).toBe(false);
+      expect(input.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
     }
+    const repeat = document.getElementById("schedule-dates-repeat");
+    expect(repeat.tagName).toBe("SELECT");
+    expect(group.contains(repeat)).toBe(true);
+    expect(document.querySelector('label[for="schedule-dates-repeat"]').textContent.trim()).toBe("Repeat dates");
+    expect(repeat.getAttribute("aria-describedby")).toBe("schedule-dates-repeat-desc");
+    expect(document.getElementById("schedule-dates-repeat-desc").classList.contains("setting-desc")).toBe(true);
     // The form's error text has an ID to be linked from the field it names.
     expect(document.querySelector("#schedule-form-error").classList.contains("field-error")).toBe(true);
     // The days description is not linked in the markup: the script links it

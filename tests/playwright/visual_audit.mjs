@@ -746,6 +746,13 @@ async function openHourFit(page, visit) {
   } finally {
     hourFitPages.delete(page);
     await toggle.evaluate((box, checked) => { box.checked = checked; }, was);
+    // The stood-in pushes said Hour fit was on, so the draft may hold "on"
+    // as the server's value; the next real push ends the draft.
+    // waitForFunction does not wait for a promise, so import first.
+    await page.evaluate(async (drafts) => { window.__autodjDrafts = await import(drafts); },
+      "/modules/settings-drafts.js");
+    await page.waitForFunction(() => !window.__autodjDrafts.dirtySettingsParts(document)
+      .some((part) => part.controls.includes("pb-hour-fit")), null, { timeout: 10000 });
   }
 }
 
@@ -1624,6 +1631,7 @@ async function eachTarget(page, measure) {
   await standInForRequests(page);
   await standInForSchedule(page);
   await standInForUpdates(page);
+  await recordConfirmOpeners(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   for (const view of VIEWS) {
     await page.locator(`#tab-${view}`).click();
@@ -1669,7 +1677,7 @@ async function eachTarget(page, measure) {
       await page.locator('[data-settings-discard]:visible').evaluateAll((buttons) => {
         for (const button of buttons) if (button.getAttribute("aria-disabled") !== "true") button.click();
       });
-      await page.locator(`#${id}`).click();
+      await clickSubtabUnprompted(page, id);
       await page.waitForTimeout(150);
       await openEveryCard(page);
       await visit(`settings/${id.replace(/^stab-/, "")}`);
@@ -1784,8 +1792,8 @@ function controlBoundaryProblems(page) {
     ].join(", "));
     for (const control of controls) {
       if (!control.getClientRects().length || control.closest("[hidden], [aria-hidden='true']")) continue;
-      if (control.disabled || control.getAttribute("aria-disabled") === "true"
-        || control.classList.contains("is-pending")) continue;
+      // A busy (.is-pending) control is still active, so it is measured.
+      if (control.disabled || control.getAttribute("aria-disabled") === "true") continue;
       const style = window.getComputedStyle(control);
       if (style.visibility === "hidden" || Number(style.opacity) === 0) continue;
       const back = behind(control.parentElement);
@@ -1881,6 +1889,47 @@ function showToast(page, message, tone = "info") {
     const { showVisibleStatus } = await import(`${window.location.origin}/modules/live-region.js`);
     showVisibleStatus(text, document, { tone: toneName });
   }, [message, tone]);
+}
+
+// A busy button (.is-pending, as Save changes is while it saves) keeps
+// focus and stays enabled, so it must keep full contrast: axe-core's
+// colour-contrast over it, its boundary, and its own opacity.
+async function pendingButtonProblems(page) {
+  const marked = await page.evaluate(() => {
+    const button = [...document.querySelectorAll("button")].find((item) => item.getClientRects().length
+      && !item.disabled && item.getAttribute("aria-disabled") !== "true"
+      && !item.closest("[hidden], [aria-hidden='true'], dialog"));
+    if (!button) return false;
+    button.classList.add("is-pending");
+    button.dataset.auditPending = "";
+    return true;
+  });
+  if (!marked) return ["no button to mark busy"];
+  await settle(page);
+  if (!await page.evaluate(() => Boolean(window.axe))) await page.addScriptTag({ path: AXE });
+  const problems = await page.evaluate(async () => {
+    const { parse, over, ratio, behind } = window.__contrast;
+    const button = document.querySelector("[data-audit-pending]");
+    const name = button.id ? `#${button.id}` : button.textContent.trim().slice(0, 30);
+    const style = window.getComputedStyle(button);
+    const issues = [];
+    if (Number(style.opacity) < 1) issues.push(`${name} opacity ${style.opacity}`);
+    if (style.cursor !== "progress") issues.push(`${name} cursor ${style.cursor}`);
+    const back = behind(button.parentElement);
+    const fill = over(parse(style.backgroundColor), back);
+    const border = over(parse(style.borderTopColor), back);
+    const best = Math.max(ratio(border, back), ratio(fill, back));
+    if (best < 3) issues.push(`${name} boundary ${best.toFixed(2)}:1`);
+    const result = await window.axe.run(button, { runOnly: { type: "rule", values: ["color-contrast"] } });
+    for (const violation of result.violations) issues.push(`${name} axe ${violation.id}`);
+    return issues;
+  });
+  await page.evaluate(() => {
+    const button = document.querySelector("[data-audit-pending]");
+    button?.classList.remove("is-pending");
+    if (button) delete button.dataset.auditPending;
+  });
+  return problems;
 }
 
 // The status message and its Dismiss button: axe-core over the page with
@@ -2065,6 +2114,7 @@ async function auditTheme(browser, mode, out) {
         record("nonText", "camelot", await wheelProblems(page));
         record("toast", target, await toastProblems(page));
         record("footer", target, await footerLinkProblems(page));
+        record("nonText", "busy button", await pendingButtonProblems(page));
       }
       if (target === "settings/display") record("toast", target, await toastProblems(page));
       if (target === "settings/workers") {
@@ -2137,13 +2187,54 @@ async function checkSystemTheme(browser, mode, out) {
   }
 }
 
+// An "Unsaved settings" confirmation on a page where nothing was edited
+// has opened now and then.  Note where each confirmation is opened from,
+// so the failure can name the dirty parts and the caller.
+const confirmOpenerPages = new WeakSet();
+
+async function recordConfirmOpeners(page) {
+  if (confirmOpenerPages.has(page)) return;
+  confirmOpenerPages.add(page);
+  await page.addInitScript(() => {
+    const show = window.HTMLDialogElement.prototype.showModal;
+    window.HTMLDialogElement.prototype.showModal = function showModal(...args) {
+      if (this.id === "confirm-dialog") window.__autodjConfirmOpenedFrom = new Error("confirm opened").stack;
+      return show.apply(this, args);
+    };
+  });
+}
+
+// Click a Settings subtab; an unexpected confirmation fails with the
+// dirty parts the draft module reports, instead of a 30 s timeout.
+async function clickSubtabUnprompted(page, id) {
+  // The page's own module instance, by the URL app.js loads it from.
+  const unexpected = () => page.evaluate(async (drafts) => {
+    if (!document.getElementById("confirm-dialog")?.open) return null;
+    const { dirtySettingsParts } = await import(drafts);
+    return {
+      message: document.getElementById("confirm-message")?.textContent,
+      dirty: dirtySettingsParts(document),
+      openedFrom: window.__autodjConfirmOpenedFrom || null,
+    };
+  }, "/modules/settings-drafts.js");
+  const fail = async (cause) => {
+    const found = await unexpected();
+    if (found) throw new Error(`unexpected confirmation before ${id}: ${JSON.stringify(found, null, 1)}`, { cause });
+    if (cause) throw cause;
+  };
+  await fail(null);
+  await page.locator(`#${id}`).click({ timeout: 10000 }).catch(fail);
+  await fail(null);
+}
+
 // Choosing Dark in Settings, Display and keys: the page changes at once,
 // the preview says nothing; Save persists it across reloads.
 async function themeSettingProblems(page) {
   const problems = [];
+  await recordConfirmOpeners(page);
   await page.goto(BASE, { waitUntil: "networkidle", timeout: 20000 });
   await page.locator("#tab-settings").click();
-  await page.locator("#stab-display").click();
+  await clickSubtabUnprompted(page, "stab-display");
   const regions = () => page.evaluate(() => [...document.querySelectorAll(
     '[aria-live]:not([aria-live="off"]), [role="status"], [role="alert"]',
   )].map((node) => node.textContent.trim()).join("|"));
@@ -2173,7 +2264,7 @@ async function themeSettingProblems(page) {
     problems.push(`after reload: ${JSON.stringify(reloaded)}`);
   }
   await page.locator("#tab-settings").click();
-  await page.locator("#stab-display").click();
+  await clickSubtabUnprompted(page, "stab-display");
   await page.locator("#theme-system").click();
   await page.locator('#spanel-display [data-settings-save]').click();
   await page.waitForFunction(() => localStorage.getItem("autodj.theme") === "system");

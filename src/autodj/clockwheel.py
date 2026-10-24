@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from autodj.clock_conditions import relative_date_now, uses_relative_dates
 from autodj.hour_fit import FIT_CANDIDATES
 
 if TYPE_CHECKING:
@@ -332,8 +333,13 @@ def condition_paths(
     entries: Sequence[Any],
     beets: Mapping[str, Mapping[str, Any]] | None = None,
     categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
+    now: float | None = None,
 ) -> set[str]:
-    """The paths of *entries* that pass a conditions slot's Match all or Match any."""
+    """The paths of *entries* that pass a conditions slot's Match all or Match any.
+
+    *now* is the wall-clock time a relative date condition (within the last
+    N days) is judged at, the current time when not given.
+    """
     from autodj.catalog import normalize_path
     from autodj.clock_conditions import condition_matcher
 
@@ -359,11 +365,13 @@ def condition_paths(
         elif condition["field"] == "beets" and beets:
             test = condition_matcher(condition)
             matched = [
-                entry for entry in entries if test(entry, beets.get(normalize_path(entry.path)))
+                entry
+                for entry in entries
+                if test(entry, beets.get(normalize_path(entry.path)), now)
             ]
         else:
             test = condition_matcher(condition)
-            matched = [entry for entry in entries if test(entry, None)]
+            matched = [entry for entry in entries if test(entry, None, now)]
         paths = {entry.path for entry in matched}
         if found_paths is None:
             found_paths = paths
@@ -384,6 +392,9 @@ class ConditionPaths:
     entries are compared by identity, so a new one is needed whenever the
     library publishes new entries or Beets is read again. Category memberships
     are compared by value because the category index returns a new mapping per pick.
+    When a step has a relative date condition (within the last N days), *now*,
+    the time of the pick, is part of the key too, to the hour the condition
+    moves by (:func:`autodj.clock_conditions.relative_date_now`).
     """
 
     def __init__(
@@ -393,10 +404,16 @@ class ConditionPaths:
         liners: Sequence[Any],
         beets: Mapping[str, Mapping[str, Any]] | None,
         categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
+        now: float | None = None,
     ) -> None:
         self._key = (slots, entries, liners, beets)
         self._categories = categories
+        self._relative = any(uses_relative_dates(slot.conditions) for slot in slots)
+        self._now = self._hour(now)
         self._paths: dict[int, frozenset[str]] = {}
+
+    def _hour(self, now: float | None) -> int | None:
+        return relative_date_now(now) if self._relative else None
 
     def current(
         self,
@@ -405,10 +422,19 @@ class ConditionPaths:
         liners: Sequence[Any],
         beets: Mapping[str, Mapping[str, Any]] | None,
         categories: Mapping[str, tuple[str, AbstractSet[str]]] | None = None,
+        now: float | None = None,
     ) -> bool:
-        """Whether this was built from these very slots, entries and Beets values."""
-        return self._categories == categories and all(
-            old is new for old, new in zip(self._key, (slots, entries, liners, beets), strict=True)
+        """Whether this was built from these very slots, entries and Beets values.
+
+        With a relative date condition, also within the same hour of *now*.
+        """
+        return (
+            self._categories == categories
+            and all(
+                old is new
+                for old, new in zip(self._key, (slots, entries, liners, beets), strict=True)
+            )
+            and self._hour(now) == self._now
         )
 
     def paths(self, index: int) -> frozenset[str]:
@@ -419,7 +445,7 @@ class ConditionPaths:
             slot = slots[index]
             pool = liners if slot.kind == "liner" else entries
             found = self._paths[index] = frozenset(
-                condition_paths(slot, pool, beets, self._categories)
+                condition_paths(slot, pool, beets, self._categories, self._now)
             )
         return found
 

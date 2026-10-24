@@ -25,6 +25,17 @@ has no run left cannot be saved enabled; save it disabled, or move its end date.
 from earlier versions load unchanged, and an event without a range is saved without the two
 fields.
 
+**Repeat dates**, under the two dates, makes a season come back each year. **Don't repeat**, the
+default, keeps the dates as they are. With **Every year**, only the month and day count and the
+year is ignored, so the event needs no edit next year. A range may run past New Year: start
+date 20 December and end date 2 January runs from 20 December to 2 January every year. Without an
+end date, or with the same month and day, it is that one day each year. 29 February counts as 28
+February in a year that has none. A yearly range needs a start date. **Next events** shows the
+next run in the range, next year's once this year's has passed, and the events list says, for
+example, "Every day at 00:00, every year from 20 December to 2 January". There is no **Every
+week**: the event's own **Repeat** rule chooses its days. An event whose dates do not repeat is
+saved without the choice, so an earlier version still reads the file.
+
 A seasonal clockwheel, such as a holiday one from 27 November to 26 December, takes two events:
 
 1. **Holiday music**: repeat every day at 00:00, start date 27 November, end date 26 December,

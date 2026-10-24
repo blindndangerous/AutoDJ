@@ -291,6 +291,54 @@ def test_categories_save_and_report_their_days_and_hours(tmp_path, monkeypatch):
         assert backwards.status_code == 400
         assert backwards.json()["field"] == "not_after"
 
+        # Repeating seasons (#470): saved, said in words and judged for now,
+        # a Monday.
+        weekly = client.post(
+            "/api/categories",
+            json={
+                "name": "Weekends",
+                "source": "query",
+                "query": "genre:rock",
+                "not_before": "2026-10-09",
+                "not_after": "2026-10-11",
+                "dates_repeat": "weekly",
+            },
+        ).json()["category"]
+        assert weekly["dates_repeat"] == "weekly"
+        assert weekly["daypart_text"] == (
+            "Plays only every week from Friday to Sunday, starting 9 October 2026"
+        )
+        assert (weekly["allowed_now"], weekly["outside_now"]) == (False, "dates")
+        yearly = client.post(
+            "/api/categories",
+            json={
+                "name": "Autumn",
+                "source": "query",
+                "query": "genre:rock",
+                "not_before": "2020-10-01",
+                "not_after": "2020-10-31",
+                "dates_repeat": "yearly",
+            },
+        ).json()["category"]
+        assert (yearly["daypart_text"], yearly["allowed_now"]) == (
+            "Plays only every year between 1 October and 31 October",
+            True,
+        )
+        needs_first = client.post(
+            "/api/categories",
+            json={
+                "name": "No start",
+                "source": "query",
+                "query": "genre:rock",
+                "dates_repeat": "yearly",
+            },
+        )
+        assert needs_first.status_code == 400
+        assert needs_first.json() == {
+            "detail": "Enter a Not before date to repeat the dates",
+            "field": "not_before",
+        }
+
 
 def test_categories_list_names_beets_paths_that_match_no_library_song(tmp_path):
     import sqlite3

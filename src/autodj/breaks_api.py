@@ -332,6 +332,25 @@ def _current_slot(station: StationRuntime, *, voice_track: bool = False) -> dict
     return _slot_view(station, _Songs(station), plan, closes_in, airs_in)
 
 
+def _programming(station: StationRuntime) -> dict[str, Any]:
+    """The programming on the air: the clockwheel picking, the show on the air, the pick mode.
+
+    ``clockwheel`` is the selected wheel's name only while the station picks
+    by clockwheel and the wheel can play; ``show`` is the ``id`` and ``name``
+    of a show on the air, or ``None``.  Read from the live player and show
+    runner, so it follows a schedule change, a show that runs long and an
+    operator's own switch.
+    """
+    player = station.player
+    mode = str(player._cfg.playback.pick_mode)
+    runner = getattr(station, "show_runner", None)
+    return {
+        "clockwheel": player._clock_name() if mode == "clock" else None,
+        "show": runner.on_air_show() if runner is not None else None,
+        "pick_mode": mode,
+    }
+
+
 def _context(station: StationRuntime, *, voice_track: bool = False) -> dict[str, Any]:
     """Everything ``GET context`` says (blocking: it reads the catalog)."""
     player = station.player
@@ -383,6 +402,7 @@ def _context(station: StationRuntime, *, voice_track: bool = False) -> dict[str,
             for record in reversed(history)
         ],
         "requests": [songs.view(entry) for entry in waiting[:CONTEXT_ROWS]],
+        "programming": _programming(station),
         "limits": {
             "kinds": list(KINDS),
             "extensions": list(EXTENSIONS),

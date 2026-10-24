@@ -1823,8 +1823,11 @@ class Player:
         else:
             self._clock_condition_errors = ()
         cache = getattr(self, "_clock_condition_cache", None)
-        if cache is None or not cache.current(slots, entries, liners, beets_items, categories):
-            cache = ConditionPaths(slots, entries, liners, beets_items, categories)
+        # Relative date conditions are judged for when the song is expected
+        # to start, as the step hours are.
+        at = self._now() if context.at is None else context.at
+        if cache is None or not cache.current(slots, entries, liners, beets_items, categories, at):
+            cache = ConditionPaths(slots, entries, liners, beets_items, categories, at)
             self._clock_condition_cache = cache
 
         closed_steps = self._closed_clock_steps(context, step_hours)

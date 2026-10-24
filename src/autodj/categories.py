@@ -25,7 +25,8 @@ doctor`` can say how many.
 
 A category may have allowed hours and days (dayparting), and a first and
 last date (a season): outside them its songs are not picked in any pick
-mode, and a clockwheel step for it is skipped.  The hours are wall-clock
+mode, and a clockwheel step for it is skipped.  The season may repeat every
+week or every year (:mod:`autodj.date_repeat`).  The hours are wall-clock
 times in the station time zone; a window that crosses midnight belongs to
 the day it starts, for its days and its dates alike.  A song in several
 categories plays only while every one of them allows it.  Clockwheel steps
@@ -62,6 +63,10 @@ from pydantic import (
 
 from autodj.beets_query import FIRST_RELEASE_YEAR, Query, QueryError, parse_query
 from autodj.beets_query import first_release_year as _first_release_year
+from autodj.clock_conditions import relative_date_now, uses_relative_dates
+from autodj.date_repeat import DateRepeat, month_day, weekday_name
+from autodj.date_repeat import contains as dates_contain
+from autodj.date_repeat import problem as dates_problem
 from autodj.fsutil import atomic_write, set_aside
 from autodj.timefmt import clock_text
 
@@ -135,9 +140,11 @@ class CategorySpec(BaseModel):
     days: list[StrictInt] = Field(default_factory=list, max_length=7)
     hours_from: Time | None = None
     hours_until: Time | None = None
-    # A season: the first and last day the songs may play, both included.
+    # A season: the first and last day the songs may play, both included,
+    # once or repeating every week or every year.
     not_before: Date | None = None
     not_after: Date | None = None
+    dates_repeat: DateRepeat = "none"
 
     @field_validator("name")
     @classmethod
@@ -230,6 +237,7 @@ _FIELD_NAMES = {
     "hours_until": "Allowed until",
     "not_before": "Not before",
     "not_after": "Do not play after",
+    "dates_repeat": "Repeat dates",
 }
 
 _DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -264,9 +272,17 @@ def check_daypart(item: Any) -> list[int]:
     if item.hours_from is not None and item.hours_from == item.hours_until:
         raise CategoryError("hours_until", "Allowed until must differ from Allowed from")
     first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
-    if first is not None and last is not None and last < first:
+    found = dates_problem(first, last, getattr(item, "dates_repeat", "none"))
+    if found == "needs_first":
+        raise CategoryError("not_before", "Enter a Not before date to repeat the dates")
+    if found == "backwards":
         raise CategoryError(
             "not_after", "Do not play after must be on or after the Not before date"
+        )
+    if found == "too_long":
+        raise CategoryError(
+            "not_after",
+            "For Every week, Do not play after must be within 6 days of the Not before date",
         )
     return sorted(set(days))
 
@@ -305,13 +321,35 @@ def daypart_refusal(item: Any, wall: datetime) -> str | None:
     if item.days and day.weekday() not in item.days:
         return "days"
     first, last = getattr(item, "not_before", None), getattr(item, "not_after", None)
-    if (first is not None and day < first) or (last is not None and day > last):
+    if not dates_contain(day, first, last, getattr(item, "dates_repeat", "none")):
         return "dates"
     return None
 
 
 def _day_words(day: Date) -> str:
     return f"{day.day} {_MONTH_NAMES[day.month - 1]} {day.year}"
+
+
+def describe_season(spec: Any) -> str:
+    """Say a category's dates in words, after "Plays only"; empty for none."""
+    first, last = getattr(spec, "not_before", None), getattr(spec, "not_after", None)
+    repeat = getattr(spec, "dates_repeat", "none")
+    if repeat == "weekly" and first is not None:
+        starting = f"starting {_day_words(first)}"
+        if last is None or last == first:
+            return f"on {weekday_name(first)}s, {starting}"
+        return f"every week from {weekday_name(first)} to {weekday_name(last)}, {starting}"
+    if repeat == "yearly" and first is not None:
+        if last is None or (last.month, last.day) == (first.month, first.day):
+            return f"every year on {month_day(first)}"
+        return f"every year between {month_day(first)} and {month_day(last)}"
+    if first is not None and last is not None:
+        return f"between {_day_words(first)} and {_day_words(last)}"
+    if first is not None:
+        return f"from {_day_words(first)}"
+    if last is not None:
+        return f"until {_day_words(last)}"
+    return ""
 
 
 class StepHours(BaseModel):
@@ -406,15 +444,7 @@ def describe_daypart(spec: Any) -> str:
         days = "on " + (names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}")
     else:
         days = "every day"
-    first, last = getattr(spec, "not_before", None), getattr(spec, "not_after", None)
-    if first is not None and last is not None:
-        season = f"between {_day_words(first)} and {_day_words(last)}"
-    elif first is not None:
-        season = f"from {_day_words(first)}"
-    elif last is not None:
-        season = f"until {_day_words(last)}"
-    else:
-        season = ""
+    season = describe_season(spec)
     if spec.hours_from is None or spec.hours_until is None:
         if days != "every day":
             text = f"Plays only {days}"
@@ -459,6 +489,8 @@ def spec_error(exc: ValidationError) -> CategoryError:
         message = f"{_FIELD_NAMES[name]} is too long"
     elif error.get("type") == "literal_error" and name == "source":
         message = "Choose shared filters, a beets query or a playlist file as the source"
+    elif error.get("type") == "literal_error" and name == "dates_repeat":
+        message = "Repeat dates must be Don't repeat, Every week or Every year"
     elif error.get("type") == "extra_forbidden":
         message = f"Unknown field {location[-1] if location else ''}".strip()
     return CategoryError(name or "name", message)
@@ -531,6 +563,7 @@ class CategoryStore:
                 ("hours_until", None),
                 ("not_before", None),
                 ("not_after", None),
+                ("dates_repeat", "none"),
             ):
                 if category[key] == empty:
                     del category[key]
@@ -854,8 +887,12 @@ def resolve_all(
     music_dir: Path | None,
     folder: Path,
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
+    now: float | None = None,
 ) -> list[Resolution]:
-    """Work out every category in *categories*, reading beets once for all of them."""
+    """Work out every category in *categories*, reading beets once for all of them.
+
+    *now* is the time relative date conditions are judged at (now when not given).
+    """
     return resolve_checked(
         categories,
         entries,
@@ -863,6 +900,7 @@ def resolve_all(
         music_dir=music_dir,
         folder=folder,
         sources_by_id=sources_by_id,
+        now=now,
     )[0]
 
 
@@ -882,6 +920,7 @@ def resolve_checked(
     folder: Path,
     sources_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     remember_check: bool = True,
+    now: float | None = None,
 ) -> tuple[list[Resolution], PathCheck | None]:
     """Like :func:`resolve_all`, with how beets' paths matched the library.
 
@@ -952,7 +991,9 @@ def resolve_checked(
                 results.append(Resolution(error=problem))
                 continue
         music_entries = [entry for entry in entries if not getattr(entry, "is_silent", False)]
-        results.append(Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path))))
+        results.append(
+            Resolution(frozenset(condition_paths(slot, music_entries, beets_by_path, now=now)))
+        )
     return results, sources.beets_check
 
 
@@ -994,11 +1035,17 @@ class CategoryIndex:
     whether the library's song list is a new one.  Only when one of them
     changed does it read beets and the playlists again.
 
+    A category with a relative date condition (within the last N days) is
+    also worked out again when the hour changes, as its window moves by the
+    hour (:func:`autodj.clock_conditions.relative_date_now`).
+
     Args:
         cfg: The configuration, for the index folder, beets and the
             playlists folder.
         entries: Returns the library's music entries; a new tuple each time
             the library changes, the same one otherwise.
+        clock: Returns the wall-clock time relative date conditions are
+            judged at.
     """
 
     def __init__(
@@ -1007,10 +1054,14 @@ class CategoryIndex:
         entries: Callable[[], Sequence[Any]],
         folders: Callable[[], Sequence[Mapping[str, Any]]] = lambda: (),
         path: Path | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        import time
+
         self._cfg = cfg
         self._entries = entries
         self._folders = folders
+        self._clock = clock or time.time
         # One station's categories: the default station's without *path*.
         self.store = CategoryStore(path or store_path(cfg))
         self._lock = threading.Lock()
@@ -1041,7 +1092,9 @@ class CategoryIndex:
             self._loaded = None
             self._resolved = None
 
-    def _signature(self, categories: Sequence[Category], entries: Sequence[Any]) -> tuple:
+    def _signature(
+        self, categories: Sequence[Category], entries: Sequence[Any], now: float | None = None
+    ) -> tuple:
         folder = self.folder
         beets = self._cfg.library.beets_db
         reads_beets = beets is not None and any(uses_beets(c) for c in categories)
@@ -1062,6 +1115,9 @@ class CategoryIndex:
             _stat(Path(beets)) if reads_beets and beets else None,
             _stat(Path(f"{beets}-wal")) if reads_beets and beets else None,
             tuple(playlists),
+            relative_date_now(self._clock() if now is None else now)
+            if any(uses_relative_dates(c.conditions) for c in categories)
+            else None,
         )
 
     def cache_signature(self) -> tuple:
@@ -1076,7 +1132,8 @@ class CategoryIndex:
         with self._lock:
             categories = self.categories()
             entries = self._entries()
-            signature = self._signature(categories, entries)
+            now = self._clock()
+            signature = self._signature(categories, entries, now)
             resolved = self._resolved
             if (
                 resolved is not None
@@ -1091,6 +1148,7 @@ class CategoryIndex:
                 music_dir=self._cfg.library.music_dir,
                 folder=self.folder,
                 sources_by_id={source["id"]: source for source in self._folders()},
+                now=now,
             )
             cause = check.cause if check is not None else None
             by_id: dict[str, Resolution] = {}
@@ -1172,4 +1230,5 @@ class CategoryIndex:
             music_dir=self._cfg.library.music_dir,
             folder=self.folder,
             sources_by_id={source["id"]: source for source in self._folders()},
+            now=self._clock(),
         )[0]

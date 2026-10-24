@@ -40,7 +40,7 @@ import secrets
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -519,7 +519,9 @@ def install_worker_api(
             changed_paths: set[str] = set()
             leases: list[Lease] = []
             paused = settings.paused
-            advanced = [] if paused else manager.catalog.unembedded_paths()
+            advanced: Iterator[str] = (
+                iter(()) if paused else manager.catalog.iter_unembedded_paths()
+            )
             pending_paths = (
                 queue.claimable_scans(limit=body.batch) if supports_scan and not paused else []
             )
@@ -576,15 +578,15 @@ def install_worker_api(
                         break
                 if not records:
                     break
-                by_path.update((record["path"], record) for record in records)
-                leases.extend(
-                    queue.claim(
-                        token.token_id,
-                        [(r["path"], r["size"], r["fingerprint"]) for r in records],
-                        WORKER_LEASE_SECONDS,
-                        require_scan=pending if supports_scan else None,
-                    )
+                acquired = queue.claim(
+                    token.token_id,
+                    [(r["path"], r["size"], r["fingerprint"]) for r in records],
+                    WORKER_LEASE_SECONDS,
+                    require_scan=pending if supports_scan else None,
                 )
+                acquired_paths = {lease.path for lease in acquired}
+                by_path.update((r["path"], r) for r in records if r["path"] in acquired_paths)
+                leases.extend(acquired)
             songs = []
             for lease in leases:
                 record = by_path[lease.path]
@@ -601,7 +603,7 @@ def install_worker_api(
                 )
                 if supports_scan and lease.path in pending:
                     songs[-1]["scan"] = manager.scan_options(Path(lease.path))
-                    songs[-1]["embed"] = lease.path in advanced or (
+                    songs[-1]["embed"] = manager.catalog.awaits_analysis(lease.path) or (
                         lease.path in changed_paths
                         and any(
                             source["advanced"]

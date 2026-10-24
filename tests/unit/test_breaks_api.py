@@ -163,6 +163,35 @@ def test_context_names_the_open_slot_and_what_is_playing(station):
     assert by_name.json()["slot"]["slot_id"] == slot["slot_id"]
 
 
+def test_context_says_which_programming_is_on_the_air(station, monkeypatch):
+    """ADR-0009-06: the context names the live clockwheel, show and pick mode (#469)."""
+    player = station.player
+    assert station.context()["programming"] == {
+        "clockwheel": None,
+        "show": None,
+        "pick_mode": "random",
+    }
+    # A wheel that is loaded but not picking is not on the air.
+    monkeypatch.setattr(player, "_clock", {"name": "Weekend Electronic"})
+    assert station.context()["programming"]["clockwheel"] is None
+    monkeypatch.setattr(player._cfg.playback, "pick_mode", "clock")
+    on_air = {"id": "0" * 32, "name": "Sunday Morning"}
+    monkeypatch.setattr(
+        station.station, "show_runner", SimpleNamespace(on_air_show=lambda: dict(on_air))
+    )
+    expected = {"clockwheel": "Weekend Electronic", "show": on_air, "pick_mode": "clock"}
+    assert station.context()["programming"] == expected
+    by_name = station.call("GET", "/api/stations/default/announcer/context")
+    assert by_name.json()["programming"] == expected
+    # Clock mode with no wheel that can play falls back to ordinary picks.
+    monkeypatch.setattr(player, "_clock", None)
+    assert station.context()["programming"]["clockwheel"] is None
+    # Breaks being off does not hide the programming.
+    monkeypatch.setattr(player._cfg.breaks, "enabled", False)
+    context = station.context()
+    assert context["accepting"] is False and context["programming"]["show"] == on_air
+
+
 def test_stream_announcer_slot_is_the_current_song_change(station):
     """ADR-0004-11: stream announcer context identifies the current handoff."""
     install_live_pair(station)

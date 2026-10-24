@@ -16,7 +16,8 @@ share a clock. **Time zone**, under **Time for the selected station** in
 
 Daylight-saving changes need interpretation: a skipped event time runs at the
 clock jump; a repeated local time runs at its first occurrence. Date ranges
-include both boundary dates. A repeating window crossing midnight belongs to
+include both boundary dates, and a range set to repeat every year ignores the
+year, so it can run past New Year. A repeating window crossing midnight belongs to
 the day it starts. Events missed while AutoDJ is stopped are not a backlog to
 be replayed automatically on restart.
 

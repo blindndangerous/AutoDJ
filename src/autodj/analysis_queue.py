@@ -1,7 +1,7 @@
 """Leases on songs waiting for advanced analysis, and the workers taking them.
 
 The analysis queue is the catalog's music without a vector
-(:meth:`~autodj.catalog.LibraryCatalog.unembedded_paths`).  Whoever
+(:meth:`~autodj.catalog.LibraryCatalog.iter_unembedded_paths`).  Whoever
 analyses a song first takes a lease on it in ``library.db``: a remote
 worker (``autodj worker``, keyed by its machine token) or the server's own
 CPU job (holder :data:`SERVER_HOLDER`).  A lease runs out after a while

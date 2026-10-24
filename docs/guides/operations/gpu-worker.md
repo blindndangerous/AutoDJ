@@ -410,6 +410,13 @@ polling. New songs repeat the cycle. On exit, it runs `--after-command` only if 
 cycle has not already released the model. If loading fails after `--before-command`, it still
 runs `--after-command` to restore the other program.
 
+If the server stops answering, the worker keeps trying again, waiting up to five minutes between
+tries. Once the server has been unreachable for the idle release time, or for 10 minutes without
+an idle release, the worker frees the model and runs `--after-command`. It logs "Server
+unreachable for 10 minutes; released analysis resources until it hands out songs." once and keeps
+trying. When the server answers again and hands out songs, the worker runs `--before-command` and
+loads the model again.
+
 ## Keep the worker running as a systemd user service
 
 On Linux, install AutoDJ with GPU support in `~/autodj/.venv` and put its configuration in

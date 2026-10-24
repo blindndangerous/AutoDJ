@@ -45,6 +45,18 @@ def test_conditions_save_and_load_into_player_without_a_folder(tmp_path, conditi
         ({"conditions": [{"field": "folder", "source": "one", "folder": "../outside"}]}, "no '..'"),
         ({"conditions": [{"field": "folder", "source": "one", "extra": 1}]}, "unknown fields"),
         ({"conditions": [{"field": "group", "conditions": [YEAR]}]}, "unsupported"),
+        (
+            {"conditions": [{"field": "beets", "name": "added", "operator": "within_days"}]},
+            "whole number of days from 1 to 3650",
+        ),
+        (
+            {
+                "conditions": [
+                    {"field": "beets", "name": "added", "operator": "within_days", "value": 4000}
+                ]
+            },
+            "whole number of days from 1 to 3650",
+        ),
     ],
 )
 def test_invalid_condition_steps_are_rejected(changes, message):

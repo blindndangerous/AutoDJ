@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Iterable, Mapping
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -15,6 +16,33 @@ _NUMERIC = {"year", "bpm", "duration"}
 _FIELDS = _TEXT | _NUMERIC | {"genre", "beets"}
 _OPS = {"eq", "lt", "lte", "gt", "gte", "between", "not_eq", "outside"}
 _MAX_VALUE = 500
+#: The relative date operator: a Beets date (a Unix time, such as ``added``
+#: or ``mtime``) within the last N days.
+WITHIN_DAYS = "within_days"
+#: The longest window it takes, in days (about ten years).
+MAX_WITHIN_DAYS = 3650
+#: How often its window moves, in seconds: the window ends at the start of
+#: the current hour, so the songs it matches stay the same for an hour and
+#: cached step and category results are worked out again once an hour.
+RELATIVE_DATE_STEP = 3600
+_DAY = 86400
+WITHIN_DAYS_ERROR = (
+    f"within the last N days needs a whole number of days from 1 to {MAX_WITHIN_DAYS}"
+)
+
+
+def relative_date_now(now: float | None = None) -> int:
+    """The time relative date conditions are judged at: the start of *now*'s hour.
+
+    *now* is wall-clock seconds, the current time when not given.
+    """
+    stamp = time.time() if now is None else now
+    return int(stamp // RELATIVE_DATE_STEP) * RELATIVE_DATE_STEP
+
+
+def uses_relative_dates(conditions: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether any of *conditions* is judged against the current time."""
+    return any(condition.get("operator") == WITHIN_DAYS for condition in conditions)
 
 
 def genres(value: Any) -> list[str]:
@@ -95,6 +123,24 @@ def validate_metadata_condition(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("genre requires operator 'is' and one nonempty string")
         normalized["value"] = wanted.strip()
         return normalized
+    if op == WITHIN_DAYS:
+        if field != "beets":
+            raise ValueError(
+                "within the last N days is only for Beets date fields, such as added or mtime"
+            )
+        if "upper" in value:
+            raise ValueError("within the last N days takes one number of days, not an upper value")
+        days = (
+            wanted
+            if isinstance(wanted, int) and not isinstance(wanted, bool)
+            else int(wanted)
+            if isinstance(wanted, float) and wanted.is_integer()
+            else None
+        )
+        if days is None or not 1 <= days <= MAX_WITHIN_DAYS:
+            raise ValueError(WITHIN_DAYS_ERROR)
+        normalized["value"] = days
+        return normalized
     if field in _TEXT or (
         field == "beets"
         and op in {"is", "is_not", "contains", "matches", "not_contains", "not_matches"}
@@ -159,10 +205,12 @@ def _beets_text(value: Any) -> str | None:
 
 def condition_matcher(
     condition: Mapping[str, Any],
-) -> Callable[[Any, Mapping[str, Any] | None], bool]:
+) -> Callable[..., bool]:
     """Validate a nonfolder condition once and return a test for each entry.
 
-    The test takes a library entry and its Beets values (or ``None``).
+    The test takes a library entry, its Beets values (or ``None``) and,
+    optionally, the wall-clock time a relative date condition is judged at
+    (see :func:`relative_date_now`; the current time when not given).
     """
     c = validate_metadata_condition(condition)
     field, op, wanted = c["field"], c["operator"], c["value"]
@@ -170,7 +218,9 @@ def condition_matcher(
     if field == "genre":
         folded = wanted.casefold()
 
-        def genre_matches(entry: Any, beets_item: Mapping[str, Any] | None = None) -> bool:
+        def genre_matches(
+            entry: Any, beets_item: Mapping[str, Any] | None = None, now: float | None = None
+        ) -> bool:
             found = genres(_get(entry, "genre"))
             return bool(found) and (
                 any(g.casefold() == folded for g in found)
@@ -187,7 +237,9 @@ def condition_matcher(
     folded = wanted.casefold() if isinstance(wanted, str) else ""
     pattern = folded.replace("[", "[[]")
 
-    def matches(entry: Any, beets_item: Mapping[str, Any] | None = None) -> bool:
+    def matches(
+        entry: Any, beets_item: Mapping[str, Any] | None = None, now: float | None = None
+    ) -> bool:
         if field == "beets":
             raw = (
                 None
@@ -204,6 +256,13 @@ def condition_matcher(
             raw = _get(entry, field)
         if raw is None or raw == "":
             return False
+        if op == WITHIN_DAYS:
+            # Beets stores dates as Unix times; 0 means it has none.  A date
+            # after the window's end (the start of this hour) is recent too.
+            found = number(raw)
+            return (
+                found is not None and found > 0 and found >= relative_date_now(now) - wanted * _DAY
+            )
         if numeric:
             found = number(raw)
             if found is None or (field != "beets" and found < 0) or (no_zero and found == 0):

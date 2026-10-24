@@ -338,13 +338,89 @@ describe("categories form", () => {
     const until = byId("categories-not-after");
     expect(document.activeElement).toBe(until);
     expect(until.getAttribute("aria-invalid")).toBe("true");
-    expect(until.getAttribute("aria-describedby")).toBe("categories-form-error");
+    expect(until.getAttribute("aria-describedby")).toBe("categories-dates-repeat-help categories-form-error");
     expect(byId("categories-form-error").textContent).toBe(
       "Do not play after must be on or after the Not before date.");
     until.value = "2026-12-31";
     until.dispatchEvent(new Event("input"));
     expect(until.hasAttribute("aria-invalid")).toBe(false);
     expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+  });
+
+  // ADR-0009-09
+  it("repeats a season every week or every year, with help the date fields read too", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    const repeat = byId("categories-dates-repeat");
+    const help = byId("categories-dates-repeat-help");
+    expect(repeat.value).toBe("none");
+    expect(repeat.labels[0].textContent).toBe("Repeat dates");
+    expect([...repeat.options].map((item) => item.textContent)).toEqual(["Don't repeat", "Every week", "Every year"]);
+    for (const id of ["categories-dates-repeat", "categories-not-before", "categories-not-after"]) {
+      expect(byId(id).getAttribute("aria-describedby")).toBe("categories-dates-repeat-help");
+    }
+    expect(help.textContent).toBe("The songs play only between these dates, both included.");
+    repeat.value = "yearly";
+    repeat.dispatchEvent(new Event("change"));
+    expect(help.textContent).toContain("ignoring the year; a range may run past New Year");
+
+    // Every year: the last date may come before the first, past New Year.
+    byId("categories-name").value = "Holidays";
+    byId("categories-query").value = "genre:xmas";
+    byId("categories-not-before").value = "2026-12-20";
+    byId("categories-not-after").value = "2026-01-02";
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "POST")).toBe(true));
+    expect(server.calls.find((call) => call.method === "POST").body).toMatchObject({
+      not_before: "2026-12-20", not_after: "2026-01-02", dates_repeat: "yearly",
+    });
+    await vi.waitFor(() => expect(byId("categories-form-dialog").open).toBe(false));
+    rowButton(2, "edit").click();
+    expect(byId("categories-dates-repeat").value).toBe("yearly");
+    expect(help.textContent).toContain("ignoring the year");
+    byId("categories-cancel").click();
+
+    // Every week: Friday to Sunday; no more than 7 days.
+    rowButton(0, "edit").click();
+    repeat.value = "weekly";
+    repeat.dispatchEvent(new Event("change"));
+    expect(help.textContent).toContain("Repeats every week");
+    byId("categories-not-before").value = "2026-11-06";
+    byId("categories-not-after").value = "2026-11-13";
+    byId("categories-save").click();
+    const until = byId("categories-not-after");
+    expect(document.activeElement).toBe(until);
+    expect(until.getAttribute("aria-invalid")).toBe("true");
+    expect(byId("categories-form-error").textContent).toBe(
+      "For Every week, Do not play after must be within 6 days of the Not before date.");
+    byId("categories-not-after").value = "2026-11-08";
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the refused save settles
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(server.calls.filter((call) => call.method === "PUT")).toHaveLength(1));
+    expect(server.calls.find((call) => call.method === "PUT").body).toMatchObject({
+      not_before: "2026-11-06", not_after: "2026-11-08", dates_repeat: "weekly",
+    });
+  });
+
+  it("asks for Not before before the dates can repeat", async () => {
+    const server = await open();
+    byId("categories-add").click();
+    byId("categories-name").value = "Fridays";
+    byId("categories-query").value = "genre:party";
+    byId("categories-dates-repeat").value = "weekly";
+    byId("categories-save").click();
+    const from = byId("categories-not-before");
+    expect(document.activeElement).toBe(from);
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(from.getAttribute("aria-describedby")).toBe("categories-dates-repeat-help categories-form-error");
+    expect(byId("categories-form-error").textContent).toBe("Enter a Not before date to repeat the dates.");
+    expect(server.calls.some((call) => call.method === "POST")).toBe(false);
+    // Don't repeat is never sent, as the server never saves it.
+    byId("categories-dates-repeat").value = "none";
+    await new Promise((resolve) => setTimeout(resolve, 0)); // the refused save settles
+    byId("categories-save").click();
+    await vi.waitFor(() => expect(server.calls.some((call) => call.method === "POST")).toBe(true));
+    expect(server.calls.find((call) => call.method === "POST").body).not.toHaveProperty("dates_repeat");
   });
 
   it("names a half-typed time instead of saving the category for all day", async () => {

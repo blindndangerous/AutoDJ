@@ -542,3 +542,82 @@ def test_each_station_keeps_its_own_categories(tmp_path: Path) -> None:
     assert store_path(cfg) == tmp_path / "stations" / "default" / "categories.json"
     owl = StationPaths.for_station(cfg, "owl")
     assert store_path(cfg, owl) == tmp_path / "stations" / "owl" / "categories.json"
+
+
+def test_a_new_music_category_follows_the_clock(tmp_path, monkeypatch):
+    """ADR-0009-07: songs added within the last N days, worked out again as the hours pass."""
+    music = tmp_path / "music"
+    songs = [song(music / f"{n}.flac") for n in range(3)]
+    now = [1_760_000_000 // 3600 * 3600 + 900]
+    day = 86400
+    db = tmp_path / "library.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, path BLOB, title TEXT, added REAL, mtime REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO items (id, path, title, added, mtime) VALUES (?, ?, ?, ?, ?)",
+        [
+            (1, b"0.flac", "Old", now[0] - 90 * day, now[0] - 90 * day),
+            (2, b"1.flac", "Recent", now[0] - 20 * day, now[0] - 20 * day),
+            (3, b"2.flac", "New", now[0] - day, now[0] - 2 * day),
+        ],
+    )
+    conn.execute(
+        "CREATE TABLE item_attributes (id INTEGER PRIMARY KEY, entity_id INTEGER, key TEXT, "
+        "value TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    index = CategoryIndex(config(tmp_path, beets_db=db), Entries(songs), clock=lambda: now[0])
+    new_music = parse_spec(
+        {
+            "name": "New music",
+            "source": "filters",
+            "conditions": [
+                {"field": "beets", "name": "added", "operator": "within_days", "value": 30}
+            ],
+        }
+    )
+    index.save([Category(id="new", **new_music.model_dump())])
+    saved = json.loads(index.store.path.read_text(encoding="utf-8"))
+    # The file keeps the number of days, not a date worked out when it was saved.
+    assert saved["categories"][0]["conditions"][0]["value"] == 30
+
+    import autodj.categories as module
+
+    runs = []
+    real = module.resolve_checked
+    monkeypatch.setattr(module, "resolve_checked", lambda *a, **k: runs.append(1) or real(*a, **k))
+    assert index.members()["new"][1] == {songs[1].path, songs[2].path}
+    signature = index.cache_signature()
+    now[0] += 1800  # The same hour: nothing is worked out again.
+    assert index.members()["new"][1] == {songs[1].path, songs[2].path}
+    assert index.cache_signature() == signature
+    assert len(runs) == 1
+    now[0] += 11 * day  # The recent song is now 31 days old.
+    assert index.members()["new"][1] == {songs[2].path}
+    assert index.cache_signature() != signature
+    assert len(runs) == 2
+    # The Check button judges an unsaved category at the same time.
+    by_mtime = parse_spec(
+        {
+            "name": "Changed this week",
+            "source": "filters",
+            "conditions": [
+                {"field": "beets", "name": "mtime", "operator": "within_days", "value": 7}
+            ],
+        }
+    )
+    now[0] -= 11 * day
+    assert index.check(by_mtime).paths == {songs[2].path}
+
+
+def test_a_category_without_relative_dates_ignores_the_hour(tmp_path):
+    songs = [song(tmp_path / "music" / "0.flac", genre="Rock")]
+    now = [1_760_000_000.0]
+    index = CategoryIndex(config(tmp_path), Entries(songs), clock=lambda: now[0])
+    index.save([query("Rock", "genre:rock")])
+    signature = index.cache_signature()
+    now[0] += 7 * 86400
+    assert index.cache_signature() == signature

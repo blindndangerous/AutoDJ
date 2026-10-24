@@ -3,7 +3,8 @@
 An event pairs a repeat rule (once, daily, weekdays, chosen days, or every N
 minutes within an optional window, on every day or chosen days) with an
 action from the registry.  An optional start and end date limit any rule to
-a date range, both days included.  Wall times and dates are read in the
+a date range, both days included, which may repeat every year (see
+:mod:`autodj.date_repeat`).  Wall times and dates are read in the
 station time zone.  An active window that crosses midnight belongs to the
 day it starts, so the window that starts on the end date runs past midnight
 to its end.  A wall time that a daylight-saving change skips runs at the
@@ -23,7 +24,7 @@ import json
 import logging
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from datetime import date as Date
@@ -44,6 +45,7 @@ from pydantic import (
     model_validator,
 )
 
+from autodj import date_repeat
 from autodj.fsutil import atomic_write
 from autodj.timefmt import clock_text
 
@@ -57,6 +59,9 @@ PARAM_MAX = 200
 # A due time older than this when the scheduler sees it was missed (the
 # computer slept, or the server stalled), so it is logged, not run late.
 MISSED_AFTER = timedelta(minutes=2)
+# How far ahead the next run of a yearly range is looked for.  A one-day
+# range falls on each weekday within this many years.
+YEARS_AHEAD = 29
 
 Repeat = Literal["once", "daily", "weekdays", "days", "interval"]
 Timing = Literal["hard", "soft"]
@@ -76,6 +81,7 @@ FIELD_LABELS = {
     "window_end": "Active until",
     "start_date": "Start date",
     "end_date": "End date",
+    "dates_repeat": "Repeat dates",
     "timing": "Timing",
     "wait_seconds": "Wait up to seconds",
     "enabled": "Enabled",
@@ -145,6 +151,9 @@ class EventSpec(BaseModel):
     window_end: Time | None = None
     start_date: Date | None = None
     end_date: Date | None = None
+    # A schedule's own Repeat rule sets the days, so its dates repeat
+    # yearly at most.
+    dates_repeat: Literal["none", "yearly"] = "none"
     timing: Timing = "soft"
     wait_seconds: StrictInt = Field(default=0, ge=0, le=300)
     enabled: StrictBool = True
@@ -182,7 +191,10 @@ class EventSpec(BaseModel):
             self.time = None
         else:
             self.interval_minutes = self.window_start = self.window_end = None
-        if self.start_date and self.end_date and self.end_date < self.start_date:
+        found = date_repeat.problem(self.start_date, self.end_date, self.dates_repeat)
+        if found == "needs_first":
+            raise EventError("start_date", "Enter a start date to repeat the dates every year")
+        if found == "backwards":
             raise EventError("end_date", "End date must be on or after the start date")
         if self.repeat == "once":
             assert self.date is not None
@@ -239,6 +251,8 @@ def field_error(exc: ValidationError) -> tuple[str, str]:
         return "", str(error["msg"])
     if error["type"] == "extra_forbidden":
         return loc[0], f"Unknown field {loc[0]}"
+    if loc[0] == "dates_repeat":
+        return "dates_repeat", "Repeat dates must be Don't repeat or Every year"
     if loc[0] == "name":
         return "name", f"Enter a name of up to {NAME_MAX} characters"
     label = FIELD_LABELS.get(loc[0], loc[0])
@@ -254,9 +268,7 @@ def field_error(exc: ValidationError) -> tuple[str, str]:
 
 def in_range(event: EventSpec, day: Date) -> bool:
     """Whether the local *day* is within *event*'s start and end dates, both included."""
-    if event.start_date is not None and day < event.start_date:
-        return False
-    return event.end_date is None or day <= event.end_date
+    return date_repeat.contains(day, event.start_date, event.end_date, event.dates_repeat)
 
 
 def _runs_on(event: EventSpec, day: Date) -> bool:
@@ -269,9 +281,21 @@ def _runs_on(event: EventSpec, day: Date) -> bool:
     return not event.days or day.weekday() in event.days
 
 
-def _first_day(event: EventSpec, day: Date) -> Date:
-    """Return *day*, or the start date when that is later."""
-    return max(day, event.start_date) if event.start_date is not None else day
+def _range_days(event: EventSpec, day: Date) -> Iterator[Date]:
+    """The local days from *day* on within *event*'s date range, in order.
+
+    They end after the range's end date, or :data:`YEARS_AHEAD` years
+    after the first of them, which only a yearly range reaches.
+    """
+    horizon: Date | None = None
+    while True:
+        found = date_repeat.next_day(day, event.start_date, event.end_date, event.dates_repeat)
+        if found is None or (horizon is not None and found > horizon):
+            return
+        if horizon is None:
+            horizon = found + timedelta(days=366 * YEARS_AHEAD)
+        yield found
+        day = found + timedelta(days=1)
 
 
 def _resolve(day: Date, at: Time, zone: ZoneInfo) -> datetime:
@@ -306,13 +330,8 @@ def _next_interval(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetim
     after_wall = after.astimezone(zone).replace(tzinfo=None)
     start = event.window_start or Time(0)
     # A window that starts the day before may run past midnight into today,
-    # even when today is after the end date.  Nine days reach the next
-    # chosen weekday from yesterday.
-    begin = _first_day(event, after_wall.date() - timedelta(days=1))
-    for offset in range(9):
-        day = begin + timedelta(days=offset)
-        if event.end_date is not None and day > event.end_date:
-            return None
+    # even when today is after the end date.
+    for day in _range_days(event, after_wall.date() - timedelta(days=1)):
         if not _runs_on(event, day):
             continue
         first = datetime.combine(day, start)
@@ -330,7 +349,7 @@ def _next_interval(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetim
             if instant > after:
                 return instant
             slot += step
-    return None  # pragma: no cover - the next chosen day's window has a slot
+    return None
 
 
 def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | None:
@@ -349,17 +368,13 @@ def next_run(event: EventSpec, after: datetime, zone: ZoneInfo) -> datetime | No
         assert event.date is not None
         instant = _resolve(event.date, event.time, zone)
         return instant if instant > after else None
-    begin = _first_day(event, after.astimezone(zone).date())
-    for offset in range(8):
-        day = begin + timedelta(days=offset)
-        if event.end_date is not None and day > event.end_date:
-            return None
+    for day in _range_days(event, after.astimezone(zone).date()):
         if not _runs_on(event, day):
             continue
         instant = _resolve(day, event.time, zone)
         if instant > after:
             return instant
-    return None  # pragma: no cover - every rule matches within a week
+    return None
 
 
 def _count_skipped(event: EventSpec, first: datetime, cutoff: datetime, zone: ZoneInfo) -> int:
@@ -440,6 +455,10 @@ def _joined(names: Sequence[str]) -> str:
 def describe_range(event: EventSpec) -> str:
     """Say *event*'s date range in words, or ``""`` when it has none."""
     start, end = event.start_date, event.end_date
+    if event.dates_repeat == "yearly" and start is not None:
+        if end is None or (end.month, end.day) == (start.month, start.day):
+            return f"every year on {date_repeat.month_day(start)}"
+        return f"every year from {date_repeat.month_day(start)} to {date_repeat.month_day(end)}"
     if start is not None and end is not None:
         return f"from {_day_words(start, year=start.year != end.year)} to {_day_words(end)}"
     if start is not None:
@@ -731,6 +750,8 @@ class Scheduler:
             for key in ("start_date", "end_date"):
                 if event[key] is None:
                     del event[key]
+            if event["dates_repeat"] == "none":
+                del event["dates_repeat"]
             if not event["wait_seconds"]:
                 del event["wait_seconds"]
         return json.dumps(document, indent=2, ensure_ascii=False) + "\n"
@@ -833,7 +854,11 @@ class Scheduler:
                     "enabled", "This one-time event is in the past; edit its date first"
                 )
             today = self._clock().astimezone(self.zone).date()
-            if event.end_date is not None and event.end_date < today:
+            if (
+                event.dates_repeat == "none"
+                and event.end_date is not None
+                and event.end_date < today
+            ):
                 raise EventError(
                     "enabled", "This event's end date has passed; edit its dates first"
                 )

@@ -446,6 +446,7 @@ def test_an_event_for_an_unknown_action_is_kept_as_it_was_but_never_runs(tmp_pat
         for key, value in other.model_dump(mode="json").items()
         if (key not in ("start_date", "end_date") or value is not None)
         and (key != "wait_seconds" or value)
+        and (key != "dates_repeat" or value != "none")
     }
     rig.tick_at("2026-10-12 07:00")
     assert "b" * 32 not in {run.event_id for run in rig.schedule.runs}

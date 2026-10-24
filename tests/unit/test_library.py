@@ -3889,7 +3889,7 @@ def test_advanced_analysis_leaves_out_songs_over_the_length_cutoff(manager_facto
         manager.catalog.put_entry(entry)
     catalog = manager.catalog
     assert catalog.advanced_max_minutes() == 15
-    assert catalog.unembedded_paths() == [_path(short)]
+    assert list(catalog.iter_unembedded_paths()) == [_path(short)]
     assert [r["path"] for r in manager.analysis_pending()] == [_path(short)]
     assert [r["path"] for r in manager.analysis_pending(force=True)] == [_path(short)]
     snapshot = manager.snapshot()
@@ -3903,12 +3903,12 @@ def test_advanced_analysis_leaves_out_songs_over_the_length_cutoff(manager_facto
     # Looked for again at once, without waiting for a scan.
     assert manager._analysis_idle is None and manager._scan_generation == generation
     assert manager._analysis_started_generation is None
-    assert sorted(catalog.unembedded_paths()) == sorted([_path(short), _path(long)])
+    assert sorted(catalog.iter_unembedded_paths()) == sorted([_path(short), _path(long)])
     assert catalog.too_long_for_analysis_count() == 0
     manager.set_advanced_max_minutes(90)
     assert catalog.unembedded_count() == 2
     manager.set_advanced_max_minutes(60)
-    assert catalog.unembedded_paths() == [_path(short)]
+    assert list(catalog.iter_unembedded_paths()) == [_path(short)]
     # A bad stored value falls back to the default.
     catalog.set_setting("advanced_max_minutes", "lots")
     assert catalog.advanced_max_minutes() == 15
